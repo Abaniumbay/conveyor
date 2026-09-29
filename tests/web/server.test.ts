@@ -10,6 +10,7 @@ const model: DashboardViewModel = {
   revision: "revision-1",
   view: "board",
   counts: { board: 0, attention: 0 },
+  activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
   stages: [],
   backlog: [],
   done: {
@@ -42,6 +43,7 @@ interface CallLog {
   webhooks: unknown[][];
   mcp: unknown[][];
   steering: unknown[][];
+  issueActivity: unknown[][];
 }
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -50,7 +52,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [] };
+  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -66,6 +68,23 @@ function setup(overrides: Record<string, unknown> = {}) {
     startSteering: async (...args: unknown[]) => { calls.steering.push(args); return "run-1"; },
     getSteeringRun: async () => ({ id: "run-1", status: "succeeded" }),
     getSteeringEvents: async () => [{ sequence: 1, type: "report", text: "Done", createdAt: "2026-09-29T12:00:00Z" }],
+    getIssueActivity: async (...args: unknown[]) => {
+      calls.issueActivity.push(args);
+      return {
+        issueId: String(args[0]),
+        runs: [{
+          id: "run-2",
+          stageId: "implementation",
+          attempt: 2,
+          kind: "producer",
+          status: "running",
+          startedAt: "2026-09-29T12:00:00Z",
+          finishedAt: null,
+          result: null,
+          events: [{ sequence: 1, type: "progress", payload: { message: "Editing files" }, createdAt: "2026-09-29T12:00:01Z" }],
+        }],
+      };
+    },
     ...overrides,
   };
   return { handler: createWebHandler(dependencies as never), auth, calls };
@@ -185,6 +204,20 @@ describe("createWebHandler", () => {
     const events = await handler(new Request("http://localhost/steering/run-1/events", { headers: { cookie } }));
     expect(events.headers.get("content-type")).toContain("text/event-stream");
     expect(await events.text()).toContain('"text":"Done"');
+  });
+
+  test("serves authenticated persisted activity for an encoded issue id", async () => {
+    const { handler, calls } = setup();
+    expect((await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/activity"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/activity", { headers: { cookie } }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      issueId: "github:owner/repo#1",
+      runs: [{ status: "running", events: [{ payload: { message: "Editing files" } }] }],
+    });
+    expect(calls.issueActivity).toEqual([["github:owner/repo#1"]]);
   });
 
   test("delegates configured webhook raw body and headers without requiring a session", async () => {

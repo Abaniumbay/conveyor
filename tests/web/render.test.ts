@@ -21,6 +21,7 @@ const parent: IssueCardViewModel = {
   parent: null,
   children: [{ number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42" }],
   dependencies: [{ number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40" }],
+  working: true,
 };
 
 const backlogIssue: IssueCardViewModel = {
@@ -42,6 +43,7 @@ const backlogIssue: IssueCardViewModel = {
   parent: null,
   children: [],
   dependencies: [],
+  working: false,
 };
 
 const completedIssue: IssueCardViewModel = {
@@ -62,6 +64,19 @@ const dashboard: DashboardViewModel = {
   revision: "revision-1",
   view: "board",
   counts: { board: 43, attention: 1 },
+  activeWork: {
+    runnerCount: 1,
+    runnerCapacity: 4,
+    runs: [{
+      id: "run-active",
+      issueId: "parent",
+      issueNumber: 41,
+      issueTitle: "Build <safe> & sound",
+      stageId: "build",
+      kind: "producer",
+      startedAt: "2026-09-29T12:00:00Z",
+    }],
+  },
   stages: [
     {
       id: "stage:build",
@@ -147,7 +162,15 @@ describe("renderDashboard", () => {
     expect(html).toContain('name="doneLimit" value="21"');
     expect(html).toContain('data-dashboard-revision="revision-1"');
     expect(html).toContain('src="/assets/dashboard.js"');
-    expect(html).toContain(">Details</button>");
+    expect(html).toContain('data-dialog-open="issue-parent-41"');
+    expect(html).toContain('aria-label="Open details for issue #41"');
+    expect(html).toContain("1 runner working");
+    expect(html).toContain("1 of 4 runner slots active");
+    expect(html).toContain("Working now");
+    expect(html).toContain('data-detail-tab="activity"');
+    expect(html).toContain('/api/issues/parent/activity');
+    expect(html).not.toContain(">Details</button>");
+    expect(html).not.toContain("details-button");
     expect(html).toContain("<dialog");
     expect(html).not.toContain("indicator-blocked");
     expect(html).not.toContain('class="labels"');

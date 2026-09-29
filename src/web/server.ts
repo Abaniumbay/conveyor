@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { renderDashboard } from "./render";
-import type { DashboardPageSelection, DashboardViewModel } from "./types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -29,6 +29,7 @@ export interface WebHandlerDependencies {
     text: string;
     createdAt: string;
   }> | Promise<Array<{ sequence: number; type: string; text: string; createdAt: string }>>;
+  getIssueActivity: (issueId: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
   maxBodyBytes?: number;
 }
 
@@ -337,6 +338,26 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json({ revision: await dependencies.getDashboardRevision() });
       } catch {
         return json({ error: "revision unavailable" }, 503);
+      }
+    }
+
+    const issueActivity = /^\/api\/issues\/([^/]{1,1000})\/activity$/.exec(path);
+    if (issueActivity) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try {
+        issueId = decodeURIComponent(issueActivity[1]!);
+      } catch {
+        return text("Invalid issue id", 400);
+      }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      try {
+        const activity = await dependencies.getIssueActivity(issueId);
+        return activity ? json(activity) : text("Issue not found", 404);
+      } catch {
+        return json({ error: "activity unavailable" }, 503);
       }
     }
 

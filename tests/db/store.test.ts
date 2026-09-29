@@ -143,6 +143,61 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("lists active issue runners and complete issue run history", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "Active feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    for (const run of [
+      { id: "run-old", status: "succeeded", startedAt: "2026-01-01T00:00:00.000Z" },
+      { id: "run-live", status: "running", startedAt: "2026-01-02T00:00:00.000Z" },
+    ]) {
+      store.createRun({
+        id: run.id,
+        issueId: "issue-1",
+        stageId: "implementation",
+        attempt: run.id === "run-old" ? 1 : 2,
+        kind: "producer",
+        status: run.status,
+        configHash: "config-hash",
+        startedAt: run.startedAt,
+      });
+    }
+    store.appendRunEvent("run-live", "progress", { message: "editing" });
+
+    expect(store.listActiveIssueRuns()).toEqual([{
+      id: "run-live",
+      issueId: "issue-1",
+      issueNumber: 12,
+      issueTitle: "Active feature",
+      stageId: "implementation",
+      kind: "producer",
+      startedAt: "2026-01-02T00:00:00.000Z",
+    }]);
+    expect(store.listIssueRuns("issue-1").map((run) => run.id)).toEqual(["run-live", "run-old"]);
+    expect(store.listIssueRuns("issue-1")[0]).toMatchObject({
+      status: "running",
+      result: null,
+    });
+    store.close();
+  });
+
   test("lists projected issues in durable queue order", async () => {
     const store = await openStore();
     store.upsertRepository({

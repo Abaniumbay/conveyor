@@ -23,7 +23,7 @@ describe("ConveyorService dashboard", () => {
     const config = {
       hash: "config-hash",
       root,
-      settings: { workspaces: path.join(root, "workspaces") },
+      settings: { workspaces: path.join(root, "workspaces"), runners: 3 },
       labels: {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
@@ -101,7 +101,7 @@ describe("ConveyorService dashboard", () => {
     const config = {
       hash: "config-hash",
       root,
-      settings: { workspaces: path.join(root, "workspaces") },
+      settings: { workspaces: path.join(root, "workspaces"), runners: 3 },
       labels: {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
@@ -196,6 +196,17 @@ describe("ConveyorService dashboard", () => {
       null,
       ["github:owner/repo#1"],
     );
+    store.createRun({
+      id: "active-run",
+      issueId: "github:owner/repo#27",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: config.hash,
+      startedAt: "2026-09-29T00:01:00Z",
+    });
+    store.appendRunEvent("active-run", "progress", { message: "Implementing" });
     store.upsertIssue({
       id: "github:owner/repo#28",
       repositoryId: "repo",
@@ -228,7 +239,16 @@ describe("ConveyorService dashboard", () => {
       totalIssues: 1,
       page: 1,
       totalPages: 1,
-      issues: [{ dependencies: [{ number: 1 }] }],
+      issues: [{ dependencies: [{ number: 1 }], working: true }],
+    });
+    expect(dashboard.activeWork).toMatchObject({
+      runnerCount: 1,
+      runnerCapacity: 3,
+      runs: [{ id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer" }],
+    });
+    expect(service.issueActivity("github:owner/repo#27")).toMatchObject({
+      issueId: "github:owner/repo#27",
+      runs: [{ id: "active-run", events: [{ type: "progress", payload: { message: "Implementing" } }] }],
     });
     expect(dashboard.backlog.map((issue) => issue.number)).toEqual([26]);
     expect(dashboard.done).toMatchObject({ totalIssues: 25 });

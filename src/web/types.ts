@@ -26,6 +26,41 @@ export interface IssueCardViewModel {
   parent: IssueRelationViewModel | null;
   children: readonly IssueRelationViewModel[];
   dependencies: readonly IssueRelationViewModel[];
+  working: boolean;
+}
+
+export interface ActiveRunViewModel {
+  id: string;
+  issueId: string;
+  issueNumber: number;
+  issueTitle: string;
+  stageId: string;
+  kind: string;
+  startedAt: string;
+}
+
+export interface IssueRunEventViewModel {
+  sequence: number;
+  type: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface IssueRunViewModel {
+  id: string;
+  stageId: string;
+  attempt: number;
+  kind: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  result: unknown | null;
+  events: readonly IssueRunEventViewModel[];
+}
+
+export interface IssueActivityViewModel {
+  issueId: string;
+  runs: readonly IssueRunViewModel[];
 }
 
 export interface StageColumnViewModel {
@@ -86,6 +121,11 @@ export interface DashboardViewModel {
   revision: string;
   view: DashboardView;
   counts: { board: number; attention: number };
+  activeWork: {
+    runnerCount: number;
+    runnerCapacity: number;
+    runs: readonly ActiveRunViewModel[];
+  };
   stages: readonly StageColumnViewModel[];
   backlog: readonly IssueCardViewModel[];
   done: StageColumnViewModel;

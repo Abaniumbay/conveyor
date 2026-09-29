@@ -57,6 +57,29 @@ export interface RunRecordInput {
   startedAt: string;
 }
 
+export interface StoredRun {
+  id: string;
+  issueId: string | null;
+  stageId: string;
+  attempt: number;
+  kind: string;
+  status: string;
+  sessionId: string | null;
+  result: unknown | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface ActiveIssueRun {
+  id: string;
+  issueId: string;
+  issueNumber: number;
+  issueTitle: string;
+  stageId: string;
+  kind: string;
+  startedAt: string;
+}
+
 export interface EnrollmentRecord {
   id: string;
   issueId: string;
@@ -813,18 +836,7 @@ export class ConveyorStore {
     })();
   }
 
-  getRun(runId: string): {
-    id: string;
-    issueId: string | null;
-    stageId: string;
-    attempt: number;
-    kind: string;
-    status: string;
-    sessionId: string | null;
-    result: unknown | null;
-    startedAt: string;
-    finishedAt: string | null;
-  } | null {
+  getRun(runId: string): StoredRun | null {
     const row = this.#database
       .query("SELECT * FROM runs WHERE id = ?")
       .get(runId) as Record<string, SQLQueryBindings> | null;
@@ -841,6 +853,48 @@ export class ConveyorStore {
       startedAt: String(row.started_at),
       finishedAt: row.finished_at === null ? null : String(row.finished_at),
     };
+  }
+
+  listActiveIssueRuns(): ActiveIssueRun[] {
+    const rows = this.#database
+      .query(
+        `SELECT r.id, r.issue_id, r.stage_id, r.kind, r.started_at,
+           i.source_number, i.title
+         FROM runs r JOIN issues i ON i.id = r.issue_id
+         WHERE r.status = 'running'
+         ORDER BY r.started_at, r.id`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: String(row.id),
+      issueId: String(row.issue_id),
+      issueNumber: Number(row.source_number),
+      issueTitle: String(row.title),
+      stageId: String(row.stage_id),
+      kind: String(row.kind),
+      startedAt: String(row.started_at),
+    }));
+  }
+
+  listIssueRuns(issueId: string): StoredRun[] {
+    const rows = this.#database
+      .query(
+        `SELECT * FROM runs WHERE issue_id = ?
+         ORDER BY started_at DESC, id DESC`,
+      )
+      .all(issueId) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: String(row.id),
+      issueId: String(row.issue_id),
+      stageId: String(row.stage_id),
+      attempt: Number(row.attempt),
+      kind: String(row.kind),
+      status: String(row.status),
+      sessionId: row.session_id === null ? null : String(row.session_id),
+      result: row.result_json === null ? null : parseJson(String(row.result_json)),
+      startedAt: String(row.started_at),
+      finishedAt: row.finished_at === null ? null : String(row.finished_at),
+    }));
   }
 
   listRunsByKind(kind: string, limit = 10): Array<{

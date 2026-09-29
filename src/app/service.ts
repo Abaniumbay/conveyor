@@ -11,7 +11,7 @@ import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -1079,6 +1079,8 @@ export class ConveyorService {
     },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
+    const activeRuns = this.store.listActiveIssueRuns();
+    const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     const relation = (issue: StoredIssue): IssueRelationViewModel => ({
       number: issue.sourceNumber,
@@ -1136,6 +1138,7 @@ export class ConveyorService {
         parent: parent ? relation(parent) : null,
         children,
         dependencies,
+        working: activeIssueIds.has(issue.id),
       };
     };
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
@@ -1267,6 +1270,11 @@ export class ConveyorService {
         board: backlogIssues.length + stagedIssues.length + closedIssues.length,
         attention: attentionIssues.length,
       },
+      activeWork: {
+        runnerCount: activeRuns.length,
+        runnerCapacity: this.config.settings.runners,
+        runs: activeRuns,
+      },
       stages: stages.map((stage) => column(
           `stage:${stage}`,
           title(stage),
@@ -1320,6 +1328,25 @@ export class ConveyorService {
     };
   }
 
+  issueActivity(issueId: string): IssueActivityViewModel | null {
+    const issue = this.store.getIssue(issueId);
+    if (!issue || issue.projectedState === "offboarded") return null;
+    return {
+      issueId,
+      runs: this.store.listIssueRuns(issueId).map((run) => ({
+        id: run.id,
+        stageId: run.stageId,
+        attempt: run.attempt,
+        kind: run.kind,
+        status: run.status,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        result: run.result,
+        events: this.store.listRunEvents(run.id),
+      })),
+    };
+  }
+
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
     const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
@@ -1340,6 +1367,7 @@ export class ConveyorService {
       startSteering: (prompt) => this.startSteering(prompt),
       getSteeringRun: (runId) => this.getSteeringRun(runId),
       getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),
+      getIssueActivity: (issueId) => this.issueActivity(issueId),
     };
   }
 }

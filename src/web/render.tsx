@@ -21,16 +21,6 @@ function safeUrl(value: string | null): string | null {
   }
 }
 
-function IssueLink({ issue }: { issue: Pick<IssueCardViewModel, "number" | "title" | "url"> }) {
-  const url = safeUrl(issue.url);
-  if (!url) return <>{issue.title}</>;
-  return (
-    <a href={url} target="_blank" rel="noopener noreferrer">
-      {issue.title}<span class="sr-only"> (opens issue #{issue.number} in a new tab)</span>
-    </a>
-  );
-}
-
 function RelationLink({ relation }: { relation: IssueRelationViewModel }) {
   const url = safeUrl(relation.url);
   const label = <>#{relation.number} {relation.title}</>;
@@ -78,8 +68,10 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
 
 function DetailsDialog({ issue, id }: { issue: IssueCardViewModel; id: string }) {
   const url = safeUrl(issue.url);
+  const summaryId = `${id}-summary`;
+  const activityId = `${id}-activity`;
   return (
-    <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`}>
+    <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id}>
       <header class="details-header">
         <div>
           <p class="details-kicker">Issue #{issue.number}</p>
@@ -87,31 +79,49 @@ function DetailsDialog({ issue, id }: { issue: IssueCardViewModel; id: string })
         </div>
         <form method="dialog"><button class="dialog-close" aria-label="Close issue details">×</button></form>
       </header>
-      <div class="details-status">
-        <span class="issue-state">{issue.state}</span>
-        {issue.closable && <span class="indicator indicator-closable">Closable</span>}
-        {issue.inconsistent && <span class="indicator indicator-inconsistent">Inconsistent</span>}
-      </div>
-      <dl class="details-facts">
-        {issue.activity && <Fragment><dt>Activity</dt><dd>{issue.activity}</dd></Fragment>}
-        {issue.reason && <Fragment><dt>Source note</dt><dd>{issue.reason}</dd></Fragment>}
-        {issue.cost && <Fragment><dt>Cost</dt><dd>{issue.cost}</dd></Fragment>}
-        {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
-      </dl>
-      <Relationships issue={issue} />
-      <section class="criteria" aria-label="Acceptance criteria">
-        <h3>Acceptance criteria</h3>
-        {issue.acceptanceCriteria.length > 0
-          ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
-          : <p class="details-empty">No acceptance criteria recorded.</p>}
-      </section>
-      {issue.labels.length > 0 && (
-        <section class="source-labels" aria-label="Source labels">
-          <h3>Source labels</h3>
-          <div>{issue.labels.map((label) => <span class="source-label" key={label}>{label}</span>)}</div>
+      <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
+        <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
+        <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Activity</button>
+      </nav>
+      <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
+        <div class="details-status">
+          <span class="issue-state">{issue.state}</span>
+          {issue.working && <span class="working-indicator">Working now</span>}
+          {issue.closable && <span class="indicator indicator-closable">Closable</span>}
+          {issue.inconsistent && <span class="indicator indicator-inconsistent">Inconsistent</span>}
+        </div>
+        <dl class="details-facts">
+          {issue.activity && <Fragment><dt>Activity</dt><dd>{issue.activity}</dd></Fragment>}
+          {issue.reason && <Fragment><dt>Source note</dt><dd>{issue.reason}</dd></Fragment>}
+          {issue.cost && <Fragment><dt>Cost</dt><dd>{issue.cost}</dd></Fragment>}
+          {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
+        </dl>
+        <Relationships issue={issue} />
+        <section class="criteria" aria-label="Acceptance criteria">
+          <h3>Acceptance criteria</h3>
+          {issue.acceptanceCriteria.length > 0
+            ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            : <p class="details-empty">No acceptance criteria recorded.</p>}
         </section>
-      )}
-      {url && <p class="details-source"><a href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a></p>}
+        {issue.labels.length > 0 && (
+          <section class="source-labels" aria-label="Source labels">
+            <h3>Source labels</h3>
+            <div>{issue.labels.map((label) => <span class="source-label" key={label}>{label}</span>)}</div>
+          </section>
+        )}
+        {url && <p class="details-source"><a href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a></p>}
+      </section>
+      <section
+        id={activityId}
+        role="tabpanel"
+        aria-labelledby={`${activityId}-tab`}
+        data-detail-panel="activity"
+        data-activity-url={`/api/issues/${encodeURIComponent(issue.id)}/activity`}
+        hidden
+      >
+        <p class="activity-status" data-activity-status>Open Activity to load the persisted run log.</p>
+        <div data-activity-runs />
+      </section>
     </dialog>
   );
 }
@@ -119,17 +129,24 @@ function DetailsDialog({ issue, id }: { issue: IssueCardViewModel; id: string })
 function IssueCard({ issue }: { issue: IssueCardViewModel }) {
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   return (
-    <article class={`issue issue--${issue.tone}`} data-issue-id={issue.id}>
+    <article
+      class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}`}
+      data-issue-id={issue.id}
+      data-dialog-open={dialogId}
+      tabIndex={0}
+      aria-label={`Open details for issue #${issue.number}`}
+      aria-haspopup="dialog"
+    >
       <h3 class="issue-title">
         <span class="issue-number">#{issue.number}</span>
-        <span><IssueLink issue={issue} /></span>
+        <span>{issue.title}</span>
       </h3>
       <RelationshipSummary issue={issue} />
       {issue.activity && <p class="detail"><strong>Activity:</strong> {issue.activity}</p>}
       {issue.reason && issue.tone === "danger" && <p class="detail"><strong>Reason:</strong> {issue.reason}</p>}
       <footer class="issue-footer">
         <span class="issue-state">{issue.state}</span>
-        <button class="details-button" type="button" data-dialog-open={dialogId}>Details</button>
+        {issue.working && <span class="working-indicator">Working now</span>}
       </footer>
       <DetailsDialog issue={issue} id={dialogId} />
     </article>
@@ -225,6 +242,29 @@ function Navigation({ model }: { model: DashboardViewModel }) {
         </a>
       ))}
     </nav>
+  );
+}
+
+function ActiveWork({ model }: { model: DashboardViewModel }) {
+  const { runnerCount, runnerCapacity, runs } = model.activeWork;
+  return (
+    <section class={`active-work${runnerCount > 0 ? " active-work--running" : ""}`} aria-labelledby="active-work-heading">
+      <div class="active-work-summary">
+        <span class="live-dot" aria-hidden="true" />
+        <div>
+          <h2 id="active-work-heading">{runnerCount === 1 ? "1 runner working" : `${runnerCount} runners working`}</h2>
+          <p>{runnerCount} of {runnerCapacity} runner slots active</p>
+        </div>
+      </div>
+      {runs.length > 0
+        ? <ul>{runs.map((run) => (
+            <li key={run.id}>
+              <strong>#{run.issueNumber} {run.issueTitle}</strong>
+              <span>{run.stageId} · {run.kind.replaceAll("-", " ")}</span>
+            </li>
+          ))}</ul>
+        : <p class="active-work-idle">No issue is being worked on right now.</p>}
+    </section>
   );
 }
 
@@ -372,6 +412,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Questions questions={model.questions} csrfToken={model.csrfToken} />
           <Navigation model={model} />
+          <ActiveWork model={model} />
           {content}
         </main>
       </body>
