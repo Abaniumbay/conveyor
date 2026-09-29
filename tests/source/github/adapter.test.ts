@@ -77,6 +77,26 @@ describe("GitHubAdapter", () => {
     expect(transport.requests[0]).toMatchObject({ method: "GET", paginate: true });
   });
 
+  test("can list all source issues so reconciliation observes full offboarding", async () => {
+    const transport = new FakeTransport([
+      {
+        id: 101,
+        number: 1,
+        html_url: "https://github.com/owner/repo/issues/1",
+        title: "Offboarded",
+        body: "body",
+        state: "open",
+        labels: [{ name: "backend" }],
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.listIssues("owner/repo")).toEqual([
+      expect.objectContaining({ number: 1, labels: ["backend"] }),
+    ]);
+  });
+
   test("replaces only Conveyor labels while preserving project labels", async () => {
     const transport = new FakeTransport(
       {

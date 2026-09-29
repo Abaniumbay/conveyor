@@ -175,7 +175,7 @@ export class ConveyorStore {
            source_state = excluded.source_state,
            labels_json = excluded.labels_json,
            source_updated_at = excluded.source_updated_at,
-           parent_id = excluded.parent_id,
+           parent_id = COALESCE(excluded.parent_id, issues.parent_id),
            updated_at = excluded.updated_at`,
       )
       .run(

@@ -14,3 +14,8 @@ export interface PullRequestReference {
   url: string;
   state: string;
 }
+
+export interface IssueSourceAdapter {
+  listIssues(address: string): Promise<SourceIssue[]>;
+  getIssue(address: string, issueNumber: number): Promise<SourceIssue>;
+}

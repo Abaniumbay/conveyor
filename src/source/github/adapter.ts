@@ -110,6 +110,12 @@ export class GitHubAdapter {
   ) {}
 
   async listConveyorIssues(address: string): Promise<SourceIssue[]> {
+    return (await this.listIssues(address)).filter((issue) =>
+      issue.labels.some((label) => this.isConveyorLabel(label)),
+    );
+  }
+
+  async listIssues(address: string): Promise<SourceIssue[]> {
     const issues = await this.transport.request<GitHubIssue[]>({
       method: "GET",
       path: `repos/${address}/issues?state=all&per_page=100&sort=created&direction=asc`,
@@ -118,7 +124,6 @@ export class GitHubAdapter {
     return issues
       .filter((issue) => issue.pull_request === undefined)
       .map((issue) => ({ issue, labels: issue.labels.map(labelName) }))
-      .filter(({ labels }) => labels.some((label) => this.isConveyorLabel(label)))
       .map(({ issue, labels }) => ({
         id: `github:${address}#${issue.number}`,
         number: issue.number,
