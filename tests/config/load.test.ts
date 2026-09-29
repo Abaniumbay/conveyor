@@ -35,6 +35,9 @@ settings:
   artifacts: ./state/artifacts
 web:
   listen: 127.0.0.1:4300
+  steering:
+    agent: checker
+    workspace: ../
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
@@ -109,6 +112,10 @@ sources:
     expect(config.settings.database).toBe(
       path.join(directory, "state/conveyor.sqlite"),
     );
+    expect(config.web.steering).toEqual({
+      agent: "checker",
+      workspace: path.resolve(directory, "../"),
+    });
     expect(config.agents.checker?.instructions).toBe(
       path.join(directory, "instructions/checker.md"),
     );

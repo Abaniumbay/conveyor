@@ -55,10 +55,18 @@ const settingsSchema = z
     interruptGraceMs: interruptGrace,
   }));
 
+const steeringSchema = z
+  .object({
+    agent: identifierSchema,
+    workspace: absolutePathSchema,
+  })
+  .strict();
+
 const webSchema = z
   .object({
     listen: z.string().min(3).default("127.0.0.1:4300"),
     publicUrl: z.url().optional(),
+    steering: steeringSchema.optional(),
   })
   .strict()
   .prefault({});

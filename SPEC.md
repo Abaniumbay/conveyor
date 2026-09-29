@@ -164,6 +164,9 @@ settings:
 web:
   listen: 127.0.0.1:4300
   publicUrl: https://conveyor.example.com
+  steering:
+    agent: operator
+    workspace: /home/your-user
 
 sources:
   github:
@@ -204,6 +207,12 @@ agents:
     effort: high
     instructions: ./instructions/checker.md
     workspaceAccess: read-only
+  operator:
+    runner: codex
+    model: configured-model-name
+    effort: medium
+    instructions: ./instructions/operator.md
+    workspaceAccess: workspace-write
 
 checks:
   generic-enter:

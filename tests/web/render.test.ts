@@ -20,6 +20,7 @@ const parent: IssueCardViewModel = {
   tone: "warning",
   parent: null,
   children: [{ number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42" }],
+  dependencies: [{ number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40" }],
 };
 
 const backlogIssue: IssueCardViewModel = {
@@ -40,6 +41,7 @@ const backlogIssue: IssueCardViewModel = {
   tone: "active",
   parent: null,
   children: [],
+  dependencies: [],
 };
 
 const completedIssue: IssueCardViewModel = {
@@ -57,6 +59,7 @@ const dashboard: DashboardViewModel = {
   title: "Conveyor",
   project: "sample/repo",
   updatedAt: "2026-09-29T12:00:00Z",
+  revision: "revision-1",
   view: "board",
   counts: { board: 43, attention: 1 },
   stages: [
@@ -109,6 +112,7 @@ const dashboard: DashboardViewModel = {
     },
   ],
   systemWarnings: ["meal-planner webhook is unavailable"],
+  steering: { enabled: false, agent: null, selected: null, recent: [] },
   csrfToken: "csrf-token",
 };
 
@@ -127,6 +131,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=3");
     expect(html).toContain("issue--warning");
     expect(html).toContain("Nested task");
+    expect(html).toContain("Blocked by");
+    expect(html).toContain("Required foundation");
     expect(html).toContain("Issue relationships for #41");
     expect(html).toContain("in_progress");
     expect(html).toContain("Keyboard usable");
@@ -139,6 +145,12 @@ describe("renderDashboard", () => {
     expect(html).toContain("System attention");
     expect(html).toContain("Load 20 more");
     expect(html).toContain('name="doneLimit" value="21"');
+    expect(html).toContain('data-dashboard-revision="revision-1"');
+    expect(html).toContain('src="/assets/dashboard.js"');
+    expect(html).toContain(">Details</button>");
+    expect(html).toContain("<dialog");
+    expect(html).not.toContain("indicator-blocked");
+    expect(html).not.toContain('class="labels"');
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
@@ -163,5 +175,33 @@ describe("renderDashboard", () => {
     expect(html).toContain("missing, unknown, or conflicting stage label");
     expect(html).toContain("No valid configured stage label is present.");
     expect(html).not.toContain("Delivery board");
+  });
+
+  test("renders the configured steering agent and its persisted live report", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      view: "agent",
+      steering: {
+        enabled: true,
+        agent: "operator",
+        selected: {
+          id: "run-1",
+          status: "running",
+          startedAt: "2026-09-29T12:00:00Z",
+          finishedAt: null,
+          events: [
+            { sequence: 1, type: "user", text: "Inspect the board", createdAt: "2026-09-29T12:00:00Z" },
+            { sequence: 2, type: "report", text: "Fixed the labels", createdAt: "2026-09-29T12:01:00Z" },
+          ],
+        },
+        recent: [{ id: "run-1", status: "running", startedAt: "2026-09-29T12:00:00Z" }],
+      },
+    });
+
+    expect(html).toContain("Agent");
+    expect(html).toContain("Inspect the board");
+    expect(html).toContain("Fixed the labels");
+    expect(html).toContain('action="/steering"');
+    expect(html).toContain('data-steering-run="run-1"');
   });
 });

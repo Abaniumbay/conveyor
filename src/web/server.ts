@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
+import { dashboardClient } from "./client";
 import { renderDashboard } from "./render";
 import type { DashboardPageSelection, DashboardViewModel } from "./types";
 
@@ -13,12 +14,21 @@ export interface WebHandlerDependencies {
     csrfToken: string,
     pagination: DashboardPageSelection,
   ) => DashboardViewModel | Promise<DashboardViewModel>;
+  getDashboardRevision: () => string | Promise<string>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
   reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
   handleMcp: (body: unknown, bearerToken: string) => unknown | Promise<unknown>;
+  startSteering: (prompt: string) => string | Promise<string>;
+  getSteeringRun: (runId: string) => { id: string; status: string } | null | Promise<{ id: string; status: string } | null>;
+  getSteeringEvents: (runId: string, after: number) => Array<{
+    sequence: number;
+    type: string;
+    text: string;
+    createdAt: string;
+  }> | Promise<Array<{ sequence: number; type: string; text: string; createdAt: string }>>;
   maxBodyBytes?: number;
 }
 
@@ -33,7 +43,7 @@ function response(body: BodyInit | null, status: number, contentType: string, he
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
   responseHeaders.set("cache-control", "no-store");
-  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
 }
 
@@ -154,7 +164,13 @@ function requireMethod(request: Request, method: string): Response | null {
 function dashboardPage(url: URL): DashboardPageSelection {
   const requestedViews = url.searchParams.getAll("view");
   const requestedView = requestedViews.length === 1 ? requestedViews[0] : null;
-  const view = requestedView === "attention" ? requestedView : "board";
+  const view = requestedView === "attention" || requestedView === "agent"
+    ? requestedView
+    : "board";
+  const requestedRuns = url.searchParams.getAll("run");
+  const requestedRun = requestedRuns.length === 1 && /^[A-Za-z0-9-]{1,100}$/.test(requestedRuns[0] ?? "")
+    ? requestedRuns[0]!
+    : null;
   const requestedDoneLimits = url.searchParams.getAll("doneLimit");
   const rawDoneLimit = requestedDoneLimits.length === 1 ? requestedDoneLimits[0] : null;
   const parsedDoneLimit = rawDoneLimit && /^[1-9]\d*$/.test(rawDoneLimit)
@@ -165,16 +181,68 @@ function dashboardPage(url: URL): DashboardPageSelection {
     : DEFAULT_DONE_LIMIT;
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
-  if (columns.length !== 1 || pages.length !== 1) return { view, column: null, page: 1, doneLimit };
+  if (columns.length !== 1 || pages.length !== 1) {
+    return { view, column: null, page: 1, doneLimit, runId: requestedRun };
+  }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, column: null, page: 1, doneLimit };
+    return { view, column: null, page: 1, doneLimit, runId: requestedRun };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, column, page: parsedPage, doneLimit }
-    : { view, column: null, page: 1, doneLimit };
+    ? { view, column, page: parsedPage, doneLimit, runId: requestedRun }
+    : { view, column: null, page: 1, doneLimit, runId: requestedRun };
+}
+
+function steeringEventStream(
+  dependencies: WebHandlerDependencies,
+  runId: string,
+  initialAfter: number,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        let after = initialAfter;
+        let lastHeartbeat = Date.now();
+        while (!cancelled) {
+          const events = await dependencies.getSteeringEvents(runId, after);
+          for (const event of events) {
+            if (cancelled) return;
+            after = Math.max(after, event.sequence);
+            controller.enqueue(encoder.encode(
+              `id: ${event.sequence}\nevent: update\ndata: ${JSON.stringify(event)}\n\n`,
+            ));
+          }
+          const run = await dependencies.getSteeringRun(runId);
+          if (!run) {
+            controller.enqueue(encoder.encode("event: done\ndata: {\"status\":\"missing\"}\n\n"));
+            controller.close();
+            return;
+          }
+          if (run.status !== "running") {
+            controller.enqueue(encoder.encode(
+              `event: done\ndata: ${JSON.stringify({ status: run.status })}\n\n`,
+            ));
+            controller.close();
+            return;
+          }
+          if (Date.now() - lastHeartbeat >= 15_000) {
+            controller.enqueue(encoder.encode(": keep-alive\n\n"));
+            lastHeartbeat = Date.now();
+          }
+          await Bun.sleep(500);
+        }
+      })().catch((error) => {
+        if (!cancelled) controller.error(error);
+      });
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
 }
 
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
@@ -196,6 +264,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return text("Bad request", 400);
     }
     const path = url.pathname;
+
+    if (path === "/assets/dashboard.js") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
+    }
 
     if (path === "/health/live") {
       const methodError = requireMethod(request, "GET");
@@ -254,6 +327,54 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
+    }
+
+    if (path === "/api/dashboard-revision") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      try {
+        return json({ revision: await dependencies.getDashboardRevision() });
+      } catch {
+        return json({ error: "revision unavailable" }, 503);
+      }
+    }
+
+    if (path === "/steering") {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const prompt = oneValue(form, "prompt")?.trim();
+      if (!prompt || prompt.length > 12_000) return text("Invalid steering prompt", 400);
+      try {
+        const runId = await dependencies.startSteering(prompt);
+        return redirect(`/?view=agent&run=${encodeURIComponent(runId)}`);
+      } catch (error) {
+        return text(error instanceof Error ? error.message : "Unable to start steering agent", 409);
+      }
+    }
+
+    const steeringEvents = /^\/steering\/([A-Za-z0-9-]{1,100})\/events$/.exec(path);
+    if (steeringEvents) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const runId = steeringEvents[1]!;
+      const rawAfter = url.searchParams.get("after") ?? "0";
+      if (!/^\d+$/.test(rawAfter)) return text("Invalid event cursor", 400);
+      const after = Number(rawAfter);
+      if (!Number.isSafeInteger(after)) return text("Invalid event cursor", 400);
+      const run = await dependencies.getSteeringRun(runId);
+      if (!run) return text("Steering run not found", 404);
+      return response(
+        steeringEventStream(dependencies, runId, after),
+        200,
+        "text/event-stream; charset=utf-8",
+        { "x-accel-buffering": "no", connection: "keep-alive" },
+      );
     }
 
     if (path === dependencies.webhookPath) {

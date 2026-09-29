@@ -7,6 +7,7 @@ const model: DashboardViewModel = {
   title: "Test board",
   project: "org/repo",
   updatedAt: "2026-09-29T12:00:00Z",
+  revision: "revision-1",
   view: "board",
   counts: { board: 0, attention: 0 },
   stages: [],
@@ -31,6 +32,7 @@ const model: DashboardViewModel = {
   },
   questions: [],
   systemWarnings: [],
+  steering: { enabled: false, agent: null, selected: null, recent: [] },
   csrfToken: "filled-by-handler",
 };
 
@@ -39,6 +41,7 @@ interface CallLog {
   reorders: unknown[][];
   webhooks: unknown[][];
   mcp: unknown[][];
+  steering: unknown[][];
 }
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -47,11 +50,12 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [] };
+  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [] };
   const dependencies = {
     auth,
     username: "operator",
     getDashboard: () => model,
+    getDashboardRevision: () => "revision-1",
     isReady: () => true,
     webhookPath: "/hooks/custom",
     maxBodyBytes: 128,
@@ -59,6 +63,9 @@ function setup(overrides: Record<string, unknown> = {}) {
     reorderBacklog: async (...args: unknown[]) => { calls.reorders.push(args); },
     handleWebhook: async (...args: unknown[]) => { calls.webhooks.push(args); },
     handleMcp: async (...args: unknown[]) => { calls.mcp.push(args); return { ok: true }; },
+    startSteering: async (...args: unknown[]) => { calls.steering.push(args); return "run-1"; },
+    getSteeringRun: async () => ({ id: "run-1", status: "succeeded" }),
+    getSteeringEvents: async () => [{ sequence: 1, type: "report", text: "Done", createdAt: "2026-09-29T12:00:00Z" }],
     ...overrides,
   };
   return { handler: createWebHandler(dependencies as never), auth, calls };
@@ -110,6 +117,7 @@ describe("createWebHandler", () => {
       column: "stage:review",
       page: 4,
       doneLimit: 40,
+      runId: null,
     }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
@@ -146,6 +154,37 @@ describe("createWebHandler", () => {
     expect(reorder.status).toBe(303);
     expect(reorder.headers.get("location")).toBe("/?view=board");
     expect(calls.reorders).toEqual([["i-2", "up"]]);
+  });
+
+  test("auto-refreshes by authenticated revision and starts steering with CSRF", async () => {
+    const { handler, auth, calls } = setup();
+    expect((await handler(new Request("http://localhost/api/dashboard-revision"))).status).toBe(401);
+    const asset = await handler(new Request("http://localhost/assets/dashboard.js"));
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("content-type")).toContain("javascript");
+
+    const { cookie } = await login(handler);
+    const revision = await handler(new Request("http://localhost/api/dashboard-revision", { headers: { cookie } }));
+    expect(await revision.json()).toEqual({ revision: "revision-1" });
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const forbidden = await handler(new Request("http://localhost/steering", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ prompt: "Fix the board" }),
+    }));
+    expect(forbidden.status).toBe(403);
+    const started = await handler(new Request("http://localhost/steering", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ prompt: "Fix the board", csrf }),
+    }));
+    expect(started.status).toBe(303);
+    expect(started.headers.get("location")).toBe("/?view=agent&run=run-1");
+    expect(calls.steering).toEqual([["Fix the board"]]);
+
+    const events = await handler(new Request("http://localhost/steering/run-1/events", { headers: { cookie } }));
+    expect(events.headers.get("content-type")).toContain("text/event-stream");
+    expect(await events.text()).toContain('"text":"Done"');
   });
 
   test("delegates configured webhook raw body and headers without requiring a session", async () => {

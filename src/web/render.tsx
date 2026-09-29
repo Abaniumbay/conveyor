@@ -38,10 +38,16 @@ function RelationLink({ relation }: { relation: IssueRelationViewModel }) {
 }
 
 function Relationships({ issue }: { issue: IssueCardViewModel }) {
-  if (!issue.parent && issue.children.length === 0) return null;
+  if (!issue.parent && issue.children.length === 0 && issue.dependencies.length === 0) return null;
   return (
     <section class="relationships" aria-label={`Issue relationships for #${issue.number}`}>
       {issue.parent && <p><strong>Parent:</strong> <RelationLink relation={issue.parent} /></p>}
+      {issue.dependencies.length > 0 && (
+        <div>
+          <strong>Blocked by:</strong>
+          <ul>{issue.dependencies.map((dependency) => <li key={dependency.number}><RelationLink relation={dependency} /></li>)}</ul>
+        </div>
+      )}
       {issue.children.length > 0 && (
         <div>
           <strong>Children:</strong>
@@ -52,39 +58,80 @@ function Relationships({ issue }: { issue: IssueCardViewModel }) {
   );
 }
 
+function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
+  if (!issue.parent && issue.children.length === 0 && issue.dependencies.length === 0) return null;
+  return (
+    <div class="relation-summary" aria-label={`Relationship summary for #${issue.number}`}>
+      {issue.dependencies.length > 0 && (
+        <span class="relation-group relation-group--blocked">
+          <strong>Blocked by</strong>{" "}
+          {issue.dependencies.map((dependency, index) => (
+            <Fragment key={dependency.number}>{index > 0 && ", "}<RelationLink relation={dependency} /></Fragment>
+          ))}
+        </span>
+      )}
+      {issue.parent && <span class="relation-group"><strong>Parent</strong> <RelationLink relation={issue.parent} /></span>}
+      {issue.children.length > 0 && <span class="relation-group"><strong>{issue.children.length}</strong> {issue.children.length === 1 ? "child" : "children"}</span>}
+    </div>
+  );
+}
+
+function DetailsDialog({ issue, id }: { issue: IssueCardViewModel; id: string }) {
+  const url = safeUrl(issue.url);
+  return (
+    <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`}>
+      <header class="details-header">
+        <div>
+          <p class="details-kicker">Issue #{issue.number}</p>
+          <h2 id={`${id}-title`}>{issue.title}</h2>
+        </div>
+        <form method="dialog"><button class="dialog-close" aria-label="Close issue details">×</button></form>
+      </header>
+      <div class="details-status">
+        <span class="issue-state">{issue.state}</span>
+        {issue.closable && <span class="indicator indicator-closable">Closable</span>}
+        {issue.inconsistent && <span class="indicator indicator-inconsistent">Inconsistent</span>}
+      </div>
+      <dl class="details-facts">
+        {issue.activity && <Fragment><dt>Activity</dt><dd>{issue.activity}</dd></Fragment>}
+        {issue.reason && <Fragment><dt>Source note</dt><dd>{issue.reason}</dd></Fragment>}
+        {issue.cost && <Fragment><dt>Cost</dt><dd>{issue.cost}</dd></Fragment>}
+        {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
+      </dl>
+      <Relationships issue={issue} />
+      <section class="criteria" aria-label="Acceptance criteria">
+        <h3>Acceptance criteria</h3>
+        {issue.acceptanceCriteria.length > 0
+          ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+          : <p class="details-empty">No acceptance criteria recorded.</p>}
+      </section>
+      {issue.labels.length > 0 && (
+        <section class="source-labels" aria-label="Source labels">
+          <h3>Source labels</h3>
+          <div>{issue.labels.map((label) => <span class="source-label" key={label}>{label}</span>)}</div>
+        </section>
+      )}
+      {url && <p class="details-source"><a href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a></p>}
+    </dialog>
+  );
+}
+
 function IssueCard({ issue }: { issue: IssueCardViewModel }) {
+  const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   return (
     <article class={`issue issue--${issue.tone}`} data-issue-id={issue.id}>
       <h3 class="issue-title">
         <span class="issue-number">#{issue.number}</span>
         <span><IssueLink issue={issue} /></span>
       </h3>
-      <span class="issue-state">{issue.state}</span>
-      {issue.labels.length > 0 && (
-        <div class="labels" aria-label="Labels">
-          {issue.labels.map((label) => <span class="label" key={label}>{label}</span>)}
-        </div>
-      )}
-      {(issue.blocked || issue.inconsistent || issue.closable) && (
-        <div class="indicators" aria-label="Issue status">
-          {issue.blocked && <span class="indicator indicator-blocked">Blocked</span>}
-          {issue.inconsistent && <span class="indicator indicator-inconsistent">Inconsistent</span>}
-          {issue.closable && <span class="indicator indicator-closable">Closable</span>}
-        </div>
-      )}
-      {issue.acceptanceCriteria.length > 0 && (
-        <section class="criteria" aria-label="Acceptance criteria">
-          <h4>Acceptance criteria</h4>
-          <ul class="criteria-list">
-            {issue.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}
-          </ul>
-        </section>
-      )}
+      <RelationshipSummary issue={issue} />
       {issue.activity && <p class="detail"><strong>Activity:</strong> {issue.activity}</p>}
-      {issue.reason && <p class="detail"><strong>Reason:</strong> {issue.reason}</p>}
-      {issue.cost && <p class="detail"><strong>Cost:</strong> {issue.cost}</p>}
-      {issue.duration && <p class="detail"><strong>Duration:</strong> {issue.duration}</p>}
-      <Relationships issue={issue} />
+      {issue.reason && issue.tone === "danger" && <p class="detail"><strong>Reason:</strong> {issue.reason}</p>}
+      <footer class="issue-footer">
+        <span class="issue-state">{issue.state}</span>
+        <button class="details-button" type="button" data-dialog-open={dialogId}>Details</button>
+      </footer>
+      <DetailsDialog issue={issue} id={dialogId} />
     </article>
   );
 }
@@ -165,18 +212,64 @@ function Questions({ questions, csrfToken }: { questions: readonly QuestionViewM
 }
 
 function Navigation({ model }: { model: DashboardViewModel }) {
-  const tabs: Array<{ view: DashboardView; label: string; count: number }> = [
+  const tabs: Array<{ view: DashboardView; label: string; count: number | null }> = [
     { view: "board", label: "Board", count: model.counts.board },
     { view: "attention", label: "Needs attention", count: model.counts.attention },
+    { view: "agent", label: "Agent", count: null },
   ];
   return (
     <nav class="tabs" aria-label="Dashboard views">
       {tabs.map((tab) => (
         <a href={`/?view=${tab.view}`} class={model.view === tab.view ? "tab tab--active" : "tab"} aria-current={model.view === tab.view ? "page" : undefined} key={tab.view}>
-          {tab.label}<span class="tab-count">{tab.count}</span>
+          {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
     </nav>
+  );
+}
+
+function AgentPanel({ model }: { model: DashboardViewModel }) {
+  const steering = model.steering;
+  const selected = steering.selected;
+  const running = selected?.status === "running";
+  return (
+    <section class="agent-panel" data-steering-run={running ? selected.id : undefined}>
+      <header class="section-heading agent-heading">
+        <div>
+          <h2>Steering agent</h2>
+          <p>{steering.enabled ? `Connected to ${steering.agent}. Ask it to inspect or change the system.` : "No steering agent is configured."}</p>
+        </div>
+        {selected && <span class={`run-status run-status--${selected.status}`}>{selected.status}</span>}
+      </header>
+      <div class="agent-layout">
+        <div class="agent-main">
+          <ol class="agent-events" id="steering-events" data-next-sequence={(selected?.events.at(-1)?.sequence ?? 0) + 1} aria-live="polite">
+            {selected?.events.map((event) => (
+              <li class={`agent-event agent-event--${event.type}`} data-sequence={event.sequence} key={event.sequence}>
+                <span class="agent-event-role">{event.type === "user" ? "You" : event.type === "report" ? "Report" : "Agent"}</span>
+                <p>{event.text}</p>
+              </li>
+            ))}
+          </ol>
+          {!selected && <p class="agent-empty">No conversation yet. Send a concrete request below.</p>}
+          <form class="agent-compose" method="post" action="/steering">
+            <input type="hidden" name="csrf" value={model.csrfToken} />
+            <label for="steering-prompt">Request</label>
+            <textarea id="steering-prompt" name="prompt" maxLength={12000} rows={5} required disabled={!steering.enabled || running} placeholder="For example: inspect why issue #152 is blocked and fix any clear Conveyor configuration problem." />
+            <div class="compose-actions">
+              <span>{running ? "Wait for the current agent to finish." : "The final response is retained as a report."}</span>
+              <button type="submit" disabled={!steering.enabled || running}>Send to agent</button>
+            </div>
+          </form>
+        </div>
+        {steering.recent.length > 0 && (
+          <aside class="agent-history" aria-label="Recent agent runs">
+            <h3>Recent</h3>
+            <ol>{steering.recent.map((run) => <li key={run.id}><a href={`/?view=agent&run=${encodeURIComponent(run.id)}`} class={selected?.id === run.id ? "history-active" : undefined}><span>{run.startedAt}</span><small>{run.status}</small></a></li>)}</ol>
+          </aside>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -248,6 +341,7 @@ function Attention({ model }: { model: DashboardViewModel }) {
 function Page({ model }: { model: DashboardViewModel }) {
   let content: ComponentChildren;
   if (model.view === "attention") content = <Attention model={model} />;
+  else if (model.view === "agent") content = <AgentPanel model={model} />;
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />
@@ -264,8 +358,9 @@ function Page({ model }: { model: DashboardViewModel }) {
         <meta name="color-scheme" content="light" />
         <title>{model.title} · Conveyor</title>
         <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
+        <script src="/assets/dashboard.js" defer />
       </head>
-      <body>
+      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view}>
         <main class="dashboard">
           <header class="dashboard-header">
             <div><p class="eyebrow">Conveyor</p><h1>{model.title}</h1><p class="project-meta">{model.project}</p></div>

@@ -822,6 +822,8 @@ export class ConveyorStore {
     status: string;
     sessionId: string | null;
     result: unknown | null;
+    startedAt: string;
+    finishedAt: string | null;
   } | null {
     const row = this.#database
       .query("SELECT * FROM runs WHERE id = ?")
@@ -836,7 +838,49 @@ export class ConveyorStore {
       status: String(row.status),
       sessionId: row.session_id === null ? null : String(row.session_id),
       result: row.result_json === null ? null : parseJson(String(row.result_json)),
+      startedAt: String(row.started_at),
+      finishedAt: row.finished_at === null ? null : String(row.finished_at),
     };
+  }
+
+  listRunsByKind(kind: string, limit = 10): Array<{
+    id: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string | null;
+  }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("run list limit must be between 1 and 100");
+    }
+    const rows = this.#database
+      .query(
+        `SELECT id, status, started_at, finished_at FROM runs
+         WHERE kind = ? ORDER BY started_at DESC, id DESC LIMIT ?`,
+      )
+      .all(kind, limit) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: String(row.id),
+      status: String(row.status),
+      startedAt: String(row.started_at),
+      finishedAt: row.finished_at === null ? null : String(row.finished_at),
+    }));
+  }
+
+  dashboardRevision(): string {
+    const rows = this.#database
+      .query(
+        `SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(MAX(updated_at), '') AS updated FROM issues
+         UNION ALL
+         SELECT 'stages', COUNT(*), COALESCE(MAX(updated_at), '') FROM stage_states
+         UNION ALL
+         SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, heartbeat_at, started_at)), '') FROM runs
+         UNION ALL
+         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows
+      .map((row) => `${String(row.source)}:${Number(row.count)}:${String(row.updated)}`)
+      .join("|");
   }
 
   latestRunSummary(issueId: string): {

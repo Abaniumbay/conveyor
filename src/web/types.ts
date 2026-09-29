@@ -25,6 +25,7 @@ export interface IssueCardViewModel {
   tone: IssueTone;
   parent: IssueRelationViewModel | null;
   children: readonly IssueRelationViewModel[];
+  dependencies: readonly IssueRelationViewModel[];
 }
 
 export interface StageColumnViewModel {
@@ -42,9 +43,32 @@ export interface DashboardPageSelection {
   column: string | null;
   page: number;
   doneLimit: number;
+  runId: string | null;
 }
 
-export type DashboardView = "board" | "attention";
+export type DashboardView = "board" | "attention" | "agent";
+
+export interface SteeringEventViewModel {
+  sequence: number;
+  type: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface SteeringRunViewModel {
+  id: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  events: readonly SteeringEventViewModel[];
+}
+
+export interface SteeringViewModel {
+  enabled: boolean;
+  agent: string | null;
+  selected: SteeringRunViewModel | null;
+  recent: readonly { id: string; status: string; startedAt: string }[];
+}
 
 export interface QuestionViewModel {
   id: string;
@@ -59,6 +83,7 @@ export interface DashboardViewModel {
   title: string;
   project: string;
   updatedAt: string;
+  revision: string;
   view: DashboardView;
   counts: { board: number; attention: number };
   stages: readonly StageColumnViewModel[];
@@ -67,5 +92,6 @@ export interface DashboardViewModel {
   attention: StageColumnViewModel;
   questions: readonly QuestionViewModel[];
   systemWarnings: readonly string[];
+  steering: SteeringViewModel;
   csrfToken: string;
 }

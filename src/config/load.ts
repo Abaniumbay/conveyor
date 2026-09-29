@@ -57,6 +57,15 @@ function normalizeDocumentPaths(
     }
   }
 
+  if (isObject(document.web) && isObject(document.web.steering)) {
+    if ("workspace" in document.web.steering) {
+      document.web.steering.workspace = resolvePath(
+        document.web.steering.workspace,
+        baseDirectory,
+      );
+    }
+  }
+
   if (isObject(document.agents)) {
     for (const agent of Object.values(document.agents)) {
       if (isObject(agent) && "instructions" in agent) {
@@ -165,6 +174,11 @@ function formatIssues(issues: readonly ZodIssue[]): string {
 
 function crossReferenceErrors(config: ConveyorConfigData): string[] {
   const errors: string[] = [];
+  if (config.web.steering && !config.agents[config.web.steering.agent]) {
+    errors.push(
+      `web.steering.agent references unknown agent "${config.web.steering.agent}"`,
+    );
+  }
   for (const [name, agent] of Object.entries(config.agents)) {
     if (!config.runners[agent.runner]) {
       errors.push(`agents.${name}.runner references unknown runner "${agent.runner}"`);

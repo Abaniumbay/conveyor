@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
@@ -9,6 +9,7 @@ import { ConveyorStore, type StoredIssue } from "../db/store";
 import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } from "../source/github/managed-sections";
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { renderStatusComment } from "../source/github/status-comment";
+import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
@@ -26,6 +27,10 @@ interface McpGrant {
   stageId: string;
   context: RuntimeIssueContext;
   allowedTools: Set<string>;
+}
+
+interface ServiceImplementations {
+  steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
@@ -50,6 +55,30 @@ function number(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return Number(value);
+}
+
+function steeringProgress(event: unknown): string | null {
+  try {
+    const record = object(event);
+    if (record.type === "error" && typeof record.message === "string") {
+      return record.message;
+    }
+    if (record.type !== "item.started" && record.type !== "item.completed") {
+      return null;
+    }
+    const item = object(record.item);
+    const prefix = record.type === "item.started" ? "Running" : "Completed";
+    if (item.type === "command_execution" && typeof item.command === "string") {
+      return `${prefix}: ${item.command}`;
+    }
+    if (item.type === "mcp_tool_call" && typeof item.tool === "string") {
+      return `${prefix} tool: ${item.tool}`;
+    }
+    if (item.type === "file_change") return "Updated files in the configured workspace.";
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function listenPort(listen: string): number {
@@ -120,6 +149,7 @@ export class ConveyorService {
   readonly github: GitHubAdapter;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
+  readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
@@ -127,15 +157,18 @@ export class ConveyorService {
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
+  readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 
   constructor(
     readonly config: ConveyorConfig,
     store: ConveyorStore,
     github: GitHubAdapter,
+    implementations: ServiceImplementations = {},
   ) {
     this.store = store;
     this.github = github;
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
+    this.#runSteering = implementations.steering ?? runCodexSteering;
   }
 
   static async create(config: ConveyorConfig): Promise<ConveyorService> {
@@ -232,7 +265,8 @@ export class ConveyorService {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     for (const active of this.#active.values()) active.controller.abort();
-    while (this.#active.size > 0) await Bun.sleep(25);
+    for (const controller of this.#steeringActive.values()) controller.abort();
+    while (this.#active.size > 0 || this.#steeringActive.size > 0) await Bun.sleep(25);
     this.store.close();
   }
 
@@ -811,6 +845,137 @@ export class ConveyorService {
     }
   }
 
+  async startSteering(prompt: string): Promise<string> {
+    const request = prompt.trim();
+    if (!request || request.length > 12_000) {
+      throw new Error("The steering prompt must contain between 1 and 12000 characters");
+    }
+    const steering = this.config.web?.steering;
+    if (!steering) throw new Error("The steering agent is not configured");
+    if (this.#steeringActive.size > 0) {
+      throw new Error("A steering agent is already running");
+    }
+    const agent = this.config.agents[steering.agent];
+    if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
+    const runner = this.config.runners[agent.runner];
+    if (!runner || runner.type !== "codex") {
+      throw new Error("The steering agent must use a Codex runner");
+    }
+
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+    this.store.createRun({
+      id: runId,
+      issueId: null,
+      stageId: "steering",
+      attempt: 1,
+      kind: "steering",
+      status: "running",
+      configHash: this.config.hash,
+      startedAt,
+    });
+    this.store.appendRunEvent(runId, "user", { text: request });
+    const controller = new AbortController();
+    this.#steeringActive.set(runId, controller);
+    void this.executeSteering(runId, request, agent, runner, steering.workspace, controller.signal)
+      .finally(() => this.#steeringActive.delete(runId));
+    return runId;
+  }
+
+  private async executeSteering(
+    runId: string,
+    userPrompt: string,
+    agent: ConveyorConfig["agents"][string],
+    runner: Extract<ConveyorConfig["runners"][string], { type: "codex" }>,
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const started = performance.now();
+    try {
+      const instructions = await readFile(agent.instructions, "utf8");
+      const result = await this.#runSteering({
+        command: runner.command,
+        workspace,
+        prompt: [
+          instructions.trim(),
+          "",
+          "You are the authenticated Conveyor steering agent. Work only within the user's request.",
+          "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
+          "",
+          "User request:",
+          userPrompt,
+        ].join("\n"),
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
+        sandbox: agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
+        automaticApprovals: runner.automaticApprovals,
+        interruptGraceMs: this.config.settings.interruptGraceMs,
+        signal,
+        onEvent: (event) => {
+          const text = steeringProgress(event);
+          if (text) this.store.appendRunEvent(runId, "activity", { text });
+        },
+      });
+      this.store.appendRunEvent(runId, "report", { text: result.summary });
+      this.store.finishRun(runId, {
+        status: "succeeded",
+        exitCode: result.exitCode,
+        result: { summary: result.summary },
+        sessionId: result.sessionId,
+        usage: {
+          ...result.usage,
+          amount: 0,
+          currency: "USD",
+          source: "unavailable",
+          durationMs: result.durationMs,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.appendRunEvent(runId, "error", { text: message });
+      this.store.finishRun(runId, {
+        status: signal.aborted ? "interrupted" : "failed",
+        exitCode: 1,
+        result: { reason: message },
+        sessionId: null,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          amount: 0,
+          currency: "USD",
+          source: "unavailable",
+          durationMs: Math.max(0, Math.round(performance.now() - started)),
+        },
+      });
+    }
+  }
+
+  getSteeringRun(runId: string): { id: string; status: string } | null {
+    const run = this.store.getRun(runId);
+    return run?.kind === "steering" ? { id: run.id, status: run.status } : null;
+  }
+
+  getSteeringEvents(runId: string, after: number): Array<{
+    sequence: number;
+    type: string;
+    text: string;
+    createdAt: string;
+  }> {
+    if (!this.getSteeringRun(runId)) return [];
+    return this.store.listRunEvents(runId).flatMap((event) => {
+      if (event.sequence <= after) return [];
+      try {
+        const payload = object(event.payload);
+        return typeof payload.text === "string"
+          ? [{ ...event, text: payload.text }]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+
   reorderBacklog(issueId: string, direction: "up" | "down"): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.parentId) throw new Error("only top-level issues can be reordered");
@@ -905,7 +1070,13 @@ export class ConveyorService {
 
   dashboard(
     csrfToken: string,
-    pagination: DashboardPageSelection = { view: "board", column: null, page: 1, doneLimit: 20 },
+    pagination: DashboardPageSelection = {
+      view: "board",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+      runId: null,
+    },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
@@ -934,6 +1105,11 @@ export class ConveyorService {
           const child = byId.get(issueId);
           return child ? [relation(child)] : [];
         });
+      const dependencies = this.store.listDependencies(issue.id)
+        .flatMap((issueId) => {
+          const dependency = byId.get(issueId) ?? this.store.getIssue(issueId);
+          return dependency ? [relation(dependency)] : [];
+        });
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       return {
@@ -954,11 +1130,12 @@ export class ConveyorService {
               : `$${cost.amount.toFixed(4)} · ${cost.runs} runs`,
         duration: cost.durationMs > 0 ? `${Math.round(cost.durationMs / 1000)}s` : null,
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
-        inconsistent: Boolean(issue.warning),
+        inconsistent: issue.projectedState === "inconsistent",
         closable: issue.labels.includes(this.config.labels.metadata.closable),
         tone: tone(projectedState),
         parent: parent ? relation(parent) : null,
         children,
+        dependencies,
       };
     };
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
@@ -1048,6 +1225,34 @@ export class ConveyorService {
       }];
     });
     const total = this.store.costSummary();
+    const recentSteeringRuns = this.store.listRunsByKind("steering", 10);
+    const selectedSteeringId = pagination.runId ?? recentSteeringRuns[0]?.id ?? null;
+    const selectedSteeringRun = selectedSteeringId
+      ? this.store.getRun(selectedSteeringId)
+      : null;
+    const selectedSteering = selectedSteeringRun?.kind === "steering"
+      ? {
+          id: selectedSteeringRun.id,
+          status: selectedSteeringRun.status,
+          startedAt: selectedSteeringRun.startedAt,
+          finishedAt: selectedSteeringRun.finishedAt,
+          events: this.store.listRunEvents(selectedSteeringRun.id).flatMap((event) => {
+            try {
+              const payload = object(event.payload);
+              return typeof payload.text === "string"
+                ? [{
+                    sequence: event.sequence,
+                    type: event.type,
+                    text: payload.text,
+                    createdAt: event.createdAt,
+                  }]
+                : [];
+            } catch {
+              return [];
+            }
+          }),
+        }
+      : null;
     const degradedRepositories = new Set([
       ...this.#repositoryErrors.keys(),
       ...this.#onboardingErrors.keys(),
@@ -1056,6 +1261,7 @@ export class ConveyorService {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
+      revision: this.store.dashboardRevision(),
       view: pagination.view,
       counts: {
         board: backlogIssues.length + stagedIssues.length + closedIssues.length,
@@ -1104,6 +1310,12 @@ export class ConveyorService {
         ...this.#onboardingErrors.entries(),
         ...this.#repositoryErrors.entries(),
       ].map(([repository, message]) => `${repository}: ${message}`),
+      steering: {
+        enabled: Boolean(this.config.web?.steering),
+        agent: this.config.web?.steering?.agent ?? null,
+        selected: selectedSteering,
+        recent: recentSteeringRuns,
+      },
       csrfToken,
     };
   }
@@ -1114,6 +1326,7 @@ export class ConveyorService {
       auth,
       username,
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
+      getDashboardRevision: () => this.store.dashboardRevision(),
       isReady: () =>
         Boolean(this.#lastReconciledAt) &&
         !this.#shuttingDown &&
@@ -1124,6 +1337,9 @@ export class ConveyorService {
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token) => this.handleMcp(body, token),
+      startSteering: (prompt) => this.startSteering(prompt),
+      getSteeringRun: (runId) => this.getSteeringRun(runId),
+      getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),
     };
   }
 }

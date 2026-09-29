@@ -139,7 +139,13 @@ describe("ConveyorService dashboard", () => {
         labels: ["conveyor", "conveyor:done"],
         sourceUpdatedAt: "2026-09-29T00:00:00Z",
       });
-      store.setIssueProjection(id, { stage: null, state: "done", warning: null });
+      store.setIssueProjection(id, {
+        stage: null,
+        state: "done",
+        warning: number === 1
+          ? "issue was closed before a correlated Conveyor PR merge"
+          : null,
+      });
     }
     store.replaceRelationships(
       "github:owner/repo#25",
@@ -185,6 +191,11 @@ describe("ConveyorService dashboard", () => {
       state: "active",
       warning: null,
     });
+    store.replaceRelationships(
+      "github:owner/repo#27",
+      null,
+      ["github:owner/repo#1"],
+    );
     store.upsertIssue({
       id: "github:owner/repo#28",
       repositoryId: "repo",
@@ -208,15 +219,25 @@ describe("ConveyorService dashboard", () => {
       column: null,
       page: 1,
       doneLimit: 20,
+      runId: null,
     });
     const implementation = dashboard.stages.find((column) => column.id === "stage:implementation");
 
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
-    expect(implementation).toMatchObject({ totalIssues: 1, page: 1, totalPages: 1 });
+    expect(implementation).toMatchObject({
+      totalIssues: 1,
+      page: 1,
+      totalPages: 1,
+      issues: [{ dependencies: [{ number: 1 }] }],
+    });
     expect(dashboard.backlog.map((issue) => issue.number)).toEqual([26]);
     expect(dashboard.done).toMatchObject({ totalIssues: 25 });
     expect(dashboard.done.issues).toHaveLength(20);
-    expect(dashboard.done.issues[0]).toMatchObject({ state: "completed", tone: "success" });
+    expect(dashboard.done.issues[0]).toMatchObject({
+      state: "completed",
+      tone: "success",
+      inconsistent: false,
+    });
     expect(dashboard.attention).toMatchObject({ totalIssues: 1 });
     expect(dashboard.attention.issues[0]).toMatchObject({
       number: 28,
@@ -229,6 +250,7 @@ describe("ConveyorService dashboard", () => {
       column: null,
       page: 1,
       doneLimit: 40,
+      runId: null,
     });
     expect(expanded.done.issues).toHaveLength(25);
     store.close();

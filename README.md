@@ -2,7 +2,7 @@
 
 Conveyor is a lightweight, always-on delivery orchestrator for one trusted VPS. GitHub remains the source of truth: issues enter through labels, configurable agents and scripts move them through a pipeline, and every visible status is projected back from GitHub.
 
-The engine is a single Bun process backed by SQLite. It uses existing repository checkouts plus Git worktrees, invokes installed Codex CLI agents, exposes a run-scoped MCP server, and serves a small authenticated Preact control plane. Preact is rendered on the server; no browser bundle or hydration runtime is shipped yet.
+The engine is a single Bun process backed by SQLite. It uses existing repository checkouts plus Git worktrees, invokes installed Codex CLI agents, exposes a run-scoped MCP server, and serves a small authenticated Preact control plane. Preact is rendered on the server; a small dependency-free browser script adds live refresh, dialogs, and streaming output without a hydration runtime.
 
 ## Current scope
 
@@ -14,7 +14,8 @@ The engine is a single Bun process backed by SQLite. It uses existing repository
 - Durable issue, run, cost, question, mutation, and transition state in SQLite
 - Parent/child and dependency primitives
 - Safe worktree isolation without containers
-- Structured questions, backlog ordering, and a responsive server-rendered Preact dashboard
+- Structured questions, backlog ordering, issue details, live refresh, and a responsive server-rendered Preact dashboard
+- An optional configured Codex steering agent with persisted live progress and final reports
 - A single-row Kanban ordered as Backlog → configured stages → Done, plus a separate label-attention view
 - Idempotent PR creation and squash merge
 - Explicit cleanup as a configured stage
@@ -43,7 +44,7 @@ bun run src/cli.ts hash-password --password 'choose-a-password'
 bun run src/cli.ts serve --config /etc/conveyor
 ```
 
-The service requires these environment variables:
+The dashboard is server-rendered with a small dependency-free browser script for live refresh, issue dialogs, and steering output. The service requires these environment variables:
 
 - `CONVEYOR_USERNAME`
 - `CONVEYOR_PASSWORD_HASH`
