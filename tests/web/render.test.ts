@@ -9,6 +9,7 @@ const dashboard: DashboardViewModel = {
   stages: [
     {
       name: "Build",
+      cost: "$0.42",
       issues: [
         {
           id: "parent",
@@ -47,7 +48,7 @@ const dashboard: DashboardViewModel = {
         },
       ],
     },
-    { name: "Review", issues: [] },
+    { name: "Review", cost: null, issues: [] },
   ],
   backlog: [
     {

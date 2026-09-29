@@ -19,6 +19,7 @@ export interface IssueCardViewModel {
 
 export interface StageColumnViewModel {
   name: string;
+  cost: string | null;
   issues: readonly IssueCardViewModel[];
 }
 

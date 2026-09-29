@@ -957,6 +957,13 @@ export class ConveyorService {
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       stages: stages.map((stage) => ({
         name: stage,
+        cost: (() => {
+          const summary = this.store.costSummary({ stageId: stage });
+          if (summary.runs === 0) return null;
+          return summary.unavailableRuns === summary.runs
+            ? `${summary.runs} runs · cost unavailable`
+            : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
+        })(),
         issues: topLevel.filter((issue) => issue.projectedStage === stage).map((issue) => card(issue)),
       })),
       backlog: topLevel.filter((issue) => issue.projectedStage && firstStages.has(issue.projectedStage)).map((issue) => card(issue)),

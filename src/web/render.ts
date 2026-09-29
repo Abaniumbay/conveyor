@@ -59,7 +59,7 @@ export function renderDashboard(model: DashboardViewModel): string {
     const issues = stage.issues.length
       ? `<ul class="issue-list">${stage.issues.map((issue) => `<li>${issueCard(issue)}</li>`).join("")}</ul>`
       : `<p class="empty">No issues in this stage</p>`;
-    return `<section class="stage" aria-labelledby="${headingId}"><header class="stage-heading"><h2 id="${headingId}">${escapeHtml(stage.name)}</h2><span class="count" aria-label="${stage.issues.length} issues">${stage.issues.length}</span></header>${issues}</section>`;
+    return `<section class="stage" aria-labelledby="${headingId}"><header class="stage-heading"><h2 id="${headingId}">${escapeHtml(stage.name)}</h2><div class="stage-summary">${stage.cost ? `<span class="stage-cost">${escapeHtml(stage.cost)}</span>` : ""}<span class="count" aria-label="${stage.issues.length} issues">${stage.issues.length}</span></div></header>${issues}</section>`;
   }).join("");
   const backlog = model.backlog.length
     ? `<ol class="backlog-list">${model.backlog.map((issue, index) => {
