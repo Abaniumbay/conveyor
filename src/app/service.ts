@@ -930,10 +930,10 @@ export class ConveyorService {
     const stages = [...new Set(Object.values(this.config.pipelines).flatMap((pipeline) =>
       pipeline.stages.map((stage) => stage.id),
     ))].filter((stage) => !firstStages.has(stage));
-    const activeIssues = topLevel.filter((issue) =>
+    const activeIssues = issues.filter((issue) =>
       issue.projectedState === "active" && issue.projectedStage,
     );
-    const stateIssues = topLevel.filter((issue) =>
+    const stateIssues = issues.filter((issue) =>
       issue.projectedState !== "active" || !issue.projectedStage,
     );
     const stateGroups = new Map<string, StoredIssue[]>();
@@ -968,6 +968,7 @@ export class ConveyorService {
       name: string,
       columnIssues: StoredIssue[],
       cost: string | null,
+      totalIssues = columnIssues.length,
     ): StageColumnViewModel => {
       const totalPages = Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
       const requestedPage = pagination.column === id ? pagination.page : 1;
@@ -977,7 +978,7 @@ export class ConveyorService {
         id,
         name,
         cost,
-        totalIssues: columnIssues.length,
+        totalIssues,
         page,
         totalPages,
         issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map((issue) => card(issue)),
@@ -1016,7 +1017,7 @@ export class ConveyorService {
         ...stages.map((stage) => column(
           `stage:${stage}`,
           title(stage),
-          activeIssues.filter((issue) => issue.projectedStage === stage),
+          activeIssues.filter((issue) => !issue.parentId && issue.projectedStage === stage),
           (() => {
           const summary = this.store.costSummary({ stageId: stage });
           if (summary.runs === 0) return null;
@@ -1024,16 +1025,18 @@ export class ConveyorService {
             ? `${summary.runs} runs · cost unavailable`
             : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
           })(),
+          activeIssues.filter((issue) => issue.projectedStage === stage).length,
         )),
         ...stateNames.map((state) => column(
           `state:${state}`,
           title(state),
-          stateGroups.get(state) ?? [],
+          (stateGroups.get(state) ?? []).filter((issue) => !issue.parentId),
           null,
+          stateGroups.get(state)?.length ?? 0,
         )),
       ],
       backlog: activeIssues
-        .filter((issue) => issue.projectedStage && firstStages.has(issue.projectedStage))
+        .filter((issue) => !issue.parentId && issue.projectedStage && firstStages.has(issue.projectedStage))
         .map((issue) => card(issue)),
       questions,
       systemWarnings: [

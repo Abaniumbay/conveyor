@@ -62,6 +62,11 @@ describe("ConveyorService dashboard", () => {
       });
       store.setIssueProjection(id, { stage: null, state: "done", warning: null });
     }
+    store.replaceRelationships(
+      "github:owner/repo#25",
+      { parentId: "github:owner/repo#1", siblingOrder: 1 },
+      [],
+    );
     store.upsertIssue({
       id: "github:owner/repo#26",
       repositoryId: "repo",
@@ -89,7 +94,7 @@ describe("ConveyorService dashboard", () => {
       page: 2,
       totalPages: 2,
     });
-    expect(done?.issues).toHaveLength(5);
+    expect(done?.issues).toHaveLength(4);
     expect(dashboard.backlog).toHaveLength(1);
     expect(dashboard.stages.reduce((total, column) => total + column.totalIssues, 0)
       + dashboard.backlog.length).toBe(26);
