@@ -84,6 +84,19 @@ export interface StoredStageState {
   updatedAt: string;
 }
 
+export interface StoredQuestion {
+  id: string;
+  issueId: string;
+  runId: string | null;
+  prompt: string;
+  reason: string;
+  options: unknown[];
+  status: string;
+  createdAt: string;
+  answeredAt: string | null;
+  answer: unknown | null;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -734,6 +747,93 @@ export class ConveyorStore {
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
       cachedTokens: Number(row.cached_tokens),
+    };
+  }
+
+  openQuestion(input: {
+    issueId: string;
+    runId: string | null;
+    prompt: string;
+    reason: string;
+    options: unknown[];
+  }): StoredQuestion {
+    return this.#database.transaction(() => {
+      const existing = this.#database
+        .query("SELECT id FROM questions WHERE issue_id = ? AND status = 'open'")
+        .get(input.issueId) as { id: string } | null;
+      if (existing) return this.getQuestion(existing.id)!;
+      const id = randomUUID();
+      this.#database
+        .query(
+          `INSERT INTO questions(
+             id, issue_id, run_id, prompt, reason, options_json, status, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+        )
+        .run(
+          id,
+          input.issueId,
+          input.runId,
+          input.prompt,
+          input.reason,
+          json(input.options),
+          now(),
+        );
+      return this.getQuestion(id)!;
+    })();
+  }
+
+  answerQuestion(questionId: string, source: string, answer: unknown): void {
+    this.#database.transaction(() => {
+      const question = this.getQuestion(questionId);
+      if (!question) throw new Error(`unknown question: ${questionId}`);
+      if (question.status !== "open") throw new Error("question is no longer open");
+      const timestamp = now();
+      this.#database
+        .query(
+          `INSERT INTO answers(id, question_id, source, answer_json, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), questionId, source, json(answer), timestamp);
+      this.#database
+        .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ?")
+        .run(timestamp, questionId);
+    })();
+  }
+
+  getQuestion(questionId: string): StoredQuestion | null {
+    const row = this.#database
+      .query(
+        `SELECT q.*, a.answer_json
+         FROM questions q LEFT JOIN answers a ON a.question_id = q.id
+         WHERE q.id = ?`,
+      )
+      .get(questionId) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapQuestion(row) : null;
+  }
+
+  listOpenQuestions(): StoredQuestion[] {
+    const rows = this.#database
+      .query(
+        `SELECT q.*, NULL AS answer_json FROM questions q
+         WHERE q.status = 'open' ORDER BY q.created_at, q.id`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => this.mapQuestion(row));
+  }
+
+  private mapQuestion(row: Record<string, SQLQueryBindings>): StoredQuestion {
+    return {
+      id: String(row.id),
+      issueId: String(row.issue_id),
+      runId: row.run_id === null ? null : String(row.run_id),
+      prompt: String(row.prompt),
+      reason: String(row.reason),
+      options: parseJson<unknown[]>(String(row.options_json)) ?? [],
+      status: String(row.status),
+      createdAt: String(row.created_at),
+      answeredAt: row.answered_at === null ? null : String(row.answered_at),
+      answer:
+        row.answer_json === null ? null : parseJson(String(row.answer_json)),
     };
   }
 

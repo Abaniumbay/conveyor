@@ -324,4 +324,44 @@ describe("ConveyorStore", () => {
     });
     store.close();
   });
+
+  test("persists one structured open question per issue and its answer", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 1,
+      sourceUrl: "https://example.test/1",
+      title: "Feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+
+    const question = store.openQuestion({
+      issueId: "issue-1",
+      runId: null,
+      prompt: "Which layout?",
+      reason: "Both are valid",
+      options: [{ id: "compact", label: "Compact" }],
+    });
+    expect(store.listOpenQuestions()).toEqual([question]);
+    store.answerQuestion(question.id, "web", { selections: ["compact"] });
+
+    expect(store.listOpenQuestions()).toEqual([]);
+    expect(store.getQuestion(question.id)).toMatchObject({
+      status: "answered",
+      answer: { selections: ["compact"] },
+    });
+    store.close();
+  });
 });
