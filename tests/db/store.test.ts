@@ -265,6 +265,8 @@ describe("ConveyorStore", () => {
       });
     }
     store.appendRunEvent("run-live", "progress", { message: "editing" });
+    store.appendRunEvent("run-live", "progress", { message: "testing" });
+    store.appendRunEvent("run-live", "progress", { message: "pushing" });
 
     expect(store.listActiveIssueRuns()).toEqual([{
       id: "run-live",
@@ -280,6 +282,21 @@ describe("ConveyorStore", () => {
     expect(store.listIssueRuns("issue-1")[0]).toMatchObject({
       status: "running",
       result: null,
+    });
+    const newestRuns = store.listIssueRunsPage("issue-1", { limit: 1 });
+    expect(newestRuns).toMatchObject({ runs: [{ id: "run-live" }], nextBefore: "run-live" });
+    expect(store.listIssueRunsPage("issue-1", { before: newestRuns.nextBefore!, limit: 1 })).toMatchObject({
+      runs: [{ id: "run-old" }],
+      nextBefore: null,
+    });
+    const newestEvents = store.listRunEventsPage("run-live", { limit: 2 });
+    expect(newestEvents).toMatchObject({
+      events: [{ sequence: 3 }, { sequence: 2 }],
+      nextBefore: 2,
+    });
+    expect(store.listRunEventsPage("run-live", { before: newestEvents.nextBefore!, limit: 2 })).toMatchObject({
+      events: [{ sequence: 1 }],
+      nextBefore: null,
     });
     store.close();
   });

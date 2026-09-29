@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { renderDashboard } from "./render";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel } from "./types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -15,6 +15,7 @@ export interface WebHandlerDependencies {
     pagination: DashboardPageSelection,
   ) => DashboardViewModel | Promise<DashboardViewModel>;
   getDashboardRevision: () => string | Promise<string>;
+  getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
@@ -29,7 +30,8 @@ export interface WebHandlerDependencies {
     text: string;
     createdAt: string;
   }> | Promise<Array<{ sequence: number; type: string; text: string; createdAt: string }>>;
-  getIssueActivity: (issueId: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
+  getIssueActivity: (issueId: string, before?: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
+  getIssueRunEvents: (issueId: string, runId: string, before?: number) => IssueRunEventsViewModel | null | Promise<IssueRunEventsViewModel | null>;
   getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
   postIssueMessage: (
     issueId: string,
@@ -43,6 +45,7 @@ const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_DONE_LIMIT = 20;
 const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
+const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#087f72"/><path d="M15 21h34M15 43h34" stroke="#dff8f0" stroke-width="6" stroke-linecap="round"/><path d="m25 14 10 18-10 18" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function response(body: BodyInit | null, status: number, contentType: string, headers?: HeadersInit): Response {
   const responseHeaders = new Headers(headers);
@@ -50,7 +53,7 @@ function response(body: BodyInit | null, status: number, contentType: string, he
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
   responseHeaders.set("cache-control", "no-store");
-  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
 }
 
@@ -256,6 +259,47 @@ function steeringEventStream(
   });
 }
 
+function dashboardEventStream(dependencies: WebHandlerDependencies): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        let revision = "";
+        let lastStatus = 0;
+        let lastHeartbeat = 0;
+        while (!cancelled) {
+          const nextRevision = await dependencies.getDashboardRevision();
+          if (nextRevision !== revision) {
+            revision = nextRevision;
+            controller.enqueue(encoder.encode(
+              `event: revision\ndata: ${JSON.stringify({ revision })}\n\n`,
+            ));
+          }
+          const now = Date.now();
+          if (now - lastStatus >= 10_000) {
+            const status = await dependencies.getSystemStatus();
+            controller.enqueue(encoder.encode(
+              `event: status\ndata: ${JSON.stringify(status)}\n\n`,
+            ));
+            lastStatus = now;
+          }
+          if (now - lastHeartbeat >= 15_000) {
+            controller.enqueue(encoder.encode(": keep-alive\n\n"));
+            lastHeartbeat = now;
+          }
+          await Bun.sleep(1_000);
+        }
+      })().catch((error) => {
+        if (!cancelled) controller.error(error);
+      });
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+}
+
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
   if (!dependencies.webhookPath.startsWith("/") || dependencies.webhookPath.startsWith("//")) {
     throw new Error("webhookPath must be an absolute URL path");
@@ -279,6 +323,13 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/assets/dashboard.js") {
       const methodError = requireMethod(request, "GET");
       return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
+    }
+
+    if (path === "/favicon.svg") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(FAVICON, 200, "image/svg+xml; charset=utf-8", {
+        "cache-control": "public, max-age=86400",
+      });
     }
 
     if (path === "/health/live") {
@@ -340,15 +391,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
-    if (path === "/api/dashboard-revision") {
+    if (path === "/events/dashboard") {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       if (!session(request)) return json({ error: "unauthorized" }, 401);
-      try {
-        return json({ revision: await dependencies.getDashboardRevision() });
-      } catch {
-        return json({ error: "revision unavailable" }, 503);
-      }
+      return response(dashboardEventStream(dependencies), 200, "text/event-stream; charset=utf-8", {
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
     }
 
     const issueConversation = /^\/api\/issues\/([^/]{1,1000})\/conversation$/.exec(path);
@@ -387,6 +437,29 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return response(null, 405, "text/plain; charset=utf-8", { allow: "GET, POST" });
     }
 
+    const issueRunEvents = /^\/api\/issues\/([^/]{1,1000})\/activity\/runs\/([A-Za-z0-9-]{1,100})\/events$/.exec(path);
+    if (issueRunEvents) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try {
+        issueId = decodeURIComponent(issueRunEvents[1]!);
+      } catch {
+        return text("Invalid issue id", 400);
+      }
+      const rawBefore = url.searchParams.get("before");
+      if (rawBefore !== null && !/^[1-9]\d*$/.test(rawBefore)) return text("Invalid event cursor", 400);
+      const before = rawBefore === null ? undefined : Number(rawBefore);
+      if (before !== undefined && !Number.isSafeInteger(before)) return text("Invalid event cursor", 400);
+      try {
+        const activity = await dependencies.getIssueRunEvents(issueId, issueRunEvents[2]!, before);
+        return activity ? json(activity) : text("Issue or run not found", 404);
+      } catch {
+        return json({ error: "activity unavailable" }, 503);
+      }
+    }
+
     const issueActivity = /^\/api\/issues\/([^/]{1,1000})\/activity$/.exec(path);
     if (issueActivity) {
       const methodError = requireMethod(request, "GET");
@@ -399,8 +472,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return text("Invalid issue id", 400);
       }
       if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      const before = url.searchParams.get("before");
+      if (before !== null && !/^[A-Za-z0-9-]{1,100}$/.test(before)) return text("Invalid run cursor", 400);
       try {
-        const activity = await dependencies.getIssueActivity(issueId);
+        const activity = await dependencies.getIssueActivity(issueId, before ?? undefined);
         return activity ? json(activity) : text("Issue not found", 404);
       } catch {
         return json({ error: "activity unavailable" }, 503);

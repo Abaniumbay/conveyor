@@ -155,6 +155,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=1");
     expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=3");
     expect(html).toContain("issue--warning");
+    expect(html).toContain("issue--rollup");
+    expect(html).toContain("Roll-up parent");
     expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
@@ -178,6 +180,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("1 runner working");
     expect(html).toContain("1 of 4 runner slots active");
     expect(html).toContain("Working now");
+    expect(html).toContain('href="/?issue=parent"');
     expect(html).toContain("sample:#41");
     expect(html).toContain('href="/?issue=child"');
     expect(html).toContain('href="/?issue=dependency"');
@@ -195,6 +198,11 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("indicator-blocked");
     expect(html).not.toContain('class="labels"');
     expect(html).toContain("@keyframes working-pulse");
+    expect(html).toContain('rel="icon" href="/favicon.svg"');
+    expect(html).toContain("data-server-status");
+    expect(html).toContain("data-local-time");
+    expect(html).toContain("page-loader");
+    expect(html).toContain("min-height:calc(100vh - 11rem)");
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {

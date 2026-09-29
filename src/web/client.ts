@@ -2,6 +2,7 @@ export const dashboardClient = String.raw`(() => {
   const body = document.body;
   const board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
+  let pendingReload = false;
 
   try {
     const saved = JSON.parse(sessionStorage.getItem(scrollKey) || 'null');
@@ -19,8 +20,41 @@ export const dashboardClient = String.raw`(() => {
     } catch {}
   };
 
-  const activitySnapshots = new WeakMap();
   const conversationSnapshots = new WeakMap();
+
+  const formatDateTime = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value || '');
+    return new Intl.DateTimeFormat(undefined, {
+      year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(date);
+  };
+
+  const localizeTimes = (root = document) => {
+    for (const time of root.querySelectorAll('time[datetime]')) {
+      time.textContent = formatDateTime(time.getAttribute('datetime'));
+    }
+  };
+
+  const formatBytes = (value) => {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return 'unavailable';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let amount = bytes;
+    let index = 0;
+    while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; }
+    return (amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)) + ' ' + units[index];
+  };
+
+  const formatElapsed = (secondsValue) => {
+    const total = Math.max(0, Math.floor(Number(secondsValue) || 0));
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    if (days) return days + 'd ' + hours + 'h';
+    if (hours) return hours + 'h ' + minutes + 'm';
+    return minutes + 'm';
+  };
 
   const payloadText = (value) => {
     if (typeof value === 'string') return value;
@@ -48,7 +82,11 @@ export const dashboardClient = String.raw`(() => {
       const actorName = message.actorType === 'user' ? 'You' : String(message.actorName || 'Agent');
       actor.textContent = actorName + (message.actorTitle ? ' · ' + String(message.actorTitle) : '');
       const meta = document.createElement('small');
-      meta.textContent = (message.stageId ? String(message.stageId) + ' · ' : '') + String(message.createdAt || '');
+      if (message.stageId) meta.append(String(message.stageId) + ' · ');
+      const time = document.createElement('time');
+      time.dateTime = String(message.createdAt || '');
+      time.textContent = formatDateTime(message.createdAt);
+      meta.append(time);
       const body = document.createElement('p');
       body.textContent = String(message.message || '');
       header.append(actor, meta);
@@ -64,7 +102,10 @@ export const dashboardClient = String.raw`(() => {
     const status = panel.querySelector('[data-conversation-status]');
     if (!url) return;
     panel.dataset.loading = 'true';
-    if (status && !conversationSnapshots.has(panel)) status.textContent = 'Loading shared conversation…';
+    if (status) {
+      status.classList.add('status--loading');
+      if (!conversationSnapshots.has(panel)) status.textContent = 'Loading shared conversation…';
+    }
     try {
       const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' });
       if (!response.ok) throw new Error('conversation request failed');
@@ -73,93 +114,154 @@ export const dashboardClient = String.raw`(() => {
       if (status) status.textContent = 'Conversation is temporarily unavailable. Retrying…';
     } finally {
       delete panel.dataset.loading;
+      if (status) status.classList.remove('status--loading');
     }
   };
 
-  const renderIssueActivity = (panel, activity) => {
-    const snapshot = JSON.stringify(activity);
-    if (activitySnapshots.get(panel) === snapshot) return;
-    activitySnapshots.set(panel, snapshot);
+  const activityEvent = (item) => {
+    const eventItem = document.createElement('li');
+    const meta = document.createElement('div');
+    const type = document.createElement('strong');
+    type.textContent = String(item.type || 'event');
+    const time = document.createElement('time');
+    time.dateTime = String(item.createdAt || '');
+    time.textContent = formatDateTime(item.createdAt);
+    meta.append(type, time);
+    const payload = document.createElement('pre');
+    payload.textContent = payloadText(item.payload);
+    eventItem.append(meta, payload);
+    return eventItem;
+  };
+
+  const moreButton = (label, attribute, cursor) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'activity-more';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.setAttribute(attribute, String(cursor));
+    wrapper.append(button);
+    return wrapper;
+  };
+
+  const activityRun = (run) => {
+    const article = document.createElement('article');
+    article.className = 'activity-run';
+    article.dataset.runId = String(run.id || '');
+    const header = document.createElement('header');
+    const title = document.createElement('h3');
+    title.textContent = String(run.stageId || 'unknown') + ' · ' + String(run.kind || 'run') + ' · attempt ' + String(run.attempt || 1);
+    const badge = document.createElement('span');
+    badge.className = 'run-status run-status--' + String(run.status || 'unknown').replace(/[^a-z0-9_-]/gi, '');
+    badge.textContent = String(run.status || 'unknown');
+    header.append(title, badge);
+    const timing = document.createElement('p');
+    timing.className = 'activity-run-time';
+    const started = document.createElement('time');
+    started.dateTime = String(run.startedAt || '');
+    started.textContent = formatDateTime(run.startedAt);
+    timing.append(started, ' → ');
+    if (run.finishedAt) {
+      const finished = document.createElement('time');
+      finished.dateTime = String(run.finishedAt);
+      finished.textContent = formatDateTime(run.finishedAt);
+      timing.append(finished);
+    } else timing.append('now');
+    article.append(header, timing);
+    if (run.result !== null && run.result !== undefined) {
+      const result = document.createElement('details');
+      const label = document.createElement('summary');
+      label.textContent = 'Final result';
+      const payload = document.createElement('pre');
+      payload.textContent = payloadText(run.result);
+      result.append(label, payload);
+      article.append(result);
+    }
+    const events = Array.isArray(run.events) ? run.events : [];
+    const list = document.createElement('ol');
+    list.className = 'activity-events';
+    for (const item of events) list.append(activityEvent(item));
+    article.append(list);
+    if (run.nextEventBefore) article.append(moreButton('Load older events', 'data-more-events', run.nextEventBefore));
+    if (events.length === 0 && (run.result === null || run.result === undefined)) {
+      const empty = document.createElement('p');
+      empty.className = 'details-empty';
+      empty.textContent = run.status === 'running' ? 'Waiting for the first recorded event…' : 'No event payloads were recorded.';
+      article.append(empty);
+    }
+    return article;
+  };
+
+  const renderIssueActivity = (panel, activity, append = false) => {
     const runsRoot = panel.querySelector('[data-activity-runs]');
     const status = panel.querySelector('[data-activity-status]');
     if (!runsRoot || !status) return;
-    runsRoot.replaceChildren();
+    const previousMore = runsRoot.querySelector('[data-more-runs]')?.closest('.activity-more');
+    if (previousMore) previousMore.remove();
+    if (!append) runsRoot.replaceChildren();
     const runs = Array.isArray(activity.runs) ? activity.runs : [];
-    panel.dataset.live = runs.some((run) => run.status === 'running') ? 'true' : 'false';
-    status.textContent = runs.length === 0
-      ? 'No runs have been recorded for this issue.'
-      : runs.length + (runs.length === 1 ? ' run retained.' : ' runs retained.');
-
+    panel.dataset.live = runs.some((run) => run.status === 'running') ? 'true' : panel.dataset.live || 'false';
     for (const run of runs) {
-      const article = document.createElement('article');
-      article.className = 'activity-run';
-      const header = document.createElement('header');
-      const title = document.createElement('h3');
-      title.textContent = String(run.stageId || 'unknown') + ' · ' + String(run.kind || 'run') + ' · attempt ' + String(run.attempt || 1);
-      const badge = document.createElement('span');
-      badge.className = 'run-status run-status--' + String(run.status || 'unknown').replace(/[^a-z0-9_-]/gi, '');
-      badge.textContent = String(run.status || 'unknown');
-      header.append(title, badge);
-      const timing = document.createElement('p');
-      timing.className = 'activity-run-time';
-      timing.textContent = String(run.startedAt || '') + (run.finishedAt ? ' → ' + String(run.finishedAt) : ' → now');
-      article.append(header, timing);
-
-      const events = Array.isArray(run.events) ? run.events : [];
-      const list = document.createElement('ol');
-      list.className = 'activity-events';
-      for (const item of events) {
-        const eventItem = document.createElement('li');
-        const meta = document.createElement('div');
-        const type = document.createElement('strong');
-        type.textContent = String(item.type || 'event');
-        const time = document.createElement('time');
-        time.textContent = String(item.createdAt || '');
-        meta.append(type, time);
-        const payload = document.createElement('pre');
-        payload.textContent = payloadText(item.payload);
-        eventItem.append(meta, payload);
-        list.append(eventItem);
-      }
-      if (events.length > 0) article.append(list);
-      if (run.result !== null && run.result !== undefined) {
-        const result = document.createElement('details');
-        const label = document.createElement('summary');
-        label.textContent = 'Final result';
-        const payload = document.createElement('pre');
-        payload.textContent = payloadText(run.result);
-        result.append(label, payload);
-        article.append(result);
-      }
-      if (events.length === 0 && (run.result === null || run.result === undefined)) {
-        const empty = document.createElement('p');
-        empty.className = 'details-empty';
-        empty.textContent = run.status === 'running' ? 'Waiting for the first recorded event…' : 'No event payloads were recorded.';
-        article.append(empty);
-      }
-      runsRoot.append(article);
+      const existing = runsRoot.querySelector('[data-run-id="' + CSS.escape(String(run.id || '')) + '"]');
+      if (existing) existing.replaceWith(activityRun(run));
+      else runsRoot.append(activityRun(run));
     }
+    if (activity.nextRunBefore) runsRoot.append(moreButton('Load older runs', 'data-more-runs', activity.nextRunBefore));
+    const count = runsRoot.querySelectorAll('.activity-run').length;
+    status.textContent = count === 0 ? 'No runs have been recorded for this issue.' : 'Showing ' + count + (count === 1 ? ' recent run.' : ' recent runs.');
   };
 
-  const loadIssueActivity = async (panel) => {
+  const loadIssueActivity = async (panel, before = null, append = false) => {
     if (panel.dataset.loading === 'true') return;
-    const url = panel.dataset.activityUrl;
+    const baseUrl = panel.dataset.activityUrl;
     const status = panel.querySelector('[data-activity-status]');
-    if (!url) return;
+    if (!baseUrl) return;
+    const url = new URL(baseUrl, location.origin);
+    if (before) url.searchParams.set('before', before);
     panel.dataset.loading = 'true';
-    if (status && !activitySnapshots.has(panel)) status.textContent = 'Loading persisted activity…';
+    if (status) { status.classList.add('status--loading'); status.textContent = append ? 'Loading older runs…' : 'Loading recent activity…'; }
     try {
       const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' });
       if (!response.ok) throw new Error('activity request failed');
-      renderIssueActivity(panel, await response.json());
+      renderIssueActivity(panel, await response.json(), append);
     } catch {
-      if (status) status.textContent = 'Activity is temporarily unavailable. Retrying…';
+      if (status) status.textContent = 'Activity is temporarily unavailable. Retry by reopening this tab.';
     } finally {
       delete panel.dataset.loading;
+      if (status) status.classList.remove('status--loading');
     }
   };
 
-  const selectDetailTab = (dialog, name) => {
+  const loadOlderEvents = async (button) => {
+    const panel = button.closest('[data-activity-url]');
+    const article = button.closest('[data-run-id]');
+    const before = button.getAttribute('data-more-events');
+    const baseUrl = panel && panel.getAttribute('data-activity-url');
+    const runId = article && article.getAttribute('data-run-id');
+    if (!panel || !article || !baseUrl || !runId || !before) return;
+    button.disabled = true;
+    try {
+      const url = new URL(baseUrl + '/runs/' + encodeURIComponent(runId) + '/events', location.origin);
+      url.searchParams.set('before', before);
+      const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' });
+      if (!response.ok) throw new Error('event request failed');
+      const page = await response.json();
+      const list = article.querySelector('.activity-events');
+      if (list) for (const item of Array.isArray(page.events) ? page.events : []) list.append(activityEvent(item));
+      const wrapper = button.closest('.activity-more');
+      if (page.nextEventBefore) button.setAttribute('data-more-events', String(page.nextEventBefore));
+      else if (wrapper) wrapper.remove();
+    } catch {
+      button.textContent = 'Retry loading older events';
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  const validDetailTab = (name) => name === 'conversation' || name === 'activity' ? name : 'summary';
+
+  const selectDetailTab = (dialog, name, updateUrl = false) => {
+    name = validDetailTab(name);
     for (const tab of dialog.querySelectorAll('[data-detail-tab]')) {
       const selected = tab.getAttribute('data-detail-tab') === name;
       tab.setAttribute('aria-selected', selected ? 'true' : 'false');
@@ -171,11 +273,20 @@ export const dashboardClient = String.raw`(() => {
       if (selected && name === 'activity') void loadIssueActivity(panel);
       if (selected && name === 'conversation') void loadIssueConversation(panel);
     }
+    if (updateUrl && dialog.dataset.issueId) {
+      const url = new URL(location.href);
+      url.searchParams.set('issue', dialog.dataset.issueId);
+      if (name === 'summary') url.searchParams.delete('tab');
+      else url.searchParams.set('tab', name);
+      history.replaceState({ conveyorIssue: dialog.dataset.issueId, conveyorTab: name }, '', url.pathname + url.search + url.hash);
+    }
   };
 
-  const issueUrl = (issueId) => {
+  const issueUrl = (issueId, tab = 'summary') => {
     const url = new URL(location.href);
     url.searchParams.set('issue', issueId);
+    if (tab === 'summary') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', validDetailTab(tab));
     return url.pathname + url.search + url.hash;
   };
 
@@ -205,7 +316,7 @@ export const dashboardClient = String.raw`(() => {
 
   const openDialogElement = (dialog) => {
     if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
-    selectDetailTab(dialog, 'summary');
+    selectDetailTab(dialog, validDetailTab(new URL(location.href).searchParams.get('tab')));
     dialog.showModal();
   };
 
@@ -216,7 +327,18 @@ export const dashboardClient = String.raw`(() => {
     if (containingDialog instanceof HTMLDialogElement) {
       const tab = event.target.closest('[data-detail-tab]');
       if (tab) {
-        selectDetailTab(containingDialog, tab.getAttribute('data-detail-tab') || 'summary');
+        selectDetailTab(containingDialog, tab.getAttribute('data-detail-tab') || 'summary', true);
+        return;
+      }
+      const moreRuns = event.target.closest('[data-more-runs]');
+      if (moreRuns) {
+        const panel = moreRuns.closest('[data-activity-url]');
+        if (panel) void loadIssueActivity(panel, moreRuns.getAttribute('data-more-runs'), true);
+        return;
+      }
+      const moreEvents = event.target.closest('[data-more-events]');
+      if (moreEvents instanceof HTMLButtonElement) {
+        void loadOlderEvents(moreEvents);
         return;
       }
       if (event.target !== containingDialog || !containingDialog.open) return;
@@ -240,6 +362,13 @@ export const dashboardClient = String.raw`(() => {
     event.preventDefault();
     openIssueDialog(opener);
   });
+
+  document.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element) || event.defaultPrevented) return;
+    const link = event.target.closest('.tab, .active-work a, .relationships a, .relation-summary a, .pagination a, .agent-history a');
+    if (!(link instanceof HTMLAnchorElement) || link.target || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    body.classList.add('page-loading');
+  }, true);
 
   document.addEventListener('submit', async (event) => {
     const form = event.target;
@@ -287,7 +416,12 @@ export const dashboardClient = String.raw`(() => {
     const url = new URL(location.href);
     if (!issueId || url.searchParams.get('issue') !== issueId) return;
     url.searchParams.delete('issue');
+    url.searchParams.delete('tab');
     history.replaceState(null, '', url.pathname + url.search + url.hash);
+    if (pendingReload) {
+      preserveScroll();
+      location.reload();
+    }
   }, true);
 
   window.addEventListener('popstate', () => {
@@ -296,43 +430,59 @@ export const dashboardClient = String.raw`(() => {
       if (dialog.dataset.issueId !== requested) dialog.close();
     }
     if (requested) openDialogElement(findIssueDialog(requested));
+    const dialog = requested ? findIssueDialog(requested) : null;
+    if (dialog instanceof HTMLDialogElement && dialog.open) {
+      selectDetailTab(dialog, new URL(location.href).searchParams.get('tab'));
+    }
   });
 
   const requestedIssue = new URL(location.href).searchParams.get('issue');
   if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
 
-  setInterval(() => {
-    for (const panel of document.querySelectorAll('dialog[open] [data-detail-panel="conversation"]:not([hidden])')) {
-      void loadIssueConversation(panel);
-    }
-    for (const panel of document.querySelectorAll('dialog[open] [data-detail-panel="activity"]:not([hidden])')) {
-      if (panel.dataset.live === 'true') void loadIssueActivity(panel);
-    }
-  }, 2000);
+  localizeTimes();
 
-  const view = body.dataset.dashboardView;
-  if (view !== 'agent') {
-    let revision = body.dataset.dashboardRevision || '';
-    const checkRevision = async () => {
-      if (document.hidden || document.querySelector('dialog[open]')) return;
-      const focused = document.activeElement;
-      if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement) return;
-      try {
-        const response = await fetch('/api/dashboard-revision', {
-          headers: { accept: 'application/json' },
-          cache: 'no-store',
-        });
-        if (!response.ok) return;
-        const next = await response.json();
-        if (typeof next.revision === 'string' && next.revision !== revision) {
-          revision = next.revision;
-          preserveScroll();
-          location.reload();
-        }
-      } catch {}
-    };
-    setInterval(checkRevision, 4000);
-  }
+  const serverStatus = document.querySelector('[data-server-status]');
+  const connectionState = serverStatus && serverStatus.querySelector('[data-connection-state]');
+  const serverMetrics = serverStatus && serverStatus.querySelector('[data-server-metrics]');
+  let revision = body.dataset.dashboardRevision || '';
+  const dashboardEvents = new EventSource('/events/dashboard');
+  const setConnection = (connected) => {
+    if (!serverStatus || !connectionState) return;
+    serverStatus.dataset.connected = connected ? 'true' : 'false';
+    connectionState.textContent = connected ? 'Connected' : 'Reconnecting';
+  };
+  dashboardEvents.onopen = () => setConnection(true);
+  dashboardEvents.onerror = () => setConnection(false);
+  dashboardEvents.addEventListener('status', (message) => {
+    if (!serverMetrics) return;
+    try {
+      const status = JSON.parse(message.data);
+      serverMetrics.textContent = 'Memory ' + formatBytes(status.memory.usedBytes) + ' / ' + formatBytes(status.memory.totalBytes) +
+        ' · Disk ' + formatBytes(status.disk.usedBytes) + ' / ' + formatBytes(status.disk.totalBytes) +
+        ' · App ' + formatBytes(status.memory.processBytes) + ' · Up ' + formatElapsed(status.uptimeSeconds);
+    } catch {
+      serverMetrics.textContent = 'Server metrics unavailable';
+    }
+  });
+  dashboardEvents.addEventListener('revision', (message) => {
+    try {
+      const next = JSON.parse(message.data);
+      if (typeof next.revision !== 'string' || next.revision === revision) return;
+      revision = next.revision;
+      body.dataset.dashboardRevision = revision;
+      const openDialog = document.querySelector('dialog[open]');
+      if (openDialog) {
+        pendingReload = true;
+        const conversation = openDialog.querySelector('[data-detail-panel="conversation"]:not([hidden])');
+        const activity = openDialog.querySelector('[data-detail-panel="activity"]:not([hidden])');
+        if (conversation) void loadIssueConversation(conversation);
+        if (activity) void loadIssueActivity(activity);
+        return;
+      }
+      preserveScroll();
+      location.reload();
+    } catch {}
+  });
 
   const panel = document.querySelector('[data-steering-run]');
   const runId = panel && panel.getAttribute('data-steering-run');
@@ -352,7 +502,10 @@ export const dashboardClient = String.raw`(() => {
         role.textContent = event.type === 'user' ? 'You' : event.type === 'report' ? 'Report' : 'Agent';
         const text = document.createElement('p');
         text.textContent = String(event.text || '');
-        item.append(role, text);
+        const time = document.createElement('time');
+        time.dateTime = String(event.createdAt || '');
+        time.textContent = formatDateTime(event.createdAt);
+        item.append(role, text, time);
         events.append(item);
         events.scrollTop = events.scrollHeight;
       } catch {}

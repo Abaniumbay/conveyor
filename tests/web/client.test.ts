@@ -7,6 +7,11 @@ describe("dashboard browser client", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
     expect(dashboardClient).toContain("data-detail-tab");
+    expect(dashboardClient).toContain("new EventSource('/events/dashboard')");
+    expect(dashboardClient).not.toContain("/api/dashboard-revision");
+    expect(dashboardClient).toContain("url.searchParams.set('tab', name)");
+    expect(dashboardClient).toContain("data-more-runs");
+    expect(dashboardClient).toContain("data-more-events");
     expect(dashboardClient).toContain("field.value = ''");
     expect(dashboardClient).toContain("field.value = submittedMessage");
   });

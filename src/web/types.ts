@@ -61,11 +61,26 @@ export interface IssueRunViewModel {
   finishedAt: string | null;
   result: unknown | null;
   events: readonly IssueRunEventViewModel[];
+  nextEventBefore: number | null;
 }
 
 export interface IssueActivityViewModel {
   issueId: string;
   runs: readonly IssueRunViewModel[];
+  nextRunBefore: string | null;
+}
+
+export interface IssueRunEventsViewModel {
+  issueId: string;
+  runId: string;
+  events: readonly IssueRunEventViewModel[];
+  nextEventBefore: number | null;
+}
+
+export interface SystemStatusViewModel {
+  memory: { usedBytes: number; totalBytes: number; processBytes: number };
+  disk: { usedBytes: number; totalBytes: number; availableBytes: number };
+  uptimeSeconds: number;
 }
 
 export interface IssueConversationMessageViewModel {

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
+import { freemem, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
@@ -11,7 +12,8 @@ import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel } from "../web/types";
+import { formatDuration } from "../web/format";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -36,6 +38,8 @@ interface ServiceImplementations {
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
 const DASHBOARD_PAGE_SIZE = 20;
+const ACTIVITY_RUN_PAGE_SIZE = 5;
+const ACTIVITY_EVENT_PAGE_SIZE = 20;
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1244,7 +1248,7 @@ export class ConveyorService {
             : cost.unavailableRuns === cost.runs
               ? `unavailable · ${cost.runs} run${cost.runs === 1 ? "" : "s"}`
               : `$${cost.amount.toFixed(4)} · ${cost.runs} runs`,
-        duration: cost.durationMs > 0 ? `${Math.round(cost.durationMs / 1000)}s` : null,
+        duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
         inconsistent: issue.projectedState === "inconsistent",
         closable: issue.labels.includes(this.config.labels.metadata.closable),
@@ -1471,22 +1475,68 @@ export class ConveyorService {
     };
   }
 
-  issueActivity(issueId: string): IssueActivityViewModel | null {
+  issueActivity(issueId: string, before?: string): IssueActivityViewModel | null {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") return null;
+    const page = this.store.listIssueRunsPage(issueId, {
+      ...(before ? { before } : {}),
+      limit: ACTIVITY_RUN_PAGE_SIZE,
+    });
     return {
       issueId,
-      runs: this.store.listIssueRuns(issueId).map((run) => ({
-        id: run.id,
-        stageId: run.stageId,
-        attempt: run.attempt,
-        kind: run.kind,
-        status: run.status,
-        startedAt: run.startedAt,
-        finishedAt: run.finishedAt,
-        result: run.result,
-        events: this.store.listRunEvents(run.id),
-      })),
+      runs: page.runs.map((run) => {
+        const events = this.store.listRunEventsPage(run.id, { limit: ACTIVITY_EVENT_PAGE_SIZE });
+        return {
+          id: run.id,
+          stageId: run.stageId,
+          attempt: run.attempt,
+          kind: run.kind,
+          status: run.status,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          result: run.result,
+          events: events.events,
+          nextEventBefore: events.nextBefore,
+        };
+      }),
+      nextRunBefore: page.nextBefore,
+    };
+  }
+
+  issueRunEvents(issueId: string, runId: string, before?: number): IssueRunEventsViewModel | null {
+    const issue = this.store.getIssue(issueId);
+    const run = this.store.getRun(runId);
+    if (!issue || issue.projectedState === "offboarded" || run?.issueId !== issueId) return null;
+    const page = this.store.listRunEventsPage(runId, {
+      ...(before === undefined ? {} : { before }),
+      limit: ACTIVITY_EVENT_PAGE_SIZE,
+    });
+    return {
+      issueId,
+      runId,
+      events: page.events,
+      nextEventBefore: page.nextBefore,
+    };
+  }
+
+  async systemStatus(): Promise<SystemStatusViewModel> {
+    const memoryTotal = totalmem();
+    const memoryFree = freemem();
+    const disk = await statfs(this.config.settings.database);
+    const diskTotal = disk.blocks * disk.bsize;
+    const diskAvailable = disk.bavail * disk.bsize;
+    return {
+      memory: {
+        usedBytes: memoryTotal - memoryFree,
+        totalBytes: memoryTotal,
+        processBytes: process.memoryUsage().rss,
+      },
+      disk: {
+        usedBytes: diskTotal - diskAvailable,
+        totalBytes: diskTotal,
+        availableBytes: diskAvailable,
+      },
+      uptimeSeconds: Math.floor(uptime()),
     };
   }
 
@@ -1614,6 +1664,7 @@ export class ConveyorService {
       username,
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getDashboardRevision: () => this.store.dashboardRevision(),
+      getSystemStatus: () => this.systemStatus(),
       isReady: () =>
         Boolean(this.#lastReconciledAt) &&
         !this.#shuttingDown &&
@@ -1627,7 +1678,8 @@ export class ConveyorService {
       startSteering: (prompt) => this.startSteering(prompt),
       getSteeringRun: (runId) => this.getSteeringRun(runId),
       getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),
-      getIssueActivity: (issueId) => this.issueActivity(issueId),
+      getIssueActivity: (issueId, before) => this.issueActivity(issueId, before),
+      getIssueRunEvents: (issueId, runId, before) => this.issueRunEvents(issueId, runId, before),
       getIssueConversation: (issueId) => this.issueConversation(issueId),
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
     };

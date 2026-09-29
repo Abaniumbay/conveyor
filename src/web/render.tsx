@@ -25,6 +25,10 @@ function issueHref(issueId: string): string {
   return `/?${new URLSearchParams({ issue: issueId })}`;
 }
 
+function LocalTime({ value }: { value: string }) {
+  return <time dateTime={value} data-local-time>…</time>;
+}
+
 function RelationLink({ relation, showCompletion = false }: { relation: IssueRelationViewModel; showCompletion?: boolean }) {
   const completed = showCompletion && relation.satisfied;
   return <a class={completed ? "relation-link--satisfied" : undefined} href={issueHref(relation.id)}>{relation.repository}:#{relation.number} {relation.title}</a>;
@@ -94,6 +98,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
         <div class="details-status">
           <span class="issue-state">{issue.state}</span>
           {issue.working && <span class="working-indicator">Working now</span>}
+          {issue.children.length > 0 && <span class="indicator indicator-rollup">Roll-up parent</span>}
           {issue.closable && <span class="indicator indicator-closable">Closable</span>}
           {issue.inconsistent && <span class="indicator indicator-inconsistent">Inconsistent</span>}
         </div>
@@ -154,9 +159,10 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
 
 function IssueCard({ issue }: { issue: IssueCardViewModel }) {
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
+  const rollup = issue.children.length > 0;
   return (
     <article
-      class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}`}
+      class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${rollup ? " issue--rollup" : ""}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
       tabIndex={0}
@@ -171,6 +177,7 @@ function IssueCard({ issue }: { issue: IssueCardViewModel }) {
       <footer class="issue-footer">
         <span class="issue-state">{issue.state}</span>
         {issue.working && <span class="working-indicator">Working now</span>}
+        {rollup && <span class="indicator indicator-rollup">Roll-up parent</span>}
       </footer>
       <DetailsDialog issue={issue} id={dialogId} />
     </article>
@@ -293,8 +300,10 @@ function ActiveWork({ model }: { model: DashboardViewModel }) {
       {runs.length > 0
         ? <ul>{runs.map((run) => (
             <li key={run.id}>
-              <strong>{run.repository}:#{run.issueNumber} {run.issueTitle}</strong>
-              <span>{run.stageId} · {run.kind.replaceAll("-", " ")}</span>
+              <a href={issueHref(run.issueId)}>
+                <strong>{run.repository}:#{run.issueNumber} {run.issueTitle}</strong>
+                <span>{run.stageId} · {run.kind.replaceAll("-", " ")} · <LocalTime value={run.startedAt} /></span>
+              </a>
             </li>
           ))}</ul>
         : <p class="active-work-idle">No issue is being worked on right now.</p>}
@@ -322,6 +331,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
               <li class={`agent-event agent-event--${event.type}`} data-sequence={event.sequence} key={event.sequence}>
                 <span class="agent-event-role">{event.type === "user" ? "You" : event.type === "report" ? "Report" : "Agent"}</span>
                 <p>{event.text}</p>
+                <LocalTime value={event.createdAt} />
               </li>
             ))}
           </ol>
@@ -339,7 +349,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
         {steering.recent.length > 0 && (
           <aside class="agent-history" aria-label="Recent agent runs">
             <h3>Recent</h3>
-            <ol>{steering.recent.map((run) => <li key={run.id}><a href={`/?view=agent&run=${encodeURIComponent(run.id)}`} class={selected?.id === run.id ? "history-active" : undefined}><span>{run.startedAt}</span><small>{run.status}</small></a></li>)}</ol>
+            <ol>{steering.recent.map((run) => <li key={run.id}><a href={`/?view=agent&run=${encodeURIComponent(run.id)}`} class={selected?.id === run.id ? "history-active" : undefined}><LocalTime value={run.startedAt} /><small>{run.status}</small></a></li>)}</ol>
           </aside>
         )}
       </div>
@@ -430,6 +440,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{model.title} · Conveyor</title>
         <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
         <script src="/assets/dashboard.js" defer />
@@ -439,7 +450,12 @@ function Page({ model }: { model: DashboardViewModel }) {
           <header class="dashboard-header">
             <div><p class="eyebrow">Conveyor</p><h1>{model.title}</h1><p class="project-meta">{model.project}</p></div>
             <div class="header-actions">
-              <p class="updated"><span>Updated</span> <time dateTime={model.updatedAt}>{model.updatedAt}</time></p>
+              <section class="server-status" data-server-status aria-label="Server status">
+                <span class="server-dot" aria-hidden="true" />
+                <strong data-connection-state>Connecting</strong>
+                <span data-server-metrics>Waiting for server status…</span>
+              </section>
+              <p class="updated"><span>Updated</span> <LocalTime value={model.updatedAt} /></p>
               <form method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
             </div>
           </header>
@@ -455,6 +471,7 @@ function Page({ model }: { model: DashboardViewModel }) {
               selected
             />
           )}
+          <div class="page-loader" role="status" aria-live="polite"><span />Loading…</div>
         </main>
       </body>
     </html>

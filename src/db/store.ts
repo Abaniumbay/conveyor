@@ -933,6 +933,54 @@ export class ConveyorStore {
     }));
   }
 
+  listIssueRunsPage(
+    issueId: string,
+    options: { before?: string | undefined; limit: number },
+  ): { runs: StoredRun[]; nextBefore: string | null } {
+    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 20) {
+      throw new Error("issue run page limit must be between 1 and 20");
+    }
+    let rows: Array<Record<string, SQLQueryBindings>>;
+    if (options.before) {
+      const cursor = this.#database
+        .query("SELECT started_at, id FROM runs WHERE id = ? AND issue_id = ?")
+        .get(options.before, issueId) as { started_at: string; id: string } | null;
+      if (!cursor) return { runs: [], nextBefore: null };
+      rows = this.#database
+        .query(
+          `SELECT * FROM runs WHERE issue_id = ?
+           AND (started_at < ? OR (started_at = ? AND id < ?))
+           ORDER BY started_at DESC, id DESC LIMIT ?`,
+        )
+        .all(issueId, cursor.started_at, cursor.started_at, cursor.id, options.limit + 1) as Array<Record<string, SQLQueryBindings>>;
+    } else {
+      rows = this.#database
+        .query(
+          `SELECT * FROM runs WHERE issue_id = ?
+           ORDER BY started_at DESC, id DESC LIMIT ?`,
+        )
+        .all(issueId, options.limit + 1) as Array<Record<string, SQLQueryBindings>>;
+    }
+    const hasMore = rows.length > options.limit;
+    const page = rows.slice(0, options.limit);
+    const runs = page.map((row) => ({
+      id: String(row.id),
+      issueId: String(row.issue_id),
+      stageId: String(row.stage_id),
+      attempt: Number(row.attempt),
+      kind: String(row.kind),
+      status: String(row.status),
+      sessionId: row.session_id === null ? null : String(row.session_id),
+      result: row.result_json === null ? null : parseJson(String(row.result_json)),
+      startedAt: String(row.started_at),
+      finishedAt: row.finished_at === null ? null : String(row.finished_at),
+    }));
+    return {
+      runs,
+      nextBefore: hasMore ? (runs.at(-1)?.id ?? null) : null,
+    };
+  }
+
   listRunsByKind(kind: string, limit = 10): Array<{
     id: string;
     status: string;
@@ -963,7 +1011,9 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'stages', COUNT(*), COALESCE(MAX(updated_at), '') FROM stage_states
          UNION ALL
-         SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, heartbeat_at, started_at)), '') FROM runs
+         SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, started_at)), '') FROM runs
+         UNION ALL
+         SELECT 'run_events', COUNT(*), COALESCE(MAX(created_at), '') FROM run_events
          UNION ALL
          SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions
          UNION ALL
@@ -1207,6 +1257,43 @@ export class ConveyorStore {
       payload: parseJson(String(row.payload_json)),
       createdAt: String(row.created_at),
     }));
+  }
+
+  listRunEventsPage(
+    runId: string,
+    options: { before?: number | undefined; limit: number },
+  ): {
+    events: Array<{ sequence: number; type: string; payload: unknown; createdAt: string }>;
+    nextBefore: number | null;
+  } {
+    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 100) {
+      throw new Error("run event page limit must be between 1 and 100");
+    }
+    const rows = (options.before === undefined
+      ? this.#database
+        .query(
+          `SELECT sequence, type, payload_json, created_at
+           FROM run_events WHERE run_id = ? ORDER BY sequence DESC LIMIT ?`,
+        )
+        .all(runId, options.limit + 1)
+      : this.#database
+        .query(
+          `SELECT sequence, type, payload_json, created_at
+           FROM run_events WHERE run_id = ? AND sequence < ?
+           ORDER BY sequence DESC LIMIT ?`,
+        )
+        .all(runId, options.before, options.limit + 1)) as Array<Record<string, SQLQueryBindings>>;
+    const hasMore = rows.length > options.limit;
+    const events = rows.slice(0, options.limit).map((row) => ({
+      sequence: Number(row.sequence),
+      type: String(row.type),
+      payload: parseJson(String(row.payload_json)),
+      createdAt: String(row.created_at),
+    }));
+    return {
+      events,
+      nextBefore: hasMore ? (events.at(-1)?.sequence ?? null) : null,
+    };
   }
 
   appendConversationMessage(input: {
