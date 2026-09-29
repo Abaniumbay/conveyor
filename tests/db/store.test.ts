@@ -106,6 +106,8 @@ describe("ConveyorStore", () => {
     expect(store.removeRepositoriesExcept(["kept"])).toEqual(["removed"]);
     expect(store.listIssues().map((issue) => issue.id)).toEqual(["issue-kept"]);
     expect(store.removeRepositoriesExcept(["kept"])).toEqual([]);
+    expect(store.removeRepositoriesExcept([])).toEqual(["kept"]);
+    expect(store.listIssues()).toEqual([]);
 
     store.close();
   });
