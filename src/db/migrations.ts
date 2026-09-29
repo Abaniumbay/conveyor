@@ -1,0 +1,267 @@
+export interface Migration {
+  version: number;
+  sql: string;
+}
+
+export const migrations: readonly Migration[] = [
+  {
+    version: 1,
+    sql: `
+      CREATE TABLE config_snapshots (
+        hash TEXT PRIMARY KEY,
+        config_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE repositories (
+        id TEXT PRIMARY KEY,
+        config_name TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        address TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        health TEXT NOT NULL DEFAULT 'unknown',
+        last_reconciled_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE issues (
+        id TEXT PRIMARY KEY,
+        repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        source_number INTEGER NOT NULL,
+        source_url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        source_state TEXT NOT NULL,
+        labels_json TEXT NOT NULL,
+        source_updated_at TEXT NOT NULL,
+        queue_rank REAL,
+        parent_id TEXT REFERENCES issues(id) ON DELETE SET NULL,
+        projected_stage TEXT,
+        projected_state TEXT,
+        warning TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(repository_id, source_number)
+      );
+
+      CREATE INDEX issues_repository_idx ON issues(repository_id);
+      CREATE INDEX issues_queue_rank_idx ON issues(queue_rank);
+
+      CREATE TABLE issue_relationships (
+        parent_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        child_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        sibling_order INTEGER,
+        PRIMARY KEY(parent_id, child_id)
+      );
+
+      CREATE TABLE dependencies (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        blocker_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        PRIMARY KEY(issue_id, blocker_id)
+      );
+
+      CREATE TABLE enrollments (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        UNIQUE(issue_id, generation)
+      );
+
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY,
+        enrollment_id TEXT NOT NULL REFERENCES enrollments(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        removed_at TEXT
+      );
+
+      CREATE TABLE pull_requests (
+        id TEXT PRIMARY KEY,
+        enrollment_id TEXT NOT NULL REFERENCES enrollments(id) ON DELETE CASCADE,
+        source_number INTEGER NOT NULL,
+        url TEXT NOT NULL,
+        state TEXT NOT NULL,
+        merged_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE stage_states (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        feedback_cycle INTEGER NOT NULL DEFAULT 0,
+        config_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE stage_attempts (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        outcome TEXT,
+        status TEXT NOT NULL,
+        result_json TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        UNIQUE(issue_id, stage_id, attempt)
+      );
+
+      CREATE TABLE stage_transitions (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        from_stage TEXT,
+        to_stage TEXT,
+        status TEXT NOT NULL,
+        source_mutation_id TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+
+      CREATE TABLE feedback_cycles (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        boundary_stage TEXT NOT NULL,
+        cycle INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        required_fixes_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE runs (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT REFERENCES issues(id) ON DELETE SET NULL,
+        stage_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        session_id TEXT,
+        pid INTEGER,
+        started_at TEXT NOT NULL,
+        heartbeat_at TEXT,
+        finished_at TEXT,
+        exit_code INTEGER,
+        result_json TEXT
+      );
+
+      CREATE TABLE run_leases (
+        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        owner TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE run_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(run_id, sequence)
+      );
+
+      CREATE TABLE questions (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+        prompt TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        options_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT
+      );
+
+      CREATE UNIQUE INDEX questions_one_open_per_issue
+        ON questions(issue_id) WHERE status = 'open';
+
+      CREATE TABLE answers (
+        id TEXT PRIMARY KEY,
+        question_id TEXT NOT NULL UNIQUE REFERENCES questions(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        answer_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE source_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        delivery_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        UNIQUE(source, delivery_id)
+      );
+
+      CREATE TABLE source_mutations (
+        id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        status TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        response_json TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE artifacts (
+        id TEXT PRIMARY KEY,
+        run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        media_type TEXT,
+        size_bytes INTEGER,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE log_files (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        stream TEXT NOT NULL,
+        path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE usage_cost_entries (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        amount REAL NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        source TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE source_cursors (
+        repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        cursor_type TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(repository_id, cursor_type)
+      );
+
+      CREATE TABLE web_sessions (
+        id_hash TEXT PRIMARY KEY,
+        csrf_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+    `,
+  },
+];
