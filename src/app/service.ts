@@ -1504,19 +1504,103 @@ export class ConveyorService {
     };
   }
 
-  postIssueMessage(issueId: string, message: string, username: string): void {
+  async postIssueMessage(
+    issueId: string,
+    message: string,
+    username: string,
+  ): Promise<{ status: "delivered" | "started" | "queued"; stageId: string }> {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
-    this.store.appendConversationMessage({
+    if (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issueId)) {
+      throw new Error("closed issues cannot be resumed from conversation");
+    }
+    if (["done", "missing", "inconsistent"].includes(issue.projectedState ?? "")) {
+      throw new Error(`issue state ${issue.projectedState} cannot be resumed from conversation`);
+    }
+    if (this.store.listChildren(issueId).length > 0) {
+      throw new Error("roll-up parents cannot run directly; message a child issue instead");
+    }
+    const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
+    const stageId = issue.projectedStage ?? this.store.getStageState(issueId)?.stageId ?? activeRun?.stageId ?? null;
+    if (!stageId) throw new Error("issue has no unambiguous configured stage to resume");
+    const recorded = this.store.appendConversationMessage({
       issueId,
       runId: null,
-      stageId: issue.projectedStage,
+      stageId,
       actorType: "user",
       actorId: username,
       actorName: username,
       actorTitle: null,
       message,
     });
+    const running = this.#active.has(issueId) || Boolean(activeRun);
+    if (running) return { status: "delivered", stageId };
+
+    const repository = this.config.repositories[issue.repositoryId];
+    if (!repository) throw new Error("issue repository is not configured");
+    const pipeline = this.config.pipelines[repository.pipeline];
+    if (!pipeline || !pipeline.stages.some((stage) => stage.id === stageId)) {
+      throw new Error("issue has no unambiguous configured stage to resume");
+    }
+
+    const question = this.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId);
+    if (question) {
+      await this.answerQuestion(question.id, message);
+    } else {
+      const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
+      const metadata = issue.labels.filter((label) =>
+        label === this.config.labels.metadata.closable || label.startsWith(orderPrefix),
+      );
+      const labels = [
+        this.config.labels.enrollment,
+        this.config.labels.stageTemplate.replace("{stage}", stageId),
+        ...metadata,
+      ];
+      const mutation = this.store.beginSourceMutation({
+        idempotencyKey: `conversation-resume:${recorded.id}`,
+        source: repository.source,
+        operation: "issue.labels.resume",
+        request: { issueId, issueNumber: issue.sourceNumber, labels },
+      });
+      if (mutation.status !== "succeeded") {
+        try {
+          await this.github.replaceConveyorLabels(
+            repository.address,
+            issue.sourceNumber,
+            labels,
+          );
+          this.store.completeSourceMutation(mutation.id, { labels });
+        } catch (error) {
+          this.store.failSourceMutation(
+            mutation.id,
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      }
+      await this.reconcileRepository(issue.repositoryId);
+      const refreshed = this.store.getIssue(issueId);
+      if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
+      this.schedule();
+      await this.updateStatusComment(issueId).catch((error) => {
+        console.error(`Status comment for ${issueId} failed after conversation resume: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+
+    const status = this.#active.has(issueId) ? "started" : "queued";
+    this.store.appendConversationMessage({
+      issueId,
+      runId: null,
+      stageId,
+      actorType: "conveyor",
+      actorId: "conveyor",
+      actorName: "Conveyor",
+      actorTitle: "Orchestrator",
+      message: status === "started"
+        ? `Started ${stageId}; your message is included in the agent handoff.`
+        : `Queued ${stageId}; your message is included in the next agent handoff. Dependencies or runner capacity may delay the start.`,
+    });
+    return { status, stageId };
   }
 
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {

@@ -17,6 +17,191 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("a user conversation message clears a recoverable stop and queues the current stage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-resume-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1 },
+      web: { listen: "127.0.0.1:4300" },
+      sources: { github: { type: "github" } },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: {
+          done: "conveyor:done",
+          blocked: "conveyor:blocked",
+          rejected: "conveyor:reject",
+          "needs-input": "conveyor:needs-input",
+        },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          successStatuses: ["done"],
+          failureStatuses: ["blocked"],
+          stages: [{
+            id: "implementation",
+            run: { type: "agent", agent: "kaveh" },
+            concurrency: 1,
+            failurePolicies: {},
+            afterSuccess: [],
+          }],
+        },
+      },
+      repositories: {
+        repo: {
+          source: "github",
+          address: "owner/repo",
+          folder: root,
+          baseBranch: "main",
+          pipeline: "default",
+          concurrency: 1,
+          systemLabels: [],
+        },
+      },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const sourceIssues = [
+      {
+        id: "issue",
+        number: 1,
+        url: "https://github.com/owner/repo/issues/1",
+        title: "Feature",
+        body: "",
+        state: "open",
+        stateReason: null,
+        labels: ["conveyor", "conveyor:implementation", "conveyor:blocked", "conveyor:order:3"],
+        updatedAt: "2026-09-29T00:00:00Z",
+      },
+      {
+        id: "blocker",
+        number: 2,
+        url: "https://github.com/owner/repo/issues/2",
+        title: "Dependency",
+        body: "",
+        state: "open",
+        stateReason: null,
+        labels: [],
+        updatedAt: "2026-09-29T00:00:00Z",
+      },
+    ];
+    for (const sourceIssue of sourceIssues) {
+      store.upsertIssue({
+        id: sourceIssue.id,
+        repositoryId: "repo",
+        sourceNumber: sourceIssue.number,
+        sourceUrl: sourceIssue.url,
+        title: sourceIssue.title,
+        body: sourceIssue.body,
+        sourceState: sourceIssue.state,
+        sourceStateReason: sourceIssue.stateReason,
+        labels: sourceIssue.labels,
+        sourceUpdatedAt: sourceIssue.updatedAt,
+      });
+    }
+    store.setQueueRank("issue", 10);
+    store.setIssueProjection("issue", { stage: "implementation", state: "blocked", warning: null });
+    store.setStageState({ issueId: "issue", stageId: "implementation", status: "blocked", feedbackCycle: 2, configHash: config.hash });
+    store.setIssueProjection("blocker", { stage: null, state: "offboarded", warning: null });
+    store.replaceRelationships("issue", null, ["blocker"]);
+    const replaced: string[][] = [];
+    const github = {
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) {
+        replaced.push([...labels]);
+        sourceIssues[0]!.labels = [...labels];
+      },
+      async listIssues() { return sourceIssues; },
+      async listSubIssues() { return []; },
+      async listDependencies(_address: string, number: number) {
+        return number === 1 ? [sourceIssues[1]!] : [];
+      },
+      async upsertStatusComment() { return 1; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+
+    await expect(service.postIssueMessage("issue", "The API access blocker is resolved; please continue.", "operator")).resolves.toMatchObject({
+      status: "queued",
+      stageId: "implementation",
+    });
+
+    expect(replaced).toEqual([["conveyor", "conveyor:implementation", "conveyor:order:3"]]);
+    expect(store.getIssue("issue")).toMatchObject({ projectedState: "active", projectedStage: "implementation" });
+    expect(store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "ready", feedbackCycle: 0 });
+    expect(store.listConversationMessages("issue").map((message) => ({ actor: message.actorName, message: message.message }))).toEqual([
+      { actor: "operator", message: "The API access blocker is resolved; please continue." },
+      { actor: "Conveyor", message: expect.stringContaining("Queued implementation") },
+    ]);
+    expect(service.dashboard("csrf").activeWork.runnerCount).toBe(0);
+    store.close();
+  });
+
+  test("a conversation message answers an open structured question before resuming", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-answer-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1 },
+      web: { listen: "127.0.0.1:4300" },
+      sources: { github: { type: "github" } },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", "needs-input": "conveyor:needs-input" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          successStatuses: ["done"],
+          failureStatuses: ["needs-input"],
+          stages: [{ id: "refinement", run: { type: "agent", agent: "darya" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }],
+        },
+      },
+      repositories: {
+        repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+      },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const sourceIssue = {
+      id: "issue",
+      number: 1,
+      url: "https://github.com/owner/repo/issues/1",
+      title: "Feature",
+      body: "",
+      state: "open",
+      stateReason: null,
+      labels: ["conveyor", "conveyor:refinement", "conveyor:needs-input"],
+      updatedAt: "2026-09-29T00:00:00Z",
+    };
+    store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: sourceIssue.url, title: sourceIssue.title, body: "", sourceState: "open", labels: sourceIssue.labels, sourceUpdatedAt: sourceIssue.updatedAt });
+    store.setIssueProjection("issue", { stage: "refinement", state: "needs-input", warning: null });
+    store.setStageState({ issueId: "issue", stageId: "refinement", status: "needs-input", feedbackCycle: 0, configHash: config.hash });
+    const question = store.openQuestion({ issueId: "issue", runId: null, prompt: "Which layout?", reason: "A choice is required", options: [], allowFreeText: true });
+    const comments: string[] = [];
+    const github = {
+      async addComment(_address: string, _number: number, markdown: string) { comments.push(markdown); return 1; },
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { sourceIssue.labels = [...labels]; },
+      async listIssues() { return [sourceIssue]; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async upsertStatusComment() { return 1; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+
+    await service.postIssueMessage("issue", "Use the compact layout.", "operator");
+
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "answered", answer: { answer: "Use the compact layout." } });
+    expect(comments[0]).toContain("Use the compact layout.");
+    expect(store.listConversationMessages("issue")[0]).toMatchObject({ actorType: "user", message: "Use the compact layout." });
+    await service.close();
+  });
+
   test("turns explicit MCP progress into shared conversation and exposes live handoff context", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-conversation-"));
     temporaryDirectories.push(root);

@@ -262,11 +262,11 @@ export const dashboardClient = String.raw`(() => {
         body: data,
         headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       });
-      if (!response.ok) throw new Error('message request failed');
+      if (!response.ok) throw new Error((await response.text()).trim() || 'Message request failed.');
       form.reset();
       await loadIssueConversation(panel);
-    } catch {
-      if (status) status.textContent = 'Message could not be sent. Please try again.';
+    } catch (error) {
+      if (status) status.textContent = error instanceof Error ? error.message : 'Message could not be sent. Please try again.';
     } finally {
       if (button instanceof HTMLButtonElement) button.disabled = false;
     }

@@ -31,7 +31,11 @@ export interface WebHandlerDependencies {
   }> | Promise<Array<{ sequence: number; type: string; text: string; createdAt: string }>>;
   getIssueActivity: (issueId: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
   getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
-  postIssueMessage: (issueId: string, message: string, username: string) => void | Promise<void>;
+  postIssueMessage: (
+    issueId: string,
+    message: string,
+    username: string,
+  ) => unknown | Promise<unknown>;
   maxBodyBytes?: number;
 }
 
@@ -373,8 +377,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const message = oneValue(form, "message")?.trim();
         if (!message || message.length > 4_000) return text("Invalid conversation message", 400);
         try {
-          await dependencies.postIssueMessage(issueId, message, dependencies.username);
-          return json({ accepted: true }, 201);
+          const result = await dependencies.postIssueMessage(issueId, message, dependencies.username);
+          return json({ accepted: true, result: result ?? null }, 201);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unable to add conversation message";
           return text(message, message === "issue not found" ? 404 : 409);
