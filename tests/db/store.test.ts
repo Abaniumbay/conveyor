@@ -343,6 +343,68 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("recovers interrupted runs and makes running stages ready after restart", async () => {
+    const store = await openStore();
+    store.recordConfigSnapshot("config-hash", { version: 1 });
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 1,
+      sourceUrl: "https://example.test/1",
+      title: "Feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setStageState({
+      issueId: "issue-1",
+      stageId: "implementation",
+      status: "running",
+      feedbackCycle: 1,
+      configHash: "old-config-hash",
+    });
+    store.createRun({
+      id: "orphaned-run",
+      issueId: "issue-1",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: "old-config-hash",
+      startedAt: "2026-01-01T00:00:00Z",
+    });
+
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({
+      runs: 1,
+      stages: 1,
+    });
+    expect(store.getRun("orphaned-run")).toMatchObject({
+      status: "interrupted",
+      result: { reason: "Conveyor restarted before this run completed." },
+    });
+    expect(store.getStageState("issue-1")).toMatchObject({
+      stageId: "implementation",
+      status: "ready",
+      feedbackCycle: 1,
+      configHash: "config-hash",
+    });
+    expect(store.costSummary()).toMatchObject({ runs: 1, unavailableRuns: 1 });
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({
+      runs: 0,
+      stages: 0,
+    });
+    store.close();
+  });
+
   test("persists one structured open question per issue and its answer", async () => {
     const store = await openStore();
     store.upsertRepository({

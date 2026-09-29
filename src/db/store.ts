@@ -699,6 +699,52 @@ export class ConveyorStore {
       );
   }
 
+  recoverInterruptedExecutions(configHash: string): { runs: number; stages: number } {
+    return this.#database.transaction(() => {
+      const timestamp = now();
+      const interruptedRuns = this.#database
+        .query("SELECT id, started_at FROM runs WHERE status = 'running'")
+        .all() as Array<{ id: string; started_at: string }>;
+      const result = {
+        reason: "Conveyor restarted before this run completed.",
+      };
+      for (const run of interruptedRuns) {
+        const startedAt = Date.parse(run.started_at);
+        const durationMs = Number.isFinite(startedAt)
+          ? Math.max(0, Date.parse(timestamp) - startedAt)
+          : 0;
+        this.#database
+          .query(
+            `UPDATE runs SET status = 'interrupted', finished_at = ?, heartbeat_at = ?,
+               exit_code = NULL, result_json = ? WHERE id = ?`,
+          )
+          .run(timestamp, timestamp, json(result), run.id);
+        this.#database
+          .query(
+            `INSERT INTO usage_cost_entries(
+               id, run_id, input_tokens, output_tokens, cached_tokens, amount,
+               currency, source, duration_ms, created_at
+             ) VALUES (?, ?, 0, 0, 0, 0, 'USD', 'unavailable', ?, ?)`,
+          )
+          .run(randomUUID(), run.id, durationMs, timestamp);
+      }
+
+      const runningStages = this.#database
+        .query("SELECT COUNT(*) AS count FROM stage_states WHERE status = 'running'")
+        .get() as { count: number };
+      this.#database
+        .query(
+          `UPDATE stage_states SET status = 'ready', config_hash = ?, updated_at = ?
+           WHERE status = 'running'`,
+        )
+        .run(configHash, timestamp);
+      return {
+        runs: interruptedRuns.length,
+        stages: Number(runningStages.count),
+      };
+    })();
+  }
+
   nextRunAttempt(issueId: string, stageId: string, kind: string): number {
     const row = this.#database
       .query(

@@ -141,6 +141,12 @@ export class ConveyorService {
   static async create(config: ConveyorConfig): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
+    const recovered = store.recoverInterruptedExecutions(config.hash);
+    if (recovered.runs > 0 || recovered.stages > 0) {
+      console.warn(
+        `Recovered ${recovered.runs} interrupted run(s) and ${recovered.stages} running stage(s) after restart`,
+      );
+    }
     store.recordConfigSnapshot(config.hash, config);
     const service = new ConveyorService(
       config,
