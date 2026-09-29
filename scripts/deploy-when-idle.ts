@@ -9,11 +9,18 @@ export interface DeployOptions {
   stableChecks: number;
   pollMs: number;
   timeoutMs: number;
+  afterIssue?: string;
+  afterStage?: string;
 }
 
 interface ActivityCounts {
   runs: number;
   stages: number;
+}
+
+interface StageSnapshot {
+  stageId: string;
+  status: string;
 }
 
 function positiveInteger(value: string | undefined, name: string): number {
@@ -32,7 +39,16 @@ export function parseDeployOptions(args: readonly string[]): DeployOptions {
     if (values.has(name)) throw new Error(`duplicate argument: ${name}`);
     values.set(name, value);
   }
-  const known = new Set(["--database", "--service", "--health-url", "--stable-checks", "--poll-ms", "--timeout-ms"]);
+  const known = new Set([
+    "--database",
+    "--service",
+    "--health-url",
+    "--stable-checks",
+    "--poll-ms",
+    "--timeout-ms",
+    "--after-issue",
+    "--after-stage",
+  ]);
   for (const name of values.keys()) {
     if (!known.has(name)) throw new Error(`unknown argument: ${name}`);
   }
@@ -47,6 +63,17 @@ export function parseDeployOptions(args: readonly string[]): DeployOptions {
   if (parsedHealthUrl.protocol !== "http:" && parsedHealthUrl.protocol !== "https:") {
     throw new Error("--health-url must use http or https");
   }
+  const afterIssue = values.get("--after-issue");
+  const afterStage = values.get("--after-stage");
+  if (Boolean(afterIssue) !== Boolean(afterStage)) {
+    throw new Error("--after-issue and --after-stage must be used together");
+  }
+  if (afterIssue !== undefined && afterIssue.trim().length === 0) {
+    throw new Error("--after-issue must not be empty");
+  }
+  if (afterStage !== undefined && afterStage.trim().length === 0) {
+    throw new Error("--after-stage must not be empty");
+  }
 
   return {
     database,
@@ -55,6 +82,7 @@ export function parseDeployOptions(args: readonly string[]): DeployOptions {
     stableChecks: positiveInteger(values.get("--stable-checks") ?? "3", "--stable-checks"),
     pollMs: positiveInteger(values.get("--poll-ms") ?? "2000", "--poll-ms"),
     timeoutMs: positiveInteger(values.get("--timeout-ms") ?? "21600000", "--timeout-ms"),
+    ...(afterIssue && afterStage ? { afterIssue, afterStage } : {}),
   };
 }
 
@@ -74,6 +102,24 @@ export async function waitForStableIdle(
     if (consecutiveIdleChecks >= options.stableChecks) return;
     if (now() - startedAt >= options.timeoutMs) {
       throw new Error("timed out waiting for Conveyor to become idle");
+    }
+    await sleep(options.pollMs);
+  }
+}
+
+export async function waitForStageExit(
+  readState: () => StageSnapshot | null | Promise<StageSnapshot | null>,
+  stageId: string,
+  options: Pick<DeployOptions, "pollMs" | "timeoutMs">,
+  sleep: (milliseconds: number) => Promise<void> = Bun.sleep,
+  now: () => number = Date.now,
+): Promise<void> {
+  const startedAt = now();
+  while (true) {
+    const state = await readState();
+    if (state && state.stageId !== stageId) return;
+    if (now() - startedAt >= options.timeoutMs) {
+      throw new Error(`timed out waiting for ${stageId} to finish`);
     }
     await sleep(options.pollMs);
   }
@@ -109,21 +155,42 @@ async function verifyDeployment(service: string, healthUrl: string): Promise<voi
 async function main(): Promise<void> {
   const options = parseDeployOptions(Bun.argv.slice(2));
   const database = new Database(options.database, { readonly: true, strict: true });
-  const activity = database.query(
-    `SELECT
-       (SELECT COUNT(*) FROM runs WHERE status = 'running') AS runs,
-       (SELECT COUNT(*) FROM stage_states WHERE status = 'running') AS stages`,
-  );
-  console.log(`Waiting for ${options.service} to become durably idle...`);
   try {
-    await waitForStableIdle(() => {
-      const row = activity.get() as { runs: number; stages: number };
-      return { runs: Number(row.runs), stages: Number(row.stages) };
-    }, options);
+    if (options.afterIssue && options.afterStage) {
+      const stageState = database.query(
+        "SELECT stage_id, status FROM stage_states WHERE issue_id = ?",
+      );
+      console.log(
+        `Waiting for ${options.afterIssue} to finish ${options.afterStage}; no later work will be admitted before deployment...`,
+      );
+      await waitForStageExit(() => {
+        const row = stageState.get(options.afterIssue!) as {
+          stage_id: string;
+          status: string;
+        } | null;
+        return row ? { stageId: row.stage_id, status: row.status } : null;
+      }, options.afterStage, options);
+    } else {
+      const activity = database.query(
+        `SELECT
+           (SELECT COUNT(*) FROM runs WHERE status = 'running') AS runs,
+           (SELECT COUNT(*) FROM stage_states WHERE status = 'running') AS stages`,
+      );
+      console.log(`Waiting for ${options.service} to become durably idle...`);
+      await waitForStableIdle(() => {
+        const row = activity.get() as { runs: number; stages: number };
+        return { runs: Number(row.runs), stages: Number(row.stages) };
+      }, options);
+    }
   } finally {
     database.close();
   }
 
+  if (options.afterIssue) {
+    console.log(`Freezing ${options.service} at the completed stage boundary...`);
+    await run(["systemctl", "kill", "--kill-whom=all", "--signal=SIGSTOP", options.service]);
+    await run(["systemctl", "kill", "--kill-whom=all", "--signal=SIGKILL", options.service]);
+  }
   console.log(`Restarting ${options.service}...`);
   await run(["systemctl", "restart", options.service]);
   await verifyDeployment(options.service, options.healthUrl);

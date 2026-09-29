@@ -282,6 +282,7 @@ export class ConveyorService {
   }
 
   private schedule(): void {
+    if (this.#shuttingDown) return;
     const issues = this.store.listIssues();
     const candidates: SchedulerCandidate[] = issues.flatMap((issue) => {
       const state = this.store.getStageState(issue.id);
