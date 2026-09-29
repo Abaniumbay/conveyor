@@ -9,7 +9,7 @@ export type BacklogDirection = "up" | "down";
 export interface WebHandlerDependencies {
   auth: WebAuthApi;
   username: string;
-  getDashboard: () => DashboardViewModel | Promise<DashboardViewModel>;
+  getDashboard: (csrfToken: string) => DashboardViewModel | Promise<DashboardViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
@@ -153,8 +153,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
   const maxBodyBytes = dependencies.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1) throw new Error("maxBodyBytes must be a positive safe integer");
 
-  function session(request: Request): boolean {
-    return Boolean(dependencies.auth.getSession(request.headers.get("cookie") ?? undefined));
+  function session(request: Request) {
+    return dependencies.auth.getSession(request.headers.get("cookie") ?? undefined);
   }
 
   return async (request: Request): Promise<Response> => {
@@ -215,9 +215,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/") {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
-      if (!session(request)) return redirect("/login");
+      const currentSession = session(request);
+      if (!currentSession) return redirect("/login");
       try {
-        const model = await dependencies.getDashboard();
+        const model = await dependencies.getDashboard(currentSession.csrfToken);
         return response(renderDashboard(model), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);

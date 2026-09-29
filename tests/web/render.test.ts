@@ -68,6 +68,17 @@ const dashboard: DashboardViewModel = {
       children: [],
     },
   ],
+  questions: [
+    {
+      id: "question/1",
+      issueNumber: 43,
+      prompt: "Which layout?",
+      reason: "Both satisfy the acceptance criteria.",
+      options: [{ id: "compact", label: "Compact" }],
+      allowFreeText: false,
+    },
+  ],
+  csrfToken: "csrf-token",
 };
 
 describe("renderDashboard", () => {
@@ -92,6 +103,9 @@ describe("renderDashboard", () => {
     expect(html).toContain("Move #43 up");
     expect(html).toContain("Move #43 down");
     expect(html).toContain("Awaiting capacity");
+    expect(html).toContain("Needs your input");
+    expect(html).toContain("/questions/question%2F1/answer");
+    expect(html).toContain('name="csrf" value="csrf-token"');
   });
 
   test("escapes text and attributes and rejects unsafe issue URLs", () => {

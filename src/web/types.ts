@@ -22,10 +22,21 @@ export interface StageColumnViewModel {
   issues: readonly IssueCardViewModel[];
 }
 
+export interface QuestionViewModel {
+  id: string;
+  issueNumber: number;
+  prompt: string;
+  reason: string;
+  options: readonly { id: string; label: string }[];
+  allowFreeText: boolean;
+}
+
 export interface DashboardViewModel {
   title: string;
   project: string;
   updatedAt: string;
   stages: readonly StageColumnViewModel[];
   backlog: readonly IssueCardViewModel[];
+  questions: readonly QuestionViewModel[];
+  csrfToken: string;
 }

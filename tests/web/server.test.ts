@@ -9,6 +9,8 @@ const model: DashboardViewModel = {
   updatedAt: "2026-09-29T12:00:00Z",
   stages: [],
   backlog: [],
+  questions: [],
+  csrfToken: "filled-by-handler",
 };
 
 interface CallLog {

@@ -62,11 +62,28 @@ export function renderDashboard(model: DashboardViewModel): string {
     return `<section class="stage" aria-labelledby="${headingId}"><header class="stage-heading"><h2 id="${headingId}">${escapeHtml(stage.name)}</h2><span class="count" aria-label="${stage.issues.length} issues">${stage.issues.length}</span></header>${issues}</section>`;
   }).join("");
   const backlog = model.backlog.length
-    ? `<ol class="backlog-list">${model.backlog.map((issue, index) => `<li class="backlog-row">${issueCard(issue)}<div class="reorder" role="group" aria-label="Reorder issue #${issue.number}"><button type="button" aria-label="Move #${issue.number} up"${index === 0 ? " disabled" : ""}>↑</button><button type="button" aria-label="Move #${issue.number} down"${index === model.backlog.length - 1 ? " disabled" : ""}>↓</button></div></li>`).join("")}</ol>`
+    ? `<ol class="backlog-list">${model.backlog.map((issue, index) => {
+        const controls = (["up", "down"] as const).map((direction) => {
+          const disabled = direction === "up"
+            ? index === 0
+            : index === model.backlog.length - 1;
+          return `<form method="post" action="/backlog/reorder"><input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}"><input type="hidden" name="issueId" value="${escapeHtml(issue.id)}"><input type="hidden" name="direction" value="${direction}"><button type="submit" aria-label="Move #${issue.number} ${direction}"${disabled ? " disabled" : ""}>${direction === "up" ? "↑" : "↓"}</button></form>`;
+        }).join("");
+        return `<li class="backlog-row">${issueCard(issue)}<div class="reorder" role="group" aria-label="Reorder issue #${issue.number}">${controls}</div></li>`;
+      }).join("")}</ol>`
     : `<p class="empty">Backlog is clear</p>`;
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(model.title)} · Conveyor</title><style>${dashboardCss}</style></head><body><main class="dashboard"><header class="dashboard-header"><div><p class="eyebrow">Conveyor board</p><h1>${escapeHtml(model.title)}</h1><p class="project-meta">${escapeHtml(model.project)}</p></div><p class="updated"><span>Updated</span> <time datetime="${escapeHtml(model.updatedAt)}">${escapeHtml(model.updatedAt)}</time></p></header><section class="board" aria-label="Pipeline stages">${stages}</section><section class="backlog" aria-labelledby="backlog-heading"><header class="backlog-heading"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label="${model.backlog.length} issues">${model.backlog.length}</span></header>${backlog}</section></main></body></html>`;
+  const questions = model.questions.length
+    ? `<section class="questions" aria-labelledby="questions-heading"><header class="backlog-heading"><h2 id="questions-heading">Needs your input</h2><span class="count">${model.questions.length}</span></header><div class="question-grid">${model.questions.map((question, index) => {
+        const field = question.allowFreeText
+          ? `<label class="free-text">Your answer<input name="answer" list="question-options-${index}" required></label><datalist id="question-options-${index}">${question.options.map((option) => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`).join("")}</datalist>`
+          : question.options.map((option, optionIndex) => `<label class="option"><input type="radio" name="answer" value="${escapeHtml(option.id)}"${optionIndex === 0 ? " required" : ""}> ${escapeHtml(option.label)}</label>`).join("");
+        return `<article class="question"><p class="question-issue">Issue #${question.issueNumber}</p><h3>${escapeHtml(question.prompt)}</h3><p>${escapeHtml(question.reason)}</p><form method="post" action="/questions/${escapeHtml(encodeURIComponent(question.id))}/answer"><input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}">${field}<button class="answer-button" type="submit">Answer</button></form></article>`;
+      }).join("")}</div></section>`
+    : "";
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(model.title)} · Conveyor</title><style>${dashboardCss}</style></head><body><main class="dashboard"><header class="dashboard-header"><div><p class="eyebrow">Conveyor board</p><h1>${escapeHtml(model.title)}</h1><p class="project-meta">${escapeHtml(model.project)}</p></div><div class="header-actions"><p class="updated"><span>Updated</span> <time datetime="${escapeHtml(model.updatedAt)}">${escapeHtml(model.updatedAt)}</time></p><form method="post" action="/logout"><input type="hidden" name="csrf" value="${escapeHtml(model.csrfToken)}"><button class="logout" type="submit">Sign out</button></form></div></header>${questions}<section class="board" aria-label="Pipeline stages">${stages}</section><section class="backlog" aria-labelledby="backlog-heading"><header class="backlog-heading"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label="${model.backlog.length} issues">${model.backlog.length}</span></header>${backlog}</section></main></body></html>`;
 }
 
 export { dashboardCss } from "./styles";
-export type { DashboardViewModel, IssueCardViewModel, StageColumnViewModel } from "./types";
+export type { DashboardViewModel, IssueCardViewModel, QuestionViewModel, StageColumnViewModel } from "./types";
