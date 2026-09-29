@@ -4,6 +4,7 @@ export const dashboardClient = String.raw`(() => {
   const scrollKey = 'conveyor:scroll';
   let pendingRefresh = false;
   let conversationRefreshTimer = null;
+  let journeyRefreshTimer = null;
   let activityRefreshTimer = null;
 
   try {
@@ -23,6 +24,7 @@ export const dashboardClient = String.raw`(() => {
   };
 
   const conversationSnapshots = new WeakMap();
+  const journeySnapshots = new WeakMap();
 
   const formatDateTime = (value) => {
     const date = new Date(value);
@@ -114,6 +116,96 @@ export const dashboardClient = String.raw`(() => {
       renderIssueConversation(panel, await response.json());
     } catch {
       if (status) status.textContent = 'Conversation is temporarily unavailable. Retrying…';
+    } finally {
+      delete panel.dataset.loading;
+      if (status) status.classList.remove('status--loading');
+    }
+  };
+
+  const humanize = (value) => String(value || '')
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+  const renderIssueJourney = (panel, journey) => {
+    const snapshot = JSON.stringify(journey);
+    if (journeySnapshots.get(panel) === snapshot) return;
+    journeySnapshots.set(panel, snapshot);
+    const root = panel.querySelector('[data-journey-list]');
+    const status = panel.querySelector('[data-journey-status]');
+    if (!root || !status) return;
+    root.replaceChildren();
+    const transitions = Array.isArray(journey.transitions) ? journey.transitions : [];
+    status.textContent = transitions.length === 0
+      ? 'No stage changes have been recorded yet.'
+      : transitions.length + (transitions.length === 1 ? ' recorded stage change.' : ' recorded stage changes.');
+    for (const transition of transitions) {
+      const item = document.createElement('li');
+      const kind = String(transition.kind || 'observed').replace(/[^a-z0-9_-]/gi, '');
+      item.className = 'journey-entry journey-entry--' + kind;
+      const header = document.createElement('header');
+      const title = document.createElement('strong');
+      const from = transition.fromStage ? humanize(transition.fromStage) : null;
+      const to = transition.toStage ? humanize(transition.toStage) : null;
+      if (kind === 'onboarded') title.textContent = 'Entered ' + (to || 'Conveyor');
+      else if (kind === 'correction') title.textContent = (from || 'Stage') + ' returned to ' + (to || 'previous stage');
+      else if (kind === 'stopped') title.textContent = (from || to || 'Stage') + ' stopped';
+      else if (from && to && from !== to) title.textContent = from + ' advanced to ' + to;
+      else title.textContent = (to || from || 'Stage') + ' completed';
+      const badge = document.createElement('span');
+      badge.className = 'journey-kind journey-kind--' + kind;
+      badge.textContent = humanize(kind);
+      header.append(title, badge);
+      const meta = document.createElement('p');
+      meta.className = 'journey-meta';
+      const time = document.createElement('time');
+      time.dateTime = String(transition.createdAt || '');
+      time.textContent = formatDateTime(transition.createdAt);
+      meta.append(String(transition.actor || 'Conveyor'), ' · ', time);
+      item.append(header, meta);
+      if (transition.reason) {
+        const reason = document.createElement('p');
+        reason.className = 'journey-reason';
+        reason.textContent = String(transition.reason);
+        item.append(reason);
+      }
+      const fixes = Array.isArray(transition.requiredFixes) ? transition.requiredFixes : [];
+      if (fixes.length > 0) {
+        const list = document.createElement('ul');
+        for (const fix of fixes) {
+          const entry = document.createElement('li');
+          entry.textContent = String(fix);
+          list.append(entry);
+        }
+        item.append(list);
+      }
+      if (transition.status !== 'completed') {
+        const lifecycle = document.createElement('small');
+        lifecycle.className = 'journey-lifecycle';
+        lifecycle.textContent = 'Transition ' + String(transition.status || 'pending');
+        item.append(lifecycle);
+      }
+      root.append(item);
+    }
+  };
+
+  const loadIssueJourney = async (panel) => {
+    if (panel.dataset.loading === 'true') return;
+    const url = panel.dataset.journeyUrl;
+    const status = panel.querySelector('[data-journey-status]');
+    if (!url) return;
+    panel.dataset.loading = 'true';
+    if (status) {
+      status.classList.add('status--loading');
+      if (!journeySnapshots.has(panel)) status.textContent = 'Loading stage journey…';
+    }
+    try {
+      const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' });
+      if (!response.ok) throw new Error('journey request failed');
+      renderIssueJourney(panel, await response.json());
+    } catch {
+      if (status) status.textContent = 'Journey is temporarily unavailable. Retry by reopening this tab.';
     } finally {
       delete panel.dataset.loading;
       if (status) status.classList.remove('status--loading');
@@ -243,6 +335,15 @@ export const dashboardClient = String.raw`(() => {
     }, 250);
   };
 
+  const scheduleJourneyRefresh = () => {
+    if (journeyRefreshTimer !== null) return;
+    journeyRefreshTimer = setTimeout(() => {
+      journeyRefreshTimer = null;
+      const panel = document.querySelector('dialog[open] [data-detail-panel="journey"]:not([hidden])');
+      if (panel) void loadIssueJourney(panel);
+    }, 250);
+  };
+
   const scheduleActivityRefresh = () => {
     if (activityRefreshTimer !== null) return;
     activityRefreshTimer = setTimeout(() => {
@@ -278,7 +379,7 @@ export const dashboardClient = String.raw`(() => {
     }
   };
 
-  const validDetailTab = (name) => name === 'conversation' || name === 'activity' ? name : 'summary';
+  const validDetailTab = (name) => name === 'conversation' || name === 'journey' || name === 'activity' ? name : 'summary';
 
   const selectDetailTab = (dialog, name, updateUrl = false) => {
     name = validDetailTab(name);
@@ -292,6 +393,7 @@ export const dashboardClient = String.raw`(() => {
       panel.hidden = !selected;
       if (selected && name === 'activity') void loadIssueActivity(panel);
       if (selected && name === 'conversation') void loadIssueConversation(panel);
+      if (selected && name === 'journey') void loadIssueJourney(panel);
     }
     if (updateUrl && dialog.dataset.issueId) {
       const url = new URL(location.href);
@@ -550,6 +652,7 @@ export const dashboardClient = String.raw`(() => {
       if (body.dataset.dashboardView === 'agent') return;
       const openDialog = document.querySelector('dialog[open]');
       if (openDialog) {
+        scheduleJourneyRefresh();
         pendingRefresh = true;
         return;
       }

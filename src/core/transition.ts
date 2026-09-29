@@ -21,6 +21,7 @@ export interface ApplyStageTransitionInput {
   stages: readonly string[];
   labels: LabelConfiguration;
   result: StageExecutionResult;
+  actor?: { name: string; title: string | null };
 }
 
 function matchesTemplate(label: string, template: string, token: string): boolean {
@@ -101,6 +102,22 @@ export async function applyStageTransition(
   input: ApplyStageTransitionInput,
 ): Promise<void> {
   const target = targetFor(input);
+  const stageResult = input.result.result?.stageResult;
+  const detail = input.result.kind === "advance"
+    ? {
+        reason: stageResult?.summary ?? `Completed ${input.result.stageId}`,
+        requiredFixes: [],
+        resultStatus: stageResult?.status ?? null,
+        actor: input.actor ?? null,
+      }
+    : {
+        reason: input.result.reason,
+        requiredFixes: input.result.requiredFixes,
+        resultStatus:
+          stageResult?.status ??
+          (input.result.kind === "stopped" ? input.result.state : "changes-requested"),
+        actor: input.actor ?? null,
+      };
   const labels = [...new Set(target.labels)].sort((left, right) =>
     left.localeCompare(right),
   );
@@ -113,6 +130,15 @@ export async function applyStageTransition(
       issueNumber: input.issue.sourceNumber,
       labels,
     },
+  });
+  input.store.beginStageTransition({
+    id: input.transitionId,
+    issueId: input.issue.id,
+    fromStage: input.result.stageId,
+    toStage: target.stageId,
+    kind: input.result.kind,
+    sourceMutationId: mutation.id,
+    detail,
   });
   if (mutation.status !== "succeeded") {
     try {
@@ -127,9 +153,11 @@ export async function applyStageTransition(
         mutation.id,
         error instanceof Error ? error.message : String(error),
       );
+      input.store.failStageTransition(input.transitionId);
       throw error;
     }
   }
+  input.store.completeStageTransition(input.transitionId);
   input.store.setStageState({
     issueId: input.issue.id,
     stageId: target.stageId,

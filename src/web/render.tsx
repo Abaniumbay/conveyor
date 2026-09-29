@@ -77,6 +77,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
   const url = safeUrl(issue.url);
   const summaryId = `${id}-summary`;
   const conversationId = `${id}-conversation`;
+  const journeyId = `${id}-journey`;
   const activityId = `${id}-activity`;
   return (
     <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-selected-issue={selected ? "true" : undefined}>
@@ -92,6 +93,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
         <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
         <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} aria-selected="false" data-detail-tab="conversation">Conversation</button>
+        <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="false" data-detail-tab="journey">Journey</button>
         <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Technical logs</button>
       </nav>
       <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
@@ -141,6 +143,17 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
             <button type="submit">Send</button>
           </div>
         </form>
+      </section>
+      <section
+        id={journeyId}
+        role="tabpanel"
+        aria-labelledby={`${journeyId}-tab`}
+        data-detail-panel="journey"
+        data-journey-url={`/api/issues/${encodeURIComponent(issue.id)}/journey`}
+        hidden
+      >
+        <p class="journey-status" data-journey-status>Open Journey to load the stage history.</p>
+        <ol class="journey-list" data-journey-list />
       </section>
       <section
         id={activityId}

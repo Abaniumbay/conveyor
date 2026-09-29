@@ -112,6 +112,20 @@ export class IssueExecutor {
         stages: pipeline.stages.map((stage) => stage.id),
         labels: this.dependencies.config.labels,
         result,
+        actor: (() => {
+          const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
+          if (stage?.run.type === "agent") {
+            const agent = this.dependencies.config.agents[stage.run.agent];
+            return {
+              name: agent?.name ?? stage.run.agent,
+              title: agent?.title ?? "AI Agent",
+            };
+          }
+          return {
+            name: "Conveyor",
+            title: stage?.run.type === "script" ? "Script" : "Orchestrator",
+          };
+        })(),
       });
       return result;
     } catch (error) {

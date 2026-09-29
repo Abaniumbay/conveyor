@@ -83,6 +83,13 @@ describe("applyStageTransition", () => {
       stageId: "review",
       status: "awaiting-source",
     });
+    expect(store.listStageTransitions("issue")).toMatchObject([{
+      id: "run-1",
+      fromStage: "implementation",
+      toStage: "review",
+      kind: "advance",
+      status: "completed",
+    }]);
     store.close();
   });
 
@@ -170,6 +177,14 @@ describe("applyStageTransition", () => {
     expect(calls[0]).toContain("conveyor:blocked");
     expect(calls[1]).toContain("conveyor:implementation");
     expect(calls[1]).not.toContain("conveyor:blocked");
+    expect(store.listStageTransitions("issue").at(-1)).toMatchObject({
+      id: "run-correction",
+      fromStage: "review",
+      toStage: "implementation",
+      kind: "correction",
+      reason: "Tests fail",
+      requiredFixes: ["Fix tests"],
+    });
     store.close();
   });
 });

@@ -109,6 +109,26 @@ export interface StoredStageState {
   updatedAt: string;
 }
 
+export interface StageTransitionDetail {
+  reason: string | null;
+  requiredFixes: string[];
+  resultStatus: string | null;
+  actor?: { name: string; title: string | null } | null;
+}
+
+export interface StoredStageTransition extends StageTransitionDetail {
+  id: string;
+  issueId: string;
+  fromStage: string | null;
+  toStage: string | null;
+  kind: string;
+  status: string;
+  sourceMutationId: string | null;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 export interface StoredQuestion {
   id: string;
   issueId: string;
@@ -651,6 +671,96 @@ export class ConveyorStore {
       configHash: String(row.config_hash),
       updatedAt: String(row.updated_at),
     };
+  }
+
+  beginStageTransition(input: {
+    id: string;
+    issueId: string;
+    fromStage: string | null;
+    toStage: string | null;
+    kind: string;
+    sourceMutationId: string | null;
+    detail: StageTransitionDetail;
+  }): void {
+    this.#database
+      .query(
+        `INSERT INTO stage_transitions(
+           id, issue_id, from_stage, to_stage, status, source_mutation_id,
+           created_at, completed_at, kind, detail_json
+         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, ?, ?)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(
+        input.id,
+        input.issueId,
+        input.fromStage,
+        input.toStage,
+        input.sourceMutationId,
+        now(),
+        input.kind,
+        json(input.detail),
+      );
+  }
+
+  completeStageTransition(id: string): void {
+    this.#database
+      .query(
+        `UPDATE stage_transitions
+         SET status = 'completed', completed_at = ?
+         WHERE id = ? AND status <> 'completed'`,
+      )
+      .run(now(), id);
+  }
+
+  failStageTransition(id: string): void {
+    this.#database
+      .query(
+        `UPDATE stage_transitions
+         SET status = 'failed', completed_at = ?
+         WHERE id = ? AND status <> 'completed'`,
+      )
+      .run(now(), id);
+  }
+
+  listStageTransitions(issueId: string): StoredStageTransition[] {
+    const rows = this.#database
+      .query(
+        `SELECT st.*, sm.error AS source_error
+         FROM stage_transitions st
+         LEFT JOIN source_mutations sm ON sm.id = st.source_mutation_id
+         WHERE st.issue_id = ?
+         ORDER BY st.created_at, st.id`,
+      )
+      .all(issueId) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => {
+      const detail = parseJson<Partial<StageTransitionDetail>>(String(row.detail_json)) ?? {};
+      return {
+        id: String(row.id),
+        issueId: String(row.issue_id),
+        fromStage: row.from_stage === null ? null : String(row.from_stage),
+        toStage: row.to_stage === null ? null : String(row.to_stage),
+        kind: String(row.kind),
+        status: String(row.status),
+        sourceMutationId:
+          row.source_mutation_id === null ? null : String(row.source_mutation_id),
+        error: row.source_error === null ? null : String(row.source_error),
+        reason: typeof detail.reason === "string" ? detail.reason : null,
+        requiredFixes: Array.isArray(detail.requiredFixes)
+          ? detail.requiredFixes.filter((value): value is string => typeof value === "string")
+          : [],
+        resultStatus:
+          typeof detail.resultStatus === "string" ? detail.resultStatus : null,
+        actor:
+          detail.actor && typeof detail.actor.name === "string"
+            ? {
+                name: detail.actor.name,
+                title: typeof detail.actor.title === "string" ? detail.actor.title : null,
+              }
+            : null,
+        createdAt: String(row.created_at),
+        completedAt: row.completed_at === null ? null : String(row.completed_at),
+      };
+    });
   }
 
   private mapEnrollment(row: Record<string, SQLQueryBindings>): EnrollmentRecord {

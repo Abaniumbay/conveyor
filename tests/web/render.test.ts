@@ -189,6 +189,9 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-detail-tab="conversation"');
     expect(html).toContain("Conversation");
     expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
+    expect(html).toContain('data-detail-tab="journey"');
+    expect(html).toContain('data-journey-url="/api/issues/parent/journey"');
+    expect(html).toContain("Journey");
     expect(html).toContain("Technical logs");
     expect(html).toContain('data-detail-tab="activity"');
     expect(html).toContain('/api/issues/parent/activity');

@@ -49,6 +49,7 @@ interface CallLog {
   issueActivity: unknown[][];
   issueRunEvents: unknown[][];
   issueConversation: unknown[][];
+  issueJourney: unknown[][];
   messages: unknown[][];
 }
 
@@ -58,7 +59,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], messages: [] };
+  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -122,6 +123,25 @@ function setup(overrides: Record<string, unknown> = {}) {
           actorTitle: "Senior Developer",
           message: "Running focused tests.",
           createdAt: "2026-09-29T12:00:01Z",
+        }],
+      };
+    },
+    getIssueJourney: async (...args: unknown[]) => {
+      calls.issueJourney.push(args);
+      return {
+        issueId: String(args[0]),
+        transitions: [{
+          id: "transition-1",
+          fromStage: "review",
+          toStage: "implementation",
+          kind: "correction",
+          status: "completed",
+          resultStatus: "changes-requested",
+          reason: "A race can return null.",
+          requiredFixes: ["Return duel-ended."],
+          actor: "Shirin · Senior Code Reviewer",
+          createdAt: "2026-09-29T12:00:00Z",
+          completedAt: "2026-09-29T12:00:01Z",
         }],
       };
     },
@@ -301,6 +321,20 @@ describe("createWebHandler", () => {
     const events = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/activity/runs/run-2/events?before=2", { headers: { cookie } }));
     expect(events.status).toBe(200);
     expect(calls.issueRunEvents).toEqual([["github:owner/repo#1", "run-2", 2]]);
+  });
+
+  test("serves an authenticated issue journey", async () => {
+    const { handler, calls } = setup();
+    expect((await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/journey"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/journey", { headers: { cookie } }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      issueId: "github:owner/repo#1",
+      transitions: [{ kind: "correction", actor: "Shirin · Senior Code Reviewer" }],
+    });
+    expect(calls.issueJourney).toEqual([["github:owner/repo#1"]]);
   });
 
   test("serves and accepts authenticated issue conversation messages", async () => {

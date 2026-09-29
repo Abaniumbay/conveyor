@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { renderDashboard } from "./render";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -35,6 +35,7 @@ export interface WebHandlerDependencies {
   getIssueActivity: (issueId: string, before?: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
   getIssueRunEvents: (issueId: string, runId: string, before?: number) => IssueRunEventsViewModel | null | Promise<IssueRunEventsViewModel | null>;
   getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
+  getIssueJourney: (issueId: string) => IssueJourneyViewModel | null | Promise<IssueJourneyViewModel | null>;
   postIssueMessage: (
     issueId: string,
     message: string,
@@ -439,6 +440,26 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
+    }
+
+    const issueJourney = /^\/api\/issues\/([^/]{1,1000})\/journey$/.exec(path);
+    if (issueJourney) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try {
+        issueId = decodeURIComponent(issueJourney[1]!);
+      } catch {
+        return text("Invalid issue id", 400);
+      }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      try {
+        const journey = await dependencies.getIssueJourney(issueId);
+        return journey ? json(journey) : text("Issue not found", 404);
+      } catch {
+        return json({ error: "journey unavailable" }, 503);
+      }
     }
 
     const issueConversation = /^\/api\/issues\/([^/]{1,1000})\/conversation$/.exec(path);

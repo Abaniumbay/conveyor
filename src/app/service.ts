@@ -13,7 +13,7 @@ import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -60,6 +60,14 @@ function number(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return Number(value);
+}
+
+function displayName(value: string): string {
+  return value
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
 }
 
 function steeringProgress(event: unknown): string | null {
@@ -1519,6 +1527,44 @@ export class ConveyorService {
     };
   }
 
+  issueJourney(issueId: string): IssueJourneyViewModel | null {
+    const issue = this.store.getIssue(issueId);
+    if (!issue || issue.projectedState === "offboarded") return null;
+    const repository = this.config.repositories[issue.repositoryId]
+      ?? Object.values(this.config.repositories).find((candidate) =>
+        candidate.address === issue.repositoryId
+      );
+    const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
+    const actorFor = (stageId: string | null): string => {
+      if (!stageId) return "Conveyor · Orchestrator";
+      const stage = pipeline?.stages.find((candidate) => candidate.id === stageId);
+      if (stage?.run.type === "agent") {
+        const agent = this.config.agents[stage.run.agent];
+        return `${agent?.name ?? displayName(stage.run.agent)} · ${agent?.title ?? "AI Agent"}`;
+      }
+      if (stage?.run.type === "script") return "Conveyor · Script";
+      return "Conveyor · Orchestrator";
+    };
+    return {
+      issueId,
+      transitions: this.store.listStageTransitions(issueId).map((transition) => ({
+        id: transition.id,
+        fromStage: transition.fromStage,
+        toStage: transition.toStage,
+        kind: transition.kind,
+        status: transition.status,
+        resultStatus: transition.resultStatus,
+        reason: transition.error ?? transition.reason,
+        requiredFixes: transition.requiredFixes,
+        actor: transition.actor
+          ? `${transition.actor.name}${transition.actor.title ? ` · ${transition.actor.title}` : ""}`
+          : actorFor(transition.fromStage ?? transition.toStage),
+        createdAt: transition.createdAt,
+        completedAt: transition.completedAt,
+      })),
+    };
+  }
+
   async systemStatus(): Promise<SystemStatusViewModel> {
     const memoryTotal = totalmem();
     const memoryFree = freemem();
@@ -1683,6 +1729,7 @@ export class ConveyorService {
       getIssueActivity: (issueId, before) => this.issueActivity(issueId, before),
       getIssueRunEvents: (issueId, runId, before) => this.issueRunEvents(issueId, runId, before),
       getIssueConversation: (issueId) => this.issueConversation(issueId),
+      getIssueJourney: (issueId) => this.issueJourney(issueId),
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
     };
   }

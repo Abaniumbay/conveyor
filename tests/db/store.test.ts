@@ -27,7 +27,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(4);
+    expect(store.schemaVersion()).toBe(5);
 
     store.close();
   });
@@ -151,6 +151,57 @@ describe("ConveyorStore", () => {
       status: "succeeded",
       response: { commentId: 99 },
     });
+    store.close();
+  });
+
+  test("records an issue stage journey with correction reasons", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "Journey",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:review"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    store.beginStageTransition({
+      id: "transition-1",
+      issueId: "issue-1",
+      fromStage: "review",
+      toStage: "implementation",
+      kind: "correction",
+      sourceMutationId: null,
+      detail: {
+        reason: "Concurrent finish can return null.",
+        requiredFixes: ["Return duel-ended."],
+        resultStatus: "changes-requested",
+      },
+    });
+    store.completeStageTransition("transition-1");
+
+    expect(store.listStageTransitions("issue-1")).toMatchObject([{
+      id: "transition-1",
+      fromStage: "review",
+      toStage: "implementation",
+      kind: "correction",
+      status: "completed",
+      reason: "Concurrent finish can return null.",
+      requiredFixes: ["Return duel-ended."],
+      resultStatus: "changes-requested",
+      completedAt: expect.any(String),
+    }]);
     store.close();
   });
 

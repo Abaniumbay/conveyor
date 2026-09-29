@@ -298,4 +298,59 @@ export const migrations: readonly Migration[] = [
         ON conversation_messages(issue_id, id);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      ALTER TABLE stage_transitions ADD COLUMN kind TEXT NOT NULL DEFAULT 'observed';
+      ALTER TABLE stage_transitions ADD COLUMN detail_json TEXT NOT NULL DEFAULT '{}';
+
+      CREATE INDEX stage_transitions_issue_idx
+        ON stage_transitions(issue_id, created_at, id);
+
+      WITH ordered_runs AS (
+        SELECT
+          id AS run_id,
+          issue_id,
+          stage_id,
+          started_at,
+          LAG(stage_id) OVER (
+            PARTITION BY issue_id ORDER BY started_at, id
+          ) AS previous_stage,
+          LAG(result_json) OVER (
+            PARTITION BY issue_id ORDER BY started_at, id
+          ) AS previous_result
+        FROM runs
+        WHERE issue_id IS NOT NULL
+      )
+      INSERT INTO stage_transitions(
+        id, issue_id, from_stage, to_stage, status, source_mutation_id,
+        created_at, completed_at, kind, detail_json
+      )
+      SELECT
+        'backfill:' || run_id,
+        issue_id,
+        previous_stage,
+        stage_id,
+        'completed',
+        NULL,
+        started_at,
+        started_at,
+        CASE
+          WHEN previous_stage IS NULL THEN 'onboarded'
+          WHEN json_extract(previous_result, '$.status') = 'changes-requested' THEN 'correction'
+          ELSE 'advance'
+        END,
+        json_object(
+          'reason', COALESCE(
+            json_extract(previous_result, '$.reason'),
+            json_extract(previous_result, '$.summary'),
+            CASE WHEN previous_stage IS NULL THEN 'First recorded Conveyor run.' ELSE NULL END
+          ),
+          'requiredFixes', json('[]'),
+          'resultStatus', json_extract(previous_result, '$.status')
+        )
+      FROM ordered_runs
+      WHERE previous_stage IS NULL OR previous_stage <> stage_id;
+    `,
+  },
 ];

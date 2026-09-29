@@ -99,6 +99,25 @@ export interface IssueConversationViewModel {
   messages: readonly IssueConversationMessageViewModel[];
 }
 
+export interface IssueJourneyTransitionViewModel {
+  id: string;
+  fromStage: string | null;
+  toStage: string | null;
+  kind: string;
+  status: string;
+  resultStatus: string | null;
+  reason: string | null;
+  requiredFixes: readonly string[];
+  actor: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface IssueJourneyViewModel {
+  issueId: string;
+  transitions: readonly IssueJourneyTransitionViewModel[];
+}
+
 export interface StageActorViewModel {
   type: "agent" | "script";
   name: string;
