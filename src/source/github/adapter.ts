@@ -109,6 +109,9 @@ interface GitHubPullRequest {
   number: number;
   html_url: string;
   state: string;
+  merged?: boolean;
+  merged_at?: string | null;
+  merge_commit_sha?: string | null;
   draft?: boolean;
   mergeable_state?: string;
   head?: { ref: string; sha: string };
@@ -127,6 +130,9 @@ interface GitHubCheckRun {
 
 export interface GitHubDeliveryState {
   pullRequest: PullRequestReference & {
+    merged: boolean;
+    mergedAt: string | null;
+    mergeCommitSha: string | null;
     draft: boolean;
     mergeState: string | null;
     headBranch: string;
@@ -521,7 +527,10 @@ export class GitHubAdapter {
       pullRequest: {
         number: pullRequest.number,
         url: pullRequest.html_url,
-        state: pullRequest.state,
+        state: pullRequest.merged === true ? "merged" : pullRequest.state,
+        merged: pullRequest.merged === true,
+        mergedAt: pullRequest.merged_at ?? null,
+        mergeCommitSha: pullRequest.merge_commit_sha ?? null,
         draft: pullRequest.draft === true,
         mergeState: pullRequest.mergeable_state ?? null,
         headBranch: pullRequest.head.ref,
@@ -544,6 +553,16 @@ export class GitHubAdapter {
     address: string,
     pullRequestNumber: number,
   ): Promise<{ merged: boolean; sha?: string }> {
+    const current = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (current.merged === true) {
+      return {
+        merged: true,
+        ...(current.merge_commit_sha ? { sha: current.merge_commit_sha } : {}),
+      };
+    }
     return this.transport.request<{ merged: boolean; sha?: string }>({
       method: "PUT",
       path: `repos/${address}/pulls/${pullRequestNumber}/merge`,

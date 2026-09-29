@@ -256,6 +256,42 @@ describe("PipelineEngine", () => {
     });
   });
 
+  test("does not repeat a successful source action when its exit verifier fails", async () => {
+    const failure: CheckResult = {
+      decision: "fail",
+      status: "needs-intervention",
+      reason: "External state is not yet confirmed",
+      evidence: [],
+      requiredFixes: ["Inspect the delivery state"],
+      criteria: [],
+    };
+    const fake = dependencies({
+      checks: [passed, failure],
+      producers: [envelope("success", "done")],
+    });
+    const engine = new PipelineEngine(pipeline({
+      run: { type: "source-action" as const, action: "pullRequest.squashMerge" },
+      feedbackCycles: 2,
+      afterSuccess: [],
+    }), fake.value, 2);
+
+    const result = await engine.executeStage("implementation", {
+      issue: { id: "issue-1" },
+      workspace: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({
+      kind: "stopped",
+      state: "needs-intervention",
+      feedbackCycles: 0,
+    });
+    expect(fake.calls).toEqual([
+      "check:enter:implementation-enter",
+      "producer:implementation:1",
+      "check:exit:implementation-exit",
+    ]);
+  });
+
   test("routes review changes back to the previous producer", async () => {
     const fake = dependencies({
       checks: [passed],

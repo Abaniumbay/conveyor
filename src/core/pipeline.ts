@@ -219,7 +219,7 @@ export class PipelineEngine {
           producerResult,
         });
         if (exit.decision === "fail") {
-          if (feedbackCycles >= maximumFeedbackCycles) {
+          if (stage.run.type === "source-action" || feedbackCycles >= maximumFeedbackCycles) {
             return {
               kind: "stopped",
               stageId,

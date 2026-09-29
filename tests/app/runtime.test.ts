@@ -120,6 +120,7 @@ repositories:
     });
     const grants: string[][] = [];
     const actors: unknown[] = [];
+    const deliveryStates: unknown[] = [];
     const producerInputs: unknown[] = [];
     const checkInputs: unknown[] = [];
     const producerResult: RunEnvelope = {
@@ -151,10 +152,15 @@ repositories:
         async create(input) {
           grants.push([...input.allowedTools]);
           actors.push(input.actor);
+          deliveryStates.push(structuredClone(input.context.delivery));
           return { configuration: { command: "bun", args: ["mcp.ts"] }, async close() {} };
         },
       },
       { async run() {} },
+      async () => ({
+        pullRequest: { number: 18, state: "merged", merged: true },
+        checks: [{ name: "Tests", conclusion: "success" }],
+      }),
       {
         async codex(input) {
           producerInputs.push(input);
@@ -207,6 +213,10 @@ repositories:
     expect(checkInputs).toHaveLength(1);
     expect(grants[0]).toEqual(["source.get_issue", "conversation.get", "workspace.request_fetch"]);
     expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
+    expect(deliveryStates[1]).toEqual({
+      pullRequest: { number: 18, state: "merged", merged: true },
+      checks: [{ name: "Tests", conclusion: "success" }],
+    });
     expect(actors).toEqual([
       { id: "worker", name: "Kaveh", title: "Senior Developer" },
       { id: "checker", name: "Mitra", title: "Quality Verifier" },

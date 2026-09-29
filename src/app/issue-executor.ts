@@ -5,7 +5,7 @@ import { PipelineEngine, type PipelineDependencies, type StageExecutionResult } 
 import { applyStageTransition, type TransitionSource } from "../core/transition";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import type { WorkspaceManager } from "../workspace/manager";
-import type { RuntimeIssueContext } from "./runtime";
+import type { RuntimeDeliveryState, RuntimeIssueContext } from "./runtime";
 
 export interface IssueExecutorDependencies {
   config: ConveyorConfig;
@@ -16,8 +16,11 @@ export interface IssueExecutorDependencies {
   loadDeliveryState?: (
     issue: StoredIssue,
     repository: { id: string; address: string; folder: string; baseBranch: string },
-  ) => Promise<{ pullRequest: unknown | null; checks: unknown[] }>;
-  runtime: (context: RuntimeIssueContext) => PipelineDependencies;
+  ) => Promise<RuntimeDeliveryState>;
+  runtime: (
+    context: RuntimeIssueContext,
+    refreshDeliveryState: () => Promise<RuntimeDeliveryState>,
+  ) => PipelineDependencies;
   sourceGuidance: string;
   signal?: AbortSignal;
 }
@@ -86,20 +89,24 @@ export class IssueExecutor {
       folder: repository.folder,
       baseBranch: repository.baseBranch,
     };
-    const storedPullRequest = this.dependencies.store.getCurrentPullRequest(issue.id);
-    const delivery = this.dependencies.loadDeliveryState
-      ? await this.dependencies.loadDeliveryState(issue, runtimeRepository)
-      : {
-          pullRequest: storedPullRequest
-            ? {
-                number: storedPullRequest.number,
-                url: storedPullRequest.url,
-                state: storedPullRequest.state,
-                mergedAt: storedPullRequest.mergedAt,
-              }
-            : null,
-          checks: [],
-        };
+    const refreshDeliveryState = async (): Promise<RuntimeDeliveryState> => {
+      if (this.dependencies.loadDeliveryState) {
+        return this.dependencies.loadDeliveryState(issue, runtimeRepository);
+      }
+      const storedPullRequest = this.dependencies.store.getCurrentPullRequest(issue.id);
+      return {
+        pullRequest: storedPullRequest
+          ? {
+              number: storedPullRequest.number,
+              url: storedPullRequest.url,
+              state: storedPullRequest.state,
+              mergedAt: storedPullRequest.mergedAt,
+            }
+          : null,
+        checks: [],
+      };
+    };
+    const delivery = await refreshDeliveryState();
     const context: RuntimeIssueContext = {
       issue,
       repository: runtimeRepository,
@@ -109,7 +116,7 @@ export class IssueExecutor {
     };
     const engine = new PipelineEngine(
       pipeline,
-      this.dependencies.runtime(context),
+      this.dependencies.runtime(context, refreshDeliveryState),
       this.dependencies.config.settings.feedbackCycles,
     );
     const transitionId = randomUUID();

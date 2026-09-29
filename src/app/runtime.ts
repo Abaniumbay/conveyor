@@ -36,6 +36,8 @@ export interface RuntimeIssueContext {
   delivery?: { pullRequest: unknown | null; checks: unknown[] };
 }
 
+export type RuntimeDeliveryState = NonNullable<RuntimeIssueContext["delivery"]>;
+
 export interface ScopedMcpLease {
   configuration: CodexMcpConfiguration;
   close(): Promise<void> | void;
@@ -190,6 +192,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     private readonly context: RuntimeIssueContext,
     private readonly mcp: ScopedMcpFactory,
     private readonly actions: SourceActionHandler,
+    private readonly refreshDeliveryState?: () => Promise<RuntimeDeliveryState>,
     implementations: RuntimeImplementations = {},
     private readonly signal?: AbortSignal,
   ) {
@@ -373,6 +376,19 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     }
     const issue = issueFrom(context);
     const workspace = this.context.workspace?.path ?? this.context.repository.folder;
+    if (this.refreshDeliveryState) {
+      try {
+        this.context.delivery = await this.refreshDeliveryState();
+      } catch (error) {
+        this.conveyorMessage(
+          issue.id,
+          context.stageId,
+          null,
+          `${displayName(context.stageId)} delivery refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        throw error;
+      }
+    }
     let evidence: unknown = null;
     if (definition.script) {
       try {

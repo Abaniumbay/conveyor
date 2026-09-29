@@ -234,6 +234,12 @@ describe("GitHubAdapter", () => {
     const transport = new FakeTransport(
       [],
       { number: 18, html_url: "https://github.com/owner/repo/pull/18", state: "open" },
+      {
+        number: 18,
+        html_url: "https://github.com/owner/repo/pull/18",
+        state: "open",
+        merged: false,
+      },
       { merged: true, sha: "abc123" },
     );
     const adapter = new GitHubAdapter(transport, "conveyor");
@@ -256,7 +262,7 @@ describe("GitHubAdapter", () => {
         body: "Closes #12",
       },
     });
-    expect(transport.requests[2]).toEqual({
+    expect(transport.requests[3]).toEqual({
       method: "PUT",
       path: "repos/owner/repo/pulls/18/merge",
       body: { merge_method: "squash" },
@@ -264,12 +270,34 @@ describe("GitHubAdapter", () => {
     expect(merge).toEqual({ merged: true, sha: "abc123" });
   });
 
+  test("treats an already merged pull request as an idempotent squash merge", async () => {
+    const transport = new FakeTransport({
+      number: 18,
+      html_url: "https://github.com/owner/repo/pull/18",
+      state: "closed",
+      merged: true,
+      merge_commit_sha: "abc123",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.squashMerge("owner/repo", 18)).resolves.toEqual({
+      merged: true,
+      sha: "abc123",
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/pulls/18" },
+    ]);
+  });
+
   test("loads a pull request and its current check runs for delivery gates", async () => {
     const transport = new FakeTransport(
       {
         number: 18,
         html_url: "https://github.com/owner/repo/pull/18",
-        state: "open",
+        state: "closed",
+        merged: true,
+        merged_at: "2026-09-29T12:06:00Z",
+        merge_commit_sha: "merge123",
         draft: false,
         mergeable_state: "clean",
         head: { ref: "conveyor/12-r1-feature", sha: "abc123" },
@@ -295,7 +323,10 @@ describe("GitHubAdapter", () => {
       pullRequest: {
         number: 18,
         url: "https://github.com/owner/repo/pull/18",
-        state: "open",
+        state: "merged",
+        merged: true,
+        mergedAt: "2026-09-29T12:06:00Z",
+        mergeCommitSha: "merge123",
         draft: false,
         mergeState: "clean",
         headBranch: "conveyor/12-r1-feature",

@@ -394,18 +394,21 @@ export class ConveyorService {
           number: delivery.pullRequest.number,
           url: delivery.pullRequest.url,
           state: delivery.pullRequest.state,
-          ...(stored.mergedAt ? { mergedAt: stored.mergedAt } : {}),
+          ...(delivery.pullRequest.mergedAt || stored.mergedAt
+            ? { mergedAt: delivery.pullRequest.mergedAt ?? stored.mergedAt }
+            : {}),
         });
         return delivery;
       },
       sourceGuidance: SOURCE_GUIDANCE,
       signal,
-      runtime: (context) => new ConfiguredStageRuntime(
+      runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
         this.store,
         context,
         this.mcpFactory(),
         this.sourceActions(context),
+        refreshDeliveryState,
         {},
         signal,
       ),
