@@ -38,17 +38,5 @@
         }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "decision": { "const": "fail" } } },
-      "then": {
-        "properties": { "reason": { "type": "string", "minLength": 1 } },
-        "anyOf": [
-          { "properties": { "status": { "enum": ["rejected", "needs-input"] } } },
-          { "properties": { "requiredFixes": { "minItems": 1 } } }
-        ]
-      }
-    }
-  ]
+  }
 }

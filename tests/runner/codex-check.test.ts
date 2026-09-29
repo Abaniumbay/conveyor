@@ -31,6 +31,38 @@ afterEach(async () => {
 });
 
 describe("runCodexCheck", () => {
+  test("uses an output schema accepted by the Codex structured-output API", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      const schemaPath = args[args.indexOf("--output-schema") + 1];
+      const schema = await Bun.file(schemaPath).json();
+      if (schema.allOf !== undefined) {
+        console.error("structured outputs do not accept allOf");
+        process.exit(1);
+      }
+      const output = args[args.indexOf("-o") + 1];
+      await Bun.write(output, JSON.stringify({
+        version: 1,
+        decision: "pass",
+        status: "ready",
+        reason: null,
+        evidence: ["Issue has acceptance criteria."],
+        requiredFixes: [],
+        criteria: []
+      }));
+    `);
+
+    await expect(runCodexCheck({
+      command: files.executable,
+      workspace: files.workspace,
+      artifactsDirectory: files.artifacts,
+      prompt: "Check",
+      sandbox: "read-only",
+      automaticApprovals: false,
+      mcp: { command: "bun", args: [] },
+    })).resolves.toMatchObject({ decision: "pass", status: "ready" });
+  });
+
   test("allows a structured human question to pause without invented fixes", () => {
     expect(checkResultSchema.safeParse({
       version: 1,
