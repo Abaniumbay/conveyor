@@ -13,6 +13,10 @@ export interface IssueExecutorDependencies {
   sourceName: string;
   source: TransitionSource;
   workspaceManager: Pick<WorkspaceManager, "create">;
+  loadDeliveryState?: (
+    issue: StoredIssue,
+    repository: { id: string; address: string; folder: string; baseBranch: string },
+  ) => Promise<{ pullRequest: unknown | null; checks: unknown[] }>;
   runtime: (context: RuntimeIssueContext) => PipelineDependencies;
   sourceGuidance: string;
   signal?: AbortSignal;
@@ -76,17 +80,32 @@ export class IssueExecutor {
       feedbackCycle: state.feedbackCycle,
       configHash: this.dependencies.config.hash,
     });
+    const runtimeRepository = {
+      id: repositoryId,
+      address: repository.address,
+      folder: repository.folder,
+      baseBranch: repository.baseBranch,
+    };
+    const storedPullRequest = this.dependencies.store.getCurrentPullRequest(issue.id);
+    const delivery = this.dependencies.loadDeliveryState
+      ? await this.dependencies.loadDeliveryState(issue, runtimeRepository)
+      : {
+          pullRequest: storedPullRequest
+            ? {
+                number: storedPullRequest.number,
+                url: storedPullRequest.url,
+                state: storedPullRequest.state,
+                mergedAt: storedPullRequest.mergedAt,
+              }
+            : null,
+          checks: [],
+        };
     const context: RuntimeIssueContext = {
       issue,
-      repository: {
-        id: repositoryId,
-        address: repository.address,
-        folder: repository.folder,
-        baseBranch: repository.baseBranch,
-      },
+      repository: runtimeRepository,
       workspace: { path: workspace.path, branch: workspace.branch },
       sourceGuidance: this.dependencies.sourceGuidance,
-      delivery: { pullRequest: null, checks: [] },
+      delivery,
     };
     const engine = new PipelineEngine(
       pipeline,

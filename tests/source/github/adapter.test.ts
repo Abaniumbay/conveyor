@@ -264,6 +264,60 @@ describe("GitHubAdapter", () => {
     expect(merge).toEqual({ merged: true, sha: "abc123" });
   });
 
+  test("loads a pull request and its current check runs for delivery gates", async () => {
+    const transport = new FakeTransport(
+      {
+        number: 18,
+        html_url: "https://github.com/owner/repo/pull/18",
+        state: "open",
+        draft: false,
+        mergeable_state: "clean",
+        head: { ref: "conveyor/12-r1-feature", sha: "abc123" },
+        base: { ref: "main" },
+      },
+      {
+        check_runs: [
+          {
+            id: 91,
+            name: "Tests",
+            status: "completed",
+            conclusion: "success",
+            details_url: "https://github.com/owner/repo/actions/runs/1",
+            started_at: "2026-09-29T12:00:00Z",
+            completed_at: "2026-09-29T12:05:00Z",
+          },
+        ],
+      },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.getPullRequestDelivery("owner/repo", 18)).resolves.toEqual({
+      pullRequest: {
+        number: 18,
+        url: "https://github.com/owner/repo/pull/18",
+        state: "open",
+        draft: false,
+        mergeState: "clean",
+        headBranch: "conveyor/12-r1-feature",
+        headSha: "abc123",
+        baseBranch: "main",
+      },
+      checks: [{
+        id: 91,
+        name: "Tests",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/owner/repo/actions/runs/1",
+        startedAt: "2026-09-29T12:00:00Z",
+        completedAt: "2026-09-29T12:05:00Z",
+      }],
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/pulls/18" },
+      { method: "GET", path: "repos/owner/repo/commits/abc123/check-runs?per_page=100" },
+    ]);
+  });
+
   test("reads native child and dependency relationships", async () => {
     const related = {
       id: 12,

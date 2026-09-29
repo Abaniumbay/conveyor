@@ -381,6 +381,23 @@ export class ConveyorService {
       sourceName: repository.source,
       source: this.github,
       workspaceManager: this.workspaceManager,
+      loadDeliveryState: async (currentIssue, currentRepository) => {
+        const stored = this.store.getCurrentPullRequest(currentIssue.id);
+        if (!stored) return { pullRequest: null, checks: [] };
+        const delivery = await this.github.getPullRequestDelivery(
+          currentRepository.address,
+          stored.number,
+        );
+        this.store.upsertPullRequest({
+          issueId: currentIssue.id,
+          id: stored.id,
+          number: delivery.pullRequest.number,
+          url: delivery.pullRequest.url,
+          state: delivery.pullRequest.state,
+          ...(stored.mergedAt ? { mergedAt: stored.mergedAt } : {}),
+        });
+        return delivery;
+      },
       sourceGuidance: SOURCE_GUIDANCE,
       signal,
       runtime: (context) => new ConfiguredStageRuntime(

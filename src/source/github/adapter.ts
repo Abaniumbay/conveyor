@@ -109,6 +109,39 @@ interface GitHubPullRequest {
   number: number;
   html_url: string;
   state: string;
+  draft?: boolean;
+  mergeable_state?: string;
+  head?: { ref: string; sha: string };
+  base?: { ref: string };
+}
+
+interface GitHubCheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  details_url: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface GitHubDeliveryState {
+  pullRequest: PullRequestReference & {
+    draft: boolean;
+    mergeState: string | null;
+    headBranch: string;
+    headSha: string;
+    baseBranch: string;
+  };
+  checks: Array<{
+    id: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+    url: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+  }>;
 }
 
 interface GitHubHook {
@@ -466,6 +499,44 @@ export class GitHubAdapter {
       number: pullRequest.number,
       url: pullRequest.html_url,
       state: pullRequest.state,
+    };
+  }
+
+  async getPullRequestDelivery(
+    address: string,
+    pullRequestNumber: number,
+  ): Promise<GitHubDeliveryState> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha || !pullRequest.head.ref || !pullRequest.base?.ref) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} is missing branch metadata`);
+    }
+    const response = await this.transport.request<{ check_runs: GitHubCheckRun[] }>({
+      method: "GET",
+      path: `repos/${address}/commits/${pullRequest.head.sha}/check-runs?per_page=100`,
+    });
+    return {
+      pullRequest: {
+        number: pullRequest.number,
+        url: pullRequest.html_url,
+        state: pullRequest.state,
+        draft: pullRequest.draft === true,
+        mergeState: pullRequest.mergeable_state ?? null,
+        headBranch: pullRequest.head.ref,
+        headSha: pullRequest.head.sha,
+        baseBranch: pullRequest.base.ref,
+      },
+      checks: response.check_runs.map((check) => ({
+        id: check.id,
+        name: check.name,
+        status: check.status,
+        conclusion: check.conclusion,
+        url: check.details_url,
+        startedAt: check.started_at,
+        completedAt: check.completed_at,
+      })),
     };
   }
 

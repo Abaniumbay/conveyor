@@ -615,6 +615,12 @@ describe("ConveyorStore", () => {
       state: "merged",
       mergedAt: "2026-01-02T00:00:00Z",
     });
+    expect(store.getCurrentPullRequest("issue-1")).toMatchObject({
+      number: 9,
+      url: "https://example.test/pull/9",
+      state: "merged",
+      mergedAt: "2026-01-02T00:00:00Z",
+    });
     expect(store.hasMergedPullRequest("issue-1")).toBe(true);
 
     store.endActiveEnrollment("issue-1", "offboarded");

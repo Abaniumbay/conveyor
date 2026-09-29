@@ -89,6 +89,7 @@ repositories:
     });
     const calls: string[] = [];
     const labels: string[][] = [];
+    const runtimeDelivery: unknown[] = [];
     const executor = new IssueExecutor({
       config,
       store,
@@ -106,7 +107,12 @@ repositories:
           };
         },
       },
-      runtime() {
+      loadDeliveryState: async () => ({
+        pullRequest: { number: 190, state: "open" },
+        checks: [{ name: "Tests", conclusion: "success" }],
+      }),
+      runtime(context) {
+        runtimeDelivery.push(context.delivery);
         return {
           async runCheck(_id, phase) {
             calls.push(`check:${phase}`);
@@ -141,6 +147,10 @@ repositories:
     const result = await executor.execute(store.getIssue("issue")!);
 
     expect(result).toMatchObject({ kind: "advance", nextStageId: "implementation" });
+    expect(runtimeDelivery).toEqual([{
+      pullRequest: { number: 190, state: "open" },
+      checks: [{ name: "Tests", conclusion: "success" }],
+    }]);
     expect(calls).toEqual([
       "workspace:7",
       "check:enter",
