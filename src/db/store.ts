@@ -201,11 +201,114 @@ export class ConveyorStore {
       .run(rank, now(), issueId);
   }
 
+  nextQueueRank(): number {
+    const row = this.#database
+      .query("SELECT COALESCE(MAX(queue_rank), 0) AS maximum FROM issues")
+      .get() as { maximum: number };
+    return Number(row.maximum) + 10;
+  }
+
+  setIssueProjection(
+    issueId: string,
+    projection: { stage: string | null; state: string | null; warning: string | null },
+  ): void {
+    this.#database
+      .query(
+        `UPDATE issues
+         SET projected_stage = ?, projected_state = ?, warning = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        projection.stage,
+        projection.state,
+        projection.warning,
+        now(),
+        issueId,
+      );
+  }
+
   getIssue(issueId: string): StoredIssue | null {
     const row = this.#database
       .query("SELECT * FROM issues WHERE id = ?")
       .get(issueId) as Record<string, SQLQueryBindings> | null;
     if (!row) return null;
+    return this.mapIssue(row);
+  }
+
+  listIssues(repositoryId?: string): StoredIssue[] {
+    const rows = (repositoryId
+      ? this.#database
+          .query(
+            `SELECT * FROM issues WHERE repository_id = ?
+             ORDER BY queue_rank IS NULL, queue_rank, source_number`,
+          )
+          .all(repositoryId)
+      : this.#database
+          .query(
+            `SELECT * FROM issues
+             ORDER BY queue_rank IS NULL, queue_rank, repository_id, source_number`,
+          )
+          .all()) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => this.mapIssue(row));
+  }
+
+  replaceRelationships(
+    issueId: string,
+    parent: { parentId: string; siblingOrder: number | null } | null,
+    blockers: readonly string[],
+  ): void {
+    this.#database.transaction(() => {
+      this.#database
+        .query("DELETE FROM issue_relationships WHERE child_id = ?")
+        .run(issueId);
+      this.#database.query("DELETE FROM dependencies WHERE issue_id = ?").run(issueId);
+      this.#database
+        .query("UPDATE issues SET parent_id = ?, updated_at = ? WHERE id = ?")
+        .run(parent?.parentId ?? null, now(), issueId);
+      if (parent) {
+        this.#database
+          .query(
+            `INSERT INTO issue_relationships(parent_id, child_id, sibling_order)
+             VALUES (?, ?, ?)`,
+          )
+          .run(parent.parentId, issueId, parent.siblingOrder);
+      }
+      const insertDependency = this.#database.query(
+        "INSERT INTO dependencies(issue_id, blocker_id) VALUES (?, ?)",
+      );
+      for (const blockerId of new Set(blockers)) {
+        if (blockerId === issueId) throw new Error("an issue cannot depend on itself");
+        insertDependency.run(issueId, blockerId);
+      }
+    })();
+  }
+
+  listDependencies(issueId: string): string[] {
+    const rows = this.#database
+      .query(
+        "SELECT blocker_id FROM dependencies WHERE issue_id = ? ORDER BY blocker_id",
+      )
+      .all(issueId) as Array<{ blocker_id: string }>;
+    return rows.map((row) => row.blocker_id);
+  }
+
+  listChildren(parentId: string): Array<{
+    issueId: string;
+    siblingOrder: number | null;
+  }> {
+    const rows = this.#database
+      .query(
+        `SELECT child_id, sibling_order FROM issue_relationships
+         WHERE parent_id = ? ORDER BY sibling_order IS NULL, sibling_order, child_id`,
+      )
+      .all(parentId) as Array<{ child_id: string; sibling_order: number | null }>;
+    return rows.map((row) => ({
+      issueId: row.child_id,
+      siblingOrder: row.sibling_order,
+    }));
+  }
+
+  private mapIssue(row: Record<string, SQLQueryBindings>): StoredIssue {
     return {
       id: String(row.id),
       repositoryId: String(row.repository_id),

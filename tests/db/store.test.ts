@@ -139,4 +139,89 @@ describe("ConveyorStore", () => {
     ]);
     store.close();
   });
+
+  test("lists projected issues in durable queue order", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    for (const [id, number, rank] of [
+      ["issue-2", 2, 20],
+      ["issue-1", 1, 10],
+    ] as const) {
+      store.upsertIssue({
+        id,
+        repositoryId: "repo-1",
+        sourceNumber: number,
+        sourceUrl: `https://example.test/${number}`,
+        title: id,
+        body: "",
+        sourceState: "open",
+        labels: ["conveyor"],
+        sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      store.setQueueRank(id, rank);
+    }
+    store.setIssueProjection("issue-1", {
+      stage: "refinement",
+      state: "active",
+      warning: null,
+    });
+
+    expect(store.nextQueueRank()).toBe(30);
+    expect(store.listIssues("repo-1").map((issue) => issue.id)).toEqual([
+      "issue-1",
+      "issue-2",
+    ]);
+    expect(store.getIssue("issue-1")).toMatchObject({
+      projectedStage: "refinement",
+      projectedState: "active",
+    });
+    store.close();
+  });
+
+  test("replaces hierarchy and dependency projections transactionally", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    for (const [id, number] of [
+      ["parent", 1],
+      ["child", 2],
+      ["blocker", 3],
+    ] as const) {
+      store.upsertIssue({
+        id,
+        repositoryId: "repo-1",
+        sourceNumber: number,
+        sourceUrl: `https://example.test/${number}`,
+        title: id,
+        body: "",
+        sourceState: "open",
+        labels: ["conveyor"],
+        sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    }
+
+    store.replaceRelationships("child", { parentId: "parent", siblingOrder: 2 }, [
+      "blocker",
+    ]);
+
+    expect(store.getIssue("child")?.parentId).toBe("parent");
+    expect(store.listDependencies("child")).toEqual(["blocker"]);
+    expect(store.listChildren("parent")).toEqual([
+      { issueId: "child", siblingOrder: 2 },
+    ]);
+    store.close();
+  });
 });
