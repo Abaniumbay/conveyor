@@ -277,6 +277,15 @@ describe("ConveyorStore", () => {
       stageId: "refinement",
       status: "ready",
     });
+    store.upsertPullRequest({
+      issueId: "issue-1",
+      id: "github:owner/sample#pr-9",
+      number: 9,
+      url: "https://example.test/pull/9",
+      state: "merged",
+      mergedAt: "2026-01-02T00:00:00Z",
+    });
+    expect(store.hasMergedPullRequest("issue-1")).toBe(true);
 
     store.endActiveEnrollment("issue-1", "offboarded");
     const second = store.activateEnrollment("issue-1");

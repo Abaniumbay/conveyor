@@ -460,6 +460,53 @@ export class ConveyorStore {
       .run(now(), workspaceId);
   }
 
+  upsertPullRequest(input: {
+    issueId: string;
+    id: string;
+    number: number;
+    url: string;
+    state: string;
+    mergedAt?: string | null;
+  }): void {
+    const enrollment = this.#database
+      .query(
+        `SELECT id FROM enrollments WHERE issue_id = ? AND status = 'active'
+         ORDER BY generation DESC LIMIT 1`,
+      )
+      .get(input.issueId) as { id: string } | null;
+    if (!enrollment) throw new Error(`issue ${input.issueId} has no active enrollment`);
+    this.#database
+      .query(
+        `INSERT INTO pull_requests(
+           id, enrollment_id, source_number, url, state, merged_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           state = excluded.state,
+           merged_at = COALESCE(excluded.merged_at, pull_requests.merged_at),
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        input.id,
+        enrollment.id,
+        input.number,
+        input.url,
+        input.state,
+        input.mergedAt ?? null,
+        now(),
+      );
+  }
+
+  hasMergedPullRequest(issueId: string): boolean {
+    const row = this.#database
+      .query(
+        `SELECT 1 AS found FROM pull_requests p
+         JOIN enrollments e ON e.id = p.enrollment_id
+         WHERE e.issue_id = ? AND p.merged_at IS NOT NULL LIMIT 1`,
+      )
+      .get(issueId) as { found: number } | null;
+    return row?.found === 1;
+  }
+
   setStageState(state: {
     issueId: string;
     stageId: string;

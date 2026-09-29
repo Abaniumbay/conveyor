@@ -188,6 +188,7 @@ export class ConveyorService {
         stages: pipeline.stages.map((stage) => stage.id),
         labels: this.config.labels,
         source: this.github,
+        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       });
     }
     this.#lastReconciledAt = new Date().toISOString();
@@ -347,6 +348,7 @@ export class ConveyorService {
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
       source: this.github,
+      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
   }
 
@@ -421,13 +423,20 @@ export class ConveyorService {
         if (!workspace) throw new Error(`${action.sourceAction} requires a workspace`);
         if (action.sourceAction === "pullRequest.ensure") {
           await git(workspace.path, ["push", "--set-upstream", "origin", workspace.branch]);
-          await this.github.ensurePullRequest({
+          const pullRequest = await this.github.ensurePullRequest({
             address: context.repository.address,
             issueNumber: context.issue.sourceNumber,
             branch: workspace.branch,
             baseBranch: context.repository.baseBranch,
             title: context.issue.title,
             closingReference: action.with?.closingReference !== false,
+          });
+          this.store.upsertPullRequest({
+            issueId: context.issue.id,
+            id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+            number: pullRequest.number,
+            url: pullRequest.url,
+            state: pullRequest.state,
           });
           return;
         }
@@ -440,7 +449,16 @@ export class ConveyorService {
             title: context.issue.title,
             closingReference: true,
           });
-          await this.github.squashMerge(context.repository.address, pullRequest.number);
+          const merged = await this.github.squashMerge(context.repository.address, pullRequest.number);
+          if (!merged.merged) throw new Error(`GitHub did not merge pull request #${pullRequest.number}`);
+          this.store.upsertPullRequest({
+            issueId: context.issue.id,
+            id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+            number: pullRequest.number,
+            url: pullRequest.url,
+            state: "merged",
+            mergedAt: new Date().toISOString(),
+          });
           return;
         }
         throw new Error(`unsupported source action: ${action.sourceAction}`);
