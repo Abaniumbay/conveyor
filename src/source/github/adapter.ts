@@ -80,6 +80,7 @@ interface GitHubIssue {
   title: string;
   body: string | null;
   state: "open" | "closed";
+  state_reason?: string | null;
   labels: Array<GitHubLabel | string>;
   updated_at: string;
   pull_request?: unknown;
@@ -93,6 +94,7 @@ function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
     title: issue.title,
     body: issue.body ?? "",
     state: issue.state,
+    stateReason: issue.state_reason ?? null,
     labels: issue.labels.map(labelName).sort((left, right) => left.localeCompare(right)),
     updatedAt: issue.updated_at,
   };
@@ -149,6 +151,7 @@ export class GitHubAdapter {
         title: issue.title,
         body: issue.body ?? "",
         state: issue.state,
+        stateReason: issue.state_reason ?? null,
         labels: [...labels].sort((left, right) => left.localeCompare(right)),
         updatedAt: issue.updated_at,
       }));

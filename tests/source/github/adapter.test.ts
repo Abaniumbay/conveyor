@@ -33,6 +33,7 @@ describe("GitHubAdapter", () => {
         title: "Active",
         body: "body",
         state: "open",
+        state_reason: null,
         labels: [{ name: "conveyor" }, { name: "backend" }],
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -43,6 +44,7 @@ describe("GitHubAdapter", () => {
         title: "Paused",
         body: null,
         state: "open",
+        state_reason: null,
         labels: [{ name: "conveyor:implementation" }],
         updated_at: "2026-01-02T00:00:00Z",
       },
@@ -75,6 +77,25 @@ describe("GitHubAdapter", () => {
     expect(issues.map((issue) => issue.number)).toEqual([1, 2]);
     expect(issues[1]).toMatchObject({ body: "", labels: ["conveyor:implementation"] });
     expect(transport.requests[0]).toMatchObject({ method: "GET", paginate: true });
+  });
+
+  test("projects GitHub's close reason separately from issue state", async () => {
+    const transport = new FakeTransport([{
+      id: 105,
+      number: 5,
+      html_url: "https://github.com/owner/repo/issues/5",
+      title: "Delivered",
+      body: "",
+      state: "closed",
+      state_reason: "completed",
+      labels: [{ name: "conveyor:done" }],
+      updated_at: "2026-01-05T00:00:00Z",
+    }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.listConveyorIssues("owner/repo")).toEqual([
+      expect.objectContaining({ state: "closed", stateReason: "completed" }),
+    ]);
   });
 
   test("can list all source issues so reconciliation observes full offboarding", async () => {

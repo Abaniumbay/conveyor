@@ -272,4 +272,10 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE questions ADD COLUMN allow_free_text INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE issues ADD COLUMN source_state_reason TEXT;
+    `,
+  },
 ];

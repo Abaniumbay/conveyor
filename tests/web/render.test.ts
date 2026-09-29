@@ -42,12 +42,23 @@ const backlogIssue: IssueCardViewModel = {
   children: [],
 };
 
+const completedIssue: IssueCardViewModel = {
+  ...backlogIssue,
+  id: "completed",
+  number: 44,
+  title: "Delivered item",
+  url: "https://github.com/sample/repo/issues/44",
+  state: "completed",
+  tone: "success",
+  reason: null,
+};
+
 const dashboard: DashboardViewModel = {
   title: "Conveyor",
   project: "sample/repo",
   updatedAt: "2026-09-29T12:00:00Z",
   view: "board",
-  counts: { board: 41, backlog: 1, attention: 1 },
+  counts: { board: 43, attention: 1 },
   stages: [
     {
       id: "stage:build",
@@ -69,6 +80,15 @@ const dashboard: DashboardViewModel = {
     },
   ],
   backlog: [backlogIssue],
+  done: {
+    id: "done",
+    name: "Done",
+    cost: null,
+    totalIssues: 41,
+    page: 1,
+    totalPages: 1,
+    issues: [completedIssue],
+  },
   attention: {
     id: "attention",
     name: "Needs attention",
@@ -96,9 +116,11 @@ describe("renderDashboard", () => {
   test("renders one horizontal board column per configured stage with card status styling", () => {
     const html = renderDashboard(dashboard);
 
-    expect(html).toContain("Configured pipeline stages");
+    expect(html).toContain("Delivery board");
+    expect(html).toContain(">Backlog</h2>");
     expect(html).toContain(">Build</h2>");
     expect(html).toContain(">Review</h2>");
+    expect(html).toContain(">Done</h2>");
     expect(html).toContain('aria-label="41 issues"');
     expect(html).toContain("Page 2 of 3");
     expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=1");
@@ -115,6 +137,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("/questions/question%2F1/answer");
     expect(html).toContain('name="csrf" value="csrf-token"');
     expect(html).toContain("System attention");
+    expect(html).toContain("Load 20 more");
+    expect(html).toContain('name="doneLimit" value="21"');
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
@@ -127,18 +151,17 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("<script>alert(1)</script>");
   });
 
-  test("renders backlog controls only on the backlog tab", () => {
-    const html = renderDashboard({ ...dashboard, view: "backlog" });
-    expect(html).toContain("Ordered backlog");
-    expect(html).toContain('aria-current="page">Backlog');
+  test("renders backlog ordering inside the board", () => {
+    const html = renderDashboard(dashboard);
     expect(html).toContain('Move #43 up" disabled');
     expect(html).toContain('Move #43 down" disabled');
+    expect(html).not.toContain("?view=backlog");
   });
 
   test("renders invalid stage labels on the separate attention tab", () => {
     const html = renderDashboard({ ...dashboard, view: "attention" });
     expect(html).toContain("missing, unknown, or conflicting stage label");
     expect(html).toContain("No valid configured stage label is present.");
-    expect(html).not.toContain("Configured pipeline stages");
+    expect(html).not.toContain("Delivery board");
   });
 });

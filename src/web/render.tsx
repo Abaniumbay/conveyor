@@ -167,7 +167,6 @@ function Questions({ questions, csrfToken }: { questions: readonly QuestionViewM
 function Navigation({ model }: { model: DashboardViewModel }) {
   const tabs: Array<{ view: DashboardView; label: string; count: number }> = [
     { view: "board", label: "Board", count: model.counts.board },
-    { view: "backlog", label: "Backlog", count: model.counts.backlog },
     { view: "attention", label: "Needs attention", count: model.counts.attention },
   ];
   return (
@@ -181,12 +180,12 @@ function Navigation({ model }: { model: DashboardViewModel }) {
   );
 }
 
-function Backlog({ model }: { model: DashboardViewModel }) {
+function BacklogColumn({ model }: { model: DashboardViewModel }) {
   return (
-    <section class="panel" aria-labelledby="backlog-heading">
-      <header class="section-heading"><div><h2 id="backlog-heading">Ordered backlog</h2><p>Top-level issues waiting at the first configured stage.</p></div><span class="count">{model.backlog.length}</span></header>
+    <section class="stage stage--backlog" aria-labelledby="backlog-heading">
+      <header class="stage-heading"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label={`${model.backlog.length} issues`}>{model.backlog.length}</span></header>
       {model.backlog.length > 0 ? (
-        <ol class="backlog-list">
+        <ol class="issue-list">
           {model.backlog.map((issue, index) => (
             <li class="backlog-row" key={issue.id}>
               <IssueCard issue={issue} />
@@ -206,7 +205,29 @@ function Backlog({ model }: { model: DashboardViewModel }) {
             </li>
           ))}
         </ol>
-      ) : <p class="empty">Backlog is clear</p>}
+      ) : <p class="empty">No issues waiting to start</p>}
+    </section>
+  );
+}
+
+function DoneColumn({ model }: { model: DashboardViewModel }) {
+  const column = model.done;
+  const remaining = column.totalIssues - column.issues.length;
+  const increment = Math.min(20, remaining);
+  return (
+    <section class="stage stage--done" aria-labelledby="done-heading">
+      <header class="stage-heading"><h2 id="done-heading">Done</h2><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
+      {column.issues.length > 0
+        ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
+        : <p class="empty">No closed issues</p>}
+      {remaining > 0 && (
+        <form class="load-more" method="get" action="/">
+          <input type="hidden" name="view" value="board" />
+          <input type="hidden" name="doneLimit" value={column.issues.length + increment} />
+          <button type="submit">Load {increment} more</button>
+          <span>{column.issues.length} of {column.totalIssues}</span>
+        </form>
+      )}
     </section>
   );
 }
@@ -226,9 +247,14 @@ function Attention({ model }: { model: DashboardViewModel }) {
 
 function Page({ model }: { model: DashboardViewModel }) {
   let content: ComponentChildren;
-  if (model.view === "backlog") content = <Backlog model={model} />;
-  else if (model.view === "attention") content = <Attention model={model} />;
-  else content = <section class="board" aria-label="Configured pipeline stages">{model.stages.map((stage) => <StageColumn column={stage} key={stage.id} />)}</section>;
+  if (model.view === "attention") content = <Attention model={model} />;
+  else content = (
+    <section class="board" aria-label="Delivery board">
+      <BacklogColumn model={model} />
+      {model.stages.map((stage) => <StageColumn column={stage} key={stage.id} />)}
+      <DoneColumn model={model} />
+    </section>
+  );
 
   return (
     <html lang="en">

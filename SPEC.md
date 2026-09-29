@@ -336,7 +336,7 @@ Eligibility is resolved in this order:
 
 1. No label matching `conveyor` or `conveyor:*`: fully offboarded and absent from the active UI.
 2. At least one matching label but no base `conveyor`: paused/excluded, visible in the UI, and never scheduled regardless of its remembered stage/state.
-3. Manually closed before merge: stopped immediately and no further delivery work is scheduled.
+3. A closed source issue is stopped immediately and no further delivery work is scheduled. It appears in the Done lane while its source close reason distinguishes completed work from other closure.
 4. Base label plus a waiting, blocking, or terminal state: visible but not eligible until the corresponding question, retry, or explicit restart transition resolves it. Done and rejected never restart automatically.
 5. Base label plus an open issue and no stopping state: active. A newly enrolled issue with no stage label enters the first configured stage; otherwise its one valid stage label selects the stage.
 
@@ -613,9 +613,11 @@ The UI is an operations console, not a general Kanban editor. It is implemented 
 
 Primary views:
 
-- A single horizontally scrolling Kanban row with exactly one column for every configured stage, including the first stage. Statuses never create columns; they appear as card badges, border colors, and reasons.
-- Global backlog ordering for top-level items waiting at the first configured stage.
-- A separate needs-attention view for enrolled issues with a missing, unknown, or conflicting stage label. Such issues never disappear from the UI and are not guessed into a stage.
+- A single horizontally scrolling Kanban row ordered as the built-in Backlog lane, exactly one column for every configured stage including the first stage, and the built-in Done lane.
+- Backlog contains ordered, top-level, open issues carrying the base enrollment label that have not started and do not yet carry a stage label. Once execution starts, the card moves to its configured stage.
+- Done contains every source-closed issue that retains any Conveyor label. It initially renders 20 cards and provides a server-rendered load-more control.
+- GitHub's close reason is projected independently: `completed` renders as Completed; non-completion or absent close reasons render as Closed. Both remain in Done and require no attention.
+- A separate needs-attention view contains only open enrolled issues with a missing, unknown, or conflicting stage label that are not valid untouched backlog items. Such issues never disappear from the UI and are not guessed into a stage.
 - Hierarchical parent/child roll-ups.
 - Waiting for input.
 - Blocked, rejected, needs-intervention, done, closable, paused, and source-closed status presentation on cards.

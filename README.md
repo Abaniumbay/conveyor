@@ -15,7 +15,7 @@ The engine is a single Bun process backed by SQLite. It uses existing repository
 - Parent/child and dependency primitives
 - Safe worktree isolation without containers
 - Structured questions, backlog ordering, and a responsive server-rendered Preact dashboard
-- A single-row Kanban with one column per configured stage and a separate label-attention view
+- A single-row Kanban ordered as Backlog → configured stages → Done, plus a separate label-attention view
 - Idempotent PR creation and squash merge
 - Explicit cleanup as a configured stage
 

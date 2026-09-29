@@ -8,9 +8,18 @@ const model: DashboardViewModel = {
   project: "org/repo",
   updatedAt: "2026-09-29T12:00:00Z",
   view: "board",
-  counts: { board: 0, backlog: 0, attention: 0 },
+  counts: { board: 0, attention: 0 },
   stages: [],
   backlog: [],
+  done: {
+    id: "done",
+    name: "Done",
+    cost: null,
+    totalIssues: 0,
+    page: 1,
+    totalPages: 1,
+    issues: [],
+  },
   attention: {
     id: "attention",
     name: "Needs attention",
@@ -92,11 +101,16 @@ describe("createWebHandler", () => {
     expect(response.headers.get("location")).toBe("/");
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
 
-    const page = await handler(new Request("http://localhost/?column=state%3Adone&page=4", { headers: { cookie } }));
+    const page = await handler(new Request("http://localhost/?column=stage%3Areview&page=4&doneLimit=40", { headers: { cookie } }));
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(await page.text()).toContain("Test board");
-    expect(dashboardCalls).toEqual([[expect.any(String), { view: "board", column: "state:done", page: 4 }]]);
+    expect(dashboardCalls).toEqual([[expect.any(String), {
+      view: "board",
+      column: "stage:review",
+      page: 4,
+      doneLimit: 40,
+    }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const logout = await handler(new Request("http://localhost/logout", {
@@ -130,7 +144,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ issueId: "i-2", direction: "up", csrf }),
     }));
     expect(reorder.status).toBe(303);
-    expect(reorder.headers.get("location")).toBe("/?view=backlog");
+    expect(reorder.headers.get("location")).toBe("/?view=board");
     expect(calls.reorders).toEqual([["i-2", "up"]]);
   });
 

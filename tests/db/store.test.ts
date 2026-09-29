@@ -27,7 +27,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(2);
+    expect(store.schemaVersion()).toBe(3);
 
     store.close();
   });
@@ -50,7 +50,8 @@ describe("ConveyorStore", () => {
       sourceUrl: "https://github.com/owner/sample/issues/12",
       title: "Original title",
       body: "Body",
-      sourceState: "open",
+      sourceState: "closed",
+      sourceStateReason: "completed",
       labels: ["conveyor"],
       sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -63,7 +64,8 @@ describe("ConveyorStore", () => {
       sourceUrl: "https://github.com/owner/sample/issues/12",
       title: "Edited title",
       body: "Updated body",
-      sourceState: "open",
+      sourceState: "closed",
+      sourceStateReason: "completed",
       labels: ["conveyor", "backend"],
       sourceUpdatedAt: "2026-01-02T00:00:00.000Z",
     });
@@ -72,6 +74,7 @@ describe("ConveyorStore", () => {
       title: "Edited title",
       labels: ["backend", "conveyor"],
       queueRank: 42.5,
+      sourceStateReason: "completed",
     });
     store.close();
   });

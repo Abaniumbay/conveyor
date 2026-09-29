@@ -22,6 +22,7 @@ export interface IssueProjection {
   title: string;
   body: string;
   sourceState: string;
+  sourceStateReason?: string | null;
   labels: string[];
   sourceUpdatedAt: string;
   parentId?: string | null;
@@ -208,8 +209,8 @@ export class ConveyorStore {
       .query(
         `INSERT INTO issues(
            id, repository_id, source_number, source_url, title, body, source_state,
-           labels_json, source_updated_at, parent_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           source_state_reason, labels_json, source_updated_at, parent_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            repository_id = excluded.repository_id,
            source_number = excluded.source_number,
@@ -217,6 +218,7 @@ export class ConveyorStore {
            title = excluded.title,
            body = excluded.body,
            source_state = excluded.source_state,
+           source_state_reason = excluded.source_state_reason,
            labels_json = excluded.labels_json,
            source_updated_at = excluded.source_updated_at,
            parent_id = COALESCE(excluded.parent_id, issues.parent_id),
@@ -230,6 +232,7 @@ export class ConveyorStore {
         issue.title,
         issue.body,
         issue.sourceState,
+        issue.sourceStateReason ?? null,
         json(labels),
         issue.sourceUpdatedAt,
         issue.parentId ?? null,
@@ -571,6 +574,8 @@ export class ConveyorStore {
       title: String(row.title),
       body: String(row.body),
       sourceState: String(row.source_state),
+      sourceStateReason:
+        row.source_state_reason === null ? null : String(row.source_state_reason),
       labels: parseJson<string[]>(String(row.labels_json)) ?? [],
       sourceUpdatedAt: String(row.source_updated_at),
       parentId: row.parent_id === null ? null : String(row.parent_id),

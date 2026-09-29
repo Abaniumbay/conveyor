@@ -65,6 +65,7 @@ export async function reconcileRepository(
       title: sourceIssue.title,
       body: sourceIssue.body,
       sourceState: sourceIssue.state,
+      sourceStateReason: sourceIssue.stateReason ?? null,
       labels: sourceIssue.labels,
       sourceUpdatedAt: sourceIssue.updatedAt,
     });

@@ -41,9 +41,10 @@ export interface DashboardPageSelection {
   view: DashboardView;
   column: string | null;
   page: number;
+  doneLimit: number;
 }
 
-export type DashboardView = "board" | "backlog" | "attention";
+export type DashboardView = "board" | "attention";
 
 export interface QuestionViewModel {
   id: string;
@@ -59,9 +60,10 @@ export interface DashboardViewModel {
   project: string;
   updatedAt: string;
   view: DashboardView;
-  counts: { board: number; backlog: number; attention: number };
+  counts: { board: number; attention: number };
   stages: readonly StageColumnViewModel[];
   backlog: readonly IssueCardViewModel[];
+  done: StageColumnViewModel;
   attention: StageColumnViewModel;
   questions: readonly QuestionViewModel[];
   systemWarnings: readonly string[];

@@ -23,6 +23,8 @@ export interface WebHandlerDependencies {
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_DONE_LIMIT = 20;
+const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
 function response(body: BodyInit | null, status: number, contentType: string, headers?: HeadersInit): Response {
@@ -152,21 +154,27 @@ function requireMethod(request: Request, method: string): Response | null {
 function dashboardPage(url: URL): DashboardPageSelection {
   const requestedViews = url.searchParams.getAll("view");
   const requestedView = requestedViews.length === 1 ? requestedViews[0] : null;
-  const view = requestedView === "backlog" || requestedView === "attention"
-    ? requestedView
-    : "board";
+  const view = requestedView === "attention" ? requestedView : "board";
+  const requestedDoneLimits = url.searchParams.getAll("doneLimit");
+  const rawDoneLimit = requestedDoneLimits.length === 1 ? requestedDoneLimits[0] : null;
+  const parsedDoneLimit = rawDoneLimit && /^[1-9]\d*$/.test(rawDoneLimit)
+    ? Number(rawDoneLimit)
+    : DEFAULT_DONE_LIMIT;
+  const doneLimit = Number.isSafeInteger(parsedDoneLimit)
+    ? Math.min(Math.max(DEFAULT_DONE_LIMIT, parsedDoneLimit), MAX_DONE_LIMIT)
+    : DEFAULT_DONE_LIMIT;
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
-  if (columns.length !== 1 || pages.length !== 1) return { view, column: null, page: 1 };
+  if (columns.length !== 1 || pages.length !== 1) return { view, column: null, page: 1, doneLimit };
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, column: null, page: 1 };
+    return { view, column: null, page: 1, doneLimit };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, column, page: parsedPage }
-    : { view, column: null, page: 1 };
+    ? { view, column, page: parsedPage, doneLimit }
+    : { view, column: null, page: 1, doneLimit };
 }
 
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
@@ -318,7 +326,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!issueId || issueId.length > 200 || (direction !== "up" && direction !== "down")) return text("Invalid reorder request", 400);
       try {
         await dependencies.reorderBacklog(issueId, direction);
-        return redirect("/?view=backlog");
+        return redirect("/?view=board");
       } catch {
         return text("Unable to reorder backlog", 409);
       }

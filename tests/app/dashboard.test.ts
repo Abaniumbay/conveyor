@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
-  test("uses only configured stages as columns and sends invalid labels to attention", async () => {
+  test("places untouched, staged, closed, and invalid issues in distinct lanes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-"));
     temporaryDirectories.push(root);
     const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -56,7 +56,8 @@ describe("ConveyorService dashboard", () => {
         sourceUrl: `https://github.com/owner/repo/issues/${number}`,
         title: `Done issue ${number}`,
         body: "",
-        sourceState: "open",
+        sourceState: "closed",
+        sourceStateReason: "completed",
         labels: ["conveyor", "conveyor:done"],
         sourceUpdatedAt: "2026-09-29T00:00:00Z",
       });
@@ -72,10 +73,10 @@ describe("ConveyorService dashboard", () => {
       repositoryId: "repo",
       sourceNumber: 26,
       sourceUrl: "https://github.com/owner/repo/issues/26",
-      title: "Ready issue",
+      title: "Untouched backlog issue",
       body: "",
       sourceState: "open",
-      labels: ["conveyor", "conveyor:refinement"],
+      labels: ["conveyor"],
       sourceUpdatedAt: "2026-09-29T00:00:00Z",
     });
     store.setIssueProjection("github:owner/repo#26", {
@@ -90,22 +91,68 @@ describe("ConveyorService dashboard", () => {
       feedbackCycle: 0,
       configHash: config.hash,
     });
+    store.upsertIssue({
+      id: "github:owner/repo#27",
+      repositoryId: "repo",
+      sourceNumber: 27,
+      sourceUrl: "https://github.com/owner/repo/issues/27",
+      title: "Implementation issue",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    });
+    store.setIssueProjection("github:owner/repo#27", {
+      stage: "implementation",
+      state: "active",
+      warning: null,
+    });
+    store.upsertIssue({
+      id: "github:owner/repo#28",
+      repositoryId: "repo",
+      sourceNumber: 28,
+      sourceUrl: "https://github.com/owner/repo/issues/28",
+      title: "Open done issue without a stage",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:done"],
+      sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    });
+    store.setIssueProjection("github:owner/repo#28", {
+      stage: null,
+      state: "done",
+      warning: null,
+    });
 
     const service = new ConveyorService(config, store, {} as never);
-    const dashboard = service.dashboard("csrf", { view: "attention", column: "attention", page: 2 });
-    const refinement = dashboard.stages.find((column) => column.id === "stage:refinement");
+    const dashboard = service.dashboard("csrf", {
+      view: "board",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+    });
+    const implementation = dashboard.stages.find((column) => column.id === "stage:implementation");
 
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
-    expect(refinement).toMatchObject({ totalIssues: 1, page: 1, totalPages: 1 });
-    expect(dashboard.attention).toMatchObject({ totalIssues: 25, page: 2, totalPages: 2 });
-    expect(dashboard.attention.issues).toHaveLength(5);
-    expect(dashboard.attention.issues[4]).toMatchObject({
-      number: 25,
-      parent: { number: 1 },
+    expect(implementation).toMatchObject({ totalIssues: 1, page: 1, totalPages: 1 });
+    expect(dashboard.backlog.map((issue) => issue.number)).toEqual([26]);
+    expect(dashboard.done).toMatchObject({ totalIssues: 25 });
+    expect(dashboard.done.issues).toHaveLength(20);
+    expect(dashboard.done.issues[0]).toMatchObject({ state: "completed", tone: "success" });
+    expect(dashboard.attention).toMatchObject({ totalIssues: 1 });
+    expect(dashboard.attention.issues[0]).toMatchObject({
+      number: 28,
       reason: "No valid configured stage label is present.",
     });
-    expect(dashboard.backlog).toHaveLength(1);
-    expect(dashboard.counts).toEqual({ board: 1, backlog: 1, attention: 25 });
+    expect(dashboard.counts).toEqual({ board: 27, attention: 1 });
+
+    const expanded = service.dashboard("csrf", {
+      view: "board",
+      column: null,
+      page: 1,
+      doneLimit: 40,
+    });
+    expect(expanded.done.issues).toHaveLength(25);
     store.close();
   });
 });

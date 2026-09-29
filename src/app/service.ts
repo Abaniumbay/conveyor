@@ -431,6 +431,7 @@ export class ConveyorService {
           title: dependency.title,
           body: dependency.body,
           sourceState: dependency.state,
+          sourceStateReason: dependency.stateReason ?? null,
           labels: dependency.labels,
           sourceUpdatedAt: dependency.updatedAt,
         });
@@ -889,7 +890,7 @@ export class ConveyorService {
 
   dashboard(
     csrfToken: string,
-    pagination: DashboardPageSelection = { view: "board", column: null, page: 1 },
+    pagination: DashboardPageSelection = { view: "board", column: null, page: 1, doneLimit: 20 },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
@@ -899,7 +900,7 @@ export class ConveyorService {
       url: issue.sourceUrl,
     });
     const tone = (state: string): IssueTone => {
-      if (state === "done") return "success";
+      if (state === "done" || state === "completed") return "success";
       if (["blocked", "error", "rejected", "needs-intervention", "inconsistent"].includes(state)) {
         return "danger";
       }
@@ -907,7 +908,10 @@ export class ConveyorService {
       if (state === "closed") return "muted";
       return "active";
     };
-    const card = (issue: StoredIssue, fallbackReason: string | null = null): IssueCardViewModel => {
+    const card = (
+      issue: StoredIssue,
+      options: { reason?: string | null; state?: string } = {},
+    ): IssueCardViewModel => {
       const state = this.store.getStageState(issue.id);
       const cost = this.store.costSummary({ issueId: issue.id });
       const children = this.store.listChildren(issue.id)
@@ -915,7 +919,7 @@ export class ConveyorService {
           const child = byId.get(issueId);
           return child ? [relation(child)] : [];
         });
-      const projectedState = issue.projectedState ?? issue.sourceState;
+      const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       return {
         id: issue.id,
@@ -926,7 +930,7 @@ export class ConveyorService {
         labels: issue.labels,
         acceptanceCriteria: criteriaFromBody(issue.body),
         activity: state ? `${state.stageId} · ${state.status}` : null,
-        reason: issue.warning ?? fallbackReason,
+        reason: issue.warning ?? options.reason ?? null,
         cost:
           cost.runs === 0
             ? null
@@ -950,18 +954,37 @@ export class ConveyorService {
       pipeline.stages.map((stage) => stage.id),
     ))];
     const configuredStages = new Set(stages);
-    const stagedIssues = issues.filter((issue) =>
+    const closedIssues = issues.filter((issue) => issue.sourceState === "closed");
+    const openIssues = issues.filter((issue) => issue.sourceState !== "closed");
+    const sourceStages = (issue: StoredIssue): string[] => {
+      const repository = this.config.repositories[issue.repositoryId];
+      const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
+      if (!pipeline) return [];
+      return pipeline.stages.flatMap((stage) =>
+        issue.labels.includes(this.config.labels.stageTemplate.replace("{stage}", stage.id))
+          ? [stage.id]
+          : [],
+      );
+    };
+    const backlogIssues = openIssues.filter((issue) => {
+      if (issue.parentId || !issue.labels.includes(this.config.labels.enrollment)) return false;
+      if (sourceStages(issue).length !== 0 || issue.projectedState !== "active") return false;
+      const stageState = this.store.getStageState(issue.id);
+      return firstStages.has(issue.projectedStage ?? "") &&
+        stageState?.status === "ready" &&
+        !this.store.getActiveWorkspace(issue.id);
+    });
+    const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
+    const stagedIssues = openIssues.filter((issue) =>
+      !backlogIds.has(issue.id) &&
       issue.projectedStage !== null &&
       configuredStages.has(issue.projectedStage) &&
-      issue.projectedState !== "inconsistent",
+      issue.projectedState !== "inconsistent" &&
+      (sourceStages(issue).length === 1 || issue.projectedState === "active"),
     );
-    const attentionIssues = issues.filter((issue) => !stagedIssues.includes(issue));
-    const backlogIssues = stagedIssues.filter((issue) =>
-      !issue.parentId &&
-      issue.projectedState === "active" &&
-      issue.projectedStage !== null &&
-      firstStages.has(issue.projectedStage) &&
-      this.store.getStageState(issue.id)?.status === "ready",
+    const stagedIds = new Set(stagedIssues.map((issue) => issue.id));
+    const attentionIssues = openIssues.filter((issue) =>
+      !backlogIds.has(issue.id) && !stagedIds.has(issue.id),
     );
     const title = (value: string) => value
       .split(/[-_]/)
@@ -1020,8 +1043,7 @@ export class ConveyorService {
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       view: pagination.view,
       counts: {
-        board: stagedIssues.length,
-        backlog: backlogIssues.length,
+        board: backlogIssues.length + stagedIssues.length + closedIssues.length,
         attention: attentionIssues.length,
       },
       stages: stages.map((stage) => column(
@@ -1037,17 +1059,30 @@ export class ConveyorService {
           })(),
         )),
       backlog: backlogIssues.map((issue) => card(issue)),
+      done: {
+        id: "done",
+        name: "Done",
+        cost: null,
+        totalIssues: closedIssues.length,
+        page: 1,
+        totalPages: 1,
+        issues: closedIssues.slice(0, pagination.doneLimit).map((issue) => card(issue, {
+          state: issue.sourceStateReason === "completed" ? "completed" : "closed",
+          reason: issue.sourceStateReason && issue.sourceStateReason !== "completed"
+            ? `GitHub close reason: ${issue.sourceStateReason.replaceAll("_", " ")}.`
+            : null,
+        })),
+      },
       attention: column(
         "attention",
         "Needs attention",
         attentionIssues,
         null,
-        (issue) => card(
-          issue,
-          issue.projectedStage
+        (issue) => card(issue, {
+          reason: issue.projectedStage
             ? "The issue has conflicting or invalid Conveyor labels."
             : "No valid configured stage label is present.",
-        ),
+        }),
       ),
       questions,
       systemWarnings: [

@@ -5,6 +5,7 @@ export interface SourceIssue {
   title: string;
   body: string;
   state: "open" | "closed";
+  stateReason?: string | null;
   labels: string[];
   updatedAt: string;
 }
