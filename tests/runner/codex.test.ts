@@ -117,6 +117,9 @@ describe("runCodex", () => {
     expect(invocation.args).not.toContain("--sandbox");
     expect(invocation.args).not.toContain("--full-auto");
     expect(invocation.args).toContain('mcp_servers.conveyor.required=true');
+    expect(invocation.args).toContain(
+      'mcp_servers.conveyor.default_tools_approval_mode="approve"',
+    );
   });
 
   test("classifies usage-limit failures for automatic retry", async () => {

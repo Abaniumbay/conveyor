@@ -166,6 +166,8 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
     `mcp_servers.conveyor.args=${tomlArray(input.mcp.args)}`,
     "-c",
     "mcp_servers.conveyor.required=true",
+    "-c",
+    'mcp_servers.conveyor.default_tools_approval_mode="approve"',
     "-",
   );
   return args;
