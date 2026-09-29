@@ -79,6 +79,37 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("removes repositories that are no longer configured", async () => {
+    const store = await openStore();
+    for (const id of ["kept", "removed"]) {
+      store.upsertRepository({
+        id,
+        configName: id,
+        source: "github",
+        address: `owner/${id}`,
+        folder: `/srv/${id}`,
+        configHash: "config-hash",
+      });
+      store.upsertIssue({
+        id: `issue-${id}`,
+        repositoryId: id,
+        sourceNumber: 1,
+        sourceUrl: `https://github.com/owner/${id}/issues/1`,
+        title: id,
+        body: "",
+        sourceState: "open",
+        labels: ["conveyor"],
+        sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    }
+
+    expect(store.removeRepositoriesExcept(["kept"])).toEqual(["removed"]);
+    expect(store.listIssues().map((issue) => issue.id)).toEqual(["issue-kept"]);
+    expect(store.removeRepositoriesExcept(["kept"])).toEqual([]);
+
+    store.close();
+  });
+
   test("deduplicates webhook deliveries and source mutations", async () => {
     const store = await openStore();
 

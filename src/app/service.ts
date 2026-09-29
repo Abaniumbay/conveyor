@@ -180,6 +180,12 @@ export class ConveyorService {
         `Recovered ${recovered.runs} interrupted run(s) and ${recovered.stages} running stage(s) after restart`,
       );
     }
+    const removedRepositories = store.removeRepositoriesExcept(Object.keys(config.repositories));
+    if (removedRepositories.length > 0) {
+      console.info(
+        `Removed unconfigured repositories from the local index: ${removedRepositories.join(", ")}`,
+      );
+    }
     store.recordConfigSnapshot(config.hash, config);
     const service = new ConveyorService(
       config,

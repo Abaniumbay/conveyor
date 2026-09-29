@@ -226,6 +226,27 @@ export class ConveyorStore {
       );
   }
 
+  removeRepositoriesExcept(configuredIds: readonly string[]): string[] {
+    const configured = [...new Set(configuredIds)];
+    const placeholders = configured.map(() => "?").join(", ");
+    const rows = (configured.length > 0
+      ? this.#database
+          .query(`SELECT id FROM repositories WHERE id NOT IN (${placeholders}) ORDER BY id`)
+          .all(...configured)
+      : this.#database.query("SELECT id FROM repositories ORDER BY id").all()) as Array<{
+      id: string;
+    }>;
+    if (rows.length === 0) return [];
+
+    const remove = this.#database.transaction((repositoryIds: readonly string[]) => {
+      const statement = this.#database.query("DELETE FROM repositories WHERE id = ?");
+      for (const repositoryId of repositoryIds) statement.run(repositoryId);
+    });
+    const removed = rows.map((row) => row.id);
+    remove(removed);
+    return removed;
+  }
+
   upsertIssue(issue: IssueProjection): void {
     const timestamp = now();
     const labels = [...new Set(issue.labels)].sort((left, right) => left.localeCompare(right));
