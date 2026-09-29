@@ -85,8 +85,6 @@ pipelines:
           runner: process
           script: ./scripts/inspect.ts
         concurrency: 2
-        enterCheck: enter
-        exitCheck: exit
 repositories:
   sample:
     source: github

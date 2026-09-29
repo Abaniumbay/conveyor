@@ -125,6 +125,23 @@ describe("PipelineEngine", () => {
     ]);
   });
 
+  test("lets deterministic stages rely on their script or source-action result", async () => {
+    const fake = dependencies({ checks: [] });
+    const engine = new PipelineEngine(pipeline({
+      enterCheck: undefined,
+      exitCheck: undefined,
+      afterSuccess: [],
+    }), fake.value, 2);
+
+    const result = await engine.executeStage("implementation", {
+      issue: { id: "issue-1" },
+      workspace: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({ kind: "advance", nextStageId: "review" });
+    expect(fake.calls).toEqual(["producer:implementation:1"]);
+  });
+
   test("returns exit-check feedback to a fresh producer attempt", async () => {
     const failedCheck: CheckResult = {
       decision: "fail",

@@ -192,10 +192,10 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = `pipelines.${pipelineName}.stages.${index}`;
-      if (!config.checks[stage.enterCheck]) {
+      if (stage.enterCheck && !config.checks[stage.enterCheck]) {
         errors.push(`${prefix}.enterCheck references unknown check "${stage.enterCheck}"`);
       }
-      if (!config.checks[stage.exitCheck]) {
+      if (stage.exitCheck && !config.checks[stage.exitCheck]) {
         errors.push(`${prefix}.exitCheck references unknown check "${stage.exitCheck}"`);
       }
       if (stage.run.type === "agent" && !config.agents[stage.run.agent]) {

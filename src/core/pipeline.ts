@@ -16,8 +16,8 @@ export interface PipelineStage {
     | { type: "script"; runner: string; script: string }
     | { type: "source-action"; action: string; input?: Record<string, unknown> | undefined };
   concurrency: number;
-  enterCheck: string;
-  exitCheck: string;
+  enterCheck?: string | undefined;
+  exitCheck?: string | undefined;
   feedbackCycles?: number | undefined;
   childrenStartAt?: string | undefined;
   successStatuses?: string[] | undefined;
@@ -138,32 +138,34 @@ export class PipelineEngine {
       attempt: 1,
       feedback: null,
     };
-    const enter = await this.dependencies.runCheck(stage.enterCheck, "enter", {
-      ...initialContext,
-      producerResult: null,
-    });
-    if (enter.decision === "fail") {
-      const prior = this.pipeline.stages[stageIndex - 1];
-      if (prior) {
+    if (stage.enterCheck) {
+      const enter = await this.dependencies.runCheck(stage.enterCheck, "enter", {
+        ...initialContext,
+        producerResult: null,
+      });
+      if (enter.decision === "fail") {
+        const prior = this.pipeline.stages[stageIndex - 1];
+        if (prior) {
+          return {
+            kind: "correction",
+            stageId,
+            targetStageId: prior.id,
+            reason: enter.reason ?? "stage entry verification failed",
+            requiredFixes: enter.requiredFixes,
+            evidence: enter.evidence,
+            result: null,
+          };
+        }
         return {
-          kind: "correction",
+          kind: "stopped",
           stageId,
-          targetStageId: prior.id,
-          reason: enter.reason ?? "stage entry verification failed",
+          state: stage.failureState ?? enter.status,
+          reason: enter.reason ?? "initial stage entry verification failed",
           requiredFixes: enter.requiredFixes,
-          evidence: enter.evidence,
+          feedbackCycles: 0,
           result: null,
         };
       }
-      return {
-        kind: "stopped",
-        stageId,
-        state: stage.failureState ?? enter.status,
-        reason: enter.reason ?? "initial stage entry verification failed",
-        requiredFixes: enter.requiredFixes,
-        feedbackCycles: 0,
-        result: null,
-      };
     }
 
     const maximumFeedbackCycles = stage.feedbackCycles ?? this.defaultFeedbackCycles;
@@ -210,26 +212,28 @@ export class PipelineEngine {
         };
       }
 
-      const exit = await this.dependencies.runCheck(stage.exitCheck, "exit", {
-        ...producerContext,
-        producerResult,
-      });
-      if (exit.decision === "fail") {
-        if (feedbackCycles >= maximumFeedbackCycles) {
-          return {
-            kind: "stopped",
-            stageId,
-            state: stage.failureState ?? exit.status,
-            reason: exit.reason ?? "stage exit verification failed",
-            requiredFixes: exit.requiredFixes,
-            feedbackCycles,
-            result: producerResult,
-          };
+      if (stage.exitCheck) {
+        const exit = await this.dependencies.runCheck(stage.exitCheck, "exit", {
+          ...producerContext,
+          producerResult,
+        });
+        if (exit.decision === "fail") {
+          if (feedbackCycles >= maximumFeedbackCycles) {
+            return {
+              kind: "stopped",
+              stageId,
+              state: stage.failureState ?? exit.status,
+              reason: exit.reason ?? "stage exit verification failed",
+              requiredFixes: exit.requiredFixes,
+              feedbackCycles,
+              result: producerResult,
+            };
+          }
+          feedbackCycles += 1;
+          attempt += 1;
+          feedback = feedbackFrom(exit);
+          continue;
         }
-        feedbackCycles += 1;
-        attempt += 1;
-        feedback = feedbackFrom(exit);
-        continue;
       }
 
       for (const action of stage.afterSuccess) {
