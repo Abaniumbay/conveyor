@@ -67,9 +67,32 @@ export interface IssueActivityViewModel {
   runs: readonly IssueRunViewModel[];
 }
 
+export interface IssueConversationMessageViewModel {
+  id: number;
+  stageId: string | null;
+  actorType: string;
+  actorId: string;
+  actorName: string;
+  actorTitle: string | null;
+  message: string;
+  createdAt: string;
+}
+
+export interface IssueConversationViewModel {
+  issueId: string;
+  messages: readonly IssueConversationMessageViewModel[];
+}
+
+export interface StageActorViewModel {
+  type: "agent" | "script";
+  name: string;
+  title: string | null;
+}
+
 export interface StageColumnViewModel {
   id: string;
   name: string;
+  actors: readonly StageActorViewModel[];
   cost: string | null;
   totalIssues: number;
   page: number;

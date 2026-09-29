@@ -106,6 +106,8 @@ const runnerSchema = z.discriminatedUnion("type", [
 
 const agentSchema = z
   .object({
+    name: identifierSchema.optional(),
+    title: identifierSchema.optional(),
     runner: identifierSchema,
     model: z.string().min(1).optional(),
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),

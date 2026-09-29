@@ -186,28 +186,38 @@ runners:
 
 agents:
   jack:
+    name: Jack
+    title: Product Owner
     runner: codex
     model: configured-model-name
     effort: high
     instructions: ./instructions/jack.md
   implementer:
+    name: Kaveh
+    title: Senior Developer
     runner: codex
     model: configured-model-name
     effort: medium
     instructions: ./instructions/implementer.md
   reviewer:
+    name: Shirin
+    title: Senior Reviewer
     runner: codex
     model: configured-model-name
     effort: high
     instructions: ./instructions/reviewer.md
     workspaceAccess: read-only
   checker:
+    name: Mitra
+    title: Quality Verifier
     runner: codex
     model: configured-model-name
     effort: high
     instructions: ./instructions/checker.md
     workspaceAccess: read-only
   operator:
+    name: Omid
+    title: Conveyor Operator
     runner: codex
     model: configured-model-name
     effort: medium
@@ -576,6 +586,9 @@ Every agent receives a scoped MCP server for exactly one repository, issue, stag
 - `run.*`: report progress, rationale summaries, blockers, questions, results, artifacts, and milestones.
 - `workspace.*`: obtain safe workspace/base/branch metadata, request scoped fetch/push operations, and record workspace artifacts.
 - `delivery.*`: inspect configured checks, merge readiness, deployment observations, and stage-specific delivery state.
+- `conversation.get`: read the concise shared issue handoff without exposing raw harness logs or private reasoning.
+
+`run.report_progress` is the only agent event copied into the shared issue conversation. Agents keep it short and user-facing; raw harness events remain separately retained as technical logs. The next run receives the shared conversation in its initial context and can refresh it through `conversation.get`. The authenticated owner can add messages from the issue detail window. Stage execution remains sequential per issue, so only the active lead agent writes agent messages at a given time.
 
 The server validates scope, permissions, schemas, and idempotency keys. Every mutation is journaled before execution and reconciled afterward. Agent-visible source guidance is supplied by the source plugin so instructions remain exact for GitHub without contaminating the generic engine.
 
@@ -644,6 +657,9 @@ Every card links directly to its source issue. Issue detail shows:
 - Questions and answer controls.
 - Blocker reason and exact required action.
 - Event timeline and cost breakdown.
+- A live shared conversation containing owner messages, concise agent progress, and Conveyor script/action start and result messages; raw run events remain under Technical logs.
+
+Each configured stage heading names its responsible agent and title. Deterministic script and source-action stages are identified as `Script`.
 
 Live updates use server-sent events with polling fallback. One Conveyor status comment per issue, identified by a hidden stable marker, is updated on meaningful transitions and debounced progress intervals to reflect stage, attempts, blocker, PR/deployment, and cost without exhausting source rate limits. If deleted, it is recreated on the next active synchronization. Separate comments are reserved for questions, rejection, and final outcome to avoid conversation spam.
 

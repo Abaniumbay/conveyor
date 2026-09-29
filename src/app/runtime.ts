@@ -47,6 +47,7 @@ export interface ScopedMcpFactory {
     stageId: string;
     context: RuntimeIssueContext;
     allowedTools: readonly string[];
+    actor: { id: string; name: string; title: string };
   }): Promise<ScopedMcpLease>;
 }
 
@@ -80,6 +81,14 @@ function prompt(parts: Record<string, unknown>, instructions: string): string {
     "",
     "Use the scoped Conveyor MCP for source and workspace operations. Return only the required structured result.",
   ].join("\n");
+}
+
+function displayName(id: string): string {
+  return id
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
 }
 
 async function evidenceScript(
@@ -155,34 +164,42 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
   }
 
   async runProducer(stage: PipelineStage, context: ProducerContext): Promise<RunEnvelope> {
+    const issue = issueFrom(context);
     if (stage.run.type === "source-action") {
       const started = performance.now();
-      await this.actions.run(
-        {
-          sourceAction: stage.run.action,
-          ...(stage.run.input ? { with: stage.run.input } : {}),
-        },
-        context,
-      );
-      return {
-        stageResult: {
-          outcome: "success",
-          status: stage.successStatuses?.[0] ?? "done",
-          summary: `Completed source action ${stage.run.action}`,
-          reason: null,
-          metrics: {},
-        },
-        sessionId: null,
-        usage: { ...EMPTY_USAGE },
-        cost: { ...UNAVAILABLE_COST },
-        durationMs: Math.max(0, Math.round(performance.now() - started)),
-        exitCode: 0,
-        artifacts: [],
-        stderr: "",
-      };
+      this.conveyorMessage(issue.id, stage.id, null, `Running source action \`${stage.run.action}\`.`);
+      try {
+        await this.actions.run(
+          {
+            sourceAction: stage.run.action,
+            ...(stage.run.input ? { with: stage.run.input } : {}),
+          },
+          context,
+        );
+        const summary = `Completed source action ${stage.run.action}`;
+        this.conveyorMessage(issue.id, stage.id, null, summary);
+        return {
+          stageResult: {
+            outcome: "success",
+            status: stage.successStatuses?.[0] ?? "done",
+            summary,
+            reason: null,
+            metrics: {},
+          },
+          sessionId: null,
+          usage: { ...EMPTY_USAGE },
+          cost: { ...UNAVAILABLE_COST },
+          durationMs: Math.max(0, Math.round(performance.now() - started)),
+          exitCode: 0,
+          artifacts: [],
+          stderr: "",
+        };
+      } catch (error) {
+        this.conveyorMessage(issue.id, stage.id, null, `Source action failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
     }
 
-    const issue = issueFrom(context);
     const kind = "producer";
     const runId = randomUUID();
     const attempt = this.store.nextRunAttempt(issue.id, stage.id, kind);
@@ -202,6 +219,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     try {
       let result: RunEnvelope;
       if (stage.run.type === "script") {
+        this.conveyorMessage(issue.id, stage.id, runId, `Running \`bun run ${stage.run.script}\`.`);
         result = await this.#jsonProcess({
           command: ["bun", "run", stage.run.script],
           cwd: this.context.workspace?.path ?? this.context.repository.folder,
@@ -209,6 +227,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           interruptGraceMs: this.config.settings.interruptGraceMs,
           ...(this.signal ? { signal: this.signal } : {}),
         });
+        this.conveyorMessage(issue.id, stage.id, runId, `Script finished: ${result.stageResult.summary}`);
       } else {
         const agent = this.config.agents[stage.run.agent];
         if (!agent) throw new Error(`unknown agent: ${stage.run.agent}`);
@@ -223,6 +242,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           stageId: stage.id,
           context: this.context,
           allowedTools: agent.tools,
+          actor: this.agentActor(stage.run.agent),
         });
         try {
           const instructions = await readFile(agent.instructions, "utf8");
@@ -237,6 +257,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
                 stageId: stage.id,
                 attempt: context.attempt,
                 feedback: context.feedback,
+                conversation: this.store.listConversationMessages(issue.id, 100).map((message) => ({
+                  actor: message.actorName,
+                  title: message.actorTitle,
+                  message: message.message,
+                  createdAt: message.createdAt,
+                })),
               },
               instructions,
             ),
@@ -264,6 +290,9 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         Math.max(0, Math.round(performance.now() - started)),
       );
       this.finishRun(runId, "failed", failure);
+      if (stage.run.type === "script") {
+        this.conveyorMessage(issue.id, stage.id, runId, `Script failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       throw error;
     }
   }
@@ -283,14 +312,22 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     }
     const issue = issueFrom(context);
     const workspace = this.context.workspace?.path ?? this.context.repository.folder;
-    const evidence = definition.script
-      ? await evidenceScript(definition.script, workspace, {
+    let evidence: unknown = null;
+    if (definition.script) {
+      this.conveyorMessage(issue.id, context.stageId, null, `Running check script \`bun run ${definition.script}\`.`);
+      try {
+        evidence = await evidenceScript(definition.script, workspace, {
           phase,
           stageId: context.stageId,
           issue,
           producerResult: context.producerResult,
-        })
-      : null;
+        });
+        this.conveyorMessage(issue.id, context.stageId, null, "Check script finished; evidence is ready for review.");
+      } catch (error) {
+        this.conveyorMessage(issue.id, context.stageId, null, `Check script failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
+    }
     const runId = randomUUID();
     const kind = `${phase}-verifier`;
     const attempt = this.store.nextRunAttempt(issue.id, context.stageId, kind);
@@ -310,6 +347,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       stageId: context.stageId,
       context: this.context,
       allowedTools: verifierToolGrant(agent.tools),
+      actor: this.agentActor(definition.verifier),
     });
     try {
       const instructions = await readFile(agent.instructions, "utf8");
@@ -327,6 +365,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
             feedback: context.feedback,
             producerResult: context.producerResult,
             evidence,
+            conversation: this.store.listConversationMessages(issue.id, 100).map((message) => ({
+              actor: message.actorName,
+              title: message.actorTitle,
+              message: message.message,
+              createdAt: message.createdAt,
+            })),
           },
           instructions,
         ),
@@ -371,7 +415,15 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     action: PipelineStage["afterSuccess"][number],
     context: ProducerContext & { producerResult: RunEnvelope },
   ): Promise<void> {
-    await this.actions.run(action, context);
+    const issue = issueFrom(context);
+    this.conveyorMessage(issue.id, context.stageId, null, `Running source action \`${action.sourceAction}\`.`);
+    try {
+      await this.actions.run(action, context);
+      this.conveyorMessage(issue.id, context.stageId, null, `Completed source action ${action.sourceAction}`);
+    } catch (error) {
+      this.conveyorMessage(issue.id, context.stageId, null, `Source action failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
 
   private finishRun(runId: string, status: string, result: RunEnvelope): void {
@@ -387,6 +439,33 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         source: result.cost.source,
         durationMs: result.durationMs,
       },
+    });
+  }
+
+  private agentActor(agentId: string): { id: string; name: string; title: string } {
+    const agent = this.config.agents[agentId];
+    return {
+      id: agentId,
+      name: agent?.name ?? displayName(agentId),
+      title: agent?.title ?? "AI Agent",
+    };
+  }
+
+  private conveyorMessage(
+    issueId: string,
+    stageId: string,
+    runId: string | null,
+    message: string,
+  ): void {
+    this.store.appendConversationMessage({
+      issueId,
+      runId,
+      stageId,
+      actorType: "conveyor",
+      actorId: "conveyor",
+      actorName: "Conveyor",
+      actorTitle: "Orchestrator",
+      message,
     });
   }
 }

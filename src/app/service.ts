@@ -11,7 +11,7 @@ import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -27,6 +27,7 @@ interface McpGrant {
   stageId: string;
   context: RuntimeIssueContext | null;
   allowedTools: Set<string>;
+  actor: { id: string; name: string; title: string } | null;
 }
 
 interface ServiceImplementations {
@@ -557,13 +558,14 @@ export class ConveyorService {
 
   private mcpFactory(): ScopedMcpFactory {
     return {
-      create: async ({ runId, stageId, context, allowedTools }) => {
+      create: async ({ runId, stageId, context, allowedTools, actor }) => {
         const token = randomBytes(32).toString("base64url");
         this.#mcpGrants.set(token, {
           runId,
           stageId,
           context,
           allowedTools: new Set(allowedTools),
+          actor,
         });
         const directory = path.join(this.config.settings.artifacts, runId);
         await mkdir(directory, { recursive: true });
@@ -618,6 +620,7 @@ export class ConveyorService {
       stageId: "steering",
       context: null,
       allowedTools: new Set(allowedTools),
+      actor: null,
     });
     const directory = path.join(this.config.settings.artifacts, runId);
     await mkdir(directory, { recursive: true });
@@ -728,6 +731,17 @@ export class ConveyorService {
     const tool = string(request.tool, "tool");
     if (!grant.allowedTools.has(tool)) throw new Error(`MCP tool is not granted: ${tool}`);
     const input = object(request.input ?? {});
+    if (tool === "conversation.get") {
+      if (!grant.context) throw new Error("conversation requires an issue-scoped MCP grant");
+      const requestedLimit = input.limit === undefined ? 100 : number(input.limit, "limit");
+      return {
+        issueId: grant.context.issue.id,
+        messages: this.store.listConversationMessages(
+          grant.context.issue.id,
+          Math.min(requestedLimit, 100),
+        ),
+      };
+    }
     if (tool.startsWith("run.report_") || tool === "run.ask_question" || tool === "run.record_artifact" || tool === "run.report_milestone") {
       if (tool === "run.ask_question") {
         if (!grant.context) throw new Error("structured questions require an issue-scoped MCP grant");
@@ -748,6 +762,18 @@ export class ConveyorService {
         return { accepted: true, questionId: question.id };
       }
       this.store.appendRunEvent(grant.runId, tool.slice("run.".length), input);
+      if (tool === "run.report_progress" && grant.context && grant.actor) {
+        this.store.appendConversationMessage({
+          issueId: grant.context.issue.id,
+          runId: grant.runId,
+          stageId: grant.stageId,
+          actorType: "agent",
+          actorId: grant.actor.id,
+          actorName: grant.actor.name,
+          actorTitle: grant.actor.title,
+          message: string(input.message, "message"),
+        });
+      }
       return { accepted: true };
     }
 
@@ -1232,6 +1258,27 @@ export class ConveyorService {
     const stages = [...new Set(Object.values(this.config.pipelines).flatMap((pipeline) =>
       pipeline.stages.map((stage) => stage.id),
     ))];
+    const actorsForStage = (stageId: string): StageActorViewModel[] => {
+      const actors: StageActorViewModel[] = [];
+      for (const pipeline of Object.values(this.config.pipelines)) {
+        const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
+        if (!stage) continue;
+        if (stage.run?.type !== "agent") {
+          actors.push({ type: "script", name: "Script", title: null });
+          continue;
+        }
+        const agent = this.config.agents[stage.run.agent];
+        actors.push({
+          type: "agent",
+          name: agent?.name ?? title(stage.run.agent),
+          title: agent?.title ?? "AI agent",
+        });
+      }
+      return [...new Map(actors.map((actor) => [
+        `${actor.type}:${actor.name}:${actor.title ?? ""}`,
+        actor,
+      ])).values()];
+    };
     const configuredStages = new Set(stages);
     const closedIssues = issues.filter((issue) => issue.sourceState === "closed");
     const openIssues = issues.filter((issue) => issue.sourceState !== "closed");
@@ -1276,6 +1323,7 @@ export class ConveyorService {
       columnIssues: StoredIssue[],
       cost: string | null,
       issueCard: (issue: StoredIssue) => IssueCardViewModel = (issue) => card(issue),
+      actors: readonly StageActorViewModel[] = [],
     ): StageColumnViewModel => {
       const totalPages = Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
       const requestedPage = pagination.column === id ? pagination.page : 1;
@@ -1284,6 +1332,7 @@ export class ConveyorService {
       return {
         id,
         name,
+        actors,
         cost,
         totalIssues: columnIssues.length,
         page,
@@ -1370,11 +1419,14 @@ export class ConveyorService {
             ? `${summary.runs} runs · cost unavailable`
             : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
           })(),
+          (issue) => card(issue),
+          actorsForStage(stage),
         )),
       backlog: backlogIssues.map((issue) => card(issue)),
       done: {
         id: "done",
         name: "Done",
+        actors: [],
         cost: null,
         totalIssues: closedIssues.length,
         page: 1,
@@ -1434,6 +1486,39 @@ export class ConveyorService {
     };
   }
 
+  issueConversation(issueId: string): IssueConversationViewModel | null {
+    const issue = this.store.getIssue(issueId);
+    if (!issue || issue.projectedState === "offboarded") return null;
+    return {
+      issueId,
+      messages: this.store.listConversationMessages(issueId, 100).map((message) => ({
+        id: message.id,
+        stageId: message.stageId,
+        actorType: message.actorType,
+        actorId: message.actorId,
+        actorName: message.actorName,
+        actorTitle: message.actorTitle,
+        message: message.message,
+        createdAt: message.createdAt,
+      })),
+    };
+  }
+
+  postIssueMessage(issueId: string, message: string, username: string): void {
+    const issue = this.store.getIssue(issueId);
+    if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    this.store.appendConversationMessage({
+      issueId,
+      runId: null,
+      stageId: issue.projectedStage,
+      actorType: "user",
+      actorId: username,
+      actorName: username,
+      actorTitle: null,
+      message,
+    });
+  }
+
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
     const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
@@ -1455,6 +1540,8 @@ export class ConveyorService {
       getSteeringRun: (runId) => this.getSteeringRun(runId),
       getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),
       getIssueActivity: (issueId) => this.issueActivity(issueId),
+      getIssueConversation: (issueId) => this.issueConversation(issueId),
+      postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
     };
   }
 }

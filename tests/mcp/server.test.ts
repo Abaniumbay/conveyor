@@ -46,6 +46,7 @@ const context: RunMcpContext = {
     "source.get_guidance",
     "workspace.get_context",
     "delivery.get_state",
+    "conversation.get",
     "run.report_progress",
     "run.ask_question",
   ],
@@ -101,6 +102,14 @@ describe("Conveyor MCP server", () => {
     expect(
       text(
         await client.callTool({
+          name: "conversation.get",
+          arguments: { limit: 25 },
+        }),
+      ),
+    ).toEqual({ accepted: true });
+    expect(
+      text(
+        await client.callTool({
           name: "run.report_progress",
           arguments: { message: "Running tests", details: { suite: "unit" } },
         }),
@@ -125,10 +134,11 @@ describe("Conveyor MCP server", () => {
       ),
     ).toEqual({ accepted: true });
     expect(calls.map((call) => call.tool)).toEqual([
+      "conversation.get",
       "run.report_progress",
       "run.ask_question",
     ]);
-    expect(calls[1]?.input).toMatchObject({ runId: "run-1", stageId: "implementation" });
+    expect(calls[2]?.input).toMatchObject({ runId: "run-1", stageId: "implementation" });
   });
 
   test("rejects unknown or duplicate tool grants instead of silently weakening config", () => {

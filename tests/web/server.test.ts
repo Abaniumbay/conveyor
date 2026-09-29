@@ -17,6 +17,7 @@ const model: DashboardViewModel = {
   done: {
     id: "done",
     name: "Done",
+    actors: [],
     cost: null,
     totalIssues: 0,
     page: 1,
@@ -26,6 +27,7 @@ const model: DashboardViewModel = {
   attention: {
     id: "attention",
     name: "Needs attention",
+    actors: [],
     cost: null,
     totalIssues: 0,
     page: 1,
@@ -45,6 +47,8 @@ interface CallLog {
   mcp: unknown[][];
   steering: unknown[][];
   issueActivity: unknown[][];
+  issueConversation: unknown[][];
+  messages: unknown[][];
 }
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -53,7 +57,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [] };
+  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueConversation: [], messages: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -86,6 +90,23 @@ function setup(overrides: Record<string, unknown> = {}) {
         }],
       };
     },
+    getIssueConversation: async (...args: unknown[]) => {
+      calls.issueConversation.push(args);
+      return {
+        issueId: String(args[0]),
+        messages: [{
+          id: 1,
+          stageId: "implementation",
+          actorType: "agent",
+          actorId: "kaveh",
+          actorName: "Kaveh",
+          actorTitle: "Senior Developer",
+          message: "Running focused tests.",
+          createdAt: "2026-09-29T12:00:01Z",
+        }],
+      };
+    },
+    postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     ...overrides,
   };
   return { handler: createWebHandler(dependencies as never), auth, calls };
@@ -220,6 +241,34 @@ describe("createWebHandler", () => {
       runs: [{ status: "running", events: [{ payload: { message: "Editing files" } }] }],
     });
     expect(calls.issueActivity).toEqual([["github:owner/repo#1"]]);
+  });
+
+  test("serves and accepts authenticated issue conversation messages", async () => {
+    const { handler, auth, calls } = setup({ maxBodyBytes: 4096 });
+    expect((await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation", { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      issueId: "github:owner/repo#1",
+      messages: [{ actorName: "Kaveh", message: "Running focused tests." }],
+    });
+
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const forbidden = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message: "Please preserve the public API." }),
+    }));
+    expect(forbidden.status).toBe(403);
+    const posted = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message: "Please preserve the public API.", csrf }),
+    }));
+    expect(posted.status).toBe(201);
+    expect(calls.issueConversation).toEqual([["github:owner/repo#1"]]);
+    expect(calls.messages).toEqual([["github:owner/repo#1", "Please preserve the public API.", "operator"]]);
   });
 
   test("delegates configured webhook raw body and headers without requiring a session", async () => {

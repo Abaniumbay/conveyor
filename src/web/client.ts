@@ -20,10 +20,60 @@ export const dashboardClient = String.raw`(() => {
   };
 
   const activitySnapshots = new WeakMap();
+  const conversationSnapshots = new WeakMap();
 
   const payloadText = (value) => {
     if (typeof value === 'string') return value;
     try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  };
+
+  const renderIssueConversation = (panel, conversation) => {
+    const snapshot = JSON.stringify(conversation);
+    if (conversationSnapshots.get(panel) === snapshot) return;
+    conversationSnapshots.set(panel, snapshot);
+    const root = panel.querySelector('[data-conversation-messages]');
+    const status = panel.querySelector('[data-conversation-status]');
+    if (!root || !status) return;
+    const nearBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 80;
+    root.replaceChildren();
+    const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+    status.textContent = messages.length === 0
+      ? 'No shared messages yet.'
+      : messages.length + (messages.length === 1 ? ' shared message.' : ' shared messages.');
+    for (const message of messages) {
+      const item = document.createElement('li');
+      item.className = 'conversation-message conversation-message--' + String(message.actorType || 'agent').replace(/[^a-z0-9_-]/gi, '');
+      const header = document.createElement('header');
+      const actor = document.createElement('strong');
+      const actorName = message.actorType === 'user' ? 'You' : String(message.actorName || 'Agent');
+      actor.textContent = actorName + (message.actorTitle ? ' · ' + String(message.actorTitle) : '');
+      const meta = document.createElement('small');
+      meta.textContent = (message.stageId ? String(message.stageId) + ' · ' : '') + String(message.createdAt || '');
+      const body = document.createElement('p');
+      body.textContent = String(message.message || '');
+      header.append(actor, meta);
+      item.append(header, body);
+      root.append(item);
+    }
+    if (nearBottom) root.scrollTop = root.scrollHeight;
+  };
+
+  const loadIssueConversation = async (panel) => {
+    if (panel.dataset.loading === 'true') return;
+    const url = panel.dataset.conversationUrl;
+    const status = panel.querySelector('[data-conversation-status]');
+    if (!url) return;
+    panel.dataset.loading = 'true';
+    if (status && !conversationSnapshots.has(panel)) status.textContent = 'Loading shared conversation…';
+    try {
+      const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' });
+      if (!response.ok) throw new Error('conversation request failed');
+      renderIssueConversation(panel, await response.json());
+    } catch {
+      if (status) status.textContent = 'Conversation is temporarily unavailable. Retrying…';
+    } finally {
+      delete panel.dataset.loading;
+    }
   };
 
   const renderIssueActivity = (panel, activity) => {
@@ -119,6 +169,7 @@ export const dashboardClient = String.raw`(() => {
       const selected = panel.getAttribute('data-detail-panel') === name;
       panel.hidden = !selected;
       if (selected && name === 'activity') void loadIssueActivity(panel);
+      if (selected && name === 'conversation') void loadIssueConversation(panel);
     }
   };
 
@@ -190,6 +241,37 @@ export const dashboardClient = String.raw`(() => {
     openIssueDialog(opener);
   });
 
+  document.addEventListener('submit', async (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.matches('[data-conversation-form]')) return;
+    event.preventDefault();
+    const panel = form.closest('[data-conversation-url]');
+    const url = panel && panel.getAttribute('data-conversation-url');
+    const button = form.querySelector('button[type="submit"]');
+    const status = panel && panel.querySelector('[data-conversation-status]');
+    if (!url || !(panel instanceof HTMLElement)) return;
+    if (button instanceof HTMLButtonElement) button.disabled = true;
+    const field = form.querySelector('textarea[name="message"]');
+    const data = new URLSearchParams({
+      message: field instanceof HTMLTextAreaElement ? field.value : '',
+      csrf: body.dataset.csrfToken || '',
+    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        body: data,
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      if (!response.ok) throw new Error('message request failed');
+      form.reset();
+      await loadIssueConversation(panel);
+    } catch {
+      if (status) status.textContent = 'Message could not be sent. Please try again.';
+    } finally {
+      if (button instanceof HTMLButtonElement) button.disabled = false;
+    }
+  });
+
   document.addEventListener('close', (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
     const issueId = event.target.dataset.issueId;
@@ -211,6 +293,9 @@ export const dashboardClient = String.raw`(() => {
   if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
 
   setInterval(() => {
+    for (const panel of document.querySelectorAll('dialog[open] [data-detail-panel="conversation"]:not([hidden])')) {
+      void loadIssueConversation(panel);
+    }
     for (const panel of document.querySelectorAll('dialog[open] [data-detail-panel="activity"]:not([hidden])')) {
       if (panel.dataset.live === 'true') void loadIssueActivity(panel);
     }

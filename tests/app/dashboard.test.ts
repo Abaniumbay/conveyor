@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
+import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 
@@ -16,6 +17,85 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("turns explicit MCP progress into shared conversation and exposes live handoff context", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-conversation-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces") },
+      web: { listen: "127.0.0.1:4300" },
+      repositories: {},
+      pipelines: {},
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({
+      id: "repo",
+      configName: "repo",
+      source: "github",
+      address: "owner/repo",
+      folder: root,
+      configHash: config.hash,
+    });
+    store.upsertIssue({
+      id: "issue",
+      repositoryId: "repo",
+      sourceNumber: 1,
+      sourceUrl: "https://github.com/owner/repo/issues/1",
+      title: "Feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    });
+    store.createRun({
+      id: "run-1",
+      issueId: "issue",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: config.hash,
+      startedAt: "2026-09-29T00:00:00Z",
+    });
+    const issue = store.getIssue("issue")!;
+    const context: RuntimeIssueContext = {
+      issue,
+      repository: { id: "repo", address: "owner/repo", folder: root, baseBranch: "main" },
+      workspace: { path: root, branch: "conveyor/1" },
+      sourceGuidance: "Never close issues.",
+    };
+    const service = new ConveyorService(config, store, {} as never);
+    const factory = (service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();
+    const lease = await factory.create({
+      runId: "run-1",
+      stageId: "implementation",
+      context,
+      allowedTools: ["conversation.get", "run.report_progress"],
+      actor: { id: "kaveh", name: "Kaveh", title: "Senior Developer" },
+    });
+    const control = JSON.parse(await readFile(path.join(root, "artifacts/run-1/mcp-context.json"), "utf8")) as {
+      control: { token: string };
+    };
+    service.postIssueMessage("issue", "Keep this backward compatible.", "operator");
+    await service.handleMcp({
+      tool: "run.report_progress",
+      input: { message: "Compatibility is preserved; focused tests pass." },
+    }, control.control.token);
+    expect(await service.handleMcp({ tool: "conversation.get", input: {} }, control.control.token)).toMatchObject({
+      messages: [
+        { actorType: "user", message: "Keep this backward compatible." },
+        { actorName: "Kaveh", actorTitle: "Senior Developer", message: "Compatibility is preserved; focused tests pass." },
+      ],
+    });
+    expect(store.listRunEvents("run-1")).toMatchObject([
+      { type: "report_progress", payload: { message: "Compatibility is preserved; focused tests pass." } },
+    ]);
+    await lease.close();
+    store.close();
+  });
+
   test("persists blocked children so tracking parents remain roll-up only", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-relationships-"));
     temporaryDirectories.push(root);
@@ -110,8 +190,15 @@ describe("ConveyorService dashboard", () => {
       },
       pipelines: {
         default: {
-          stages: [{ id: "refinement" }, { id: "implementation" }],
+          stages: [
+            { id: "refinement", run: { type: "agent", agent: "darya" } },
+            { id: "implementation", run: { type: "agent", agent: "kaveh" } },
+          ],
         },
+      },
+      agents: {
+        darya: { name: "Darya", title: "Product Owner" },
+        kaveh: { name: "Kaveh", title: "Senior Developer" },
       },
       repositories: {
         repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
@@ -237,6 +324,7 @@ describe("ConveyorService dashboard", () => {
 
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
     expect(implementation).toMatchObject({
+      actors: [{ type: "agent", name: "Kaveh", title: "Senior Developer" }],
       totalIssues: 1,
       page: 1,
       totalPages: 1,

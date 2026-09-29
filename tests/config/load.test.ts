@@ -60,6 +60,8 @@ runners:
     command: codex
 agents:
   checker:
+    name: Mitra
+    title: Quality Verifier
     runner: codex
     model: gpt-test
     effort: high
@@ -118,6 +120,10 @@ sources:
     expect(config.agents.checker?.instructions).toBe(
       path.join(directory, "instructions/checker.md"),
     );
+    expect(config.agents.checker).toMatchObject({
+      name: "Mitra",
+      title: "Quality Verifier",
+    });
     expect(config.agents.checker?.tools).toEqual([
       "source.get_issue",
       "run.report_progress",

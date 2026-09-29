@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { renderDashboard } from "./render";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel } from "./types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -30,6 +30,8 @@ export interface WebHandlerDependencies {
     createdAt: string;
   }> | Promise<Array<{ sequence: number; type: string; text: string; createdAt: string }>>;
   getIssueActivity: (issueId: string) => IssueActivityViewModel | null | Promise<IssueActivityViewModel | null>;
+  getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
+  postIssueMessage: (issueId: string, message: string, username: string) => void | Promise<void>;
   maxBodyBytes?: number;
 }
 
@@ -343,6 +345,42 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       } catch {
         return json({ error: "revision unavailable" }, 503);
       }
+    }
+
+    const issueConversation = /^\/api\/issues\/([^/]{1,1000})\/conversation$/.exec(path);
+    if (issueConversation) {
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try {
+        issueId = decodeURIComponent(issueConversation[1]!);
+      } catch {
+        return text("Invalid issue id", 400);
+      }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      if (request.method === "GET") {
+        try {
+          const conversation = await dependencies.getIssueConversation(issueId);
+          return conversation ? json(conversation) : text("Issue not found", 404);
+        } catch {
+          return json({ error: "conversation unavailable" }, 503);
+        }
+      }
+      if (request.method === "POST") {
+        const form = await readForm(request, maxBodyBytes);
+        if (form instanceof Response) return form;
+        if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+        const message = oneValue(form, "message")?.trim();
+        if (!message || message.length > 4_000) return text("Invalid conversation message", 400);
+        try {
+          await dependencies.postIssueMessage(issueId, message, dependencies.username);
+          return json({ accepted: true }, 201);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unable to add conversation message";
+          return text(message, message === "issue not found" ? 404 : 409);
+        }
+      }
+      return response(null, 405, "text/plain; charset=utf-8", { allow: "GET, POST" });
     }
 
     const issueActivity = /^\/api\/issues\/([^/]{1,1000})\/activity$/.exec(path);

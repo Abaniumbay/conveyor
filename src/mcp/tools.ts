@@ -3,6 +3,7 @@ export const MCP_READ_TOOLS = [
   "source.get_guidance",
   "workspace.get_context",
   "delivery.get_state",
+  "conversation.get",
 ] as const;
 
 export const MCP_REPORT_TOOLS = [

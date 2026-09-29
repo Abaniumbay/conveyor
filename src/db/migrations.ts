@@ -278,4 +278,24 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE issues ADD COLUMN source_state_reason TEXT;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE conversation_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+        stage_id TEXT,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_name TEXT NOT NULL,
+        actor_title TEXT,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX conversation_messages_issue_idx
+        ON conversation_messages(issue_id, id);
+    `,
+  },
 ];

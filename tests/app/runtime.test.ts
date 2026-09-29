@@ -32,14 +32,19 @@ sources:
   github: { type: github }
 runners:
   codex: { type: codex, command: codex }
+  process: { type: json-process }
 agents:
   worker:
+    name: Kaveh
+    title: Senior Developer
     runner: codex
     model: gpt-test
     effort: low
     instructions: ./agent.md
-    tools: [source.get_issue, workspace.request_fetch]
+    tools: [source.get_issue, conversation.get, workspace.request_fetch]
   checker:
+    name: Mitra
+    title: Quality Verifier
     runner: codex
     effort: high
     instructions: ./agent.md
@@ -62,6 +67,9 @@ pipelines:
         concurrency: 1
         enterCheck: verify
         exitCheck: verify
+      - id: deploy
+        run: { runner: process, script: ./deploy.ts }
+        concurrency: 1
 repositories:
   repo:
     source: github
@@ -91,7 +99,18 @@ repositories:
       sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     const issue = store.getIssue("issue")!;
+    store.appendConversationMessage({
+      issueId: issue.id,
+      runId: null,
+      stageId: "implementation",
+      actorType: "user",
+      actorId: "operator",
+      actorName: "You",
+      actorTitle: null,
+      message: "Preserve the existing API.",
+    });
     const grants: string[][] = [];
+    const actors: unknown[] = [];
     const producerInputs: unknown[] = [];
     const checkInputs: unknown[] = [];
     const producerResult: RunEnvelope = {
@@ -122,6 +141,7 @@ repositories:
       {
         async create(input) {
           grants.push([...input.allowedTools]);
+          actors.push(input.actor);
           return { configuration: { command: "bun", args: ["mcp.ts"] }, async close() {} };
         },
       },
@@ -147,6 +167,12 @@ repositories:
             stderr: "",
           };
         },
+        async jsonProcess() {
+          return {
+            ...producerResult,
+            stageResult: { ...producerResult.stageResult, summary: "Deployment completed" },
+          };
+        },
       },
     );
     const stage = config.pipelines.default!.stages[0]!;
@@ -163,17 +189,34 @@ repositories:
       decision: "pass",
       sessionId: "check-thread",
     });
+    expect(await runtime.runProducer(config.pipelines.default!.stages[1]!, {
+      ...context,
+      stageId: "deploy",
+    })).toMatchObject({ stageResult: { summary: "Deployment completed" } });
 
     expect(producerInputs).toHaveLength(1);
     expect(checkInputs).toHaveLength(1);
-    expect(grants[0]).toEqual(["source.get_issue", "workspace.request_fetch"]);
+    expect(grants[0]).toEqual(["source.get_issue", "conversation.get", "workspace.request_fetch"]);
     expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
+    expect(actors).toEqual([
+      { id: "worker", name: "Kaveh", title: "Senior Developer" },
+      { id: "checker", name: "Mitra", title: "Quality Verifier" },
+    ]);
+    expect((producerInputs[0] as { prompt: string }).prompt).toContain("Preserve the existing API.");
     expect(store.costSummary()).toMatchObject({
-      runs: 2,
-      inputTokens: 30,
-      outputTokens: 8,
-      durationMs: 75,
+      runs: 3,
+      inputTokens: 50,
+      outputTokens: 13,
+      durationMs: 125,
     });
+    expect(store.listConversationMessages(issue.id, 20).map((message) => ({
+      actor: message.actorName,
+      message: message.message,
+    }))).toEqual([
+      { actor: "You", message: "Preserve the existing API." },
+      { actor: "Conveyor", message: expect.stringContaining("bun run") },
+      { actor: "Conveyor", message: "Script finished: Deployment completed" },
+    ]);
     store.close();
   });
 });

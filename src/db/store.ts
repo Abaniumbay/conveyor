@@ -125,6 +125,19 @@ export interface StoredQuestion {
   answer: unknown | null;
 }
 
+export interface StoredConversationMessage {
+  id: number;
+  issueId: string;
+  runId: string | null;
+  stageId: string | null;
+  actorType: string;
+  actorId: string;
+  actorName: string;
+  actorTitle: string | null;
+  message: string;
+  createdAt: string;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -952,7 +965,9 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, heartbeat_at, started_at)), '') FROM runs
          UNION ALL
-         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions`,
+         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions
+         UNION ALL
+         SELECT 'conversation', COUNT(*), COALESCE(MAX(created_at), '') FROM conversation_messages`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows
@@ -1190,6 +1205,72 @@ export class ConveyorStore {
       sequence: Number(row.sequence),
       type: String(row.type),
       payload: parseJson(String(row.payload_json)),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  appendConversationMessage(input: {
+    issueId: string;
+    runId: string | null;
+    stageId: string | null;
+    actorType: "agent" | "user" | "conveyor";
+    actorId: string;
+    actorName: string;
+    actorTitle: string | null;
+    message: string;
+  }): StoredConversationMessage {
+    const message = input.message.trim();
+    if (!message) throw new Error("conversation message must not be empty");
+    if (message.length > 4_000) throw new Error("conversation message must not exceed 4000 characters");
+    const createdAt = now();
+    const result = this.#database
+      .query(
+        `INSERT INTO conversation_messages(
+           issue_id, run_id, stage_id, actor_type, actor_id, actor_name,
+           actor_title, message, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.issueId,
+        input.runId,
+        input.stageId,
+        input.actorType,
+        input.actorId,
+        input.actorName,
+        input.actorTitle,
+        message,
+        createdAt,
+      );
+    return {
+      id: Number(result.lastInsertRowid),
+      ...input,
+      message,
+      createdAt,
+    };
+  }
+
+  listConversationMessages(issueId: string, limit = 100): StoredConversationMessage[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      throw new Error("conversation message limit must be between 1 and 200");
+    }
+    const rows = this.#database
+      .query(
+        `SELECT * FROM (
+           SELECT * FROM conversation_messages
+           WHERE issue_id = ? ORDER BY id DESC LIMIT ?
+         ) ORDER BY id`,
+      )
+      .all(issueId, limit) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      issueId: String(row.issue_id),
+      runId: row.run_id === null ? null : String(row.run_id),
+      stageId: row.stage_id === null ? null : String(row.stage_id),
+      actorType: String(row.actor_type),
+      actorId: String(row.actor_id),
+      actorName: String(row.actor_name),
+      actorTitle: row.actor_title === null ? null : String(row.actor_title),
+      message: String(row.message),
       createdAt: String(row.created_at),
     }));
   }

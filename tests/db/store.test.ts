@@ -27,7 +27,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(3);
+    expect(store.schemaVersion()).toBe(4);
 
     store.close();
   });
@@ -173,6 +173,58 @@ describe("ConveyorStore", () => {
       { message: "reading issue" },
       { message: "writing criteria" },
     ]);
+    store.close();
+  });
+
+  test("persists a concise issue conversation independently from technical run events", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "Shared handoff",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    store.appendConversationMessage({
+      issueId: "issue-1",
+      runId: null,
+      stageId: "implementation",
+      actorType: "user",
+      actorId: "operator",
+      actorName: "You",
+      actorTitle: null,
+      message: "Keep the public API backward compatible.",
+    });
+    store.appendConversationMessage({
+      issueId: "issue-1",
+      runId: null,
+      stageId: "implementation",
+      actorType: "agent",
+      actorId: "kaveh",
+      actorName: "Kaveh",
+      actorTitle: "Senior Developer",
+      message: "The API is compatible; I am running the focused tests now.",
+    });
+
+    expect(store.listConversationMessages("issue-1", 20)).toMatchObject([
+      { actorType: "user", actorName: "You", message: "Keep the public API backward compatible." },
+      { actorType: "agent", actorName: "Kaveh", actorTitle: "Senior Developer" },
+    ]);
+    expect(store.listConversationMessages("issue-1", 1)).toHaveLength(1);
+    expect(store.listConversationMessages("issue-1", 1)[0]?.actorName).toBe("Kaveh");
     store.close();
   });
 

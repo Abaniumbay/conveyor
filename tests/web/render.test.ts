@@ -84,6 +84,7 @@ const dashboard: DashboardViewModel = {
     {
       id: "stage:build",
       name: "Build",
+      actors: [{ type: "agent", name: "Kaveh", title: "Senior Developer" }],
       cost: "$0.42",
       totalIssues: 41,
       page: 2,
@@ -93,6 +94,7 @@ const dashboard: DashboardViewModel = {
     {
       id: "stage:review",
       name: "Review",
+      actors: [{ type: "agent", name: "Shirin", title: "Senior Reviewer" }],
       cost: null,
       totalIssues: 0,
       page: 1,
@@ -104,6 +106,7 @@ const dashboard: DashboardViewModel = {
   done: {
     id: "done",
     name: "Done",
+    actors: [],
     cost: null,
     totalIssues: 41,
     page: 1,
@@ -113,6 +116,7 @@ const dashboard: DashboardViewModel = {
   attention: {
     id: "attention",
     name: "Needs attention",
+    actors: [],
     cost: null,
     totalIssues: 1,
     page: 1,
@@ -143,6 +147,8 @@ describe("renderDashboard", () => {
     expect(html).toContain(">Backlog</h2>");
     expect(html).toContain(">Build</h2>");
     expect(html).toContain(">Review</h2>");
+    expect(html).toContain("Kaveh");
+    expect(html).toContain("Senior Developer");
     expect(html).toContain(">Done</h2>");
     expect(html).toContain('aria-label="41 issues"');
     expect(html).toContain("Page 2 of 3");
@@ -176,6 +182,10 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="/?issue=dependency"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
     expect(html).toContain('href="/?issue=parent"');
+    expect(html).toContain('data-detail-tab="conversation"');
+    expect(html).toContain("Conversation");
+    expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
+    expect(html).toContain("Technical logs");
     expect(html).toContain('data-detail-tab="activity"');
     expect(html).toContain('/api/issues/parent/activity');
     expect(html).not.toContain(">Details</button>");

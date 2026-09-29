@@ -71,6 +71,7 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
 function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewModel; id: string; selected?: boolean }) {
   const url = safeUrl(issue.url);
   const summaryId = `${id}-summary`;
+  const conversationId = `${id}-conversation`;
   const activityId = `${id}-activity`;
   return (
     <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-selected-issue={selected ? "true" : undefined}>
@@ -86,7 +87,8 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
         <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
-        <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Activity</button>
+        <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} aria-selected="false" data-detail-tab="conversation">Conversation</button>
+        <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Technical logs</button>
       </nav>
       <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
         <div class="details-status">
@@ -117,6 +119,25 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
         {url && <p class="details-source"><a href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a></p>}
       </section>
       <section
+        id={conversationId}
+        role="tabpanel"
+        aria-labelledby={`${conversationId}-tab`}
+        data-detail-panel="conversation"
+        data-conversation-url={`/api/issues/${encodeURIComponent(issue.id)}/conversation`}
+        hidden
+      >
+        <p class="conversation-status" data-conversation-status>Open Conversation to load the shared handoff.</p>
+        <ol class="conversation-messages" data-conversation-messages />
+        <form class="conversation-compose" data-conversation-form>
+          <label for={`${conversationId}-message`}>Message to the current or next agent</label>
+          <textarea id={`${conversationId}-message`} name="message" rows={3} maxLength={4000} required placeholder="Add context or steer the work…" />
+          <div class="conversation-compose-actions">
+            <span>Shared with the next run.</span>
+            <button type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+      <section
         id={activityId}
         role="tabpanel"
         aria-labelledby={`${activityId}-tab`}
@@ -124,7 +145,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
         data-activity-url={`/api/issues/${encodeURIComponent(issue.id)}/activity`}
         hidden
       >
-        <p class="activity-status" data-activity-status>Open Activity to load the persisted run log.</p>
+        <p class="activity-status" data-activity-status>Open Technical logs to load the persisted run log.</p>
         <div data-activity-runs />
       </section>
     </dialog>
@@ -180,7 +201,17 @@ function StageColumn({ column }: { column: StageColumnViewModel }) {
   return (
     <section class="stage" aria-labelledby={headingId}>
       <header class="stage-heading">
-        <h2 id={headingId}>{column.name}</h2>
+        <div class="stage-identity">
+          <h2 id={headingId}>{column.name}</h2>
+          {column.actors.length > 0 && (
+            <p>{column.actors.map((actor, index) => (
+              <Fragment key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
+                {index > 0 && " · "}
+                <strong>{actor.name}</strong>{actor.title && <> ({actor.title})</>}
+              </Fragment>
+            ))}</p>
+          )}
+        </div>
         <div class="stage-summary">
           {column.cost && <span class="stage-cost">{column.cost}</span>}
           <span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span>
@@ -403,7 +434,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
         <script src="/assets/dashboard.js" defer />
       </head>
-      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view}>
+      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
         <main class="dashboard">
           <header class="dashboard-header">
             <div><p class="eyebrow">Conveyor</p><h1>{model.title}</h1><p class="project-meta">{model.project}</p></div>

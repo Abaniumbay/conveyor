@@ -59,13 +59,17 @@ const questionInput = {
 };
 
 const progressInput = {
-  message: z.string().min(1),
+  message: z.string().min(1).max(4_000),
   details: z.record(z.string(), z.unknown()).optional(),
 };
 
 const passthroughInput = z.object({}).passthrough();
 
 const controlTools: Record<string, { description: string; schema: z.ZodType }> = {
+  "conversation.get": {
+    description: "Read the concise shared issue conversation. Use it for handoffs and user steering; it does not contain raw harness logs.",
+    schema: z.object({ limit: z.number().int().min(1).max(100).optional() }),
+  },
   "run.report_progress": { description: "Report run progress.", schema: z.object(progressInput) },
   "run.ask_question": { description: "Ask the user a structured question.", schema: z.object(questionInput) },
   "run.report_rationale": { description: "Record a rationale summary.", schema: passthroughInput },
