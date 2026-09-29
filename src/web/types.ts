@@ -6,6 +6,7 @@ export interface IssueRelationViewModel {
   number: number;
   title: string;
   url: string | null;
+  satisfied: boolean;
 }
 
 /** A server-ready issue card with lightweight hierarchy references. */

@@ -142,6 +142,59 @@ describe("PipelineEngine", () => {
     expect(fake.calls).toEqual(["producer:implementation:1"]);
   });
 
+  test("stops a failed entry check at the current stage by default", async () => {
+    const failure: CheckResult = {
+      decision: "fail",
+      status: "needs-intervention",
+      reason: "Verification infrastructure is unavailable",
+      evidence: [],
+      requiredFixes: ["Restore the verification environment"],
+      criteria: [],
+    };
+    const fake = dependencies({ checks: [failure], producers: [] });
+    const engine = new PipelineEngine(pipeline(), fake.value, 2);
+
+    const result = await engine.executeStage("review", {
+      issue: { id: "issue-1" },
+      workspace: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({
+      kind: "stopped",
+      stageId: "review",
+      state: "needs-intervention",
+      reason: "Verification infrastructure is unavailable",
+      feedbackCycles: 0,
+    });
+    expect(fake.calls).toEqual(["check:enter:review-enter"]);
+  });
+
+  test("returns from a failed entry check only when its status explicitly requests it", async () => {
+    const failure: CheckResult = {
+      decision: "fail",
+      status: "changes-requested",
+      reason: "Implementation evidence is stale",
+      evidence: ["Branch changed after implementation"],
+      requiredFixes: ["Refresh the implementation"],
+      criteria: [],
+    };
+    const fake = dependencies({ checks: [failure], producers: [] });
+    const engine = new PipelineEngine(pipeline(), fake.value, 2);
+
+    const result = await engine.executeStage("review", {
+      issue: { id: "issue-1" },
+      workspace: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({
+      kind: "correction",
+      stageId: "review",
+      targetStageId: "implementation",
+      reason: "Implementation evidence is stale",
+    });
+    expect(fake.calls).toEqual(["check:enter:review-enter"]);
+  });
+
   test("returns exit-check feedback to a fresh producer attempt", async () => {
     const failedCheck: CheckResult = {
       decision: "fail",

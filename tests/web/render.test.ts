@@ -20,8 +20,8 @@ const parent: IssueCardViewModel = {
   closable: true,
   tone: "warning",
   parent: null,
-  children: [{ id: "child", repository: "sample", number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42" }],
-  dependencies: [{ id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40" }],
+  children: [{ id: "child", repository: "sample", number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42", satisfied: false }],
+  dependencies: [{ id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true }],
   working: true,
 };
 
@@ -158,6 +158,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
+    expect(html).toContain('class="relation-link--satisfied"');
     expect(html).toContain("Issue relationships for #41");
     expect(html).toContain("in_progress");
     expect(html).toContain("Keyboard usable");

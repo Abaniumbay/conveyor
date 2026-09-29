@@ -393,8 +393,7 @@ For each stage, the engine performs:
 enter evidence -> enter verifier -> producer -> exit evidence -> exit verifier
 ```
 
-- Enter-check failure returns feedback to the preceding stage's producer.
-- If the first stage's enter check fails, there is no preceding producer; it becomes blocked or needs input according to the check result.
+- Enter-check failure stops at the current stage using the check result by default. A status-specific `returnToPrevious` policy may instead return actionable feedback to the preceding stage's producer.
 - Exit-check failure returns feedback to the current stage's producer.
 - A producer failure normally stops at its configured state. A status-specific `returnToPrevious` policy may instead append its feedback to the preceding producer, which is how a read-only review stage requests code changes.
 - The corrected producer reruns in a fresh agent process against the preserved worktree.
@@ -404,7 +403,7 @@ enter evidence -> enter verifier -> producer -> exit evidence -> exit verifier
 
 Every producer and verifier evaluates the latest issue content. If requirements change during a producer run, that run continues; the next verifier catches any mismatch.
 
-When an enter check reopens the preceding stage, its earlier successful attempts remain immutable history. Conveyor appends a correction attempt, reruns that stage's exit check, and then reruns the failed enter check. No downstream stage is considered complete until this boundary passes.
+When an explicitly configured enter-check policy reopens the preceding stage, its earlier successful attempts remain immutable history. Conveyor appends a correction attempt, reruns that stage's exit check, and then reruns the failed enter check. No downstream stage is considered complete until this boundary passes. Infrastructure failures remain on the stage where they occurred.
 
 Evidence scripts return structured facts and do not make the semantic decision. A verifier returns:
 

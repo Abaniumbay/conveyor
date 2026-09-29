@@ -25,8 +25,9 @@ function issueHref(issueId: string): string {
   return `/?${new URLSearchParams({ issue: issueId })}`;
 }
 
-function RelationLink({ relation }: { relation: IssueRelationViewModel }) {
-  return <a href={issueHref(relation.id)}>{relation.repository}:#{relation.number} {relation.title}</a>;
+function RelationLink({ relation, showCompletion = false }: { relation: IssueRelationViewModel; showCompletion?: boolean }) {
+  const completed = showCompletion && relation.satisfied;
+  return <a class={completed ? "relation-link--satisfied" : undefined} href={issueHref(relation.id)}>{relation.repository}:#{relation.number} {relation.title}</a>;
 }
 
 function Relationships({ issue }: { issue: IssueCardViewModel }) {
@@ -37,7 +38,7 @@ function Relationships({ issue }: { issue: IssueCardViewModel }) {
       {issue.dependencies.length > 0 && (
         <div>
           <strong>Blocked by:</strong>
-          <ul>{issue.dependencies.map((dependency) => <li key={dependency.number}><RelationLink relation={dependency} /></li>)}</ul>
+          <ul>{issue.dependencies.map((dependency) => <li key={dependency.number}><RelationLink relation={dependency} showCompletion /></li>)}</ul>
         </div>
       )}
       {issue.children.length > 0 && (
@@ -58,7 +59,7 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
         <span class="relation-group relation-group--blocked">
           <strong>Blocked by</strong>{" "}
           {issue.dependencies.map((dependency, index) => (
-            <Fragment key={dependency.number}>{index > 0 && ", "}<RelationLink relation={dependency} /></Fragment>
+            <Fragment key={dependency.number}>{index > 0 && ", "}<RelationLink relation={dependency} showCompletion /></Fragment>
           ))}
         </span>
       )}

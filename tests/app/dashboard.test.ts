@@ -513,7 +513,7 @@ describe("ConveyorService dashboard", () => {
       totalIssues: 1,
       page: 1,
       totalPages: 1,
-      issues: [{ dependencies: [{ number: 1 }], working: true }],
+      issues: [{ dependencies: [{ number: 1, satisfied: true }], working: true }],
     });
     expect(dashboard.activeWork).toMatchObject({
       runnerCount: 1,

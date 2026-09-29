@@ -144,8 +144,9 @@ export class PipelineEngine {
         producerResult: null,
       });
       if (enter.decision === "fail") {
+        const policy = stage.failurePolicies[enter.status];
         const prior = this.pipeline.stages[stageIndex - 1];
-        if (prior) {
+        if (policy?.action === "returnToPrevious" && prior) {
           return {
             kind: "correction",
             stageId,
@@ -160,7 +161,7 @@ export class PipelineEngine {
           kind: "stopped",
           stageId,
           state: stage.failureState ?? enter.status,
-          reason: enter.reason ?? "initial stage entry verification failed",
+          reason: enter.reason ?? "stage entry verification failed",
           requiredFixes: enter.requiredFixes,
           feedbackCycles: 0,
           result: null,

@@ -1195,6 +1195,10 @@ export class ConveyorService {
       number: issue.sourceNumber,
       title: issue.title,
       url: issue.sourceUrl,
+      satisfied:
+        issue.sourceState === "closed" ||
+        issue.projectedState === "done" ||
+        issue.projectedState === "completed",
     });
     const tone = (state: string): IssueTone => {
       if (state === "done" || state === "completed") return "success";
