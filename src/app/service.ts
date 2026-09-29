@@ -103,6 +103,11 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
       description: `Conveyor state: ${state}`,
     })),
     { name: config.labels.metadata.closable, color: "8b5cf6", description: "Conveyor considers this issue closable" },
+    ...repository.systemLabels.map((name) => ({
+      name,
+      color: "64748b",
+      description: "Project system area",
+    })),
   ];
   return [...new Map(labels.map((label) => [label.name, label])).values()];
 }
