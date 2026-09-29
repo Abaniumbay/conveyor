@@ -1316,8 +1316,6 @@ export class ConveyorService {
       ])).values()];
     };
     const configuredStages = new Set(stages);
-    const closedIssues = issues.filter((issue) => issue.sourceState === "closed");
-    const openIssues = issues.filter((issue) => issue.sourceState !== "closed");
     const sourceStages = (issue: StoredIssue): string[] => {
       const repository = this.config.repositories[issue.repositoryId];
       const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
@@ -1328,7 +1326,24 @@ export class ConveyorService {
           : [],
       );
     };
-    const backlogIssues = openIssues.filter((issue) => {
+    const remainsInWorkflow = (issue: StoredIssue): boolean =>
+      issue.projectedStage !== null &&
+      configuredStages.has(issue.projectedStage) &&
+      issue.projectedState !== "done" &&
+      issue.projectedState !== "inconsistent" &&
+      (sourceStages(issue).length === 1 || issue.projectedState === "active");
+    const closedIssues = issues
+      .filter((issue) => issue.sourceState === "closed" && !remainsInWorkflow(issue))
+      .sort((left, right) =>
+        right.sourceUpdatedAt.localeCompare(left.sourceUpdatedAt) ||
+        left.repositoryId.localeCompare(right.repositoryId) ||
+        right.sourceNumber - left.sourceNumber
+      );
+    const workflowIssues = issues.filter((issue) =>
+      issue.sourceState !== "closed" || remainsInWorkflow(issue)
+    );
+    const backlogIssues = workflowIssues.filter((issue) => {
+      if (issue.sourceState === "closed") return false;
       if (issue.parentId || !issue.labels.includes(this.config.labels.enrollment)) return false;
       if (sourceStages(issue).length !== 0 || issue.projectedState !== "active") return false;
       const stageState = this.store.getStageState(issue.id);
@@ -1337,7 +1352,7 @@ export class ConveyorService {
         !this.store.getActiveWorkspace(issue.id);
     });
     const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
-    const stagedIssues = openIssues.filter((issue) =>
+    const stagedIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) &&
       issue.projectedStage !== null &&
       configuredStages.has(issue.projectedStage) &&
@@ -1345,7 +1360,7 @@ export class ConveyorService {
       (sourceStages(issue).length === 1 || issue.projectedState === "active"),
     );
     const stagedIds = new Set(stagedIssues.map((issue) => issue.id));
-    const attentionIssues = openIssues.filter((issue) =>
+    const attentionIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) && !stagedIds.has(issue.id),
     );
     const title = (value: string) => value

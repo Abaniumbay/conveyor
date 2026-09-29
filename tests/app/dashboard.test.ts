@@ -409,7 +409,7 @@ describe("ConveyorService dashboard", () => {
         sourceState: "closed",
         sourceStateReason: "completed",
         labels: ["conveyor", "conveyor:done"],
-        sourceUpdatedAt: "2026-09-29T00:00:00Z",
+        sourceUpdatedAt: `2026-09-29T00:${String(number).padStart(2, "0")}:00Z`,
       });
       store.setIssueProjection(id, {
         stage: null,
@@ -507,6 +507,30 @@ describe("ConveyorService dashboard", () => {
       state: "done",
       warning: null,
     });
+    store.upsertIssue({
+      id: "github:owner/repo#29",
+      repositoryId: "repo",
+      sourceNumber: 29,
+      sourceUrl: "https://github.com/owner/repo/issues/29",
+      title: "Closed by its merged PR while delivery continues",
+      body: "",
+      sourceState: "closed",
+      sourceStateReason: "completed",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-09-29T01:00:00Z",
+    });
+    store.setIssueProjection("github:owner/repo#29", {
+      stage: "implementation",
+      state: "active",
+      warning: null,
+    });
+    store.setStageState({
+      issueId: "github:owner/repo#29",
+      stageId: "implementation",
+      status: "running",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
 
     const service = new ConveyorService(config, store, {} as never);
     const dashboard = service.dashboard("csrf", {
@@ -522,15 +546,23 @@ describe("ConveyorService dashboard", () => {
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
     expect(implementation).toMatchObject({
       actors: [{ type: "agent", name: "Kaveh", title: "Senior Developer" }],
-      totalIssues: 1,
+      totalIssues: 2,
       page: 1,
       totalPages: 1,
-      issues: [{ dependencies: [{ number: 1, satisfied: true }], working: true }],
     });
+    expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29]);
+    expect(implementation?.issues[0]).toMatchObject({
+      dependencies: [{ number: 1, satisfied: true }],
+      working: true,
+    });
+    expect(implementation?.issues[1]).toMatchObject({ working: true });
     expect(dashboard.activeWork).toMatchObject({
-      runnerCount: 1,
+      runnerCount: 2,
       runnerCapacity: 3,
-      runs: [{ id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer" }],
+      runs: [
+        { id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer" },
+        { issueNumber: 29, stageId: "implementation", kind: "orchestration" },
+      ],
     });
     expect(dashboard.selectedIssue).toMatchObject({
       id: "github:owner/repo#27",
@@ -551,6 +583,7 @@ describe("ConveyorService dashboard", () => {
     expect(dashboard.done).toMatchObject({ totalIssues: 25 });
     expect(dashboard.done.issues).toHaveLength(20);
     expect(dashboard.done.issues[0]).toMatchObject({
+      number: 25,
       state: "completed",
       tone: "success",
       inconsistent: false,
@@ -560,7 +593,7 @@ describe("ConveyorService dashboard", () => {
       number: 28,
       reason: "No valid configured stage label is present.",
     });
-    expect(dashboard.counts).toEqual({ board: 27, attention: 1 });
+    expect(dashboard.counts).toEqual({ board: 28, attention: 1 });
 
     const expanded = service.dashboard("csrf", {
       view: "board",
