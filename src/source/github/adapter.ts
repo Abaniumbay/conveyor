@@ -1,6 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import type { PullRequestReference, SourceIssue } from "../types";
+import {
+  parseManagedSections,
+  upsertManagedSection,
+  type ManagedSectionName,
+} from "./managed-sections";
 
 export interface GitHubTransportRequest {
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -78,6 +83,19 @@ interface GitHubIssue {
   labels: Array<GitHubLabel | string>;
   updated_at: string;
   pull_request?: unknown;
+}
+
+function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
+  return {
+    id: `github:${address}#${issue.number}`,
+    number: issue.number,
+    url: issue.html_url,
+    title: issue.title,
+    body: issue.body ?? "",
+    state: issue.state,
+    labels: issue.labels.map(labelName).sort((left, right) => left.localeCompare(right)),
+    updatedAt: issue.updated_at,
+  };
 }
 
 interface GitHubComment {
@@ -207,16 +225,63 @@ export class GitHubAdapter {
       method: "GET",
       path: `repos/${address}/issues/${issueNumber}`,
     });
-    return {
-      id: `github:${address}#${issue.number}`,
-      number: issue.number,
-      url: issue.html_url,
-      title: issue.title,
-      body: issue.body ?? "",
-      state: issue.state,
-      labels: issue.labels.map(labelName).sort((left, right) => left.localeCompare(right)),
-      updatedAt: issue.updated_at,
-    };
+    return sourceIssue(address, issue);
+  }
+
+  async createChildIssue(input: {
+    address: string;
+    parentNumber: number;
+    title: string;
+    body: string;
+    labels: readonly string[];
+  }): Promise<SourceIssue> {
+    const parent = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.parentNumber}`,
+    });
+    const child = await this.transport.request<GitHubIssue>({
+      method: "POST",
+      path: `repos/${input.address}/issues`,
+      body: {
+        title: input.title,
+        body: input.body,
+        labels: [...new Set(input.labels)],
+        parent_issue_id: parent.id,
+      },
+    });
+    return sourceIssue(input.address, child);
+  }
+
+  async setParent(input: {
+    address: string;
+    childNumber: number;
+    parentNumber: number;
+  }): Promise<void> {
+    const child = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.childNumber}`,
+    });
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues`,
+      body: { sub_issue_id: child.id, replace_parent: true },
+    });
+  }
+
+  async addDependency(input: {
+    address: string;
+    issueNumber: number;
+    blockerNumber: number;
+  }): Promise<void> {
+    const blocker = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.blockerNumber}`,
+    });
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`,
+      body: { issue_id: blocker.id },
+    });
   }
 
   async replaceConveyorLabels(
@@ -265,6 +330,59 @@ export class GitHubAdapter {
           body: { body },
         });
     return comment.id;
+  }
+
+  async addComment(
+    address: string,
+    issueNumber: number,
+    markdown: string,
+  ): Promise<number> {
+    const comment = await this.transport.request<GitHubComment>({
+      method: "POST",
+      path: `repos/${address}/issues/${issueNumber}/comments`,
+      body: { body: markdown },
+    });
+    return comment.id;
+  }
+
+  async updateManagedSection(input: {
+    address: string;
+    issueNumber: number;
+    section: ManagedSectionName;
+    markdown: string;
+    expectedRevision: string;
+  }): Promise<SourceIssue> {
+    const current = await this.transport.request<GitHubIssue>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.issueNumber}`,
+    });
+    const body = current.body ?? "";
+    const updatedBody = upsertManagedSection(
+      body,
+      input.section,
+      input.markdown,
+      input.expectedRevision,
+    );
+    const updated = await this.transport.request<GitHubIssue>({
+      method: "PATCH",
+      path: `repos/${input.address}/issues/${input.issueNumber}`,
+      body: { body: updatedBody },
+    });
+    const labels = updated.labels.map(labelName).sort((left, right) => left.localeCompare(right));
+    return {
+      id: `github:${input.address}#${updated.number}`,
+      number: updated.number,
+      url: updated.html_url,
+      title: updated.title,
+      body: updated.body ?? "",
+      state: updated.state,
+      labels,
+      updatedAt: updated.updated_at,
+    };
+  }
+
+  managedRevision(body: string): string {
+    return parseManagedSections(body).revision;
   }
 
   async ensurePullRequest(input: {

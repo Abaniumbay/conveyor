@@ -78,6 +78,7 @@ const controlTools: Record<string, { description: string; schema: z.ZodType }> =
   "source.set_acceptance_criteria": { description: "Update acceptance criteria.", schema: passthroughInput },
   "source.set_parent": { description: "Set issue hierarchy.", schema: passthroughInput },
   "source.set_dependencies": { description: "Update issue dependencies.", schema: passthroughInput },
+  "source.create_child": { description: "Create a child issue in the scoped repository.", schema: passthroughInput },
   "source.set_pull_request_metadata": { description: "Update PR metadata.", schema: passthroughInput },
   "workspace.request_fetch": { description: "Request a scoped workspace fetch.", schema: passthroughInput },
   "workspace.request_push": { description: "Request a scoped workspace push.", schema: passthroughInput },

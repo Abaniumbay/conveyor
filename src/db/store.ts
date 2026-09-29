@@ -91,6 +91,9 @@ export interface StoredQuestion {
   prompt: string;
   reason: string;
   options: unknown[];
+  minSelections: number;
+  maxSelections: number;
+  allowFreeText: boolean;
   status: string;
   createdAt: string;
   answeredAt: string | null;
@@ -449,6 +452,14 @@ export class ConveyorStore {
     };
   }
 
+  markWorkspaceRemoved(workspaceId: string): void {
+    this.#database
+      .query(
+        `UPDATE workspaces SET status = 'removed', removed_at = ? WHERE id = ?`,
+      )
+      .run(now(), workspaceId);
+  }
+
   setStageState(state: {
     issueId: string;
     stageId: string;
@@ -730,7 +741,7 @@ export class ConveyorStore {
     };
   }
 
-  costSummary(): {
+  costSummary(filters: { issueId?: string; stageId?: string } = {}): {
     runs: number;
     amount: number;
     currency: string;
@@ -738,17 +749,30 @@ export class ConveyorStore {
     inputTokens: number;
     outputTokens: number;
     cachedTokens: number;
+    unavailableRuns: number;
   } {
+    const conditions: string[] = [];
+    const bindings: string[] = [];
+    if (filters.issueId) {
+      conditions.push("r.issue_id = ?");
+      bindings.push(filters.issueId);
+    }
+    if (filters.stageId) {
+      conditions.push("r.stage_id = ?");
+      bindings.push(filters.stageId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const row = this.#database
       .query(
         `SELECT COUNT(*) AS runs, COALESCE(SUM(amount), 0) AS amount,
            COALESCE(SUM(duration_ms), 0) AS duration_ms,
            COALESCE(SUM(input_tokens), 0) AS input_tokens,
            COALESCE(SUM(output_tokens), 0) AS output_tokens,
-           COALESCE(SUM(cached_tokens), 0) AS cached_tokens
-         FROM usage_cost_entries`,
+           COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+           COALESCE(SUM(CASE WHEN source = 'unavailable' THEN 1 ELSE 0 END), 0) AS unavailable_runs
+         FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id ${where}`,
       )
-      .get() as Record<string, SQLQueryBindings>;
+      .get(...bindings) as Record<string, SQLQueryBindings>;
     return {
       runs: Number(row.runs),
       amount: Number(row.amount),
@@ -757,7 +781,33 @@ export class ConveyorStore {
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),
       cachedTokens: Number(row.cached_tokens),
+      unavailableRuns: Number(row.unavailable_runs),
     };
+  }
+
+  moveQueueIssue(issueId: string, direction: "up" | "down"): void {
+    this.#database.transaction(() => {
+      const issues = this.#database
+        .query(
+          `SELECT id, queue_rank FROM issues
+           WHERE parent_id IS NULL AND queue_rank IS NOT NULL
+           ORDER BY queue_rank, id`,
+        )
+        .all() as Array<{ id: string; queue_rank: number }>;
+      const index = issues.findIndex((issue) => issue.id === issueId);
+      if (index < 0) throw new Error("only queued top-level issues can be reordered");
+      const otherIndex = direction === "up" ? index - 1 : index + 1;
+      const current = issues[index];
+      const other = issues[otherIndex];
+      if (!current || !other) return;
+      const timestamp = now();
+      this.#database
+        .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
+        .run(other.queue_rank, timestamp, current.id);
+      this.#database
+        .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
+        .run(current.queue_rank, timestamp, other.id);
+    })();
   }
 
   openQuestion(input: {
@@ -766,6 +816,9 @@ export class ConveyorStore {
     prompt: string;
     reason: string;
     options: unknown[];
+    minSelections?: number;
+    maxSelections?: number;
+    allowFreeText?: boolean;
   }): StoredQuestion {
     return this.#database.transaction(() => {
       const existing = this.#database
@@ -776,8 +829,9 @@ export class ConveyorStore {
       this.#database
         .query(
           `INSERT INTO questions(
-             id, issue_id, run_id, prompt, reason, options_json, status, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+             id, issue_id, run_id, prompt, reason, options_json,
+             min_selections, max_selections, allow_free_text, status, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
         )
         .run(
           id,
@@ -786,6 +840,9 @@ export class ConveyorStore {
           input.prompt,
           input.reason,
           json(input.options),
+          input.minSelections ?? 1,
+          input.maxSelections ?? 1,
+          input.allowFreeText ? 1 : 0,
           now(),
         );
       return this.getQuestion(id)!;
@@ -839,6 +896,9 @@ export class ConveyorStore {
       prompt: String(row.prompt),
       reason: String(row.reason),
       options: parseJson<unknown[]>(String(row.options_json)) ?? [],
+      minSelections: Number(row.min_selections),
+      maxSelections: Number(row.max_selections),
+      allowFreeText: Number(row.allow_free_text) === 1,
       status: String(row.status),
       createdAt: String(row.created_at),
       answeredAt: row.answered_at === null ? null : String(row.answered_at),

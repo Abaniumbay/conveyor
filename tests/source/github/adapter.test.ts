@@ -144,6 +144,41 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  test("optimistically updates only a managed issue-body section", async () => {
+    const body = "Human text";
+    const updatedBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const issue = {
+      id: 101,
+      number: 3,
+      html_url: "https://github.com/owner/repo/issues/3",
+      title: "Feature",
+      body,
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(
+      issue,
+      { ...issue, body: updatedBody, updated_at: "2026-01-02T00:00:00Z" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const updated = await adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(body),
+    });
+
+    expect(transport.requests[1]).toEqual({
+      method: "PATCH",
+      path: "repos/owner/repo/issues/3",
+      body: { body: updatedBody },
+    });
+    expect(updated.body).toBe(updatedBody);
+  });
+
   test("creates a PR idempotently and requests squash merge", async () => {
     const transport = new FakeTransport(
       [],

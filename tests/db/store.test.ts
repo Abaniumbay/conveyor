@@ -27,7 +27,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(1);
+    expect(store.schemaVersion()).toBe(2);
 
     store.close();
   });
@@ -182,6 +182,11 @@ describe("ConveyorStore", () => {
       projectedStage: "refinement",
       projectedState: "active",
     });
+    store.moveQueueIssue("issue-2", "up");
+    expect(store.listIssues("repo-1").map((issue) => issue.id)).toEqual([
+      "issue-2",
+      "issue-1",
+    ]);
     store.close();
   });
 
@@ -321,6 +326,7 @@ describe("ConveyorStore", () => {
       inputTokens: 100,
       outputTokens: 20,
       cachedTokens: 5,
+      unavailableRuns: 1,
     });
     store.close();
   });

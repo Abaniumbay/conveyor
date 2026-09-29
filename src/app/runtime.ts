@@ -43,6 +43,7 @@ const MUTATION_TOOLS = [
   "source.set_acceptance_criteria",
   "source.set_parent",
   "source.set_dependencies",
+  "source.create_child",
   "source.set_pull_request_metadata",
   "workspace.request_fetch",
   "workspace.request_push",

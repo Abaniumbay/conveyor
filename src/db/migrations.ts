@@ -264,4 +264,12 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE questions ADD COLUMN min_selections INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE questions ADD COLUMN max_selections INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE questions ADD COLUMN allow_free_text INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
