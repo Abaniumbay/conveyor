@@ -10,7 +10,7 @@ import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } fr
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { renderStatusComment } from "../source/github/status-comment";
 import { WorkspaceManager } from "../workspace/manager";
-import type { DashboardViewModel, IssueCardViewModel, QuestionViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, QuestionViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -29,6 +29,7 @@ interface McpGrant {
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
+const DASHBOARD_PAGE_SIZE = 20;
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -882,7 +883,10 @@ export class ConveyorService {
     }
   }
 
-  dashboard(csrfToken: string): DashboardViewModel {
+  dashboard(
+    csrfToken: string,
+    pagination: DashboardPageSelection = { column: null, page: 1 },
+  ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     const card = (issue: StoredIssue, visited = new Set<string>()): IssueCardViewModel => {
@@ -926,6 +930,59 @@ export class ConveyorService {
     const stages = [...new Set(Object.values(this.config.pipelines).flatMap((pipeline) =>
       pipeline.stages.map((stage) => stage.id),
     ))].filter((stage) => !firstStages.has(stage));
+    const activeIssues = topLevel.filter((issue) =>
+      issue.projectedState === "active" && issue.projectedStage,
+    );
+    const stateIssues = topLevel.filter((issue) =>
+      issue.projectedState !== "active" || !issue.projectedStage,
+    );
+    const stateGroups = new Map<string, StoredIssue[]>();
+    for (const issue of stateIssues) {
+      const state = issue.projectedState ?? issue.sourceState ?? "unknown";
+      const group = stateGroups.get(state) ?? [];
+      group.push(issue);
+      stateGroups.set(state, group);
+    }
+    const preferredStates = [
+      "needs-input",
+      "needs-intervention",
+      "blocked",
+      "inconsistent",
+      "paused",
+      "rejected",
+      ...Object.keys(this.config.labels.states),
+      "done",
+      "closed",
+    ];
+    const stateNames = [
+      ...new Set(preferredStates.filter((state) => stateGroups.has(state))),
+      ...[...stateGroups.keys()].filter((state) => !preferredStates.includes(state)).sort(),
+    ];
+    const title = (value: string) => value
+      .split(/[-_]/)
+      .filter(Boolean)
+      .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+      .join(" ");
+    const column = (
+      id: string,
+      name: string,
+      columnIssues: StoredIssue[],
+      cost: string | null,
+    ): StageColumnViewModel => {
+      const totalPages = Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
+      const requestedPage = pagination.column === id ? pagination.page : 1;
+      const page = Math.min(Math.max(1, requestedPage), totalPages);
+      const offset = (page - 1) * DASHBOARD_PAGE_SIZE;
+      return {
+        id,
+        name,
+        cost,
+        totalIssues: columnIssues.length,
+        page,
+        totalPages,
+        issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map((issue) => card(issue)),
+      };
+    };
     const questions: QuestionViewModel[] = this.store.listOpenQuestions().flatMap((question) => {
       const issue = byId.get(question.issueId);
       if (!issue) return [];
@@ -955,18 +1012,29 @@ export class ConveyorService {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
-      stages: stages.map((stage) => ({
-        name: stage,
-        cost: (() => {
+      stages: [
+        ...stages.map((stage) => column(
+          `stage:${stage}`,
+          title(stage),
+          activeIssues.filter((issue) => issue.projectedStage === stage),
+          (() => {
           const summary = this.store.costSummary({ stageId: stage });
           if (summary.runs === 0) return null;
           return summary.unavailableRuns === summary.runs
             ? `${summary.runs} runs · cost unavailable`
             : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
-        })(),
-        issues: topLevel.filter((issue) => issue.projectedStage === stage).map((issue) => card(issue)),
-      })),
-      backlog: topLevel.filter((issue) => issue.projectedStage && firstStages.has(issue.projectedStage)).map((issue) => card(issue)),
+          })(),
+        )),
+        ...stateNames.map((state) => column(
+          `state:${state}`,
+          title(state),
+          stateGroups.get(state) ?? [],
+          null,
+        )),
+      ],
+      backlog: activeIssues
+        .filter((issue) => issue.projectedStage && firstStages.has(issue.projectedStage))
+        .map((issue) => card(issue)),
       questions,
       systemWarnings: [
         ...this.#onboardingErrors.entries(),
@@ -981,7 +1049,7 @@ export class ConveyorService {
     return {
       auth,
       username,
-      getDashboard: (csrfToken) => this.dashboard(csrfToken),
+      getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       isReady: () =>
         Boolean(this.#lastReconciledAt) &&
         !this.#shuttingDown &&

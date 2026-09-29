@@ -8,8 +8,12 @@ const dashboard: DashboardViewModel = {
   updatedAt: "2026-09-29T12:00:00Z",
   stages: [
     {
+      id: "stage:build",
       name: "Build",
       cost: "$0.42",
+      totalIssues: 41,
+      page: 2,
+      totalPages: 3,
       issues: [
         {
           id: "parent",
@@ -48,7 +52,15 @@ const dashboard: DashboardViewModel = {
         },
       ],
     },
-    { name: "Review", cost: null, issues: [] },
+    {
+      id: "stage:review",
+      name: "Review",
+      cost: null,
+      totalIssues: 0,
+      page: 1,
+      totalPages: 1,
+      issues: [],
+    },
   ],
   backlog: [
     {
@@ -89,6 +101,10 @@ describe("renderDashboard", () => {
 
     expect(html).toContain("<h2 id=\"stage-heading-1\">Build</h2>");
     expect(html).toContain("<h2 id=\"stage-heading-2\">Review</h2>");
+    expect(html).toContain('aria-label="41 issues"');
+    expect(html).toContain("Page 2 of 3");
+    expect(html).toContain("column=stage%3Abuild&amp;page=1");
+    expect(html).toContain("column=stage%3Abuild&amp;page=3");
     expect(html).toContain("Nested task");
     expect(html).toContain("aria-label=\"Child issues for #41\"");
     expect(html).toContain("in_progress");

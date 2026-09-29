@@ -18,9 +18,18 @@ export interface IssueCardViewModel {
 }
 
 export interface StageColumnViewModel {
+  id: string;
   name: string;
   cost: string | null;
+  totalIssues: number;
+  page: number;
+  totalPages: number;
   issues: readonly IssueCardViewModel[];
+}
+
+export interface DashboardPageSelection {
+  column: string | null;
+  page: number;
 }
 
 export interface QuestionViewModel {

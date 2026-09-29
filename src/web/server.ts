@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { renderDashboard } from "./render";
-import type { DashboardViewModel } from "./types";
+import type { DashboardPageSelection, DashboardViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -9,7 +9,10 @@ export type BacklogDirection = "up" | "down";
 export interface WebHandlerDependencies {
   auth: WebAuthApi;
   username: string;
-  getDashboard: (csrfToken: string) => DashboardViewModel | Promise<DashboardViewModel>;
+  getDashboard: (
+    csrfToken: string,
+    pagination: DashboardPageSelection,
+  ) => DashboardViewModel | Promise<DashboardViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
@@ -146,6 +149,21 @@ function requireMethod(request: Request, method: string): Response | null {
   return request.method === method ? null : response(null, 405, "text/plain; charset=utf-8", { allow: method });
 }
 
+function dashboardPage(url: URL): DashboardPageSelection {
+  const columns = url.searchParams.getAll("column");
+  const pages = url.searchParams.getAll("page");
+  if (columns.length !== 1 || pages.length !== 1) return { column: null, page: 1 };
+  const column = columns[0]!;
+  const page = pages[0]!;
+  if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
+    return { column: null, page: 1 };
+  }
+  const parsedPage = Number(page);
+  return Number.isSafeInteger(parsedPage)
+    ? { column, page: parsedPage }
+    : { column: null, page: 1 };
+}
+
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
   if (!dependencies.webhookPath.startsWith("/") || dependencies.webhookPath.startsWith("//")) {
     throw new Error("webhookPath must be an absolute URL path");
@@ -218,7 +236,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const currentSession = session(request);
       if (!currentSession) return redirect("/login");
       try {
-        const model = await dependencies.getDashboard(currentSession.csrfToken);
+        const model = await dependencies.getDashboard(currentSession.csrfToken, dashboardPage(url));
         return response(renderDashboard(model), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);

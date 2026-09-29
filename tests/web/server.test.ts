@@ -69,16 +69,23 @@ describe("createWebHandler", () => {
   });
 
   test("logs in, serves dashboard, and clears the session on logout", async () => {
-    const { handler, auth } = setup();
+    const dashboardCalls: unknown[][] = [];
+    const { handler, auth } = setup({
+      getDashboard: (...args: unknown[]) => {
+        dashboardCalls.push(args);
+        return model;
+      },
+    });
     const { response, cookie } = await login(handler);
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("/");
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
 
-    const page = await handler(new Request("http://localhost/", { headers: { cookie } }));
+    const page = await handler(new Request("http://localhost/?column=state%3Adone&page=4", { headers: { cookie } }));
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(await page.text()).toContain("Test board");
+    expect(dashboardCalls).toEqual([[expect.any(String), { column: "state:done", page: 4 }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const logout = await handler(new Request("http://localhost/logout", {
