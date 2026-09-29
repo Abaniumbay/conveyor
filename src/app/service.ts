@@ -376,7 +376,10 @@ export class ConveyorService {
   ): Promise<void> {
     const issues = this.store
       .listIssues(repositoryId)
-      .filter((issue) => issue.labels.includes(this.config.labels.enrollment));
+      .filter(
+        (issue) =>
+          issue.sourceState === "open" && issue.projectedState === "active",
+      );
     const parents = new Map<string, { parentId: string; siblingOrder: number }>();
     for (const parent of issues) {
       const children = await this.github.listSubIssues(address, parent.sourceNumber);
