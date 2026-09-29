@@ -1,0 +1,125 @@
+import { randomUUID } from "node:crypto";
+
+import type { ConveyorConfig } from "../config/load";
+import { PipelineEngine, type PipelineDependencies, type StageExecutionResult } from "../core/pipeline";
+import { applyStageTransition, type TransitionSource } from "../core/transition";
+import type { ConveyorStore, StoredIssue } from "../db/store";
+import type { WorkspaceManager } from "../workspace/manager";
+import type { RuntimeIssueContext } from "./runtime";
+
+export interface IssueExecutorDependencies {
+  config: ConveyorConfig;
+  store: ConveyorStore;
+  sourceName: string;
+  source: TransitionSource;
+  workspaceManager: Pick<WorkspaceManager, "create">;
+  runtime: (context: RuntimeIssueContext) => PipelineDependencies;
+  sourceGuidance: string;
+}
+
+function slug(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "issue";
+}
+
+export class IssueExecutor {
+  constructor(private readonly dependencies: IssueExecutorDependencies) {}
+
+  async execute(issue: StoredIssue): Promise<StageExecutionResult> {
+    const repositoryEntry = Object.entries(this.dependencies.config.repositories)
+      .find(([, repository]) => repository.address && issue.repositoryId === repository.address);
+    const fallbackEntry = Object.entries(this.dependencies.config.repositories)
+      .find(([name]) => name === issue.repositoryId);
+    const [repositoryId, repository] = repositoryEntry ?? fallbackEntry ?? [];
+    if (!repositoryId || !repository) {
+      throw new Error(`issue ${issue.id} references unknown repository ${issue.repositoryId}`);
+    }
+    const pipeline = this.dependencies.config.pipelines[repository.pipeline];
+    if (!pipeline) throw new Error(`unknown pipeline: ${repository.pipeline}`);
+    const stageId = issue.projectedStage ?? pipeline.stages[0]?.id;
+    if (!stageId) throw new Error(`pipeline ${repository.pipeline} has no stage`);
+    const state = this.dependencies.store.getStageState(issue.id);
+    if (state?.status !== "ready" || state.stageId !== stageId) {
+      throw new Error(`issue ${issue.id} is not ready at stage ${stageId}`);
+    }
+
+    const enrollment = this.dependencies.store.activateEnrollment(issue.id);
+    let workspace = this.dependencies.store.getActiveWorkspace(issue.id);
+    if (!workspace) {
+      const created = await this.dependencies.workspaceManager.create({
+        repositoryPath: repository.folder,
+        repositoryId,
+        issueNumber: issue.sourceNumber,
+        enrollment: enrollment.generation,
+        slug: slug(issue.title),
+        baseBranch: repository.baseBranch,
+      });
+      this.dependencies.store.recordWorkspace({
+        id: randomUUID(),
+        enrollmentId: enrollment.id,
+        path: created.path,
+        branch: created.branch,
+        status: "active",
+      });
+      workspace = this.dependencies.store.getActiveWorkspace(issue.id);
+    }
+    if (!workspace) throw new Error(`workspace for issue ${issue.id} was not recorded`);
+
+    this.dependencies.store.setStageState({
+      issueId: issue.id,
+      stageId,
+      status: "running",
+      feedbackCycle: state.feedbackCycle,
+      configHash: this.dependencies.config.hash,
+    });
+    const context: RuntimeIssueContext = {
+      issue,
+      repository: {
+        id: repositoryId,
+        address: repository.address,
+        folder: repository.folder,
+        baseBranch: repository.baseBranch,
+      },
+      workspace: { path: workspace.path, branch: workspace.branch },
+      sourceGuidance: this.dependencies.sourceGuidance,
+      delivery: { pullRequest: null, checks: [] },
+    };
+    const engine = new PipelineEngine(
+      pipeline,
+      this.dependencies.runtime(context),
+      this.dependencies.config.settings.feedbackCycles,
+    );
+    const transitionId = randomUUID();
+    try {
+      const result = await engine.executeStage(stageId, {
+        issue: issue as unknown as Record<string, unknown>,
+        workspace: workspace.path,
+      });
+      await applyStageTransition({
+        store: this.dependencies.store,
+        source: this.dependencies.source,
+        sourceName: this.dependencies.sourceName,
+        address: repository.address,
+        configHash: this.dependencies.config.hash,
+        transitionId,
+        issue,
+        stages: pipeline.stages.map((stage) => stage.id),
+        labels: this.dependencies.config.labels,
+        result,
+      });
+      return result;
+    } catch (error) {
+      this.dependencies.store.setStageState({
+        issueId: issue.id,
+        stageId,
+        status: "error",
+        feedbackCycle: state.feedbackCycle,
+        configHash: this.dependencies.config.hash,
+      });
+      throw error;
+    }
+  }
+}
