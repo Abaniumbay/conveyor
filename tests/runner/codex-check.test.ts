@@ -40,6 +40,10 @@ describe("runCodexCheck", () => {
         console.error("structured outputs do not accept allOf");
         process.exit(1);
       }
+      if (schema.properties?.version?.type !== "integer") {
+        console.error("structured-output properties require explicit types");
+        process.exit(1);
+      }
       const output = args[args.indexOf("-o") + 1];
       await Bun.write(output, JSON.stringify({
         version: 1,

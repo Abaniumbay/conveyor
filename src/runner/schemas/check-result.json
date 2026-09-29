@@ -13,7 +13,7 @@
     "criteria"
   ],
   "properties": {
-    "version": { "const": 1 },
+    "version": { "type": "integer", "enum": [1] },
     "decision": { "enum": ["pass", "fail"] },
     "status": { "type": "string", "minLength": 1 },
     "reason": { "type": ["string", "null"], "minLength": 1 },
