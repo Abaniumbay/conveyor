@@ -636,6 +636,16 @@ export class ConveyorStore {
       );
   }
 
+  nextRunAttempt(issueId: string, stageId: string, kind: string): number {
+    const row = this.#database
+      .query(
+        `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt FROM runs
+         WHERE issue_id = ? AND stage_id = ? AND kind = ?`,
+      )
+      .get(issueId, stageId, kind) as { attempt: number };
+    return Number(row.attempt);
+  }
+
   finishRun(
     runId: string,
     finish: {
