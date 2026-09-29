@@ -1,0 +1,31 @@
+# Dependencies and build output
+node_modules/
+coverage/
+dist/
+
+# Runtime state — configuration and operational data belong outside the source tree
+data/
+artifacts/
+logs/
+worktrees/
+config.local/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+*.bak
+
+# Credentials and machine-local overrides
+.env
+.env.*
+!.env.example
+*.local.yml
+*.local.yaml
+
+# Editor and operating-system state
+.DS_Store
+.idea/
+.vscode/
+
+# Documentation screenshot staging
+.screenshots/

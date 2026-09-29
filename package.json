@@ -1,0 +1,31 @@
+{
+  "name": "conveyor-v2",
+  "version": "0.1.0",
+  "description": "A GitHub-native autonomous software delivery orchestrator",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmirRaptoR/conveyor-v2.git"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit",
+    "check": "bun test && tsc --noEmit",
+    "deploy:when-idle": "bun run scripts/deploy-when-idle.ts",
+    "start": "bun run src/cli.ts serve"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "preact": "^10.29.8",
+    "preact-render-to-string": "^6.7.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}
