@@ -3,6 +3,8 @@ export const dashboardClient = String.raw`(() => {
   const board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
   let pendingReload = false;
+  let conversationRefreshTimer = null;
+  let activityRefreshTimer = null;
 
   try {
     const saved = JSON.parse(sessionStorage.getItem(scrollKey) || 'null');
@@ -230,6 +232,24 @@ export const dashboardClient = String.raw`(() => {
       delete panel.dataset.loading;
       if (status) status.classList.remove('status--loading');
     }
+  };
+
+  const scheduleConversationRefresh = () => {
+    if (conversationRefreshTimer !== null) return;
+    conversationRefreshTimer = setTimeout(() => {
+      conversationRefreshTimer = null;
+      const panel = document.querySelector('dialog[open] [data-detail-panel="conversation"]:not([hidden])');
+      if (panel) void loadIssueConversation(panel);
+    }, 250);
+  };
+
+  const scheduleActivityRefresh = () => {
+    if (activityRefreshTimer !== null) return;
+    activityRefreshTimer = setTimeout(() => {
+      activityRefreshTimer = null;
+      const panel = document.querySelector('dialog[open] [data-detail-panel="activity"]:not([hidden])');
+      if (panel) void loadIssueActivity(panel);
+    }, 3_000);
   };
 
   const loadOlderEvents = async (button) => {
@@ -473,16 +493,14 @@ export const dashboardClient = String.raw`(() => {
       const openDialog = document.querySelector('dialog[open]');
       if (openDialog) {
         pendingReload = true;
-        const conversation = openDialog.querySelector('[data-detail-panel="conversation"]:not([hidden])');
-        const activity = openDialog.querySelector('[data-detail-panel="activity"]:not([hidden])');
-        if (conversation) void loadIssueConversation(conversation);
-        if (activity) void loadIssueActivity(activity);
         return;
       }
       preserveScroll();
       location.reload();
     } catch {}
   });
+  dashboardEvents.addEventListener('conversation', scheduleConversationRefresh);
+  dashboardEvents.addEventListener('activity', scheduleActivityRefresh);
 
   const panel = document.querySelector('[data-steering-run]');
   const runId = panel && panel.getAttribute('data-steering-run');

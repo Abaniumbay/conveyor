@@ -8,6 +8,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("activityUrl");
     expect(dashboardClient).toContain("data-detail-tab");
     expect(dashboardClient).toContain("new EventSource('/events/dashboard')");
+    expect(dashboardClient).toContain("addEventListener('conversation'");
+    expect(dashboardClient).toContain("addEventListener('activity'");
+    expect(dashboardClient).toContain("scheduleActivityRefresh");
     expect(dashboardClient).not.toContain("/api/dashboard-revision");
     expect(dashboardClient).toContain("url.searchParams.set('tab', name)");
     expect(dashboardClient).toContain("data-more-runs");

@@ -280,7 +280,18 @@ export class ConveyorStore {
            labels_json = excluded.labels_json,
            source_updated_at = excluded.source_updated_at,
            parent_id = COALESCE(excluded.parent_id, issues.parent_id),
-           updated_at = excluded.updated_at`,
+           updated_at = CASE WHEN
+             issues.repository_id IS NOT excluded.repository_id OR
+             issues.source_number IS NOT excluded.source_number OR
+             issues.source_url IS NOT excluded.source_url OR
+             issues.title IS NOT excluded.title OR
+             issues.body IS NOT excluded.body OR
+             issues.source_state IS NOT excluded.source_state OR
+             issues.source_state_reason IS NOT excluded.source_state_reason OR
+             issues.labels_json IS NOT excluded.labels_json OR
+             issues.source_updated_at IS NOT excluded.source_updated_at OR
+             issues.parent_id IS NOT COALESCE(excluded.parent_id, issues.parent_id)
+           THEN excluded.updated_at ELSE issues.updated_at END`,
       )
       .run(
         issue.id,
@@ -321,7 +332,9 @@ export class ConveyorStore {
       .query(
         `UPDATE issues
          SET projected_stage = ?, projected_state = ?, warning = ?, updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND (
+           projected_stage IS NOT ? OR projected_state IS NOT ? OR warning IS NOT ?
+         )`,
       )
       .run(
         projection.stage,
@@ -329,6 +342,9 @@ export class ConveyorStore {
         projection.warning,
         now(),
         issueId,
+        projection.stage,
+        projection.state,
+        projection.warning,
       );
   }
 
@@ -585,7 +601,12 @@ export class ConveyorStore {
            status = excluded.status,
            feedback_cycle = excluded.feedback_cycle,
            config_hash = excluded.config_hash,
-           updated_at = excluded.updated_at`,
+           updated_at = CASE WHEN
+             stage_states.stage_id IS NOT excluded.stage_id OR
+             stage_states.status IS NOT excluded.status OR
+             stage_states.feedback_cycle IS NOT excluded.feedback_cycle OR
+             stage_states.config_hash IS NOT excluded.config_hash
+           THEN excluded.updated_at ELSE stage_states.updated_at END`,
       )
       .run(
         state.issueId,
@@ -1024,11 +1045,31 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, started_at)), '') FROM runs
          UNION ALL
-         SELECT 'run_events', COUNT(*), COALESCE(MAX(created_at), '') FROM run_events
+         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows
+      .map((row) => `${String(row.source)}:${Number(row.count)}:${String(row.updated)}`)
+      .join("|");
+  }
+
+  conversationRevision(): string {
+    const row = this.#database
+      .query(
+        `SELECT COUNT(*) AS count, COALESCE(MAX(created_at), '') AS updated
+         FROM conversation_messages`,
+      )
+      .get() as Record<string, SQLQueryBindings>;
+    return `${Number(row.count)}:${String(row.updated)}`;
+  }
+
+  activityRevision(): string {
+    const rows = this.#database
+      .query(
+        `SELECT 'runs' AS source, COUNT(*) AS count,
+           COALESCE(MAX(COALESCE(finished_at, started_at)), '') AS updated FROM runs
          UNION ALL
-         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions
-         UNION ALL
-         SELECT 'conversation', COUNT(*), COALESCE(MAX(created_at), '') FROM conversation_messages`,
+         SELECT 'run_events', COUNT(*), COALESCE(MAX(created_at), '') FROM run_events`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows

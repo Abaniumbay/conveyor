@@ -203,6 +203,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("data-local-time");
     expect(html).toContain("page-loader");
     expect(html).toContain("min-height:calc(100vh - 11rem)");
+    expect(html).toContain("grid-template-columns:minmax(0,1fr) auto");
+    expect(html).toContain("height:calc(100dvh - 1rem)");
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {

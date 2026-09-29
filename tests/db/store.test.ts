@@ -228,6 +228,82 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("separates stable board revisions from conversation and technical activity", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    const issue = {
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "Stable board",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    store.upsertIssue(issue);
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-1",
+      stageId: "implementation",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: "config-hash",
+    });
+    store.createRun({
+      id: "run-1",
+      issueId: "issue-1",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: "config-hash",
+      startedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    const board = store.dashboardRevision();
+    const conversation = store.conversationRevision();
+    const activity = store.activityRevision();
+    await Bun.sleep(2);
+    store.upsertIssue(issue);
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-1",
+      stageId: "implementation",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: "config-hash",
+    });
+    expect(store.dashboardRevision()).toBe(board);
+
+    store.appendRunEvent("run-1", "progress", { message: "Editing" });
+    expect(store.dashboardRevision()).toBe(board);
+    expect(store.activityRevision()).not.toBe(activity);
+    expect(store.conversationRevision()).toBe(conversation);
+
+    store.appendConversationMessage({
+      issueId: "issue-1",
+      runId: "run-1",
+      stageId: "implementation",
+      actorType: "agent",
+      actorId: "kaveh",
+      actorName: "Kaveh",
+      actorTitle: "Senior Developer",
+      message: "Running focused tests.",
+    });
+    expect(store.dashboardRevision()).toBe(board);
+    expect(store.conversationRevision()).not.toBe(conversation);
+    store.close();
+  });
+
   test("lists active issue runners and complete issue run history", async () => {
     const store = await openStore();
     store.upsertRepository({

@@ -38,8 +38,8 @@ interface ServiceImplementations {
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
 const DASHBOARD_PAGE_SIZE = 20;
-const ACTIVITY_RUN_PAGE_SIZE = 5;
-const ACTIVITY_EVENT_PAGE_SIZE = 20;
+const ACTIVITY_RUN_PAGE_SIZE = 1;
+const ACTIVITY_EVENT_PAGE_SIZE = 5;
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1664,6 +1664,8 @@ export class ConveyorService {
       username,
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getDashboardRevision: () => this.store.dashboardRevision(),
+      getConversationRevision: () => this.store.conversationRevision(),
+      getActivityRevision: () => this.store.activityRevision(),
       getSystemStatus: () => this.systemStatus(),
       isReady: () =>
         Boolean(this.#lastReconciledAt) &&

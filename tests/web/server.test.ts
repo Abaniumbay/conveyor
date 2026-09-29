@@ -64,6 +64,8 @@ function setup(overrides: Record<string, unknown> = {}) {
     username: "operator",
     getDashboard: () => model,
     getDashboardRevision: () => "revision-1",
+    getConversationRevision: () => "conversation-1",
+    getActivityRevision: () => "activity-1",
     getSystemStatus: async () => ({
       memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
       disk: { usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
@@ -216,7 +218,18 @@ describe("createWebHandler", () => {
   });
 
   test("streams authenticated dashboard updates and starts steering with CSRF", async () => {
-    const { handler, auth, calls } = setup();
+    let statusAttempts = 0;
+    const { handler, auth, calls } = setup({
+      getSystemStatus: async () => {
+        statusAttempts += 1;
+        if (statusAttempts === 1) throw new Error("temporary statfs failure");
+        return {
+          memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
+          disk: { usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
+          uptimeSeconds: 3_600,
+        };
+      },
+    });
     expect((await handler(new Request("http://localhost/events/dashboard"))).status).toBe(401);
     expect((await handler(new Request("http://localhost/api/dashboard-revision"))).status).toBe(404);
     const asset = await handler(new Request("http://localhost/assets/dashboard.js"));
@@ -229,11 +242,23 @@ describe("createWebHandler", () => {
     const { cookie } = await login(handler);
     const updates = await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }));
     expect(updates.headers.get("content-type")).toContain("text/event-stream");
+    expect(updates.headers.get("x-accel-buffering")).toBe("no");
     const reader = updates.body!.getReader();
-    const first = await reader.read();
-    const streamed = new TextDecoder().decode(first.value);
+    let streamed = "";
+    await Promise.race([
+      (async () => {
+        while (!streamed.includes("event: status")) {
+          const next = await reader.read();
+          if (next.done) throw new Error("dashboard event stream closed");
+          streamed += new TextDecoder().decode(next.value);
+        }
+      })(),
+      Bun.sleep(2_500).then(() => { throw new Error("dashboard event stream timed out"); }),
+    ]);
     expect(streamed).toContain("event: revision");
     expect(streamed).toContain('"revision":"revision-1"');
+    expect(streamed).toContain("event: status");
+    expect(statusAttempts).toBe(2);
     await reader.cancel();
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const forbidden = await handler(new Request("http://localhost/steering", {

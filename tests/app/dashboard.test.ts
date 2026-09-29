@@ -478,7 +478,19 @@ describe("ConveyorService dashboard", () => {
       configHash: config.hash,
       startedAt: "2026-09-29T00:01:00Z",
     });
-    store.appendRunEvent("active-run", "progress", { message: "Implementing" });
+    for (let sequence = 1; sequence <= 7; sequence += 1) {
+      store.appendRunEvent("active-run", "progress", { message: `Step ${sequence}` });
+    }
+    store.createRun({
+      id: "older-run",
+      issueId: "github:owner/repo#27",
+      stageId: "implementation",
+      attempt: 0,
+      kind: "producer",
+      status: "succeeded",
+      configHash: config.hash,
+      startedAt: "2026-09-29T00:00:30Z",
+    });
     store.upsertIssue({
       id: "github:owner/repo#28",
       repositoryId: "repo",
@@ -526,7 +538,14 @@ describe("ConveyorService dashboard", () => {
     });
     expect(service.issueActivity("github:owner/repo#27")).toMatchObject({
       issueId: "github:owner/repo#27",
-      runs: [{ id: "active-run", events: [{ type: "progress", payload: { message: "Implementing" } }] }],
+      runs: [{ id: "active-run" }],
+      nextRunBefore: "active-run",
+    });
+    expect(service.issueActivity("github:owner/repo#27")?.runs).toHaveLength(1);
+    expect(service.issueActivity("github:owner/repo#27")?.runs[0]?.events).toHaveLength(5);
+    expect(service.issueActivity("github:owner/repo#27")?.runs[0]?.events[0]).toMatchObject({
+      type: "progress",
+      payload: { message: "Step 7" },
     });
     expect(dashboard.backlog.map((issue) => issue.number)).toEqual([26]);
     expect(dashboard.done).toMatchObject({ totalIssues: 25 });

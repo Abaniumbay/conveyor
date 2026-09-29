@@ -15,6 +15,8 @@ export interface WebHandlerDependencies {
     pagination: DashboardPageSelection,
   ) => DashboardViewModel | Promise<DashboardViewModel>;
   getDashboardRevision: () => string | Promise<string>;
+  getConversationRevision: () => string | Promise<string>;
+  getActivityRevision: () => string | Promise<string>;
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
@@ -52,7 +54,7 @@ function response(body: BodyInit | null, status: number, contentType: string, he
   responseHeaders.set("content-type", contentType);
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
-  responseHeaders.set("cache-control", "no-store");
+  if (!responseHeaders.has("cache-control")) responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
 }
@@ -266,23 +268,60 @@ function dashboardEventStream(dependencies: WebHandlerDependencies): ReadableStr
     start(controller) {
       void (async () => {
         let revision = "";
+        let conversationRevision = await Promise.resolve()
+          .then(() => dependencies.getConversationRevision())
+          .catch(() => "");
+        let activityRevision = await Promise.resolve()
+          .then(() => dependencies.getActivityRevision())
+          .catch(() => "");
         let lastStatus = 0;
         let lastHeartbeat = 0;
+        controller.enqueue(encoder.encode("retry: 5000\n\n"));
         while (!cancelled) {
-          const nextRevision = await dependencies.getDashboardRevision();
-          if (nextRevision !== revision) {
-            revision = nextRevision;
-            controller.enqueue(encoder.encode(
-              `event: revision\ndata: ${JSON.stringify({ revision })}\n\n`,
-            ));
+          try {
+            const nextRevision = await dependencies.getDashboardRevision();
+            if (nextRevision !== revision) {
+              revision = nextRevision;
+              controller.enqueue(encoder.encode(
+                `event: revision\ndata: ${JSON.stringify({ revision })}\n\n`,
+              ));
+            }
+          } catch {
+            // A transient SQLite read must not terminate the browser's event stream.
+          }
+          try {
+            const nextConversationRevision = await dependencies.getConversationRevision();
+            if (conversationRevision && nextConversationRevision !== conversationRevision) {
+              controller.enqueue(encoder.encode(
+                `event: conversation\ndata: ${JSON.stringify({ revision: nextConversationRevision })}\n\n`,
+              ));
+            }
+            conversationRevision = nextConversationRevision;
+          } catch {
+            // The next successful read will catch the client up.
+          }
+          try {
+            const nextActivityRevision = await dependencies.getActivityRevision();
+            if (activityRevision && nextActivityRevision !== activityRevision) {
+              controller.enqueue(encoder.encode(
+                `event: activity\ndata: ${JSON.stringify({ revision: nextActivityRevision })}\n\n`,
+              ));
+            }
+            activityRevision = nextActivityRevision;
+          } catch {
+            // The next successful read will catch the client up.
           }
           const now = Date.now();
           if (now - lastStatus >= 10_000) {
-            const status = await dependencies.getSystemStatus();
-            controller.enqueue(encoder.encode(
-              `event: status\ndata: ${JSON.stringify(status)}\n\n`,
-            ));
-            lastStatus = now;
+            try {
+              const status = await dependencies.getSystemStatus();
+              controller.enqueue(encoder.encode(
+                `event: status\ndata: ${JSON.stringify(status)}\n\n`,
+              ));
+              lastStatus = now;
+            } catch {
+              // Retry on the next loop while keeping the SSE connection alive.
+            }
           }
           if (now - lastHeartbeat >= 15_000) {
             controller.enqueue(encoder.encode(": keep-alive\n\n"));
@@ -396,6 +435,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (methodError) return methodError;
       if (!session(request)) return json({ error: "unauthorized" }, 401);
       return response(dashboardEventStream(dependencies), 200, "text/event-stream; charset=utf-8", {
+        "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
