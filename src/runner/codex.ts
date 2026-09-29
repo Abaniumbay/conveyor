@@ -143,8 +143,6 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
     "--color",
     "never",
     "--ephemeral",
-    "--sandbox",
-    input.sandbox,
     "-C",
     input.workspace,
     "--output-schema",
@@ -154,6 +152,8 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
   ];
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("--approve-for-me");
+  } else {
+    args.push("--sandbox", input.sandbox);
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) {

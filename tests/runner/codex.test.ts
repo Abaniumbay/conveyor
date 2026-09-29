@@ -35,6 +35,28 @@ describe("runCodex", () => {
       const args = process.argv.slice(2);
       const prompt = await new Response(Bun.stdin.stream()).text();
       await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, prompt }));
+      const schema = await Bun.file(args[args.indexOf("--output-schema") + 1]).json();
+      const validateSchema = (node, location = "root") => {
+        if (!node || typeof node !== "object") return;
+        if (node.const !== undefined && node.type === undefined) {
+          throw new Error(location + " uses const without an explicit type");
+        }
+        if (node.type === "object") {
+          if (node.additionalProperties !== false) {
+            throw new Error(location + " must forbid additional properties");
+          }
+          const properties = Object.keys(node.properties ?? {});
+          const required = new Set(node.required ?? []);
+          if (properties.some((property) => !required.has(property))) {
+            throw new Error(location + " has an optional property");
+          }
+          for (const [name, property] of Object.entries(node.properties ?? {})) {
+            validateSchema(property, location + "." + name);
+          }
+        }
+        if (node.type === "array") validateSchema(node.items, location + "[]");
+      };
+      validateSchema(schema);
       const output = args[args.indexOf("-o") + 1];
       await Bun.write(output, JSON.stringify({
         version: 1,
@@ -92,6 +114,7 @@ describe("runCodex", () => {
     expect(invocation.args).toContain("--json");
     expect(invocation.args).toContain("--output-schema");
     expect(invocation.args).toContain("--approve-for-me");
+    expect(invocation.args).not.toContain("--sandbox");
     expect(invocation.args).not.toContain("--full-auto");
     expect(invocation.args).toContain('mcp_servers.conveyor.required=true');
   });
