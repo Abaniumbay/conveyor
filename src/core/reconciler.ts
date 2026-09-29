@@ -84,6 +84,24 @@ export async function reconcileRepository(
       warning: projected.warnings.length > 0 ? projected.warnings.join("; ") : null,
     });
 
+    if (!projected.visible) {
+      input.store.endActiveEnrollment(sourceIssue.id, "offboarded");
+    } else if (projected.mode === "active" && projected.stage) {
+      const stageState = input.store.getStageState(sourceIssue.id);
+      const awaitingDifferentStage =
+        stageState?.status === "awaiting-source" &&
+        stageState.stageId !== projected.stage;
+      if (!awaitingDifferentStage && stageState?.status !== "running") {
+        input.store.setStageState({
+          issueId: sourceIssue.id,
+          stageId: projected.stage,
+          status: "ready",
+          feedbackCycle: 0,
+          configHash: input.configHash,
+        });
+      }
+    }
+
     if (!prior && projected.visible) {
       input.store.setQueueRank(sourceIssue.id, input.store.nextQueueRank());
       enrolled += 1;

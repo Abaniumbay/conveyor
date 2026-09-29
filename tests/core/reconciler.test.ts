@@ -81,6 +81,10 @@ describe("reconcileRepository", () => {
       projectedStage: "review",
       queueRank: 20,
     });
+    expect(store.getStageState(sourceIssues[2]!.id)).toMatchObject({
+      stageId: "review",
+      status: "ready",
+    });
     store.close();
   });
 
@@ -103,6 +107,7 @@ describe("reconcileRepository", () => {
       ...common,
       source: { async listIssues() { return [issue(1, ["conveyor"])]; } },
     });
+    const enrollment = store.activateEnrollment("github:owner/repo#1");
 
     const result = await reconcileRepository({
       ...common,
@@ -115,6 +120,48 @@ describe("reconcileRepository", () => {
       projectedStage: null,
       projectedState: "offboarded",
       queueRank: 10,
+    });
+    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(
+      enrollment.generation + 1,
+    );
+    store.close();
+  });
+
+  test("confirms an awaiting label transition before making the new stage ready", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: {
+        id: "repo",
+        configName: "repo",
+        source: "github",
+        address: "owner/repo",
+        folder: "/srv/repo",
+      },
+      stages: ["refinement", "review"],
+      labels,
+    };
+    await reconcileRepository({
+      ...common,
+      source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } },
+    });
+    store.setStageState({
+      issueId: "github:owner/repo#1",
+      stageId: "review",
+      status: "awaiting-source",
+      feedbackCycle: 0,
+      configHash: "hash-1",
+    });
+
+    await reconcileRepository({
+      ...common,
+      source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:review"])]; } },
+    });
+
+    expect(store.getStageState("github:owner/repo#1")).toMatchObject({
+      stageId: "review",
+      status: "ready",
     });
     store.close();
   });
