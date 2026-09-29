@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Conveyor verifier result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "decision",
+    "status",
+    "reason",
+    "evidence",
+    "requiredFixes",
+    "criteria"
+  ],
+  "properties": {
+    "version": { "type": "integer", "enum": [1] },
+    "decision": { "enum": ["pass", "fail"] },
+    "status": { "type": "string", "minLength": 1 },
+    "reason": { "type": ["string", "null"], "minLength": 1 },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "requiredFixes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "passed", "evidence"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "passed": { "type": "boolean" },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
