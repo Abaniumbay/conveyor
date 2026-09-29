@@ -252,8 +252,13 @@ export const dashboardClient = String.raw`(() => {
     if (!url || !(panel instanceof HTMLElement)) return;
     if (button instanceof HTMLButtonElement) button.disabled = true;
     const field = form.querySelector('textarea[name="message"]');
+    const submittedMessage = field instanceof HTMLTextAreaElement ? field.value : '';
+    if (field instanceof HTMLTextAreaElement) {
+      field.value = '';
+      field.disabled = true;
+    }
     const data = new URLSearchParams({
-      message: field instanceof HTMLTextAreaElement ? field.value : '',
+      message: submittedMessage,
       csrf: body.dataset.csrfToken || '',
     });
     try {
@@ -263,12 +268,16 @@ export const dashboardClient = String.raw`(() => {
         headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       });
       if (!response.ok) throw new Error((await response.text()).trim() || 'Message request failed.');
-      form.reset();
       await loadIssueConversation(panel);
     } catch (error) {
+      if (field instanceof HTMLTextAreaElement) field.value = submittedMessage;
       if (status) status.textContent = error instanceof Error ? error.message : 'Message could not be sent. Please try again.';
     } finally {
       if (button instanceof HTMLButtonElement) button.disabled = false;
+      if (field instanceof HTMLTextAreaElement) {
+        field.disabled = false;
+        field.focus();
+      }
     }
   });
 

@@ -81,7 +81,6 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
           <h2 id={`${id}-title`}>{issue.title}</h2>
         </div>
         <div class="details-header-actions">
-          <a class="detail-permalink" href={issueHref(issue.id)}>Permalink</a>
           <form method="dialog"><button class="dialog-close" aria-label="Close issue details">×</button></form>
         </div>
       </header>

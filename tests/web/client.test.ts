@@ -7,5 +7,7 @@ describe("dashboard browser client", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
     expect(dashboardClient).toContain("data-detail-tab");
+    expect(dashboardClient).toContain("field.value = ''");
+    expect(dashboardClient).toContain("field.value = submittedMessage");
   });
 });

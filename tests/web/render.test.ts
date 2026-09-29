@@ -181,7 +181,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="/?issue=child"');
     expect(html).toContain('href="/?issue=dependency"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
-    expect(html).toContain('href="/?issue=parent"');
+    expect(html).not.toContain(">Permalink</a>");
     expect(html).toContain('data-detail-tab="conversation"');
     expect(html).toContain("Conversation");
     expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
@@ -193,6 +193,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("<dialog");
     expect(html).not.toContain("indicator-blocked");
     expect(html).not.toContain('class="labels"');
+    expect(html).toContain("@keyframes working-pulse");
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
@@ -252,6 +253,5 @@ describe("renderDashboard", () => {
 
     expect(html).toContain('data-selected-issue="true"');
     expect(html).toContain('data-issue-id="completed"');
-    expect(html).toContain('href="/?issue=completed"');
   });
 });
