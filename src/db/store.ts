@@ -893,11 +893,22 @@ export class ConveyorStore {
   listActiveIssueRuns(): ActiveIssueRun[] {
     const rows = this.#database
       .query(
-        `SELECT r.id, r.issue_id, r.stage_id, r.kind, r.started_at,
-           i.repository_id, i.source_number, i.title
-         FROM runs r JOIN issues i ON i.id = r.issue_id
-         WHERE r.status = 'running'
-         ORDER BY r.started_at, r.id`,
+        `SELECT * FROM (
+           SELECT r.id, r.issue_id, r.stage_id, r.kind, r.started_at,
+             i.repository_id, i.source_number, i.title
+           FROM runs r JOIN issues i ON i.id = r.issue_id
+           WHERE r.status = 'running'
+           UNION ALL
+           SELECT 'orchestration:' || s.issue_id || ':' || s.stage_id AS id,
+             s.issue_id, s.stage_id, 'orchestration' AS kind,
+             s.updated_at AS started_at, i.repository_id, i.source_number, i.title
+           FROM stage_states s JOIN issues i ON i.id = s.issue_id
+           WHERE s.status = 'running'
+             AND NOT EXISTS (
+               SELECT 1 FROM runs r
+               WHERE r.issue_id = s.issue_id AND r.status = 'running'
+             )
+         ) ORDER BY started_at, id`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => ({

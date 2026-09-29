@@ -301,6 +301,47 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("keeps running orchestration visible between agent and verifier runs", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "Active check",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    store.setStageState({
+      issueId: "issue-1",
+      stageId: "implementation",
+      status: "running",
+      feedbackCycle: 0,
+      configHash: "config-hash",
+    });
+
+    expect(store.listActiveIssueRuns()).toMatchObject([{
+      id: "orchestration:issue-1:implementation",
+      issueId: "issue-1",
+      repository: "repo-1",
+      issueNumber: 12,
+      issueTitle: "Active check",
+      stageId: "implementation",
+      kind: "orchestration",
+    }]);
+    store.close();
+  });
+
   test("lists projected issues in durable queue order", async () => {
     const store = await openStore();
     store.upsertRepository({
