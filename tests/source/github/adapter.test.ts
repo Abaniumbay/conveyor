@@ -213,6 +213,28 @@ describe("GitHubAdapter", () => {
     expect(merge).toEqual({ merged: true, sha: "abc123" });
   });
 
+  test("reads native child and dependency relationships", async () => {
+    const related = {
+      id: 12,
+      number: 12,
+      html_url: "https://github.com/owner/repo/issues/12",
+      title: "Related",
+      body: "",
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport([related], [related]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect((await adapter.listSubIssues("owner/repo", 1))[0]?.number).toBe(12);
+    expect((await adapter.listDependencies("owner/repo", 2))[0]?.number).toBe(12);
+    expect(transport.requests.map((request) => request.path)).toEqual([
+      "repos/owner/repo/issues/1/sub_issues?per_page=100",
+      "repos/owner/repo/issues/2/dependencies/blocked_by?per_page=100",
+    ]);
+  });
+
   test("creates only missing configured labels during onboarding", async () => {
     const transport = new FakeTransport(
       [{ name: "conveyor" }],

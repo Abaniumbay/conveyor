@@ -190,6 +190,7 @@ export class ConveyorService {
         source: this.github,
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       });
+      await this.reconcileRelationships(id, repository.address);
     }
     this.#lastReconciledAt = new Date().toISOString();
   }
@@ -350,6 +351,98 @@ export class ConveyorService {
       source: this.github,
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
+    await this.reconcileRelationships(repositoryId, repository.address);
+  }
+
+  private async reconcileRelationships(
+    repositoryId: string,
+    address: string,
+  ): Promise<void> {
+    const issues = this.store
+      .listIssues(repositoryId)
+      .filter((issue) => issue.projectedState !== "offboarded");
+    const parents = new Map<string, { parentId: string; siblingOrder: number }>();
+    for (const parent of issues) {
+      const children = await this.github.listSubIssues(address, parent.sourceNumber);
+      for (const [index, child] of children.entries()) {
+        if (this.store.getIssue(child.id)) {
+          parents.set(child.id, { parentId: parent.id, siblingOrder: index + 1 });
+        }
+      }
+    }
+    for (const issue of issues) {
+      const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
+      for (const dependency of dependencies) {
+        if (this.store.getIssue(dependency.id)) continue;
+        this.store.upsertIssue({
+          id: dependency.id,
+          repositoryId,
+          sourceNumber: dependency.number,
+          sourceUrl: dependency.url,
+          title: dependency.title,
+          body: dependency.body,
+          sourceState: dependency.state,
+          labels: dependency.labels,
+          sourceUpdatedAt: dependency.updatedAt,
+        });
+        this.store.setIssueProjection(dependency.id, {
+          stage: null,
+          state: "offboarded",
+          warning: null,
+        });
+      }
+      this.store.replaceRelationships(
+        issue.id,
+        parents.get(issue.id) ?? null,
+        dependencies.map((dependency) => dependency.id),
+      );
+    }
+    const doneLabel = this.config.labels.states.done;
+    if (!doneLabel) return;
+    const satisfied = (issueId: string, visited = new Set<string>()): boolean => {
+      if (visited.has(issueId)) return false;
+      const issue = this.store.getIssue(issueId);
+      if (!issue) return false;
+      if (issue.sourceState === "closed" || issue.labels.includes(doneLabel)) return true;
+      const children = this.store.listChildren(issueId);
+      if (children.length === 0) return false;
+      const next = new Set(visited).add(issueId);
+      return children.every((child) => satisfied(child.issueId, next));
+    };
+    for (const parent of issues) {
+      const children = this.store.listChildren(parent.id);
+      if (
+        children.length === 0 ||
+        !parent.labels.includes(this.config.labels.enrollment)
+      ) {
+        continue;
+      }
+      const workspace = this.store.getActiveWorkspace(parent.id);
+      const parentStage = this.store.getStageState(parent.id);
+      if (workspace && parentStage?.status !== "running") {
+        await this.workspaceManager.remove({
+          repositoryPath: this.config.repositories[repositoryId]!.folder,
+          workspacePath: workspace.path,
+          branch: workspace.branch,
+          deleteBranch: true,
+        });
+        this.store.markWorkspaceRemoved(workspace.id);
+      }
+      if (
+        children.every((child) => satisfied(child.issueId)) &&
+        (!parent.labels.includes(doneLabel) ||
+          !parent.labels.includes(this.config.labels.metadata.closable))
+      ) {
+        const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
+        const metadata = parent.labels.filter((label) => label.startsWith(orderPrefix));
+        await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
+          this.config.labels.enrollment,
+          doneLabel,
+          this.config.labels.metadata.closable,
+          ...metadata,
+        ]);
+      }
+    }
   }
 
   private mcpFactory(): ScopedMcpFactory {

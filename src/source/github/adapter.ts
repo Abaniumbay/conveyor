@@ -284,6 +284,28 @@ export class GitHubAdapter {
     });
   }
 
+  async listSubIssues(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/sub_issues?per_page=100`,
+      paginate: true,
+    });
+    return issues
+      .filter((issue) => issue.pull_request === undefined)
+      .map((issue) => sourceIssue(address, issue));
+  }
+
+  async listDependencies(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/dependencies/blocked_by?per_page=100`,
+      paginate: true,
+    });
+    return issues
+      .filter((issue) => issue.pull_request === undefined)
+      .map((issue) => sourceIssue(address, issue));
+  }
+
   async replaceConveyorLabels(
     address: string,
     issueNumber: number,
