@@ -18,6 +18,7 @@ import { IssueExecutor } from "./issue-executor";
 interface ActiveRun {
   repositoryId: string;
   stageId: string;
+  controller: AbortController;
 }
 
 interface McpGrant {
@@ -210,6 +211,7 @@ export class ConveyorService {
       }
     }
     this.#lastReconciledAt = new Date().toISOString();
+    this.interruptIneligibleRuns();
   }
 
   start(): void {
@@ -222,6 +224,7 @@ export class ConveyorService {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    for (const active of this.#active.values()) active.controller.abort();
     while (this.#active.size > 0) await Bun.sleep(25);
     this.store.close();
   }
@@ -299,14 +302,16 @@ export class ConveyorService {
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
+        controller: new AbortController(),
       });
-      void this.execute(issue).finally(() => {
+      const active = this.#active.get(issue.id)!;
+      void this.execute(issue, active.controller.signal).finally(() => {
         this.#active.delete(issue.id);
       });
     }
   }
 
-  private async execute(issue: StoredIssue): Promise<void> {
+  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
     const executor = new IssueExecutor({
@@ -316,12 +321,15 @@ export class ConveyorService {
       source: this.github,
       workspaceManager: this.workspaceManager,
       sourceGuidance: SOURCE_GUIDANCE,
+      signal,
       runtime: (context) => new ConfiguredStageRuntime(
         this.config,
         this.store,
         context,
         this.mcpFactory(),
         this.sourceActions(context),
+        {},
+        signal,
       ),
     });
     try {
@@ -330,6 +338,7 @@ export class ConveyorService {
       await this.updateStatusComment(issue.id);
       this.schedule();
     } catch (error) {
+      if (signal.aborted) return;
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
@@ -354,6 +363,19 @@ export class ConveyorService {
     }
   }
 
+  private interruptIneligibleRuns(): void {
+    for (const [issueId, active] of this.#active) {
+      const issue = this.store.getIssue(issueId);
+      if (
+        !issue ||
+        issue.projectedState !== "active" ||
+        issue.projectedStage !== active.stageId
+      ) {
+        active.controller.abort();
+      }
+    }
+  }
+
   private async reconcileRepository(repositoryId: string): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
@@ -374,6 +396,7 @@ export class ConveyorService {
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
     await this.reconcileRelationships(repositoryId, repository.address);
+    this.interruptIneligibleRuns();
   }
 
   private async reconcileRelationships(

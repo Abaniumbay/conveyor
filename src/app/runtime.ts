@@ -176,6 +176,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     private readonly mcp: ScopedMcpFactory,
     private readonly actions: SourceActionHandler,
     implementations: RuntimeImplementations = {},
+    private readonly signal?: AbortSignal,
   ) {
     this.#codex = implementations.codex ?? runCodex;
     this.#codexCheck = implementations.codexCheck ?? runCodexCheck;
@@ -235,6 +236,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           cwd: this.context.workspace?.path ?? this.context.repository.folder,
           input: { ...context, runId, repository: this.context.repository },
           interruptGraceMs: this.config.settings.interruptGraceMs,
+          ...(this.signal ? { signal: this.signal } : {}),
         });
       } else {
         const agent = this.config.agents[stage.run.agent];
@@ -274,6 +276,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
             automaticApprovals: runner.automaticApprovals,
             mcp: lease.configuration,
             interruptGraceMs: this.config.settings.interruptGraceMs,
+            ...(this.signal ? { signal: this.signal } : {}),
             onEvent: (event) => {
               this.store.appendRunEvent(runId, "harness", event);
             },
@@ -362,6 +365,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         automaticApprovals: false,
         mcp: lease.configuration,
         interruptGraceMs: this.config.settings.interruptGraceMs,
+        ...(this.signal ? { signal: this.signal } : {}),
         onEvent: (event) => {
           this.store.appendRunEvent(runId, "harness", event);
         },

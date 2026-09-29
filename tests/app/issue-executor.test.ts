@@ -156,6 +156,70 @@ repositories:
       branch: "conveyor/7-r1-a-feature",
       generation: 1,
     });
+
+    store.upsertIssue({
+      id: "issue-abort",
+      repositoryId: "repo",
+      sourceNumber: 8,
+      sourceUrl: "https://example.test/8",
+      title: "Interrupted feature",
+      body: "Requirements",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setIssueProjection("issue-abort", { stage: "refinement", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-abort",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
+    const controller = new AbortController();
+    const interrupted = new IssueExecutor({
+      config,
+      store,
+      sourceName: "github",
+      source: {
+        async replaceConveyorLabels() { throw new Error("must not transition after abort"); },
+      },
+      workspaceManager: {
+        async create() {
+          return {
+            path: path.join(root, "worktree-abort"),
+            branch: "conveyor/8-r1-interrupted-feature",
+            baseRevision: "abc",
+          };
+        },
+      },
+      runtime() {
+        return {
+          async runCheck() {
+            return { decision: "pass", status: "done", reason: null, evidence: [], requiredFixes: [], criteria: [] };
+          },
+          async runProducer() {
+            controller.abort();
+            return {
+              stageResult: { outcome: "success", status: "done", summary: "late", reason: null, metrics: {} },
+              sessionId: null,
+              usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
+              cost: { amount: 0, currency: "USD", source: "unavailable" },
+              durationMs: 1,
+              exitCode: 0,
+              artifacts: [],
+              stderr: "",
+            };
+          },
+          async runAction() {},
+        };
+      },
+      sourceGuidance: "Never close issues.",
+      signal: controller.signal,
+    });
+
+    await expect(interrupted.execute(store.getIssue("issue-abort")!)).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.getStageState("issue-abort")?.status).toBe("interrupted");
     store.close();
   });
 });

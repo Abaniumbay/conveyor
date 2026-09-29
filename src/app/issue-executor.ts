@@ -15,6 +15,7 @@ export interface IssueExecutorDependencies {
   workspaceManager: Pick<WorkspaceManager, "create">;
   runtime: (context: RuntimeIssueContext) => PipelineDependencies;
   sourceGuidance: string;
+  signal?: AbortSignal;
 }
 
 function slug(title: string): string {
@@ -94,10 +95,12 @@ export class IssueExecutor {
     );
     const transitionId = randomUUID();
     try {
+      this.dependencies.signal?.throwIfAborted();
       const result = await engine.executeStage(stageId, {
         issue: issue as unknown as Record<string, unknown>,
         workspace: workspace.path,
       });
+      this.dependencies.signal?.throwIfAborted();
       await applyStageTransition({
         store: this.dependencies.store,
         source: this.dependencies.source,
@@ -115,7 +118,7 @@ export class IssueExecutor {
       this.dependencies.store.setStageState({
         issueId: issue.id,
         stageId,
-        status: "error",
+        status: this.dependencies.signal?.aborted ? "interrupted" : "error",
         feedbackCycle: state.feedbackCycle,
         configHash: this.dependencies.config.hash,
       });
