@@ -225,21 +225,23 @@ repositories:
       { actor: "You", message: "Preserve the existing API." },
       {
         actor: "Conveyor",
-        message: "Agent run completed with outcome success and status done: Implemented",
-      },
-      { actor: "Conveyor", message: expect.stringContaining("Running check script") },
-      {
-        actor: "Conveyor",
-        message: "Check evidence failed: 1 of 2 checks failed. Main reason: Core tests — Executable not found in $PATH: dart",
+        message: "Implementation started — Kaveh (Senior Developer).",
       },
       {
-        actor: "Conveyor",
-        message: "Exit verifier failed with status needs-intervention. Reason: The verification command could not start. Required fixes: Restore Dart to PATH.",
+        actor: "Kaveh",
+        message: "Implementation completed: Implemented.",
       },
-      { actor: "Conveyor", message: expect.stringContaining("bun run") },
+      {
+        actor: "Mitra",
+        message: "Implementation exit verification failed: The verification command could not start. Required: Restore Dart to PATH. Evidence: Core tests did not execute.",
+      },
       {
         actor: "Conveyor",
-        message: "Script run completed with outcome success and status done: Deployment completed",
+        message: "Deploy script started.",
+      },
+      {
+        actor: "Conveyor",
+        message: "Deploy script completed: Deployment completed.",
       },
     ]);
     store.close();

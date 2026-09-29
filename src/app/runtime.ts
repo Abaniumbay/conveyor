@@ -91,12 +91,6 @@ function displayName(id: string): string {
     .join(" ");
 }
 
-function recordFrom(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
 function concise(value: unknown, maximum = 500): string {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
@@ -107,59 +101,29 @@ function sentence(value: unknown, maximum = 500): string {
   return /[.!?…]$/.test(text) ? text : `${text}.`;
 }
 
-function evidenceConversationMessage(evidence: unknown): string {
-  const result = recordFrom(evidence);
-  if (!result || typeof result.passed !== "boolean") {
-    return "Check script completed and returned structured evidence for verifier review.";
-  }
-
-  const commands = Array.isArray(result.commands)
-    ? result.commands.map(recordFrom).filter((command) => command !== null)
-    : [];
-  const failed = commands.filter((command) => command.passed === false);
-  if (result.passed) {
-    return commands.length > 0
-      ? `Check evidence passed: ${commands.length} of ${commands.length} checks passed.`
-      : "Check evidence passed.";
-  }
-
-  const count = commands.length > 0
-    ? `: ${failed.length} of ${commands.length} checks failed`
-    : "";
-  const first = failed[0];
-  if (!first) return `Check evidence failed${count}.`;
-  const name = concise(first.name || first.command || "Unnamed check", 120);
-  const cause = concise(
-    first.output
-      || (first.timedOut === true ? "Timed out" : "")
-      || (first.exitCode !== undefined ? `Exited with code ${String(first.exitCode)}` : "No failure detail was returned"),
-    500,
-  );
-  return `Check evidence failed${count}. Main reason: ${name} — ${cause}`;
-}
-
-function producerConversationMessage(kind: "Agent" | "Script", result: RunEnvelope): string {
+function producerConversationMessage(stageId: string, result: RunEnvelope): string {
   const stage = result.stageResult;
-  const reason = stage.reason ? `. Reason: ${concise(stage.reason)}` : "";
-  return `${kind} run completed with outcome ${concise(stage.outcome, 40)} and status ${concise(stage.status, 80)}: ${concise(stage.summary)}${reason}`;
+  const stageName = displayName(stageId);
+  if (stage.outcome === "success") {
+    return `${stageName} completed: ${sentence(stage.summary)}`;
+  }
+  const reason = stage.reason ? ` Reason: ${sentence(stage.reason)}` : "";
+  return `${stageName} returned ${concise(stage.status, 80)}: ${sentence(stage.summary)}${reason}`;
 }
 
 function verifierConversationMessage(
+  stageId: string,
   phase: "enter" | "exit",
   result: CheckResult,
 ): string {
-  const label = phase === "enter" ? "Entry" : "Exit";
-  if (result.decision === "pass") {
-    const evidence = result.evidence.length > 0
-      ? ` Evidence: ${concise(result.evidence.join("; "), 700)}`
-      : "";
-    return `${label} verifier passed with status ${concise(result.status, 80)}.${evidence}`;
-  }
-  const reason = result.reason ? ` Reason: ${sentence(result.reason, 700)}` : "";
+  const reason = result.reason ? sentence(result.reason, 700) : "No reason was provided.";
   const fixes = result.requiredFixes.length > 0
-    ? ` Required fixes: ${concise(result.requiredFixes.join("; "), 700)}`
+    ? ` Required: ${sentence(result.requiredFixes.join("; "), 700)}`
     : "";
-  return `${label} verifier failed with status ${concise(result.status, 80)}.${reason}${fixes}`;
+  const evidence = result.evidence.length > 0
+    ? ` Evidence: ${sentence(result.evidence.join("; "), 700)}`
+    : "";
+  return `${displayName(stageId)} ${phase} verification failed: ${reason}${fixes}${evidence}`;
 }
 
 async function evidenceScript(
@@ -238,7 +202,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     const issue = issueFrom(context);
     if (stage.run.type === "source-action") {
       const started = performance.now();
-      this.conveyorMessage(issue.id, stage.id, null, `Running source action \`${stage.run.action}\`.`);
+      this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} started.`);
       try {
         await this.actions.run(
           {
@@ -248,7 +212,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           context,
         );
         const summary = `Completed source action ${stage.run.action}`;
-        this.conveyorMessage(issue.id, stage.id, null, summary);
+        this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} completed.`);
         return {
           stageResult: {
             outcome: "success",
@@ -266,7 +230,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           stderr: "",
         };
       } catch (error) {
-        this.conveyorMessage(issue.id, stage.id, null, `Source action failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} failed: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
       }
     }
@@ -286,11 +250,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       startedAt,
     });
     const started = performance.now();
+    let producerAgentId: string | null = null;
 
     try {
       let result: RunEnvelope;
       if (stage.run.type === "script") {
-        this.conveyorMessage(issue.id, stage.id, runId, `Running \`bun run ${stage.run.script}\`.`);
+        this.conveyorMessage(issue.id, stage.id, runId, `${displayName(stage.id)} script started.`);
         result = await this.#jsonProcess({
           command: ["bun", "run", stage.run.script],
           cwd: this.context.workspace?.path ?? this.context.repository.folder,
@@ -299,6 +264,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           ...(this.signal ? { signal: this.signal } : {}),
         });
       } else {
+        producerAgentId = stage.run.agent;
         const agent = this.config.agents[stage.run.agent];
         if (!agent) throw new Error(`unknown agent: ${stage.run.agent}`);
         const runner = this.config.runners[agent.runner];
@@ -307,6 +273,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         }
         const workspace = this.context.workspace?.path;
         if (!workspace) throw new Error(`agent stage ${stage.id} requires a workspace`);
+        this.conveyorMessage(
+          issue.id,
+          stage.id,
+          runId,
+          `${displayName(stage.id)} started — ${agent.name ?? displayName(stage.run.agent)} (${agent.title ?? "AI Agent"}).`,
+        );
         const lease = await this.mcp.create({
           runId,
           stageId: stage.id,
@@ -353,12 +325,22 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         }
       }
       this.finishRun(runId, "succeeded", result);
-      this.conveyorMessage(
-        issue.id,
-        stage.id,
-        runId,
-        producerConversationMessage(stage.run.type === "agent" ? "Agent" : "Script", result),
-      );
+      if (producerAgentId) {
+        this.agentMessage(
+          issue.id,
+          stage.id,
+          runId,
+          producerAgentId,
+          producerConversationMessage(stage.id, result),
+        );
+      } else {
+        this.conveyorMessage(
+          issue.id,
+          stage.id,
+          runId,
+          `${displayName(stage.id)} script completed: ${sentence(result.stageResult.summary)}`,
+        );
+      }
       return result;
     } catch (error) {
       const failure = failedEnvelope(
@@ -366,9 +348,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         Math.max(0, Math.round(performance.now() - started)),
       );
       this.finishRun(runId, "failed", failure);
-      if (stage.run.type === "script") {
-        this.conveyorMessage(issue.id, stage.id, runId, `Script failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      this.conveyorMessage(
+        issue.id,
+        stage.id,
+        runId,
+        `${displayName(stage.id)} ${stage.run.type === "script" ? "script" : "runner"} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
@@ -390,7 +375,6 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     const workspace = this.context.workspace?.path ?? this.context.repository.folder;
     let evidence: unknown = null;
     if (definition.script) {
-      this.conveyorMessage(issue.id, context.stageId, null, `Running check script \`bun run ${definition.script}\`.`);
       try {
         evidence = await evidenceScript(definition.script, workspace, {
           phase,
@@ -398,14 +382,8 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           issue,
           producerResult: context.producerResult,
         });
-        this.conveyorMessage(
-          issue.id,
-          context.stageId,
-          null,
-          evidenceConversationMessage(evidence),
-        );
       } catch (error) {
-        this.conveyorMessage(issue.id, context.stageId, null, `Check script failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.conveyorMessage(issue.id, context.stageId, null, `${displayName(context.stageId)} check script failed: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
       }
     }
@@ -480,12 +458,15 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           durationMs: result.durationMs,
         },
       });
-      this.conveyorMessage(
-        issue.id,
-        context.stageId,
-        runId,
-        verifierConversationMessage(phase, result),
-      );
+      if (result.decision === "fail") {
+        this.agentMessage(
+          issue.id,
+          context.stageId,
+          runId,
+          definition.verifier,
+          verifierConversationMessage(context.stageId, phase, result),
+        );
+      }
       return result;
     } catch (error) {
       const failure = failedEnvelope(
@@ -510,12 +491,13 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     context: ProducerContext & { producerResult: RunEnvelope },
   ): Promise<void> {
     const issue = issueFrom(context);
-    this.conveyorMessage(issue.id, context.stageId, null, `Running source action \`${action.sourceAction}\`.`);
+    const actionName = displayName(action.sourceAction.replaceAll(".", "-"));
+    this.conveyorMessage(issue.id, context.stageId, null, `${actionName} started.`);
     try {
       await this.actions.run(action, context);
-      this.conveyorMessage(issue.id, context.stageId, null, `Completed source action ${action.sourceAction}`);
+      this.conveyorMessage(issue.id, context.stageId, null, `${actionName} completed.`);
     } catch (error) {
-      this.conveyorMessage(issue.id, context.stageId, null, `Source action failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.conveyorMessage(issue.id, context.stageId, null, `${actionName} failed: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -559,6 +541,26 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       actorId: "conveyor",
       actorName: "Conveyor",
       actorTitle: "Orchestrator",
+      message,
+    });
+  }
+
+  private agentMessage(
+    issueId: string,
+    stageId: string,
+    runId: string,
+    agentId: string,
+    message: string,
+  ): void {
+    const actor = this.agentActor(agentId);
+    this.store.appendConversationMessage({
+      issueId,
+      runId,
+      stageId,
+      actorType: "agent",
+      actorId: actor.id,
+      actorName: actor.name,
+      actorTitle: actor.title,
       message,
     });
   }

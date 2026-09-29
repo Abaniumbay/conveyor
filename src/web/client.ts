@@ -1,8 +1,8 @@
 export const dashboardClient = String.raw`(() => {
   const body = document.body;
-  const board = document.querySelector('.board');
+  let board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
-  let pendingReload = false;
+  let pendingRefresh = false;
   let conversationRefreshTimer = null;
   let activityRefreshTimer = null;
 
@@ -438,9 +438,9 @@ export const dashboardClient = String.raw`(() => {
     url.searchParams.delete('issue');
     url.searchParams.delete('tab');
     history.replaceState(null, '', url.pathname + url.search + url.hash);
-    if (pendingReload) {
-      preserveScroll();
-      location.reload();
+    if (pendingRefresh) {
+      pendingRefresh = false;
+      void refreshDashboard();
     }
   }, true);
 
@@ -461,27 +461,84 @@ export const dashboardClient = String.raw`(() => {
 
   localizeTimes();
 
-  const serverStatus = document.querySelector('[data-server-status]');
-  const connectionState = serverStatus && serverStatus.querySelector('[data-connection-state]');
-  const serverMetrics = serverStatus && serverStatus.querySelector('[data-server-metrics]');
+  let serverStatus = null;
+  let connectionState = null;
+  let serverMetrics = null;
+  let connected = false;
+  let latestServerStatus = null;
+  let dashboardRefresh = null;
+  let dashboardRefreshQueued = false;
   let revision = body.dataset.dashboardRevision || '';
   const dashboardEvents = new EventSource('/events/dashboard');
-  const setConnection = (connected) => {
+  const setConnection = (nextConnected) => {
+    connected = nextConnected;
     if (!serverStatus || !connectionState) return;
-    serverStatus.dataset.connected = connected ? 'true' : 'false';
-    connectionState.textContent = connected ? 'Connected' : 'Reconnecting';
+    serverStatus.dataset.connected = nextConnected ? 'true' : 'false';
+    connectionState.textContent = nextConnected ? 'Connected' : 'Reconnecting';
   };
+  const renderServerStatus = () => {
+    if (!serverMetrics || !latestServerStatus) return;
+    const status = latestServerStatus;
+    serverMetrics.textContent = 'Memory ' + formatBytes(status.memory.usedBytes) + ' / ' + formatBytes(status.memory.totalBytes) +
+      ' · Disk ' + formatBytes(status.disk.usedBytes) + ' / ' + formatBytes(status.disk.totalBytes) +
+      ' · App ' + formatBytes(status.memory.processBytes) + ' · Up ' + formatElapsed(status.uptimeSeconds);
+  };
+  const bindServerStatus = () => {
+    serverStatus = document.querySelector('[data-server-status]');
+    connectionState = serverStatus && serverStatus.querySelector('[data-connection-state]');
+    serverMetrics = serverStatus && serverStatus.querySelector('[data-server-metrics]');
+    setConnection(connected);
+    renderServerStatus();
+  };
+  const refreshDashboard = async () => {
+    if (dashboardRefresh) {
+      dashboardRefreshQueued = true;
+      return dashboardRefresh;
+    }
+    const scrollX = board ? board.scrollLeft : 0;
+    const scrollY = window.scrollY;
+    dashboardRefresh = (async () => {
+      try {
+        const response = await fetch(location.pathname + location.search, {
+          headers: { accept: 'text/html' },
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('dashboard refresh failed');
+        const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const currentDashboard = document.querySelector('main.dashboard');
+        const nextDashboard = nextDocument.querySelector('main.dashboard');
+        if (!currentDashboard || !nextDashboard) throw new Error('dashboard response is incomplete');
+        currentDashboard.replaceWith(nextDashboard);
+        body.dataset.csrfToken = nextDocument.body.dataset.csrfToken || body.dataset.csrfToken || '';
+        body.dataset.dashboardView = nextDocument.body.dataset.dashboardView || body.dataset.dashboardView || '';
+        body.dataset.dashboardRevision = revision;
+        body.classList.remove('page-loading');
+        board = document.querySelector('.board');
+        localizeTimes(nextDashboard);
+        bindServerStatus();
+        window.scrollTo(0, scrollY);
+        if (board) board.scrollLeft = scrollX;
+      } catch {
+        pendingRefresh = true;
+      }
+    })().finally(() => {
+      dashboardRefresh = null;
+      if (dashboardRefreshQueued) {
+        dashboardRefreshQueued = false;
+        void refreshDashboard();
+      }
+    });
+    return dashboardRefresh;
+  };
+  bindServerStatus();
   dashboardEvents.onopen = () => setConnection(true);
   dashboardEvents.onerror = () => setConnection(false);
   dashboardEvents.addEventListener('status', (message) => {
-    if (!serverMetrics) return;
     try {
-      const status = JSON.parse(message.data);
-      serverMetrics.textContent = 'Memory ' + formatBytes(status.memory.usedBytes) + ' / ' + formatBytes(status.memory.totalBytes) +
-        ' · Disk ' + formatBytes(status.disk.usedBytes) + ' / ' + formatBytes(status.disk.totalBytes) +
-        ' · App ' + formatBytes(status.memory.processBytes) + ' · Up ' + formatElapsed(status.uptimeSeconds);
+      latestServerStatus = JSON.parse(message.data);
+      renderServerStatus();
     } catch {
-      serverMetrics.textContent = 'Server metrics unavailable';
+      if (serverMetrics) serverMetrics.textContent = 'Server metrics unavailable';
     }
   });
   dashboardEvents.addEventListener('revision', (message) => {
@@ -490,13 +547,13 @@ export const dashboardClient = String.raw`(() => {
       if (typeof next.revision !== 'string' || next.revision === revision) return;
       revision = next.revision;
       body.dataset.dashboardRevision = revision;
+      if (body.dataset.dashboardView === 'agent') return;
       const openDialog = document.querySelector('dialog[open]');
       if (openDialog) {
-        pendingReload = true;
+        pendingRefresh = true;
         return;
       }
-      preserveScroll();
-      location.reload();
+      void refreshDashboard();
     } catch {}
   });
   dashboardEvents.addEventListener('conversation', scheduleConversationRefresh);
@@ -530,7 +587,7 @@ export const dashboardClient = String.raw`(() => {
     });
     source.addEventListener('done', () => {
       source.close();
-      setTimeout(() => location.reload(), 500);
+      setTimeout(() => void refreshDashboard(), 500);
     });
   }
 })();`;

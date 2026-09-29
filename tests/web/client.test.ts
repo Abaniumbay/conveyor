@@ -17,5 +17,8 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("data-more-events");
     expect(dashboardClient).toContain("field.value = ''");
     expect(dashboardClient).toContain("field.value = submittedMessage");
+    expect(dashboardClient).toContain("new DOMParser()");
+    expect(dashboardClient).toContain("currentDashboard.replaceWith(nextDashboard)");
+    expect(dashboardClient).not.toContain("location.reload()")
   });
 });
