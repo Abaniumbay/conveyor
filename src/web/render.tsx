@@ -21,10 +21,12 @@ function safeUrl(value: string | null): string | null {
   }
 }
 
+function issueHref(issueId: string): string {
+  return `/?${new URLSearchParams({ issue: issueId })}`;
+}
+
 function RelationLink({ relation }: { relation: IssueRelationViewModel }) {
-  const url = safeUrl(relation.url);
-  const label = <>#{relation.number} {relation.title}</>;
-  return url ? <a href={url} target="_blank" rel="noopener noreferrer">{label}</a> : label;
+  return <a href={issueHref(relation.id)}>{relation.repository}:#{relation.number} {relation.title}</a>;
 }
 
 function Relationships({ issue }: { issue: IssueCardViewModel }) {
@@ -66,18 +68,21 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
   );
 }
 
-function DetailsDialog({ issue, id }: { issue: IssueCardViewModel; id: string }) {
+function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewModel; id: string; selected?: boolean }) {
   const url = safeUrl(issue.url);
   const summaryId = `${id}-summary`;
   const activityId = `${id}-activity`;
   return (
-    <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id}>
+    <dialog class="issue-details" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
-          <p class="details-kicker">Issue #{issue.number}</p>
+          <p class="details-kicker">{issue.repository}:#{issue.number}</p>
           <h2 id={`${id}-title`}>{issue.title}</h2>
         </div>
-        <form method="dialog"><button class="dialog-close" aria-label="Close issue details">×</button></form>
+        <div class="details-header-actions">
+          <a class="detail-permalink" href={issueHref(issue.id)}>Permalink</a>
+          <form method="dialog"><button class="dialog-close" aria-label="Close issue details">×</button></form>
+        </div>
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
         <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
@@ -137,10 +142,8 @@ function IssueCard({ issue }: { issue: IssueCardViewModel }) {
       aria-label={`Open details for issue #${issue.number}`}
       aria-haspopup="dialog"
     >
-      <h3 class="issue-title">
-        <span class="issue-number">#{issue.number}</span>
-        <span>{issue.title}</span>
-      </h3>
+      <p class="issue-kicker">{issue.repository}:#{issue.number}</p>
+      <h3 class="issue-title">{issue.title}</h3>
       <RelationshipSummary issue={issue} />
       {issue.activity && <p class="detail"><strong>Activity:</strong> {issue.activity}</p>}
       {issue.reason && issue.tone === "danger" && <p class="detail"><strong>Reason:</strong> {issue.reason}</p>}
@@ -259,7 +262,7 @@ function ActiveWork({ model }: { model: DashboardViewModel }) {
       {runs.length > 0
         ? <ul>{runs.map((run) => (
             <li key={run.id}>
-              <strong>#{run.issueNumber} {run.issueTitle}</strong>
+              <strong>{run.repository}:#{run.issueNumber} {run.issueTitle}</strong>
               <span>{run.stageId} · {run.kind.replaceAll("-", " ")}</span>
             </li>
           ))}</ul>
@@ -414,6 +417,13 @@ function Page({ model }: { model: DashboardViewModel }) {
           <Navigation model={model} />
           <ActiveWork model={model} />
           {content}
+          {model.selectedIssue && (
+            <DetailsDialog
+              issue={model.selectedIssue}
+              id={`selected-issue-${model.selectedIssue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${model.selectedIssue.number}`}
+              selected
+            />
+          )}
         </main>
       </body>
     </html>

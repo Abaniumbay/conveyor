@@ -172,6 +172,10 @@ function dashboardPage(url: URL): DashboardPageSelection {
   const requestedRun = requestedRuns.length === 1 && /^[A-Za-z0-9-]{1,100}$/.test(requestedRuns[0] ?? "")
     ? requestedRuns[0]!
     : null;
+  const requestedIssues = url.searchParams.getAll("issue");
+  const requestedIssue = requestedIssues.length === 1 && (requestedIssues[0]?.length ?? 0) > 0 && (requestedIssues[0]?.length ?? 0) <= 500
+    ? requestedIssues[0]!
+    : null;
   const requestedDoneLimits = url.searchParams.getAll("doneLimit");
   const rawDoneLimit = requestedDoneLimits.length === 1 ? requestedDoneLimits[0] : null;
   const parsedDoneLimit = rawDoneLimit && /^[1-9]\d*$/.test(rawDoneLimit)
@@ -183,17 +187,17 @@ function dashboardPage(url: URL): DashboardPageSelection {
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
   if (columns.length !== 1 || pages.length !== 1) {
-    return { view, column: null, page: 1, doneLimit, runId: requestedRun };
+    return { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
   }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, column: null, page: 1, doneLimit, runId: requestedRun };
+    return { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, column, page: parsedPage, doneLimit, runId: requestedRun }
-    : { view, column: null, page: 1, doneLimit, runId: requestedRun };
+    ? { view, column, page: parsedPage, doneLimit, runId: requestedRun, issueId: requestedIssue }
+    : { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
 }
 
 function steeringEventStream(

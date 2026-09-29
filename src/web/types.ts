@@ -1,6 +1,8 @@
 export type IssueTone = "active" | "success" | "warning" | "danger" | "muted";
 
 export interface IssueRelationViewModel {
+  id: string;
+  repository: string;
   number: number;
   title: string;
   url: string | null;
@@ -9,6 +11,7 @@ export interface IssueRelationViewModel {
 /** A server-ready issue card with lightweight hierarchy references. */
 export interface IssueCardViewModel {
   id: string;
+  repository: string;
   number: number;
   title: string;
   url: string | null;
@@ -32,6 +35,7 @@ export interface IssueCardViewModel {
 export interface ActiveRunViewModel {
   id: string;
   issueId: string;
+  repository: string;
   issueNumber: number;
   issueTitle: string;
   stageId: string;
@@ -79,6 +83,7 @@ export interface DashboardPageSelection {
   page: number;
   doneLimit: number;
   runId: string | null;
+  issueId: string | null;
 }
 
 export type DashboardView = "board" | "attention" | "agent";
@@ -133,5 +138,6 @@ export interface DashboardViewModel {
   questions: readonly QuestionViewModel[];
   systemWarnings: readonly string[];
   steering: SteeringViewModel;
+  selectedIssue: IssueCardViewModel | null;
   csrfToken: string;
 }

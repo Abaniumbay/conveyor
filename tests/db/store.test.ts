@@ -184,6 +184,7 @@ describe("ConveyorStore", () => {
     expect(store.listActiveIssueRuns()).toEqual([{
       id: "run-live",
       issueId: "issue-1",
+      repository: "repo-1",
       issueNumber: 12,
       issueTitle: "Active feature",
       stageId: "implementation",

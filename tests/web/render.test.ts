@@ -4,6 +4,7 @@ import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types
 
 const parent: IssueCardViewModel = {
   id: "parent",
+  repository: "sample",
   number: 41,
   title: "Build <safe> & sound",
   url: "https://github.com/sample/repo/issues/41?x=1&y=2",
@@ -19,13 +20,14 @@ const parent: IssueCardViewModel = {
   closable: true,
   tone: "warning",
   parent: null,
-  children: [{ number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42" }],
-  dependencies: [{ number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40" }],
+  children: [{ id: "child", repository: "sample", number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42" }],
+  dependencies: [{ id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40" }],
   working: true,
 };
 
 const backlogIssue: IssueCardViewModel = {
   id: "backlog",
+  repository: "sample",
   number: 43,
   title: "Next item",
   url: "javascript:alert(1)",
@@ -70,6 +72,7 @@ const dashboard: DashboardViewModel = {
     runs: [{
       id: "run-active",
       issueId: "parent",
+      repository: "sample",
       issueNumber: 41,
       issueTitle: "Build <safe> & sound",
       stageId: "build",
@@ -128,6 +131,7 @@ const dashboard: DashboardViewModel = {
   ],
   systemWarnings: ["meal-planner webhook is unavailable"],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
+  selectedIssue: null,
   csrfToken: "csrf-token",
 };
 
@@ -167,6 +171,11 @@ describe("renderDashboard", () => {
     expect(html).toContain("1 runner working");
     expect(html).toContain("1 of 4 runner slots active");
     expect(html).toContain("Working now");
+    expect(html).toContain("sample:#41");
+    expect(html).toContain('href="/?issue=child"');
+    expect(html).toContain('href="/?issue=dependency"');
+    expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
+    expect(html).toContain('href="/?issue=parent"');
     expect(html).toContain('data-detail-tab="activity"');
     expect(html).toContain('/api/issues/parent/activity');
     expect(html).not.toContain(">Details</button>");
@@ -226,5 +235,13 @@ describe("renderDashboard", () => {
     expect(html).toContain("Fixed the labels");
     expect(html).toContain('action="/steering"');
     expect(html).toContain('data-steering-run="run-1"');
+  });
+
+  test("renders a deep-linked issue dialog even when its card is not on the current page", () => {
+    const html = renderDashboard({ ...dashboard, selectedIssue: completedIssue });
+
+    expect(html).toContain('data-selected-issue="true"');
+    expect(html).toContain('data-issue-id="completed"');
+    expect(html).toContain('href="/?issue=completed"');
   });
 });

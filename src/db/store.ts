@@ -73,6 +73,7 @@ export interface StoredRun {
 export interface ActiveIssueRun {
   id: string;
   issueId: string;
+  repository: string;
   issueNumber: number;
   issueTitle: string;
   stageId: string;
@@ -859,7 +860,7 @@ export class ConveyorStore {
     const rows = this.#database
       .query(
         `SELECT r.id, r.issue_id, r.stage_id, r.kind, r.started_at,
-           i.source_number, i.title
+           i.repository_id, i.source_number, i.title
          FROM runs r JOIN issues i ON i.id = r.issue_id
          WHERE r.status = 'running'
          ORDER BY r.started_at, r.id`,
@@ -868,6 +869,7 @@ export class ConveyorStore {
     return rows.map((row) => ({
       id: String(row.id),
       issueId: String(row.issue_id),
+      repository: String(row.repository_id),
       issueNumber: Number(row.source_number),
       issueTitle: String(row.title),
       stageId: String(row.stage_id),

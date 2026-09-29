@@ -1076,6 +1076,7 @@ export class ConveyorService {
       page: 1,
       doneLimit: 20,
       runId: null,
+      issueId: null,
     },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
@@ -1083,6 +1084,8 @@ export class ConveyorService {
     const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     const relation = (issue: StoredIssue): IssueRelationViewModel => ({
+      id: issue.id,
+      repository: issue.repositoryId,
       number: issue.sourceNumber,
       title: issue.title,
       url: issue.sourceUrl,
@@ -1116,6 +1119,7 @@ export class ConveyorService {
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       return {
         id: issue.id,
+        repository: issue.repositoryId,
         number: issue.sourceNumber,
         title: issue.title,
         url: issue.sourceUrl,
@@ -1324,6 +1328,9 @@ export class ConveyorService {
         selected: selectedSteering,
         recent: recentSteeringRuns,
       },
+      selectedIssue: pagination.issueId && byId.has(pagination.issueId)
+        ? card(byId.get(pagination.issueId)!)
+        : null,
       csrfToken,
     };
   }

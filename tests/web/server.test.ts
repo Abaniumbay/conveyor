@@ -11,6 +11,7 @@ const model: DashboardViewModel = {
   view: "board",
   counts: { board: 0, attention: 0 },
   activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
+  selectedIssue: null,
   stages: [],
   backlog: [],
   done: {
@@ -127,7 +128,7 @@ describe("createWebHandler", () => {
     expect(response.headers.get("location")).toBe("/");
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
 
-    const page = await handler(new Request("http://localhost/?column=stage%3Areview&page=4&doneLimit=40", { headers: { cookie } }));
+    const page = await handler(new Request("http://localhost/?column=stage%3Areview&page=4&doneLimit=40&issue=github%3Aowner%2Frepo%231", { headers: { cookie } }));
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(await page.text()).toContain("Test board");
@@ -137,6 +138,7 @@ describe("createWebHandler", () => {
       page: 4,
       doneLimit: 40,
       runId: null,
+      issueId: "github:owner/repo#1",
     }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";

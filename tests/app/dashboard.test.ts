@@ -231,6 +231,7 @@ describe("ConveyorService dashboard", () => {
       page: 1,
       doneLimit: 20,
       runId: null,
+      issueId: "github:owner/repo#27",
     });
     const implementation = dashboard.stages.find((column) => column.id === "stage:implementation");
 
@@ -245,6 +246,10 @@ describe("ConveyorService dashboard", () => {
       runnerCount: 1,
       runnerCapacity: 3,
       runs: [{ id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer" }],
+    });
+    expect(dashboard.selectedIssue).toMatchObject({
+      id: "github:owner/repo#27",
+      repository: "repo",
     });
     expect(service.issueActivity("github:owner/repo#27")).toMatchObject({
       issueId: "github:owner/repo#27",
@@ -271,6 +276,7 @@ describe("ConveyorService dashboard", () => {
       page: 1,
       doneLimit: 40,
       runId: null,
+      issueId: null,
     });
     expect(expanded.done.issues).toHaveLength(25);
     store.close();

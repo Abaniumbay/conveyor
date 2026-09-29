@@ -8,6 +8,7 @@
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
     "check": "bun test && tsc --noEmit",
+    "deploy:when-idle": "bun run scripts/deploy-when-idle.ts",
     "start": "bun run src/cli.ts serve"
   },
   "dependencies": {

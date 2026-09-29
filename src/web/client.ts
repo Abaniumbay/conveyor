@@ -122,13 +122,40 @@ export const dashboardClient = String.raw`(() => {
     }
   };
 
-  const openIssueDialog = (opener) => {
+  const issueUrl = (issueId) => {
+    const url = new URL(location.href);
+    url.searchParams.set('issue', issueId);
+    return url.pathname + url.search + url.hash;
+  };
+
+  const openIssueDialog = (opener, updateUrl = true) => {
     const id = opener.getAttribute('data-dialog-open');
     const dialog = id ? document.getElementById(id) : null;
     if (dialog instanceof HTMLDialogElement && !dialog.open) {
       selectDetailTab(dialog, 'summary');
       dialog.showModal();
+      const issueId = dialog.dataset.issueId;
+      if (updateUrl && issueId && new URL(location.href).searchParams.get('issue') !== issueId) {
+        history.pushState({ conveyorIssue: issueId }, '', issueUrl(issueId));
+      }
     }
+  };
+
+  const findIssueDialog = (issueId) => {
+    const dialogs = document.querySelectorAll('dialog[data-issue-id]');
+    for (const dialog of dialogs) {
+      if (dialog.dataset.issueId === issueId && dialog.dataset.selectedIssue === 'true') return dialog;
+    }
+    for (const dialog of dialogs) {
+      if (dialog.dataset.issueId === issueId) return dialog;
+    }
+    return null;
+  };
+
+  const openDialogElement = (dialog) => {
+    if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
+    selectDetailTab(dialog, 'summary');
+    dialog.showModal();
   };
 
   document.addEventListener('click', (event) => {
@@ -162,6 +189,26 @@ export const dashboardClient = String.raw`(() => {
     event.preventDefault();
     openIssueDialog(opener);
   });
+
+  document.addEventListener('close', (event) => {
+    if (!(event.target instanceof HTMLDialogElement)) return;
+    const issueId = event.target.dataset.issueId;
+    const url = new URL(location.href);
+    if (!issueId || url.searchParams.get('issue') !== issueId) return;
+    url.searchParams.delete('issue');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }, true);
+
+  window.addEventListener('popstate', () => {
+    const requested = new URL(location.href).searchParams.get('issue');
+    for (const dialog of document.querySelectorAll('dialog[data-issue-id][open]')) {
+      if (dialog.dataset.issueId !== requested) dialog.close();
+    }
+    if (requested) openDialogElement(findIssueDialog(requested));
+  });
+
+  const requestedIssue = new URL(location.href).searchParams.get('issue');
+  if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
 
   setInterval(() => {
     for (const panel of document.querySelectorAll('dialog[open] [data-detail-panel="activity"]:not([hidden])')) {
