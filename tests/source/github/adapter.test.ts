@@ -1,0 +1,233 @@
+import { describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+
+import {
+  GitHubAdapter,
+  verifyGitHubSignature,
+  type GitHubTransport,
+  type GitHubTransportRequest,
+} from "../../../src/source/github/adapter";
+
+class FakeTransport implements GitHubTransport {
+  readonly requests: GitHubTransportRequest[] = [];
+  readonly #responses: unknown[];
+
+  constructor(...responses: unknown[]) {
+    this.#responses = [...responses];
+  }
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    this.requests.push(request);
+    if (this.#responses.length === 0) throw new Error("unexpected GitHub request");
+    return this.#responses.shift() as T;
+  }
+}
+
+describe("GitHubAdapter", () => {
+  test("projects only issues carrying the configured Conveyor prefix", async () => {
+    const transport = new FakeTransport([
+      {
+        id: 101,
+        number: 1,
+        html_url: "https://github.com/owner/repo/issues/1",
+        title: "Active",
+        body: "body",
+        state: "open",
+        labels: [{ name: "conveyor" }, { name: "backend" }],
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: 102,
+        number: 2,
+        html_url: "https://github.com/owner/repo/issues/2",
+        title: "Paused",
+        body: null,
+        state: "open",
+        labels: [{ name: "conveyor:implementation" }],
+        updated_at: "2026-01-02T00:00:00Z",
+      },
+      {
+        id: 103,
+        number: 3,
+        html_url: "https://github.com/owner/repo/issues/3",
+        title: "Invisible",
+        body: "",
+        state: "open",
+        labels: [{ name: "backend" }],
+        updated_at: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: 104,
+        number: 4,
+        html_url: "https://github.com/owner/repo/pull/4",
+        title: "A pull request",
+        body: "",
+        state: "open",
+        labels: [{ name: "conveyor" }],
+        pull_request: {},
+        updated_at: "2026-01-04T00:00:00Z",
+      },
+    ]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const issues = await adapter.listConveyorIssues("owner/repo");
+
+    expect(issues.map((issue) => issue.number)).toEqual([1, 2]);
+    expect(issues[1]).toMatchObject({ body: "", labels: ["conveyor:implementation"] });
+    expect(transport.requests[0]).toMatchObject({ method: "GET", paginate: true });
+  });
+
+  test("replaces only Conveyor labels while preserving project labels", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "backend" },
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+        ],
+      },
+      [{ name: "backend" }, { name: "conveyor" }, { name: "conveyor:implementation" }],
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceConveyorLabels("owner/repo", 7, [
+      "conveyor",
+      "conveyor:implementation",
+    ]);
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["backend", "conveyor", "conveyor:implementation"],
+      },
+    });
+  });
+
+  test("updates the marked status comment instead of creating conversation spam", async () => {
+    const transport = new FakeTransport(
+      [
+        { id: 55, body: "<!-- conveyor:status -->\nOld" },
+        { id: 56, body: "Human comment" },
+      ],
+      { id: 55, body: "updated" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const id = await adapter.upsertStatusComment("owner/repo", 3, "Current status");
+
+    expect(id).toBe(55);
+    expect(transport.requests[1]).toEqual({
+      method: "PATCH",
+      path: "repos/owner/repo/issues/comments/55",
+      body: { body: "<!-- conveyor:status -->\nCurrent status" },
+    });
+  });
+
+  test("creates a PR idempotently and requests squash merge", async () => {
+    const transport = new FakeTransport(
+      [],
+      { number: 18, html_url: "https://github.com/owner/repo/pull/18", state: "open" },
+      { merged: true, sha: "abc123" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    const pullRequest = await adapter.ensurePullRequest({
+      address: "owner/repo",
+      issueNumber: 12,
+      branch: "conveyor/12-r1-feature",
+      baseBranch: "main",
+      title: "Deliver feature",
+      closingReference: true,
+    });
+    const merge = await adapter.squashMerge("owner/repo", pullRequest.number);
+
+    expect(transport.requests[1]).toMatchObject({
+      method: "POST",
+      body: {
+        head: "conveyor/12-r1-feature",
+        base: "main",
+        body: "Closes #12",
+      },
+    });
+    expect(transport.requests[2]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/pulls/18/merge",
+      body: { merge_method: "squash" },
+    });
+    expect(merge).toEqual({ merged: true, sha: "abc123" });
+  });
+
+  test("creates only missing configured labels during onboarding", async () => {
+    const transport = new FakeTransport(
+      [{ name: "conveyor" }],
+      { name: "conveyor:done" },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.ensureLabels("owner/repo", [
+      { name: "conveyor", color: "2563eb", description: "Managed by Conveyor" },
+      { name: "conveyor:done", color: "16a34a", description: "Delivery complete" },
+    ]);
+
+    expect(transport.requests).toHaveLength(2);
+    expect(transport.requests[1]).toEqual({
+      method: "POST",
+      path: "repos/owner/repo/labels",
+      body: {
+        name: "conveyor:done",
+        color: "16a34a",
+        description: "Delivery complete",
+      },
+    });
+  });
+
+  test("installs a signed webhook when no matching hook exists", async () => {
+    const transport = new FakeTransport(
+      [],
+      { id: 4, config: { url: "https://example.test/hooks/github" }, active: true },
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.ensureWebhook({
+      address: "owner/repo",
+      url: "https://example.test/hooks/github",
+      secret: "webhook-secret",
+    });
+
+    expect(transport.requests[1]).toEqual({
+      method: "POST",
+      path: "repos/owner/repo/hooks",
+      body: {
+        name: "web",
+        active: true,
+        events: [
+          "issues",
+          "issue_comment",
+          "pull_request",
+          "workflow_run",
+          "deployment_status",
+          "sub_issues",
+          "issue_dependencies",
+        ],
+        config: {
+          url: "https://example.test/hooks/github",
+          content_type: "json",
+          insecure_ssl: "0",
+          secret: "webhook-secret",
+        },
+      },
+    });
+  });
+});
+
+describe("verifyGitHubSignature", () => {
+  test("accepts only the matching sha256 signature", () => {
+    const body = new TextEncoder().encode('{"action":"labeled"}');
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    expect(verifyGitHubSignature(body, signature, "secret")).toBe(true);
+    expect(verifyGitHubSignature(body, "sha256=deadbeef", "secret")).toBe(false);
+    expect(verifyGitHubSignature(body, null, "secret")).toBe(false);
+  });
+});
