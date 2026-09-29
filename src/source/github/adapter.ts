@@ -331,6 +331,30 @@ export class GitHubAdapter {
     });
   }
 
+  async replaceManagedProjectLabels(
+    address: string,
+    issueNumber: number,
+    managedProjectLabels: readonly string[],
+    selectedLabels: readonly string[],
+  ): Promise<void> {
+    const issue = await this.transport.request<Pick<GitHubIssue, "labels">>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}`,
+    });
+    const managed = new Set(managedProjectLabels);
+    const preserved = issue.labels
+      .map(labelName)
+      .filter((label) => !managed.has(label));
+    const labels = [...new Set([...preserved, ...selectedLabels])].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    await this.transport.request<unknown>({
+      method: "PUT",
+      path: `repos/${address}/issues/${issueNumber}/labels`,
+      body: { labels },
+    });
+  }
+
   async upsertStatusComment(
     address: string,
     issueNumber: number,

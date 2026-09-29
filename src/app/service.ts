@@ -777,6 +777,19 @@ export class ConveyorService {
             )
           : [];
         await this.github.replaceConveyorLabels(address, issue.sourceNumber, labels);
+      } else if (tool === "source.set_system_labels") {
+        const repository = this.config.repositories[issue.repositoryId]!;
+        const selected = Array.isArray(input.labels)
+          ? input.labels.filter((value): value is string =>
+              typeof value === "string" && repository.systemLabels.includes(value)
+            )
+          : [];
+        await this.github.replaceManagedProjectLabels(
+          address,
+          issue.sourceNumber,
+          repository.systemLabels,
+          selected,
+        );
       } else if (tool === "workspace.request_fetch" || tool === "workspace.request_push") {
         if (!grant.context.workspace) throw new Error("run has no workspace");
         await git(

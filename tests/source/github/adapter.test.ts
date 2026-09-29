@@ -145,6 +145,36 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  test("replaces configured system labels while preserving workflow and unmanaged labels", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+          { name: "backend" },
+          { name: "priority:high" },
+        ],
+      },
+      {},
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceManagedProjectLabels(
+      "owner/repo",
+      7,
+      ["backend", "web", "mobile"],
+      ["web"],
+    );
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["conveyor", "conveyor:refinement", "priority:high", "web"],
+      },
+    });
+  });
+
   test("updates the marked status comment instead of creating conversation spam", async () => {
     const transport = new FakeTransport(
       [

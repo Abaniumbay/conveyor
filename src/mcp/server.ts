@@ -74,6 +74,10 @@ const controlTools: Record<string, { description: string; schema: z.ZodType }> =
   "run.record_artifact": { description: "Record a run artifact.", schema: passthroughInput },
   "run.report_milestone": { description: "Report a run milestone.", schema: passthroughInput },
   "source.set_labels": { description: "Update allowed issue labels.", schema: passthroughInput },
+  "source.set_system_labels": {
+    description: "Replace the issue's configured system-area labels while preserving workflow and unmanaged labels.",
+    schema: passthroughInput,
+  },
   "source.add_comment": { description: "Add an issue comment.", schema: passthroughInput },
   "source.set_acceptance_criteria": { description: "Update acceptance criteria.", schema: passthroughInput },
   "source.set_parent": { description: "Set issue hierarchy.", schema: passthroughInput },
