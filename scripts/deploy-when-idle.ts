@@ -137,11 +137,18 @@ async function run(command: readonly string[]): Promise<void> {
   }
 }
 
+async function systemctl(...args: string[]): Promise<void> {
+  const command = typeof process.getuid === "function" && process.getuid() === 0
+    ? ["systemctl", ...args]
+    : ["sudo", "-n", "systemctl", ...args];
+  await run(command);
+}
+
 async function verifyDeployment(service: string, healthUrl: string): Promise<void> {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
-      await run(["systemctl", "is-active", "--quiet", service]);
+      await systemctl("is-active", "--quiet", service);
       const response = await fetch(healthUrl, { signal: AbortSignal.timeout(3_000) });
       if (response.ok) return;
     } catch {
@@ -188,11 +195,11 @@ async function main(): Promise<void> {
 
   if (options.afterIssue) {
     console.log(`Freezing ${options.service} at the completed stage boundary...`);
-    await run(["systemctl", "kill", "--kill-whom=all", "--signal=SIGSTOP", options.service]);
-    await run(["systemctl", "kill", "--kill-whom=all", "--signal=SIGKILL", options.service]);
+    await systemctl("kill", "--kill-whom=all", "--signal=SIGSTOP", options.service);
+    await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", options.service);
   }
   console.log(`Restarting ${options.service}...`);
-  await run(["systemctl", "restart", options.service]);
+  await systemctl("restart", options.service);
   await verifyDeployment(options.service, options.healthUrl);
   console.log(`Deployment verified: ${options.service} is active and ${options.healthUrl} is healthy.`);
 }
