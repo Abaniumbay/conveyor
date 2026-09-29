@@ -10,6 +10,7 @@ const model: DashboardViewModel = {
   stages: [],
   backlog: [],
   questions: [],
+  systemWarnings: [],
   csrfToken: "filled-by-handler",
 };
 

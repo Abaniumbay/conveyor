@@ -78,6 +78,7 @@ const dashboard: DashboardViewModel = {
       allowFreeText: false,
     },
   ],
+  systemWarnings: ["meal-planner webhook is unavailable"],
   csrfToken: "csrf-token",
 };
 
@@ -106,6 +107,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("Needs your input");
     expect(html).toContain("/questions/question%2F1/answer");
     expect(html).toContain('name="csrf" value="csrf-token"');
+    expect(html).toContain("System attention");
+    expect(html).toContain("meal-planner webhook is unavailable");
   });
 
   test("escapes text and attributes and rejects unsafe issue URLs", () => {

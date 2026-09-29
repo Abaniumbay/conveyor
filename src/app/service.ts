@@ -119,6 +119,7 @@ export class ConveyorService {
   readonly #active = new Map<string, ActiveRun>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   readonly #repositoryErrors = new Map<string, string>();
+  readonly #onboardingErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
@@ -171,10 +172,10 @@ export class ConveyorService {
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
         }
-        this.#repositoryErrors.delete(id);
+        this.#onboardingErrors.delete(id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.#repositoryErrors.set(id, message);
+        this.#onboardingErrors.set(id, message);
         console.error(`Repository ${id} onboarding failed: ${message}`);
       }
     }
@@ -837,9 +838,13 @@ export class ConveyorService {
       }];
     });
     const total = this.store.costSummary();
+    const degradedRepositories = new Set([
+      ...this.#repositoryErrors.keys(),
+      ...this.#onboardingErrors.keys(),
+    ]).size;
     return {
       title: "Conveyor",
-      project: `${Object.keys(this.config.repositories).length} repositories${this.#repositoryErrors.size > 0 ? ` · ${this.#repositoryErrors.size} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
+      project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       stages: stages.map((stage) => ({
         name: stage,
@@ -847,6 +852,10 @@ export class ConveyorService {
       })),
       backlog: topLevel.filter((issue) => issue.projectedStage && firstStages.has(issue.projectedStage)).map((issue) => card(issue)),
       questions,
+      systemWarnings: [
+        ...this.#onboardingErrors.entries(),
+        ...this.#repositoryErrors.entries(),
+      ].map(([repository, message]) => `${repository}: ${message}`),
       csrfToken,
     };
   }
@@ -857,7 +866,11 @@ export class ConveyorService {
       auth,
       username,
       getDashboard: (csrfToken) => this.dashboard(csrfToken),
-      isReady: () => Boolean(this.#lastReconciledAt) && !this.#shuttingDown && this.#repositoryErrors.size === 0,
+      isReady: () =>
+        Boolean(this.#lastReconciledAt) &&
+        !this.#shuttingDown &&
+        this.#repositoryErrors.size === 0 &&
+        this.#onboardingErrors.size === 0,
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       answerQuestion: (id, answer) => this.answerQuestion(id, answer),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),

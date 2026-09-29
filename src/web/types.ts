@@ -38,5 +38,6 @@ export interface DashboardViewModel {
   stages: readonly StageColumnViewModel[];
   backlog: readonly IssueCardViewModel[];
   questions: readonly QuestionViewModel[];
+  systemWarnings: readonly string[];
   csrfToken: string;
 }
