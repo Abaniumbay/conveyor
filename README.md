@@ -2,7 +2,7 @@
 
 Conveyor is a lightweight, always-on delivery orchestrator for one trusted VPS. GitHub remains the source of truth: issues enter through labels, configurable agents and scripts move them through a pipeline, and every visible status is projected back from GitHub.
 
-The engine is a single Bun process backed by SQLite. It uses existing repository checkouts plus Git worktrees, invokes installed Codex CLI agents, exposes a run-scoped MCP server, and serves a small authenticated HTML control plane.
+The engine is a single Bun process backed by SQLite. It uses existing repository checkouts plus Git worktrees, invokes installed Codex CLI agents, exposes a run-scoped MCP server, and serves a small authenticated Preact control plane. Preact is rendered on the server; no browser bundle or hydration runtime is shipped yet.
 
 ## Current scope
 
@@ -14,7 +14,8 @@ The engine is a single Bun process backed by SQLite. It uses existing repository
 - Durable issue, run, cost, question, mutation, and transition state in SQLite
 - Parent/child and dependency primitives
 - Safe worktree isolation without containers
-- Structured questions, backlog ordering, and a responsive server-rendered dashboard
+- Structured questions, backlog ordering, and a responsive server-rendered Preact dashboard
+- A single-row Kanban with one column per configured stage and a separate label-attention view
 - Idempotent PR creation and squash merge
 - Explicit cleanup as a configured stage
 

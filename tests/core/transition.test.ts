@@ -89,10 +89,14 @@ describe("applyStageTransition", () => {
   test("does not repeat a completed source mutation after restart", async () => {
     const store = await setup();
     let calls = 0;
+    let appliedLabels: readonly string[] = [];
     const input = {
       store,
       source: {
-        async replaceConveyorLabels() { calls += 1; },
+        async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) {
+          calls += 1;
+          appliedLabels = labels;
+        },
       },
       sourceName: "github",
       address: "owner/repo",
@@ -114,6 +118,8 @@ describe("applyStageTransition", () => {
     await applyStageTransition(input);
 
     expect(calls).toBe(1);
+    expect(appliedLabels).toContain("conveyor:review");
+    expect(appliedLabels).toContain("conveyor:done");
     store.close();
   });
 

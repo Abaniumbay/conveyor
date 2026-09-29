@@ -7,8 +7,19 @@ const model: DashboardViewModel = {
   title: "Test board",
   project: "org/repo",
   updatedAt: "2026-09-29T12:00:00Z",
+  view: "board",
+  counts: { board: 0, backlog: 0, attention: 0 },
   stages: [],
   backlog: [],
+  attention: {
+    id: "attention",
+    name: "Needs attention",
+    cost: null,
+    totalIssues: 0,
+    page: 1,
+    totalPages: 1,
+    issues: [],
+  },
   questions: [],
   systemWarnings: [],
   csrfToken: "filled-by-handler",
@@ -85,7 +96,7 @@ describe("createWebHandler", () => {
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(await page.text()).toContain("Test board");
-    expect(dashboardCalls).toEqual([[expect.any(String), { column: "state:done", page: 4 }]]);
+    expect(dashboardCalls).toEqual([[expect.any(String), { view: "board", column: "state:done", page: 4 }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const logout = await handler(new Request("http://localhost/logout", {
@@ -119,6 +130,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ issueId: "i-2", direction: "up", csrf }),
     }));
     expect(reorder.status).toBe(303);
+    expect(reorder.headers.get("location")).toBe("/?view=backlog");
     expect(calls.reorders).toEqual([["i-2", "up"]]);
   });
 

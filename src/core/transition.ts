@@ -64,7 +64,11 @@ function targetFor(input: ApplyStageTransitionInput): {
     return {
       stageId: result.stageId,
       state: "done",
-      labels: [...base, done],
+      labels: [
+        ...base,
+        input.labels.stageTemplate.replace("{stage}", result.stageId),
+        done,
+      ],
     };
   }
   if (result.kind === "correction") {

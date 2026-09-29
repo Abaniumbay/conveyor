@@ -150,18 +150,23 @@ function requireMethod(request: Request, method: string): Response | null {
 }
 
 function dashboardPage(url: URL): DashboardPageSelection {
+  const requestedViews = url.searchParams.getAll("view");
+  const requestedView = requestedViews.length === 1 ? requestedViews[0] : null;
+  const view = requestedView === "backlog" || requestedView === "attention"
+    ? requestedView
+    : "board";
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
-  if (columns.length !== 1 || pages.length !== 1) return { column: null, page: 1 };
+  if (columns.length !== 1 || pages.length !== 1) return { view, column: null, page: 1 };
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { column: null, page: 1 };
+    return { view, column: null, page: 1 };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { column, page: parsedPage }
-    : { column: null, page: 1 };
+    ? { view, column, page: parsedPage }
+    : { view, column: null, page: 1 };
 }
 
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
@@ -313,7 +318,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!issueId || issueId.length > 200 || (direction !== "up" && direction !== "down")) return text("Invalid reorder request", 400);
       try {
         await dependencies.reorderBacklog(issueId, direction);
-        return redirect("/");
+        return redirect("/?view=backlog");
       } catch {
         return text("Unable to reorder backlog", 409);
       }

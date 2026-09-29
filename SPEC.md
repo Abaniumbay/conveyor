@@ -609,17 +609,16 @@ Conveyor does not silently repair an ambiguity that could restart or skip work. 
 
 ## 16. Web UI
 
-The UI is an operations console, not a general Kanban editor.
+The UI is an operations console, not a general Kanban editor. It is implemented as server-rendered Preact components. V0.1 ships no client hydration bundle; links and forms retain simple HTTP semantics.
 
 Primary views:
 
-- Global backlog with drag ordering for top-level backlog items only.
-- Active runs grouped by configured stage.
+- A single horizontally scrolling Kanban row with exactly one column for every configured stage, including the first stage. Statuses never create columns; they appear as card badges, border colors, and reasons.
+- Global backlog ordering for top-level items waiting at the first configured stage.
+- A separate needs-attention view for enrolled issues with a missing, unknown, or conflicting stage label. Such issues never disappear from the UI and are not guessed into a stage.
 - Hierarchical parent/child roll-ups.
 - Waiting for input.
-- Blocked/rejected/needs intervention.
-- Done and closable.
-- Paused/excluded.
+- Blocked, rejected, needs-intervention, done, closable, paused, and source-closed status presentation on cards.
 - Run, stage, repository, issue, agent, and total cost summaries.
 
 Every card links directly to its source issue. Issue detail shows:

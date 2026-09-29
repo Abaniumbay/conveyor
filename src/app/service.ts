@@ -10,7 +10,7 @@ import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } fr
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { renderStatusComment } from "../source/github/status-comment";
 import { WorkspaceManager } from "../workspace/manager";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, QuestionViewModel, StageColumnViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -484,8 +484,12 @@ export class ConveyorService {
       ) {
         const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
         const metadata = parent.labels.filter((label) => label.startsWith(orderPrefix));
+        const stageLabel = parent.projectedStage
+          ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
+          : [];
         await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
           this.config.labels.enrollment,
+          ...stageLabel,
           doneLabel,
           this.config.labels.metadata.closable,
           ...metadata,
@@ -885,30 +889,44 @@ export class ConveyorService {
 
   dashboard(
     csrfToken: string,
-    pagination: DashboardPageSelection = { column: null, page: 1 },
+    pagination: DashboardPageSelection = { view: "board", column: null, page: 1 },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
-    const card = (issue: StoredIssue, visited = new Set<string>()): IssueCardViewModel => {
-      if (visited.has(issue.id)) throw new Error(`issue hierarchy cycle at ${issue.id}`);
-      const nextVisited = new Set(visited).add(issue.id);
+    const relation = (issue: StoredIssue): IssueRelationViewModel => ({
+      number: issue.sourceNumber,
+      title: issue.title,
+      url: issue.sourceUrl,
+    });
+    const tone = (state: string): IssueTone => {
+      if (state === "done") return "success";
+      if (["blocked", "error", "rejected", "needs-intervention", "inconsistent"].includes(state)) {
+        return "danger";
+      }
+      if (["paused", "needs-input"].includes(state)) return "warning";
+      if (state === "closed") return "muted";
+      return "active";
+    };
+    const card = (issue: StoredIssue, fallbackReason: string | null = null): IssueCardViewModel => {
       const state = this.store.getStageState(issue.id);
       const cost = this.store.costSummary({ issueId: issue.id });
       const children = this.store.listChildren(issue.id)
         .flatMap(({ issueId }) => {
           const child = byId.get(issueId);
-          return child ? [card(child, nextVisited)] : [];
+          return child ? [relation(child)] : [];
         });
+      const projectedState = issue.projectedState ?? issue.sourceState;
+      const parent = issue.parentId ? byId.get(issue.parentId) : null;
       return {
         id: issue.id,
         number: issue.sourceNumber,
         title: issue.title,
         url: issue.sourceUrl,
-        state: issue.projectedState ?? issue.sourceState,
+        state: projectedState,
         labels: issue.labels,
         acceptanceCriteria: criteriaFromBody(issue.body),
         activity: state ? `${state.stageId} · ${state.status}` : null,
-        reason: issue.warning,
+        reason: issue.warning ?? fallbackReason,
         cost:
           cost.runs === 0
             ? null
@@ -919,45 +937,32 @@ export class ConveyorService {
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
         inconsistent: Boolean(issue.warning),
         closable: issue.labels.includes(this.config.labels.metadata.closable),
+        tone: tone(projectedState),
+        parent: parent ? relation(parent) : null,
         children,
       };
     };
-    const topLevel = issues.filter((issue) => !issue.parentId);
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
       const first = this.config.pipelines[repository.pipeline]?.stages[0]?.id;
       return first ? [first] : [];
     }));
     const stages = [...new Set(Object.values(this.config.pipelines).flatMap((pipeline) =>
       pipeline.stages.map((stage) => stage.id),
-    ))].filter((stage) => !firstStages.has(stage));
-    const activeIssues = issues.filter((issue) =>
-      issue.projectedState === "active" && issue.projectedStage,
+    ))];
+    const configuredStages = new Set(stages);
+    const stagedIssues = issues.filter((issue) =>
+      issue.projectedStage !== null &&
+      configuredStages.has(issue.projectedStage) &&
+      issue.projectedState !== "inconsistent",
     );
-    const stateIssues = issues.filter((issue) =>
-      issue.projectedState !== "active" || !issue.projectedStage,
+    const attentionIssues = issues.filter((issue) => !stagedIssues.includes(issue));
+    const backlogIssues = stagedIssues.filter((issue) =>
+      !issue.parentId &&
+      issue.projectedState === "active" &&
+      issue.projectedStage !== null &&
+      firstStages.has(issue.projectedStage) &&
+      this.store.getStageState(issue.id)?.status === "ready",
     );
-    const stateGroups = new Map<string, StoredIssue[]>();
-    for (const issue of stateIssues) {
-      const state = issue.projectedState ?? issue.sourceState ?? "unknown";
-      const group = stateGroups.get(state) ?? [];
-      group.push(issue);
-      stateGroups.set(state, group);
-    }
-    const preferredStates = [
-      "needs-input",
-      "needs-intervention",
-      "blocked",
-      "inconsistent",
-      "paused",
-      "rejected",
-      ...Object.keys(this.config.labels.states),
-      "done",
-      "closed",
-    ];
-    const stateNames = [
-      ...new Set(preferredStates.filter((state) => stateGroups.has(state))),
-      ...[...stateGroups.keys()].filter((state) => !preferredStates.includes(state)).sort(),
-    ];
     const title = (value: string) => value
       .split(/[-_]/)
       .filter(Boolean)
@@ -968,7 +973,7 @@ export class ConveyorService {
       name: string,
       columnIssues: StoredIssue[],
       cost: string | null,
-      totalIssues = columnIssues.length,
+      issueCard: (issue: StoredIssue) => IssueCardViewModel = (issue) => card(issue),
     ): StageColumnViewModel => {
       const totalPages = Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
       const requestedPage = pagination.column === id ? pagination.page : 1;
@@ -978,10 +983,10 @@ export class ConveyorService {
         id,
         name,
         cost,
-        totalIssues,
+        totalIssues: columnIssues.length,
         page,
         totalPages,
-        issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map((issue) => card(issue)),
+        issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map(issueCard),
       };
     };
     const questions: QuestionViewModel[] = this.store.listOpenQuestions().flatMap((question) => {
@@ -1013,11 +1018,16 @@ export class ConveyorService {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
-      stages: [
-        ...stages.map((stage) => column(
+      view: pagination.view,
+      counts: {
+        board: stagedIssues.length,
+        backlog: backlogIssues.length,
+        attention: attentionIssues.length,
+      },
+      stages: stages.map((stage) => column(
           `stage:${stage}`,
           title(stage),
-          activeIssues.filter((issue) => !issue.parentId && issue.projectedStage === stage),
+          stagedIssues.filter((issue) => issue.projectedStage === stage),
           (() => {
           const summary = this.store.costSummary({ stageId: stage });
           if (summary.runs === 0) return null;
@@ -1025,19 +1035,20 @@ export class ConveyorService {
             ? `${summary.runs} runs · cost unavailable`
             : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
           })(),
-          activeIssues.filter((issue) => issue.projectedStage === stage).length,
         )),
-        ...stateNames.map((state) => column(
-          `state:${state}`,
-          title(state),
-          (stateGroups.get(state) ?? []).filter((issue) => !issue.parentId),
-          null,
-          stateGroups.get(state)?.length ?? 0,
-        )),
-      ],
-      backlog: activeIssues
-        .filter((issue) => !issue.parentId && issue.projectedStage && firstStages.has(issue.projectedStage))
-        .map((issue) => card(issue)),
+      backlog: backlogIssues.map((issue) => card(issue)),
+      attention: column(
+        "attention",
+        "Needs attention",
+        attentionIssues,
+        null,
+        (issue) => card(
+          issue,
+          issue.projectedStage
+            ? "The issue has conflicting or invalid Conveyor labels."
+            : "No valid configured stage label is present.",
+        ),
+      ),
       questions,
       systemWarnings: [
         ...this.#onboardingErrors.entries(),

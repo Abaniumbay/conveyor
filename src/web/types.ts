@@ -1,4 +1,12 @@
-/** A server-ready issue card. Child issues are rendered beneath their parent. */
+export type IssueTone = "active" | "success" | "warning" | "danger" | "muted";
+
+export interface IssueRelationViewModel {
+  number: number;
+  title: string;
+  url: string | null;
+}
+
+/** A server-ready issue card with lightweight hierarchy references. */
 export interface IssueCardViewModel {
   id: string;
   number: number;
@@ -14,7 +22,9 @@ export interface IssueCardViewModel {
   blocked: boolean;
   inconsistent: boolean;
   closable: boolean;
-  children: readonly IssueCardViewModel[];
+  tone: IssueTone;
+  parent: IssueRelationViewModel | null;
+  children: readonly IssueRelationViewModel[];
 }
 
 export interface StageColumnViewModel {
@@ -28,9 +38,12 @@ export interface StageColumnViewModel {
 }
 
 export interface DashboardPageSelection {
+  view: DashboardView;
   column: string | null;
   page: number;
 }
+
+export type DashboardView = "board" | "backlog" | "attention";
 
 export interface QuestionViewModel {
   id: string;
@@ -45,8 +58,11 @@ export interface DashboardViewModel {
   title: string;
   project: string;
   updatedAt: string;
+  view: DashboardView;
+  counts: { board: number; backlog: number; attention: number };
   stages: readonly StageColumnViewModel[];
   backlog: readonly IssueCardViewModel[];
+  attention: StageColumnViewModel;
   questions: readonly QuestionViewModel[];
   systemWarnings: readonly string[];
   csrfToken: string;

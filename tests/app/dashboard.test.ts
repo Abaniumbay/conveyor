@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
-  test("keeps every enrolled issue visible and paginates non-stage states", async () => {
+  test("uses only configured stages as columns and sends invalid labels to attention", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-"));
     temporaryDirectories.push(root);
     const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -83,21 +83,29 @@ describe("ConveyorService dashboard", () => {
       state: "active",
       warning: null,
     });
+    store.setStageState({
+      issueId: "github:owner/repo#26",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
 
     const service = new ConveyorService(config, store, {} as never);
-    const dashboard = service.dashboard("csrf", { column: "state:done", page: 2 });
-    const done = dashboard.stages.find((column) => column.id === "state:done");
+    const dashboard = service.dashboard("csrf", { view: "attention", column: "attention", page: 2 });
+    const refinement = dashboard.stages.find((column) => column.id === "stage:refinement");
 
-    expect(done).toMatchObject({
-      name: "Done",
-      totalIssues: 25,
-      page: 2,
-      totalPages: 2,
+    expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
+    expect(refinement).toMatchObject({ totalIssues: 1, page: 1, totalPages: 1 });
+    expect(dashboard.attention).toMatchObject({ totalIssues: 25, page: 2, totalPages: 2 });
+    expect(dashboard.attention.issues).toHaveLength(5);
+    expect(dashboard.attention.issues[4]).toMatchObject({
+      number: 25,
+      parent: { number: 1 },
+      reason: "No valid configured stage label is present.",
     });
-    expect(done?.issues).toHaveLength(4);
     expect(dashboard.backlog).toHaveLength(1);
-    expect(dashboard.stages.reduce((total, column) => total + column.totalIssues, 0)
-      + dashboard.backlog.length).toBe(26);
+    expect(dashboard.counts).toEqual({ board: 1, backlog: 1, attention: 25 });
     store.close();
   });
 });
