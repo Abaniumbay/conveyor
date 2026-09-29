@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { MCP_AGENT_TOOLS } from "../mcp/tools";
+
 import { parseDuration } from "./duration";
 
 const durationSchema = z
@@ -109,6 +111,7 @@ const agentSchema = z
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     instructions: absolutePathSchema,
     workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
+    tools: z.array(z.enum(MCP_AGENT_TOOLS)).default([...MCP_AGENT_TOOLS]),
   })
   .strict();
 

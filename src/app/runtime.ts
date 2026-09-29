@@ -11,6 +11,7 @@ import type {
   ProducerContext,
 } from "../core/pipeline";
 import type { ConveyorStore, StoredIssue } from "../db/store";
+import { verifierToolGrant } from "../mcp/tools";
 import { runCodex, type CodexMcpConfiguration, type CodexRunInput } from "../runner/codex";
 import {
   runCodexCheck,
@@ -19,36 +20,6 @@ import {
 } from "../runner/codex-check";
 import { runJsonProcess } from "../runner/json-process";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
-
-const READ_TOOLS = [
-  "source.get_issue",
-  "source.get_guidance",
-  "workspace.get_context",
-  "delivery.get_state",
-] as const;
-
-const REPORT_TOOLS = [
-  "run.report_progress",
-  "run.ask_question",
-  "run.report_rationale",
-  "run.report_blocker",
-  "run.report_result",
-  "run.record_artifact",
-  "run.report_milestone",
-] as const;
-
-const MUTATION_TOOLS = [
-  "source.set_labels",
-  "source.add_comment",
-  "source.set_acceptance_criteria",
-  "source.set_parent",
-  "source.set_dependencies",
-  "source.create_child",
-  "source.set_pull_request_metadata",
-  "workspace.request_fetch",
-  "workspace.request_push",
-  "workspace.record_artifact",
-] as const;
 
 export interface RuntimeRepository {
   id: string;
@@ -251,7 +222,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           runId,
           stageId: stage.id,
           context: this.context,
-          allowedTools: [...READ_TOOLS, ...REPORT_TOOLS, ...MUTATION_TOOLS],
+          allowedTools: agent.tools,
         });
         try {
           const instructions = await readFile(agent.instructions, "utf8");
@@ -338,7 +309,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       runId,
       stageId: context.stageId,
       context: this.context,
-      allowedTools: [...READ_TOOLS, ...REPORT_TOOLS],
+      allowedTools: verifierToolGrant(agent.tools),
     });
     try {
       const instructions = await readFile(agent.instructions, "utf8");

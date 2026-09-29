@@ -64,6 +64,7 @@ agents:
     model: gpt-test
     effort: high
     instructions: ./instructions/checker.md
+    tools: [source.get_issue, run.report_progress]
 checks:
   enter:
     verifier: checker
@@ -119,6 +120,10 @@ sources:
     expect(config.agents.checker?.instructions).toBe(
       path.join(directory, "instructions/checker.md"),
     );
+    expect(config.agents.checker?.tools).toEqual([
+      "source.get_issue",
+      "run.report_progress",
+    ]);
     expect(config.pipelines.default?.stages[0]?.run).toEqual({
       type: "script",
       runner: "process",

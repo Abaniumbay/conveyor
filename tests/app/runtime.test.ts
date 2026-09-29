@@ -38,11 +38,13 @@ agents:
     model: gpt-test
     effort: low
     instructions: ./agent.md
+    tools: [source.get_issue, workspace.request_fetch]
   checker:
     runner: codex
     effort: high
     instructions: ./agent.md
     workspaceAccess: read-only
+    tools: [source.get_issue, run.report_progress, source.set_acceptance_criteria]
 checks:
   verify: { verifier: checker }
 labels:
@@ -164,8 +166,8 @@ repositories:
 
     expect(producerInputs).toHaveLength(1);
     expect(checkInputs).toHaveLength(1);
-    expect(grants[0]).toContain("source.set_acceptance_criteria");
-    expect(grants[1]).not.toContain("source.set_acceptance_criteria");
+    expect(grants[0]).toEqual(["source.get_issue", "workspace.request_fetch"]);
+    expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
     expect(store.costSummary()).toMatchObject({
       runs: 2,
       inputTokens: 30,

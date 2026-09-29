@@ -8,7 +8,7 @@ The engine is a single Bun process backed by SQLite. It uses existing repository
 
 - Split YAML configuration outside managed repositories
 - GitHub polling and signed webhooks
-- Configurable stages, enter/exit verifiers, scripts, and source actions
+- Configurable stages, enter/exit verifiers, scripts, source actions, and per-agent MCP tool grants
 - Codex and strict JSON-process runners
 - Per-stage, per-repository, and global concurrency
 - Durable issue, run, cost, question, mutation, and transition state in SQLite
