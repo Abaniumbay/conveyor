@@ -91,6 +91,77 @@ function displayName(id: string): string {
     .join(" ");
 }
 
+function recordFrom(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function concise(value: unknown, maximum = 500): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
+}
+
+function sentence(value: unknown, maximum = 500): string {
+  const text = concise(value, maximum);
+  return /[.!?…]$/.test(text) ? text : `${text}.`;
+}
+
+function evidenceConversationMessage(evidence: unknown): string {
+  const result = recordFrom(evidence);
+  if (!result || typeof result.passed !== "boolean") {
+    return "Check script completed and returned structured evidence for verifier review.";
+  }
+
+  const commands = Array.isArray(result.commands)
+    ? result.commands.map(recordFrom).filter((command) => command !== null)
+    : [];
+  const failed = commands.filter((command) => command.passed === false);
+  if (result.passed) {
+    return commands.length > 0
+      ? `Check evidence passed: ${commands.length} of ${commands.length} checks passed.`
+      : "Check evidence passed.";
+  }
+
+  const count = commands.length > 0
+    ? `: ${failed.length} of ${commands.length} checks failed`
+    : "";
+  const first = failed[0];
+  if (!first) return `Check evidence failed${count}.`;
+  const name = concise(first.name || first.command || "Unnamed check", 120);
+  const cause = concise(
+    first.output
+      || (first.timedOut === true ? "Timed out" : "")
+      || (first.exitCode !== undefined ? `Exited with code ${String(first.exitCode)}` : "No failure detail was returned"),
+    500,
+  );
+  return `Check evidence failed${count}. Main reason: ${name} — ${cause}`;
+}
+
+function producerConversationMessage(kind: "Agent" | "Script", result: RunEnvelope): string {
+  const stage = result.stageResult;
+  const reason = stage.reason ? `. Reason: ${concise(stage.reason)}` : "";
+  return `${kind} run completed with outcome ${concise(stage.outcome, 40)} and status ${concise(stage.status, 80)}: ${concise(stage.summary)}${reason}`;
+}
+
+function verifierConversationMessage(
+  phase: "enter" | "exit",
+  result: CheckResult,
+): string {
+  const label = phase === "enter" ? "Entry" : "Exit";
+  if (result.decision === "pass") {
+    const evidence = result.evidence.length > 0
+      ? ` Evidence: ${concise(result.evidence.join("; "), 700)}`
+      : "";
+    return `${label} verifier passed with status ${concise(result.status, 80)}.${evidence}`;
+  }
+  const reason = result.reason ? ` Reason: ${sentence(result.reason, 700)}` : "";
+  const fixes = result.requiredFixes.length > 0
+    ? ` Required fixes: ${concise(result.requiredFixes.join("; "), 700)}`
+    : "";
+  return `${label} verifier failed with status ${concise(result.status, 80)}.${reason}${fixes}`;
+}
+
 async function evidenceScript(
   script: string,
   cwd: string,
@@ -227,7 +298,6 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           interruptGraceMs: this.config.settings.interruptGraceMs,
           ...(this.signal ? { signal: this.signal } : {}),
         });
-        this.conveyorMessage(issue.id, stage.id, runId, `Script finished: ${result.stageResult.summary}`);
       } else {
         const agent = this.config.agents[stage.run.agent];
         if (!agent) throw new Error(`unknown agent: ${stage.run.agent}`);
@@ -283,6 +353,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         }
       }
       this.finishRun(runId, "succeeded", result);
+      this.conveyorMessage(
+        issue.id,
+        stage.id,
+        runId,
+        producerConversationMessage(stage.run.type === "agent" ? "Agent" : "Script", result),
+      );
       return result;
     } catch (error) {
       const failure = failedEnvelope(
@@ -322,7 +398,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           issue,
           producerResult: context.producerResult,
         });
-        this.conveyorMessage(issue.id, context.stageId, null, "Check script finished; evidence is ready for review.");
+        this.conveyorMessage(
+          issue.id,
+          context.stageId,
+          null,
+          evidenceConversationMessage(evidence),
+        );
       } catch (error) {
         this.conveyorMessage(issue.id, context.stageId, null, `Check script failed: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
@@ -342,14 +423,15 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       startedAt: new Date().toISOString(),
     });
     const started = performance.now();
-    const lease = await this.mcp.create({
-      runId,
-      stageId: context.stageId,
-      context: this.context,
-      allowedTools: verifierToolGrant(agent.tools),
-      actor: this.agentActor(definition.verifier),
-    });
+    let lease: ScopedMcpLease | null = null;
     try {
+      lease = await this.mcp.create({
+        runId,
+        stageId: context.stageId,
+        context: this.context,
+        allowedTools: verifierToolGrant(agent.tools),
+        actor: this.agentActor(definition.verifier),
+      });
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await this.#codexCheck({
         command: runner.command,
@@ -398,6 +480,12 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           durationMs: result.durationMs,
         },
       });
+      this.conveyorMessage(
+        issue.id,
+        context.stageId,
+        runId,
+        verifierConversationMessage(phase, result),
+      );
       return result;
     } catch (error) {
       const failure = failedEnvelope(
@@ -405,9 +493,15 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         Math.max(0, Math.round(performance.now() - started)),
       );
       this.finishRun(runId, "failed", failure);
+      this.conveyorMessage(
+        issue.id,
+        context.stageId,
+        runId,
+        `${phase === "enter" ? "Entry" : "Exit"} verifier could not complete: ${concise(error instanceof Error ? error.message : String(error), 700)}`,
+      );
       throw error;
     } finally {
-      await lease.close();
+      await lease?.close();
     }
   }
 

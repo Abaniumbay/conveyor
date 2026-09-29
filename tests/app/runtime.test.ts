@@ -20,6 +20,15 @@ describe("ConfiguredStageRuntime", () => {
     directories.push(root);
     const repository = path.join(root, "repository");
     await mkdir(repository);
+    await writeFile(path.join(root, "check.ts"), `
+console.log(JSON.stringify({
+  passed: false,
+  commands: [
+    { name: "Core tests", passed: false, output: "Executable not found in $PATH: dart" },
+    { name: "Web tests", passed: true, output: "12 tests passed" },
+  ],
+}));
+`);
     await writeFile(path.join(root, "agent.md"), "Implement only the requested issue.");
     await writeFile(path.join(root, "config.yml"), `
 settings:
@@ -51,7 +60,7 @@ agents:
     workspaceAccess: read-only
     tools: [source.get_issue, run.report_progress, source.set_acceptance_criteria]
 checks:
-  verify: { verifier: checker }
+  verify: { verifier: checker, script: ./check.ts }
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
@@ -154,11 +163,11 @@ repositories:
         async codexCheck(input) {
           checkInputs.push(input);
           return {
-            decision: "pass",
-            status: "done",
-            reason: null,
-            evidence: ["tests pass"],
-            requiredFixes: [],
+            decision: "fail",
+            status: "needs-intervention",
+            reason: "The verification command could not start.",
+            evidence: ["Core tests did not execute."],
+            requiredFixes: ["Restore Dart to PATH."],
             criteria: [],
             sessionId: "check-thread",
             usage: { inputTokens: 10, outputTokens: 3, cachedTokens: 1 },
@@ -186,7 +195,7 @@ repositories:
 
     expect(await runtime.runProducer(stage, context)).toEqual(producerResult);
     expect(await runtime.runCheck("verify", "exit", { ...context, producerResult })).toMatchObject({
-      decision: "pass",
+      decision: "fail",
       sessionId: "check-thread",
     });
     expect(await runtime.runProducer(config.pipelines.default!.stages[1]!, {
@@ -214,8 +223,24 @@ repositories:
       message: message.message,
     }))).toEqual([
       { actor: "You", message: "Preserve the existing API." },
+      {
+        actor: "Conveyor",
+        message: "Agent run completed with outcome success and status done: Implemented",
+      },
+      { actor: "Conveyor", message: expect.stringContaining("Running check script") },
+      {
+        actor: "Conveyor",
+        message: "Check evidence failed: 1 of 2 checks failed. Main reason: Core tests — Executable not found in $PATH: dart",
+      },
+      {
+        actor: "Conveyor",
+        message: "Exit verifier failed with status needs-intervention. Reason: The verification command could not start. Required fixes: Restore Dart to PATH.",
+      },
       { actor: "Conveyor", message: expect.stringContaining("bun run") },
-      { actor: "Conveyor", message: "Script finished: Deployment completed" },
+      {
+        actor: "Conveyor",
+        message: "Script run completed with outcome success and status done: Deployment completed",
+      },
     ]);
     store.close();
   });
