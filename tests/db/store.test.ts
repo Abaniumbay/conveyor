@@ -224,4 +224,104 @@ describe("ConveyorStore", () => {
     ]);
     store.close();
   });
+
+  test("tracks enrollment generations, workspaces, and durable stage state", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 1,
+      sourceUrl: "https://example.test/1",
+      title: "Feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+
+    const first = store.activateEnrollment("issue-1");
+    expect(store.activateEnrollment("issue-1")).toEqual(first);
+    store.recordWorkspace({
+      id: "workspace-1",
+      enrollmentId: first.id,
+      path: "/tmp/worktree",
+      branch: "conveyor/1-r1-feature",
+      status: "active",
+    });
+    store.setStageState({
+      issueId: "issue-1",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: "config-hash",
+    });
+
+    expect(store.getActiveWorkspace("issue-1")).toMatchObject({
+      id: "workspace-1",
+      generation: 1,
+    });
+    expect(store.getStageState("issue-1")).toMatchObject({
+      stageId: "refinement",
+      status: "ready",
+    });
+
+    store.endActiveEnrollment("issue-1", "offboarded");
+    const second = store.activateEnrollment("issue-1");
+    expect(second.generation).toBe(2);
+    expect(second.id).not.toBe(first.id);
+    store.close();
+  });
+
+  test("finishes runs with usage and exposes cost totals", async () => {
+    const store = await openStore();
+    store.createRun({
+      id: "run-1",
+      issueId: null,
+      stageId: "review",
+      attempt: 1,
+      kind: "verifier",
+      status: "running",
+      configHash: "config-hash",
+      startedAt: "2026-01-01T00:00:00Z",
+    });
+    store.finishRun("run-1", {
+      status: "succeeded",
+      exitCode: 0,
+      result: { decision: "pass" },
+      sessionId: "thread-1",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedTokens: 5,
+        amount: 0,
+        currency: "USD",
+        source: "unavailable",
+        durationMs: 1200,
+      },
+    });
+
+    expect(store.getRun("run-1")).toMatchObject({
+      status: "succeeded",
+      sessionId: "thread-1",
+      result: { decision: "pass" },
+    });
+    expect(store.costSummary()).toEqual({
+      runs: 1,
+      amount: 0,
+      currency: "USD",
+      durationMs: 1200,
+      inputTokens: 100,
+      outputTokens: 20,
+      cachedTokens: 5,
+    });
+    store.close();
+  });
 });

@@ -56,6 +56,34 @@ export interface RunRecordInput {
   startedAt: string;
 }
 
+export interface EnrollmentRecord {
+  id: string;
+  issueId: string;
+  generation: number;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface StoredWorkspace {
+  id: string;
+  enrollmentId: string;
+  issueId: string;
+  generation: number;
+  path: string;
+  branch: string;
+  status: string;
+}
+
+export interface StoredStageState {
+  issueId: string;
+  stageId: string;
+  status: string;
+  feedbackCycle: number;
+  configHash: string;
+  updatedAt: string;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -308,6 +336,161 @@ export class ConveyorStore {
     }));
   }
 
+  activateEnrollment(issueId: string): EnrollmentRecord {
+    return this.#database.transaction(() => {
+      const active = this.#database
+        .query(
+          `SELECT * FROM enrollments
+           WHERE issue_id = ? AND status = 'active'
+           ORDER BY generation DESC LIMIT 1`,
+        )
+        .get(issueId) as Record<string, SQLQueryBindings> | null;
+      if (active) return this.mapEnrollment(active);
+
+      const latest = this.#database
+        .query(
+          "SELECT COALESCE(MAX(generation), 0) AS generation FROM enrollments WHERE issue_id = ?",
+        )
+        .get(issueId) as { generation: number };
+      const id = randomUUID();
+      const startedAt = now();
+      this.#database
+        .query(
+          `INSERT INTO enrollments(id, issue_id, generation, status, started_at)
+           VALUES (?, ?, ?, 'active', ?)`,
+        )
+        .run(id, issueId, Number(latest.generation) + 1, startedAt);
+      return this.getEnrollment(id)!;
+    })();
+  }
+
+  getEnrollment(id: string): EnrollmentRecord | null {
+    const row = this.#database
+      .query("SELECT * FROM enrollments WHERE id = ?")
+      .get(id) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapEnrollment(row) : null;
+  }
+
+  endActiveEnrollment(issueId: string, status: string): void {
+    const timestamp = now();
+    this.#database.transaction(() => {
+      this.#database
+        .query(
+          `UPDATE workspaces SET status = 'stale'
+           WHERE enrollment_id IN (
+             SELECT id FROM enrollments WHERE issue_id = ? AND status = 'active'
+           ) AND status = 'active'`,
+        )
+        .run(issueId);
+      this.#database
+        .query(
+          `UPDATE enrollments SET status = ?, ended_at = ?
+           WHERE issue_id = ? AND status = 'active'`,
+        )
+        .run(status, timestamp, issueId);
+    })();
+  }
+
+  recordWorkspace(workspace: {
+    id: string;
+    enrollmentId: string;
+    path: string;
+    branch: string;
+    status: string;
+  }): void {
+    this.#database
+      .query(
+        `INSERT INTO workspaces(id, enrollment_id, path, branch, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET status = excluded.status`,
+      )
+      .run(
+        workspace.id,
+        workspace.enrollmentId,
+        workspace.path,
+        workspace.branch,
+        workspace.status,
+        now(),
+      );
+  }
+
+  getActiveWorkspace(issueId: string): StoredWorkspace | null {
+    const row = this.#database
+      .query(
+        `SELECT w.*, e.issue_id, e.generation
+         FROM workspaces w
+         JOIN enrollments e ON e.id = w.enrollment_id
+         WHERE e.issue_id = ? AND e.status = 'active' AND w.status = 'active'
+         ORDER BY e.generation DESC LIMIT 1`,
+      )
+      .get(issueId) as Record<string, SQLQueryBindings> | null;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      enrollmentId: String(row.enrollment_id),
+      issueId: String(row.issue_id),
+      generation: Number(row.generation),
+      path: String(row.path),
+      branch: String(row.branch),
+      status: String(row.status),
+    };
+  }
+
+  setStageState(state: {
+    issueId: string;
+    stageId: string;
+    status: string;
+    feedbackCycle: number;
+    configHash: string;
+  }): void {
+    this.#database
+      .query(
+        `INSERT INTO stage_states(
+           issue_id, stage_id, status, feedback_cycle, config_hash, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(issue_id) DO UPDATE SET
+           stage_id = excluded.stage_id,
+           status = excluded.status,
+           feedback_cycle = excluded.feedback_cycle,
+           config_hash = excluded.config_hash,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        state.issueId,
+        state.stageId,
+        state.status,
+        state.feedbackCycle,
+        state.configHash,
+        now(),
+      );
+  }
+
+  getStageState(issueId: string): StoredStageState | null {
+    const row = this.#database
+      .query("SELECT * FROM stage_states WHERE issue_id = ?")
+      .get(issueId) as Record<string, SQLQueryBindings> | null;
+    if (!row) return null;
+    return {
+      issueId: String(row.issue_id),
+      stageId: String(row.stage_id),
+      status: String(row.status),
+      feedbackCycle: Number(row.feedback_cycle),
+      configHash: String(row.config_hash),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapEnrollment(row: Record<string, SQLQueryBindings>): EnrollmentRecord {
+    return {
+      id: String(row.id),
+      issueId: String(row.issue_id),
+      generation: Number(row.generation),
+      status: String(row.status),
+      startedAt: String(row.started_at),
+      endedAt: row.ended_at === null ? null : String(row.ended_at),
+    };
+  }
+
   private mapIssue(row: Record<string, SQLQueryBindings>): StoredIssue {
     return {
       id: String(row.id),
@@ -438,6 +621,120 @@ export class ConveyorStore {
         run.startedAt,
         run.startedAt,
       );
+  }
+
+  finishRun(
+    runId: string,
+    finish: {
+      status: string;
+      exitCode: number | null;
+      result: unknown;
+      sessionId: string | null;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cachedTokens: number;
+        amount: number;
+        currency: string;
+        source: string;
+        durationMs: number;
+      };
+    },
+  ): void {
+    this.#database.transaction(() => {
+      const timestamp = now();
+      const updated = this.#database
+        .query(
+          `UPDATE runs SET status = ?, session_id = ?, finished_at = ?,
+             heartbeat_at = ?, exit_code = ?, result_json = ?
+           WHERE id = ?`,
+        )
+        .run(
+          finish.status,
+          finish.sessionId,
+          timestamp,
+          timestamp,
+          finish.exitCode,
+          json(finish.result),
+          runId,
+        );
+      if (updated.changes !== 1) throw new Error(`unknown run: ${runId}`);
+      this.#database
+        .query(
+          `INSERT INTO usage_cost_entries(
+             id, run_id, input_tokens, output_tokens, cached_tokens, amount,
+             currency, source, duration_ms, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          runId,
+          finish.usage.inputTokens,
+          finish.usage.outputTokens,
+          finish.usage.cachedTokens,
+          finish.usage.amount,
+          finish.usage.currency,
+          finish.usage.source,
+          finish.usage.durationMs,
+          timestamp,
+        );
+    })();
+  }
+
+  getRun(runId: string): {
+    id: string;
+    issueId: string | null;
+    stageId: string;
+    attempt: number;
+    kind: string;
+    status: string;
+    sessionId: string | null;
+    result: unknown | null;
+  } | null {
+    const row = this.#database
+      .query("SELECT * FROM runs WHERE id = ?")
+      .get(runId) as Record<string, SQLQueryBindings> | null;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      issueId: row.issue_id === null ? null : String(row.issue_id),
+      stageId: String(row.stage_id),
+      attempt: Number(row.attempt),
+      kind: String(row.kind),
+      status: String(row.status),
+      sessionId: row.session_id === null ? null : String(row.session_id),
+      result: row.result_json === null ? null : parseJson(String(row.result_json)),
+    };
+  }
+
+  costSummary(): {
+    runs: number;
+    amount: number;
+    currency: string;
+    durationMs: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+  } {
+    const row = this.#database
+      .query(
+        `SELECT COUNT(*) AS runs, COALESCE(SUM(amount), 0) AS amount,
+           COALESCE(SUM(duration_ms), 0) AS duration_ms,
+           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0) AS cached_tokens
+         FROM usage_cost_entries`,
+      )
+      .get() as Record<string, SQLQueryBindings>;
+    return {
+      runs: Number(row.runs),
+      amount: Number(row.amount),
+      currency: "USD",
+      durationMs: Number(row.duration_ms),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cachedTokens: Number(row.cached_tokens),
+    };
   }
 
   appendRunEvent(runId: string, type: string, payload: unknown): number {
