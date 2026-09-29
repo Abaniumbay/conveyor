@@ -118,6 +118,7 @@ export class ConveyorService {
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
   readonly #mcpGrants = new Map<string, McpGrant>();
+  readonly #repositoryErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
@@ -157,17 +158,24 @@ export class ConveyorService {
         folder: repository.folder,
         configHash: this.config.hash,
       });
-      await this.github.ensureLabels(repository.address, labelDefinitions(this.config, id));
-      const source = this.config.sources[repository.source];
-      if (
-        source?.type === "github" &&
-        source.autoConfigureWebhook &&
-        this.config.web.publicUrl
-      ) {
-        const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
-        if (!secret) throw new Error("CONVEYOR_GITHUB_WEBHOOK_SECRET is required for webhooks");
-        const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
-        await this.github.ensureWebhook({ address: repository.address, url, secret });
+      try {
+        await this.github.ensureLabels(repository.address, labelDefinitions(this.config, id));
+        const source = this.config.sources[repository.source];
+        if (
+          source?.type === "github" &&
+          source.autoConfigureWebhook &&
+          this.config.web.publicUrl
+        ) {
+          const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
+          if (!secret) throw new Error("CONVEYOR_GITHUB_WEBHOOK_SECRET is required for webhooks");
+          const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
+          await this.github.ensureWebhook({ address: repository.address, url, secret });
+        }
+        this.#repositoryErrors.delete(id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#repositoryErrors.set(id, message);
+        console.error(`Repository ${id} onboarding failed: ${message}`);
       }
     }
   }
@@ -175,22 +183,29 @@ export class ConveyorService {
   async reconcileAll(): Promise<void> {
     for (const [id, repository] of Object.entries(this.config.repositories)) {
       const pipeline = this.config.pipelines[repository.pipeline]!;
-      await reconcileRepository({
-        store: this.store,
-        configHash: this.config.hash,
-        repository: {
-          id,
-          configName: id,
-          source: repository.source,
-          address: repository.address,
-          folder: repository.folder,
-        },
-        stages: pipeline.stages.map((stage) => stage.id),
-        labels: this.config.labels,
-        source: this.github,
-        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-      });
-      await this.reconcileRelationships(id, repository.address);
+      try {
+        await reconcileRepository({
+          store: this.store,
+          configHash: this.config.hash,
+          repository: {
+            id,
+            configName: id,
+            source: repository.source,
+            address: repository.address,
+            folder: repository.folder,
+          },
+          stages: pipeline.stages.map((stage) => stage.id),
+          labels: this.config.labels,
+          source: this.github,
+          expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+        });
+        await this.reconcileRelationships(id, repository.address);
+        this.#repositoryErrors.delete(id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#repositoryErrors.set(id, message);
+        console.error(`Repository ${id} reconciliation failed: ${message}`);
+      }
     }
     this.#lastReconciledAt = new Date().toISOString();
   }
@@ -242,7 +257,8 @@ export class ConveyorService {
         eligible:
           issue.projectedState === "active" &&
           state.status === "ready" &&
-          !this.#active.has(issue.id),
+          !this.#active.has(issue.id) &&
+          !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly: this.store.listChildren(issue.id).length > 0,
       }];
@@ -820,7 +836,7 @@ export class ConveyorService {
     const total = this.store.costSummary();
     return {
       title: "Conveyor",
-      project: `${Object.keys(this.config.repositories).length} repositories · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
+      project: `${Object.keys(this.config.repositories).length} repositories${this.#repositoryErrors.size > 0 ? ` · ${this.#repositoryErrors.size} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       stages: stages.map((stage) => ({
         name: stage,
@@ -838,7 +854,7 @@ export class ConveyorService {
       auth,
       username,
       getDashboard: (csrfToken) => this.dashboard(csrfToken),
-      isReady: () => Boolean(this.#lastReconciledAt) && !this.#shuttingDown,
+      isReady: () => Boolean(this.#lastReconciledAt) && !this.#shuttingDown && this.#repositoryErrors.size === 0,
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       answerQuestion: (id, answer) => this.answerQuestion(id, answer),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
