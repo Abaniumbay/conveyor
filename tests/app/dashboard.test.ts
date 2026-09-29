@@ -16,6 +16,84 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("persists blocked children so tracking parents remain roll-up only", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-relationships-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { workspaces: path.join(root, "workspaces") },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", blocked: "conveyor:blocked" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: { default: { stages: [{ id: "implementation" }] } },
+      repositories: {
+        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+      },
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({
+      id: "repo",
+      configName: "repo",
+      source: "github",
+      address: "owner/repo",
+      folder: root,
+      configHash: config.hash,
+    });
+    for (const issue of [
+      { id: "parent", number: 1, state: "active", labels: ["conveyor", "conveyor:implementation"] },
+      { id: "child", number: 2, state: "blocked", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"] },
+    ]) {
+      store.upsertIssue({
+        id: issue.id,
+        repositoryId: "repo",
+        sourceNumber: issue.number,
+        sourceUrl: `https://github.com/owner/repo/issues/${issue.number}`,
+        title: issue.id,
+        body: "",
+        sourceState: "open",
+        labels: issue.labels,
+        sourceUpdatedAt: "2026-09-29T00:00:00Z",
+      });
+      store.setIssueProjection(issue.id, {
+        stage: "implementation",
+        state: issue.state,
+        warning: null,
+      });
+    }
+    const source = {
+      async listSubIssues(_address: string, number: number) {
+        return number === 1
+          ? [{
+              id: "child",
+              number: 2,
+              url: "https://github.com/owner/repo/issues/2",
+              title: "child",
+              body: "",
+              state: "open",
+              stateReason: null,
+              labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
+              updatedAt: "2026-09-29T00:00:00Z",
+            }]
+          : [];
+      },
+      async listDependencies() { return []; },
+      async replaceConveyorLabels() { throw new Error("parent is not complete"); },
+    };
+    const service = new ConveyorService(config, store, source as never);
+
+    await (service as unknown as {
+      reconcileRelationships(repositoryId: string, address: string): Promise<void>;
+    }).reconcileRelationships("repo", "owner/repo");
+
+    expect(store.listChildren("parent")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
+    expect(store.getIssue("child")?.parentId).toBe("parent");
+    store.close();
+  });
+
   test("places untouched, staged, closed, and invalid issues in distinct lanes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-"));
     temporaryDirectories.push(root);

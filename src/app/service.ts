@@ -419,6 +419,15 @@ export class ConveyorService {
         }
       }
     }
+    const activeIssueIds = new Set(issues.map((issue) => issue.id));
+    for (const [childId, parent] of parents) {
+      if (activeIssueIds.has(childId)) continue;
+      this.store.replaceRelationships(
+        childId,
+        parent,
+        this.store.listDependencies(childId),
+      );
+    }
     for (const issue of issues) {
       const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
       for (const dependency of dependencies) {
