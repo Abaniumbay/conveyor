@@ -788,6 +788,37 @@ export class ConveyorStore {
     };
   }
 
+  latestRunSummary(issueId: string): {
+    id: string;
+    status: string;
+    durationMs: number | null;
+    inputTokens: number;
+    outputTokens: number;
+    amount: number | null;
+    costSource: string | null;
+  } | null {
+    const row = this.#database
+      .query(
+        `SELECT r.id, r.status, u.duration_ms, u.input_tokens, u.output_tokens,
+           u.amount, u.source AS cost_source
+         FROM runs r
+         LEFT JOIN usage_cost_entries u ON u.run_id = r.id
+         WHERE r.issue_id = ?
+         ORDER BY r.started_at DESC, r.id DESC LIMIT 1`,
+      )
+      .get(issueId) as Record<string, SQLQueryBindings> | null;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      status: String(row.status),
+      durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+      inputTokens: row.input_tokens === null ? 0 : Number(row.input_tokens),
+      outputTokens: row.output_tokens === null ? 0 : Number(row.output_tokens),
+      amount: row.amount === null ? null : Number(row.amount),
+      costSource: row.cost_source === null ? null : String(row.cost_source),
+    };
+  }
+
   costSummary(filters: { issueId?: string; stageId?: string } = {}): {
     runs: number;
     amount: number;

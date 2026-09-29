@@ -8,6 +8,7 @@ import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler
 import { ConveyorStore, type StoredIssue } from "../db/store";
 import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } from "../source/github/managed-sections";
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { renderStatusComment } from "../source/github/status-comment";
 import { WorkspaceManager } from "../workspace/manager";
 import type { DashboardViewModel, IssueCardViewModel, QuestionViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
@@ -326,12 +327,16 @@ export class ConveyorService {
     try {
       await executor.execute(issue);
       await this.reconcileRepository(issue.repositoryId);
+      await this.updateStatusComment(issue.id);
       this.schedule();
     } catch (error) {
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
         warning: `Execution failed and will retry: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await this.updateStatusComment(issue.id).catch((statusError) => {
+        console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
       });
       setTimeout(() => {
         const current = this.store.getStageState(issue.id);
@@ -603,6 +608,7 @@ export class ConveyorService {
           allowFreeText: input.allowFreeText === true,
         });
         this.store.appendRunEvent(grant.runId, "question", { questionId: question.id });
+        await this.updateStatusComment(issue.id);
         return { accepted: true, questionId: question.id };
       }
       this.store.appendRunEvent(grant.runId, tool.slice("run.".length), input);
@@ -756,6 +762,7 @@ export class ConveyorService {
         ...metadata,
       ]);
       await this.reconcileRepository(issue.repositoryId);
+      await this.updateStatusComment(issue.id);
       this.schedule();
     }
   }
@@ -771,6 +778,85 @@ export class ConveyorService {
       throw new Error("only backlog issues can be reordered");
     }
     this.store.moveQueueIssue(issueId, direction);
+  }
+
+  private async updateStatusComment(issueId: string): Promise<void> {
+    const issue = this.store.getIssue(issueId);
+    if (!issue) return;
+    const relevant = issue.labels.some(
+      (label) =>
+        label === this.config.labels.enrollment ||
+        label.startsWith(`${this.config.labels.enrollment}:`),
+    );
+    if (!relevant) return;
+    const repository = this.config.repositories[issue.repositoryId];
+    if (!repository) return;
+    const stageState = this.store.getStageState(issue.id);
+    const latestRun = this.store.latestRunSummary(issue.id);
+    const questions = this.store
+      .listOpenQuestions()
+      .filter((question) => question.issueId === issue.id)
+      .map((question) => question.prompt);
+    const children = this.store.listChildren(issue.id).flatMap(({ issueId: childId }) => {
+      const child = this.store.getIssue(childId);
+      return child ? [{ number: child.sourceNumber, title: child.title }] : [];
+    });
+    const dependencies = this.store.listDependencies(issue.id).flatMap((blockerId) => {
+      const blocker = this.store.getIssue(blockerId);
+      return blocker
+        ? [{ number: blocker.sourceNumber, title: blocker.title, state: blocker.projectedState ?? blocker.sourceState }]
+        : [];
+    });
+    const acceptanceCriteria = criteriaFromBody(issue.body).map((text) => ({
+      text,
+      passed: false,
+    }));
+    const markdown = renderStatusComment({
+      issue: { number: issue.sourceNumber, title: issue.title, state: issue.sourceState },
+      stage: issue.projectedStage ?? "unassigned",
+      state: issue.projectedState ?? "unknown",
+      ...(stageState
+        ? { activity: `${stageState.stageId} · ${stageState.status}` }
+        : {}),
+      acceptanceCriteria,
+      children,
+      dependencies,
+      ...(latestRun
+        ? { latestRun: {
+            id: latestRun.id,
+            state: latestRun.status,
+            durationMs: latestRun.durationMs,
+            usage: {
+              inputTokens: latestRun.inputTokens,
+              outputTokens: latestRun.outputTokens,
+            },
+            costUsd:
+              latestRun.costSource === "unavailable" ? null : latestRun.amount,
+          } }
+        : {}),
+      questions,
+      warnings: issue.warning ? [issue.warning] : [],
+      timestamps: { updatedAt: issue.sourceUpdatedAt },
+    });
+    const digest = createHash("sha256").update(markdown).digest("hex");
+    const mutation = this.store.beginSourceMutation({
+      idempotencyKey: `status:${issue.id}:${digest}`,
+      source: repository.source,
+      operation: "comment.status.upsert",
+      request: { issueId: issue.id, digest },
+    });
+    if (mutation.status === "succeeded") return;
+    try {
+      const commentId = await this.github.upsertStatusComment(
+        repository.address,
+        issue.sourceNumber,
+        markdown,
+      );
+      this.store.completeSourceMutation(mutation.id, { commentId });
+    } catch (error) {
+      this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }
 
   dashboard(csrfToken: string): DashboardViewModel {
