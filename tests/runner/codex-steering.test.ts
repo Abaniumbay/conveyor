@@ -41,6 +41,7 @@ describe("runCodexSteering", () => {
       effort: "medium",
       sandbox: "workspace-write",
       automaticApprovals: true,
+      mcp: { command: "bun", args: ["run", "mcp.ts"] },
       env: { CAPTURE: capture },
       onEvent: (event) => events.push(event),
     });
@@ -57,6 +58,7 @@ describe("runCodexSteering", () => {
     expect(invocation.args).toContain("--approve-for-me");
     expect(invocation.args).toContain("--skip-git-repo-check");
     expect(invocation.args).not.toContain("--output-schema");
-    expect(invocation.args).not.toContain("mcp_servers.conveyor.required=true");
+    expect(invocation.args).toContain("mcp_servers.conveyor.required=true");
+    expect(invocation.args).toContain('mcp_servers.conveyor.command="bun"');
   });
 });

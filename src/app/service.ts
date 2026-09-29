@@ -13,7 +13,7 @@ import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steer
 import { WorkspaceManager } from "../workspace/manager";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueRelationViewModel, IssueTone, QuestionViewModel, StageColumnViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
-import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type SourceActionHandler } from "./runtime";
+import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
 
 interface ActiveRun {
@@ -25,7 +25,7 @@ interface ActiveRun {
 interface McpGrant {
   runId: string;
   stageId: string;
-  context: RuntimeIssueContext;
+  context: RuntimeIssueContext | null;
   allowedTools: Set<string>;
 }
 
@@ -601,6 +601,58 @@ export class ConveyorService {
     };
   }
 
+  private async steeringMcpLease(
+    runId: string,
+    workspace: string,
+    allowedTools: readonly string[],
+  ): Promise<ScopedMcpLease> {
+    const token = randomBytes(32).toString("base64url");
+    this.#mcpGrants.set(token, {
+      runId,
+      stageId: "steering",
+      context: null,
+      allowedTools: new Set(allowedTools),
+    });
+    const directory = path.join(this.config.settings.artifacts, runId);
+    await mkdir(directory, { recursive: true });
+    const contextFile = path.join(directory, "mcp-context.json");
+    const port = listenPort(this.config.web.listen);
+    await writeFile(contextFile, JSON.stringify({
+      version: 1,
+      runId,
+      stageId: "steering",
+      repository: {
+        id: "conveyor-system",
+        address: "conveyor/system",
+        baseBranch: "main",
+      },
+      issue: {
+        id: `steering:${runId}`,
+        number: 1,
+        title: "Interactive Conveyor steering",
+        body: "",
+        labels: [],
+        url: this.config.web.publicUrl ?? `http://127.0.0.1:${port}/`,
+      },
+      workspace: { path: workspace, branch: "steering" },
+      delivery: { pullRequest: null, checks: [] },
+      sourceGuidance: "This is a system-scoped steering run. Only explicitly granted reporting tools are available.",
+      control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
+      allowedTools,
+    }), { mode: 0o600 });
+    await chmod(contextFile, 0o600);
+    return {
+      configuration: {
+        command: process.execPath,
+        args: ["run", path.join(import.meta.dir, "../mcp/cli.ts"), "--context", contextFile],
+      },
+      close: async () => {
+        this.#mcpGrants.delete(token);
+        await rm(contextFile, { force: true });
+      },
+    };
+  }
+
   private sourceActions(context: RuntimeIssueContext): SourceActionHandler {
     return {
       run: async (action) => {
@@ -670,11 +722,10 @@ export class ConveyorService {
     const tool = string(request.tool, "tool");
     if (!grant.allowedTools.has(tool)) throw new Error(`MCP tool is not granted: ${tool}`);
     const input = object(request.input ?? {});
-    const issue = grant.context.issue;
-    const address = grant.context.repository.address;
-
     if (tool.startsWith("run.report_") || tool === "run.ask_question" || tool === "run.record_artifact" || tool === "run.report_milestone") {
       if (tool === "run.ask_question") {
+        if (!grant.context) throw new Error("structured questions require an issue-scoped MCP grant");
+        const issue = grant.context.issue;
         const options = Array.isArray(input.options) ? input.options : [];
         const question = this.store.openQuestion({
           issueId: issue.id,
@@ -693,6 +744,10 @@ export class ConveyorService {
       this.store.appendRunEvent(grant.runId, tool.slice("run.".length), input);
       return { accepted: true };
     }
+
+    if (!grant.context) throw new Error(`${tool} requires an issue-scoped MCP grant`);
+    const issue = grant.context.issue;
+    const address = grant.context.repository.address;
 
     const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
     const mutation = this.store.beginSourceMutation({
@@ -905,7 +960,9 @@ export class ConveyorService {
     signal: AbortSignal,
   ): Promise<void> {
     const started = performance.now();
+    let lease: ScopedMcpLease | null = null;
     try {
+      lease = await this.steeringMcpLease(runId, workspace, agent.tools);
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await this.#runSteering({
         command: runner.command,
@@ -923,6 +980,7 @@ export class ConveyorService {
         ...(agent.effort ? { effort: agent.effort } : {}),
         sandbox: agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
         automaticApprovals: runner.automaticApprovals,
+        mcp: lease.configuration,
         interruptGraceMs: this.config.settings.interruptGraceMs,
         signal,
         onEvent: (event) => {
@@ -962,6 +1020,8 @@ export class ConveyorService {
           durationMs: Math.max(0, Math.round(performance.now() - started)),
         },
       });
+    } finally {
+      await lease?.close();
     }
   }
 

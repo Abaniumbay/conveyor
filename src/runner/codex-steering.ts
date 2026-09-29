@@ -1,4 +1,4 @@
-import { CodexRunnerError } from "./codex";
+import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
 import { EMPTY_USAGE } from "./result";
 
 export interface CodexSteeringInput {
@@ -9,6 +9,7 @@ export interface CodexSteeringInput {
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   automaticApprovals: boolean;
+  mcp?: CodexMcpConfiguration;
   env?: Record<string, string>;
   timeoutMs?: number;
   interruptGraceMs?: number;
@@ -88,6 +89,18 @@ function argumentsFor(input: CodexSteeringInput): string[] {
   if (input.model) args.push("--model", input.model);
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+  }
+  if (input.mcp) {
+    args.push(
+      "-c",
+      `mcp_servers.conveyor.command=${JSON.stringify(input.mcp.command)}`,
+      "-c",
+      `mcp_servers.conveyor.args=[${input.mcp.args.map((value) => JSON.stringify(value)).join(",")}]`,
+      "-c",
+      "mcp_servers.conveyor.required=true",
+      "-c",
+      'mcp_servers.conveyor.default_tools_approval_mode="approve"',
+    );
   }
   args.push("-");
   return args;

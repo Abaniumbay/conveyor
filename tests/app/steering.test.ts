@@ -30,7 +30,10 @@ describe("ConveyorService steering", () => {
         artifacts: path.join(root, "artifacts"),
         interruptGraceMs: 100,
       },
-      web: { steering: { agent: "operator", workspace: root } },
+      web: {
+        listen: "127.0.0.1:4300",
+        steering: { agent: "operator", workspace: root },
+      },
       runners: {
         codex: {
           type: "codex",
@@ -45,6 +48,7 @@ describe("ConveyorService steering", () => {
           effort: "medium",
           instructions,
           workspaceAccess: "workspace-write",
+          tools: ["run.report_progress", "run.report_result"],
         },
       },
       pipelines: {},
@@ -54,6 +58,7 @@ describe("ConveyorService steering", () => {
     } as unknown as ConveyorConfig;
     const service = new ConveyorService(config, store, {} as never, {
       steering: async (input) => {
+        expect(input.mcp).toMatchObject({ command: process.execPath });
         input.onEvent?.({
           type: "item.started",
           item: { type: "command_execution", command: "git status" },
