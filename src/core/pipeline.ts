@@ -14,19 +14,19 @@ export interface PipelineStage {
   run:
     | { type: "agent"; agent: string }
     | { type: "script"; runner: string; script: string }
-    | { type: "source-action"; action: string; input?: Record<string, unknown> };
+    | { type: "source-action"; action: string; input?: Record<string, unknown> | undefined };
   concurrency: number;
   enterCheck: string;
   exitCheck: string;
-  feedbackCycles?: number;
-  childrenStartAt?: string;
-  successStatuses?: string[];
-  failureStatuses?: string[];
-  failureState?: string;
+  feedbackCycles?: number | undefined;
+  childrenStartAt?: string | undefined;
+  successStatuses?: string[] | undefined;
+  failureStatuses?: string[] | undefined;
+  failureState?: string | undefined;
   failurePolicies: Record<string, { action: "returnToPrevious" }>;
   afterSuccess: Array<{
     sourceAction: string;
-    with?: Record<string, unknown>;
+    with?: Record<string, unknown> | undefined;
   }>;
 }
 

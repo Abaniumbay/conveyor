@@ -80,7 +80,7 @@ export interface ScopedMcpFactory {
 
 export interface SourceActionHandler {
   run(
-    action: { sourceAction: string; with?: Record<string, unknown> },
+    action: { sourceAction: string; with?: Record<string, unknown> | undefined },
     context: ProducerContext & { producerResult?: RunEnvelope },
   ): Promise<void>;
 }
