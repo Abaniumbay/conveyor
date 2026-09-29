@@ -1,0 +1,11 @@
+node_modules/
+coverage/
+dist/
+data/
+.env
+.env.*
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.bak

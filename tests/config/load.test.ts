@@ -1,0 +1,169 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { ConfigError, loadConfig } from "../../src/config/load";
+
+const temporaryDirectories: string[] = [];
+
+async function temporaryDirectory(): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "conveyor-config-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  );
+});
+
+describe("loadConfig", () => {
+  test("merges split YAML maps, applies defaults, and resolves declared paths", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "conveyor.yml"),
+      `
+settings:
+  runners: 3
+  database: ./state/conveyor.sqlite
+  logs: ./state/logs
+  workspaces: ./state/worktrees
+  artifacts: ./state/artifacts
+web:
+  listen: 127.0.0.1:4300
+labels:
+  enrollment: conveyor
+  stageTemplate: "conveyor:{stage}"
+  states:
+    done: conveyor:done
+    blocked: conveyor:blocked
+  metadata:
+    closable: conveyor:closable
+    orderTemplate: "conveyor:order:{number}"
+`,
+    );
+    await writeFile(
+      path.join(directory, "runners.yml"),
+      `
+runners:
+  process:
+    type: json-process
+  codex:
+    type: codex
+    command: codex
+agents:
+  checker:
+    runner: codex
+    model: gpt-test
+    effort: high
+    instructions: ./instructions/checker.md
+checks:
+  enter:
+    verifier: checker
+  exit:
+    verifier: checker
+`,
+    );
+    await writeFile(
+      path.join(directory, "pipelines.yml"),
+      `
+pipelines:
+  default:
+    successStatuses: [done, skipped]
+    failureStatuses: [blocked, rejected, error]
+    stages:
+      - id: inspect
+        run:
+          runner: process
+          script: ./scripts/inspect.ts
+        concurrency: 2
+        enterCheck: enter
+        exitCheck: exit
+repositories:
+  sample:
+    source: github
+    address: owner/sample
+    folder: ../sample
+    pipeline: default
+`,
+    );
+    await writeFile(
+      path.join(directory, "sources.yml"),
+      `
+sources:
+  github:
+    type: github
+    webhookPath: /hooks/github
+    allowedHumanLogins: [owner]
+`,
+    );
+
+    const config = await loadConfig(directory);
+
+    expect(config.settings.runners).toBe(3);
+    expect(config.settings.reconcileIntervalMs).toBe(300_000);
+    expect(config.settings.database).toBe(
+      path.join(directory, "state/conveyor.sqlite"),
+    );
+    expect(config.agents.checker?.instructions).toBe(
+      path.join(directory, "instructions/checker.md"),
+    );
+    expect(config.pipelines.default?.stages[0]?.run).toEqual({
+      type: "script",
+      runner: "process",
+      script: path.join(directory, "scripts/inspect.ts"),
+    });
+    expect(config.repositories.sample?.folder).toBe(
+      path.resolve(directory, "../sample"),
+    );
+    expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("rejects duplicate named definitions across files", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "one.yml"),
+      "runners:\n  process:\n    type: json-process\n",
+    );
+    await writeFile(
+      path.join(directory, "two.yml"),
+      "runners:\n  process:\n    type: json-process\n",
+    );
+
+    await expect(loadConfig(directory)).rejects.toThrow(
+      /duplicate runners definition "process"/i,
+    );
+  });
+
+  test("reports all schema violations with their configuration paths", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "invalid.yml"),
+      `
+settings:
+  runners: 0
+repositories:
+  broken:
+    source: missing
+    address: not-a-repository
+    folder: 42
+    pipeline: absent
+`,
+    );
+
+    try {
+      await loadConfig(directory);
+      throw new Error("expected loadConfig to reject");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      const message = String(error);
+      expect(message).toContain("settings.runners");
+      expect(message).toContain("repositories.broken.address");
+      expect(message).toContain("repositories.broken.folder");
+    }
+  });
+});
