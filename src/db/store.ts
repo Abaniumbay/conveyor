@@ -379,6 +379,27 @@ export class ConveyorStore {
     blockers: readonly string[],
   ): void {
     this.#database.transaction(() => {
+      const normalizedBlockers = [...new Set(blockers)].sort((left, right) => left.localeCompare(right));
+      if (normalizedBlockers.includes(issueId)) {
+        throw new Error("an issue cannot depend on itself");
+      }
+      const currentParent = this.#database
+        .query(
+          `SELECT parent_id, sibling_order FROM issue_relationships
+           WHERE child_id = ? LIMIT 1`,
+        )
+        .get(issueId) as { parent_id: string; sibling_order: number | null } | null;
+      const currentBlockers = (this.#database
+        .query("SELECT blocker_id FROM dependencies WHERE issue_id = ? ORDER BY blocker_id")
+        .all(issueId) as Array<{ blocker_id: string }>)
+        .map((row) => row.blocker_id);
+      const sameParent = parent
+        ? currentParent?.parent_id === parent.parentId && currentParent.sibling_order === parent.siblingOrder
+        : currentParent === null;
+      const sameBlockers = currentBlockers.length === normalizedBlockers.length &&
+        currentBlockers.every((blockerId, index) => blockerId === normalizedBlockers[index]);
+      if (sameParent && sameBlockers) return;
+
       this.#database
         .query("DELETE FROM issue_relationships WHERE child_id = ?")
         .run(issueId);
@@ -397,8 +418,7 @@ export class ConveyorStore {
       const insertDependency = this.#database.query(
         "INSERT INTO dependencies(issue_id, blocker_id) VALUES (?, ?)",
       );
-      for (const blockerId of new Set(blockers)) {
-        if (blockerId === issueId) throw new Error("an issue cannot depend on itself");
+      for (const blockerId of normalizedBlockers) {
         insertDependency.run(issueId, blockerId);
       }
     })();

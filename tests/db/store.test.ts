@@ -282,6 +282,7 @@ describe("ConveyorStore", () => {
       feedbackCycle: 0,
       configHash: "config-hash",
     });
+    store.replaceRelationships("issue-1", null, []);
     expect(store.dashboardRevision()).toBe(board);
 
     store.appendRunEvent("run-1", "progress", { message: "Editing" });
