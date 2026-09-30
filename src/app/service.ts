@@ -557,8 +557,10 @@ export class ConveyorService {
   private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
     const repository = this.config.repositories[repositoryId];
     if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
-    const providerName = repository.ci ?? Object.entries(this.config.ci).find(([, provider]) => provider.type === "github-actions")?.[0] ?? "actions";
-    const configured = this.config.ci[providerName];
+    const providerName = repository.ci ?? "actions";
+    // Unreferenced named providers are inert. An omitted repository reference
+    // selects its source-native provider with no named-provider configuration.
+    const configured = repository.ci ? this.config.ci[repository.ci] : undefined;
     const stageTriggers = stageInput?.triggers;
     const configuredTriggers = configured?.triggers;
     const triggers = parseGitHubActionsTriggers(

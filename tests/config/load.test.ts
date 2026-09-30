@@ -255,8 +255,36 @@ pipelines:
         run: { sourceAction: pullRequest.awaitChecks, with: { triggers: [{ label: stage, workflow: stage.yml, check: Stage }] } }
         concurrency: 1
 repositories:
-  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default, ci: actions }
 `);
     await expect(loadConfig(directory)).rejects.toThrow(/pipelines.default.stages.0.run.with.triggers conflicts with ci.actions.triggers/);
+  });
+
+  test("does not apply an unreferenced named provider to a repository using native CI", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "config.yml"), `
+settings: {}
+labels:
+  stageTemplate: "ci:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+ci:
+  actions:
+    type: github-actions
+    triggers: [{ label: provider, workflow: provider.yml, check: Provider }]
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - id: work
+        run: { sourceAction: pullRequest.awaitChecks, with: { triggers: [{ label: stage, workflow: stage.yml, check: Stage }] } }
+        concurrency: 1
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`);
+    const config = await loadConfig(directory);
+    expect(config.repositories.sample?.ci).toBeUndefined();
   });
 });

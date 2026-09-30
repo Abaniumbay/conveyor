@@ -6,6 +6,7 @@ import path from "node:path";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConveyorService } from "../../src/app/service";
+import type { CiProvider } from "../../src/app/ci-provider";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { GitHubAdapter, GitHubCheckRun, GitHubDeliveryState } from "../../src/source/github/adapter";
 
@@ -38,6 +39,10 @@ agents:
     instructions: ./agent.md
     tools: [delivery.get_state, delivery.get_check_logs]
 checks: {}
+ci:
+  actions:
+    type: github-actions
+    triggers: [{ label: unrelated, workflow: unrelated.yml, check: Unrelated }]
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
@@ -77,6 +82,8 @@ repositories:
     { id: 13, name: "Passing", status: "completed", conclusion: "success", details_url: "https://checks/passing", started_at: null, completed_at: null, app: { slug: "github-actions" } },
   ];
   const logCalls: string[] = [];
+  const workflowCalls: string[] = [];
+  const retriggerCalls: string[] = [];
   const delivery: GitHubDeliveryState = {
     pullRequest: {
       number: 9, url: "https://github.com/owner/repo/pull/9", state: "open", merged: false,
@@ -90,6 +97,8 @@ repositories:
     async getPullRequestHead() { return { sha: "abc123" }; },
     async listCheckRuns() { return rawRuns; },
     async jobLog(_address: string, id: number) { logCalls.push(String(id)); return `log-${id}`; },
+    async workflowExists(_address: string, workflow: string) { workflowCalls.push(workflow); return true; },
+    async retriggerLabel(_address: string, _number: number, label: string) { retriggerCalls.push(label); },
   } as unknown as GitHubAdapter;
   const service = new ConveyorService(config, store, github);
   const issue = store.getIssue("issue")!;
@@ -112,11 +121,36 @@ repositories:
     service,
     token,
     logCalls,
+    workflowCalls,
+    retriggerCalls,
     async close() { await lease.close(); store.close(); },
   };
 }
 
 describe("service delivery tools", () => {
+  test("uses native CI when an unreferenced named provider exists, retaining legacy stage triggers", async () => {
+    const fixture = await setup();
+    try {
+      const service = fixture.service as unknown as {
+        ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider;
+      };
+      const change = { repository: "owner/repo", changeId: "9", url: "https://github.com/owner/repo/pull/9" };
+      const native = service.ciProvider("repo");
+      await expect(native.start(change, "abc123", 60_000, 10_000)).resolves.toEqual([]);
+      expect(fixture.workflowCalls).toEqual([]);
+      expect(fixture.retriggerCalls).toEqual([]);
+
+      const legacy = service.ciProvider("repo", {
+        triggers: [{ label: "legacy", workflow: "legacy.yml", check: "Legacy" }],
+      });
+      await expect(legacy.start(change, "abc123", 60_000, 10_000)).resolves.toEqual(["Legacy"]);
+      expect(fixture.workflowCalls).toEqual(["legacy.yml"]);
+      expect(fixture.retriggerCalls).toEqual(["legacy"]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   test("returns neutral CI run fields from the selected provider", async () => {
     const fixture = await setup();
     try {

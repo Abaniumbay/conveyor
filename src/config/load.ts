@@ -262,8 +262,8 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       errors.push(`repositories.${name}.ci is incompatible with sources.${repository.source}`);
     }
     {
-      const providerName = repository.ci ?? Object.entries(config.ci).find(([, provider]) => provider.type === "github-actions")?.[0] ?? "actions";
-      const provider = config.ci[providerName];
+      const providerName = repository.ci;
+      const provider = providerName ? config.ci[providerName] : undefined;
       for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
         if (stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
         if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
