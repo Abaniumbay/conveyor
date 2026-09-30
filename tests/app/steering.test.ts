@@ -102,6 +102,20 @@ describe("ConveyorService steering", () => {
     expect(store.listRunEvents(runId).some((event) => event.type === "activity")).toBe(false);
     expect(store.listRunEvents(runId).some((event) => event.type === "report_rationale")).toBe(true);
     expect(store.costSummary()).toMatchObject({ runs: 1, amount: 0.025, unavailableRuns: 0 });
+    expect(store.getRun(runId)).toMatchObject({
+      status: "succeeded",
+      exitCode: 0,
+      sessionId: "thread-1",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedTokens: 50,
+        amount: 0.025,
+        currency: "USD",
+        source: "reported",
+        durationMs: 1500,
+      },
+    });
     await service.close();
   });
 });
