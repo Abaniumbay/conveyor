@@ -39,6 +39,8 @@ export class GhCliTransport implements GitHubTransport {
   async request<T>(request: GitHubTransportRequest): Promise<T> {
     const args = [this.command, "api", request.path, "--method", request.method];
     if (request.paginate) args.push("--paginate", "--slurp");
+    // CI job logs carry ANSI colour codes, which gh refuses to print otherwise.
+    if (request.raw) args.push("--allow-escape-sequences");
     if (request.body !== undefined) args.push("--input", "-");
 
     const child = Bun.spawn(args, {
@@ -622,13 +624,13 @@ export class GitHubAdapter {
     });
   }
 
-  async jobLogTail(address: string, jobId: number, lines: number): Promise<string> {
+  async jobLog(address: string, jobId: number): Promise<string> {
     const text = await this.transport.request<string>({
       method: "GET",
       path: `repos/${address}/actions/jobs/${jobId}/logs`,
       raw: true,
     });
-    return String(text ?? "").split(/\r?\n/).slice(-lines).join("\n");
+    return String(text ?? "");
   }
 
   async squashMerge(

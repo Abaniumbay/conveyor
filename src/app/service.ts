@@ -24,7 +24,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
-import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
+import { createCiGateMemory, evaluateCiGate, ExternalWaitError, focusLog, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
   repositoryId: string;
@@ -1067,8 +1067,9 @@ export class ConveyorService {
     for (const check of selected.slice(0, 5)) {
       let log: string | null = null;
       if (check.actionsJob) {
-        log = await this.github.jobLogTail(address, check.id, lines).catch((error) =>
-          `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
+        log = await this.github.jobLog(address, check.id)
+          .then((text) => focusLog(text, lines))
+          .catch((error) => `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
       }
       checks.push({ name: check.name, status: check.status, conclusion: check.conclusion, url: check.url, log });
     }
