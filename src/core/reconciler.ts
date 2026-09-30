@@ -41,16 +41,24 @@ export async function reconcileRepository(
   });
 
   const sourceIssues = await input.source.listIssues(input.repository.address);
-  const existing = new Map(
-    input.store.listIssues(input.repository.id).map((issue) => [issue.id, issue]),
+  const storedIssues = input.store.listIssues(input.repository.id);
+  const existing = new Map(storedIssues.map((issue) => [issue.id, issue]));
+  const existingByNumber = new Map(
+    storedIssues.map((issue) => [issue.sourceNumber, issue]),
   );
   const seen = new Set<string>();
   let enrolled = 0;
   let offboarded = 0;
 
   for (const sourceIssue of sourceIssues) {
-    seen.add(sourceIssue.id);
-    const prior = existing.get(sourceIssue.id);
+    // Source adapters may include a repository address in their IDs. Preserve
+    // the stored identity when a repository is renamed or transferred so its
+    // enrollments, runs, workspaces, relationships, and conversation remain
+    // attached to the same issue.
+    const prior =
+      existing.get(sourceIssue.id) ?? existingByNumber.get(sourceIssue.number);
+    const issueId = prior?.id ?? sourceIssue.id;
+    seen.add(issueId);
     const relevant = isConveyorIssue(
       sourceIssue.labels,
       input.labels.enrollment,
@@ -58,7 +66,7 @@ export async function reconcileRepository(
     if (!relevant && !prior) continue;
 
     input.store.upsertIssue({
-      id: sourceIssue.id,
+      id: issueId,
       repositoryId: input.repository.id,
       sourceNumber: sourceIssue.number,
       sourceUrl: sourceIssue.url,
@@ -76,25 +84,25 @@ export async function reconcileRepository(
       labels: input.labels,
       stages: input.stages,
       expectedPostMergeClosure:
-        input.expectedPostMergeClosure?.(sourceIssue.id) ?? false,
+        input.expectedPostMergeClosure?.(issueId) ?? false,
     });
     const projectedState = projected.state ?? projected.mode;
-    input.store.setIssueProjection(sourceIssue.id, {
+    input.store.setIssueProjection(issueId, {
       stage: projected.visible ? projected.stage : null,
       state: projectedState,
       warning: projected.warnings.length > 0 ? projected.warnings.join("; ") : null,
     });
 
     if (!projected.visible) {
-      input.store.endActiveEnrollment(sourceIssue.id, "offboarded");
+      input.store.endActiveEnrollment(issueId, "offboarded");
     } else if (projected.mode === "active" && projected.stage) {
-      const stageState = input.store.getStageState(sourceIssue.id);
+      const stageState = input.store.getStageState(issueId);
       const awaitingDifferentStage =
         stageState?.status === "awaiting-source" &&
         stageState.stageId !== projected.stage;
       if (!awaitingDifferentStage && stageState?.status !== "running") {
         input.store.setStageState({
-          issueId: sourceIssue.id,
+          issueId,
           stageId: projected.stage,
           status: "ready",
           feedbackCycle: 0,
@@ -104,7 +112,7 @@ export async function reconcileRepository(
     }
 
     if (!prior && projected.visible) {
-      input.store.setQueueRank(sourceIssue.id, input.store.nextQueueRank());
+      input.store.setQueueRank(issueId, input.store.nextQueueRank());
       enrolled += 1;
     } else if (prior && !projected.visible && prior.projectedState !== "offboarded") {
       offboarded += 1;

@@ -148,8 +148,8 @@ Conveyor is intended for a trusted single-user server, not hostile multi-tenant 
 ## Install and verify
 
 ```sh
-git clone https://github.com/owner/conveyor-v2.git
-cd conveyor-v2
+git clone https://github.com/Abaniumbay/conveyor.git
+cd conveyor
 bun install --frozen-lockfile
 bun run check
 ```
