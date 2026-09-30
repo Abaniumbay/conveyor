@@ -11,6 +11,7 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps } from "../tasks/deps";
 import type { LegacyRuntime } from "../tasks/legacy";
 import { compilePipeline, type CompiledPipeline } from "../tasks/plan";
+import { createWorkspace } from "../workspace/lifecycle";
 import type { WorkspaceManager } from "../workspace/manager";
 import type { RuntimeDeliveryState, RuntimeIssueContext } from "./runtime";
 
@@ -35,14 +36,6 @@ export interface IssueExecutorDependencies {
     repository: { id: string; address: string; folder: string; baseBranch: string },
   ) => TaskDeps;
   signal?: AbortSignal;
-}
-
-function slug(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "issue";
 }
 
 export class IssueExecutor {
@@ -76,27 +69,16 @@ export class IssueExecutor {
       throw new Error(`issue ${issue.id} is not ready at stage ${stageId}`);
     }
 
-    const enrollment = store.activateEnrollment(issue.id);
+    store.activateEnrollment(issue.id);
     let workspace = store.getActiveWorkspace(issue.id);
     // Legacy stages get today's pre-created workspace; native stages ensure their own.
     if (!workspace && stage.legacy) {
-      const created = await this.dependencies.workspaceManager.create({
-        repositoryPath: repository.folder,
-        repositoryId,
-        issueNumber: issue.sourceNumber,
-        enrollment: enrollment.generation,
-        slug: slug(issue.title),
-        baseBranch: repository.baseBranch,
+      workspace = await createWorkspace({
+        store,
+        manager: this.dependencies.workspaceManager,
+        issue,
+        repository: { id: repositoryId, folder: repository.folder, baseBranch: repository.baseBranch },
       });
-      store.recordWorkspace({
-        id: randomUUID(),
-        enrollmentId: enrollment.id,
-        path: created.path,
-        branch: created.branch,
-        status: "active",
-      });
-      workspace = store.getActiveWorkspace(issue.id);
-      if (!workspace) throw new Error(`workspace for issue ${issue.id} was not recorded`);
     }
 
     store.setStageState({

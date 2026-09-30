@@ -79,3 +79,16 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `legacy.exitCheck` | act | run, legacy | - | Runs the legacy exit check; a failure feeds back to a fresh producer attempt while cycles remain. |
 | `legacy.produce` | act | run | writes legacy | Runs the legacy producer (agent, script or source action) and captures its envelope. |
 | `legacy.succeeded` | check | legacy | - | Passes when the captured legacy producer outcome is success. |
+
+### workspace
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `workspace.cleanup` | act | repository | invalidates workspace | Removes the worktree and deletes the local branch, then marks the workspace removed. A missing workspace is already done. |
+| `workspace.ensure` | act | repository | invalidates workspace | Creates the issue's workspace (worktree and branch) when none is recorded; does nothing when an active workspace exists on disk. |
+| `workspace.fetch` | tool | - | - | Fetch the repository base branch from origin into the workspace. |
+| `workspace.get` | tool | - | - | Read scoped workspace metadata (path and branch). |
+| `workspace.load` | load | - | writes workspace | Loads the stored workspace with local git facts: clean, ahead/behind and head SHAs against origin/<branch> as last fetched or pushed (no network). |
+| `workspace.push` | tool | - | invalidates workspace | Push the workspace branch to origin, optionally with --force-with-lease. |
+| `workspace.pushed` | check | workspace | - | Passes when the workspace is clean, not ahead of origin/<branch>, and its head equals the remote head; the failure names the condition that failed. |
+| `workspace.removed` | check | workspace | - | Passes when no workspace exists. |

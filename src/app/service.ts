@@ -27,6 +27,8 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
 import { criteriaFromBody } from "../tasks/item";
+import { cliGit } from "../workspace/git";
+import { removeWorkspace } from "../workspace/lifecycle";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -121,17 +123,6 @@ function listenPort(listen: string): number {
   return port;
 }
 
-async function git(cwd: string, args: string[]): Promise<void> {
-  const child = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
-  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-  if (exitCode !== 0) throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${exitCode}`}`);
-}
-
 /** Legacy MCP tool names served by the `item` tool tasks. */
 const ITEM_TOOLS: Record<string, string> = {
   "source.get_issue": "item.get",
@@ -141,6 +132,12 @@ const ITEM_TOOLS: Record<string, string> = {
   "source.set_parent": "item.setParent",
   "source.set_dependencies": "item.setDependencies",
   "source.create_child": "item.createChild",
+};
+
+/** Legacy MCP tool names served by the `workspace` tool tasks. */
+const WORKSPACE_TOOLS: Record<string, string> = {
+  "workspace.request_fetch": "workspace.fetch",
+  "workspace.request_push": "workspace.push",
 };
 
 function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
@@ -432,6 +429,8 @@ export class ConveyorService {
       repository,
       issueId,
       sourceGuidance: SOURCE_GUIDANCE,
+      git: cliGit,
+      workspaces: this.workspaceManager,
     };
   }
 
@@ -746,16 +745,13 @@ export class ConveyorService {
         continue;
       }
       if (runningIssueIds.has(parent.id)) continue;
-      const workspace = this.store.getActiveWorkspace(parent.id);
-      const parentStage = this.store.getStageState(parent.id);
-      if (workspace && parentStage?.status !== "running") {
-        await this.workspaceManager.remove({
-          repositoryPath: this.config.repositories[repositoryId]!.folder,
-          workspacePath: workspace.path,
-          branch: workspace.branch,
-          deleteBranch: true,
+      if (this.store.getStageState(parent.id)?.status !== "running") {
+        await removeWorkspace({
+          store: this.store,
+          manager: this.workspaceManager,
+          issueId: parent.id,
+          repositoryFolder: this.config.repositories[repositoryId]!.folder,
         });
-        this.store.markWorkspaceRemoved(workspace.id);
       }
 
       const allChildrenSatisfied = children.every((child) => satisfied(child.issueId));
@@ -930,15 +926,12 @@ export class ConveyorService {
         const workspace = context.workspace;
         const changeOperation = changeAction(action.sourceAction);
         if (action.sourceAction === "workspace.cleanup") {
-          const stored = this.store.getActiveWorkspace(context.issue.id);
-          if (!stored) return;
-          await this.workspaceManager.remove({
-            repositoryPath: context.repository.folder,
-            workspacePath: stored.path,
-            branch: stored.branch,
-            deleteBranch: true,
+          await removeWorkspace({
+            store: this.store,
+            manager: this.workspaceManager,
+            issueId: context.issue.id,
+            repositoryFolder: context.repository.folder,
           });
-          this.store.markWorkspaceRemoved(stored.id);
           return;
         }
         if (!workspace) throw new Error(`${action.sourceAction} requires a workspace`);
@@ -1197,21 +1190,8 @@ export class ConveyorService {
       const itemTool = ITEM_TOOLS[tool];
       if (itemTool) {
         result = await this.runItemTool(itemTool, grant, input, idempotencyKey);
-      } else if (tool === "workspace.request_fetch" || tool === "workspace.request_push") {
-        if (!grant.context.workspace) throw new Error("run has no workspace");
-        const forceWithLease = tool === "workspace.request_push" && input.forceWithLease === true;
-        await git(
-          grant.context.workspace.path,
-          tool.endsWith("fetch")
-            ? ["fetch", "origin", grant.context.repository.baseBranch]
-            : [
-                "push",
-                "--set-upstream",
-                ...(forceWithLease ? ["--force-with-lease"] : []),
-                "origin",
-                grant.context.workspace.branch,
-              ],
-        );
+      } else if (WORKSPACE_TOOLS[tool]) {
+        result = await this.runItemTool(WORKSPACE_TOOLS[tool]!, grant, input, idempotencyKey);
       } else if (tool === "workspace.record_artifact" || tool === "source.set_pull_request_metadata") {
         this.store.appendRunEvent(grant.runId, tool, input);
       } else {

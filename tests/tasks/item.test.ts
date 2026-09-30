@@ -132,6 +132,7 @@ async function world() {
   } as unknown as TaskDeps["items"];
   const deps = (issueId = "i1"): TaskDeps => ({
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
+    git: {} as TaskDeps["git"], workspaces: {} as TaskDeps["workspaces"],
   });
   return { store, add, deps, calls };
 }

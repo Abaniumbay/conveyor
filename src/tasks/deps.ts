@@ -4,6 +4,8 @@
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore } from "../db/store";
 import type { GitHubAdapter } from "../source/github/adapter";
+import type { GitOps } from "../workspace/git";
+import type { WorkspaceLifecycleManager } from "../workspace/lifecycle";
 
 export interface TaskDeps {
   store: ConveyorStore;
@@ -23,4 +25,8 @@ export interface TaskDeps {
   repository: { id: string; address: string; folder: string; baseBranch: string };
   issueId: string;
   sourceGuidance: string;
+  /** The git operations the workspace group uses. */
+  git: GitOps;
+  /** Creates and removes worktrees. */
+  workspaces: WorkspaceLifecycleManager;
 }
