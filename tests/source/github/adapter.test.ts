@@ -27,6 +27,7 @@ class FakeTransport implements GitHubTransport {
 class DependencyTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];
   postError: Error | null = null;
+  postErrorIds: number[] | null = null;
 
   constructor(public blockers: number[]) {}
 
@@ -45,7 +46,10 @@ class DependencyTransport implements GitHubTransport {
       return { id: n * 10, number: n } as T;
     }
     if (request.method === "POST") {
-      if (this.postError) throw this.postError;
+      const id = (request.body as { issue_id: number }).issue_id;
+      if (this.postError && (this.postErrorIds === null || this.postErrorIds.includes(id))) {
+        throw this.postError;
+      }
       this.blockers.push((request.body as { issue_id: number }).issue_id / 10);
       return null as T;
     }
@@ -91,7 +95,10 @@ describe("GitHubAdapter.setDependencies", () => {
       1,
       "Validation Failed (HTTP 422)",
     );
-    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2] });
+    transport.postErrorIds = [20];
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations.map((request) => request.body)).toEqual([{ issue_id: 20 }, { issue_id: 30 }]);
+    expect(transport.blockers).toEqual([3]);
   });
 
   test("propagates other errors", async () => {
@@ -99,6 +106,22 @@ describe("GitHubAdapter.setDependencies", () => {
     transport.postError = new GitHubTransportError("GitHub API POST x failed: HTTP 500", 1, "HTTP 500");
     await expect(
       new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2] }),
+    ).rejects.toThrow("HTTP 500");
+  });
+
+  test("does not mistake issue number 422 in the path for an HTTP 422", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError(
+      "GitHub API POST repos/owner/repo/issues/422/dependencies/blocked_by failed: HTTP 500",
+      1,
+      "HTTP 500",
+    );
+    await expect(
+      new GitHubAdapter(transport, "conveyor").setDependencies({
+        address: "owner/repo",
+        issueNumber: 422,
+        blockerNumbers: [2],
+      }),
     ).rejects.toThrow("HTTP 500");
   });
 });

@@ -343,7 +343,7 @@ export class GitHubAdapter {
         });
       } catch (error) {
         // A concurrent writer already created the link.
-        if (error instanceof GitHubTransportError && /\b422\b/.test(`${error.message} ${error.stderr}`)) continue;
+        if (error instanceof GitHubTransportError && /\(HTTP 422\)/.test(error.stderr)) continue;
         throw error;
       }
     }
