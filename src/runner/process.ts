@@ -163,6 +163,8 @@ export async function superviseProcess(input: SupervisedProcessInput): Promise<S
     throw new HarnessError(
       `${input.command[0] ?? "Process"} ${kind === "timeout" ? "timed out" : "was interrupted"}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
       kind,
+      undefined,
+      stderr,
     );
   }
   return { stdout, stderr, exitCode, durationMs, interrupted, timedOut };
