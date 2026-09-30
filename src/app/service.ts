@@ -565,7 +565,11 @@ export class ConveyorService {
       .listIssues(repositoryId)
       .filter(
         (issue) =>
-          issue.sourceState === "open" && issue.projectedState === "active",
+          issue.sourceState === "open" &&
+          // Stopped items too: the board must show the dependencies a person
+          // added while an item was blocked, and the scheduler needs them the
+          // moment it is unblocked.
+          !["offboarded", "missing", "done"].includes(issue.projectedState ?? ""),
       );
     const issueByNumber = new Map(
       this.store
