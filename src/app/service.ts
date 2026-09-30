@@ -30,6 +30,8 @@ interface ActiveRun {
   repositoryId: string;
   stageId: string;
   controller: AbortController;
+  /** Runs no runner process; excluded from global and repository permits. */
+  lightweight: boolean;
 }
 
 interface McpGrant {
@@ -370,6 +372,7 @@ export class ConveyorService {
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly: this.store.listChildren(issue.id).length > 0,
+        lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
     const stageLimits: Record<string, number> = {};
@@ -383,8 +386,11 @@ export class ConveyorService {
     );
     const stageUsage: Record<string, number> = {};
     const repositoryUsage: Record<string, number> = {};
+    let processUsage = 0;
     for (const active of this.#active.values()) {
       stageUsage[active.stageId] = (stageUsage[active.stageId] ?? 0) + 1;
+      if (active.lightweight) continue;
+      processUsage += 1;
       repositoryUsage[active.repositoryId] = (repositoryUsage[active.repositoryId] ?? 0) + 1;
     }
     const selected = selectRunnableIssues(
@@ -395,7 +401,7 @@ export class ConveyorService {
         repositories: repositoryLimits,
       },
       {
-        global: this.#active.size,
+        global: processUsage,
         stages: stageUsage,
         repositories: repositoryUsage,
       },
@@ -407,6 +413,7 @@ export class ConveyorService {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
         controller: new AbortController(),
+        lightweight: candidate.lightweight === true,
       });
       const active = this.#active.get(issue.id)!;
       void this.execute(issue, active.controller.signal).finally(() => {
@@ -519,6 +526,15 @@ export class ConveyorService {
         : {}),
     });
     return delivery;
+  }
+
+  /** A stage that only runs an in-process source action: no producer or verifier process. */
+  private isLightweightStage(repositoryId: string, stageId: string): boolean {
+    const repository = this.config.repositories[repositoryId];
+    const stage = repository
+      ? this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId)
+      : undefined;
+    return Boolean(stage && stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck);
   }
 
   private interruptIneligibleRuns(): void {
