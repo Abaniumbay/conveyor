@@ -1447,6 +1447,18 @@ export class ConveyorService {
   }
 
   reorderBacklog(issueId: string, direction: "up" | "down"): void {
+    this.requireBacklogIssue(issueId);
+    this.store.moveQueueIssue(issueId, direction);
+  }
+
+  /** Drag-and-drop placement: put a backlog issue right before another, or last. */
+  moveBacklogIssue(issueId: string, beforeIssueId: string | null): void {
+    this.requireBacklogIssue(issueId);
+    if (beforeIssueId !== null) this.requireBacklogIssue(beforeIssueId);
+    this.store.moveQueueIssueBefore(issueId, beforeIssueId);
+  }
+
+  private requireBacklogIssue(issueId: string): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.parentId) throw new Error("only top-level issues can be reordered");
     const repository = this.config.repositories[issue.repositoryId];
@@ -1456,7 +1468,6 @@ export class ConveyorService {
     if (!firstStage || issue.projectedStage !== firstStage) {
       throw new Error("only backlog issues can be reordered");
     }
-    this.store.moveQueueIssue(issueId, direction);
   }
 
   private async updateStatusComment(issueId: string): Promise<void> {
@@ -2077,6 +2088,7 @@ export class ConveyorService {
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       answerQuestion: (id, answer) => this.answerQuestion(id, answer),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
+      moveBacklogIssue: (id, beforeId) => this.moveBacklogIssue(id, beforeId),
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token) => this.handleMcp(body, token),
       startSteering: (prompt) => this.startSteering(prompt),

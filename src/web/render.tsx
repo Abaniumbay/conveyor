@@ -393,9 +393,9 @@ function BacklogColumn({ model }: { model: DashboardViewModel }) {
     <section class="stage stage--backlog" aria-labelledby="backlog-heading">
       <header class="stage-heading"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label={`${model.backlog.length} issues`}>{model.backlog.length}</span></header>
       {model.backlog.length > 0 ? (
-        <ol class="issue-list">
+        <ol class="issue-list" data-backlog-list>
           {model.backlog.map((issue, index) => (
-            <li class="backlog-row" key={issue.id}>
+            <li class="backlog-row" key={issue.id} data-backlog-id={issue.id} draggable>
               <IssueCard issue={issue} />
               <div class="reorder" role="group" aria-label={`Reorder issue #${issue.number}`}>
                 {(["up", "down"] as const).map((direction) => {

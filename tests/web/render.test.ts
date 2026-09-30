@@ -230,6 +230,8 @@ describe("renderDashboard", () => {
     const html = renderDashboard(dashboard);
     expect(html).toContain('Move #43 up" disabled');
     expect(html).toContain('Move #43 down" disabled');
+    expect(html).toContain('<ol class="issue-list" data-backlog-list="true">');
+    expect(html).toContain('data-backlog-id="backlog" draggable="true"');
     expect(html).not.toContain("?view=backlog");
   });
 

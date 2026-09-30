@@ -7,6 +7,8 @@ describe("dashboard browser client", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
     expect(dashboardClient).toContain("appendLinkedText(body, String(message.message");
+    expect(dashboardClient).toContain("'/backlog/move'");
+    expect(dashboardClient).toContain("addEventListener('dragend'");
     expect(dashboardClient).toContain("data-detail-tab");
     expect(dashboardClient).toContain("new EventSource('/events/dashboard')");
     expect(dashboardClient).toContain("addEventListener('conversation'");

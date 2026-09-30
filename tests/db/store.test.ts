@@ -520,6 +520,37 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("places a queued issue before another, last, and renumbers when ranks crowd", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1", configName: "sample", source: "github", address: "owner/sample",
+      folder: "/srv/sample", configHash: "config-hash",
+    });
+    for (const [id, number, rank] of [["a", 1, 1], ["b", 2, 2], ["c", 3, 3], ["d", 4, 4]] as const) {
+      store.upsertIssue({
+        id, repositoryId: "repo-1", sourceNumber: number, sourceUrl: `https://example.test/${number}`,
+        title: id, body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      store.setQueueRank(id, rank);
+    }
+    const order = () => store.listIssues("repo-1").map((issue) => issue.id);
+
+    store.moveQueueIssueBefore("d", "b");
+    expect(order()).toEqual(["a", "d", "b", "c"]);
+    store.moveQueueIssueBefore("a", null);
+    expect(order()).toEqual(["d", "b", "c", "a"]);
+    store.moveQueueIssueBefore("c", "d");
+    expect(order()).toEqual(["c", "d", "b", "a"]);
+    // Repeatedly halving the same gap eventually forces a renumber; order must survive it.
+    for (let index = 0; index < 60; index += 1) {
+      store.moveQueueIssueBefore(index % 2 === 0 ? "a" : "b", "d");
+    }
+    expect(order()).toEqual(["c", "a", "b", "d"]);
+    expect(() => store.moveQueueIssueBefore("missing", null)).toThrow();
+    expect(() => store.moveQueueIssueBefore("a", "missing")).toThrow();
+    store.close();
+  });
+
   test("replaces hierarchy and dependency projections transactionally", async () => {
     const store = await openStore();
     store.upsertRepository({
