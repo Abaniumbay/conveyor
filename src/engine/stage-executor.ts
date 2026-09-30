@@ -83,7 +83,7 @@ export class StageExecutor {
     if (!stage) throw new Error(`Unknown stage ${input.stageId}`);
     const stored = journal.getContext(input.issueId);
     const context: TaskContext = stored
-      ? { ...stored.context, repository: input.baseContext.repository }
+      ? { ...stored.context, repository: input.baseContext.repository, configHash: input.baseContext.configHash }
       : structuredClone(input.baseContext);
     const existing = journal.getCursor(input.issueId);
     const resuming = existing !== null && existing.stage === stage.id && existing.stageEpoch === epoch;
@@ -223,6 +223,8 @@ export class StageExecutor {
     await this.#save(run, {
       state: "pending", pendingSince: pendingRecord.pendingSince, wakeAt, deadlineAt: pendingRecord.deadlineAt,
     });
+    // A parked stage must carry its context (and the config hash it started under) across a restart.
+    this.#persist(run, task.id);
     await this.#o.setStatus(result.message);
     return { kind: "pending", wakeAt };
   }

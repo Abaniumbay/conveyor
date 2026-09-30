@@ -6,7 +6,8 @@ import path from "node:path";
 import { ExternalWaitError } from "../../src/app/ci-gate";
 import { ConfiguredStageRuntime, type SourceActionHandler } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
-import { PipelineEngine, type PipelineDefinition } from "../../src/core/pipeline";
+import type { PipelineDefinition } from "../../src/core/pipeline";
+import { PipelineEngine } from "../engine/reference-engine";
 import type { StageConfig } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 

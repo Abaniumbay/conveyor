@@ -395,6 +395,30 @@ export class ExecutionStore {
     return row?.wake_at ?? null;
   }
 
+  /** The earliest persisted wake-up strictly after `now`, or null. */
+  nextWakeupAfter(now: Date): string | null {
+    const row = this.#db
+      .query("SELECT MIN(wake_at) AS wake_at FROM stage_cursors WHERE wake_at > ?")
+      .get(now.toISOString()) as { wake_at: string | null } | null;
+    return row?.wake_at ?? null;
+  }
+
+  /** The latest pending message of a parked item's current task, for the board status line. */
+  pendingMessage(issueId: string): string | null {
+    const row = this.#db
+      .query(
+        `SELECT e.result_json FROM stage_cursors c
+         JOIN task_executions e
+           ON e.issue_id = c.issue_id AND e.stage = c.stage AND e.stage_epoch = c.stage_epoch
+          AND e.attempt = c.attempt AND e.task_instance_id = c.task_instance_id
+         WHERE c.issue_id = ? AND c.state = 'pending' AND e.state = 'pending'`,
+      )
+      .get(issueId) as { result_json: string | null } | null;
+    if (!row?.result_json) return null;
+    const message = (JSON.parse(row.result_json) as { message?: unknown }).message;
+    return typeof message === "string" ? message : null;
+  }
+
   listDueWakeups(now: Date): string[] {
     const rows = this.#db
       .query("SELECT issue_id FROM stage_cursors WHERE wake_at IS NOT NULL AND wake_at <= ? ORDER BY wake_at, issue_id")

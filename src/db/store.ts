@@ -208,6 +208,11 @@ export class ConveyorStore {
     this.#database.close(false);
   }
 
+  /** The durable task-chain journal: context, cursor, wake-ups and epochs. */
+  executions(): ExecutionStore {
+    return this.#executions;
+  }
+
   /** The underlying database, shared with ExecutionStore. */
   sqlite(): Database {
     return this.#database;

@@ -10,7 +10,6 @@ import path from "node:path";
 import { ExternalWaitError } from "../../src/app/ci-gate";
 import { ConveyorStore } from "../../src/db/store";
 import {
-  PipelineEngine,
   PipelineExecutionError,
   type CheckResult,
   type PipelineDefinition,
@@ -18,6 +17,7 @@ import {
   type ProducerContext,
   type StageExecutionResult,
 } from "../../src/core/pipeline";
+import { PipelineEngine } from "./reference-engine";
 import { ExecutionStore } from "../../src/engine/journal";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import type { RunEnvelope } from "../../src/runner/result";
@@ -182,7 +182,7 @@ async function viaEngine(definition: PipelineDefinition, stageId: string, fake: 
 async function viaChain(definition: PipelineDefinition, stageId: string, fake: Fake): Promise<Outcome & { notes: string[] }> {
   const h = await chain();
   h.journal.bumpStageEpoch("issue-1");
-  const deps: LegacyRuntime = { ...fake.value, input: INPUT, notify: (m) => { h.notes.push(m); } };
+  const deps: LegacyRuntime = { ...fake.value, input: INPUT };
   try {
     const outcome = await h.executor.execute({
       issueId: "issue-1", pipeline: compiled(definition, 2), stageId, baseContext: baseContext(), deps,
@@ -398,7 +398,7 @@ describe("legacy compiler is equivalent to PipelineEngine", () => {
 });
 
 describe("external waits", () => {
-  test("a producer that is waiting on CI posts its announcement once and parks, then completes when polled again", async () => {
+  test("a producer that is waiting on CI parks without posting (the runtime narrates it), then completes when polled again, then completes when polled again", async () => {
     const h = await chain();
     h.journal.bumpStageEpoch("issue-1");
     const wait = new ExternalWaitError("Waiting for CI at abc1234: lint.", 30_000, "CI started for abc1234");
@@ -407,13 +407,13 @@ describe("external waits", () => {
       producers: [wait, new ExternalWaitError("Waiting for CI at abc1234: lint.", 30_000, null), envelope("success", "done")],
     });
     const definition = pipeline({ enterCheck: undefined, exitCheck: undefined, afterSuccess: [], run: { type: "source-action", action: "pullRequest.awaitChecks" } });
-    const deps: LegacyRuntime = { ...fake.value, input: INPUT, notify: (m) => { h.notes.push(m); } };
+    const deps: LegacyRuntime = { ...fake.value, input: INPUT };
     const execute = () =>
       h.executor.execute({ issueId: "issue-1", pipeline: compiled(definition, 2), stageId: "implementation", baseContext: baseContext(), deps });
 
     const first = await execute();
     expect(first).toMatchObject({ kind: "parked", reason: "pending", wakeAt: "2026-01-01T00:00:30.000Z" });
-    expect(h.notes).toEqual(["CI started for abc1234"]);
+    expect(h.notes).toEqual([]);
     expect(h.statuses).toContain("Waiting for CI at abc1234: lint.");
 
     h.advance(30_000);
@@ -421,7 +421,7 @@ describe("external waits", () => {
     h.advance(30_000);
     const done = await execute();
     expect(done).toMatchObject({ kind: "advance", nextStageId: "review", feedbackCycles: 0, result: envelope("success", "done") });
-    expect(h.notes).toEqual(["CI started for abc1234"]);
+    expect(h.notes).toEqual([]);
     expect(fake.calls).toEqual(["producer:implementation:1", "producer:implementation:1", "producer:implementation:1"]);
   });
 

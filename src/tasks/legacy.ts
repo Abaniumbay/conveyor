@@ -20,10 +20,9 @@ import type { Feedback } from "./context";
 import { defineGroup, fail, pass, pending, type Route, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { CompiledStage, CompiledTask } from "./plan";
 
-/** The runtime a legacy act needs: today's pipeline dependencies, the stage input and a conversation hook. */
+/** The runtime a legacy act needs: today's pipeline dependencies and the stage input. */
 export interface LegacyRuntime extends PipelineDependencies {
   input: StageExecutionInput;
-  notify(message: string): void | Promise<void>;
 }
 
 export interface LegacyPipeline {
@@ -118,7 +117,6 @@ const produce: TaskDefinition<LegacyWith, unknown, LegacyRuntime> = {
       result = await deps.runProducer(config.stage, producerContext(args));
     } catch (error) {
       if (!(error instanceof ExternalWaitError)) throw error;
-      if (error.announcement) await deps.notify(error.announcement);
       return pending(error.message, { after: error.retryAfterMs });
     }
     validateStatus(config, result);

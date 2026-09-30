@@ -30,7 +30,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
-import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
+import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
   repositoryId: string;
@@ -198,10 +198,8 @@ export class ConveyorService {
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
-  /** Issues polling an external condition (CI); not schedulable before this time. */
-  readonly #deferredUntil = new Map<string, number>();
-  /** Why a deferred issue is waiting; re-applied after reconciliation resets warnings. */
-  readonly #waitReasons = new Map<string, string>();
+  /** Fires a schedule pass at the earliest persisted wake-up of a parked item. */
+  #wakeTimer: ReturnType<typeof setTimeout> | null = null;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
@@ -303,6 +301,7 @@ export class ConveyorService {
           expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
         });
         await this.reconcileRelationships(id, repository.address);
+        this.restorePendingStatus(id);
         this.#repositoryErrors.delete(id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -324,6 +323,8 @@ export class ConveyorService {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    this.#wakeTimer = null;
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     while (this.#active.size > 0 || this.#steeringActive.size > 0) await Bun.sleep(25);
@@ -365,7 +366,7 @@ export class ConveyorService {
           issue.projectedState === "active" &&
           state.status === "ready" &&
           !this.#active.has(issue.id) &&
-          (this.#deferredUntil.get(issue.id) ?? 0) <= Date.now() &&
+          this.wakeupReached(issue.id) &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly: this.store.listChildren(issue.id).length > 0,
@@ -417,6 +418,26 @@ export class ConveyorService {
         this.#active.delete(issue.id);
       });
     }
+    this.armWakeTimer();
+  }
+
+  /** A parked item is schedulable only once its persisted wake-up time has passed. */
+  private wakeupReached(issueId: string): boolean {
+    const wakeAt = this.store.executions().wakeAt(issueId);
+    return wakeAt === null || Date.parse(wakeAt) <= Date.now();
+  }
+
+  /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
+  private armWakeTimer(): void {
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    this.#wakeTimer = null;
+    if (this.#shuttingDown) return;
+    const next = this.store.executions().nextWakeupAfter(new Date());
+    if (next === null) return;
+    this.#wakeTimer = setTimeout(() => {
+      this.#wakeTimer = null;
+      this.schedule();
+    }, Math.max(0, Date.parse(next) - Date.now()) + 50);
   }
 
   private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
@@ -450,10 +471,6 @@ export class ConveyorService {
       this.schedule();
     } catch (error) {
       if (signal.aborted) return;
-      if (error instanceof ExternalWaitError) {
-        await this.deferForExternalWait(issue, error);
-        return;
-      }
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
@@ -478,50 +495,18 @@ export class ConveyorService {
     }
   }
 
-  private restoreWaitReasons(repositoryId: string): void {
-    for (const [issueId, reason] of this.#waitReasons) {
-      const issue = this.store.getIssue(issueId);
-      if (!issue || issue.repositoryId !== repositoryId) continue;
-      if (issue.projectedState !== "active") {
-        this.#waitReasons.delete(issueId);
-        this.#deferredUntil.delete(issueId);
-        continue;
-      }
-      if (issue.warning) continue;
-      this.store.setIssueProjection(issueId, {
+  /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
+  private restorePendingStatus(repositoryId: string): void {
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (issue.projectedState !== "active" || issue.warning) continue;
+      const message = this.store.executions().pendingMessage(issue.id);
+      if (message === null) continue;
+      this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: issue.projectedState,
-        warning: reason,
+        warning: message,
       });
     }
-  }
-
-  /** Park an issue whose stage is waiting on an external system; no permit is held meanwhile. */
-  private async deferForExternalWait(issue: StoredIssue, error: ExternalWaitError): Promise<void> {
-    const current = this.store.getStageState(issue.id);
-    if (current) {
-      this.store.setStageState({
-        issueId: issue.id,
-        stageId: current.stageId,
-        status: "ready",
-        feedbackCycle: current.feedbackCycle,
-        configHash: this.config.hash,
-      });
-    }
-    const previous = this.store.getIssue(issue.id)?.warning ?? null;
-    this.store.setIssueProjection(issue.id, {
-      stage: issue.projectedStage,
-      state: "active",
-      warning: error.message,
-    });
-    if (previous !== error.message) {
-      await this.updateStatusComment(issue.id).catch((statusError) => {
-        console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
-      });
-    }
-    this.#deferredUntil.set(issue.id, Date.now() + error.retryAfterMs);
-    this.#waitReasons.set(issue.id, error.message);
-    setTimeout(() => this.schedule(), error.retryAfterMs + 50);
   }
 
   private async loadDeliveryState(
@@ -585,7 +570,12 @@ export class ConveyorService {
     const stage = repository
       ? this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId)
       : undefined;
-    return Boolean(stage && !isNativeStage(stage) && stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck);
+    if (!stage) return false;
+    // A native stage is lightweight when it launches no agent or script process.
+    if (isNativeStage(stage)) {
+      return ![...stage.actions, ...(stage.exitGate ?? [])].some((entry) => /^(agent|script)\.run$/.test(entry.task));
+    }
+    return stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck;
   }
 
   private interruptIneligibleRuns(): void {
@@ -621,7 +611,7 @@ export class ConveyorService {
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
     await this.reconcileRelationships(repositoryId, repository.address);
-    this.restoreWaitReasons(repositoryId);
+    this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
   }
 
@@ -1040,8 +1030,6 @@ export class ConveyorService {
       memory: this.#ciMemory,
       now: Date.now(),
     });
-    this.#deferredUntil.delete(context.issue.id);
-    this.#waitReasons.delete(context.issue.id);
     if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
       // Stop an implementation<->CI loop that is not converging.
       const transitions = this.store.listStageTransitions(context.issue.id);
