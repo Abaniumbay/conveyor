@@ -161,6 +161,19 @@ export class ExecutionStore {
     return row.stage_epoch;
   }
 
+  /**
+   * Fences off everything running for the item: bumps the stage epoch and drops the
+   * stage cursor in one transaction, so a late completion from the old stage, state or
+   * enrollment can no longer mutate or advance it. Returns the new epoch.
+   */
+  onStageChange(issueId: string): number {
+    return this.#db.transaction(() => {
+      const epoch = this.bumpStageEpoch(issueId);
+      this.clearCursor(issueId, epoch);
+      return epoch;
+    })();
+  }
+
   /** Persists the context, appends a history row and returns the new version. */
   saveContext(
     issueId: string,
