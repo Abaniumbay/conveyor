@@ -37,7 +37,7 @@ describe("provider-neutral CI gate", () => {
   test("waits for pending runs and settle window, then passes", async () => {
     const provider = new FakeProvider(); provider.runs = [run("1", "Tests", "running")];
     const tracked: string[] = [];
-    const error = await evaluateCiGate({ change, issueKey: "issue-1", options, provider, memory: createCiGateMemory(), now: 1_000_000, onCommit: (sha) => tracked.push(sha) }).catch((caught) => caught);
+    const error = await evaluateCiGate({ change, headSha: provider.sha, issueKey: "issue-1", options, provider, memory: createCiGateMemory(), now: 1_000_000, onCommit: (sha) => tracked.push(sha) }).catch((caught) => caught);
     expect(error).toBeInstanceOf(ExternalWaitError);
     expect((error as ExternalWaitError).commitSha).toBe(provider.sha);
     expect(tracked).toEqual([provider.sha]);
