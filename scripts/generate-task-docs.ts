@@ -48,6 +48,24 @@ exit-gate:
 - **wait**: \`{ timeout, poll }\`. Each field comes from the entry, else the task's own default, else \`settings.taskDefaults.wait\`. \`timeout: unlimited\` never times out.
 - **onFail**: \`retry\`, \`{ return: <stage> }\` (another stage of the pipeline) or \`{ stop: <state> }\` (a \`labels.states\` key). An exit-gate failure defaults to \`retry\`, bounded by the stage's \`retries\`; an action failure defaults to \`stop: blocked\`. \`settings.maxReturns\` bounds loops across stages.
 
+## Script protocol
+
+\`script.run\` runs \`bun run <script>\` in the workspace (the repository folder when the item has none) and writes one JSON request to stdin:
+
+\`\`\`json
+{ "phase": "apply", "idempotencyKey": "...", "taskInstanceId": "deploy", "context": { "repository": {}, "run": {} },
+  "issue": {}, "workspace": "/path or null", "repository": {}, "runId": "...", "stageId": "deploy", "attempt": 1, "feedback": null }
+\`\`\`
+
+\`phase\`, \`idempotencyKey\` and \`taskInstanceId\` are the protocol; \`idempotencyKey\` is stable across restarts of the same execution, so a script can pass it to the system it calls. The other fields are the legacy stage-script input, so scripts written for \`run: { type: script }\` keep working unchanged. \`with.recovery\` is required:
+
+- \`replay-safe\`: the script may safely run again. It is called with \`phase: "apply"\` every time, including after a restart.
+- \`reconcile\`: the script can tell whether an earlier run already did the work. The first run is \`apply\`. After a restart the engine calls \`phase: "observe"\` first: \`already-applied\` records the observed result without applying, \`not-applied\` runs \`apply\`, and \`indeterminate\` fails the task with \`stop: needs-intervention\` without applying.
+
+\`apply\` prints one JSON object on stdout: the producer result (\`outcome\` \`success\` or \`failure\`, \`status\`, \`summary\`, \`reason\`, and so on), optionally with \`externalOperationId\` and \`artifactUrl\`. \`observe\` prints \`{ "state": "already-applied", "operationId": "..." | null, "result": <apply output> }\`, \`{ "state": "not-applied" }\` or \`{ "state": "indeterminate", "reason": "..." }\`. A non-zero exit, a timeout or output that does not match is an infrastructure error.
+
+A script that completes always lets \`script.run\` pass, even when it reports failure. The bounded result (\`passed\`, \`recovery\`, \`externalOperationId\`, \`summary\`, \`artifactUrl\`, \`outputTail\` of at most 4 KB, \`finishedAt\`) is stored as \`script.results[<instance id>]\`, and \`script.succeeded\` (with \`with.run\` naming the instance) fails the exit gate with the summary when \`passed\` is false.
+
 ## Exit-gate semantics
 
 Gate open: advance. Gate \`fail\`: run the stage's actions again with \`run.feedback\`, unless \`onFail\` routes elsewhere. Gate \`pending\`: park, then re-evaluate the whole gate with fresh loads.

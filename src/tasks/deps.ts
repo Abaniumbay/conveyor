@@ -29,4 +29,6 @@ export interface TaskDeps {
   git: GitOps;
   /** Creates and removes worktrees. */
   workspaces: WorkspaceLifecycleManager;
+  /** Interrupts a running script (the script group passes it to the process). */
+  signal?: AbortSignal;
 }
