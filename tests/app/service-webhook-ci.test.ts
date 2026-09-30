@@ -7,6 +7,8 @@ import path from "node:path";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConveyorService } from "../../src/app/service";
+import { CodeHostRegistry } from "../../src/codehost/registry";
+import type { CodeHost } from "../../src/codehost/types";
 import type { RuntimeIssueContext } from "../../src/app/runtime";
 import type { CiProvider } from "../../src/app/ci-provider";
 import type { GitHubAdapter } from "../../src/source/github/adapter";
@@ -90,7 +92,24 @@ repositories:
   const github = {
     async ensurePullRequest() { return { number: 9, url: "https://github.com/owner/repo/pull/9", state: "open" }; },
   } as unknown as GitHubAdapter;
-  const service = new ConveyorService(config, store, github);
+  const headSha = (await Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: path.join(root, "workspace") })).stdout.toString().trim();
+  const codeHosts = new CodeHostRegistry().register("github", {
+    async pushBranch() { return { pushed: true }; },
+    async ensureChange() {
+      return { id: "pr-9", number: 9, url: "https://github.com/owner/repo/pull/9", state: "open", headSha, draft: false, mergeable: null };
+    },
+    async getChange() {
+      return { id: "pr-9", number: 9, url: "https://github.com/owner/repo/pull/9", state: "open", headSha, draft: false, mergeable: null };
+    },
+    async mergeChange() { return { merged: true }; },
+    async getChangeDelivery() {
+      return {
+        change: { id: "pr-9", number: 9, url: "https://github.com/owner/repo/pull/9", state: "open", headSha, draft: false, mergeable: null },
+        checks: [],
+      };
+    },
+  } satisfies CodeHost);
+  const service = new ConveyorService(config, store, github, { codeHosts });
   const issue = store.getIssue("issue")!;
   const workspace = { path: path.join(root, "workspace"), branch: "feature" };
   const context: RuntimeIssueContext = {
@@ -99,9 +118,8 @@ repositories:
     workspace: null,
     sourceGuidance: "",
   };
-  const headSha = (await Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: workspace.path })).stdout.toString().trim();
   process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = "test-secret";
-  return { root, config, store, service, context, workspace, headSha, github, async close() { store.close(); } };
+  return { root, config, store, service, context, workspace, headSha, github, codeHosts, async close() { store.close(); } };
 }
 
 function provider(runs: () => Array<{ id: string; name: string; url: null; state: "queued" | "passed"; canRerun: false; hasLog: false }>, sha: string): CiProvider {
@@ -194,7 +212,7 @@ describe("service CI webhook and polling recovery", () => {
 
     await fixture.close();
     const restartedStore = await ConveyorStore.open(fixture.config.settings.database);
-    const restarted = new ConveyorService(fixture.config, restartedStore, fixture.github);
+    const restarted = new ConveyorService(fixture.config, restartedStore, fixture.github, { codeHosts: fixture.codeHosts });
     const restartedMethods = restarted as unknown as Record<string, (...args: never[]) => unknown>;
     restartedMethods.ciProvider = () => provider(() => passing, fixture.headSha);
     const restartedGate = (restartedMethods.awaitPullRequestChecks as (context: RuntimeIssueContext, workspace: { path: string; branch: string }, input: Record<string, unknown>) => Promise<{ outcome: string }>).bind(restarted);
