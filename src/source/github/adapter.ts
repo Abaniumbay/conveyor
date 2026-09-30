@@ -555,6 +555,33 @@ export class GitHubAdapter {
     };
   }
 
+  async getPullRequestChange(address: string, pullRequestNumber: number): Promise<{
+    number: number;
+    url: string;
+    state: string;
+    draft: boolean;
+    mergeState: string | null;
+    headSha: string;
+    mergedAt: string | null;
+  }> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} has no head commit`);
+    }
+    return {
+      number: pullRequest.number,
+      url: pullRequest.html_url,
+      state: pullRequest.merged === true ? "merged" : pullRequest.state,
+      draft: pullRequest.draft === true,
+      mergeState: pullRequest.mergeable_state ?? null,
+      headSha: pullRequest.head.sha,
+      mergedAt: pullRequest.merged_at ?? null,
+    };
+  }
+
   async getPullRequestHead(
     address: string,
     pullRequestNumber: number,

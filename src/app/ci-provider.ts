@@ -17,7 +17,6 @@ export interface CiChange {
 }
 
 export interface CiProvider {
-  currentCommit(change: CiChange): Promise<string>;
   start(change: CiChange, commit: string, retryWindowMs: number, now: number): Promise<string[]>;
   list(change: CiChange, commit: string): Promise<CiRun[]>;
   rerun(change: CiChange, runId: string): Promise<void>;

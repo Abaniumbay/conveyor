@@ -15,9 +15,12 @@ import {
   upsertManagedSection,
   type AcceptanceCriterion,
 } from "../source/github/managed-sections";
-import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
+import { CodeHostRegistry } from "../codehost/registry";
+import type { CodeHost } from "../codehost/types";
+import { changeAction } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
@@ -46,6 +49,7 @@ interface McpGrant {
 
 interface ServiceImplementations {
   steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  codeHosts?: CodeHostRegistry;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
@@ -138,28 +142,8 @@ async function git(cwd: string, args: string[]): Promise<void> {
     stderr: "pipe",
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
-  const [stderr, exitCode] = await Promise.all([
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${exitCode}`}`);
-  }
-}
-
-async function gitStatus(cwd: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+  if (exitCode !== 0) throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${exitCode}`}`);
 }
 
 function criteriaFromBody(body: string): string[] {
@@ -203,6 +187,7 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
 export class ConveyorService {
   readonly store: ConveyorStore;
   readonly github: GitHubAdapter;
+  readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
   readonly #steeringActive = new Map<string, AbortController>();
@@ -229,11 +214,16 @@ export class ConveyorService {
   ) {
     this.store = store;
     this.github = github;
+    this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
   }
 
-  static async create(config: ConveyorConfig): Promise<ConveyorService> {
+  static async create(
+    config: ConveyorConfig,
+    github: GitHubAdapter,
+    codeHosts: CodeHostRegistry,
+  ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
     const recovered = store.recoverInterruptedExecutions(config.hash);
@@ -252,7 +242,8 @@ export class ConveyorService {
     const service = new ConveyorService(
       config,
       store,
-      new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix),
+      github,
+      { codeHosts },
     );
     await service.onboardRepositories();
     await service.reconcileAll();
@@ -535,23 +526,26 @@ export class ConveyorService {
   private async loadDeliveryState(
     issueId: string,
     address: string,
-  ): Promise<{ pullRequest: unknown | null; checks: unknown[] }> {
+  ): Promise<{ change: unknown | null; pullRequest: unknown | null; checks: unknown[] }> {
     const stored = this.store.getCurrentPullRequest(issueId);
-    if (!stored) return { pullRequest: null, checks: [] };
-    const delivery = await this.github.getPullRequestDelivery(address, stored.number);
+    if (!stored) return { change: null, pullRequest: null, checks: [] };
+    const repository = this.store.getIssue(issueId)?.repositoryId;
+    const host = repository ? this.codeHostFor(repository) : null;
+    if (!host) throw new Error(`no code host configured for ${issueId}`);
+    const delivery = await host.getChangeDelivery({ address, id: stored.id });
     this.store.upsertPullRequest({
       issueId,
       id: stored.id,
-      number: delivery.pullRequest.number,
-      url: delivery.pullRequest.url,
-      state: delivery.pullRequest.state,
-      ...(delivery.pullRequest.mergedAt || stored.mergedAt
-        ? { mergedAt: delivery.pullRequest.mergedAt ?? stored.mergedAt }
+      number: delivery.change.number,
+      url: delivery.change.url,
+      state: delivery.change.state,
+      ...(delivery.change.mergedAt || stored.mergedAt
+        ? { mergedAt: delivery.change.mergedAt ?? stored.mergedAt }
         : {}),
     });
-    const change: CiChange = { repository: address, changeId: String(stored.number), url: delivery.pullRequest.url };
-    const checks = await this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "").list(change, delivery.pullRequest.headSha);
-    return { pullRequest: delivery.pullRequest, checks };
+    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
+    const checks = await this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "").list(change, delivery.change.headSha);
+    return { change: delivery.change, pullRequest: delivery.pullRequest ?? null, checks };
   }
 
   private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
@@ -575,6 +569,13 @@ export class ConveyorService {
       this.#ciProviders.set(key, provider);
     }
     return provider;
+  }
+
+  private codeHostFor(repositoryId: string): CodeHost | null {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return null;
+    const name = repository.codeHost ?? repository.source;
+    return this.#codeHosts.get(name) ?? null;
   }
 
   /** A stage that only runs an in-process source action: no producer or verifier process. */
@@ -933,6 +934,7 @@ export class ConveyorService {
     return {
       run: async (action) => {
         const workspace = context.workspace;
+        const changeOperation = changeAction(action.sourceAction);
         if (action.sourceAction === "workspace.cleanup") {
           const stored = this.store.getActiveWorkspace(context.issue.id);
           if (!stored) return;
@@ -946,19 +948,22 @@ export class ConveyorService {
           return;
         }
         if (!workspace) throw new Error(`${action.sourceAction} requires a workspace`);
-        if (action.sourceAction === "pullRequest.ensure") {
-          await git(workspace.path, ["push", "--set-upstream", "origin", workspace.branch]);
-          const pullRequest = await this.github.ensurePullRequest({
+        if (changeOperation === "ensure") {
+          const codeHost = this.codeHostFor(context.repository.id);
+          if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
+          const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
+          if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
+          const pullRequest = await codeHost.ensureChange({
             address: context.repository.address,
             issueNumber: context.issue.sourceNumber,
             branch: workspace.branch,
-            baseBranch: context.repository.baseBranch,
+            base: context.repository.baseBranch,
             title: context.issue.title,
-            closingReference: action.with?.closingReference !== false,
+            closes: action.with?.closingReference !== false,
           });
           this.store.upsertPullRequest({
             issueId: context.issue.id,
-            id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+            id: pullRequest.id,
             number: pullRequest.number,
             url: pullRequest.url,
             state: pullRequest.state,
@@ -968,20 +973,22 @@ export class ConveyorService {
         if (action.sourceAction === "ci.await" || action.sourceAction === "pullRequest.awaitChecks") {
           return this.awaitPullRequestChecks(context, workspace, action.with);
         }
-        if (action.sourceAction === "pullRequest.squashMerge") {
-          const pullRequest = await this.github.ensurePullRequest({
+        if (changeOperation === "merge") {
+          const codeHost = this.codeHostFor(context.repository.id);
+          if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
+          const pullRequest = await codeHost.ensureChange({
             address: context.repository.address,
             issueNumber: context.issue.sourceNumber,
             branch: workspace.branch,
-            baseBranch: context.repository.baseBranch,
+            base: context.repository.baseBranch,
             title: context.issue.title,
-            closingReference: true,
+            closes: true,
           });
-          const merged = await this.github.squashMerge(context.repository.address, pullRequest.number);
-          if (!merged.merged) throw new Error(`GitHub did not merge pull request #${pullRequest.number}`);
+          const merged = await codeHost.mergeChange({ address: context.repository.address, id: pullRequest.id, method: "squash" });
+          if (!merged.merged) throw new Error(`code host did not merge change request #${pullRequest.number}`);
           this.store.upsertPullRequest({
             issueId: context.issue.id,
-            id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+            id: pullRequest.id,
             number: pullRequest.number,
             url: pullRequest.url,
             state: "merged",
@@ -995,9 +1002,7 @@ export class ConveyorService {
   }
 
   /**
-   * Gate a stage on CI for the pull request's current head. The branch is first
-   * brought level with its remote (someone may have pushed fixes by hand), then
-   * pushed, then the PR is ensured and its checks evaluated.
+   * Gate a stage on CI for the change request's current head.
    */
   private async awaitPullRequestChecks(
     context: RuntimeIssueContext,
@@ -1006,38 +1011,21 @@ export class ConveyorService {
   ): Promise<SourceActionOutcome> {
     const options = parseCiGateOptions(input);
     const maxCorrections = typeof input?.maxCorrections === "number" ? input.maxCorrections : 5;
-    const branch = workspace.branch;
-    const fetched = await gitStatus(workspace.path, [
-      "fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
-    ]);
-    if (fetched.exitCode === 0) {
-      const remote = `origin/${branch}`;
-      const localBehind = (await gitStatus(workspace.path, ["merge-base", "--is-ancestor", "HEAD", remote])).exitCode === 0;
-      const remoteBehind = (await gitStatus(workspace.path, ["merge-base", "--is-ancestor", remote, "HEAD"])).exitCode === 0;
-      if (localBehind && !remoteBehind) {
-        const status = await gitStatus(workspace.path, ["status", "--porcelain"]);
-        if (status.stdout.length === 0) await git(workspace.path, ["merge", "--ff-only", remote]);
-      } else if (!localBehind && !remoteBehind) {
-        return {
-          outcome: "failure",
-          status: "changes-requested",
-          reason: `The local branch ${branch} and origin/${branch} have diverged; rebase the local work onto origin/${branch} (keeping both sides) and push.`,
-          summary: `Branch ${branch} diverged from its remote; returning to implementation to reconcile it.`,
-        };
-      }
-    }
-    await git(workspace.path, ["push", "--set-upstream", "origin", branch]);
-    const pullRequest = await this.github.ensurePullRequest({
+    const codeHost = this.codeHostFor(context.repository.id);
+    if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
+    const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
+    if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
+    const pullRequest = await codeHost.ensureChange({
       address: context.repository.address,
       issueNumber: context.issue.sourceNumber,
-      branch,
-      baseBranch: context.repository.baseBranch,
+      branch: workspace.branch,
+      base: context.repository.baseBranch,
       title: context.issue.title,
-      closingReference: input?.closingReference !== false,
+      closes: input?.closingReference !== false,
     });
     this.store.upsertPullRequest({
       issueId: context.issue.id,
-      id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+      id: pullRequest.id,
       number: pullRequest.number,
       url: pullRequest.url,
       state: pullRequest.state,
@@ -1047,6 +1035,7 @@ export class ConveyorService {
       issueKey: context.issue.id,
       options,
       provider: this.ciProvider(context.issue.repositoryId, input),
+      headSha: (await codeHost.getChange({ address: context.repository.address, id: pullRequest.id })).headSha,
       memory: this.#ciMemory,
       now: Date.now(),
     });
@@ -1079,11 +1068,15 @@ export class ConveyorService {
     input: Record<string, unknown>,
   ): Promise<unknown> {
     const stored = this.store.getCurrentPullRequest(issueId);
-    if (!stored) return { pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." };
-    const { sha } = await this.github.getPullRequestHead(address, stored.number);
+    if (!stored) return { change: null, pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." };
+    const repositoryId = this.store.getIssue(issueId)?.repositoryId;
+    const codeHost = repositoryId ? this.codeHostFor(repositoryId) : null;
+    if (!codeHost) throw new Error(`no code host configured for ${issueId}`);
+    const delivery = await codeHost.getChangeDelivery({ address, id: stored.id });
+    const sha = delivery.change.headSha;
     const requested = typeof input.checkName === "string" ? input.checkName : null;
     const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
-    const change: CiChange = { repository: address, changeId: String(stored.number), url: stored.url };
+    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
     const provider = this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "");
     const runs = await provider.list(change, sha);
     const selected = runs.filter((run) => requested
@@ -1098,7 +1091,13 @@ export class ConveyorService {
       }
       checks.push({ ...run, log });
     }
-    return { pullRequest: { number: stored.number, url: stored.url, headSha: sha }, checks };
+    return {
+      change: delivery.change,
+      pullRequest: delivery.pullRequest
+        ? { number: delivery.pullRequest.number, url: delivery.pullRequest.url, headSha: delivery.pullRequest.headSha }
+        : null,
+      checks,
+    };
   }
 
   async handleMcp(payload: unknown, token: string): Promise<unknown> {

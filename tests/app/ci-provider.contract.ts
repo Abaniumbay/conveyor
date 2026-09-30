@@ -14,7 +14,6 @@ export function ciProviderContract(name: string, createFixture: () => Promise<Ci
     test("starts, lists neutral runs, reruns capable runs, and reads their logs", async () => {
       const fixture = await createFixture();
       const { provider, change, commit } = fixture;
-      expect(await provider.currentCommit(change)).toBe(commit);
       const pending = await provider.start(change, commit, 10_000, 0);
       expect(pending.every((item) => typeof item === "string")).toBe(true);
       const runs = await provider.list(change, commit);

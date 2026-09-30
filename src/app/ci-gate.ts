@@ -65,6 +65,7 @@ export function parseCiGateOptions(input: Record<string, unknown> | undefined): 
 
 export interface CiGateInput {
   change: CiChange;
+  headSha: string;
   issueKey: string;
   options: CiGateOptions;
   provider: CiProvider;
@@ -74,7 +75,7 @@ export interface CiGateInput {
 
 export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOutcome> {
   const { change, options, provider, memory, now } = input;
-  const sha = await provider.currentCommit(change);
+  const sha = input.headSha;
   const short = sha.slice(0, 7);
   const key = `${input.issueKey}@${sha}`;
   const firstSeen = memory.firstSeen.get(key) ?? now;
