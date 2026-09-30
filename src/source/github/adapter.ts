@@ -316,20 +316,37 @@ export class GitHubAdapter {
     });
   }
 
-  async addDependency(input: {
+  async setDependencies(input: {
     address: string;
     issueNumber: number;
-    blockerNumber: number;
+    blockerNumbers: readonly number[];
   }): Promise<void> {
-    const blocker = await this.transport.request<GitHubIssue>({
-      method: "GET",
-      path: `repos/${input.address}/issues/${input.blockerNumber}`,
-    });
-    await this.transport.request<unknown>({
-      method: "POST",
-      path: `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`,
-      body: { issue_id: blocker.id },
-    });
+    const base = `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`;
+    const current = await this.listBlockedBy(input.address, input.issueNumber);
+    const wanted = new Set(input.blockerNumbers);
+    const present = new Set(current.map((issue) => issue.number));
+    for (const issue of current) {
+      if (wanted.has(issue.number)) continue;
+      await this.transport.request<unknown>({ method: "DELETE", path: `${base}/${issue.id}` });
+    }
+    for (const blockerNumber of wanted) {
+      if (present.has(blockerNumber)) continue;
+      const blocker = await this.transport.request<GitHubIssue>({
+        method: "GET",
+        path: `repos/${input.address}/issues/${blockerNumber}`,
+      });
+      try {
+        await this.transport.request<unknown>({
+          method: "POST",
+          path: base,
+          body: { issue_id: blocker.id },
+        });
+      } catch (error) {
+        // A concurrent writer already created the link.
+        if (error instanceof GitHubTransportError && /\b422\b/.test(`${error.message} ${error.stderr}`)) continue;
+        throw error;
+      }
+    }
   }
 
   async listSubIssues(address: string, issueNumber: number): Promise<SourceIssue[]> {
@@ -344,14 +361,17 @@ export class GitHubAdapter {
   }
 
   async listDependencies(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.listBlockedBy(address, issueNumber);
+    return issues.map((issue) => sourceIssue(address, issue));
+  }
+
+  private async listBlockedBy(address: string, issueNumber: number): Promise<GitHubIssue[]> {
     const issues = await this.transport.request<GitHubIssue[]>({
       method: "GET",
       path: `repos/${address}/issues/${issueNumber}/dependencies/blocked_by?per_page=100`,
       paginate: true,
     });
-    return issues
-      .filter((issue) => issue.pull_request === undefined)
-      .map((issue) => sourceIssue(address, issue));
+    return issues.filter((issue) => issue.pull_request === undefined);
   }
 
   async replaceConveyorLabels(

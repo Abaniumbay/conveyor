@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 
 import {
   GitHubAdapter,
+  GitHubTransportError,
   verifyGitHubSignature,
   type GitHubTransport,
   type GitHubTransportRequest,
@@ -22,6 +23,85 @@ class FakeTransport implements GitHubTransport {
     return this.#responses.shift() as T;
   }
 }
+
+class DependencyTransport implements GitHubTransport {
+  readonly requests: GitHubTransportRequest[] = [];
+  postError: Error | null = null;
+
+  constructor(public blockers: number[]) {}
+
+  get mutations(): GitHubTransportRequest[] {
+    return this.requests.filter((request) => request.method !== "GET");
+  }
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    this.requests.push(request);
+    const base = "repos/owner/repo/issues/";
+    if (request.method === "GET" && request.path.endsWith("/dependencies/blocked_by?per_page=100")) {
+      return this.blockers.map((n) => ({ id: n * 10, number: n })) as T;
+    }
+    if (request.method === "GET") {
+      const n = Number(request.path.slice(base.length));
+      return { id: n * 10, number: n } as T;
+    }
+    if (request.method === "POST") {
+      if (this.postError) throw this.postError;
+      this.blockers.push((request.body as { issue_id: number }).issue_id / 10);
+      return null as T;
+    }
+    const id = Number(request.path.split("/").pop());
+    this.blockers = this.blockers.filter((n) => n * 10 !== id);
+    return null as T;
+  }
+}
+
+const SET = { address: "owner/repo", issueNumber: 1 };
+
+describe("GitHubAdapter.setDependencies", () => {
+  test("adds only the missing blockers", async () => {
+    const transport = new DependencyTransport([2]);
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations).toEqual([
+      { method: "POST", path: "repos/owner/repo/issues/1/dependencies/blocked_by", body: { issue_id: 30 } },
+    ]);
+  });
+
+  test("removes dropped blockers", async () => {
+    const transport = new DependencyTransport([2, 3]);
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [3] });
+    expect(transport.mutations).toEqual([
+      { method: "DELETE", path: "repos/owner/repo/issues/1/dependencies/blocked_by/20" },
+    ]);
+  });
+
+  test("performs no mutation when called twice with the same list", async () => {
+    const transport = new DependencyTransport([4]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    await adapter.setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    const after = transport.mutations.length;
+    expect(after).toBe(3);
+    await adapter.setDependencies({ ...SET, blockerNumbers: [2, 3] });
+    expect(transport.mutations).toHaveLength(after);
+  });
+
+  test("treats a 422 already-exists on POST as success", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError(
+      "GitHub API POST x failed: gh: Validation Failed (HTTP 422)",
+      1,
+      "Validation Failed (HTTP 422)",
+    );
+    await new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2] });
+  });
+
+  test("propagates other errors", async () => {
+    const transport = new DependencyTransport([]);
+    transport.postError = new GitHubTransportError("GitHub API POST x failed: HTTP 500", 1, "HTTP 500");
+    await expect(
+      new GitHubAdapter(transport, "conveyor").setDependencies({ ...SET, blockerNumbers: [2] }),
+    ).rejects.toThrow("HTTP 500");
+  });
+});
 
 describe("GitHubAdapter", () => {
   test("projects only issues carrying the configured Conveyor prefix", async () => {

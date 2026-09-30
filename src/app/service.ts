@@ -1231,13 +1231,11 @@ export class ConveyorService {
         const dependencies = Array.isArray(input.issueNumbers)
           ? input.issueNumbers.map((value) => number(value, "dependency issue number"))
           : [];
-        for (const blockerNumber of dependencies) {
-          await this.github.addDependency({
-            address,
-            issueNumber: issue.sourceNumber,
-            blockerNumber,
-          });
-        }
+        await this.github.setDependencies({
+          address,
+          issueNumber: issue.sourceNumber,
+          blockerNumbers: dependencies,
+        });
         const current = await this.github.getIssue(address, issue.sourceNumber);
         await this.github.updateManagedSection({
           address,
