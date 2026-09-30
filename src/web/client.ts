@@ -577,6 +577,158 @@ export const dashboardClient = String.raw`(() => {
     }
   });
 
+  // Backlog ordering happens in place: drag a row, or use its arrow buttons. The
+  // DOM moves immediately, the new position is saved in the background, and a
+  // failed save puts the row back. Dashboard refreshes wait while this is busy.
+  let backlogBusy = false;
+  const backlogRows = (list) => Array.from(list.children).filter((row) => row.matches('.backlog-row'));
+  const syncBacklogButtons = (list) => {
+    const rows = backlogRows(list);
+    rows.forEach((row, index) => {
+      for (const form of row.querySelectorAll('form')) {
+        const direction = form.querySelector('input[name="direction"]');
+        const button = form.querySelector('button');
+        if (!direction || !(button instanceof HTMLButtonElement)) continue;
+        button.disabled = direction.value === 'up' ? index === 0 : index === rows.length - 1;
+      }
+    });
+  };
+  const showBacklogError = (list, message) => {
+    const column = list.closest('.stage--backlog');
+    if (!column) return;
+    let note = column.querySelector('.backlog-error');
+    if (!message) {
+      if (note) note.remove();
+      return;
+    }
+    if (!note) {
+      note = document.createElement('p');
+      note.className = 'backlog-error';
+      note.setAttribute('role', 'alert');
+      column.append(note);
+    }
+    note.textContent = message;
+  };
+  const saveBacklogPosition = async (row, restore) => {
+    const list = row.parentElement;
+    if (!list) return;
+    const next = row.nextElementSibling;
+    const beforeIssueId = next && next.matches('.backlog-row') ? next.dataset.backlogId || '' : '';
+    backlogBusy = true;
+    row.classList.add('backlog-row--saving');
+    syncBacklogButtons(list);
+    try {
+      const response = await fetch('/backlog/move', {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          csrf: body.dataset.csrfToken || '',
+          issueId: row.dataset.backlogId || '',
+          beforeIssueId,
+        }),
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || 'The new order could not be saved.');
+      showBacklogError(list, '');
+    } catch (error) {
+      restore();
+      syncBacklogButtons(list);
+      showBacklogError(list, error instanceof Error ? error.message : 'The new order could not be saved.');
+    } finally {
+      row.classList.remove('backlog-row--saving');
+      backlogBusy = false;
+      if (pendingRefresh && !document.querySelector('dialog[open]')) {
+        pendingRefresh = false;
+        void refreshDashboard();
+      }
+    }
+  };
+  const rememberPosition = (row) => {
+    const list = row.parentElement;
+    const next = row.nextElementSibling;
+    return () => {
+      if (!list) return;
+      if (next && next.parentElement === list) list.insertBefore(row, next);
+      else list.append(row);
+    };
+  };
+
+  let draggedRow = null;
+  let restoreDragged = null;
+  let draggedFrom = null;
+  document.addEventListener('dragstart', (event) => {
+    const row = event.target instanceof Element ? event.target.closest('[data-backlog-list] > .backlog-row') : null;
+    if (!row || backlogBusy) return;
+    draggedRow = row;
+    restoreDragged = rememberPosition(row);
+    draggedFrom = row.nextElementSibling;
+    backlogBusy = true;
+    row.classList.add('backlog-row--dragging');
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', row.dataset.backlogId || '');
+    }
+  });
+  document.addEventListener('dragover', (event) => {
+    if (!draggedRow) return;
+    const list = draggedRow.parentElement;
+    const target = event.target instanceof Element ? event.target.closest('.backlog-row') : null;
+    if (!list || !(event.target instanceof Element) || !list.contains(event.target)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    if (!target || target === draggedRow || target.parentElement !== list) return;
+    const box = target.getBoundingClientRect();
+    const after = event.clientY > box.top + box.height / 2;
+    list.insertBefore(draggedRow, after ? target.nextElementSibling : target);
+  });
+  document.addEventListener('drop', (event) => {
+    if (draggedRow) event.preventDefault();
+  });
+  document.addEventListener('dragend', () => {
+    const row = draggedRow;
+    const restore = restoreDragged;
+    const from = draggedFrom;
+    draggedRow = null;
+    restoreDragged = null;
+    draggedFrom = null;
+    if (!row || !restore) return;
+    row.classList.remove('backlog-row--dragging');
+    backlogBusy = false;
+    if (row.nextElementSibling === from) {
+      if (pendingRefresh) {
+        pendingRefresh = false;
+        void refreshDashboard();
+      }
+      return;
+    }
+    void saveBacklogPosition(row, restore);
+  });
+
+  // Arrow buttons: same in-place move. Without JavaScript the form still posts.
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.matches('[data-backlog-list] .reorder form')) return;
+    event.preventDefault();
+    if (backlogBusy) return;
+    const row = form.closest('.backlog-row');
+    const list = row && row.parentElement;
+    const direction = form.querySelector('input[name="direction"]');
+    if (!row || !list || !direction) return;
+    const restore = rememberPosition(row);
+    if (direction.value === 'up') {
+      const previous = row.previousElementSibling;
+      if (!previous) return;
+      list.insertBefore(row, previous);
+    } else {
+      const next = row.nextElementSibling;
+      if (!next) return;
+      list.insertBefore(row, next.nextElementSibling);
+    }
+    const button = form.querySelector('button');
+    void saveBacklogPosition(row, restore).then(() => {
+      if (button instanceof HTMLButtonElement && !button.disabled) button.focus();
+    });
+  }, true);
+
   const requestedIssue = new URL(location.href).searchParams.get('issue');
   if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
 
@@ -669,6 +821,10 @@ export const dashboardClient = String.raw`(() => {
       revision = next.revision;
       body.dataset.dashboardRevision = revision;
       if (body.dataset.dashboardView === 'agent') return;
+      if (backlogBusy) {
+        pendingRefresh = true;
+        return;
+      }
       const openDialog = document.querySelector('dialog[open]');
       if (openDialog) {
         scheduleJourneyRefresh();

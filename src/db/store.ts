@@ -1339,6 +1339,50 @@ export class ConveyorStore {
     })();
   }
 
+  /**
+   * Place a queued top-level issue immediately before another one, or last when
+   * `beforeIssueId` is null. Ranks are fractional, so only the moved issue is
+   * rewritten; the queue is renumbered when neighbouring ranks get too close.
+   */
+  moveQueueIssueBefore(issueId: string, beforeIssueId: string | null): void {
+    this.#database.transaction(() => {
+      const load = () => this.#database
+        .query(
+          `SELECT id, queue_rank FROM issues
+           WHERE parent_id IS NULL AND queue_rank IS NOT NULL
+           ORDER BY queue_rank, id`,
+        )
+        .all() as Array<{ id: string; queue_rank: number }>;
+      let issues = load();
+      if (!issues.some((issue) => issue.id === issueId)) {
+        throw new Error("only queued top-level issues can be reordered");
+      }
+      if (beforeIssueId === issueId) return;
+      if (beforeIssueId !== null && !issues.some((issue) => issue.id === beforeIssueId)) {
+        throw new Error("the target position is not a queued top-level issue");
+      }
+      const target = () => {
+        const others = issues.filter((issue) => issue.id !== issueId);
+        if (beforeIssueId === null) return (others.at(-1)?.queue_rank ?? 0) + 1;
+        const index = others.findIndex((issue) => issue.id === beforeIssueId);
+        const next = others[index]!.queue_rank;
+        const previous = others[index - 1]?.queue_rank;
+        return previous === undefined ? next - 1 : (previous + next) / 2;
+      };
+      let rank = target();
+      const neighbours = issues.filter((issue) => issue.id !== issueId).map((issue) => issue.queue_rank);
+      if (neighbours.some((value) => Math.abs(value - rank) < 1e-6)) {
+        const renumber = this.#database.query("UPDATE issues SET queue_rank = ? WHERE id = ?");
+        issues.forEach((issue, index) => renumber.run(index + 1, issue.id));
+        issues = load();
+        rank = target();
+      }
+      this.#database
+        .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
+        .run(rank, now(), issueId);
+    })();
+  }
+
   openQuestion(input: {
     issueId: string;
     runId: string | null;

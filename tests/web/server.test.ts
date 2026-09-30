@@ -43,6 +43,7 @@ const model: DashboardViewModel = {
 interface CallLog {
   answers: unknown[][];
   reorders: unknown[][];
+  moves: unknown[][];
   webhooks: unknown[][];
   mcp: unknown[][];
   steering: unknown[][];
@@ -59,7 +60,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -77,6 +78,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     maxBodyBytes: 128,
     answerQuestion: async (...args: unknown[]) => { calls.answers.push(args); },
     reorderBacklog: async (...args: unknown[]) => { calls.reorders.push(args); },
+    moveBacklogIssue: async (...args: unknown[]) => { calls.moves.push(args); },
     handleWebhook: async (...args: unknown[]) => { calls.webhooks.push(args); },
     handleMcp: async (...args: unknown[]) => { calls.mcp.push(args); return { ok: true }; },
     startSteering: async (...args: unknown[]) => { calls.steering.push(args); return "run-1"; },
@@ -235,6 +237,31 @@ describe("createWebHandler", () => {
     expect(reorder.status).toBe(303);
     expect(reorder.headers.get("location")).toBe("/?view=board");
     expect(calls.reorders).toEqual([["i-2", "up"]]);
+
+    const scripted = await handler(new Request("http://localhost/backlog/reorder", {
+      method: "POST", headers: { cookie, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ issueId: "i-2", direction: "down", csrf }),
+    }));
+    expect(scripted.status).toBe(200);
+    expect(await scripted.json()).toEqual({ ok: true });
+  });
+
+  test("moves a backlog issue in place for drag and drop, with CSRF", async () => {
+    const { handler, auth, calls } = setup();
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const post = (params: Record<string, string>) => handler(new Request("http://localhost/backlog/move", {
+      method: "POST", headers: { cookie, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params),
+    }));
+
+    expect((await post({ issueId: "i-3", beforeIssueId: "i-1" })).status).toBe(403);
+    const before = await post({ issueId: "i-3", beforeIssueId: "i-1", csrf });
+    expect(before.status).toBe(200);
+    expect(await before.json()).toEqual({ ok: true });
+    expect((await post({ issueId: "i-1", beforeIssueId: "", csrf })).status).toBe(200);
+    expect((await post({ csrf })).status).toBe(400);
+    expect(calls.moves).toEqual([["i-3", "i-1"], ["i-1", null]]);
   });
 
   test("streams authenticated dashboard updates and starts steering with CSRF", async () => {
