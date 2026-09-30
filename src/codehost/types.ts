@@ -21,7 +21,7 @@ export interface ChangeDelivery {
     completedAt: string | null;
   }>;
   /** GitHub compatibility projection retained while consumers migrate to `change`. */
-  pullRequest: {
+  pullRequest?: {
     number: number;
     url: string;
     state: string;

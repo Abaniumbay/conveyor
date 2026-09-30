@@ -544,9 +544,9 @@ export class ConveyorService {
         ? { mergedAt: delivery.change.mergedAt ?? stored.mergedAt }
         : {}),
     });
-    const change: CiChange = { repository: address, changeId: String(stored.number), url: delivery.pullRequest.url };
-    const checks = await this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "").list(change, delivery.pullRequest.headSha);
-    return { change: delivery.change, pullRequest: delivery.pullRequest, checks };
+    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
+    const checks = await this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "").list(change, delivery.change.headSha);
+    return { change: delivery.change, pullRequest: delivery.pullRequest ?? null, checks };
   }
 
   private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
@@ -1073,10 +1073,11 @@ export class ConveyorService {
     const repositoryId = this.store.getIssue(issueId)?.repositoryId;
     const codeHost = repositoryId ? this.codeHostFor(repositoryId) : null;
     if (!codeHost) throw new Error(`no code host configured for ${issueId}`);
-    const { headSha: sha } = await codeHost.getChange({ address, id: stored.id });
+    const delivery = await codeHost.getChangeDelivery({ address, id: stored.id });
+    const sha = delivery.change.headSha;
     const requested = typeof input.checkName === "string" ? input.checkName : null;
     const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
-    const change: CiChange = { repository: address, changeId: String(stored.number), url: stored.url };
+    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
     const provider = this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "");
     const runs = await provider.list(change, sha);
     const selected = runs.filter((run) => requested
@@ -1091,10 +1092,11 @@ export class ConveyorService {
       }
       checks.push({ ...run, log });
     }
-    const changeRequest = await codeHost.getChange({ address, id: stored.id });
     return {
-      change: changeRequest,
-      pullRequest: { number: stored.number, url: stored.url, headSha: sha },
+      change: delivery.change,
+      pullRequest: delivery.pullRequest
+        ? { number: delivery.pullRequest.number, url: delivery.pullRequest.url, headSha: delivery.pullRequest.headSha }
+        : null,
       checks,
     };
   }

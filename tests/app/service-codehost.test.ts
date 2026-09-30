@@ -10,6 +10,8 @@ import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { migrations } from "../../src/db/migrations";
 import { GitHubAdapter, type GitHubTransport } from "../../src/source/github/adapter";
+import type { CodeHost } from "../../src/codehost/types";
+import type { CiProvider } from "../../src/app/ci-provider";
 
 const roots: string[] = [];
 const requestLog: Array<Record<string, unknown>> = [];
@@ -202,6 +204,46 @@ describe("CodeHost service integration", () => {
       .catch((error) => expect(error).toMatchObject({ name: "ExternalWaitError" }));
     expect(requestLog).toContainEqual({ op: "change", number: 23 });
     expect(requestLog).toContainEqual({ op: "checks", sha: "head-sha-23" });
+    store.close();
+  });
+
+  test("delivery lookup uses neutral change data without requiring a GitHub pullRequest projection", async () => {
+    const { service, store } = await setup();
+    store.upsertPullRequest({ issueId: "issue", id: "host:repo#change-23", number: 23, url: "https://code.example/repo/changes/23", state: "open" });
+    const listed: Array<{ change: unknown; sha: string }> = [];
+    const changeHost = {
+      async getChangeDelivery() {
+        return {
+          change: { id: "host:repo#change-23", number: 23, url: "https://code.example/repo/changes/23", state: "open", headSha: "neutral-head", draft: false, mergeable: true },
+          checks: [],
+        };
+      },
+    } as unknown as CodeHost;
+    const internal = service as unknown as {
+      codeHostFor(repositoryId: string): CodeHost;
+      ciProvider(repositoryId: string): CiProvider;
+      loadDeliveryState(issueId: string, address: string): Promise<{ change: any; pullRequest: unknown; checks: unknown[] }>;
+      checkLogs(issueId: string, address: string, input: Record<string, unknown>): Promise<{ change: any; pullRequest: unknown; checks: unknown[] }>;
+    };
+    internal.codeHostFor = () => changeHost;
+    internal.ciProvider = () => ({
+      async start() { return []; },
+      async list(change, sha) { listed.push({ change, sha }); return []; },
+      async log() { return ""; },
+      async rerun() {},
+    });
+
+    const delivery = await internal.loadDeliveryState("issue", "owner/repo");
+    expect(delivery.change).toMatchObject({ id: "host:repo#change-23", url: "https://code.example/repo/changes/23", headSha: "neutral-head" });
+    expect(delivery.pullRequest).toBeNull();
+    expect(listed).toEqual([{
+      change: { repository: "owner/repo", changeId: "23", url: "https://code.example/repo/changes/23" },
+      sha: "neutral-head",
+    }]);
+    const logs = await internal.checkLogs("issue", "owner/repo", {});
+    expect(logs).toMatchObject({ change: { id: "host:repo#change-23", headSha: "neutral-head" }, pullRequest: null, checks: [] });
+    expect(listed).toHaveLength(2);
+    expect(listed[1]?.sha).toBe("neutral-head");
     store.close();
   });
 
