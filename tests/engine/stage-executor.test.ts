@@ -305,7 +305,7 @@ describe("crash injection", () => {
     h.world.actResult = () => pending("waiting for an answer");
     const parked = await h.run(plan, "implementation");
     const pendingSince = h.journal.getCursor("issue-1")!.pendingSince;
-    expect(parked).toEqual({ kind: "parked", reason: "pending", wakeAt: new Date(h.now().getTime() + 60_000).toISOString() });
+    expect(parked).toEqual({ kind: "parked", stageId: "implementation", reason: "pending", wakeAt: new Date(h.now().getTime() + 60_000).toISOString() });
     expect(h.statuses.at(-1)).toBe("waiting for an answer");
     const deadline = h.journal.getCursor("issue-1")!.deadlineAt;
     expect(deadline).toBe(new Date(h.now().getTime() + 600_000).toISOString());
@@ -345,11 +345,11 @@ describe("crash injection", () => {
     h.world.onAct = () => { h.journal.onStageChange("issue-1"); };
     const versionBefore = h.journal.getContext("issue-1")?.version ?? 0;
     const outcome = await h.run(plan, "implementation");
-    expect(outcome).toEqual({ kind: "parked", reason: "superseded", wakeAt: null });
+    expect(outcome).toEqual({ kind: "parked", stageId: "implementation", reason: "superseded", wakeAt: null });
     expect(h.notes).toEqual([]);
     expect(h.journal.getCursor("issue-1")).toBeNull();
     expect(h.journal.getContext("issue-1")?.context.agent).toBeUndefined();
-    expect(h.journal.getContext("issue-1")?.version ?? 0).toBeLessThanOrEqual(versionBefore + 1); // only the pre-act load save
+    expect(h.journal.getContext("issue-1")?.version ?? 0).toBe(versionBefore + 1); // only the pre-act load save
     const rows = h.store.sqlite().query("SELECT state FROM task_executions").all() as Array<{ state: string }>;
     expect(rows.every((row) => row.state !== "completed")).toBe(true);
   });
@@ -476,10 +476,10 @@ describe("routing", () => {
       h.activate();
       h.world.actResult = () => pending("hold");
       await h.run(plan, "review");
-      expect(h.journal.getCursor("issue-1")!.returns).toBe(Math.min(i + 1, 2));
+      expect(h.journal.getCursor("issue-1")!.returns).toBe(i < 2 ? i + 1 : 0); // the guard stop resets the budget
       h.world.actResult = () => pass();
     }
-    expect(seen).toEqual([1, 2, 2]);
+    expect(seen).toEqual([1, 2, 0]);
   });
 
   test("the return counter resets when the item leaves the pipeline", async () => {
@@ -495,6 +495,78 @@ describe("routing", () => {
   });
 });
 
+describe("deadlines", () => {
+  test("an act past its deadline is not invoked and fails with its last pending message and route", async () => {
+    const h = await harness();
+    h.activate();
+    const plan = simple(h, [], {
+      actionExtra: { wait: { timeoutMs: 100_000, pollMs: 10_000 }, onFail: { stop: "needs-input" } },
+    });
+    h.world.actResult = () => pending("first question");
+    await h.run(plan, "implementation");
+    h.advance(10_000);
+    await h.run(plan, "implementation");
+    h.world.actResult = () => pending("latest question");
+    h.advance(10_000);
+    await h.run(plan, "implementation");
+    const invocations = h.world.calls.length;
+    h.advance(200_000);
+    const outcome = await h.run(plan, "implementation");
+    expect(h.world.calls).toHaveLength(invocations);
+    expect(outcome).toMatchObject({
+      kind: "stopped", state: "needs-input", reason: "act did not finish within 100s: latest question",
+    });
+  });
+
+  test("a check past its deadline is evaluated once more and passes if it now passes", async () => {
+    const h = await harness();
+    h.activate();
+    let green = false;
+    h.world.checkResult.gate = () => (green ? pass() : pending("ci running"));
+    const plan = simple(h, [ct(h.registry, "gate", "test.check", { wait: { timeoutMs: 120_000, pollMs: 60_000 } })]);
+    await h.run(plan, "implementation");
+    green = true;
+    h.advance(500_000);
+    expect((await h.run(plan, "implementation")).kind).toBe("advance");
+  });
+
+  test("a stop resets the return budget", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.checkResult.gate = () => fail("once", { route: { return: "review" } });
+    await h.run(simple(h), "implementation");
+    expect(h.journal.getContext("issue-1")!.context.engine?.returns).toBe(1);
+    h.activate();
+    h.world.checkResult.gate = () => fail("halt", { route: { stop: "blocked" } });
+    await h.run(simple(h), "implementation");
+    expect(h.journal.getContext("issue-1")!.context.engine?.returns).toBe(0);
+  });
+
+  test("an epoch bump while a gate check is going pending fences the pending write", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.checkResult.gate = () => { h.journal.onStageChange("issue-1"); return pending("ci"); };
+    const outcome = await h.run(simple(h), "implementation");
+    expect(outcome).toEqual({ kind: "parked", stageId: "implementation", reason: "superseded", wakeAt: null });
+    expect(h.journal.getCursor("issue-1")).toBeNull();
+    const rows = h.store.sqlite().query("SELECT state FROM task_executions WHERE task_instance_id = 'gate'").all() as Array<{ state: string }>;
+    expect(rows.every((row) => row.state !== "pending")).toBe(true);
+  });
+
+  test("an aborted signal parks before the next task", async () => {
+    const h = await harness();
+    h.activate();
+    const controller = new AbortController();
+    h.world.onAct = () => controller.abort();
+    const out = await h.executorFor().execute({
+      issueId: "issue-1", pipeline: simple(h), stageId: "implementation", baseContext: baseContext(),
+      deps: {}, signal: controller.signal,
+    });
+    expect(out).toEqual({ kind: "parked", stageId: "implementation", reason: "aborted", wakeAt: null });
+    expect(h.world.calls).toEqual(["act"]);
+  });
+});
+
 describe("pending exit gate", () => {
   test("parks without repeating actions, then re-evaluates with fresh loads", async () => {
     const h = await harness();
@@ -503,7 +575,7 @@ describe("pending exit gate", () => {
     h.world.checkResult.gate = () => (++polls < 3 ? pending("ci running", { after: 5_000 }) : pass());
     const plan = simple(h, [ct(h.registry, "gate", "test.check", { wait: { timeoutMs: null, pollMs: 60_000 } })]);
     const first = await h.run(plan, "implementation");
-    expect(first).toEqual({ kind: "parked", reason: "pending", wakeAt: new Date(h.now().getTime() + 5_000).toISOString() });
+    expect(first).toEqual({ kind: "parked", stageId: "implementation", reason: "pending", wakeAt: new Date(h.now().getTime() + 5_000).toISOString() });
     expect(h.statuses).toContain("ci running");
     expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "exit-gate", taskInstanceId: "gate", state: "pending" });
     const ciLoadsAfterFirst = h.world.loads.ci;
@@ -524,7 +596,7 @@ describe("pending exit gate", () => {
       h.activate();
       h.world.checkResult.gate = () => ({ status: "pending", message: "w", after });
       const out = await h.run(simple(h), "implementation");
-      expect(out).toEqual({ kind: "parked", reason: "pending", wakeAt: new Date(h.now().getTime() + 60_000).toISOString() });
+      expect(out).toEqual({ kind: "parked", stageId: "implementation", reason: "pending", wakeAt: new Date(h.now().getTime() + 60_000).toISOString() });
     }
   });
 

@@ -22,7 +22,7 @@ import { resolveRoute } from "./stage-routing";
 
 export type StageOutcome =
   | StageExecutionResult
-  | { kind: "parked"; reason: "pending" | "superseded" | "aborted"; wakeAt: string | null };
+  | { kind: "parked"; stageId: string; reason: "pending" | "superseded" | "aborted"; wakeAt: string | null };
 
 export interface StageExecutorOptions {
   registry: TaskRegistry;
@@ -47,6 +47,7 @@ export interface ExecuteInput {
 type List = "actions" | "exit-gate";
 type Step =
   | { kind: "pass" }
+  | { kind: "aborted" }
   | { kind: "pending"; wakeAt: string }
   | { kind: "fail"; message: string; details?: unknown; route?: Route | undefined };
 
@@ -71,7 +72,7 @@ export class StageExecutor {
     try {
       return await this.#drive(input, epoch);
     } catch (error) {
-      if (error instanceof StaleEpochError) return { kind: "parked", reason: "superseded", wakeAt: null };
+      if (error instanceof StaleEpochError) return { kind: "parked", stageId: input.stageId, reason: "superseded", wakeAt: null };
       throw error;
     }
   }
@@ -100,7 +101,6 @@ export class StageExecutor {
     };
 
     for (;;) {
-      if (input.signal?.aborted) return { kind: "parked", reason: "aborted", wakeAt: null };
       const outcome = run.cursor.list === "actions" ? await this.#actions(run) : await this.#gate(run);
       if (outcome) return outcome;
     }
@@ -113,7 +113,8 @@ export class StageExecutor {
     if (start < 0) throw new Error(`Cursor task ${run.cursor.taskInstanceId} is not in ${run.stage.id} actions`);
     for (const task of tasks.slice(start)) {
       const step = await this.#runTask(run, task, "actions");
-      if (step.kind === "pending") return { kind: "parked", reason: "pending", wakeAt: step.wakeAt };
+      if (step.kind === "aborted") return { kind: "parked", stageId: run.stage.id, reason: "aborted", wakeAt: null };
+      if (step.kind === "pending") return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: step.wakeAt };
       if (step.kind === "fail") return this.#route(run, task, "actions", step);
     }
     await this.#moveTo(run, { list: "exit-gate", taskInstanceId: null });
@@ -128,11 +129,15 @@ export class StageExecutor {
     this.#persist(run, tasks[0]?.id ?? run.stage.id);
     for (const task of tasks) {
       const step = await this.#runTask(run, task, "exit-gate");
-      if (step.kind === "pending") return { kind: "parked", reason: "pending", wakeAt: step.wakeAt };
+      if (step.kind === "aborted") return { kind: "parked", stageId: run.stage.id, reason: "aborted", wakeAt: null };
+      if (step.kind === "pending") return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: step.wakeAt };
       if (step.kind === "fail") return this.#route(run, task, "exit-gate", step);
     }
     const at = this.#o.clock().toISOString();
-    for (const task of tasks) recordCheckpoint(run.context, this.#o.registry.require(task.task), task.id, at);
+    for (const task of tasks) {
+      const definition = this.#o.registry.require(task.task);
+      if (definition.checkpoint?.scope === "gate") recordCheckpoint(run.context, definition, task.id, at);
+    }
     const next = run.input.pipeline.stages[run.input.pipeline.stages.findIndex((s) => s.id === run.stage.id) + 1];
     if (!next) engineState(run.context).returns = 0;
     this.#persist(run, tasks.at(-1)?.id ?? run.stage.id);
@@ -145,6 +150,7 @@ export class StageExecutor {
   }
 
   async #runTask(run: Run, task: CompiledTask, list: List): Promise<Step> {
+    if (run.input.signal?.aborted) return { kind: "aborted" };
     const { journal, registry, clock } = this.#o;
     const { issueId, deps } = run.input;
     const definition = registry.require(task.task);
@@ -162,18 +168,22 @@ export class StageExecutor {
       // Crashed after the journal write but before the cursor advanced: replay, never re-run.
       result = record.result as TaskResult;
     } else {
-      const running = journal.markRunning(record.id, run.epoch);
-      await this.#save(run, { state: "running" });
-      result = await runTask(definition, {
-        context: run.context, config: task.with, deps,
-        instance: { id: task.id, stage: run.stage.id, idempotencyKey: record.idempotencyKey, resumed: planned.resumed },
+      const timeoutFail = (message: string): TaskResult => ({
+        status: "fail",
+        message: `${task.id} did not finish within ${formatDuration(task.wait.timeoutMs ?? 0)}: ${message}`,
       });
-      const expired = running.deadlineAt !== null && clock().getTime() >= Date.parse(running.deadlineAt);
-      if (result.status === "pending" && expired) {
-        result = {
-          status: "fail",
-          message: `${task.id} did not finish within ${formatDuration(task.wait.timeoutMs ?? 0)}: ${result.message}`,
-        };
+      const expired = (deadlineAt: string | null) => deadlineAt !== null && clock().getTime() >= Date.parse(deadlineAt);
+      if (list === "actions" && record.state === "pending" && expired(record.deadlineAt)) {
+        // An act past its deadline is not invoked again; it fails with its last pending message.
+        result = timeoutFail((record.result as { message?: string } | null)?.message ?? "no progress");
+      } else {
+        const running = journal.markRunning(record.id, run.epoch);
+        await this.#save(run, { state: "running" });
+        result = await runTask(definition, {
+          context: run.context, config: task.with, deps,
+          instance: { id: task.id, stage: run.stage.id, idempotencyKey: record.idempotencyKey, resumed: planned.resumed },
+        });
+        if (result.status === "pending" && expired(running.deadlineAt)) result = timeoutFail(result.message);
       }
       if (result.status === "pass") journal.completeExecution(record.id, result, run.epoch);
       else if (result.status === "fail") journal.failExecution(record.id, result, run.epoch);
@@ -201,7 +211,7 @@ export class StageExecutor {
     const now = clock().getTime();
     const wakeAt = new Date(now + (validAfter(result.after) ?? task.wait.pollMs)).toISOString();
     const deadlineAt = task.wait.timeoutMs === null ? null : new Date(now + task.wait.timeoutMs).toISOString();
-    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt }, run.epoch);
+    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt, message: result.message }, run.epoch);
     await this.#save(run, {
       state: "pending", pendingSince: pendingRecord.pendingSince, wakeAt, deadlineAt: pendingRecord.deadlineAt,
     });
@@ -225,11 +235,15 @@ export class StageExecutor {
       await this.#o.notify(note);
       return outcome;
     };
-    const stop = (state: string, reason: string, note: string) =>
-      finish(
+    const stop = (state: string, reason: string, note: string) => {
+      // A human unblock after a stop starts with a fresh loop budget.
+      engineState(run.context).returns = 0;
+      this.#persist(run, task.id);
+      return finish(
         { kind: "stopped", stageId: stage.id, state, reason, requiredFixes: [], feedbackCycles: cursor.attempt - 1, result: null },
         note,
       );
+    };
 
     if ("retry" in route) {
       if (cursor.attempt <= stage.retries) {

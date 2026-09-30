@@ -303,10 +303,14 @@ export class ExecutionStore {
     return this.#update(id, expectedEpoch, "state = 'running'");
   }
 
-  /** Keeps the first pending_since and deadline_at across repeated polls. */
+  /**
+   * Keeps the first pending_since and deadline_at across repeated polls. The latest
+   * `message` is stored as the record's result so a timeout can quote it without
+   * re-invoking the task.
+   */
   markPending(
     id: string,
-    times: { wakeAt: string | null; deadlineAt: string | null },
+    times: { wakeAt: string | null; deadlineAt: string | null; message?: string },
     expectedEpoch: number,
   ): TaskExecutionRecord {
     return this.#update(
@@ -314,10 +318,12 @@ export class ExecutionStore {
       expectedEpoch,
       `state = 'pending', wake_at = ?,
        pending_since = COALESCE(pending_since, ?),
-       deadline_at = COALESCE(deadline_at, ?)`,
+       deadline_at = COALESCE(deadline_at, ?),
+       result_json = ?`,
       times.wakeAt,
       this.#timestamp(),
       times.deadlineAt,
+      times.message === undefined ? null : JSON.stringify({ status: "pending", message: times.message }),
     );
   }
 

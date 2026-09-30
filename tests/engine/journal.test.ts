@@ -163,7 +163,8 @@ describe("ExecutionStore executions", () => {
     const { record } = journal.planExecution(plan);
     journal.markRunning(record.id, 0);
     const a = journal.markPending(record.id, { wakeAt: "2026-02-01T00:00:10.000Z", deadlineAt: "2026-02-01T01:00:00.000Z" }, 0);
-    const b = journal.markPending(record.id, { wakeAt: "2026-02-01T00:00:20.000Z", deadlineAt: "2026-02-01T09:00:00.000Z" }, 0);
+    const b = journal.markPending(record.id, { wakeAt: "2026-02-01T00:00:20.000Z", deadlineAt: "2026-02-01T09:00:00.000Z", message: "latest" }, 0);
+    expect(b.result).toEqual({ status: "pending", message: "latest" });
     expect(a.pendingSince).not.toBeNull();
     expect(b).toMatchObject({
       state: "pending",
