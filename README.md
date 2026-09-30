@@ -275,6 +275,43 @@ repositories:
     concurrency: 2
 ```
 
+### CI providers
+
+CI pipelines are configured separately from stage timing. Select a named provider on a repository, or omit `repositories.<name>.ci` to use the source's native CI provider (GitHub Actions for GitHub):
+
+```yaml
+ci:
+  actions:
+    type: github-actions
+    triggers:
+      - label: run-web-e2e
+        workflow: web-e2e.yml
+        check: Headless Chrome smoke test
+      - label: run-android-e2e
+        workflow: android-e2e.yml
+        check: Android emulator smoke
+      - label: run-full-suite
+        workflow: full-suite.yml
+        check: Full suite
+        replaces: [run-web-e2e, run-android-e2e]
+
+repositories:
+  example:
+    ci: actions
+```
+
+Use `ci.await` in a pipeline stage. Timing and filtering options stay with the stage:
+
+```yaml
+- id: ci
+  run:
+    sourceAction: ci.await
+    with: { settleSeconds: 120, pollSeconds: 60, timeoutMinutes: 180 }
+  concurrency: 1
+```
+
+Existing `pullRequest.awaitChecks` stages may keep their `with.triggers`; this form is deprecated. A stage cannot define triggers when its selected provider already declares them.
+
 Validate before starting:
 
 ```sh

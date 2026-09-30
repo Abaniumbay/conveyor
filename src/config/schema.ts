@@ -208,6 +208,18 @@ const pipelineSchema = z
     }
   });
 
+const ciTriggerSchema = z.object({
+  label: identifierSchema,
+  workflow: z.string().regex(/^[\w.-]+\.ya?ml$/, "must be a workflow file name"),
+  check: identifierSchema,
+  replaces: z.array(identifierSchema).default([]),
+}).strict();
+
+const ciProviderSchema = z.object({
+  type: z.literal("github-actions"),
+  triggers: z.array(ciTriggerSchema).default([]),
+}).strict();
+
 const repositorySchema = z
   .object({
     source: identifierSchema,
@@ -215,6 +227,7 @@ const repositorySchema = z
     folder: absolutePathSchema,
     baseBranch: identifierSchema.default("main"),
     pipeline: identifierSchema,
+    ci: identifierSchema.optional(),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
   })
@@ -239,6 +252,7 @@ export const configSchema = z
     settings: settingsSchema,
     web: webSchema,
     sources: z.record(identifierSchema, sourceSchema).default({}),
+    ci: z.record(identifierSchema, ciProviderSchema).default({}),
     runners: z.record(identifierSchema, runnerSchema).default({}),
     agents: z.record(identifierSchema, agentSchema).default({}),
     checks: z.record(identifierSchema, checkSchema).default({}),
