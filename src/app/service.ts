@@ -465,9 +465,16 @@ export class ConveyorService {
       ),
     });
     try {
-      await executor.execute(issue);
-      await this.reconcileRepository(issue.repositoryId);
-      await this.updateStatusComment(issue.id);
+      const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
+      const outcome = await executor.execute(issue);
+      if (outcome.kind === "parked") {
+        // A parked poll changes nothing at the source: no reconcile, just the status line.
+        this.restorePendingStatus(issue.repositoryId);
+        if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);
+      } else {
+        await this.reconcileRepository(issue.repositoryId);
+        await this.updateStatusComment(issue.id);
+      }
       this.schedule();
     } catch (error) {
       if (signal.aborted) return;

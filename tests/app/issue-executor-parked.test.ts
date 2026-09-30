@@ -79,6 +79,7 @@ repositories:
   store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
   const labels: string[][] = [];
   const producers: string[] = [];
+  let failure = false;
   let wait: ExternalWaitError | null = new ExternalWaitError("Waiting for CI at abc1234: Tests.", 60_000, "CI started");
   const executorFor = (current: ConveyorConfig) => new IssueExecutor({
     config: current,
@@ -92,6 +93,7 @@ repositories:
       async runProducer(stage) {
         producers.push(stage.id);
         if (wait) throw wait;
+        if (failure) return { ...success, stageResult: { ...success.stageResult, outcome: "failure" as const, status: "blocked", reason: "nope" } };
         return success;
       },
       async runAction() {},
@@ -101,6 +103,7 @@ repositories:
   return {
     config, store, labels, producers, executorFor,
     stopWaiting() { wait = null; },
+    failNext() { wait = null; failure = true; },
     messages: () => store.listConversationMessages("issue").map((message) => message.message),
   };
 }
@@ -145,6 +148,35 @@ describe("IssueExecutor parked stages", () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/plan changed.*restart/i);
     expect(h.producers).toEqual(["implementation", "implementation", "implementation"]);
+    h.store.close();
+  });
+
+  test("legacy stages post no executor notes, even when they stop", async () => {
+    const h = await setup();
+    h.failNext();
+    const outcome = await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    expect(outcome).toMatchObject({ kind: "stopped" });
+    expect(h.messages()).toEqual([]);
+    h.store.close();
+  });
+
+  test("clearing the status only removes the pending message the executor set", async () => {
+    const h = await setup();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    // The reconciler replaced the pending message with an unrelated warning.
+    h.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: "Something else" });
+    h.stopWaiting();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    expect(h.store.getIssue("issue")?.warning).toBe("Something else");
+    h.store.close();
+  });
+
+  test("clearing the status removes the pending message it set", async () => {
+    const h = await setup();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    h.stopWaiting();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    expect(h.store.getIssue("issue")?.warning).toBeNull();
     h.store.close();
   });
 });

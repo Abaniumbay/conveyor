@@ -145,6 +145,7 @@ export class IssueExecutor {
         } satisfies LegacyRuntime;
       }
       this.#restartOnPlanChange(issue.id, stageId);
+      let ownStatus: string | null = journal.pendingMessage(issue.id);
       const executor = new StageExecutor({
         registry: createTaskRegistry(),
         journal,
@@ -160,6 +161,9 @@ export class IssueExecutor {
         setStatus: (message) => {
           const current = store.getIssue(issue.id);
           if (!current) return;
+          // Clear only the pending message this executor (or its parked predecessor) set.
+          if (message === null && (current.warning === null || current.warning !== ownStatus)) return;
+          ownStatus = message;
           store.setIssueProjection(issue.id, {
             stage: current.projectedStage,
             state: current.projectedState ?? "active",
@@ -240,7 +244,7 @@ export class IssueExecutor {
     store.appendConversationMessage({
       issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
       actorName: "Conveyor", actorTitle: "Orchestrator",
-      message: `The pipeline plan changed while ${stageId} was waiting; the stage restarted from the beginning.`,
+      message: `The pipeline plan changed since ${stageId} started; the stage restarted from the beginning.`,
     });
   }
 }

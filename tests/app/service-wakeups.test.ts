@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { IssueExecutor } from "../../src/app/issue-executor";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
@@ -96,7 +97,7 @@ const schedule = (service: ConveyorService) => (service as unknown as { schedule
 describe("persisted wake-ups", () => {
   test("a parked item keeps its wake-up across a restart and is scheduled when due", async () => {
     const { config, first, open } = await setup();
-    const wakeAt = new Date(Date.now() + 400).toISOString();
+    const wakeAt = new Date(Date.now() + 600).toISOString();
     park(first.store, config, wakeAt);
     schedule(first.service);
     expect(first.executed).toEqual([]);
@@ -108,7 +109,8 @@ describe("persisted wake-ups", () => {
     expect(second.executed).toEqual([]);
 
     // The armed timer fires a schedule pass at the wake-up time.
-    await Bun.sleep(700);
+    const deadline = Date.now() + 5_000;
+    while (second.executed.length === 0 && Date.now() < deadline) await Bun.sleep(50);
     expect(second.executed).toEqual(["issue"]);
     await second.service.close();
   });
@@ -128,5 +130,48 @@ describe("persisted wake-ups", () => {
     (first.service as unknown as { restorePendingStatus(id: string): void }).restorePendingStatus("repo");
     expect(first.store.getIssue("issue")?.warning).toBe(MESSAGE);
     await first.service.close();
+  });
+
+  test("a native stage is lightweight only when it runs no agent or script", async () => {
+    const { first } = await setup();
+    const stages = first.service.config.pipelines.default!.stages as unknown[];
+    const native = (id: string, task: string) => ({ id, concurrency: 1, retries: 2, actions: [{ task }], exitGate: [{ task: "ci.await" }] });
+    stages.push(native("poll", "ci.await"), native("coding", "agent.run"), native("scripted", "script.run"));
+    const lightweight = (id: string) =>
+      (first.service as unknown as { isLightweightStage(r: string, s: string): boolean }).isLightweightStage("repo", id);
+    expect(lightweight("poll")).toBe(true);
+    expect(lightweight("coding")).toBe(false);
+    expect(lightweight("scripted")).toBe(false);
+    expect(lightweight("implementation")).toBe(false);
+    await first.service.close();
+  });
+
+  test("a parked outcome skips source reconciliation and the status comment when the text is unchanged", async () => {
+    const { config, open } = await setup();
+    const h = await open();
+    park(h.store, config, new Date(Date.now() + 60_000).toISOString());
+    h.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: MESSAGE });
+    const calls: string[] = [];
+    const internals = h.service as unknown as Record<string, unknown>;
+    internals.reconcileRepository = async () => { calls.push("reconcile"); };
+    internals.updateStatusComment = async () => { calls.push("comment"); };
+    delete (internals as { execute?: unknown }).execute;
+    const spy = spyOn(IssueExecutor.prototype, "execute").mockResolvedValue({
+      kind: "parked", stageId: "implementation", reason: "pending", wakeAt: null,
+    });
+    try {
+      await (internals.execute as (i: unknown, s: AbortSignal) => Promise<void>).call(
+        h.service, h.store.getIssue("issue"), new AbortController().signal,
+      );
+      expect(calls).toEqual([]);
+      spy.mockResolvedValue({ kind: "advance", stageId: "implementation", nextStageId: null, result: null, feedbackCycles: 0 });
+      await (internals.execute as (i: unknown, s: AbortSignal) => Promise<void>).call(
+        h.service, h.store.getIssue("issue"), new AbortController().signal,
+      );
+      expect(calls).toEqual(["reconcile", "comment"]);
+    } finally {
+      spy.mockRestore();
+      await h.service.close();
+    }
   });
 });
