@@ -6,6 +6,7 @@ describe("dashboard browser client", () => {
   test("is valid standalone JavaScript", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
+    expect(dashboardClient).toContain("appendLinkedText(body, String(message.message");
     expect(dashboardClient).toContain("data-detail-tab");
     expect(dashboardClient).toContain("new EventSource('/events/dashboard')");
     expect(dashboardClient).toContain("addEventListener('conversation'");

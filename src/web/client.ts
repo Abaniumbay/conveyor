@@ -34,6 +34,25 @@ export const dashboardClient = String.raw`(() => {
     }).format(date);
   };
 
+  // Plain-text messages with http(s) URLs made clickable. Built from text nodes
+  // and anchors, never innerHTML, so message content cannot inject markup.
+  const appendLinkedText = (parent, text) => {
+    const pattern = /https?:\/\/[^\s<>"')\]]+/g;
+    let last = 0;
+    for (const match of text.matchAll(pattern)) {
+      const url = match[0].replace(/[.,;:!?]+$/, '');
+      if (match.index > last) parent.append(text.slice(last, match.index));
+      const link = document.createElement('a');
+      link.href = url;
+      link.textContent = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      parent.append(link);
+      last = match.index + url.length;
+    }
+    if (last < text.length) parent.append(text.slice(last));
+  };
+
   const localizeTimes = (root = document) => {
     for (const time of root.querySelectorAll('time[datetime]')) {
       time.textContent = formatDateTime(time.getAttribute('datetime'));
@@ -92,7 +111,7 @@ export const dashboardClient = String.raw`(() => {
       time.textContent = formatDateTime(message.createdAt);
       meta.append(time);
       const body = document.createElement('p');
-      body.textContent = String(message.message || '');
+      appendLinkedText(body, String(message.message || ''));
       header.append(actor, meta);
       item.append(header, body);
       root.append(item);
