@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config/load";
+import { createTaskRegistry } from "./tasks/catalogue";
+import type { TaskRegistry } from "./tasks/contract";
+import { compileRepositories, renderPlan } from "./tasks/plan";
 import { ConveyorService } from "./app/service";
 import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
 import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
@@ -19,6 +22,16 @@ function listenAddress(value: string): { hostname: string; port: number } {
     throw new Error(`invalid listen address: ${value}`);
   }
   return { hostname, port };
+}
+
+/** The check-config report: the hash, then the expanded plan of each compilable repository. */
+export async function checkConfig(
+  configPath: string,
+  registry: TaskRegistry = createTaskRegistry(),
+): Promise<string> {
+  const config = await loadConfig(configPath, registry);
+  const plans = compileRepositories(config, registry).map(renderPlan);
+  return [`Configuration is valid (${config.hash})`, ...plans].join("\n\n");
 }
 
 async function serve(configPath: string): Promise<void> {
@@ -78,8 +91,7 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
     throw new Error(`usage: conveyor ${command ?? "serve"} --config <file-or-directory>`);
   }
   if (command === "check-config") {
-    const config = await loadConfig(configPath);
-    console.log(`Configuration is valid (${config.hash})`);
+    console.log(await checkConfig(configPath));
     return;
   }
   if (command === "serve") {

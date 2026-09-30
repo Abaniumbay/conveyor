@@ -37,7 +37,7 @@ async function load(body: string, options: { header?: string } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-task-stages-"));
   directories.push(directory);
   await writeFile(path.join(directory, "config.yml"), (options.header ?? HEADER) + body);
-  return { directory, config: await loadConfig(directory) };
+  return { directory, config: await loadConfig(directory, null) };
 }
 
 const NATIVE_PIPELINE = `

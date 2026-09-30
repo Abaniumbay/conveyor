@@ -4,6 +4,10 @@ import path from "node:path";
 import { parse } from "yaml";
 import type { ZodIssue } from "zod";
 
+import { createTaskRegistry } from "../tasks/catalogue";
+import type { TaskRegistry } from "../tasks/contract";
+import { compileRepositories, PlanError } from "../tasks/plan";
+
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
@@ -326,7 +330,11 @@ function configurationHash(config: ConveyorConfigData): string {
   return hasher.digest("hex");
 }
 
-export async function loadConfig(target: string): Promise<ConveyorConfig> {
+export async function loadConfig(
+  target: string,
+  /** Pass null to validate the schema only, without compiling task plans. */
+  registry: TaskRegistry | null = createTaskRegistry(),
+): Promise<ConveyorConfig> {
   const resolvedTarget = path.resolve(target);
   const targetStat = await stat(resolvedTarget).catch(() => undefined);
   const root = targetStat?.isDirectory()
@@ -377,6 +385,15 @@ export async function loadConfig(target: string): Promise<ConveyorConfig> {
         "\n",
       ),
     );
+  }
+
+  if (registry) {
+    try {
+      compileRepositories(parsed.data, registry);
+    } catch (error) {
+      if (error instanceof PlanError) throw new ConfigError(error.message);
+      throw error;
+    }
   }
 
   return {

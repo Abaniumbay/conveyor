@@ -14,6 +14,7 @@
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
     "check": "bun test && tsc --noEmit",
+    "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "deploy:when-idle": "bun run scripts/deploy-when-idle.ts",
     "start": "bun run src/cli.ts serve"
   },
