@@ -47,6 +47,56 @@ function issue(number: number, issueLabels: string[], state: "open" | "closed" =
 }
 
 describe("reconcileRepository", () => {
+  test("preserves issue identity and history when a repository address changes", async () => {
+    const store = await openStore();
+    const repository = {
+      id: "repo",
+      configName: "repo",
+      source: "github",
+      address: "old-owner/repo",
+      folder: "/srv/repo",
+    };
+    const oldIssue = {
+      ...issue(1, ["conveyor"]),
+      id: "github:old-owner/repo#1",
+      url: "https://github.com/old-owner/repo/issues/1",
+    };
+    await reconcileRepository({
+      store,
+      configHash: "hash-1",
+      repository,
+      stages: ["refinement"],
+      labels,
+      source: { async listIssues() { return [oldIssue]; } },
+    });
+    const enrollment = store.activateEnrollment(oldIssue.id);
+
+    const transferredIssue = {
+      ...oldIssue,
+      id: "github:new-owner/repo#1",
+      url: "https://github.com/new-owner/repo/issues/1",
+      updatedAt: "2026-02-01T00:00:00Z",
+    };
+    const result = await reconcileRepository({
+      store,
+      configHash: "hash-2",
+      repository: { ...repository, address: "new-owner/repo" },
+      stages: ["refinement"],
+      labels,
+      source: { async listIssues() { return [transferredIssue]; } },
+    });
+
+    expect(result).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
+    expect(store.listIssues("repo")).toHaveLength(1);
+    expect(store.getIssue(oldIssue.id)).toMatchObject({
+      id: oldIssue.id,
+      sourceUrl: transferredIssue.url,
+    });
+    expect(store.getIssue(transferredIssue.id)).toBeNull();
+    expect(store.activateEnrollment(oldIssue.id).id).toBe(enrollment.id);
+    store.close();
+  });
+
   test("projects source truth and queues only newly enrolled issues", async () => {
     const store = await openStore();
     const sourceIssues = [

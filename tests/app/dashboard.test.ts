@@ -333,9 +333,9 @@ describe("ConveyorService dashboard", () => {
       async listSubIssues(_address: string, number: number) {
         return number === 1
           ? [{
-              id: "child",
+              id: "github:new-owner/repo#2",
               number: 2,
-              url: "https://github.com/owner/repo/issues/2",
+              url: "https://github.com/new-owner/repo/issues/2",
               title: "child",
               body: "",
               state: "open",
@@ -345,17 +345,32 @@ describe("ConveyorService dashboard", () => {
             }]
           : [];
       },
-      async listDependencies() { return []; },
+      async listDependencies(_address: string, number: number) {
+        return number === 1
+          ? [{
+              id: "github:new-owner/repo#2",
+              number: 2,
+              url: "https://github.com/new-owner/repo/issues/2",
+              title: "child",
+              body: "",
+              state: "open",
+              stateReason: null,
+              labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
+              updatedAt: "2026-09-29T00:00:00Z",
+            }]
+          : [];
+      },
       async replaceConveyorLabels() { throw new Error("parent is not complete"); },
     };
     const service = new ConveyorService(config, store, source as never);
 
     await (service as unknown as {
       reconcileRelationships(repositoryId: string, address: string): Promise<void>;
-    }).reconcileRelationships("repo", "owner/repo");
+    }).reconcileRelationships("repo", "new-owner/repo");
 
     expect(store.listChildren("parent")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
     expect(store.getIssue("child")?.parentId).toBe("parent");
+    expect(store.listDependencies("parent")).toEqual(["child"]);
     store.close();
   });
 

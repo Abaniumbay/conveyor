@@ -494,12 +494,18 @@ export class ConveyorService {
         (issue) =>
           issue.sourceState === "open" && issue.projectedState === "active",
       );
+    const issueByNumber = new Map(
+      this.store
+        .listIssues(repositoryId)
+        .map((issue) => [issue.sourceNumber, issue]),
+    );
     const parents = new Map<string, { parentId: string; siblingOrder: number }>();
     for (const parent of issues) {
       const children = await this.github.listSubIssues(address, parent.sourceNumber);
       for (const [index, child] of children.entries()) {
-        if (this.store.getIssue(child.id)) {
-          parents.set(child.id, { parentId: parent.id, siblingOrder: index + 1 });
+        const storedChild = issueByNumber.get(child.number);
+        if (storedChild) {
+          parents.set(storedChild.id, { parentId: parent.id, siblingOrder: index + 1 });
         }
       }
     }
@@ -514,8 +520,13 @@ export class ConveyorService {
     }
     for (const issue of issues) {
       const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
+      const blockerIds: string[] = [];
       for (const dependency of dependencies) {
-        if (this.store.getIssue(dependency.id)) continue;
+        const storedDependency = issueByNumber.get(dependency.number);
+        if (storedDependency) {
+          blockerIds.push(storedDependency.id);
+          continue;
+        }
         this.store.upsertIssue({
           id: dependency.id,
           repositoryId,
@@ -533,11 +544,14 @@ export class ConveyorService {
           state: "offboarded",
           warning: null,
         });
+        blockerIds.push(dependency.id);
+        const inserted = this.store.getIssue(dependency.id);
+        if (inserted) issueByNumber.set(dependency.number, inserted);
       }
       this.store.replaceRelationships(
         issue.id,
         parents.get(issue.id) ?? null,
-        dependencies.map((dependency) => dependency.id),
+        blockerIds,
       );
     }
     const doneLabel = this.config.labels.states.done;
