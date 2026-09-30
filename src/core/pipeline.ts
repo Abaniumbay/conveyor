@@ -23,7 +23,7 @@ export interface PipelineStage {
   successStatuses?: string[] | undefined;
   failureStatuses?: string[] | undefined;
   failureState?: string | undefined;
-  failurePolicies: Record<string, { action: "returnToPrevious" }>;
+  failurePolicies: Record<string, { action: "returnToPrevious"; stage?: string | undefined }>;
   afterSuccess: Array<{
     sourceAction: string;
     with?: Record<string, unknown> | undefined;
@@ -145,7 +145,7 @@ export class PipelineEngine {
       });
       if (enter.decision === "fail") {
         const policy = stage.failurePolicies[enter.status];
-        const prior = this.pipeline.stages[stageIndex - 1];
+        const prior = this.returnTarget(stageIndex, policy);
         if (policy?.action === "returnToPrevious" && prior) {
           return {
             kind: "correction",
@@ -186,7 +186,7 @@ export class PipelineEngine {
 
       if (producerResult.stageResult.outcome === "failure") {
         const policy = stage.failurePolicies[producerResult.stageResult.status];
-        const prior = this.pipeline.stages[stageIndex - 1];
+        const prior = this.returnTarget(stageIndex, policy);
         if (policy?.action === "returnToPrevious" && prior) {
           return {
             kind: "correction",
@@ -259,6 +259,17 @@ export class PipelineEngine {
         feedbackCycles,
       };
     }
+  }
+
+  private returnTarget(
+    stageIndex: number,
+    policy: PipelineStage["failurePolicies"][string] | undefined,
+  ): PipelineStage | undefined {
+    if (policy?.stage) {
+      const index = this.pipeline.stages.findIndex((candidate) => candidate.id === policy.stage);
+      return index >= 0 && index < stageIndex ? this.pipeline.stages[index] : undefined;
+    }
+    return this.pipeline.stages[stageIndex - 1];
   }
 
   private validateProducerResult(stage: PipelineStage, result: RunEnvelope): void {
