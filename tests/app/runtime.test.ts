@@ -202,7 +202,7 @@ repositories:
             durationMs: 25,
             exitCode: 0,
             stderr: "",
-            cost: { amount: 0.075, currency: "USD", source: "reported" },
+            cost: { amount: 0, currency: "USD", source: "unavailable" },
             };
           },
           async runSteering() { throw new Error("unused"); },
@@ -236,6 +236,37 @@ repositories:
       stageId: "deploy",
     })).toMatchObject({ stageResult: { summary: "Deployment completed" } });
 
+    const producerRun = store.getRun(store.listIssueRuns(issue.id).find((run) => run.kind === "producer")!.id);
+    const verifierRun = store.getRun(store.listIssueRuns(issue.id).find((run) => run.kind === "exit-verifier")!.id);
+    expect(producerRun).toMatchObject({
+      status: "succeeded",
+      exitCode: 0,
+      sessionId: "producer-thread",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 5,
+        cachedTokens: 2,
+        amount: 0.125,
+        currency: "USD",
+        source: "reported",
+        durationMs: 50,
+      },
+    });
+    expect(verifierRun).toMatchObject({
+      status: "succeeded",
+      exitCode: 0,
+      sessionId: "check-thread",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 3,
+        cachedTokens: 1,
+        amount: 0,
+        currency: "USD",
+        source: "unavailable",
+        durationMs: 25,
+      },
+    });
+
     expect(producerInputs).toHaveLength(2);
     expect(checkInputs).toHaveLength(2);
     expect((producerInputs[0] as { accessLevel: string; mcp: unknown }).accessLevel).toBe("workspace-write");
@@ -260,8 +291,8 @@ repositories:
     expect((checkInputs[0] as { prompt: string }).prompt).toContain('"blocked"');
     expect(store.costSummary()).toMatchObject({
       runs: 3,
-      amount: 0.325,
-      unavailableRuns: 0,
+      amount: 0.25,
+      unavailableRuns: 1,
       inputTokens: 50,
       outputTokens: 13,
       durationMs: 125,

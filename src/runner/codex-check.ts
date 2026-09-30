@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { type RunEnvelope } from "./result";
 import { superviseProcess } from "./process";
 import { HarnessError } from "./harness-error";
 import { codexEventStream, codexFailureKind } from "./codex-events";
+import { readStructuredOutput } from "./structured-output";
 
 export interface CodexCheckInput {
   command: string;
@@ -208,30 +209,20 @@ export async function runCodexCheck(
     );
   }
 
-  let decoded: unknown;
+  let validated;
   try {
-    decoded = JSON.parse(await readFile(outputFile, "utf8"));
+    validated = await readStructuredOutput(outputFile, checkResultSchema, "Codex verifier");
   } catch (error) {
+    if (!(error instanceof HarnessError)) throw error;
     throw new CodexRunnerError(
-      `Codex verifier did not produce valid structured output: ${error instanceof Error ? error.message : String(error)}`,
-      "protocol",
+      error.message,
+      error.kind,
       exitCode,
       stderr,
       { cause: error },
     );
   }
-  const parsed = checkResultSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new CodexRunnerError(
-      `Codex verifier structured output failed validation: ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
-        .join("; ")}`,
-      "protocol",
-      exitCode,
-      stderr,
-    );
-  }
-  const { version: _version, ...check } = parsed.data;
+  const { version: _version, ...check } = validated;
   return {
     ...check,
     sessionId: events.sessionId,

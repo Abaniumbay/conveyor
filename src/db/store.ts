@@ -64,7 +64,17 @@ export interface StoredRun {
   attempt: number;
   kind: string;
   status: string;
+  exitCode?: number | null;
   sessionId: string | null;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    amount: number;
+    currency: string;
+    source: string;
+    durationMs: number;
+  } | null;
   result: unknown | null;
   startedAt: string;
   finishedAt: string | null;
@@ -1056,7 +1066,12 @@ export class ConveyorStore {
 
   getRun(runId: string): StoredRun | null {
     const row = this.#database
-      .query("SELECT * FROM runs WHERE id = ?")
+      .query(
+        `SELECT r.*, u.input_tokens, u.output_tokens, u.cached_tokens,
+           u.amount, u.currency, u.source, u.duration_ms
+         FROM runs r LEFT JOIN usage_cost_entries u ON u.run_id = r.id
+         WHERE r.id = ?`,
+      )
       .get(runId) as Record<string, SQLQueryBindings> | null;
     if (!row) return null;
     return {
@@ -1066,7 +1081,17 @@ export class ConveyorStore {
       attempt: Number(row.attempt),
       kind: String(row.kind),
       status: String(row.status),
+      exitCode: row.exit_code === null ? null : Number(row.exit_code),
       sessionId: row.session_id === null ? null : String(row.session_id),
+      usage: row.input_tokens === null ? null : {
+        inputTokens: Number(row.input_tokens),
+        outputTokens: Number(row.output_tokens),
+        cachedTokens: Number(row.cached_tokens),
+        amount: Number(row.amount),
+        currency: String(row.currency),
+        source: String(row.source),
+        durationMs: Number(row.duration_ms),
+      },
       result: row.result_json === null ? null : parseJson(String(row.result_json)),
       startedAt: String(row.started_at),
       finishedAt: row.finished_at === null ? null : String(row.finished_at),

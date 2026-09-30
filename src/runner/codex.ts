@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { HarnessError, type HarnessErrorKind } from "./harness-error";
@@ -10,6 +10,7 @@ import {
 } from "./result";
 import { superviseProcess } from "./process";
 import { codexEventStream, codexFailureKind } from "./codex-events";
+import { readStructuredOutput } from "./structured-output";
 
 export interface CodexMcpConfiguration {
   command: string;
@@ -171,30 +172,19 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     );
   }
 
-  let decoded: unknown;
+  let result;
   try {
-    decoded = JSON.parse(await readFile(outputFile, "utf8"));
+    result = await readStructuredOutput(outputFile, producerResultSchema, "Codex");
   } catch (error) {
+    if (!(error instanceof HarnessError)) throw error;
     throw new CodexRunnerError(
-      `Codex did not produce valid structured output: ${error instanceof Error ? error.message : String(error)}`,
-      "protocol",
+      error.message,
+      error.kind,
       exitCode,
       stderr,
       { cause: error },
     );
   }
-  const parsed = producerResultSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new CodexRunnerError(
-      `Codex structured output failed validation: ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
-        .join("; ")}`,
-      "protocol",
-      exitCode,
-      stderr,
-    );
-  }
-  const result = parsed.data;
   return {
     stageResult: {
       outcome: result.outcome,
