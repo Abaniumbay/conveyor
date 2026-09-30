@@ -75,7 +75,7 @@ export type StageExecutionResult =
       kind: "advance";
       stageId: string;
       nextStageId: string | null;
-      result: RunEnvelope;
+      result: RunEnvelope | null;
       feedbackCycles: number;
     }
   | {

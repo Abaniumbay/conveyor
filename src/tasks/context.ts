@@ -64,6 +64,18 @@ export interface TaskContext {
   agent?: AgentContext;             // engine-captured agent.run result
   script?: ScriptContext;           // engine-captured script.run results
   checkpoints: GateCheckpoints;     // engine only
+  engine?: EngineState;             // engine only, never readable by tasks
+}
+
+/**
+ * Engine bookkeeping that must survive a restart. `stale` are snapshot keys an act
+ * invalidated and no load has refreshed yet. `returns` counts cross-stage `return`
+ * routes since the item last left the pipeline; the next stage to start carries it
+ * in its first cursor and the maxReturns guard compares against it.
+ */
+export interface EngineState {
+  stale: SnapshotKey[];
+  returns: number;
 }
 
 export interface RunContext {
@@ -201,4 +213,4 @@ export interface AdvisoryCiWatch {
   finalMessageAt: string | null;
 }
 
-export type ContextKey = keyof Omit<TaskContext, "schemaVersion" | "configHash">;
+export type ContextKey = keyof Omit<TaskContext, "schemaVersion" | "configHash" | "engine">;
