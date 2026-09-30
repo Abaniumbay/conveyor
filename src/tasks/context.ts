@@ -31,7 +31,7 @@ export interface ItemContext {
   labels: string[];
   state: string;
   criteria: Array<{ id: string; text: string; manual: boolean }>;
-  children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean }>;
+  children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean; hasChildren: boolean }>;
   dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
   systemLabels: string[];
 }

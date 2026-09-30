@@ -41,7 +41,7 @@ describe("item.criteriaDefined", () => {
   });
   test("passes with criteria, and for an item with children", async () => {
     expect((await run("item.criteriaDefined", { context: ctx({ criteria: [{ id: "a", text: "x", manual: false }] }) })).status).toBe("pass");
-    expect((await run("item.criteriaDefined", { context: ctx({ children: [{ id: "c", number: 2, state: "open", enrolled: true, hasCriteria: true }] }) })).status).toBe("pass");
+    expect((await run("item.criteriaDefined", { context: ctx({ children: [{ id: "c", number: 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false }] }) })).status).toBe("pass");
   });
 });
 
@@ -54,9 +54,7 @@ describe("item.labelsValid", () => {
     const result = await run("item.labelsValid", { context: ctx({}, repo) });
     expect(result).toEqual({ status: "fail", message: "System label is missing: add at least one of area:api, area:ui" });
   });
-  test("rejects labels outside the configured set and passes valid ones", async () => {
-    const bad = await run("item.labelsValid", { context: ctx({ systemLabels: ["area:db"] }, repo) });
-    expect(bad).toEqual({ status: "fail", message: "Unknown system labels: area:db (configured: area:api, area:ui)" });
+  test("passes when the item has a configured system label", async () => {
     expect((await run("item.labelsValid", { context: ctx({ systemLabels: ["area:ui"] }, repo) })).status).toBe("pass");
   });
 });
@@ -67,10 +65,10 @@ describe("item.childrenValid", () => {
   });
   test("names every child that is not enrolled, not open or done, or has no criteria", async () => {
     const children = [
-      { id: "a", number: 2, state: "open", enrolled: true, hasCriteria: true },
-      { id: "b", number: 3, state: "open", enrolled: false, hasCriteria: true },
-      { id: "c", number: 4, state: "closed", enrolled: true, hasCriteria: true },
-      { id: "d", number: 5, state: "done", enrolled: true, hasCriteria: false },
+      { id: "a", number: 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false },
+      { id: "b", number: 3, state: "open", enrolled: false, hasCriteria: true, hasChildren: false },
+      { id: "c", number: 4, state: "closed", enrolled: true, hasCriteria: true, hasChildren: false },
+      { id: "d", number: 5, state: "done", enrolled: true, hasCriteria: false, hasChildren: false },
     ];
     const result = await run("item.childrenValid", { context: ctx({ children }) });
     expect(result).toEqual({
@@ -78,6 +76,8 @@ describe("item.childrenValid", () => {
       message: "Children are not ready: #3 is not enrolled; #4 is closed (it must be open or done); #5 has no acceptance criteria",
     });
     expect((await run("item.childrenValid", { context: ctx({ children: children.slice(0, 1) }) })).status).toBe("pass");
+    const rollup = { id: "r", number: 6, state: "open", enrolled: true, hasCriteria: false, hasChildren: true };
+    expect((await run("item.childrenValid", { context: ctx({ children: [rollup] }) })).status).toBe("pass");
   });
 });
 
@@ -163,8 +163,8 @@ describe("item.load", () => {
         { id: "criterion-3", text: "Bare", manual: false },
       ],
       children: [
-        { id: "kid", number: 2, state: "open", enrolled: true, hasCriteria: true },
-        { id: "kid2", number: 3, state: "closed", enrolled: false, hasCriteria: false },
+        { id: "kid", number: 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false },
+        { id: "kid2", number: 3, state: "closed", enrolled: false, hasCriteria: false, hasChildren: false },
       ],
       dependencies: [
         { id: "dep-closed", number: 5, satisfied: true },

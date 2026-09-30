@@ -84,6 +84,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
         state: child.projectedState === "done" ? "done" : child.sourceState,
         enrolled: child.labels.includes(config.labels.enrollment),
         hasCriteria: parseCriteria(child.body).length > 0,
+        hasChildren: store.listChildren(child.id).length > 0,
       }];
     });
     const dependencies = store.listDependencies(issue.id).flatMap((blockerId) => {
@@ -130,15 +131,11 @@ const criteriaDefined = check(
 
 const labelsValid = check(
   "item.labelsValid",
-  "Passes when the item's system labels are all configured for the repository and, when the repository configures any, at least one is set.",
+  "Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones).",
   ({ context }) => {
     const item = context.item!;
     const configured = context.repository!.systemLabels;
     if (configured.length === 0) return pass();
-    const unknown = item.systemLabels.filter((label) => !configured.includes(label));
-    if (unknown.length > 0) {
-      return fail(`Unknown system labels: ${unknown.join(", ")} (configured: ${configured.join(", ")})`);
-    }
     if (item.systemLabels.length === 0) return fail(`System label is missing: add at least one of ${configured.join(", ")}`);
     return pass();
   },
@@ -146,12 +143,12 @@ const labelsValid = check(
 
 const childrenValid = check(
   "item.childrenValid",
-  "Passes when every child is enrolled, open or done, and has acceptance criteria (and when there are no children).",
+  "Passes when every child is enrolled, open or done, and has acceptance criteria or children of its own (and when there are no children).",
   ({ context }) => {
     const problems = context.item!.children.flatMap((child) => {
       if (!child.enrolled) return [`#${child.number} is not enrolled`];
       if (child.state !== "open" && child.state !== "done") return [`#${child.number} is ${child.state} (it must be open or done)`];
-      if (!child.hasCriteria) return [`#${child.number} has no acceptance criteria`];
+      if (!child.hasCriteria && !child.hasChildren) return [`#${child.number} has no acceptance criteria`];
       return [];
     });
     return problems.length === 0 ? pass() : fail(`Children are not ready: ${problems.join("; ")}`);
