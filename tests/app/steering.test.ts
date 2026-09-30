@@ -6,6 +6,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { AgentHarnessRegistry } from "../../src/runner/harness";
 
 const temporaryDirectories: string[] = [];
 
@@ -35,16 +36,11 @@ describe("ConveyorService steering", () => {
         steering: { agent: "operator", workspace: root },
       },
       runners: {
-        codex: {
-          type: "codex",
-          command: "codex",
-          sandbox: "workspace-write",
-          automaticApprovals: true,
-        },
+        fake: { type: "fake" },
       },
       agents: {
         operator: {
-          runner: "codex",
+          runner: "fake",
           effort: "medium",
           instructions,
           workspaceAccess: "workspace-write",
@@ -57,7 +53,10 @@ describe("ConveyorService steering", () => {
       checks: {},
     } as unknown as ConveyorConfig;
     const service = new ConveyorService(config, store, {} as never, {
-      steering: async (input) => {
+      harnesses: new AgentHarnessRegistry().register("fake", () => ({
+        async runProducer() { throw new Error("unused"); },
+        async runCheck() { throw new Error("unused"); },
+        async runSteering(input) {
         expect(input.mcp).toMatchObject({ command: process.execPath });
         input.onEvent?.({
           type: "item.started",
@@ -66,7 +65,9 @@ describe("ConveyorService steering", () => {
         const contextIndex = input.mcp!.args.indexOf("--context") + 1;
         const context = JSON.parse(await readFile(input.mcp!.args[contextIndex]!, "utf8")) as {
           control: { token: string };
+          allowedTools: string[];
         };
+        expect(context.allowedTools).toEqual(["run.report_progress", "run.report_rationale", "run.report_result"]);
         await service.handleMcp({
           tool: "run.report_progress",
           input: { message: "I found the stale labels and am applying the narrow fix." },
@@ -79,11 +80,12 @@ describe("ConveyorService steering", () => {
           summary: "Updated the board and verified the tests.",
           sessionId: "thread-1",
           usage: { inputTokens: 100, outputTokens: 20, cachedTokens: 50 },
+          cost: { amount: 0, currency: "USD", source: "unavailable" },
           durationMs: 1500,
           exitCode: 0,
-          stderr: "",
         };
-      },
+        },
+      })),
     });
 
     const runId = await service.startSteering("Make the board clearer");

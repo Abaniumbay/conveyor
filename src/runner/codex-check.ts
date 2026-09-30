@@ -10,6 +10,8 @@ import {
   type CodexErrorKind,
 } from "./codex";
 import { EMPTY_USAGE, type RunEnvelope } from "./result";
+import { JsonLinesParser, superviseProcess } from "./process";
+import { HarnessError, isUsageLimitFailure } from "./harness-error";
 
 export interface CodexCheckInput {
   command: string;
@@ -89,7 +91,6 @@ type CheckEvent = {
 };
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/check-result.json");
-const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
 const INHERITED_ENVIRONMENT = [
   "HOME",
   "USER",
@@ -124,40 +125,6 @@ function tomlString(value: string): string {
 
 function tomlArray(values: readonly string[]): string {
   return `[${values.map(tomlString).join(",")}]`;
-}
-
-async function consumeJsonLines(
-  stream: ReadableStream<Uint8Array>,
-  onEvent: (event: CheckEvent) => void,
-): Promise<{ raw: string; invalidLine: string | null }> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let raw = "";
-  let invalidLine: string | null = null;
-  const consume = (line: string): void => {
-    if (line.trim().length === 0) return;
-    try {
-      onEvent(JSON.parse(line) as CheckEvent);
-    } catch {
-      invalidLine ??= line;
-    }
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    raw += chunk;
-    buffer += chunk;
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) consume(line);
-  }
-  const tail = buffer + decoder.decode();
-  raw += tail;
-  consume(tail);
-  return { raw, invalidLine };
 }
 
 function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
@@ -198,7 +165,7 @@ function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
 }
 
 function errorKind(detail: string): CodexErrorKind {
-  return USAGE_LIMIT_PATTERN.test(detail) ? "usage-limit" : "process";
+  return isUsageLimitFailure(detail) ? "usage-limit" : "process";
 }
 
 export async function runCodexCheck(
@@ -209,17 +176,35 @@ export async function runCodexCheck(
     input.artifactsDirectory,
     `codex-check-${randomUUID()}.json`,
   );
-  const startedAt = performance.now();
-  let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  let sessionId: string | null = null;
+  const usage = { ...EMPTY_USAGE };
+  const messages: string[] = [];
+  const eventParser = new JsonLinesParser<CheckEvent>((event) => {
+    input.onEvent?.(event);
+    if (event.type === "thread.started" && event.thread_id) sessionId = event.thread_id;
+    if (event.type === "turn.completed" && event.usage) {
+      usage.inputTokens += event.usage.input_tokens ?? 0;
+      usage.outputTokens += event.usage.output_tokens ?? 0;
+      usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
+    }
+    if (event.type === "error" && event.message) messages.push(event.message);
+  });
+  let supervised;
   try {
-    child = Bun.spawn([input.command, ...buildArguments(input, outputFile)], {
+    supervised = await superviseProcess({
+      command: [input.command, ...buildArguments(input, outputFile)],
       cwd: input.workspace,
       env: environment(input.env),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdin: input.prompt,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.interruptGraceMs !== undefined ? { interruptGraceMs: input.interruptGraceMs } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      onStdoutChunk: (chunk) => eventParser.write(chunk),
     });
   } catch (error) {
+    if (error instanceof HarnessError) {
+      throw new CodexRunnerError(error.message, error.kind, null, "", { cause: error });
+    }
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -228,81 +213,10 @@ export async function runCodexCheck(
       { cause: error },
     );
   }
-  child.stdin.write(input.prompt);
-  child.stdin.end();
 
-  let sessionId: string | null = null;
-  const usage = { ...EMPTY_USAGE };
-  const messages: string[] = [];
-  const stdoutPromise = consumeJsonLines(child.stdout, (event) => {
-    input.onEvent?.(event);
-    if (event.type === "thread.started" && event.thread_id) {
-      sessionId = event.thread_id;
-    }
-    if (event.type === "turn.completed" && event.usage) {
-      usage.inputTokens += event.usage.input_tokens ?? 0;
-      usage.outputTokens += event.usage.output_tokens ?? 0;
-      usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
-    }
-    if (event.type === "error" && event.message) messages.push(event.message);
-  });
-  const stderrPromise = new Response(child.stderr).text();
-
-  let timedOut = false;
-  let interrupted = input.signal?.aborted ?? false;
-  let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-  const stop = (): void => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    forceKillTimer = setTimeout(
-      () => child.exitCode === null && child.kill("SIGKILL"),
-      input.interruptGraceMs ?? 10_000,
-    );
-  };
-  const timeoutTimer = input.timeoutMs
-    ? setTimeout(() => {
-        timedOut = true;
-        stop();
-      }, input.timeoutMs)
-    : undefined;
-  const onAbort = (): void => {
-    interrupted = true;
-    stop();
-  };
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-  if (interrupted) stop();
-
-  let exitCode: number;
-  try {
-    exitCode = await child.exited;
-  } finally {
-    if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (forceKillTimer) clearTimeout(forceKillTimer);
-    input.signal?.removeEventListener("abort", onAbort);
-  }
-  const [{ raw, invalidLine }, stderr] = await Promise.all([
-    stdoutPromise,
-    stderrPromise,
-  ]);
-  const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+  const { invalidLine } = eventParser.end();
+  const { stdout: raw, stderr, exitCode, durationMs } = supervised;
   const failureDetail = [stderr.trim(), ...messages].filter(Boolean).join("\n");
-
-  if (timedOut) {
-    throw new CodexRunnerError(
-      `Codex verifier timed out after ${input.timeoutMs}ms${failureDetail ? `: ${failureDetail}` : ""}`,
-      "timeout",
-      exitCode,
-      stderr,
-    );
-  }
-  if (interrupted) {
-    throw new CodexRunnerError(
-      `Codex verifier was interrupted${failureDetail ? `: ${failureDetail}` : ""}`,
-      "interrupted",
-      exitCode,
-      stderr,
-    );
-  }
   if (exitCode !== 0) {
     const kind = errorKind(`${failureDetail}\n${raw}`);
     throw new CodexRunnerError(

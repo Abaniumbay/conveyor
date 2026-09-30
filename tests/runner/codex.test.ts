@@ -144,4 +144,28 @@ describe("runCodex", () => {
       expect(error).toMatchObject({ kind: "usage-limit", exitCode: 1 });
     }
   });
+
+  test("rejects malformed JSONL and missing structured output as protocol failures", async () => {
+    const malformed = await fixture(`console.log("not-json");`);
+    await expect(runCodex({
+      command: malformed.executable,
+      workspace: malformed.workspace,
+      artifactsDirectory: malformed.artifacts,
+      prompt: "Implement",
+      sandbox: "workspace-write",
+      automaticApprovals: true,
+      mcp: { command: "bun", args: [] },
+    })).rejects.toMatchObject({ kind: "protocol", exitCode: 0 });
+
+    const missing = await fixture(`console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-missing" }));`);
+    await expect(runCodex({
+      command: missing.executable,
+      workspace: missing.workspace,
+      artifactsDirectory: missing.artifacts,
+      prompt: "Implement",
+      sandbox: "workspace-write",
+      automaticApprovals: true,
+      mcp: { command: "bun", args: [] },
+    })).rejects.toMatchObject({ kind: "protocol", exitCode: 0 });
+  });
 });

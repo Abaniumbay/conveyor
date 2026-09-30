@@ -22,7 +22,7 @@ import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
 import { changeAction } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
-import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
+import { defaultHarnessRegistry, type AgentHarnessRegistry } from "../runner/harness";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration } from "../web/format";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
@@ -48,7 +48,7 @@ interface McpGrant {
 }
 
 interface ServiceImplementations {
-  steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  harnesses?: AgentHarnessRegistry;
   codeHosts?: CodeHostRegistry;
 }
 
@@ -204,7 +204,7 @@ export class ConveyorService {
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
-  readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  readonly #harnesses: AgentHarnessRegistry;
 
   constructor(
     readonly config: ConveyorConfig,
@@ -216,7 +216,7 @@ export class ConveyorService {
     this.github = github;
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
-    this.#runSteering = implementations.steering ?? runCodexSteering;
+    this.#harnesses = implementations.harnesses ?? defaultHarnessRegistry();
   }
 
   static async create(
@@ -451,6 +451,28 @@ export class ConveyorService {
       if (signal.aborted) return;
       if (error instanceof ExternalWaitError) {
         await this.deferForExternalWait(issue, error);
+        return;
+      }
+      if ((error as { retryExhausted?: unknown } | null)?.retryExhausted === true) {
+        const message = error instanceof Error ? error.message : String(error);
+        const stageState = this.store.getStageState(issue.id);
+        if (stageState) {
+          this.store.setStageState({
+            issueId: issue.id,
+            stageId: stageState.stageId,
+            status: "needs-intervention",
+            feedbackCycle: stageState.feedbackCycle,
+            configHash: this.config.hash,
+          });
+        }
+        this.store.setIssueProjection(issue.id, {
+          stage: issue.projectedStage,
+          state: "needs-intervention",
+          warning: message,
+        });
+        await this.updateStatusComment(issue.id).catch((statusError) => {
+          console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
+        });
         return;
       }
       this.store.setIssueProjection(issue.id, {
@@ -1356,9 +1378,8 @@ export class ConveyorService {
     const agent = this.config.agents[steering.agent];
     if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
     const runner = this.config.runners[agent.runner];
-    if (!runner || runner.type !== "codex") {
-      throw new Error("The steering agent must use a Codex runner");
-    }
+    if (!runner) throw new Error(`The steering agent references unknown runner "${agent.runner}"`);
+    this.#harnesses.create(runner);
 
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
@@ -1375,7 +1396,7 @@ export class ConveyorService {
     this.store.appendRunEvent(runId, "user", { text: request });
     const controller = new AbortController();
     this.#steeringActive.set(runId, controller);
-    void this.executeSteering(runId, request, agent, runner, steering.workspace, controller.signal)
+    void this.executeSteering(runId, request, agent, steering.workspace, controller.signal)
       .finally(() => this.#steeringActive.delete(runId));
     return runId;
   }
@@ -1384,21 +1405,24 @@ export class ConveyorService {
     runId: string,
     userPrompt: string,
     agent: ConveyorConfig["agents"][string],
-    runner: Extract<ConveyorConfig["runners"][string], { type: "codex" }>,
     workspace: string,
     signal: AbortSignal,
   ): Promise<void> {
     const started = performance.now();
     let lease: ScopedMcpLease | null = null;
     try {
+      const runner = this.config.runners[agent.runner];
+      if (!runner) throw new Error(`The steering agent references unknown runner "${agent.runner}"`);
+      const harness = this.#harnesses.create(runner);
       lease = await this.steeringMcpLease(runId, workspace, agent.tools);
       const instructions = await readFile(agent.instructions, "utf8");
-      const result = await this.#runSteering({
-        command: runner.command,
+      const result = await harness.runSteering({
         workspace,
+        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
+        instructions,
+        accessLevel: agent.workspaceAccess,
+        interruptGraceMs: this.config.settings.interruptGraceMs,
         prompt: [
-          instructions.trim(),
-          "",
           "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
           "Use run.report_progress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
@@ -1408,10 +1432,7 @@ export class ConveyorService {
         ].join("\n"),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
-        sandbox: agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
-        automaticApprovals: runner.automaticApprovals,
         mcp: lease.configuration,
-        interruptGraceMs: this.config.settings.interruptGraceMs,
         signal,
       });
       this.store.appendRunEvent(runId, "report", { text: result.summary });
@@ -1422,9 +1443,9 @@ export class ConveyorService {
         sessionId: result.sessionId,
         usage: {
           ...result.usage,
-          amount: 0,
-          currency: "USD",
-          source: "unavailable",
+          amount: result.cost.amount,
+          currency: result.cost.currency,
+          source: result.cost.source,
           durationMs: result.durationMs,
         },
       });

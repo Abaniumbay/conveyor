@@ -345,7 +345,7 @@ src/
 ├── core/         issue projection, scheduling, pipeline execution, and transitions
 ├── db/           SQLite migrations and durable store
 ├── mcp/          run-scoped MCP context, tools, and stdio server
-├── runner/       Codex, verifier, steering, and strict JSON-process harnesses
+├── runner/       agent harnesses, Codex adapter, and strict JSON-process runner
 ├── source/       source contracts and the GitHub adapter
 ├── web/          authentication, HTTP/SSE server, Preact rendering, styles, and client script
 └── workspace/    managed Git worktree lifecycle
@@ -353,6 +353,8 @@ scripts/          operational helpers
 tests/            unit and integration coverage for every engine boundary
 SPEC.md           detailed product and engineering contract
 ```
+
+See [Agent harnesses](docs/agent-harnesses.md) for the producer, verifier, and steering contract and the Codex registration example.
 
 ## Development
 

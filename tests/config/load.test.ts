@@ -64,7 +64,7 @@ agents:
     title: Quality Verifier
     runner: codex
     model: gpt-test
-    effort: high
+    effort: reasoning-budget-3
     instructions: ./instructions/checker.md
     tools: [source.get_issue, run.report_progress]
 checks:
@@ -109,6 +109,13 @@ sources:
     const config = await loadConfig(directory);
 
     expect(config.settings.runners).toBe(3);
+    expect(config.runners.codex).toEqual({
+      type: "codex",
+      command: "codex",
+      sandbox: "workspace-write",
+      automaticApprovals: true,
+    });
+    expect(config.runners.process).toEqual({ type: "json-process" });
     expect(config.settings.reconcileIntervalMs).toBe(300_000);
     expect(config.settings.database).toBe(
       path.join(directory, "state/conveyor.sqlite"),
@@ -123,6 +130,8 @@ sources:
     expect(config.agents.checker).toMatchObject({
       name: "Verifier",
       title: "Quality Verifier",
+      model: "gpt-test",
+      effort: "reasoning-budget-3",
     });
     expect(config.agents.checker?.tools).toEqual([
       "source.get_issue",
@@ -137,6 +146,18 @@ sources:
       path.resolve(directory, "../sample"),
     );
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
+
+    await writeFile(path.join(directory, "runners.yml"), `
+runners:
+  codex: { type: unsupported }
+  process: { type: json-process }
+agents:
+  checker: { runner: codex, instructions: ./instructions/checker.md }
+checks:
+  enter: { verifier: checker }
+  exit: { verifier: checker }
+`);
+    await expect(loadConfig(directory)).rejects.toThrow(/runners.codex.type/);
   });
 
   test("rejects duplicate named definitions across files", async () => {
