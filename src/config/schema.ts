@@ -96,6 +96,8 @@ const codexRunnerSchema = z
   })
   .strict();
 
+export type CodexRunnerSchema = z.output<typeof codexRunnerSchema>;
+
 const processRunnerSchema = z
   .object({
     type: z.literal("json-process"),
@@ -113,7 +115,7 @@ const agentSchema = z
     title: identifierSchema.optional(),
     runner: identifierSchema,
     model: z.string().min(1).optional(),
-    effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
+    effort: z.string().trim().min(1).optional(),
     instructions: absolutePathSchema,
     workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
     tools: z.array(z.enum(MCP_AGENT_TOOLS)).default([...MCP_AGENT_TOOLS]),

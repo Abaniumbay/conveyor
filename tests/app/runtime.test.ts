@@ -6,6 +6,7 @@ import path from "node:path";
 import { ConfiguredStageRuntime } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { AgentHarnessRegistry } from "../../src/runner/harness";
 import type { RunEnvelope } from "../../src/runner/result";
 
 const directories: string[] = [];
@@ -87,6 +88,9 @@ repositories:
     pipeline: default
 `);
     const config = await loadConfig(path.join(root, "config.yml"));
+    config.runners.fake = { type: "fake" } as unknown as typeof config.runners[string];
+    config.agents.worker!.runner = "fake";
+    config.agents.checker!.runner = "fake";
     const store = await ConveyorStore.open(config.settings.database);
     store.upsertRepository({
       id: "repo",
@@ -162,13 +166,14 @@ repositories:
         checks: [{ name: "Tests", conclusion: "success" }],
       }),
       {
-        async codex(input) {
-          producerInputs.push(input);
-          return producerResult;
-        },
-        async codexCheck(input) {
-          checkInputs.push(input);
-          return {
+        harnesses: new AgentHarnessRegistry().register("fake", () => ({
+          async runProducer(input) {
+            producerInputs.push(input);
+            return producerResult;
+          },
+          async runCheck(input) {
+            checkInputs.push(input);
+            return {
             decision: "fail",
             status: "needs-intervention",
             reason: "The verification command could not start.",
@@ -180,8 +185,11 @@ repositories:
             durationMs: 25,
             exitCode: 0,
             stderr: "",
-          };
-        },
+            cost: { amount: 0, currency: "USD", source: "unavailable" },
+            };
+          },
+          async runSteering() { throw new Error("unused"); },
+        })),
         async jsonProcess() {
           return {
             ...producerResult,
@@ -211,6 +219,9 @@ repositories:
 
     expect(producerInputs).toHaveLength(1);
     expect(checkInputs).toHaveLength(1);
+    expect((producerInputs[0] as { accessLevel: string; mcp: unknown }).accessLevel).toBe("workspace-write");
+    expect((producerInputs[0] as { mcp: unknown }).mcp).toEqual({ command: "bun", args: ["mcp.ts"] });
+    expect((checkInputs[0] as { accessLevel: string }).accessLevel).toBe("read-only");
     expect(grants[0]).toEqual(["source.get_issue", "conversation.get", "run.report_progress", "workspace.request_fetch"]);
     expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
     expect(deliveryStates[1]).toEqual({
@@ -221,6 +232,7 @@ repositories:
       { id: "worker", name: "Implementer", title: "Senior Developer" },
       { id: "checker", name: "Verifier", title: "Quality Verifier" },
     ]);
+    expect((producerInputs[0] as { instructions: string }).instructions).toContain("Implement only the requested issue.");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("Preserve the existing API.");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("Publish every interim update intended for the user exclusively through `run.report_progress`");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("continues for ten minutes without another report");

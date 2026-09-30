@@ -1,5 +1,7 @@
 import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
 import { EMPTY_USAGE } from "./result";
+import { JsonLinesParser, superviseProcess } from "./process";
+import { HarnessError, isUsageLimitFailure } from "./harness-error";
 
 export interface CodexSteeringInput {
   command: string;
@@ -41,7 +43,6 @@ interface CodexEvent {
   };
 }
 
-const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
 const INHERITED_ENVIRONMENT = [
   "HOME",
   "USER",
@@ -106,58 +107,14 @@ function argumentsFor(input: CodexSteeringInput): string[] {
   return args;
 }
 
-async function consumeJsonLines(
-  stream: ReadableStream<Uint8Array>,
-  onEvent: (event: CodexEvent) => void,
-): Promise<{ raw: string; invalidLine: string | null }> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let raw = "";
-  let invalidLine: string | null = null;
-  const consume = (line: string) => {
-    if (!line.trim()) return;
-    try {
-      onEvent(JSON.parse(line) as CodexEvent);
-    } catch {
-      invalidLine ??= line;
-    }
-  };
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    raw += chunk;
-    buffer += chunk;
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) consume(line);
-  }
-  const tail = buffer + decoder.decode();
-  raw += tail;
-  consume(tail);
-  return { raw, invalidLine };
-}
-
 export async function runCodexSteering(
   input: CodexSteeringInput,
 ): Promise<CodexSteeringResult> {
-  const started = performance.now();
-  const child = Bun.spawn([input.command, ...argumentsFor(input)], {
-    cwd: input.workspace,
-    env: environment(input.env),
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  child.stdin.write(input.prompt);
-  child.stdin.end();
-
   let sessionId: string | null = null;
   let summary = "";
   const usage = { ...EMPTY_USAGE };
   const errors: string[] = [];
-  const stdout = consumeJsonLines(child.stdout, (event) => {
+  const eventParser = new JsonLinesParser<CodexEvent>((event) => {
     input.onEvent?.(event);
     if (event.type === "thread.started" && event.thread_id) sessionId = event.thread_id;
     if (event.type === "item.completed" && event.item?.type === "agent_message" && event.item.text) {
@@ -170,50 +127,30 @@ export async function runCodexSteering(
     }
     if (event.type === "error" && event.message) errors.push(event.message);
   });
-  const stderrPromise = new Response(child.stderr).text();
-
-  let timedOut = false;
-  let interrupted = false;
-  let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-  const stop = () => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    forceKillTimer = setTimeout(
-      () => child.exitCode === null && child.kill("SIGKILL"),
-      input.interruptGraceMs ?? 10_000,
-    );
-  };
-  const timeoutTimer = input.timeoutMs
-    ? setTimeout(() => {
-        timedOut = true;
-        stop();
-      }, input.timeoutMs)
-    : undefined;
-  const onAbort = () => {
-    interrupted = true;
-    stop();
-  };
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-
-  let exitCode: number;
+  let supervised;
   try {
-    exitCode = await child.exited;
-  } finally {
-    if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (forceKillTimer) clearTimeout(forceKillTimer);
-    input.signal?.removeEventListener("abort", onAbort);
+    supervised = await superviseProcess({
+      command: [input.command, ...argumentsFor(input)],
+      cwd: input.workspace,
+      env: environment(input.env),
+      stdin: input.prompt,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.interruptGraceMs !== undefined ? { interruptGraceMs: input.interruptGraceMs } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      onStdoutChunk: (chunk) => eventParser.write(chunk),
+    });
+  } catch (error) {
+    if (error instanceof HarnessError) {
+      throw new CodexRunnerError(error.message, error.kind, null, "", { cause: error });
+    }
+    throw error;
   }
-  const [{ raw, invalidLine }, stderr] = await Promise.all([stdout, stderrPromise]);
-  const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");
 
-  if (timedOut) {
-    throw new CodexRunnerError(`Codex steering timed out${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr);
-  }
-  if (interrupted) {
-    throw new CodexRunnerError(`Codex steering was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
-  }
+  const { invalidLine } = eventParser.end();
+  const { stdout: raw, stderr, exitCode, durationMs } = supervised;
+  const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");
   if (exitCode !== 0) {
-    const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw}`) ? "usage-limit" : "process";
+    const kind = isUsageLimitFailure(`${detail}\n${raw}`) ? "usage-limit" : "process";
     throw new CodexRunnerError(`Codex steering exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
   }
   if (invalidLine) {
@@ -226,7 +163,7 @@ export async function runCodexSteering(
     summary: summary.trim(),
     sessionId,
     usage,
-    durationMs: Math.max(0, Math.round(performance.now() - started)),
+    durationMs,
     exitCode,
     stderr,
   };
