@@ -924,6 +924,10 @@ export class ConveyorService {
     const issue = grant.context.issue;
     const address = grant.context.repository.address;
 
+    if (tool === "source.get_issue") {
+      return this.github.getIssue(address, issue.sourceNumber);
+    }
+
     const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
     const mutation = this.store.beginSourceMutation({
       idempotencyKey,
