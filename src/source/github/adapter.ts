@@ -1,6 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import type { CiCheckRun } from "../../app/ci-gate";
 import type { PullRequestReference, SourceIssue } from "../types";
 import {
   parseManagedSections,
@@ -124,7 +123,7 @@ interface GitHubPullRequest {
   base?: { ref: string };
 }
 
-interface GitHubCheckRun {
+export interface GitHubCheckRun {
   app?: { slug?: string } | null;
   id: number;
   name: string;
@@ -570,21 +569,14 @@ export class GitHubAdapter {
     return { sha: pullRequest.head.sha };
   }
 
-  async listCheckRuns(address: string, sha: string): Promise<CiCheckRun[]> {
+  async listCheckRuns(address: string, sha: string): Promise<GitHubCheckRun[]> {
     const pages = await this.transport.request<Array<{ check_runs?: GitHubCheckRun[] }> | { check_runs?: GitHubCheckRun[] }>({
       method: "GET",
       path: `repos/${address}/commits/${sha}/check-runs?per_page=100`,
       paginate: true,
     });
     const runs = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page?.check_runs ?? []);
-    return runs.map((check) => ({
-      id: check.id,
-      name: check.name,
-      status: check.status,
-      conclusion: check.conclusion,
-      url: check.details_url,
-      actionsJob: check.app?.slug === "github-actions",
-    }));
+    return runs;
   }
 
   async workflowExists(address: string, workflow: string, ref: string): Promise<boolean> {

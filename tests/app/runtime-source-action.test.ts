@@ -15,7 +15,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function setup(actions: SourceActionHandler) {
+async function setup(actions: SourceActionHandler, action = "pullRequest.awaitChecks") {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-source-action-"));
   directories.push(root);
   const repository = path.join(root, "repository");
@@ -52,7 +52,7 @@ pipelines:
         run: { agent: worker }
         concurrency: 1
       - id: ci
-        run: { sourceAction: pullRequest.awaitChecks }
+        run: { sourceAction: ${action} }
         concurrency: 4
         failurePolicies:
           changes-requested: { action: returnToPrevious }
@@ -89,6 +89,22 @@ repositories:
 }
 
 describe("source-action stages", () => {
+  test("ci.await and its deprecated alias preserve the same stage outcome", async () => {
+    for (const action of ["ci.await", "pullRequest.awaitChecks"]) {
+      let invoked = "";
+      const { config, issue, runtime } = await setup({
+        async run(request) {
+          invoked = request.sourceAction;
+          return { outcome: "success", status: "done", reason: null, summary: "CI passed." };
+        },
+      }, action);
+      const engine = new PipelineEngine(config.pipelines.default!, runtime, 2);
+      const result = await engine.executeStage("ci", { issue: issue as unknown as Record<string, unknown>, workspace: null });
+      expect(result).toMatchObject({ kind: "advance", nextStageId: null });
+      expect(invoked).toBe(action);
+    }
+  });
+
   test("a failing CI outcome returns the issue to the previous stage with the failure as feedback", async () => {
     const { config, store, issue, runtime } = await setup({
       async run() {
