@@ -66,7 +66,7 @@ export interface CiGateGitHub {
   workflowExists(address: string, workflow: string, ref: string): Promise<boolean>;
   retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void>;
   rerunJob(address: string, jobId: number): Promise<void>;
-  jobLogTail(address: string, jobId: number, lines: number): Promise<string>;
+  jobLog(address: string, jobId: number): Promise<string>;
 }
 
 /** Per-process memory of what the gate has already done for a head. */
@@ -148,13 +148,26 @@ function latestByName(checks: CiCheckRun[]): CiCheckRun[] {
   return [...latest.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function cleanLog(text: string, lines: number): string {
-  return text
+/**
+ * The part of an Actions job log that explains a failure: timestamps and colour
+ * codes stripped, the post-job cleanup cut off, and the window ending at the
+ * last `##[error]` line (or the end, when there is none).
+ */
+export function focusLog(text: string, lines: number): string {
+  const all = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, "").replace(/\u001b\[[0-9;]*m/g, ""))
-    .filter((line) => line.trim().length > 0)
-    .slice(-lines)
-    .join("\n");
+    .map((line) => line.replace(/^\uFEFF?\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, "").replace(/\u001b\[[0-9;]*m/g, ""))
+    .filter((line) => line.trim().length > 0);
+  const cleanup = all.findIndex((line) => /^Post job cleanup\.|^Cleaning up orphan processes/.test(line));
+  const body = cleanup >= 0 ? all.slice(0, cleanup) : all;
+  let end = body.length;
+  for (let index = body.length - 1; index >= 0; index -= 1) {
+    if (body[index]!.startsWith("##[error]")) {
+      end = index + 1;
+      break;
+    }
+  }
+  return body.slice(Math.max(0, end - lines), end).join("\n");
 }
 
 export interface CiGateInput {
@@ -228,7 +241,7 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
       let log = "";
       if (check.actionsJob) {
         try {
-          log = cleanLog(await github.jobLogTail(address, check.id, options.logLines * 4), options.logLines);
+          log = focusLog(await github.jobLog(address, check.id), options.logLines);
         } catch (error) {
           log = `(log unavailable: ${error instanceof Error ? error.message : String(error)})`;
         }

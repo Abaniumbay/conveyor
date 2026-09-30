@@ -4,6 +4,7 @@ import {
   createCiGateMemory,
   evaluateCiGate,
   ExternalWaitError,
+  focusLog,
   parseCiGateOptions,
   type CiCheckRun,
   type CiGateGitHub,
@@ -32,7 +33,7 @@ class FakeGitHub implements CiGateGitHub {
   async rerunJob(_address: string, jobId: number) {
     this.reruns.push(jobId);
   }
-  async jobLogTail() {
+  async jobLog() {
     return this.logs;
   }
 }
@@ -184,6 +185,19 @@ describe("CI gate", () => {
       outcome: "failure",
       status: "blocked",
     });
+  });
+
+  test("focuses a job log on the lines before the last error, without cleanup noise", () => {
+    const log = [
+      "\uFEFF2026-01-01T00:00:00.0000000Z ##[group]Run tests",
+      "2026-01-01T00:00:01.0000000Z compiling",
+      "2026-01-01T00:00:02.0000000Z \u001b[31mFAILED: launches the app\u001b[0m",
+      "2026-01-01T00:00:03.0000000Z ##[error]Process completed with exit code 1.",
+      "2026-01-01T00:00:04.0000000Z Post job cleanup.",
+      "2026-01-01T00:00:05.0000000Z Terminate orphan process: pid (2705) (java)",
+    ].join("\n");
+    expect(focusLog(log, 2)).toBe("FAILED: launches the app\n##[error]Process completed with exit code 1.");
+    expect(focusLog("a\nb\nc", 2)).toBe("b\nc");
   });
 
   test("rejects malformed options", () => {
