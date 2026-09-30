@@ -31,6 +31,8 @@ export class CiGateWaitRegistry {
     if (!wait) return false;
     if (wait.wakePending) {
       wait.wakePending = false;
+      wait.parked = false;
+      return false;
     }
     wait.parked = true;
     return true;
