@@ -51,6 +51,13 @@ export class TaskConfigError extends Error {
   }
 }
 
+export class TaskInputError extends Error {
+  constructor(readonly task: string, message: string) {
+    super(`Invalid input for task ${task}: ${message}`);
+    this.name = "TaskInputError";
+  }
+}
+
 export class InvalidTaskResultError extends Error {
   constructor(readonly task: string, detail: string) {
     super(`Task ${task} returned an invalid result: ${detail}`);
@@ -208,6 +215,12 @@ export async function runTask<C, I, D>(
     if (!parsed.success) throw new TaskConfigError(definition.name, parsed.error.message);
     config = parsed.data;
   }
+  let input = args.input;
+  if (definition.input) {
+    const parsed = definition.input.safeParse(args.input ?? {});
+    if (!parsed.success) throw new TaskInputError(definition.name, parsed.error.message);
+    input = parsed.data;
+  }
   const source = args.context as Record<string, unknown>;
   const picked: Record<string, unknown> = {};
   for (const key of definition.reads) {
@@ -217,6 +230,7 @@ export async function runTask<C, I, D>(
   const isCheck = definition.kind === "check";
   const result = await definition.run({
     ...args,
+    ...(input === undefined ? {} : { input }),
     context,
     config,
     deps: (isCheck ? undefined : args.deps) as D,

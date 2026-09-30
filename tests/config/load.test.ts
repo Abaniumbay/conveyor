@@ -140,6 +140,36 @@ sources:
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  test("rejects an agent granting source.set_labels because workflow labels are engine-owned", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "conveyor.yml"),
+      `
+settings: {}
+labels:
+  stageTemplate: "conveyor:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+runners: { codex: { type: codex, command: codex } }
+agents:
+  worker:
+    runner: codex
+    instructions: /tmp/worker.md
+    tools: [source.get_issue, source.set_labels]
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: work, run: { agent: worker }, concurrency: 1 }
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`,
+    );
+    await expect(loadConfig(directory)).rejects.toThrow(/source\.set_labels.*workflow labels are engine-owned/);
+  });
+
   test("rejects duplicate named definitions across files", async () => {
     const directory = await temporaryDirectory();
     await writeFile(

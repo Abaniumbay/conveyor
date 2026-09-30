@@ -8,6 +8,7 @@ import type { ConveyorStore, StoredIssue } from "../db/store";
 import { StageExecutor, type StageOutcome } from "../engine/stage-executor";
 import { CONTEXT_SCHEMA_VERSION, type TaskContext } from "../tasks/context";
 import { createTaskRegistry } from "../tasks/catalogue";
+import type { TaskDeps } from "../tasks/deps";
 import type { LegacyRuntime } from "../tasks/legacy";
 import { compilePipeline, type CompiledPipeline } from "../tasks/plan";
 import type { WorkspaceManager } from "../workspace/manager";
@@ -28,6 +29,11 @@ export interface IssueExecutorDependencies {
     refreshDeliveryState: () => Promise<RuntimeDeliveryState>,
   ) => PipelineDependencies;
   sourceGuidance: string;
+  /** Builds the dependencies native-stage tasks receive; legacy stages use `runtime` instead. */
+  taskDeps?: (
+    issue: StoredIssue,
+    repository: { id: string; address: string; folder: string; baseBranch: string },
+  ) => TaskDeps;
   signal?: AbortSignal;
 }
 
@@ -127,7 +133,7 @@ export class IssueExecutor {
     const transitionId = randomUUID();
     try {
       signal?.throwIfAborted();
-      let deps: unknown = {};
+      let deps: unknown = this.dependencies.taskDeps?.(issue, runtimeRepository) ?? {};
       if (stage.legacy) {
         const delivery = await refreshDeliveryState();
         const runtime = this.dependencies.runtime({
@@ -176,7 +182,7 @@ export class IssueExecutor {
         issueId: issue.id,
         pipeline: plan,
         stageId,
-        baseContext: baseContext(issue, config.hash, { ...runtimeRepository, ciMode: repository.ci.mode }),
+        baseContext: baseContext(issue, config.hash, { ...runtimeRepository, ciMode: repository.ci.mode, systemLabels: repository.systemLabels }),
         deps,
         ...(signal ? { signal } : {}),
       });

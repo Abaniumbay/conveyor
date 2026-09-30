@@ -9,13 +9,6 @@ import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
-import {
-  formatAcceptanceCriteria,
-  formatDependencies,
-  parseManagedSections,
-  upsertManagedSection,
-  type AcceptanceCriterion,
-} from "../source/github/managed-sections";
 import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
@@ -30,6 +23,10 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
+import { createTaskRegistry } from "../tasks/catalogue";
+import { runTask } from "../tasks/contract";
+import type { TaskDeps } from "../tasks/deps";
+import { criteriaFromBody } from "../tasks/item";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -77,18 +74,6 @@ function number(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return Number(value);
-}
-
-function acceptanceCriteria(value: unknown, name = "criteria"): AcceptanceCriterion[] {
-  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
-  return value.map((entry) => {
-    const criterion = object(entry);
-    return {
-      id: string(criterion.id, "criterion.id"),
-      text: string(criterion.text, "criterion.text"),
-      completed: criterion.completed === true,
-    };
-  });
 }
 
 function displayName(value: string): string {
@@ -147,18 +132,16 @@ async function git(cwd: string, args: string[]): Promise<void> {
   if (exitCode !== 0) throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${exitCode}`}`);
 }
 
-function criteriaFromBody(body: string): string[] {
-  try {
-    const markdown = parseManagedSections(body).sections["acceptance-criteria"];
-    if (!markdown) return [];
-    return markdown.split(/\r?\n/).flatMap((line) => {
-      const match = /^- \[[ xX]\]\s+(.+?)(?:\s+<!-- conveyor:criterion:[^>]+ -->)?$/.exec(line.trim());
-      return match?.[1] ? [match[1]] : [];
-    });
-  } catch {
-    return [];
-  }
-}
+/** Legacy MCP tool names served by the `item` tool tasks. */
+const ITEM_TOOLS: Record<string, string> = {
+  "source.get_issue": "item.get",
+  "source.add_comment": "item.comment",
+  "source.set_acceptance_criteria": "item.setCriteria",
+  "source.set_system_labels": "item.setSystemLabels",
+  "source.set_parent": "item.setParent",
+  "source.set_dependencies": "item.setDependencies",
+  "source.create_child": "item.createChild",
+};
 
 function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   const repository = config.repositories[repositoryId]!;
@@ -440,6 +423,18 @@ export class ConveyorService {
     }, Math.max(0, Date.parse(next) - Date.now()) + 50);
   }
 
+  /** What native-stage tasks and MCP tools receive. */
+  private taskDeps(issueId: string, repository: TaskDeps["repository"]): TaskDeps {
+    return {
+      store: this.store,
+      config: this.config,
+      items: this.github,
+      repository,
+      issueId,
+      sourceGuidance: SOURCE_GUIDANCE,
+    };
+  }
+
   private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
@@ -452,6 +447,7 @@ export class ConveyorService {
       loadDeliveryState: async (currentIssue, currentRepository) =>
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,
+      taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
@@ -1096,6 +1092,31 @@ export class ConveyorService {
     };
   }
 
+  private async runItemTool(
+    name: string,
+    grant: McpGrant,
+    input: Record<string, unknown>,
+    idempotencyKey: string,
+  ): Promise<unknown> {
+    const issue = grant.context!.issue;
+    const repository = this.config.repositories[issue.repositoryId]!;
+    const result = await runTask(createTaskRegistry().require(name), {
+      config: {},
+      context: {},
+      deps: this.taskDeps(issue.id, {
+        id: issue.repositoryId,
+        address: repository.address,
+        folder: repository.folder,
+        baseBranch: repository.baseBranch,
+      }),
+      input,
+      ...(grant.actor ? { actor: grant.actor.id } : {}),
+      instance: { id: name, stage: grant.stageId, idempotencyKey, resumed: false },
+    });
+    if (result.status !== "pass") throw new Error(result.status === "fail" || result.status === "pending" ? result.message : name);
+    return result.output ?? { accepted: true };
+  }
+
   async handleMcp(payload: unknown, token: string): Promise<unknown> {
     const grant = this.#mcpGrants.get(token);
     if (!grant) throw new Error("expired MCP grant");
@@ -1154,7 +1175,7 @@ export class ConveyorService {
     const address = grant.context.repository.address;
 
     if (tool === "source.get_issue") {
-      return this.github.getIssue(address, issue.sourceNumber);
+      return this.runItemTool(ITEM_TOOLS[tool]!, grant, input, "");
     }
     if (tool === "delivery.get_state") {
       return this.loadDeliveryState(issue.id, address);
@@ -1173,94 +1194,9 @@ export class ConveyorService {
     if (mutation.status === "succeeded") return mutation.response ?? { accepted: true };
     try {
       let result: unknown = { accepted: true };
-      if (tool === "source.add_comment") {
-        result = { commentId: await this.github.addComment(address, issue.sourceNumber, string(input.markdown, "markdown")) };
-      } else if (tool === "source.set_acceptance_criteria") {
-        const criteria = acceptanceCriteria(input.criteria);
-        const current = await this.github.getIssue(address, issue.sourceNumber);
-        const updated = await this.github.updateManagedSection({
-          address,
-          issueNumber: issue.sourceNumber,
-          section: "acceptance-criteria",
-          markdown: formatAcceptanceCriteria(criteria),
-          expectedRevision: this.github.managedRevision(current.body),
-        });
-        result = { revision: this.github.managedRevision(updated.body) };
-      } else if (tool === "source.create_child") {
-        const repository = this.config.repositories[issue.repositoryId]!;
-        const pipeline = this.config.pipelines[repository.pipeline]!;
-        const currentIndex = pipeline.stages.findIndex((stage) => stage.id === grant.stageId);
-        const nextStage = pipeline.stages[currentIndex + 1]?.id ?? pipeline.stages[currentIndex]?.id;
-        const requestedLabels = Array.isArray(input.systemLabels)
-          ? input.systemLabels.filter((value): value is string => typeof value === "string" && repository.systemLabels.includes(value))
-          : [];
-        const criteria = acceptanceCriteria(input.acceptanceCriteria, "acceptanceCriteria");
-        if (criteria.length === 0) {
-          throw new Error("acceptanceCriteria must contain at least one criterion");
-        }
-        const suppliedBody = typeof input.body === "string" ? input.body : "";
-        const body = upsertManagedSection(
-          suppliedBody,
-          "acceptance-criteria",
-          formatAcceptanceCriteria(criteria),
-          parseManagedSections(suppliedBody).revision,
-        );
-        const child = await this.github.createChildIssue({
-          address,
-          parentNumber: issue.sourceNumber,
-          title: string(input.title, "title"),
-          body,
-          labels: [
-            this.config.labels.enrollment,
-            ...(nextStage ? [this.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
-            ...requestedLabels,
-          ],
-        });
-        result = child;
-      } else if (tool === "source.set_parent") {
-        await this.github.setParent({
-          address,
-          childNumber: issue.sourceNumber,
-          parentNumber: number(input.parentNumber, "parentNumber"),
-        });
-      } else if (tool === "source.set_dependencies") {
-        const dependencies = Array.isArray(input.issueNumbers)
-          ? input.issueNumbers.map((value) => number(value, "dependency issue number"))
-          : [];
-        await this.github.setDependencies({
-          address,
-          issueNumber: issue.sourceNumber,
-          blockerNumbers: dependencies,
-        });
-        const current = await this.github.getIssue(address, issue.sourceNumber);
-        await this.github.updateManagedSection({
-          address,
-          issueNumber: issue.sourceNumber,
-          section: "dependencies",
-          markdown: formatDependencies(dependencies.map((value) => ({ number: value }))),
-          expectedRevision: this.github.managedRevision(current.body),
-        });
-      } else if (tool === "source.set_labels") {
-        const labels = Array.isArray(input.labels)
-          ? input.labels.filter((value): value is string =>
-              typeof value === "string" &&
-              (value === this.config.labels.enrollment || value.startsWith(`${this.config.labels.enrollment}:`)),
-            )
-          : [];
-        await this.github.replaceConveyorLabels(address, issue.sourceNumber, labels);
-      } else if (tool === "source.set_system_labels") {
-        const repository = this.config.repositories[issue.repositoryId]!;
-        const selected = Array.isArray(input.labels)
-          ? input.labels.filter((value): value is string =>
-              typeof value === "string" && repository.systemLabels.includes(value)
-            )
-          : [];
-        await this.github.replaceManagedProjectLabels(
-          address,
-          issue.sourceNumber,
-          repository.systemLabels,
-          selected,
-        );
+      const itemTool = ITEM_TOOLS[tool];
+      if (itemTool) {
+        result = await this.runItemTool(itemTool, grant, input, idempotencyKey);
       } else if (tool === "workspace.request_fetch" || tool === "workspace.request_push") {
         if (!grant.context.workspace) throw new Error("run has no workspace");
         const forceWithLease = tool === "workspace.request_push" && input.forceWithLease === true;

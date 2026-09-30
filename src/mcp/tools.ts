@@ -18,7 +18,6 @@ export const MCP_REPORT_TOOLS = [
 ] as const;
 
 export const MCP_MUTATION_TOOLS = [
-  "source.set_labels",
   "source.set_system_labels",
   "source.add_comment",
   "source.set_acceptance_criteria",

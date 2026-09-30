@@ -27,7 +27,7 @@ function context(): TaskContext {
       enteredAt: "2026-01-01T00:00:00Z",
       feedback: null,
     },
-    repository: { id: "r", address: "o/r", folder: "/r", baseBranch: "main", ciMode: "required" },
+    repository: { id: "r", address: "o/r", folder: "/r", baseBranch: "main", ciMode: "required", systemLabels: [] },
     item: {
       id: "i", number: 1, title: "T", body: "B", url: "u", labels: ["a"], state: "open",
       criteria: [], children: [], dependencies: [], systemLabels: [],
@@ -140,6 +140,15 @@ describe("TaskRegistry", () => {
 });
 
 describe("runTask", () => {
+  test("a tool's input is validated and replaced by the parsed value", async () => {
+    const def: TaskDefinition = {
+      name: "g.tool", kind: "tool", description: "d", reads: [], writes: [], invalidates: [],
+      input: z.object({ n: z.number().int().positive() }).strict(),
+      run: ({ input }) => pass(input),
+    };
+    expect(await runTask(def, { ...args(), input: { n: 2 } })).toEqual({ status: "pass", output: { n: 2 } });
+    await expect(runTask(def, { ...args(), input: { n: -1 } })).rejects.toThrow(/g\.tool/);
+  });
   test("a check cannot mutate its context", async () => {
     const def = check({
       reads: ["item", "checkpoints"],

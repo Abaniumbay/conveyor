@@ -52,6 +52,24 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 ## Task catalogue
 
+### item
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `item.childrenValid` | check | item, repository | - | Passes when every child is enrolled, open or done, and has acceptance criteria (and when there are no children). |
+| `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
+| `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels. |
+| `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
+| `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. |
+| `item.get` | tool | - | - | Read the latest source state of the current issue. |
+| `item.guidance` | tool | - | - | Read source-specific agent guidance. |
+| `item.labelsValid` | check | item, repository | - | Passes when the item's system labels are all configured for the repository and, when the repository configures any, at least one is set. |
+| `item.load` | load | - | writes item | Loads the stored issue with its acceptance criteria, children, dependencies and system labels. |
+| `item.setCriteria` | tool | - | invalidates item | Replace acceptance criteria on the current issue. |
+| `item.setDependencies` | tool | - | invalidates item | Replace dependencies of the current issue. |
+| `item.setParent` | tool | - | invalidates item | Set the parent of the current issue. |
+| `item.setSystemLabels` | tool | - | invalidates item | Replace the issue's configured system-area labels while preserving workflow and unmanaged labels. |
+
 ### legacy
 
 | Task | Kind | Reads | Writes / invalidates | Description |

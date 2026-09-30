@@ -1,6 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import {
+  commentInput, createChildInput, dependenciesInput, parentInput, setCriteriaInput, systemLabelsInput,
+} from "../tasks/item";
+
 export interface RunMcpContext {
   version: 1;
   runId: string;
@@ -63,23 +67,6 @@ const progressInput = {
   details: z.record(z.string(), z.unknown()).optional(),
 };
 
-const acceptanceCriterionInput = z.object({
-  id: z.string().min(1),
-  text: z.string().min(1),
-  completed: z.boolean().optional(),
-}).strict();
-
-const setAcceptanceCriteriaInput = z.object({
-  criteria: z.array(acceptanceCriterionInput),
-}).strict();
-
-const createChildInput = z.object({
-  title: z.string().min(1),
-  body: z.string().min(1),
-  acceptanceCriteria: z.array(acceptanceCriterionInput).min(1),
-  systemLabels: z.array(z.string().min(1)).optional(),
-}).strict();
-
 const passthroughInput = z.object({}).passthrough();
 
 const controlTools: Record<string, { description: string; schema: z.ZodType }> = {
@@ -112,26 +99,25 @@ const controlTools: Record<string, { description: string; schema: z.ZodType }> =
   "run.report_result": { description: "Report a stage result.", schema: passthroughInput },
   "run.record_artifact": { description: "Record a run artifact.", schema: passthroughInput },
   "run.report_milestone": { description: "Report a run milestone.", schema: passthroughInput },
-  "source.set_labels": { description: "Update allowed issue labels.", schema: passthroughInput },
   "source.set_system_labels": {
     description: "Replace the issue's configured system-area labels while preserving workflow and unmanaged labels.",
-    schema: z.object({ labels: z.array(z.string().min(1)) }).strict(),
+    schema: systemLabelsInput,
   },
   "source.add_comment": {
     description: "Add a Markdown comment to the current scoped issue.",
-    schema: z.object({ markdown: z.string().min(1) }).strict(),
+    schema: commentInput,
   },
   "source.set_acceptance_criteria": {
     description: "Replace acceptance criteria on the current scoped issue only.",
-    schema: setAcceptanceCriteriaInput,
+    schema: setCriteriaInput,
   },
   "source.set_parent": {
     description: "Set the parent of the current scoped issue.",
-    schema: z.object({ parentNumber: z.number().int().positive() }).strict(),
+    schema: parentInput,
   },
   "source.set_dependencies": {
     description: "Replace dependencies of the current scoped issue.",
-    schema: z.object({ issueNumbers: z.array(z.number().int().positive()) }).strict(),
+    schema: dependenciesInput,
   },
   "source.create_child": {
     description: "Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels.",

@@ -18,6 +18,8 @@ export interface RepositoryContext {
   folder: string;
   baseBranch: string;
   ciMode: "required" | "advisory" | "disabled";
+  /** The repository's configured system labels (may be empty). */
+  systemLabels: string[];
 }
 
 export interface ItemContext {
@@ -29,7 +31,7 @@ export interface ItemContext {
   labels: string[];
   state: string;
   criteria: Array<{ id: string; text: string; manual: boolean }>;
-  children: Array<{ id: string; number: number; state: string }>;
+  children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean }>;
   dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
   systemLabels: string[];
 }

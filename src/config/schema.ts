@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { MCP_AGENT_TOOLS } from "../mcp/tools";
+import { MCP_AGENT_TOOLS, type McpAgentTool } from "../mcp/tools";
 
 import type { Route } from "../tasks/contract";
 
@@ -141,7 +141,19 @@ const agentSchema = z
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     instructions: absolutePathSchema,
     workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
-    tools: z.array(z.enum(MCP_AGENT_TOOLS)).default([...MCP_AGENT_TOOLS]),
+    tools: z.array(z.string()).superRefine((tools, context) => {
+      tools.forEach((tool, index) => {
+        if (tool === "source.set_labels") {
+          context.addIssue({
+            code: "custom",
+            path: [index],
+            message: "source.set_labels is no longer available: workflow labels are engine-owned, so remove it from tools",
+          });
+        } else if (!(MCP_AGENT_TOOLS as readonly string[]).includes(tool)) {
+          context.addIssue({ code: "custom", path: [index], message: `unknown tool "${tool}"` });
+        }
+      });
+    }).transform((tools) => tools as McpAgentTool[]).default([...MCP_AGENT_TOOLS]),
   })
   .strict();
 
