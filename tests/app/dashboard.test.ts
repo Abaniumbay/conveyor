@@ -295,7 +295,7 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
-  test("persists blocked children so tracking parents remain roll-up only", async () => {
+  test("moves a roll-up parent to the leftmost unfinished child stage", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-relationships-"));
     temporaryDirectories.push(root);
     const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -309,7 +309,15 @@ describe("ConveyorService dashboard", () => {
         states: { done: "conveyor:done", blocked: "conveyor:blocked" },
         metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
       },
-      pipelines: { default: { stages: [{ id: "implementation" }] } },
+      pipelines: {
+        default: {
+          stages: [
+            { id: "refinement" },
+            { id: "implementation" },
+            { id: "review" },
+          ],
+        },
+      },
       repositories: {
         repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
       },
@@ -323,8 +331,10 @@ describe("ConveyorService dashboard", () => {
       configHash: config.hash,
     });
     for (const issue of [
-      { id: "parent", number: 1, state: "active", labels: ["conveyor", "conveyor:implementation"] },
-      { id: "child", number: 2, state: "blocked", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"] },
+      { id: "parent", number: 1, stage: "refinement", state: "active", labels: ["conveyor", "conveyor:refinement", "conveyor:order:4"] },
+      { id: "child", number: 2, stage: "implementation", state: "blocked", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"] },
+      { id: "later-child", number: 3, stage: "review", state: "active", labels: ["conveyor", "conveyor:review"] },
+      { id: "done-child", number: 4, stage: "refinement", state: "done", labels: ["conveyor", "conveyor:refinement", "conveyor:done"] },
     ]) {
       store.upsertIssue({
         id: issue.id,
@@ -338,43 +348,45 @@ describe("ConveyorService dashboard", () => {
         sourceUpdatedAt: "2026-09-29T00:00:00Z",
       });
       store.setIssueProjection(issue.id, {
-        stage: "implementation",
+        stage: issue.stage,
         state: issue.state,
         warning: null,
       });
     }
+    const sourceIssue = (
+      id: string,
+      number: number,
+      labels: string[],
+    ) => ({
+      id,
+      number,
+      url: `https://github.com/new-owner/repo/issues/${number}`,
+      title: id,
+      body: "",
+      state: "open" as const,
+      stateReason: null,
+      labels,
+      updatedAt: "2026-09-29T00:00:00Z",
+    });
+    const replaced: Array<{ number: number; labels: readonly string[] }> = [];
     const source = {
       async listSubIssues(_address: string, number: number) {
         return number === 1
-          ? [{
-              id: "github:new-owner/repo#2",
-              number: 2,
-              url: "https://github.com/new-owner/repo/issues/2",
-              title: "child",
-              body: "",
-              state: "open",
-              stateReason: null,
-              labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
-              updatedAt: "2026-09-29T00:00:00Z",
-            }]
+          ? [
+              sourceIssue("github:new-owner/repo#2", 2, ["conveyor", "conveyor:implementation", "conveyor:blocked"]),
+              sourceIssue("github:new-owner/repo#3", 3, ["conveyor", "conveyor:review"]),
+              sourceIssue("github:new-owner/repo#4", 4, ["conveyor", "conveyor:refinement", "conveyor:done"]),
+            ]
           : [];
       },
       async listDependencies(_address: string, number: number) {
         return number === 1
-          ? [{
-              id: "github:new-owner/repo#2",
-              number: 2,
-              url: "https://github.com/new-owner/repo/issues/2",
-              title: "child",
-              body: "",
-              state: "open",
-              stateReason: null,
-              labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
-              updatedAt: "2026-09-29T00:00:00Z",
-            }]
+          ? [sourceIssue("github:new-owner/repo#2", 2, ["conveyor", "conveyor:implementation", "conveyor:blocked"])]
           : [];
       },
-      async replaceConveyorLabels() { throw new Error("parent is not complete"); },
+      async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
+        replaced.push({ number, labels });
+      },
     };
     const service = new ConveyorService(config, store, source as never);
 
@@ -382,9 +394,27 @@ describe("ConveyorService dashboard", () => {
       reconcileRelationships(repositoryId: string, address: string): Promise<void>;
     }).reconcileRelationships("repo", "new-owner/repo");
 
-    expect(store.listChildren("parent")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
+    expect(store.listChildren("parent")).toEqual([
+      { issueId: "child", siblingOrder: 1 },
+      { issueId: "later-child", siblingOrder: 2 },
+      { issueId: "done-child", siblingOrder: 3 },
+    ]);
     expect(store.getIssue("child")?.parentId).toBe("parent");
     expect(store.listDependencies("parent")).toEqual(["child"]);
+    expect(replaced).toEqual([{
+      number: 1,
+      labels: ["conveyor", "conveyor:implementation", "conveyor:order:4"],
+    }]);
+    expect(store.getStageState("parent")).toMatchObject({
+      stageId: "implementation",
+      status: "awaiting-source",
+    });
+    expect(store.listStageTransitions("parent")).toMatchObject([{
+      fromStage: "refinement",
+      toStage: "implementation",
+      kind: "rollup",
+      status: "completed",
+    }]);
     store.close();
   });
 

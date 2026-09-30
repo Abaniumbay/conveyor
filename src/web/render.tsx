@@ -218,6 +218,11 @@ function Pagination({ column, view }: { column: StageColumnViewModel; view: Dash
 
 function StageColumn({ column }: { column: StageColumnViewModel }) {
   const headingId = `stage-${column.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const rollupParents = column.issues.filter((issue) => issue.children.length > 0);
+  const regularIssues = column.issues.filter((issue) => issue.children.length === 0);
+  const issueList = (issues: readonly IssueCardViewModel[]) => (
+    <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
+  );
   return (
     <section class="stage" aria-labelledby={headingId}>
       <header class="stage-heading">
@@ -238,7 +243,20 @@ function StageColumn({ column }: { column: StageColumnViewModel }) {
         </div>
       </header>
       {column.issues.length > 0
-        ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
+        ? rollupParents.length > 0
+          ? <Fragment>
+              <section class="stage-group stage-group--rollups" aria-label="Roll-up parents">
+                <h3>Roll-up parents</h3>
+                {issueList(rollupParents)}
+              </section>
+              {regularIssues.length > 0 && (
+                <section class="stage-group" aria-label="Issues">
+                  <h3>Issues</h3>
+                  {issueList(regularIssues)}
+                </section>
+              )}
+            </Fragment>
+          : issueList(regularIssues)
         : <p class="empty">No issues in this stage</p>}
       <Pagination column={column} view="board" />
     </section>

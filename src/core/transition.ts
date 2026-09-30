@@ -24,6 +24,19 @@ export interface ApplyStageTransitionInput {
   actor?: { name: string; title: string | null };
 }
 
+export interface ApplyRollupTransitionInput {
+  store: ConveyorStore;
+  source: TransitionSource;
+  sourceName: string;
+  address: string;
+  configHash: string;
+  transitionId: string;
+  issue: StoredIssue;
+  targetStageId: string;
+  labels: LabelConfiguration;
+  reason: string;
+}
+
 function matchesTemplate(label: string, template: string, token: string): boolean {
   const [prefix, suffix = ""] = template.split(`{${token}}`);
   return label.startsWith(prefix ?? "") && label.endsWith(suffix) &&
@@ -164,6 +177,69 @@ export async function applyStageTransition(
     status: target.state,
     feedbackCycle:
       input.result.kind === "correction" ? 0 : input.result.feedbackCycles,
+    configHash: input.configHash,
+  });
+}
+
+/** Move a non-runnable roll-up parent with the earliest unfinished child frontier. */
+export async function applyRollupTransition(
+  input: ApplyRollupTransitionInput,
+): Promise<void> {
+  const orderLabels = input.issue.labels.filter((label) =>
+    matchesTemplate(label, input.labels.metadata.orderTemplate, "number")
+  );
+  const labels = [...new Set([
+    input.labels.enrollment,
+    ...orderLabels,
+    input.labels.stageTemplate.replace("{stage}", input.targetStageId),
+  ])].sort((left, right) => left.localeCompare(right));
+  const mutation = input.store.beginSourceMutation({
+    idempotencyKey: `transition:${input.transitionId}`,
+    source: input.sourceName,
+    operation: "issue.labels.replace",
+    request: {
+      issueId: input.issue.id,
+      issueNumber: input.issue.sourceNumber,
+      labels,
+    },
+  });
+  input.store.beginStageTransition({
+    id: input.transitionId,
+    issueId: input.issue.id,
+    fromStage: input.issue.projectedStage,
+    toStage: input.targetStageId,
+    kind: "rollup",
+    sourceMutationId: mutation.id,
+    detail: {
+      reason: input.reason,
+      requiredFixes: [],
+      resultStatus: null,
+      actor: { name: "Conveyor", title: "Orchestrator" },
+    },
+  });
+  if (mutation.status !== "succeeded") {
+    try {
+      await input.source.replaceConveyorLabels(
+        input.address,
+        input.issue.sourceNumber,
+        labels,
+      );
+      input.store.completeSourceMutation(mutation.id, { labels });
+    } catch (error) {
+      input.store.failSourceMutation(
+        mutation.id,
+        error instanceof Error ? error.message : String(error),
+      );
+      input.store.failStageTransition(input.transitionId);
+      throw error;
+    }
+  }
+  input.store.completeStageTransition(input.transitionId);
+  input.store.setStageState({
+    issueId: input.issue.id,
+    stageId: input.targetStageId,
+    status: "awaiting-source",
+    feedbackCycle: 0,
     configHash: input.configHash,
   });
 }

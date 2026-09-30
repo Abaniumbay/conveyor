@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { applyStageTransition } from "../../src/core/transition";
+import { applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { ConveyorStore } from "../../src/db/store";
 
 const directories: string[] = [];
@@ -89,6 +89,64 @@ describe("applyStageTransition", () => {
       toStage: "review",
       kind: "advance",
       status: "completed",
+    }]);
+    store.close();
+  });
+
+  test("moves a roll-up parent while clearing stale state labels", async () => {
+    const store = await setup();
+    store.upsertIssue({
+      id: "issue",
+      repositoryId: "repo",
+      sourceNumber: 7,
+      sourceUrl: "https://example.test/7",
+      title: "Feature",
+      body: "",
+      sourceState: "open",
+      labels: [
+        "conveyor",
+        "conveyor:implementation",
+        "conveyor:blocked",
+        "conveyor:closable",
+        "conveyor:order:2",
+        "backend",
+      ],
+      sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    store.setIssueProjection("issue", {
+      stage: "implementation",
+      state: "blocked",
+      warning: null,
+    });
+    const calls: string[][] = [];
+
+    await applyRollupTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, labels) { calls.push([...labels]); },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "rollup-1",
+      issue: store.getIssue("issue")!,
+      targetStageId: "review",
+      labels: labelConfig,
+      reason: "Following the earliest unfinished child stage: review",
+    });
+
+    expect(calls).toEqual([["conveyor", "conveyor:order:2", "conveyor:review"]]);
+    expect(store.getStageState("issue")).toMatchObject({
+      stageId: "review",
+      status: "awaiting-source",
+    });
+    expect(store.listStageTransitions("issue")).toMatchObject([{
+      id: "rollup-1",
+      fromStage: "implementation",
+      toStage: "review",
+      kind: "rollup",
+      status: "completed",
+      reason: "Following the earliest unfinished child stage: review",
     }]);
     store.close();
   });
