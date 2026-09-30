@@ -97,6 +97,23 @@ describe("Conveyor MCP server", () => {
     ).toEqual(context.workspace);
   });
 
+  test("serves delivery state live through the control client instead of a start-of-run snapshot", async () => {
+    const calls: string[] = [];
+    const live = { pullRequest: { number: 9, headSha: "new" }, checks: [{ name: "Tests" }] };
+    const client = await connectedClient({
+      async call(tool) {
+        calls.push(tool);
+        if (tool === "delivery.get_state") return live;
+        if (tool === "delivery.get_check_logs") return { checks: [] };
+        throw new Error("unexpected control endpoint call");
+      },
+    }, ["delivery.get_state", "delivery.get_check_logs"]);
+
+    expect(text(await client.callTool({ name: "delivery.get_state", arguments: {} }))).toEqual(live);
+    expect(text(await client.callTool({ name: "delivery.get_check_logs", arguments: { checkName: "Tests" } }))).toEqual({ checks: [] });
+    expect(calls).toEqual(["delivery.get_state", "delivery.get_check_logs"]);
+  });
+
   test("routes progress and structured questions through the control client", async () => {
     const calls: Array<{ tool: string; input: unknown }> = [];
     const client = await connectedClient({

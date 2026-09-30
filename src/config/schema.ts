@@ -163,7 +163,11 @@ const lifecycleActionSchema = z
   .strict();
 
 const failurePolicySchema = z
-  .object({ action: z.literal("returnToPrevious") })
+  .object({
+    action: z.literal("returnToPrevious"),
+    /** Earlier stage to return to; defaults to the immediately preceding stage. */
+    stage: identifierSchema.optional(),
+  })
   .strict();
 
 const stageSchema = z

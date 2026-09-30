@@ -24,6 +24,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
+import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
   repositoryId: string;
@@ -142,6 +143,21 @@ async function git(cwd: string, args: string[]): Promise<void> {
   }
 }
 
+async function gitStatus(cwd: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn(["git", ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
 function criteriaFromBody(body: string): string[] {
   try {
     const markdown = parseManagedSections(body).sections["acceptance-criteria"];
@@ -190,6 +206,9 @@ export class ConveyorService {
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
+  readonly #ciMemory = createCiGateMemory();
+  /** Issues polling an external condition (CI); not schedulable before this time. */
+  readonly #deferredUntil = new Map<string, number>();
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
@@ -347,6 +366,7 @@ export class ConveyorService {
           issue.projectedState === "active" &&
           state.status === "ready" &&
           !this.#active.has(issue.id) &&
+          (this.#deferredUntil.get(issue.id) ?? 0) <= Date.now() &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly: this.store.listChildren(issue.id).length > 0,
@@ -404,25 +424,8 @@ export class ConveyorService {
       sourceName: repository.source,
       source: this.github,
       workspaceManager: this.workspaceManager,
-      loadDeliveryState: async (currentIssue, currentRepository) => {
-        const stored = this.store.getCurrentPullRequest(currentIssue.id);
-        if (!stored) return { pullRequest: null, checks: [] };
-        const delivery = await this.github.getPullRequestDelivery(
-          currentRepository.address,
-          stored.number,
-        );
-        this.store.upsertPullRequest({
-          issueId: currentIssue.id,
-          id: stored.id,
-          number: delivery.pullRequest.number,
-          url: delivery.pullRequest.url,
-          state: delivery.pullRequest.state,
-          ...(delivery.pullRequest.mergedAt || stored.mergedAt
-            ? { mergedAt: delivery.pullRequest.mergedAt ?? stored.mergedAt }
-            : {}),
-        });
-        return delivery;
-      },
+      loadDeliveryState: async (currentIssue, currentRepository) =>
+        this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
@@ -443,6 +446,10 @@ export class ConveyorService {
       this.schedule();
     } catch (error) {
       if (signal.aborted) return;
+      if (error instanceof ExternalWaitError) {
+        await this.deferForExternalWait(issue, error);
+        return;
+      }
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
@@ -465,6 +472,53 @@ export class ConveyorService {
         }
       }, this.config.settings.retries.minBackoff);
     }
+  }
+
+  /** Park an issue whose stage is waiting on an external system; no permit is held meanwhile. */
+  private async deferForExternalWait(issue: StoredIssue, error: ExternalWaitError): Promise<void> {
+    const current = this.store.getStageState(issue.id);
+    if (current) {
+      this.store.setStageState({
+        issueId: issue.id,
+        stageId: current.stageId,
+        status: "ready",
+        feedbackCycle: current.feedbackCycle,
+        configHash: this.config.hash,
+      });
+    }
+    const previous = this.store.getIssue(issue.id)?.warning ?? null;
+    this.store.setIssueProjection(issue.id, {
+      stage: issue.projectedStage,
+      state: "active",
+      warning: error.message,
+    });
+    if (previous !== error.message) {
+      await this.updateStatusComment(issue.id).catch((statusError) => {
+        console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
+      });
+    }
+    this.#deferredUntil.set(issue.id, Date.now() + error.retryAfterMs);
+    setTimeout(() => this.schedule(), error.retryAfterMs + 50);
+  }
+
+  private async loadDeliveryState(
+    issueId: string,
+    address: string,
+  ): Promise<{ pullRequest: unknown | null; checks: unknown[] }> {
+    const stored = this.store.getCurrentPullRequest(issueId);
+    if (!stored) return { pullRequest: null, checks: [] };
+    const delivery = await this.github.getPullRequestDelivery(address, stored.number);
+    this.store.upsertPullRequest({
+      issueId,
+      id: stored.id,
+      number: delivery.pullRequest.number,
+      url: delivery.pullRequest.url,
+      state: delivery.pullRequest.state,
+      ...(delivery.pullRequest.mergedAt || stored.mergedAt
+        ? { mergedAt: delivery.pullRequest.mergedAt ?? stored.mergedAt }
+        : {}),
+    });
+    return delivery;
   }
 
   private interruptIneligibleRuns(): void {
@@ -841,6 +895,9 @@ export class ConveyorService {
           });
           return;
         }
+        if (action.sourceAction === "pullRequest.awaitChecks") {
+          return this.awaitPullRequestChecks(context, workspace, action.with);
+        }
         if (action.sourceAction === "pullRequest.squashMerge") {
           const pullRequest = await this.github.ensurePullRequest({
             address: context.repository.address,
@@ -865,6 +922,114 @@ export class ConveyorService {
         throw new Error(`unsupported source action: ${action.sourceAction}`);
       },
     };
+  }
+
+  /**
+   * Gate a stage on CI for the pull request's current head. The branch is first
+   * brought level with its remote (someone may have pushed fixes by hand), then
+   * pushed, then the PR is ensured and its checks evaluated.
+   */
+  private async awaitPullRequestChecks(
+    context: RuntimeIssueContext,
+    workspace: { path: string; branch: string },
+    input: Record<string, unknown> | undefined,
+  ): Promise<SourceActionOutcome> {
+    const options = parseCiGateOptions(input);
+    const maxCorrections = typeof input?.maxCorrections === "number" ? input.maxCorrections : 5;
+    const branch = workspace.branch;
+    const fetched = await gitStatus(workspace.path, [
+      "fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+    if (fetched.exitCode === 0) {
+      const remote = `origin/${branch}`;
+      const localBehind = (await gitStatus(workspace.path, ["merge-base", "--is-ancestor", "HEAD", remote])).exitCode === 0;
+      const remoteBehind = (await gitStatus(workspace.path, ["merge-base", "--is-ancestor", remote, "HEAD"])).exitCode === 0;
+      if (localBehind && !remoteBehind) {
+        const status = await gitStatus(workspace.path, ["status", "--porcelain"]);
+        if (status.stdout.length === 0) await git(workspace.path, ["merge", "--ff-only", remote]);
+      } else if (!localBehind && !remoteBehind) {
+        return {
+          outcome: "failure",
+          status: "changes-requested",
+          reason: `The local branch ${branch} and origin/${branch} have diverged; rebase the local work onto origin/${branch} (keeping both sides) and push.`,
+          summary: `Branch ${branch} diverged from its remote; returning to implementation to reconcile it.`,
+        };
+      }
+    }
+    await git(workspace.path, ["push", "--set-upstream", "origin", branch]);
+    const pullRequest = await this.github.ensurePullRequest({
+      address: context.repository.address,
+      issueNumber: context.issue.sourceNumber,
+      branch,
+      baseBranch: context.repository.baseBranch,
+      title: context.issue.title,
+      closingReference: input?.closingReference !== false,
+    });
+    this.store.upsertPullRequest({
+      issueId: context.issue.id,
+      id: `github:${context.repository.address}#pr-${pullRequest.number}`,
+      number: pullRequest.number,
+      url: pullRequest.url,
+      state: pullRequest.state,
+    });
+    const outcome = await evaluateCiGate({
+      address: context.repository.address,
+      pullRequestNumber: pullRequest.number,
+      pullRequestUrl: pullRequest.url,
+      issueKey: context.issue.id,
+      options,
+      github: this.github,
+      memory: this.#ciMemory,
+      now: Date.now(),
+    });
+    this.#deferredUntil.delete(context.issue.id);
+    if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
+      // Stop an implementation<->CI loop that is not converging.
+      const transitions = this.store.listStageTransitions(context.issue.id);
+      let corrections = 0;
+      for (const transition of transitions) {
+        if (transition.fromStage !== context.issue.projectedStage) continue;
+        if (transition.kind === "advance") corrections = 0;
+        else if (transition.kind === "correction") corrections += 1;
+      }
+      if (corrections >= maxCorrections) {
+        return {
+          ...outcome,
+          status: "blocked",
+          reason: `${outcome.reason} CI has now failed ${corrections + 1} times in a row after implementation fixes; a person needs to look.`,
+        };
+      }
+    }
+    return outcome;
+  }
+
+  /** Failing (or named) CI job logs for the issue's PR head, read on the agent's behalf. */
+  private async checkLogs(
+    issueId: string,
+    address: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    const stored = this.store.getCurrentPullRequest(issueId);
+    if (!stored) return { pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." };
+    const { sha } = await this.github.getPullRequestHead(address, stored.number);
+    const requested = typeof input.checkName === "string" ? input.checkName : null;
+    const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
+    const runs = await this.github.listCheckRuns(address, sha);
+    const selected = runs.filter((check) =>
+      requested
+        ? check.name === requested
+        : check.status === "completed" && !["success", "skipped", "neutral"].includes(check.conclusion ?? ""),
+    );
+    const checks = [];
+    for (const check of selected.slice(0, 5)) {
+      let log: string | null = null;
+      if (check.actionsJob) {
+        log = await this.github.jobLogTail(address, check.id, lines).catch((error) =>
+          `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
+      }
+      checks.push({ name: check.name, status: check.status, conclusion: check.conclusion, url: check.url, log });
+    }
+    return { pullRequest: { number: stored.number, url: stored.url, headSha: sha }, checks };
   }
 
   async handleMcp(payload: unknown, token: string): Promise<unknown> {
@@ -926,6 +1091,12 @@ export class ConveyorService {
 
     if (tool === "source.get_issue") {
       return this.github.getIssue(address, issue.sourceNumber);
+    }
+    if (tool === "delivery.get_state") {
+      return this.loadDeliveryState(issue.id, address);
+    }
+    if (tool === "delivery.get_check_logs") {
+      return this.checkLogs(issue.id, address, input);
     }
 
     const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
