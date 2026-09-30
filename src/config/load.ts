@@ -8,6 +8,7 @@ import { configSchema, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
   "sources",
+  "codeHosts",
   "runners",
   "agents",
   "checks",
@@ -269,6 +270,12 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
         if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
       }
     }
+    const codeHost = repository.codeHost ?? repository.source;
+    if (config.codeHosts[codeHost]) continue;
+    if (codeHost === repository.source && config.sources[repository.source]?.type === "github") continue;
+    errors.push(
+      `repositories.${name}.codeHost references unknown or unsupported code host "${codeHost}"`,
+    );
   }
   return errors;
 }
