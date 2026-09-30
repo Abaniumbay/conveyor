@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { checkConfig } from "../../src/cli";
 import { ConfigError, loadConfig } from "../../src/config/load";
+import { legacyGroup } from "../../src/tasks/legacy";
 import { defineGroup, pass, TaskRegistry, type TaskDefinition } from "../../src/tasks/contract";
 
 const directories: string[] = [];
@@ -19,6 +20,7 @@ function def(input: Partial<TaskDefinition> & Pick<TaskDefinition, "name" | "kin
 
 function registry(): TaskRegistry {
   const r = new TaskRegistry();
+  r.register(legacyGroup);
   r.register(defineGroup("item", [def({ name: "item.load", kind: "load", writes: ["item"] })]));
   r.register(
     defineGroup("demo", [
@@ -87,8 +89,9 @@ describe("plan compilation at load", () => {
     await expect(loadConfig(await write(NATIVE))).rejects.toThrow(/unknown task "demo.act"/);
   });
 
-  test("does not compile pipelines that contain legacy stages", async () => {
-    await expect(loadConfig(await write(LEGACY))).resolves.toBeDefined();
+  test("compiles legacy pipelines through the compatibility translator", async () => {
+    const config = await loadConfig(await write(LEGACY), registry());
+    expect(config.plans.map((plan) => [plan.repositoryId, plan.stages[0]?.legacy])).toEqual([["sample", true]]);
   });
 });
 
@@ -101,8 +104,10 @@ describe("check-config", () => {
     expect(output).toContain("demo.gate");
   });
 
-  test("prints only the hash for a legacy repository", async () => {
+  test("prints the plan of a legacy repository", async () => {
     const output = await checkConfig(await write(LEGACY), registry());
-    expect(output).toMatch(/^Configuration is valid \([0-9a-f]{64}\)$/);
+    expect(output).toMatch(/^Configuration is valid \([0-9a-f]{64}\)\n/);
+    expect(output).toContain("Stage old (concurrency 1, retries 2, legacy)");
+    expect(output).toContain("legacy.produce (source action noop)");
   });
 });

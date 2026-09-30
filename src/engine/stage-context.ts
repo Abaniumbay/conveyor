@@ -40,6 +40,7 @@ export function markLoaded(context: TaskContext, key: SnapshotKey): void {
 /** Captures an act's output into the engine-owned key it declares (`agent` replaced, `script` merged per instance). */
 export function captureOutput(context: TaskContext, task: { id: string; writes: string[] }, output: unknown): void {
   if (output === undefined) return;
+  if (task.writes.includes("legacy")) context.legacy = output as NonNullable<TaskContext["legacy"]>;
   if (task.writes.includes("agent")) context.agent = output as NonNullable<TaskContext["agent"]>;
   if (task.writes.includes("script")) {
     const results = { ...context.script?.results, [task.id]: output } as NonNullable<TaskContext["script"]>["results"];
@@ -69,4 +70,13 @@ export function formatDuration(ms: number): string {
   if (ms > 0 && ms % 60_000 === 0) return `${ms / 60_000}m`;
   if (ms > 0 && ms % 1_000 === 0) return `${ms / 1_000}s`;
   return `${ms}ms`;
+}
+
+/** A fail result's `details` may carry `requiredFixes` and `evidence` lists for the stage outcome. */
+export function detailLists(details: unknown): { requiredFixes: string[]; evidence: string[] } {
+  const pick = (key: string): string[] => {
+    const value = (details as Record<string, unknown> | null | undefined)?.[key];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  };
+  return { requiredFixes: pick("requiredFixes"), evidence: pick("evidence") };
 }

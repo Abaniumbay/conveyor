@@ -9,6 +9,7 @@ function formatMs(ms: number): string {
 
 function renderOnFail(task: CompiledTask, list: "actions" | "exit-gate"): string {
   const route = task.onFail;
+  if (!route && task.label) return "onFail decided by the task";
   if (!route) return list === "actions" ? "onFail stop blocked (default)" : "onFail retry (default)";
   if ("retry" in route) return "onFail retry";
   if ("return" in route) return `onFail return ${route.return}`;
@@ -20,8 +21,9 @@ function renderList(list: "actions" | "exit-gate", tasks: CompiledTask[]): strin
   if (tasks.length === 0) return [...lines, "    (none)"];
   for (const [index, task] of tasks.entries()) {
     for (const key of task.implicitLoads) lines.push(`    (load ${key})`);
-    lines.push(`    ${index + 1}. ${task.id === task.task ? task.task : `${task.id}: ${task.task}`} [${task.kind}]`);
-    if (Object.keys(task.with).length > 0) lines.push(`       with ${JSON.stringify(task.with)}`);
+    const name = task.id === task.task ? task.task : `${task.id}: ${task.task}`;
+    lines.push(`    ${index + 1}. ${name}${task.label ? ` (${task.label})` : ""} [${task.kind}]`);
+    if (!task.label && Object.keys(task.with).length > 0) lines.push(`       with ${JSON.stringify(task.with)}`);
     const timeout = task.wait.timeoutMs === null ? "unlimited" : formatMs(task.wait.timeoutMs);
     lines.push(`       wait timeout ${timeout}, poll ${formatMs(task.wait.pollMs)}; ${renderOnFail(task, list)}`);
   }

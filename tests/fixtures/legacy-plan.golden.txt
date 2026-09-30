@@ -1,0 +1,419 @@
+Repository caravan-v2 (pipeline caravan-delivery)
+
+Stage refinement (concurrency 3, retries 2, childrenStartAt next, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent darya) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check refinement-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage implementation (concurrency 2, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent kaveh) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check implementation-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    4. legacy.afterSuccess (pullRequest.ensure) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage ci (concurrency 8, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action pullRequest.awaitChecks; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage review (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent shirin; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage merge (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (source action pullRequest.squashMerge) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; no feedback cycles) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage deploy (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/deploy-caravan.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage verify (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/verify-caravan.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage cleanup (concurrency 4, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action workspace.cleanup; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Repository conveyor-v2 (pipeline conveyor-delivery)
+
+Stage refinement (concurrency 3, retries 2, childrenStartAt next, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent darya) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check refinement-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage implementation (concurrency 2, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent kaveh) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check implementation-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    4. legacy.afterSuccess (pullRequest.ensure) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage ci (concurrency 8, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action pullRequest.awaitChecks; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage review (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent shirin; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage merge (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (source action pullRequest.squashMerge) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; no feedback cycles) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage deploy (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/skip-conveyor-self-deploy.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage verify (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/verify-conveyor.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage cleanup (concurrency 4, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action workspace.cleanup; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Repository meal-planner (pipeline meal-planner-delivery)
+
+Stage refinement (concurrency 3, retries 2, childrenStartAt next, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent darya) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check refinement-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage implementation (concurrency 2, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent kaveh) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check implementation-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    4. legacy.afterSuccess (pullRequest.ensure) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage ci (concurrency 8, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action pullRequest.awaitChecks; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage review (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent shirin; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage merge (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (source action pullRequest.squashMerge) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; no feedback cycles) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage deploy (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/deploy-meal-planner.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage verify (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/verify-meal-planner.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage cleanup (concurrency 4, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action workspace.cleanup; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Repository midgame (pipeline midgame-delivery)
+
+Stage refinement (concurrency 3, retries 2, childrenStartAt next, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent darya) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check refinement-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage implementation (concurrency 2, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent kaveh) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check implementation-exit-midgame; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    4. legacy.afterSuccess (pullRequest.ensure) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage ci (concurrency 8, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action pullRequest.awaitChecks; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage review (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent shirin; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage merge (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (source action pullRequest.squashMerge) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; no feedback cycles) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage deploy (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/deploy-midgame-action.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage verify (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/verify-midgame.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage cleanup (concurrency 4, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action workspace.cleanup; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Repository quesshi (pipeline quesshi-delivery)
+
+Stage refinement (concurrency 3, retries 2, childrenStartAt next, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent darya) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check refinement-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage implementation (concurrency 2, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent kaveh) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check implementation-exit; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    4. legacy.afterSuccess (pullRequest.ensure) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage ci (concurrency 8, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action pullRequest.awaitChecks; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage review (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (agent shirin; changes-requested returns to implementation) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; feedback cycles 2) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage merge (concurrency 1, retries 2, legacy)
+  actions:
+    1. legacy.enterCheck (check generic) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    2. legacy.produce (source action pullRequest.squashMerge) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+    3. legacy.exitCheck (check generic; no feedback cycles) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop blocked
+
+Stage deploy (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/deploy-quesshi.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage verify (concurrency 1, retries 0, legacy)
+  actions:
+    1. legacy.produce (script process /srv/conveyor/stages/verify-quesshi.ts; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention
+
+Stage cleanup (concurrency 4, retries 0, legacy)
+  actions:
+    1. legacy.produce (source action workspace.cleanup; failures stop as needs-intervention) [act]
+       wait timeout unlimited, poll 1m; onFail decided by the task
+  exit-gate:
+    1. legacy.succeeded (producer outcome is success) [check]
+       wait timeout unlimited, poll 1m; onFail stop needs-intervention

@@ -15,7 +15,7 @@ import type { Feedback, TaskContext } from "../tasks/context";
 import { runTask, type Route, type TaskRegistry, type TaskResult } from "../tasks/contract";
 import { StaleEpochError, type ExecutionStore, type StageCursor } from "./journal";
 import {
-  captureOutput, engineState, formatDuration, keysToLoad, markLoaded, markStale, recordCheckpoint,
+  captureOutput, detailLists, engineState, formatDuration, keysToLoad, markLoaded, markStale, recordCheckpoint,
   snapshotReads, validAfter,
 } from "./stage-context";
 import { resolveRoute } from "./stage-routing";
@@ -94,6 +94,8 @@ export class StageExecutor {
           returns: engineState(context).returns, list: "actions", taskInstanceId: null, state: "planned",
           feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
         };
+    // A legacy envelope belongs to the stage that produced it.
+    if (!resuming) delete context.legacy;
     const sameRun = context.run?.stage === stage.id && context.run.stageEpoch === epoch;
     const run: Run = {
       input, stage, epoch, context, cursor,
@@ -144,7 +146,7 @@ export class StageExecutor {
     journal.clearCursor(run.input.issueId, run.epoch);
     await this.#o.setStatus(null);
     return {
-      kind: "advance", stageId: run.stage.id, nextStageId: next?.id ?? null, result: null,
+      kind: "advance", stageId: run.stage.id, nextStageId: next?.id ?? null, result: run.context.legacy ?? null,
       feedbackCycles: run.cursor.attempt - 1,
     };
   }
@@ -206,6 +208,12 @@ export class StageExecutor {
       return { kind: "pass" };
     }
     if (result.status === "fail") {
+      // A failing act may still have produced the envelope its outcome reports.
+      const produced = (result.details as { legacy?: unknown } | null | undefined)?.legacy;
+      if (list === "actions" && produced !== undefined) {
+        captureOutput(run.context, task, produced);
+        this.#persist(run, task.id);
+      }
       return { kind: "fail", message: result.message, details: result.details, route: result.route };
     }
     const now = clock().getTime();
@@ -235,12 +243,14 @@ export class StageExecutor {
       await this.#o.notify(note);
       return outcome;
     };
+    const { requiredFixes, evidence } = detailLists(failure.details);
+    const result = run.context.legacy ?? null;
     const stop = (state: string, reason: string, note: string) => {
       // A human unblock after a stop starts with a fresh loop budget.
       engineState(run.context).returns = 0;
       this.#persist(run, task.id);
       return finish(
-        { kind: "stopped", stageId: stage.id, state, reason, requiredFixes: [], feedbackCycles: cursor.attempt - 1, result: null },
+        { kind: "stopped", stageId: stage.id, state, reason, requiredFixes, feedbackCycles: cursor.attempt - 1, result },
         note,
       );
     };
@@ -271,7 +281,7 @@ export class StageExecutor {
     return finish(
       {
         kind: "correction", stageId: stage.id, targetStageId: route.return, reason: failure.message,
-        requiredFixes: [], evidence: [], result: null,
+        requiredFixes, evidence, result,
       },
       `${where}, returning to ${route.return}: ${failure.message}`,
     );

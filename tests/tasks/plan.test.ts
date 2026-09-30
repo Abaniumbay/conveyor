@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { configSchema, type ConveyorConfigData } from "../../src/config/schema";
 import { defineGroup, pass, TaskRegistry, type TaskDefinition } from "../../src/tasks/contract";
+import { legacyGroup } from "../../src/tasks/legacy";
 import { compilePipeline, PlanError, renderPlan } from "../../src/tasks/plan";
 
 type Def = Partial<TaskDefinition> & Pick<TaskDefinition, "name" | "kind">;
@@ -347,13 +348,23 @@ describe("compilePipeline", () => {
     }
   });
 
-  test("legacy stages are not yet supported and only throw when compiled", () => {
-    const legacy = {
-      successStatuses: ["done"],
-      failureStatuses: ["blocked"],
-      stages: [{ id: "old", concurrency: 1, run: { sourceAction: "noop" } }],
-    };
-    expect(() => compile(legacy)).toThrow(/legacy stage "old" not yet supported/);
+  const legacy = {
+    successStatuses: ["done"],
+    failureStatuses: ["blocked"],
+    stages: [{ id: "old", concurrency: 1, run: { sourceAction: "noop" } }],
+  };
+
+  test("legacy stages compile through the compatibility translator next to native ones", () => {
+    const r = registry();
+    r.register(legacyGroup);
+    const mixed = { ...legacy, stages: [...legacy.stages, stage("impl", [], [{ task: "workspace.pushed" }])] };
+    const plan = compilePipeline({ config: build(mixed), repositoryId: "sample", registry: r });
+    expect(plan.stages.map((s) => [s.id, s.legacy])).toEqual([["old", true], ["impl", false]]);
+    expect(plan.stages[0]?.actions.map((task) => task.task)).toEqual(["legacy.produce"]);
+  });
+
+  test("a legacy stage needs the legacy task group to be registered", () => {
+    expect(() => compile(legacy)).toThrow(/needs task "legacy.produce", which is not registered/);
   });
 
   test("carries childrenStartAt and concurrency", () => {

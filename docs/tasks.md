@@ -52,4 +52,12 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 ## Task catalogue
 
-No tasks are registered yet.
+### legacy
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `legacy.afterSuccess` | act | run, legacy | - | Runs one afterSuccess source action; errors are infrastructure errors. |
+| `legacy.enterCheck` | act | run | - | Runs the legacy entry check once, on the first attempt. |
+| `legacy.exitCheck` | act | run, legacy | - | Runs the legacy exit check; a failure feeds back to a fresh producer attempt while cycles remain. |
+| `legacy.produce` | act | run | writes legacy | Runs the legacy producer (agent, script or source action) and captures its envelope. |
+| `legacy.succeeded` | check | legacy | - | Passes when the captured legacy producer outcome is success. |

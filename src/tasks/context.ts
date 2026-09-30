@@ -1,5 +1,7 @@
 // Task context and snapshot types. Appendix B of issue #19 is the source.
 
+import type { RunEnvelope } from "../runner/result";
+
 export const CONTEXT_SCHEMA_VERSION = 1;
 
 /** Keys owned by a single load task; the engine reloads them when invalidated. */
@@ -7,7 +9,7 @@ export const SNAPSHOT_KEYS = ["item", "workspace", "change", "ci"] as const;
 export type SnapshotKey = (typeof SNAPSHOT_KEYS)[number];
 
 /** Keys the engine captures from act task results. */
-export const CAPTURED_KEYS = ["agent", "script"] as const;
+export const CAPTURED_KEYS = ["agent", "script", "legacy"] as const;
 export type CapturedKey = (typeof CAPTURED_KEYS)[number];
 
 export interface RepositoryContext {
@@ -63,6 +65,7 @@ export interface TaskContext {
   ci?: CiContext;                   // ci.load only
   agent?: AgentContext;             // engine-captured agent.run result
   script?: ScriptContext;           // engine-captured script.run results
+  legacy?: RunEnvelope;             // engine-captured legacy.produce envelope
   checkpoints: GateCheckpoints;     // engine only
   engine?: EngineState;             // engine only, never readable by tasks
 }

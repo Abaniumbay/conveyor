@@ -1,6 +1,7 @@
 import { isNativeStage, type ConveyorConfigData, type NativeStageConfig, type TaskEntryConfig, type TaskOverrideConfig } from "../config/schema";
 import { CAPTURED_KEYS, SNAPSHOT_KEYS, type CapturedKey, type SnapshotKey } from "./context";
 import type { Route, TaskKind, TaskRegistry } from "./contract";
+import { translateLegacyStage } from "./legacy";
 
 export { renderPlan } from "./render-plan";
 
@@ -14,6 +15,8 @@ export interface CompiledTask {
   task: string;
   kind: TaskKind;
   with: Record<string, unknown>;
+  /** Short human description shown by renderPlan in place of `with` (legacy tasks). */
+  label?: string;
   wait: CompiledWait;
   /** null = the list's default (exit gate: retry; actions: stop blocked). */
   onFail: Route | null;
@@ -87,7 +90,16 @@ export function compilePipeline(input: {
   for (const [index, stage] of pipeline.stages.entries()) {
     const prefix = `pipelines.${repository.pipeline}.stages[${index}]`;
     if (!isNativeStage(stage)) {
-      errors.push(`${prefix}: legacy stage "${stage.id}" not yet supported by the plan compiler`);
+      const compiled = translateLegacyStage(stage, {
+        successStatuses: pipeline.successStatuses ?? [],
+        failureStatuses: pipeline.failureStatuses ?? [],
+        stages: pipeline.stages,
+        feedbackCycles: config.settings.feedbackCycles,
+      });
+      for (const task of [...compiled.actions, ...compiled.exitGate]) {
+        if (!registry.get(task.task)) errors.push(`${prefix}: legacy stage "${stage.id}" needs task "${task.task}", which is not registered`);
+      }
+      stages.push(compiled);
       continue;
     }
     stages.push(compileStage({ config, repositoryId, registry, stage, prefix, stageIds, errors }));
@@ -97,12 +109,12 @@ export function compilePipeline(input: {
   return { id: repository.pipeline, repositoryId, stages };
 }
 
-/** Compiles every repository whose pipeline has no legacy stage (legacy translation arrives separately). */
+/** Compiles every repository; legacy stages go through the compatibility translator. */
 export function compileRepositories(config: ConveyorConfigData, registry: TaskRegistry): CompiledPipeline[] {
   const plans: CompiledPipeline[] = [];
   for (const [repositoryId, repository] of Object.entries(config.repositories)) {
     const pipeline = config.pipelines[repository.pipeline];
-    if (!pipeline || !pipeline.stages.every(isNativeStage)) continue;
+    if (!pipeline) continue;
     plans.push(compilePipeline({ config, repositoryId, registry }));
   }
   return plans;

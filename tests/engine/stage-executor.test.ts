@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
@@ -109,6 +110,10 @@ function buildRegistry(world: World): TaskRegistry {
           const result = world.actResult(instance.id);
           return result;
         },
+      }),
+      d({
+        name: "test.legacyAct", kind: "act", writes: ["legacy"],
+        run: ({ instance }) => { world.calls.push(instance.id); return world.actResult(instance.id); },
       }),
       d({
         name: "test.check", kind: "check", reads: ["ci"],
@@ -640,4 +645,55 @@ test("thrown errors propagate", async () => {
   h.activate();
   h.world.actResult = () => { throw new Error("infra down"); };
   await expect(h.run(simple(h), "implementation")).rejects.toThrow("infra down");
+});
+
+describe("legacy envelope and fail details", () => {
+  const ENVELOPE: RunEnvelope = {
+    stageResult: { outcome: "success", status: "done", summary: "ok", reason: null, metrics: {} },
+    sessionId: null, usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
+    cost: { amount: 0, currency: "USD", source: "unavailable" }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
+  };
+  const legacyPlan = (h: Awaited<ReturnType<typeof harness>>, gate: CompiledTask[] = []) =>
+    pipeline(
+      stage("implementation", [ct(h.registry, "act", "test.legacyAct")], gate.length ? gate : [ct(h.registry, "gate", "test.check")]),
+      stage("review", [ct(h.registry, "act2", "test.legacyAct")], [ct(h.registry, "gate2", "test.check")]),
+    );
+
+  test("a captured legacy envelope becomes the advance result", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = () => pass(ENVELOPE);
+    expect(await h.run(legacyPlan(h), "implementation")).toMatchObject({ kind: "advance", result: ENVELOPE });
+  });
+
+  test("a stop after the gate fails carries the envelope and the fail's requiredFixes", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = () => pass(ENVELOPE);
+    h.world.checkResult.gate = () => fail("red", { route: { stop: "blocked" }, details: { requiredFixes: ["fix it"], evidence: ["log"] } });
+    expect(await h.run(legacyPlan(h), "implementation")).toMatchObject({
+      kind: "stopped", state: "blocked", reason: "red", requiredFixes: ["fix it"], result: ENVELOPE,
+    });
+  });
+
+  test("a correction carries requiredFixes, evidence and an envelope captured from a failing act", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = () =>
+      fail("changes", { route: { return: "refinement" }, details: { requiredFixes: ["a"], evidence: ["b"], legacy: ENVELOPE } });
+    expect(await h.run(legacyPlan(h), "implementation")).toEqual({
+      kind: "correction", stageId: "implementation", targetStageId: "refinement", reason: "changes",
+      requiredFixes: ["a"], evidence: ["b"], result: ENVELOPE,
+    });
+  });
+
+  test("an envelope captured by an earlier stage does not leak into the next stage's outcome", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.actResult = () => pass(ENVELOPE);
+    const plan = legacyPlan(h);
+    await h.run(plan, "implementation");
+    h.world.actResult = () => fail("entry failed", { route: { stop: "blocked" } });
+    expect(await h.run(plan, "review")).toMatchObject({ kind: "stopped", result: null, requiredFixes: [] });
+  });
 });
