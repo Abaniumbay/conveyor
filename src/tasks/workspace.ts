@@ -83,15 +83,23 @@ const removed: TaskDefinition<unknown, unknown, Deps> = {
 const ensure: TaskDefinition<unknown, unknown, Deps> = {
   name: "workspace.ensure",
   kind: "act",
-  description: "Creates the issue's workspace (worktree and branch) when none is recorded; does nothing when an active workspace exists on disk.",
+  description: "Creates the issue's workspace (worktree and branch) when none is recorded; re-attaches the recorded path to its existing branch when the directory went missing; otherwise does nothing.",
   reads: ["repository"],
   writes: [],
   invalidates: ["workspace"],
   async run({ deps }: Args) {
     const existing = deps.store.getActiveWorkspace(deps.issueId);
     if (existing) {
-      if (existsSync(existing.path)) return pass();
-      return fail(`Recorded workspace ${existing.path} is missing on disk; clean it up before creating a new one`);
+      if (!existsSync(existing.path)) {
+        // The directory is gone: re-attach it to the recorded branch (which keeps any unpushed commits).
+        await deps.workspaces.restore({
+          repositoryPath: deps.repository.folder,
+          workspacePath: existing.path,
+          branch: existing.branch,
+          baseBranch: deps.repository.baseBranch,
+        });
+      }
+      return pass();
     }
     const issue = deps.store.getIssue(deps.issueId);
     if (!issue) throw new Error(`issue ${deps.issueId} is not stored`);

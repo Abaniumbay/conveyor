@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { ConveyorStore, StoredIssue, StoredWorkspace } from "../db/store";
 import type { WorkspaceManager } from "./manager";
 
-export type WorkspaceLifecycleManager = Pick<WorkspaceManager, "create" | "remove">;
+export type WorkspaceLifecycleManager = Pick<WorkspaceManager, "create" | "remove" | "restore">;
 
 export interface WorkspaceRepository {
   id: string;

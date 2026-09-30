@@ -45,7 +45,8 @@ async function world(gitState: Parameters<typeof gitFake>[0] = {}) {
   });
   const fake = gitFake(gitState);
   const manager = {
-    created: [] as unknown[], removed: [] as unknown[],
+    created: [] as unknown[], removed: [] as unknown[], restored: [] as unknown[],
+    async restore(input: unknown) { this.restored.push(input); },
     async create(input: unknown) {
       this.created.push(input);
       const p = path.join(root, "ws", "created");
@@ -165,14 +166,14 @@ describe("workspace.ensure", () => {
     expect(fresh.manager.created).toHaveLength(1);
   });
 
-  test("fails, without recreating, when the recorded directory is gone", async () => {
+  test("re-attaches the recorded path and branch when the directory is gone, keeping the record", async () => {
     const w = await world();
     const p = await w.record();
     await rm(p, { recursive: true });
-    const result = await ensure(w) as { status: string; message: string };
-    expect(result.status).toBe("fail");
-    expect(result.message).toContain(p);
+    expect((await ensure(w)).status).toBe("pass");
     expect(w.manager.created).toEqual([]);
+    expect(w.manager.restored).toEqual([{ repositoryPath: "/f", workspacePath: p, branch: "conveyor/7-r1-x", baseBranch: "main" }]);
+    expect(w.store.getActiveWorkspace("i1")).toMatchObject({ id: "w1", path: p, branch: "conveyor/7-r1-x" });
   });
 
   test("declares that it invalidates the workspace snapshot", () => {

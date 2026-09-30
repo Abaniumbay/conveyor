@@ -42,8 +42,9 @@ export const cliGit: GitOps = {
     return result.exitCode === 0 ? result.stdout : null;
   },
   async aheadBehind(path, branch) {
-    if ((await cliGit.revParse(path, `refs/remotes/origin/${branch}`)) === null) return null;
-    const counts = await mustRun(path, ["rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`]);
+    const result = await run(path, ["rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`]);
+    if (result.exitCode !== 0) return null;
+    const counts = result.stdout;
     const [ahead = "0", behind = "0"] = counts.split(/\s+/);
     return { ahead: Number(ahead), behind: Number(behind) };
   },

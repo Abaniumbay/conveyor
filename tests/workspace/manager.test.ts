@@ -110,3 +110,46 @@ describe("WorkspaceManager", () => {
     ).rejects.toBeInstanceOf(WorkspaceError);
   });
 });
+
+describe("WorkspaceManager.restore", () => {
+  const input = (r: { checkout: string }, created: { path: string; branch: string }) => ({
+    repositoryPath: r.checkout, workspacePath: created.path, branch: created.branch, baseBranch: "main",
+  });
+  const make = async () => {
+    const r = await repository();
+    const manager = new WorkspaceManager(r.workspaces);
+    const created = await manager.create({
+      repositoryPath: r.checkout, repositoryId: "repo", issueNumber: 3, enrollment: 1, slug: "x", baseBranch: "main",
+    });
+    return { r, manager, created };
+  };
+
+  test("re-attaches the existing branch at the recorded path and keeps an unpushed commit", async () => {
+    const { r, manager, created } = await make();
+    await command(created.path, "git", "config", "user.name", "T");
+    await command(created.path, "git", "config", "user.email", "t@example.test");
+    await writeFile(path.join(created.path, "work.txt"), "w\n");
+    await command(created.path, "git", "add", ".");
+    await command(created.path, "git", "commit", "-m", "unpushed");
+    const head = await command(created.path, "git", "rev-parse", "HEAD");
+    await rm(created.path, { recursive: true });
+
+    await manager.restore(input(r, created));
+
+    expect(await command(created.path, "git", "rev-parse", "HEAD")).toBe(head);
+    expect(await command(created.path, "git", "branch", "--show-current")).toBe(created.branch);
+    expect(await readFile(path.join(created.path, "work.txt"), "utf8")).toBe("w\n");
+  });
+
+  test("creates the branch fresh from the base branch when it no longer exists", async () => {
+    const { r, manager, created } = await make();
+    await rm(created.path, { recursive: true });
+    await command(r.checkout, "git", "worktree", "prune");
+    await command(r.checkout, "git", "branch", "-D", created.branch);
+
+    await manager.restore(input(r, created));
+
+    expect(await command(created.path, "git", "branch", "--show-current")).toBe(created.branch);
+    expect(await command(created.path, "git", "rev-parse", "HEAD")).toBe(created.baseRevision);
+  });
+});

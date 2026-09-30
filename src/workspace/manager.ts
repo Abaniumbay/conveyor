@@ -92,29 +92,7 @@ export class WorkspaceManager {
     await mkdir(path.dirname(workspacePath), { recursive: true });
 
     const branch = `conveyor/${input.issueNumber}-r${input.enrollment}-${safeSegment(input.slug, "issue")}`;
-    let baseReference = input.baseBranch;
-    const remote = await git(repositoryPath, ["remote", "get-url", "origin"]);
-    if (remote.exitCode === 0) {
-      const fetched = await git(repositoryPath, [
-        "fetch",
-        "--prune",
-        "origin",
-        input.baseBranch,
-      ]);
-      if (fetched.exitCode !== 0) {
-        throw new WorkspaceError(
-          `cannot fetch origin/${input.baseBranch}: ${fetched.stderr || "unknown Git error"}`,
-        );
-      }
-      baseReference = `refs/remotes/origin/${input.baseBranch}`;
-    }
-
-    const revision = await git(repositoryPath, ["rev-parse", "--verify", baseReference]);
-    if (revision.exitCode !== 0) {
-      throw new WorkspaceError(
-        `base branch "${input.baseBranch}" is unavailable: ${revision.stderr || "unknown Git error"}`,
-      );
-    }
+    const revision = await this.resolveBase(repositoryPath, input.baseBranch);
 
     const created = await git(repositoryPath, [
       "worktree",
@@ -122,7 +100,7 @@ export class WorkspaceManager {
       "-b",
       branch,
       workspacePath,
-      revision.stdout,
+      revision,
     ]);
     if (created.exitCode !== 0) {
       throw new WorkspaceError(
@@ -130,7 +108,62 @@ export class WorkspaceManager {
       );
     }
 
-    return { path: workspacePath, branch, baseRevision: revision.stdout };
+    return { path: workspacePath, branch, baseRevision: revision };
+  }
+
+  /**
+   * Re-attaches the recorded workspace path after its directory went missing. The local
+   * branch is never deleted: it may hold unpushed commits. When it no longer exists it is
+   * created fresh from the base branch.
+   */
+  async restore(input: {
+    repositoryPath: string;
+    workspacePath: string;
+    branch: string;
+    baseBranch: string;
+  }): Promise<void> {
+    const repositoryPath = await this.validateRepository(input.repositoryPath);
+    const workspacePath = path.resolve(input.workspacePath);
+    this.assertManagedPath(workspacePath);
+    await git(repositoryPath, ["worktree", "prune"]);
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    const branchExists =
+      (await git(repositoryPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${input.branch}`])).exitCode === 0;
+    const args = branchExists
+      ? ["worktree", "add", workspacePath, input.branch]
+      : ["worktree", "add", "-b", input.branch, workspacePath, await this.resolveBase(repositoryPath, input.baseBranch)];
+    const added = await git(repositoryPath, args);
+    if (added.exitCode !== 0) {
+      throw new WorkspaceError(`cannot restore worktree ${workspacePath}: ${added.stderr || "unknown Git error"}`);
+    }
+  }
+
+  private async resolveBase(repositoryPath: string, baseBranch: string): Promise<string> {
+    let baseReference = baseBranch;
+    const remote = await git(repositoryPath, ["remote", "get-url", "origin"]);
+    if (remote.exitCode === 0) {
+      const fetched = await git(repositoryPath, [
+        "fetch",
+        "--prune",
+        "origin",
+        baseBranch,
+      ]);
+      if (fetched.exitCode !== 0) {
+        throw new WorkspaceError(
+          `cannot fetch origin/${baseBranch}: ${fetched.stderr || "unknown Git error"}`,
+        );
+      }
+      baseReference = `refs/remotes/origin/${baseBranch}`;
+    }
+
+    const revision = await git(repositoryPath, ["rev-parse", "--verify", baseReference]);
+    if (revision.exitCode !== 0) {
+      throw new WorkspaceError(
+        `base branch "${baseBranch}" is unavailable: ${revision.stderr || "unknown Git error"}`,
+      );
+    }
+
+    return revision.stdout;
   }
 
   async remove(input: RemoveWorkspaceInput): Promise<void> {
