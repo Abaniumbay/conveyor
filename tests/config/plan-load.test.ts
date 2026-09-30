@@ -79,6 +79,7 @@ describe("plan compilation at load", () => {
   test("loads a native pipeline that compiles against the injected registry", async () => {
     const config = await loadConfig(await write(NATIVE), registry());
     expect(config.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["sample"]);
   });
 
   test("turns a plan error into a ConfigError", async () => {

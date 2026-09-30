@@ -6,7 +6,7 @@ import type { ZodIssue } from "zod";
 
 import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskRegistry } from "../tasks/contract";
-import { compileRepositories, PlanError } from "../tasks/plan";
+import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
 
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
@@ -27,6 +27,8 @@ type ConfigurationDocument = Record<string, unknown>;
 export interface ConveyorConfig extends ConveyorConfigData {
   hash: string;
   root: string;
+  /** Compiled plans of the native-only repositories (empty when compilation is skipped). */
+  plans: CompiledPipeline[];
 }
 
 export class ConfigError extends Error {
@@ -387,9 +389,10 @@ export async function loadConfig(
     );
   }
 
+  let plans: CompiledPipeline[] = [];
   if (registry) {
     try {
-      compileRepositories(parsed.data, registry);
+      plans = compileRepositories(parsed.data, registry);
     } catch (error) {
       if (error instanceof PlanError) throw new ConfigError(error.message);
       throw error;
@@ -400,5 +403,6 @@ export async function loadConfig(
     ...parsed.data,
     hash: configurationHash(parsed.data),
     root,
+    plans,
   };
 }

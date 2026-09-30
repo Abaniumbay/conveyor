@@ -2,7 +2,7 @@
 import { loadConfig } from "./config/load";
 import { createTaskRegistry } from "./tasks/catalogue";
 import type { TaskRegistry } from "./tasks/contract";
-import { compileRepositories, renderPlan } from "./tasks/plan";
+import { renderPlan } from "./tasks/plan";
 import { ConveyorService } from "./app/service";
 import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
 import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
@@ -30,7 +30,7 @@ export async function checkConfig(
   registry: TaskRegistry = createTaskRegistry(),
 ): Promise<string> {
   const config = await loadConfig(configPath, registry);
-  const plans = compileRepositories(config, registry).map(renderPlan);
+  const plans = config.plans.map(renderPlan);
   return [`Configuration is valid (${config.hash})`, ...plans].join("\n\n");
 }
 

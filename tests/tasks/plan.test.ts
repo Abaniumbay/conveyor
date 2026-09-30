@@ -154,6 +154,40 @@ describe("compilePipeline", () => {
     expect(message).toMatch(/duplicate instance id "x"/);
   });
 
+  test("instance ids are unique across the actions and exit-gate of a stage", () => {
+    const message = errorsOf(
+      simple([{ id: "x", task: "workspace.ensure" }], [{ id: "x", task: "workspace.pushed" }]),
+    );
+    expect(message).toMatch(/exit-gate\[0\].*duplicate instance id "x"/);
+  });
+
+  test("an un-id'd entry whose default id repeats an explicit id is reported", () => {
+    const message = errorsOf(
+      simple([{ id: "workspace.ensure", task: "agent.run" }, { task: "workspace.ensure" }]),
+    );
+    expect(message).toMatch(/actions\[1\].*duplicate instance id "workspace.ensure"/);
+  });
+
+  test("reports a missing loader once per key per list", () => {
+    const r = new TaskRegistry();
+    r.register(
+      defineGroup("workspace", [
+        def({ name: "workspace.pushed", kind: "check", reads: ["workspace"] }),
+        def({ name: "workspace.clean", kind: "check", reads: ["workspace"] }),
+      ]),
+    );
+    try {
+      compilePipeline({
+        config: build(simple([], [{ task: "workspace.pushed" }, { task: "workspace.clean" }])),
+        repositoryId: "sample",
+        registry: r,
+      });
+      throw new Error("expected throw");
+    } catch (error) {
+      expect((error as PlanError).errors).toHaveLength(1);
+    }
+  });
+
   test("guards resolve from the repository ci mode", () => {
     const pipeline = simple(
       [{ task: "workspace.ensure" }, { task: "ci.start", when: "ci.enabled" }],
@@ -206,6 +240,14 @@ describe("compilePipeline", () => {
     expect(run.with).toEqual({ recovery: "reconcile", script: "/b" });
     expect(run.wait).toEqual({ timeoutMs: 60_000, pollMs: 9_000 });
     expect(run.onFail).toEqual({ retry: true });
+  });
+
+  test("an override wait timeout replaces the entry timeout and keeps the poll", () => {
+    const plan = compile(
+      simple([], [{ id: "gate", task: "ci.passed", wait: { timeout: "1m", poll: "3s" } }]),
+      { overrides: { stages: { impl: { "exit-gate": { gate: { wait: { timeout: "unlimited" } } } } } } },
+    );
+    expect(plan.stages[0]!.exitGate[0]!.wait).toEqual({ timeoutMs: null, pollMs: 3_000 });
   });
 
   test("errors on overrides naming an unknown stage, list or instance", () => {

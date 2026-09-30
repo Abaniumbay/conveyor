@@ -124,21 +124,17 @@ interface Entry {
   config: TaskEntryConfig;
 }
 
-function instanceIds(list: TaskEntryConfig[], listPath: string, errors: string[]): Entry[] {
+function instanceIds(list: TaskEntryConfig[], listPath: string, seen: Set<string>, errors: string[]): Entry[] {
   const counts = new Map<string, number>();
   for (const entry of list) counts.set(entry.task, (counts.get(entry.task) ?? 0) + 1);
-  const seen = new Set<string>();
   return list.map((config, index) => {
     const path = `${listPath}[${index}]`;
-    let id = config.id;
-    if (id === undefined) {
-      id = config.task;
-      if ((counts.get(config.task) ?? 0) > 1) {
-        errors.push(`${path}: task "${config.task}" occurs more than once and needs an explicit id`);
-      }
-    }
-    if (seen.has(id)) {
-      if (config.id !== undefined) errors.push(`${path}: duplicate instance id "${id}"`);
+    const id = config.id ?? config.task;
+    const ambiguous = config.id === undefined && (counts.get(config.task) ?? 0) > 1;
+    if (ambiguous) {
+      errors.push(`${path}: task "${config.task}" occurs more than once and needs an explicit id`);
+    } else if (seen.has(id)) {
+      errors.push(`${path}: duplicate instance id "${id}" in stage`);
     }
     seen.add(id);
     return { path, id, config };
@@ -151,9 +147,10 @@ function compileStage(input: StageInput): CompiledStage {
   const mode = repository.ci.mode;
   const stageOverrides = repository.overrides?.stages?.[stage.id];
 
+  const seenIds = new Set<string>();
   const lists: Record<ListName, Entry[]> = {
-    actions: instanceIds(stage.actions, `${prefix}.actions`, errors),
-    "exit-gate": instanceIds(stage.exitGate, `${prefix}.exit-gate`, errors),
+    actions: instanceIds(stage.actions, `${prefix}.actions`, seenIds, errors),
+    "exit-gate": instanceIds(stage.exitGate, `${prefix}.exit-gate`, seenIds, errors),
   };
 
   const overrideFor = new Map<string, TaskOverrideConfig>();
@@ -270,13 +267,17 @@ function checkDataflow(
   for (const list of ["actions", "exit-gate"] as const) {
     // The exit gate re-evaluates with fresh loads, so nothing counts as loaded.
     const loaded = new Set<SnapshotKey>();
+    const reportedMissing = new Set<SnapshotKey>();
     for (const task of compiled[list]) {
       const where = pathOf(list, task);
       for (const key of task.reads) {
         if (isSnapshotKey(key)) {
           if (loaded.has(key)) continue;
           if (!registry.loaderFor(key)) {
-            errors.push(`${where}: ${task.task} reads ${key} but no loader is registered for it`);
+            if (!reportedMissing.has(key)) {
+              reportedMissing.add(key);
+              errors.push(`${where}: ${task.task} reads ${key} but no loader is registered for it`);
+            }
             continue;
           }
           loaded.add(key);
