@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ConveyorConfig } from "../config/load";
+import { isNativeStage, type StageConfig } from "../config/schema";
 import { PipelineEngine, type PipelineDependencies, type StageExecutionResult } from "../core/pipeline";
 import { applyStageTransition, type TransitionSource } from "../core/transition";
 import type { ConveyorStore, StoredIssue } from "../db/store";
@@ -47,6 +48,15 @@ export class IssueExecutor {
     }
     const pipeline = this.dependencies.config.pipelines[repository.pipeline];
     if (!pipeline) throw new Error(`unknown pipeline: ${repository.pipeline}`);
+    const legacyStages = pipeline.stages.filter((stage): stage is StageConfig => !isNativeStage(stage));
+    if (legacyStages.length !== pipeline.stages.length) {
+      throw new Error(`pipeline ${repository.pipeline} has task-chain stages, which cannot be executed yet`);
+    }
+    const legacyPipeline = {
+      successStatuses: pipeline.successStatuses ?? [],
+      failureStatuses: pipeline.failureStatuses ?? [],
+      stages: legacyStages,
+    };
     const stageId = issue.projectedStage ?? pipeline.stages[0]?.id;
     if (!stageId) throw new Error(`pipeline ${repository.pipeline} has no stage`);
     const state = this.dependencies.store.getStageState(issue.id);
@@ -115,7 +125,7 @@ export class IssueExecutor {
       delivery,
     };
     const engine = new PipelineEngine(
-      pipeline,
+      legacyPipeline,
       this.dependencies.runtime(context, refreshDeliveryState),
       this.dependencies.config.settings.feedbackCycles,
     );
@@ -139,7 +149,7 @@ export class IssueExecutor {
         labels: this.dependencies.config.labels,
         result,
         actor: (() => {
-          const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
+          const stage = legacyStages.find((candidate) => candidate.id === stageId);
           if (stage?.run.type === "agent") {
             const agent = this.dependencies.config.agents[stage.run.agent];
             return {

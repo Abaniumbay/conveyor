@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
+import { isNativeStage } from "../config/schema";
 import type {
   CheckContext,
   CheckResult,
@@ -222,7 +223,8 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
   } {
     const repository = this.config.repositories[this.context.repository.id];
     const pipeline = repository ? this.config.pipelines[repository.pipeline] : undefined;
-    const stage = pipeline?.stages.find((candidate) => candidate.id === stageId);
+    const found = pipeline?.stages.find((candidate) => candidate.id === stageId);
+    const stage = found && !isNativeStage(found) ? found : undefined;
     return {
       allowedSuccessStatuses: [...(stage?.successStatuses ?? pipeline?.successStatuses ?? [])],
       allowedFailureStatuses: [...(stage?.failureStatuses ?? pipeline?.failureStatuses ?? [])],

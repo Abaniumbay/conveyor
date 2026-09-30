@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfigError, loadConfig } from "../../src/config/load";
+import type { StageConfig } from "../../src/config/schema";
 
 const temporaryDirectories: string[] = [];
 
@@ -128,7 +129,7 @@ sources:
       "source.get_issue",
       "run.report_progress",
     ]);
-    expect(config.pipelines.default?.stages[0]?.run).toEqual({
+    expect((config.pipelines.default?.stages[0] as StageConfig | undefined)?.run).toEqual({
       type: "script",
       runner: "process",
       script: path.join(directory, "scripts/inspect.ts"),
@@ -210,7 +211,7 @@ ci:
 `);
     const config = await loadConfig(directory);
     expect(config.ci.actions?.triggers[0]).toMatchObject({ label: "go", workflow: "build.yml", check: "Build" });
-    expect(config.repositories.sample?.ci).toBeUndefined();
+    expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
 
   test("reports unknown CI provider references with the repository path", async () => {
@@ -285,6 +286,6 @@ repositories:
   sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
 `);
     const config = await loadConfig(directory);
-    expect(config.repositories.sample?.ci).toBeUndefined();
+    expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
 });

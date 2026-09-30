@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { MCP_AGENT_TOOLS } from "../mcp/tools";
 
+import type { Route } from "../tasks/contract";
+
 import { parseDuration } from "./duration";
 
 const durationSchema = z
@@ -37,6 +39,11 @@ const retrySchema = z
   .strict()
   .prefault({});
 
+/** A duration, or "unlimited" which normalises to null. */
+const waitTimeoutSchema = z.union([z.literal("unlimited"), durationSchema]).transform((value) =>
+  value === "unlimited" ? null : value,
+);
+
 const settingsSchema = z
   .object({
     runners: z.number().int().positive().default(1),
@@ -49,6 +56,24 @@ const settingsSchema = z
     labelPrefix: identifierSchema.default("conveyor"),
     interruptGrace: durationSchema.prefault("10s"),
     retries: retrySchema,
+    maxReturns: z.number().int().nonnegative().default(5),
+    taskDefaults: z
+      .object({
+        wait: z
+          .object({
+            timeout: waitTimeoutSchema.prefault("30m"),
+            poll: durationSchema.prefault("1m"),
+          })
+          .strict()
+          .prefault({}),
+      })
+      .strict()
+      .prefault({})
+      .transform(({ wait }) => ({ wait: { timeoutMs: wait.timeout, pollMs: wait.poll } })),
+    history: z
+      .object({ contextSummaryBytes: z.number().int().positive().default(65536) })
+      .strict()
+      .prefault({}),
   })
   .strict()
   .transform(({ reconcileInterval, interruptGrace, ...settings }) => ({
@@ -190,14 +215,95 @@ const stageSchema = z
   })
   .strict();
 
+const waitSchema = z
+  .object({
+    timeout: waitTimeoutSchema.optional(),
+    poll: durationSchema.optional(),
+  })
+  .strict()
+  .transform(({ timeout, poll }) => ({
+    ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
+    ...(poll !== undefined ? { pollMs: poll } : {}),
+  }));
+
+const onFailSchema = z
+  .union([
+    z.literal("retry"),
+    z.object({ return: identifierSchema }).strict(),
+    z.object({ stop: identifierSchema }).strict(),
+  ])
+  .transform((value): Route => (value === "retry" ? { retry: true } : value));
+
+const taskOverrideSchema = z
+  .object({
+    with: z.record(z.string(), z.unknown()).optional(),
+    wait: waitSchema.optional(),
+    onFail: onFailSchema.optional(),
+  })
+  .strict();
+
+const taskEntrySchema = z
+  .object({
+    id: identifierSchema.optional(),
+    task: identifierSchema,
+    when: z.enum(["ci.enabled", "ci.required", "ci.advisory"]).optional(),
+  })
+  .extend(taskOverrideSchema.shape)
+  .strict();
+
+const nativeStageSchema = z
+  .object({
+    id: identifierSchema,
+    concurrency: z.number().int().positive(),
+    retries: z.number().int().nonnegative().default(2),
+    childrenStartAt: identifierSchema.optional(),
+    actions: z.array(taskEntrySchema),
+    "exit-gate": z.array(taskEntrySchema).min(1),
+  })
+  .strict()
+  .transform(({ "exit-gate": exitGate, ...stage }) => ({ ...stage, exitGate }));
+
+/** Accepts a native (task-chain) or legacy (`run`) stage; mixing the two is an error. */
+const anyStageSchema = z.unknown().transform((value, context) => {
+  const fail = (message: string) => {
+    context.addIssue({ code: "custom", message });
+    return z.NEVER;
+  };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return fail("stage must be an object");
+  }
+  const native = "actions" in value || "exit-gate" in value;
+  const legacy = "run" in value;
+  if (native && legacy) return fail('a stage is either native (actions/exit-gate) or legacy (run), not both');
+  const parsed = (native ? nativeStageSchema : stageSchema).safeParse(value);
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      context.addIssue({ code: "custom", message: issue.message, path: issue.path });
+    }
+    return z.NEVER;
+  }
+  return parsed.data;
+});
+
 const pipelineSchema = z
   .object({
-    successStatuses: z.array(identifierSchema).min(1),
-    failureStatuses: z.array(identifierSchema).min(1),
-    stages: z.array(stageSchema).min(1),
+    successStatuses: z.array(identifierSchema).min(1).optional(),
+    failureStatuses: z.array(identifierSchema).min(1).optional(),
+    stages: z.array(anyStageSchema).min(1),
   })
   .strict()
   .superRefine((pipeline, context) => {
+    if (pipeline.stages.some((stage) => "run" in stage)) {
+      for (const key of ["successStatuses", "failureStatuses"] as const) {
+        if (!pipeline[key]) {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} is required when the pipeline has legacy (run) stages`,
+          });
+        }
+      }
+    }
     const seen = new Set<string>();
     for (const [index, stage] of pipeline.stages.entries()) {
       if (seen.has(stage.id)) {
@@ -223,6 +329,31 @@ const ciProviderSchema = z.object({
   triggers: z.array(ciTriggerSchema).default([]),
 }).strict();
 
+const ciModeSchema = z.enum(["required", "advisory", "disabled"]);
+
+/** A legacy provider name, or an object; normalised to { provider, mode, ignoreChecks }. */
+const repositoryCiSchema = z
+  .union([
+    identifierSchema,
+    z
+      .object({
+        provider: identifierSchema.optional(),
+        mode: ciModeSchema,
+        ignoreChecks: z.array(identifierSchema).default([]),
+      })
+      .strict(),
+  ])
+  .optional()
+  .transform((value) => {
+    if (value === undefined) {
+      return { provider: null as string | null, mode: "required" as z.infer<typeof ciModeSchema>, ignoreChecks: [] as string[] };
+    }
+    if (typeof value === "string") {
+      return { provider: value as string | null, mode: "required" as z.infer<typeof ciModeSchema>, ignoreChecks: [] as string[] };
+    }
+    return { provider: (value.provider ?? null) as string | null, mode: value.mode, ignoreChecks: value.ignoreChecks };
+  });
+
 const repositorySchema = z
   .object({
     source: identifierSchema,
@@ -231,7 +362,27 @@ const repositorySchema = z
     folder: absolutePathSchema,
     baseBranch: identifierSchema.default("main"),
     pipeline: identifierSchema,
-    ci: identifierSchema.optional(),
+    ci: repositoryCiSchema,
+    overrides: z
+      .object({
+        stages: z
+          .record(
+            identifierSchema,
+            z
+              .object({
+                actions: z.record(identifierSchema, taskOverrideSchema).optional(),
+                "exit-gate": z.record(identifierSchema, taskOverrideSchema).optional(),
+              })
+              .strict()
+              .transform(({ "exit-gate": exitGate, ...stage }) => ({
+                ...stage,
+                ...(exitGate ? { exitGate } : {}),
+              })),
+          )
+          .default({}),
+      })
+      .strict()
+      .optional(),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
   })
@@ -268,5 +419,13 @@ export const configSchema = z
   .strict();
 
 export type ConveyorConfigData = z.output<typeof configSchema>;
-export type StageConfig = ConveyorConfigData["pipelines"][string]["stages"][number];
+export type PipelineStageConfig = ConveyorConfigData["pipelines"][string]["stages"][number];
+export type NativeStageConfig = z.output<typeof nativeStageSchema>;
+export type StageConfig = z.output<typeof stageSchema>;
 export type StageRunConfig = StageConfig["run"];
+export type TaskEntryConfig = z.output<typeof taskEntrySchema>;
+export type TaskOverrideConfig = z.output<typeof taskOverrideSchema>;
+
+export function isNativeStage(stage: PipelineStageConfig): stage is NativeStageConfig {
+  return "actions" in stage;
+}

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { ConfiguredStageRuntime } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
+import type { StageConfig } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { RunEnvelope } from "../../src/runner/result";
 
@@ -190,7 +191,7 @@ repositories:
         },
       },
     );
-    const stage = config.pipelines.default!.stages[0]!;
+    const stage = config.pipelines.default!.stages[0]! as StageConfig;
     const context = {
       issue: issue as unknown as Record<string, unknown>,
       workspace: repository,
@@ -204,7 +205,7 @@ repositories:
       decision: "fail",
       sessionId: "check-thread",
     });
-    expect(await runtime.runProducer(config.pipelines.default!.stages[1]!, {
+    expect(await runtime.runProducer(config.pipelines.default!.stages[1]! as StageConfig, {
       ...context,
       stageId: "deploy",
     })).toMatchObject({ stageResult: { summary: "Deployment completed" } });

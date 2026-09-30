@@ -4,7 +4,7 @@ import path from "node:path";
 import { parse } from "yaml";
 import type { ZodIssue } from "zod";
 
-import { configSchema, type ConveyorConfigData } from "./schema";
+import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
   "sources",
@@ -42,6 +42,16 @@ function resolvePath(value: unknown, baseDirectory: string): unknown {
     return value;
   }
   return path.resolve(baseDirectory, value);
+}
+
+function resolveScriptWith(holder: unknown, baseDirectory: string): void {
+  if (isObject(holder) && isObject(holder.with) && "script" in holder.with) {
+    holder.with.script = resolvePath(holder.with.script, baseDirectory);
+  }
+}
+
+function resolveScriptEntry(entry: unknown, baseDirectory: string): void {
+  if (isObject(entry) && entry.task === "script.run") resolveScriptWith(entry, baseDirectory);
 }
 
 function normalizeDocumentPaths(
@@ -88,9 +98,12 @@ function normalizeDocumentPaths(
     for (const pipeline of Object.values(document.pipelines)) {
       if (!isObject(pipeline) || !Array.isArray(pipeline.stages)) continue;
       for (const stage of pipeline.stages) {
-        if (!isObject(stage) || !isObject(stage.run)) continue;
-        if ("script" in stage.run) {
+        if (!isObject(stage)) continue;
+        if (isObject(stage.run) && "script" in stage.run) {
           stage.run.script = resolvePath(stage.run.script, baseDirectory);
+        }
+        for (const list of [stage.actions, stage["exit-gate"]]) {
+          if (Array.isArray(list)) for (const entry of list) resolveScriptEntry(entry, baseDirectory);
         }
       }
     }
@@ -100,6 +113,14 @@ function normalizeDocumentPaths(
     for (const repository of Object.values(document.repositories)) {
       if (isObject(repository) && "folder" in repository) {
         repository.folder = resolvePath(repository.folder, baseDirectory);
+      }
+      if (isObject(repository) && isObject(repository.overrides) && isObject(repository.overrides.stages)) {
+        for (const stage of Object.values(repository.overrides.stages)) {
+          if (!isObject(stage)) continue;
+          for (const group of [stage.actions, stage["exit-gate"]]) {
+            if (isObject(group)) for (const override of Object.values(group)) resolveScriptWith(override, baseDirectory);
+          }
+        }
       }
     }
   }
@@ -194,6 +215,14 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = `pipelines.${pipelineName}.stages.${index}`;
+      if (isNativeStage(stage)) {
+        if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
+          if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
+            errors.push(`${prefix}.childrenStartAt references unknown stage "${stage.childrenStartAt}"`);
+          }
+        }
+        continue;
+      }
       if (stage.enterCheck && !config.checks[stage.enterCheck]) {
         errors.push(`${prefix}.enterCheck references unknown check "${stage.enterCheck}"`);
       }
@@ -256,17 +285,18 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
         `repositories.${name}.pipeline references unknown pipeline "${repository.pipeline}"`,
       );
     }
-    if (repository.ci && !config.ci[repository.ci]) {
-      errors.push(`repositories.${name}.ci references unknown CI provider "${repository.ci}"`);
+    const ciName = repository.ci.provider;
+    if (ciName && !config.ci[ciName]) {
+      errors.push(`repositories.${name}.ci references unknown CI provider "${ciName}"`);
     }
-    if (repository.ci && config.ci[repository.ci]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
+    if (ciName && config.ci[ciName]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
       errors.push(`repositories.${name}.ci is incompatible with sources.${repository.source}`);
     }
     {
-      const providerName = repository.ci;
+      const providerName = ciName;
       const provider = providerName ? config.ci[providerName] : undefined;
       for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
-        if (stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
+        if (isNativeStage(stage) || stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
         if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
       }
     }

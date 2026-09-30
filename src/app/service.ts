@@ -4,6 +4,7 @@ import { freemem, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
+import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition } from "../core/transition";
@@ -551,10 +552,10 @@ export class ConveyorService {
   private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
     const repository = this.config.repositories[repositoryId];
     if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
-    const providerName = repository.ci ?? "actions";
+    const providerName = repository.ci.provider ?? "actions";
     // Unreferenced named providers are inert. An omitted repository reference
     // selects its source-native provider with no named-provider configuration.
-    const configured = repository.ci ? this.config.ci[repository.ci] : undefined;
+    const configured = repository.ci.provider ? this.config.ci[repository.ci.provider] : undefined;
     const stageTriggers = stageInput?.triggers;
     const configuredTriggers = configured?.triggers;
     const triggers = parseGitHubActionsTriggers(
@@ -584,7 +585,7 @@ export class ConveyorService {
     const stage = repository
       ? this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId)
       : undefined;
-    return Boolean(stage && stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck);
+    return Boolean(stage && !isNativeStage(stage) && stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck);
   }
 
   private interruptIneligibleRuns(): void {
@@ -1664,7 +1665,7 @@ export class ConveyorService {
       for (const pipeline of Object.values(this.config.pipelines)) {
         const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
         if (!stage) continue;
-        if (stage.run?.type !== "agent") {
+        if (isNativeStage(stage) || stage.run?.type !== "agent") {
           actors.push({ type: "script", name: "Script", title: null });
           continue;
         }
@@ -1926,7 +1927,8 @@ export class ConveyorService {
     const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
     const actorFor = (stageId: string | null): string => {
       if (!stageId) return "Conveyor · Orchestrator";
-      const stage = pipeline?.stages.find((candidate) => candidate.id === stageId);
+      const found = pipeline?.stages.find((candidate) => candidate.id === stageId);
+      const stage = found && !isNativeStage(found) ? found : undefined;
       if (stage?.run.type === "agent") {
         const agent = this.config.agents[stage.run.agent];
         return `${agent?.name ?? displayName(stage.run.agent)} · ${agent?.title ?? "AI Agent"}`;
