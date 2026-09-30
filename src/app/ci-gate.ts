@@ -16,6 +16,8 @@ export class ExternalWaitError extends Error {
   constructor(
     message: string,
     readonly retryAfterMs: number,
+    /** Posted once to the shared conversation (e.g. "CI started", with links). */
+    readonly announcement: string | null = null,
   ) {
     super(message);
   }
@@ -74,10 +76,11 @@ export interface CiGateMemory {
   firstSeen: Map<string, number>;
   triggered: Map<string, number>;
   reruns: Set<string>;
+  announced: Set<string>;
 }
 
 export function createCiGateMemory(): CiGateMemory {
-  return { firstSeen: new Map(), triggered: new Map(), reruns: new Set() };
+  return { firstSeen: new Map(), triggered: new Map(), reruns: new Set(), announced: new Set() };
 }
 
 const PASSING = new Set(["success", "skipped", "neutral"]);
@@ -258,7 +261,7 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
       requiredFixes: failed.map(
         (check) => `Make the "${check.name}" check pass on the pull request head (${check.url ?? "no URL"}); read its log with delivery.get_check_logs.`,
       ),
-      summary: `CI failed at ${short}: ${names}.\n\n${sections.join("\n\n")}`,
+      summary: `CI failed at ${short}: ${names}.\n${input.pullRequestUrl}/checks\n\n${sections.join("\n\n")}`,
     };
   }
 
@@ -275,19 +278,32 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
         summary: `CI timed out at ${short}.`,
       };
     }
+    // Announce once per head, as soon as there is something to link to.
+    let announcement: string | null = null;
+    if (checks.length > 0 && !memory.announced.has(key)) {
+      memory.announced.add(key);
+      announcement = [
+        `CI started for ${short}: ${input.pullRequestUrl}/checks`,
+        ...checks.map((check) => `- ${check.name}: ${check.url ?? "no link"}`),
+        ...awaitingStart.map((name) => `- ${name}: starting`),
+      ].join("\n");
+    }
     throw new ExternalWaitError(
       `Waiting for CI at ${short}: ${waitingOn.join(", ") || "checks to register"}.`,
       options.pollMs,
+      announcement,
     );
   }
 
-  const passed = checks.map((check) => `${check.name} (${check.conclusion})`);
   return {
     outcome: "success",
     status: "done",
     reason: null,
-    summary: passed.length > 0
-      ? `CI passed at ${short}: ${passed.join(", ")}.`
+    summary: checks.length > 0
+      ? [
+          `CI passed at ${short}: ${input.pullRequestUrl}/checks`,
+          ...checks.map((check) => `- ${check.name} (${check.conclusion}): ${check.url ?? "no link"}`),
+        ].join("\n")
       : `No CI checks reported for ${short}.`,
   };
 }

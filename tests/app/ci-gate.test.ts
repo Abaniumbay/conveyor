@@ -134,6 +134,25 @@ describe("CI gate", () => {
     await expect(gate(github, memory, 61_000)).resolves.toMatchObject({ outcome: "success", status: "done" });
   });
 
+  test("announces CI once per head with links, and links every check when it passes", async () => {
+    const github = new FakeGitHub();
+    github.checks = [check(1, "Tests", "in_progress", null)];
+    const memory = createCiGateMemory();
+
+    const first = (await gate(github, memory, 0).catch((caught) => caught)) as ExternalWaitError;
+    expect(first.announcement).toBe(
+      "CI started for abcdef1: https://github.com/owner/repo/pull/7/checks\n- Tests: https://ci/1",
+    );
+    const second = (await gate(github, memory, 30_000).catch((caught) => caught)) as ExternalWaitError;
+    expect(second.announcement).toBeNull();
+
+    github.checks = [check(1, "Tests", "completed", "success")];
+    const outcome = await gate(github, memory, 120_000);
+    expect(outcome.summary).toBe(
+      "CI passed at abcdef1: https://github.com/owner/repo/pull/7/checks\n- Tests (success): https://ci/1",
+    );
+  });
+
   test("reruns a cancelled job once, then treats a second cancellation as a failure", async () => {
     const github = new FakeGitHub();
     github.checks = [check(4, "Tests", "completed", "cancelled")];

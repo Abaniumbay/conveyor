@@ -113,11 +113,12 @@ describe("source-action stages", () => {
     expect(messages).toEqual(["CI failed at abc1234: Tests (failure).\n\n### Tests — failure\nlog tail"]);
   });
 
-  test("a passing CI outcome advances, and a pending one is rethrown without narrating", async () => {
+  test("a passing CI outcome advances, and a pending one is rethrown, narrating only its announcement", async () => {
     let pending = true;
+    let announce = true;
     const { config, store, issue, runtime } = await setup({
       async run() {
-        if (pending) throw new ExternalWaitError("Waiting for CI at abc1234: Tests.", 1_000);
+        if (pending) throw new ExternalWaitError("Waiting for CI at abc1234: Tests.", 1_000, announce ? "CI started for abc1234: https://pr/checks" : null);
         return { outcome: "success", status: "done", reason: null, summary: "CI passed at abc1234: Tests (success)." };
       },
     });
@@ -125,11 +126,16 @@ describe("source-action stages", () => {
     const input = { issue: issue as unknown as Record<string, unknown>, workspace: null };
 
     await expect(engine.executeStage("ci", input)).rejects.toBeInstanceOf(ExternalWaitError);
-    expect(store.listConversationMessages(issue.id, 10)).toEqual([]);
+    announce = false;
+    await expect(engine.executeStage("ci", input)).rejects.toBeInstanceOf(ExternalWaitError);
+    expect(store.listConversationMessages(issue.id, 10).map((message) => message.message)).toEqual([
+      "CI started for abc1234: https://pr/checks",
+    ]);
 
     pending = false;
     await expect(engine.executeStage("ci", input)).resolves.toMatchObject({ kind: "advance", nextStageId: null });
     expect(store.listConversationMessages(issue.id, 10).map((message) => message.message)).toEqual([
+      "CI started for abc1234: https://pr/checks",
       "CI passed at abc1234: Tests (success).",
     ]);
   });

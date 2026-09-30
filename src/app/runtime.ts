@@ -273,8 +273,10 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           stderr: "",
         };
       } catch (error) {
-        // A pending external condition is polled quietly; only real failures are narrated.
-        if (!(error instanceof ExternalWaitError)) {
+        // A pending external condition is polled quietly, apart from its one-off announcement.
+        if (error instanceof ExternalWaitError) {
+          if (error.announcement) this.conveyorMessage(issue.id, stage.id, null, error.announcement);
+        } else {
           this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         throw error;
