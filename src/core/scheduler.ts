@@ -7,6 +7,12 @@ export interface SchedulerCandidate {
   eligible: boolean;
   dependenciesSatisfied: boolean;
   rollupOnly?: boolean;
+  /**
+   * A stage that only runs an in-process source action (no producer or verifier
+   * process). It needs no runner and must not queue behind long agent runs, so
+   * it is bounded by its stage limit only.
+   */
+  lightweight?: boolean;
 }
 
 export interface ConcurrencyLimits {
@@ -55,6 +61,12 @@ export function selectRunnableIssues(
     const repositoryLimit = limits.repositories[candidate.repositoryId] ?? 0;
     const usedByStage = stageUsage[candidate.stageId] ?? 0;
     const usedByRepository = repositoryUsage[candidate.repositoryId] ?? 0;
+    if (candidate.lightweight) {
+      if (usedByStage >= stageLimit) continue;
+      selected.push(candidate);
+      stageUsage[candidate.stageId] = usedByStage + 1;
+      continue;
+    }
     if (
       globalUsage >= limits.global ||
       usedByStage >= stageLimit ||
