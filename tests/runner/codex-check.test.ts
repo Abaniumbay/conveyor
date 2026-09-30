@@ -180,6 +180,7 @@ describe("runCodexCheck", () => {
     })).rejects.toMatchObject({ kind: "process", exitCode: 2 });
 
     const slow = await fixture(`
+      console.error("timeout diagnostic");
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     `);
     const input = {
@@ -192,8 +193,10 @@ describe("runCodexCheck", () => {
       mcp: { command: "bun", args: [] },
       interruptGraceMs: 20,
     };
-    await expect(runCodexCheck({ ...input, timeoutMs: 20 })).rejects.toMatchObject({
+    await expect(runCodexCheck({ ...input, timeoutMs: 100 })).rejects.toMatchObject({
       kind: "timeout",
+      stderr: expect.stringContaining("timeout diagnostic"),
+      message: expect.stringContaining("timeout diagnostic"),
     });
 
     const controller = new AbortController();

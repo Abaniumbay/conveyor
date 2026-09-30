@@ -80,7 +80,7 @@ describe("ConveyorService steering", () => {
           summary: "Updated the board and verified the tests.",
           sessionId: "thread-1",
           usage: { inputTokens: 100, outputTokens: 20, cachedTokens: 50 },
-          cost: { amount: 0, currency: "USD", source: "unavailable" },
+          cost: { amount: 0.025, currency: "USD", source: "reported" },
           durationMs: 1500,
           exitCode: 0,
         };
@@ -101,7 +101,7 @@ describe("ConveyorService steering", () => {
     ]);
     expect(store.listRunEvents(runId).some((event) => event.type === "activity")).toBe(false);
     expect(store.listRunEvents(runId).some((event) => event.type === "report_rationale")).toBe(true);
-    expect(store.costSummary()).toMatchObject({ runs: 1, unavailableRuns: 1 });
+    expect(store.costSummary()).toMatchObject({ runs: 1, amount: 0.025, unavailableRuns: 0 });
     await service.close();
   });
 });

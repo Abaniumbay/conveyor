@@ -176,7 +176,7 @@ export async function runCodexCheck(
     });
   } catch (error) {
     if (error instanceof HarnessError) {
-      throw new CodexRunnerError(error.message, error.kind, null, "", { cause: error });
+      throw new CodexRunnerError(error.message, error.kind, null, error.stderr, { cause: error });
     }
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,

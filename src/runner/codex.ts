@@ -145,7 +145,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     });
   } catch (error) {
     if (error instanceof HarnessError) {
-      throw new CodexRunnerError(error.message, error.kind, null, "", { cause: error });
+      throw new CodexRunnerError(error.message, error.kind, null, error.stderr, { cause: error });
     }
     throw error;
   }

@@ -148,7 +148,7 @@ repositories:
       },
       sessionId: "producer-thread",
       usage: { inputTokens: 20, outputTokens: 5, cachedTokens: 2 },
-      cost: { amount: 0, currency: "USD", source: "unavailable" },
+      cost: { amount: 0.125, currency: "USD", source: "reported" },
       durationMs: 50,
       exitCode: 0,
       artifacts: [],
@@ -202,7 +202,7 @@ repositories:
             durationMs: 25,
             exitCode: 0,
             stderr: "",
-            cost: { amount: 0, currency: "USD", source: "unavailable" },
+            cost: { amount: 0.075, currency: "USD", source: "reported" },
             };
           },
           async runSteering() { throw new Error("unused"); },
@@ -260,6 +260,8 @@ repositories:
     expect((checkInputs[0] as { prompt: string }).prompt).toContain('"blocked"');
     expect(store.costSummary()).toMatchObject({
       runs: 3,
+      amount: 0.325,
+      unavailableRuns: 0,
       inputTokens: 50,
       outputTokens: 13,
       durationMs: 125,

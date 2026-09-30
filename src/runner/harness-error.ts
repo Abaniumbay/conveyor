@@ -8,7 +8,12 @@ export type HarnessErrorKind =
 export class HarnessError extends Error {
   override readonly name: string = "HarnessError";
 
-  constructor(message: string, readonly kind: HarnessErrorKind, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    readonly kind: HarnessErrorKind,
+    options?: ErrorOptions,
+    readonly stderr = "",
+  ) {
     super(message, options);
   }
 }
