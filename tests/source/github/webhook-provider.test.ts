@@ -5,7 +5,7 @@ import type { ProviderEvent } from "../../../src/app/provider-event";
 
 const sha = "a".repeat(40);
 
-function signed(provider: GitHubWebhookProvider, eventType: string, payload: unknown, deliveryId = randomUUID()) {
+function signed(provider: GitHubWebhookProvider, eventType: string, payload: unknown, deliveryId: string = randomUUID()) {
   const body = new TextEncoder().encode(JSON.stringify(payload));
   const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
   return provider.receive(body, new Headers({
@@ -19,7 +19,7 @@ function providerFixture() {
   const deliveries = new Set<string>();
   const recorded: unknown[] = [];
   const provider = new GitHubWebhookProvider({
-    recordSourceEvent(event) {
+    recordSourceEvent(event: { source: string; deliveryId: string; eventType: string; payload: unknown }) {
       recorded.push(event);
       if (deliveries.has(event.deliveryId)) return false;
       deliveries.add(event.deliveryId);

@@ -21,8 +21,6 @@ describe("CI gate event wakeups", () => {
     const waits = new CiGateWaitRegistry();
     const commit = "a".repeat(40);
     waits.track("issue-1", "repo", "7", commit);
-    expect(waits.wakeCommit("repo", commit)).toEqual([]);
-    expect(waits.wakeCommit("repo", commit)).toEqual([]);
     expect(waits.park("issue-1")).toBe(true);
     expect(waits.wakeCommit("repo", commit)).toEqual(["issue-1"]);
     expect(waits.wakeCommit("repo", commit)).toEqual([]);
@@ -32,6 +30,18 @@ describe("CI gate event wakeups", () => {
     expect(waits.wakeCommit("repo", commit)).toEqual(["issue-1"]);
     waits.track("issue-1", "repo", "7", "b".repeat(40));
     expect(waits.wakeCommit("repo", commit)).toEqual([]);
+    expect(waits.park("issue-1")).toBe(true);
+  });
+
+  test("does not lose a matching event received while evaluation is about to park", () => {
+    const waits = new CiGateWaitRegistry();
+    const commit = "a".repeat(40);
+    waits.track("issue-1", "repo", "7", commit);
+
+    expect(waits.wakeCommit("repo", commit)).toEqual([]);
+    expect(waits.wakeCommit("repo", commit)).toEqual([]);
+    // false tells the service to schedule an immediate retry instead of deferring.
+    expect(waits.park("issue-1")).toBe(false);
     expect(waits.park("issue-1")).toBe(true);
   });
 
@@ -52,7 +62,7 @@ describe("CI gate event wakeups", () => {
     expect(waits.park("issue-1")).toBe(true);
     const seen = new Set<string>();
     const provider = new GitHubWebhookProvider({
-      recordSourceEvent(event) {
+      recordSourceEvent(event: { source: string; deliveryId: string; eventType: string; payload: unknown }) {
         if (seen.has(event.deliveryId)) return false;
         seen.add(event.deliveryId);
         return true;
