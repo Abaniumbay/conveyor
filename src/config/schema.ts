@@ -84,6 +84,9 @@ const githubSourceSchema = z
 
 const sourceSchema = z.discriminatedUnion("type", [githubSourceSchema]);
 
+const githubCodeHostSchema = z.object({ type: z.literal("github") }).strict();
+const codeHostSchema = z.discriminatedUnion("type", [githubCodeHostSchema]);
+
 const codexRunnerSchema = z
   .object({
     type: z.literal("codex"),
@@ -223,6 +226,7 @@ const ciProviderSchema = z.object({
 const repositorySchema = z
   .object({
     source: identifierSchema,
+    codeHost: identifierSchema.optional(),
     address: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "must use owner/repository format"),
     folder: absolutePathSchema,
     baseBranch: identifierSchema.default("main"),
@@ -253,6 +257,7 @@ export const configSchema = z
     web: webSchema,
     sources: z.record(identifierSchema, sourceSchema).default({}),
     ci: z.record(identifierSchema, ciProviderSchema).default({}),
+    codeHosts: z.record(identifierSchema, codeHostSchema).default({}),
     runners: z.record(identifierSchema, runnerSchema).default({}),
     agents: z.record(identifierSchema, agentSchema).default({}),
     checks: z.record(identifierSchema, checkSchema).default({}),

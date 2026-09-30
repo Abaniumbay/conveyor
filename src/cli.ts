@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config/load";
 import { ConveyorService } from "./app/service";
+import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
+import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
 import { createWebAuth, hashPassword } from "./web/auth";
 import { createWebHandler } from "./web/server";
 
@@ -33,7 +35,12 @@ async function serve(configPath: string): Promise<void> {
       "CONVEYOR_PASSWORD_HASH and a 32-byte CONVEYOR_SESSION_SECRET are required",
     );
   }
-  const service = await ConveyorService.create(config);
+  const github = new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix);
+  const service = await ConveyorService.create(
+    config,
+    github,
+    createGitHubCodeHostRegistry(config, github),
+  );
   const handler = createWebHandler(service.webDependencies(auth, username));
   const server = Bun.serve({
     ...listenAddress(config.web.listen),

@@ -60,10 +60,6 @@ export class GitHubActionsCiProvider implements CiProvider {
     private readonly triggers: GitHubActionsTrigger[] = [],
   ) {}
 
-  async currentCommit(change: CiChange): Promise<string> {
-    return (await this.github.getPullRequestHead(change.repository, Number(change.changeId))).sha;
-  }
-
   async start(change: CiChange, commit: string, retryWindowMs: number, now: number): Promise<string[]> {
     const present: GitHubActionsTrigger[] = [];
     for (const trigger of this.triggers) {

@@ -10,7 +10,6 @@ class FakeProvider implements CiProvider {
   readonly reruns: string[] = [];
   readonly started: Array<{ commit: string; retryWindowMs: number }> = [];
   logs = "2026-01-01T00:00:00.0000000Z step one\n2026-01-01T00:00:01.0000000Z ##[error]boom";
-  async currentCommit() { return this.sha; }
   async start(_change: CiChange, commit: string, retryWindowMs: number) { this.started.push({ commit, retryWindowMs }); return this.waiting; }
   async list() { return this.runs; }
   async rerun(_change: CiChange, runId: string) { this.reruns.push(runId); }
@@ -23,7 +22,7 @@ function run(id: string, name: string, state: CiRun["state"], extra: Partial<CiR
   return { id, name, state, url: `https://ci/${id}`, canRerun: false, hasLog: true, ...extra };
 }
 function gate(provider: FakeProvider, memory = createCiGateMemory(), now = 1_000_000) {
-  return evaluateCiGate({ change, issueKey: "issue-1", options, provider, memory, now });
+  return evaluateCiGate({ change, headSha: provider.sha, issueKey: "issue-1", options, provider, memory, now });
 }
 
 describe("provider-neutral CI gate", () => {
