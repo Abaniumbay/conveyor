@@ -15,12 +15,14 @@ import {
   upsertManagedSection,
   type AcceptanceCriterion,
 } from "../source/github/managed-sections";
-import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubAdapter } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
+import { GitHubWebhookProvider } from "../source/github/webhook-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
 import { changeAction } from "../codehost/actions";
+import { CiGateWaitRegistry, type ProviderEvent } from "./provider-event";
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
@@ -197,6 +199,8 @@ export class ConveyorService {
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
+  readonly #ciGateWaits = new CiGateWaitRegistry();
+  readonly #webhookProvider: GitHubWebhookProvider;
   /** Issues polling an external condition (CI); not schedulable before this time. */
   readonly #deferredUntil = new Map<string, number>();
   /** Why a deferred issue is waiting; re-applied after reconciliation resets warnings. */
@@ -215,6 +219,13 @@ export class ConveyorService {
     this.store = store;
     this.github = github;
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
+    const webhookSource = Object.values(config.sources).find((source) => source.type === "github");
+    this.#webhookProvider = new GitHubWebhookProvider(
+      store,
+      Object.entries(config.repositories).map(([id, repository]) => ({ id, address: repository.address })),
+      undefined,
+      webhookSource?.webhookPath ?? "/hooks/github",
+    );
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
   }
@@ -405,6 +416,7 @@ export class ConveyorService {
     for (const candidate of selected) {
       const issue = this.store.getIssue(candidate.id);
       if (!issue) continue;
+      this.#ciGateWaits.beginEvaluation(issue.id);
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
@@ -518,9 +530,13 @@ export class ConveyorService {
         console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
       });
     }
-    this.#deferredUntil.set(issue.id, Date.now() + error.retryAfterMs);
+    const parkUntil = error.commitSha && this.#ciGateWaits.park(issue.id)
+      ? Date.now() + error.retryAfterMs
+      : Date.now();
+    if (!error.commitSha) this.#ciGateWaits.clear(issue.id);
+    this.#deferredUntil.set(issue.id, parkUntil);
     this.#waitReasons.set(issue.id, error.message);
-    setTimeout(() => this.schedule(), error.retryAfterMs + 50);
+    setTimeout(() => this.schedule(), Math.max(0, parkUntil - Date.now()) + 50);
   }
 
   private async loadDeliveryState(
@@ -1038,7 +1054,14 @@ export class ConveyorService {
       headSha: (await codeHost.getChange({ address: context.repository.address, id: pullRequest.id })).headSha,
       memory: this.#ciMemory,
       now: Date.now(),
+      onCommit: (commitSha) => this.#ciGateWaits.track(
+        context.issue.id,
+        context.issue.repositoryId,
+        String(pullRequest.number),
+        commitSha,
+      ),
     });
+    this.#ciGateWaits.clear(context.issue.id);
     this.#deferredUntil.delete(context.issue.id);
     this.#waitReasons.delete(context.issue.id);
     if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
@@ -1296,20 +1319,30 @@ export class ConveyorService {
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
-    const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
-    if (!verifyGitHubSignature(rawBody, headers.get("x-hub-signature-256"), secret)) {
-      throw new Error("invalid GitHub webhook signature");
+    const events = await this.#webhookProvider.receive(rawBody, headers);
+    for (const event of events) await this.handleProviderEvent(event);
+  }
+
+  async handleProviderEvent(event: ProviderEvent): Promise<void> {
+    if (!this.config.repositories[event.repositoryId]) return;
+    if (event.type === "issue.changed") {
+      await this.reconcileRepository(event.repositoryId);
+      this.schedule();
+      return;
     }
-    const deliveryId = headers.get("x-github-delivery");
-    const eventType = headers.get("x-github-event");
-    if (!deliveryId || !eventType) throw new Error("missing GitHub webhook headers");
-    const payload = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
-    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
-    const repositoryAddress = object(object(payload).repository).full_name;
-    if (typeof repositoryAddress !== "string") return;
-    const repository = Object.entries(this.config.repositories)
-      .find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase());
-    if (repository) await this.reconcileRepository(repository[0]);
+    if (event.type === "change.updated") {
+      this.wakeCiIssues(this.#ciGateWaits.wakeChange(event.repositoryId, event.changeRef));
+      return;
+    }
+    this.wakeCiIssues(this.#ciGateWaits.wakeCommit(event.repositoryId, event.commitSha));
+  }
+
+  private wakeCiIssues(issueIds: string[]): void {
+    if (issueIds.length === 0) return;
+    for (const issueId of issueIds) {
+      this.#deferredUntil.delete(issueId);
+      this.#waitReasons.delete(issueId);
+    }
     this.schedule();
   }
 
@@ -2095,7 +2128,6 @@ export class ConveyorService {
   }
 
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
-    const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
       auth,
       username,
@@ -2109,7 +2141,7 @@ export class ConveyorService {
         !this.#shuttingDown &&
         this.#repositoryErrors.size === 0 &&
         this.#onboardingErrors.size === 0,
-      webhookPath: githubSource?.webhookPath ?? "/hooks/github",
+      webhookPath: this.#webhookProvider.webhookPath,
       answerQuestion: (id, answer) => this.answerQuestion(id, answer),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
       moveBacklogIssue: (id, beforeId) => this.moveBacklogIssue(id, beforeId),
