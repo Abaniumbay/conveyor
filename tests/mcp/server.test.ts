@@ -74,9 +74,12 @@ function text(result: Awaited<ReturnType<Client["callTool"]>>): unknown {
 
 describe("Conveyor MCP server", () => {
   test("exposes only explicitly allowed scoped tools", async () => {
+    const calls: string[] = [];
     const client = await connectedClient({
-      async call() {
-        throw new Error("control endpoint should not be called");
+      async call(tool) {
+        calls.push(tool);
+        if (tool === "source.get_issue") return context.issue;
+        throw new Error("unexpected control endpoint call");
       },
     });
 
@@ -88,6 +91,7 @@ describe("Conveyor MCP server", () => {
     expect(text(await client.callTool({ name: "source.get_issue", arguments: {} }))).toEqual(
       context.issue,
     );
+    expect(calls).toEqual(["source.get_issue"]);
     expect(
       text(await client.callTool({ name: "workspace.get_context", arguments: {} })),
     ).toEqual(context.workspace);

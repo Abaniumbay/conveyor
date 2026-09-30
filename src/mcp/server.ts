@@ -83,6 +83,10 @@ const createChildInput = z.object({
 const passthroughInput = z.object({}).passthrough();
 
 const controlTools: Record<string, { description: string; schema: z.ZodType }> = {
+  "source.get_issue": {
+    description: "Read the latest GitHub state of the current scoped issue.",
+    schema: z.object({}).strict(),
+  },
   "conversation.get": {
     description: "Read the concise shared issue conversation. Use it for handoffs and user steering; it does not contain raw harness logs.",
     schema: z.object({ limit: z.number().int().min(1).max(100).optional() }),
@@ -131,7 +135,7 @@ const controlTools: Record<string, { description: string; schema: z.ZodType }> =
   "workspace.record_artifact": { description: "Record a workspace artifact.", schema: passthroughInput },
 };
 
-type ReadToolName = "source.get_issue" | "source.get_guidance" | "workspace.get_context" | "delivery.get_state";
+type ReadToolName = "source.get_guidance" | "workspace.get_context" | "delivery.get_state";
 
 export function createConveyorMcpServer(context: RunMcpContext, control: ControlClient): McpServer {
   const server = new McpServer(
@@ -140,7 +144,6 @@ export function createConveyorMcpServer(context: RunMcpContext, control: Control
   );
 
   const reads: Record<ReadToolName, { description: string; value: unknown }> = {
-    "source.get_issue": { description: "Read the scoped source issue.", value: context.issue },
     "source.get_guidance": { description: "Read source-specific agent guidance.", value: context.sourceGuidance },
     "workspace.get_context": { description: "Read scoped workspace metadata.", value: context.workspace },
     "delivery.get_state": { description: "Read delivery state for this issue.", value: context.delivery },
