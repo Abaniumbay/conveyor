@@ -125,3 +125,18 @@ describe("selectRunnableIssues", () => {
     expect(selected).toEqual([]);
   });
 });
+
+describe("lightweight stages", () => {
+  test("a source-action-only stage runs even when repository and global permits are exhausted", () => {
+    const selected = selectRunnableIssues(
+      [
+        { id: "agent", repositoryId: "repo", stageId: "implementation", queueRank: 1, siblingOrder: null, eligible: true, dependenciesSatisfied: true },
+        { id: "ci-1", repositoryId: "repo", stageId: "ci", queueRank: 2, siblingOrder: null, eligible: true, dependenciesSatisfied: true, lightweight: true },
+        { id: "ci-2", repositoryId: "repo", stageId: "ci", queueRank: 3, siblingOrder: null, eligible: true, dependenciesSatisfied: true, lightweight: true },
+      ],
+      { global: 2, stages: { implementation: 2, ci: 1 }, repositories: { repo: 2 } },
+      { global: 2, stages: { implementation: 2 }, repositories: { repo: 2 } },
+    );
+    expect(selected.map((candidate) => candidate.id)).toEqual(["ci-1"]);
+  });
+});
