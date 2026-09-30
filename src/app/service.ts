@@ -15,10 +15,10 @@ import {
   upsertManagedSection,
   type AcceptanceCriterion,
 } from "../source/github/managed-sections";
-import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
-import { GitHubCodeHost } from "../source/github/codehost";
+import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
 import { changeAction } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
@@ -49,6 +49,7 @@ interface McpGrant {
 
 interface ServiceImplementations {
   steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
+  codeHosts?: CodeHostRegistry;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
@@ -186,7 +187,7 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
 export class ConveyorService {
   readonly store: ConveyorStore;
   readonly github: GitHubAdapter;
-  readonly #codeHosts = new Map<string, CodeHost>();
+  readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
   readonly #steeringActive = new Map<string, AbortController>();
@@ -213,19 +214,16 @@ export class ConveyorService {
   ) {
     this.store = store;
     this.github = github;
-    for (const [name, definition] of Object.entries(config.codeHosts ?? {})) {
-      if (definition.type === "github") this.#codeHosts.set(name, new GitHubCodeHost(github));
-    }
-    for (const [name, source] of Object.entries(config.sources ?? {})) {
-      if (source.type === "github" && !this.#codeHosts.has(name)) {
-        this.#codeHosts.set(name, new GitHubCodeHost(github));
-      }
-    }
+    this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
   }
 
-  static async create(config: ConveyorConfig): Promise<ConveyorService> {
+  static async create(
+    config: ConveyorConfig,
+    github: GitHubAdapter,
+    codeHosts: CodeHostRegistry,
+  ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
     const recovered = store.recoverInterruptedExecutions(config.hash);
@@ -244,7 +242,8 @@ export class ConveyorService {
     const service = new ConveyorService(
       config,
       store,
-      new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix),
+      github,
+      { codeHosts },
     );
     await service.onboardRepositories();
     await service.reconcileAll();

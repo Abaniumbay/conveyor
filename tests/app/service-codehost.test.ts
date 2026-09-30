@@ -10,6 +10,8 @@ import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { migrations } from "../../src/db/migrations";
 import { GitHubAdapter, type GitHubTransport } from "../../src/source/github/adapter";
+import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
+import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { CodeHost } from "../../src/codehost/types";
 import type { CiProvider } from "../../src/app/ci-provider";
 
@@ -139,7 +141,7 @@ repositories:
     return [{ id: 7, name: "Tests", status: "completed", conclusion: "success", details_url: "https://checks.test/7", started_at: null, completed_at: null, app: { slug: "github-actions" } }];
   };
   github.jobLog = async (_address, id) => { requestLog.push({ op: "log", id }); return "test failed\n"; };
-  const service = new ConveyorService(config, store, github);
+  const service = new ConveyorService(config, store, github, { codeHosts: createGitHubCodeHostRegistry(config, github) });
   const issue = store.getIssue("issue")!;
   const context: RuntimeIssueContext = {
     issue,
@@ -151,6 +153,28 @@ repositories:
 }
 
 describe("CodeHost service integration", () => {
+  test("selects an explicitly registered non-GitHub CodeHost without provider checks in the service", async () => {
+    const { config, store, context } = await setup();
+    const selected: CodeHost = {
+      async pushBranch() { requestLog.push({ op: "custom-push" }); return { pushed: true }; },
+      async ensureChange(input) {
+        requestLog.push({ op: "custom-ensure", closes: input.closes });
+        return { id: "custom:change/1", number: 1, url: "https://code.example/change/1", state: "open", headSha: "custom-head", draft: false, mergeable: true };
+      },
+      async getChange() { throw new Error("not expected"); },
+      async mergeChange() { throw new Error("not expected"); },
+      async getChangeDelivery() { throw new Error("not expected"); },
+    };
+    config.repositories.repo!.codeHost = "custom";
+    const registry = new CodeHostRegistry().register("custom", selected);
+    const service = new ConveyorService(config, store, {} as GitHubAdapter, { codeHosts: registry });
+    const handler = (service as unknown as { sourceActions(context: RuntimeIssueContext): SourceActionHandler }).sourceActions(context);
+    await handler.run({ sourceAction: "change.ensure" }, { issue: context.issue as unknown as Record<string, unknown>, workspace: context.workspace!.path, stageId: "implementation", attempt: 1, feedback: null });
+    expect(requestLog.map(({ op }) => op)).toEqual(["custom-push", "custom-ensure"]);
+    expect(store.getCurrentPullRequest("issue")).toMatchObject({ id: "custom:change/1", url: "https://code.example/change/1" });
+    store.close();
+  });
+
   for (const name of ["change.ensure", "pullRequest.ensure"]) {
     test(`${name} uses the same push, ensure, and closing reference from a source-action stage`, async () => {
       const { service, context, store } = await setup();
