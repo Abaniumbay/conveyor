@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ConveyorConfig } from "../config/load";
 import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
+import { applyRollupTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
 import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } from "../source/github/managed-sections";
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
@@ -555,25 +556,59 @@ export class ConveyorService {
       );
     }
     const doneLabel = this.config.labels.states.done;
-    if (!doneLabel) return;
     const satisfied = (issueId: string, visited = new Set<string>()): boolean => {
       if (visited.has(issueId)) return false;
       const issue = this.store.getIssue(issueId);
       if (!issue) return false;
-      if (issue.sourceState === "closed" || issue.labels.includes(doneLabel)) return true;
+      if (
+        issue.sourceState === "closed" ||
+        (doneLabel !== undefined && issue.labels.includes(doneLabel))
+      ) return true;
       const children = this.store.listChildren(issueId);
       if (children.length === 0) return false;
       const next = new Set(visited).add(issueId);
       return children.every((child) => satisfied(child.issueId, next));
     };
-    for (const parent of issues) {
+    const pipeline = this.config.pipelines[
+      this.config.repositories[repositoryId]!.pipeline
+    ]!;
+    const stageIds = pipeline.stages.map((stage) => stage.id);
+    const stageRanks = new Map(stageIds.map((stageId, index) => [stageId, index]));
+    const rollupStage = (
+      issueId: string,
+      visited = new Set<string>(),
+    ): string | null => {
+      if (visited.has(issueId)) return null;
+      const next = new Set(visited).add(issueId);
+      const unfinishedChildren = this.store
+        .listChildren(issueId)
+        .filter((child) => !satisfied(child.issueId));
+      const childStages = unfinishedChildren.flatMap((child) => {
+        const nestedStage = rollupStage(child.issueId, next);
+        const stage = nestedStage ?? this.store.getIssue(child.issueId)?.projectedStage;
+        return stage && stageRanks.has(stage) ? [stage] : [];
+      });
+      return childStages.sort(
+        (left, right) => stageRanks.get(left)! - stageRanks.get(right)!,
+      )[0] ?? null;
+    };
+    const runningIssueIds = new Set(
+      [
+        ...this.store.listActiveIssueRuns().map((run) => run.issueId),
+        ...this.#active.keys(),
+      ],
+    );
+    const repositoryIssues = this.store.listIssues(repositoryId);
+    for (const parent of repositoryIssues) {
       const children = this.store.listChildren(parent.id);
       if (
         children.length === 0 ||
+        parent.sourceState !== "open" ||
         !parent.labels.includes(this.config.labels.enrollment)
       ) {
         continue;
       }
+      if (runningIssueIds.has(parent.id)) continue;
       const workspace = this.store.getActiveWorkspace(parent.id);
       const parentStage = this.store.getStageState(parent.id);
       if (workspace && parentStage?.status !== "running") {
@@ -585,8 +620,48 @@ export class ConveyorService {
         });
         this.store.markWorkspaceRemoved(workspace.id);
       }
+
+      const allChildrenSatisfied = children.every((child) => satisfied(child.issueId));
+      const targetStage = rollupStage(parent.id);
+      if (!allChildrenSatisfied && targetStage) {
+        const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
+        const desiredLabels = [
+          this.config.labels.enrollment,
+          this.config.labels.stageTemplate.replace("{stage}", targetStage),
+          ...parent.labels.filter((label) => label.startsWith(orderPrefix)),
+        ].sort((left, right) => left.localeCompare(right));
+        const currentLabels = parent.labels
+          .filter(
+            (label) =>
+              label === this.config.labels.enrollment ||
+              label.startsWith(`${this.config.labels.enrollment}:`),
+          )
+          .sort((left, right) => left.localeCompare(right));
+        if (
+          desiredLabels.length !== currentLabels.length ||
+          desiredLabels.some((label, index) => label !== currentLabels[index])
+        ) {
+          const transitionDigest = createHash("sha256")
+            .update(`${parent.id}\0${parent.sourceUpdatedAt}\0${parent.projectedStage ?? ""}\0${targetStage}`)
+            .digest("hex")
+            .slice(0, 24);
+          await applyRollupTransition({
+            store: this.store,
+            source: this.github,
+            sourceName: this.config.repositories[repositoryId]!.source,
+            address,
+            configHash: this.config.hash,
+            transitionId: `rollup-${transitionDigest}`,
+            issue: parent,
+            targetStageId: targetStage,
+            labels: this.config.labels,
+            reason: `Following the earliest unfinished child stage: ${targetStage}`,
+          });
+        }
+      }
       if (
-        children.every((child) => satisfied(child.issueId)) &&
+        allChildrenSatisfied &&
+        doneLabel &&
         (!parent.labels.includes(doneLabel) ||
           !parent.labels.includes(this.config.labels.metadata.closable))
       ) {

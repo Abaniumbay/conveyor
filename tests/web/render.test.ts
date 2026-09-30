@@ -89,7 +89,7 @@ const dashboard: DashboardViewModel = {
       totalIssues: 41,
       page: 2,
       totalPages: 3,
-      issues: [parent],
+      issues: [parent, { ...backlogIssue, id: "stage-child", number: 45, title: "Executable child" }],
     },
     {
       id: "stage:review",
@@ -157,6 +157,10 @@ describe("renderDashboard", () => {
     expect(html).toContain("issue--warning");
     expect(html).toContain("issue--rollup");
     expect(html).toContain("Roll-up parent");
+    expect(html).toContain('class="stage-group stage-group--rollups"');
+    expect(html).toContain(">Roll-up parents</h3>");
+    expect(html).toContain(">Issues</h3>");
+    expect(html).toContain("Executable child");
     expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
