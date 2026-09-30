@@ -14,6 +14,7 @@ import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-r
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { CodeHost } from "../../src/codehost/types";
 import type { CiProvider } from "../../src/app/ci-provider";
+import { AgentHarnessRegistry } from "../../src/runner/harness";
 
 const roots: string[] = [];
 const requestLog: Array<Record<string, unknown>> = [];
@@ -153,6 +154,69 @@ repositories:
 }
 
 describe("CodeHost service integration", () => {
+  test("forwards the registered harness to producer, verifier, and steering service runs", async () => {
+    const { config, store, service: originalService, context } = await setup();
+    const calls: string[] = [];
+    config.runners.fake = { type: "fake" } as unknown as typeof config.runners[string];
+    config.agents.worker!.runner = "fake";
+    config.agents.checker = { ...config.agents.worker!, runner: "fake", workspaceAccess: "read-only" };
+    config.checks.verify = { verifier: "checker" } as typeof config.checks[string];
+    config.web = { ...config.web, steering: { agent: "worker", workspace: context.workspace!.path } } as typeof config.web;
+    const harnesses = new AgentHarnessRegistry().register("fake", () => ({
+      async runProducer() {
+        calls.push("producer");
+        return {
+          stageResult: { outcome: "success", status: "done", summary: "Producer complete", reason: null, metrics: {} },
+          sessionId: "producer-session",
+          usage: { inputTokens: 1, outputTokens: 2, cachedTokens: 0 },
+          cost: { amount: 0, currency: "USD", source: "unavailable" },
+          durationMs: 1,
+          exitCode: 0,
+          artifacts: [],
+          stderr: "",
+        };
+      },
+      async runCheck() {
+        calls.push("verifier");
+        return {
+          decision: "pass", status: "done", reason: "Verified", evidence: [], requiredFixes: [], criteria: [],
+          sessionId: "verifier-session", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+          durationMs: 1, exitCode: 0, stderr: "", cost: { amount: 0, currency: "USD", source: "unavailable" },
+        };
+      },
+      async runSteering() {
+        calls.push("steering");
+        return {
+          summary: "Steering complete", sessionId: "steering-session",
+          usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+          cost: { amount: 0, currency: "USD", source: "unavailable" }, durationMs: 1, exitCode: 0,
+        };
+      },
+    }));
+    const service = new ConveyorService(config, store, originalService.github, { harnesses });
+    const runtime = (service as unknown as {
+      createStageRuntime(context: RuntimeIssueContext, refresh?: undefined, signal?: AbortSignal): ConfiguredStageRuntime;
+    }).createStageRuntime(context, undefined, new AbortController().signal);
+    const stage = config.pipelines.default!.stages[0]!;
+    const runContext = {
+      issue: context.issue as unknown as Record<string, unknown>,
+      workspace: context.workspace!.path,
+      stageId: stage.id,
+      attempt: 1,
+      feedback: null,
+    };
+    const producerResult = await runtime.runProducer(stage, runContext);
+    await runtime.runCheck("verify", "exit", { ...runContext, producerResult });
+    const steeringRun = await service.startSteering("Inspect the repository");
+    for (let attempt = 0; attempt < 20 && service.getSteeringRun(steeringRun)?.status === "running"; attempt += 1) {
+      await Bun.sleep(5);
+    }
+
+    expect(calls).toEqual(["producer", "verifier", "steering"]);
+    expect(service.getSteeringRun(steeringRun)?.status).toBe("succeeded");
+    await service.close();
+  });
+
   test("selects an explicitly registered non-GitHub CodeHost without provider checks in the service", async () => {
     const { config, store, context } = await setup();
     const selected: CodeHost = {
