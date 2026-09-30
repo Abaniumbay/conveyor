@@ -234,6 +234,18 @@ describe("ConveyorService dashboard", () => {
       labels: ["conveyor"],
       sourceUpdatedAt: "2026-09-29T00:00:00Z",
     });
+    store.upsertIssue({
+      id: "child",
+      repositoryId: "repo",
+      sourceNumber: 2,
+      sourceUrl: "https://github.com/owner/repo/issues/2",
+      title: "Child feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    });
+    store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
     store.createRun({
       id: "run-1",
       issueId: "issue",
@@ -263,7 +275,9 @@ describe("ConveyorService dashboard", () => {
     const control = JSON.parse(await readFile(path.join(root, "artifacts/run-1/mcp-context.json"), "utf8")) as {
       control: { token: string };
     };
-    service.postIssueMessage("issue", "Keep this backward compatible.", "operator");
+    await expect(
+      service.postIssueMessage("issue", "Keep this backward compatible.", "operator"),
+    ).resolves.toEqual({ status: "delivered", stageId: "implementation" });
     await service.handleMcp({
       tool: "run.report_progress",
       input: { message: "Compatibility is preserved; focused tests pass." },

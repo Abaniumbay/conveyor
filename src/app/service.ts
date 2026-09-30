@@ -1657,10 +1657,11 @@ export class ConveyorService {
     if (["done", "missing", "inconsistent"].includes(issue.projectedState ?? "")) {
       throw new Error(`issue state ${issue.projectedState} cannot be resumed from conversation`);
     }
-    if (this.store.listChildren(issueId).length > 0) {
+    const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
+    const running = this.#active.has(issueId) || Boolean(activeRun);
+    if (!running && this.store.listChildren(issueId).length > 0) {
       throw new Error("roll-up parents cannot run directly; message a child issue instead");
     }
-    const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
     const stageId = issue.projectedStage ?? this.store.getStageState(issueId)?.stageId ?? activeRun?.stageId ?? null;
     if (!stageId) throw new Error("issue has no unambiguous configured stage to resume");
     const recorded = this.store.appendConversationMessage({
@@ -1673,7 +1674,6 @@ export class ConveyorService {
       actorTitle: null,
       message,
     });
-    const running = this.#active.has(issueId) || Boolean(activeRun);
     if (running) return { status: "delivered", stageId };
 
     const repository = this.config.repositories[issue.repositoryId];
