@@ -202,6 +202,11 @@ export class ConveyorStore {
     this.#database.close(false);
   }
 
+  /** The underlying database, shared with ExecutionStore. */
+  sqlite(): Database {
+    return this.#database;
+  }
+
   pragma(name: "journal_mode" | "foreign_keys"): unknown[] {
     return this.#database.query(`PRAGMA ${name}`).all();
   }

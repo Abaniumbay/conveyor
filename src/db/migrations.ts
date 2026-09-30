@@ -353,4 +353,67 @@ export const migrations: readonly Migration[] = [
       WHERE previous_stage IS NULL OR previous_stage <> stage_id;
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE item_contexts (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        schema_version INTEGER NOT NULL,
+        config_hash TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        stage_epoch INTEGER NOT NULL DEFAULT 0,
+        context_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE context_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        task_instance_id TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX context_history_issue_idx ON context_history(issue_id, version);
+
+      CREATE TABLE task_executions (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        list TEXT NOT NULL,
+        task_instance_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL,
+        recovery_state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        pending_since TEXT,
+        wake_at TEXT,
+        deadline_at TEXT,
+        result_json TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX task_executions_issue_idx ON task_executions(issue_id, started_at);
+
+      CREATE TABLE stage_cursors (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        returns INTEGER NOT NULL,
+        list TEXT NOT NULL,
+        task_instance_id TEXT,
+        state TEXT NOT NULL,
+        feedback_json TEXT,
+        pending_since TEXT,
+        wake_at TEXT,
+        deadline_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX stage_cursors_wake_idx ON stage_cursors(wake_at);
+    `,
+  },
 ];
