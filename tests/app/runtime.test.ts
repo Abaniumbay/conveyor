@@ -7,6 +7,8 @@ import { ConfiguredStageRuntime } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { AgentHarnessRegistry } from "../../src/runner/harness";
+import { HarnessError } from "../../src/runner/harness-error";
+import { HarnessRetryExhaustedError } from "../../src/runner/retry";
 import type { RunEnvelope } from "../../src/runner/result";
 
 const directories: string[] = [];
@@ -37,6 +39,11 @@ settings:
   logs: ${root}/logs
   workspaces: ${root}/workspaces
   artifacts: ${root}/artifacts
+  retries:
+    infrastructureAttempts: 2
+    usageLimitAttempts: 2
+    minBackoff: 3ms
+    maxBackoff: 6ms
 web: {}
 sources:
   github: { type: github }
@@ -127,6 +134,10 @@ repositories:
     const deliveryStates: unknown[] = [];
     const producerInputs: unknown[] = [];
     const checkInputs: unknown[] = [];
+    let producerAttempts = 0;
+    let checkAttempts = 0;
+    let forcedFailure: "producer-infrastructure" | "check-usage-limit" | null = null;
+    let interruptedHarnessCalls = 0;
     const producerResult: RunEnvelope = {
       stageResult: {
         outcome: "success",
@@ -169,10 +180,16 @@ repositories:
         harnesses: new AgentHarnessRegistry().register("fake", () => ({
           async runProducer(input) {
             producerInputs.push(input);
+            producerAttempts += 1;
+            if (forcedFailure === "producer-infrastructure") throw new HarnessError("temporary process failure", "process");
+            if (forcedFailure === null && producerAttempts === 1) throw new HarnessError("rate limit reached", "usage-limit");
             return producerResult;
           },
           async runCheck(input) {
             checkInputs.push(input);
+            checkAttempts += 1;
+            if (forcedFailure === "check-usage-limit") throw new HarnessError("rate limit reached", "usage-limit");
+            if (forcedFailure === null && checkAttempts === 1) throw new HarnessError("temporary process failure", "process");
             return {
             decision: "fail",
             status: "needs-intervention",
@@ -208,17 +225,19 @@ repositories:
     };
 
     expect(await runtime.runProducer(stage, context)).toEqual(producerResult);
+    const retryStarted = performance.now();
     expect(await runtime.runCheck("verify", "exit", { ...context, producerResult })).toMatchObject({
       decision: "fail",
       sessionId: "check-thread",
     });
+    expect(performance.now() - retryStarted).toBeGreaterThanOrEqual(2);
     expect(await runtime.runProducer(config.pipelines.default!.stages[1]!, {
       ...context,
       stageId: "deploy",
     })).toMatchObject({ stageResult: { summary: "Deployment completed" } });
 
-    expect(producerInputs).toHaveLength(1);
-    expect(checkInputs).toHaveLength(1);
+    expect(producerInputs).toHaveLength(2);
+    expect(checkInputs).toHaveLength(2);
     expect((producerInputs[0] as { accessLevel: string; mcp: unknown }).accessLevel).toBe("workspace-write");
     expect((producerInputs[0] as { mcp: unknown }).mcp).toEqual({ command: "bun", args: ["mcp.ts"] });
     expect((checkInputs[0] as { accessLevel: string }).accessLevel).toBe("read-only");
@@ -271,6 +290,45 @@ repositories:
         message: "Deploy script completed: Deployment completed.",
       },
     ]);
+
+    forcedFailure = "producer-infrastructure";
+    producerAttempts = 0;
+    await expect(runtime.runProducer(stage, context)).rejects.toBeInstanceOf(HarnessRetryExhaustedError);
+    expect(producerAttempts).toBe(2);
+
+    forcedFailure = "check-usage-limit";
+    checkAttempts = 0;
+    await expect(runtime.runCheck("verify", "exit", { ...context, producerResult })).rejects.toBeInstanceOf(HarnessRetryExhaustedError);
+    expect(checkAttempts).toBe(2);
+
+    const controller = new AbortController();
+    controller.abort();
+    const interruptedRuntime = new ConfiguredStageRuntime(
+      config,
+      store,
+      {
+        issue,
+        repository: { id: "repo", address: "owner/repo", folder: repository, baseBranch: "main" },
+        workspace: { path: repository, branch: "conveyor/1-r1-feature" },
+        sourceGuidance: "Never close issues.",
+      },
+      {
+        async create() {
+          return { configuration: { command: "bun", args: ["mcp.ts"] }, async close() {} };
+        },
+      },
+      { async run() {} },
+      undefined,
+      { harnesses: new AgentHarnessRegistry().register("fake", () => ({
+        async runProducer() { interruptedHarnessCalls += 1; throw new HarnessError("unexpected", "process"); },
+        async runCheck() { interruptedHarnessCalls += 1; throw new HarnessError("unexpected", "process"); },
+        async runSteering() { throw new Error("unused"); },
+      })) },
+      controller.signal,
+    );
+    await expect(interruptedRuntime.runProducer(stage, context)).rejects.toMatchObject({ kind: "interrupted" });
+    await expect(interruptedRuntime.runCheck("verify", "exit", { ...context, producerResult })).rejects.toMatchObject({ kind: "interrupted" });
+    expect(interruptedHarnessCalls).toBe(0);
     store.close();
   });
 });

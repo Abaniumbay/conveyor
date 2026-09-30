@@ -7,11 +7,11 @@ import type { CheckResult } from "../core/pipeline";
 import {
   CodexRunnerError,
   type CodexMcpConfiguration,
-  type CodexErrorKind,
 } from "./codex";
-import { EMPTY_USAGE, type RunEnvelope } from "./result";
-import { JsonLinesParser, superviseProcess } from "./process";
-import { HarnessError, isUsageLimitFailure } from "./harness-error";
+import { type RunEnvelope } from "./result";
+import { superviseProcess } from "./process";
+import { HarnessError } from "./harness-error";
+import { codexEventStream, codexFailureKind } from "./codex-events";
 
 export interface CodexCheckInput {
   command: string;
@@ -78,17 +78,6 @@ export const checkResultSchema = z
       });
     }
   });
-
-type CheckEvent = {
-  type?: string;
-  thread_id?: string;
-  usage?: {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    output_tokens?: number;
-  };
-  message?: string;
-};
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/check-result.json");
 const INHERITED_ENVIRONMENT = [
@@ -164,10 +153,6 @@ function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
   return args;
 }
 
-function errorKind(detail: string): CodexErrorKind {
-  return isUsageLimitFailure(detail) ? "usage-limit" : "process";
-}
-
 export async function runCodexCheck(
   input: CodexCheckInput,
 ): Promise<CodexCheckRunResult> {
@@ -176,19 +161,7 @@ export async function runCodexCheck(
     input.artifactsDirectory,
     `codex-check-${randomUUID()}.json`,
   );
-  let sessionId: string | null = null;
-  const usage = { ...EMPTY_USAGE };
-  const messages: string[] = [];
-  const eventParser = new JsonLinesParser<CheckEvent>((event) => {
-    input.onEvent?.(event);
-    if (event.type === "thread.started" && event.thread_id) sessionId = event.thread_id;
-    if (event.type === "turn.completed" && event.usage) {
-      usage.inputTokens += event.usage.input_tokens ?? 0;
-      usage.outputTokens += event.usage.output_tokens ?? 0;
-      usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
-    }
-    if (event.type === "error" && event.message) messages.push(event.message);
-  });
+  const events = codexEventStream(input.onEvent);
   let supervised;
   try {
     supervised = await superviseProcess({
@@ -199,7 +172,7 @@ export async function runCodexCheck(
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       ...(input.interruptGraceMs !== undefined ? { interruptGraceMs: input.interruptGraceMs } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
-      onStdoutChunk: (chunk) => eventParser.write(chunk),
+      onStdoutChunk: (chunk) => events.parser.write(chunk),
     });
   } catch (error) {
     if (error instanceof HarnessError) {
@@ -214,11 +187,11 @@ export async function runCodexCheck(
     );
   }
 
-  const { invalidLine } = eventParser.end();
+  const { invalidLine } = events.parser.end();
   const { stdout: raw, stderr, exitCode, durationMs } = supervised;
-  const failureDetail = [stderr.trim(), ...messages].filter(Boolean).join("\n");
+  const failureDetail = [stderr.trim(), ...events.errors].filter(Boolean).join("\n");
   if (exitCode !== 0) {
-    const kind = errorKind(`${failureDetail}\n${raw}`);
+    const kind = codexFailureKind(stderr, raw, events.errors);
     throw new CodexRunnerError(
       `Codex verifier exited with code ${exitCode}${failureDetail ? `: ${failureDetail}` : ""}`,
       kind,
@@ -261,8 +234,8 @@ export async function runCodexCheck(
   const { version: _version, ...check } = parsed.data;
   return {
     ...check,
-    sessionId,
-    usage,
+    sessionId: events.sessionId,
+    usage: events.usage,
     durationMs,
     exitCode,
     stderr,
