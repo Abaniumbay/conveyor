@@ -22,6 +22,7 @@ export interface WebHandlerDependencies {
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
   reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
+  moveBacklogIssue: (issueId: string, beforeIssueId: string | null) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
   handleMcp: (body: unknown, bearerToken: string) => unknown | Promise<unknown>;
   startSteering: (prompt: string) => string | Promise<string>;
@@ -146,6 +147,11 @@ async function readForm(request: Request, maxBytes: number): Promise<URLSearchPa
   } catch {
     return text("Malformed form data", 400);
   }
+}
+
+/** A script-initiated request that wants a result instead of a page navigation. */
+function wantsJson(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").includes("application/json");
 }
 
 function oneValue(form: URLSearchParams, name: string): string | null {
@@ -650,7 +656,28 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!issueId || issueId.length > 200 || (direction !== "up" && direction !== "down")) return text("Invalid reorder request", 400);
       try {
         await dependencies.reorderBacklog(issueId, direction);
+        if (wantsJson(request)) return json({ ok: true });
         return redirect("/?view=board");
+      } catch {
+        return text("Unable to reorder backlog", 409);
+      }
+    }
+
+    if (path === "/backlog/move") {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const issueId = oneValue(form, "issueId");
+      const beforeIssueId = oneValue(form, "beforeIssueId") || null;
+      if (!issueId || issueId.length > 200 || (beforeIssueId !== null && beforeIssueId.length > 200)) {
+        return text("Invalid move request", 400);
+      }
+      try {
+        await dependencies.moveBacklogIssue(issueId, beforeIssueId);
+        return json({ ok: true });
       } catch {
         return text("Unable to reorder backlog", 409);
       }
