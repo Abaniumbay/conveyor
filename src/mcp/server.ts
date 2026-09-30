@@ -63,6 +63,23 @@ const progressInput = {
   details: z.record(z.string(), z.unknown()).optional(),
 };
 
+const acceptanceCriterionInput = z.object({
+  id: z.string().min(1),
+  text: z.string().min(1),
+  completed: z.boolean().optional(),
+}).strict();
+
+const setAcceptanceCriteriaInput = z.object({
+  criteria: z.array(acceptanceCriterionInput),
+}).strict();
+
+const createChildInput = z.object({
+  title: z.string().min(1),
+  body: z.string().min(1),
+  acceptanceCriteria: z.array(acceptanceCriterionInput).min(1),
+  systemLabels: z.array(z.string().min(1)).optional(),
+}).strict();
+
 const passthroughInput = z.object({}).passthrough();
 
 const controlTools: Record<string, { description: string; schema: z.ZodType }> = {
@@ -83,13 +100,28 @@ const controlTools: Record<string, { description: string; schema: z.ZodType }> =
   "source.set_labels": { description: "Update allowed issue labels.", schema: passthroughInput },
   "source.set_system_labels": {
     description: "Replace the issue's configured system-area labels while preserving workflow and unmanaged labels.",
-    schema: passthroughInput,
+    schema: z.object({ labels: z.array(z.string().min(1)) }).strict(),
   },
-  "source.add_comment": { description: "Add an issue comment.", schema: passthroughInput },
-  "source.set_acceptance_criteria": { description: "Update acceptance criteria.", schema: passthroughInput },
-  "source.set_parent": { description: "Set issue hierarchy.", schema: passthroughInput },
-  "source.set_dependencies": { description: "Update issue dependencies.", schema: passthroughInput },
-  "source.create_child": { description: "Create a child issue in the scoped repository.", schema: passthroughInput },
+  "source.add_comment": {
+    description: "Add a Markdown comment to the current scoped issue.",
+    schema: z.object({ markdown: z.string().min(1) }).strict(),
+  },
+  "source.set_acceptance_criteria": {
+    description: "Replace acceptance criteria on the current scoped issue only.",
+    schema: setAcceptanceCriteriaInput,
+  },
+  "source.set_parent": {
+    description: "Set the parent of the current scoped issue.",
+    schema: z.object({ parentNumber: z.number().int().positive() }).strict(),
+  },
+  "source.set_dependencies": {
+    description: "Replace dependencies of the current scoped issue.",
+    schema: z.object({ issueNumbers: z.array(z.number().int().positive()) }).strict(),
+  },
+  "source.create_child": {
+    description: "Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels.",
+    schema: createChildInput,
+  },
   "source.set_pull_request_metadata": { description: "Update PR metadata.", schema: passthroughInput },
   "workspace.request_fetch": { description: "Request a scoped workspace fetch.", schema: passthroughInput },
   "workspace.request_push": {

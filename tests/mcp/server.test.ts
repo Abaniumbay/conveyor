@@ -52,9 +52,12 @@ const context: RunMcpContext = {
   ],
 };
 
-async function connectedClient(control: ControlClient): Promise<Client> {
+async function connectedClient(
+  control: ControlClient,
+  allowedTools: string[] = context.allowedTools,
+): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const server = createConveyorMcpServer(context, control);
+  const server = createConveyorMcpServer({ ...context, allowedTools }, control);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   clients.push(client);
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -155,5 +158,26 @@ describe("Conveyor MCP server", () => {
         control,
       ),
     ).toThrow("duplicate MCP tool");
+  });
+
+  test("rejects child-target overrides on context-bound source mutations", async () => {
+    const calls: Array<{ tool: string; input: unknown }> = [];
+    const client = await connectedClient({
+      async call(tool, input) {
+        calls.push({ tool, input });
+        return { accepted: true };
+      },
+    }, ["source.set_acceptance_criteria"]);
+
+    const result = await client.callTool({
+      name: "source.set_acceptance_criteria",
+      arguments: {
+        issueId: "different-issue",
+        criteria: [{ id: "AC-1", text: "Must remain scoped." }],
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(calls).toEqual([]);
   });
 });
