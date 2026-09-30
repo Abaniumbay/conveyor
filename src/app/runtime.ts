@@ -20,6 +20,7 @@ import {
 } from "../runner/codex-check";
 import { runJsonProcess } from "../runner/json-process";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
+import { ExternalWaitError, type SourceActionOutcome } from "./ci-gate";
 
 export interface RuntimeRepository {
   id: string;
@@ -57,7 +58,7 @@ export interface SourceActionHandler {
   run(
     action: { sourceAction: string; with?: Record<string, unknown> | undefined },
     context: ProducerContext & { producerResult?: RunEnvelope },
-  ): Promise<void>;
+  ): Promise<void | SourceActionOutcome>;
 }
 
 export interface RuntimeImplementations {
@@ -232,25 +233,37 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     const issue = issueFrom(context);
     if (stage.run.type === "source-action") {
       const started = performance.now();
-      this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} started.`);
       try {
-        await this.actions.run(
+        const outcome = await this.actions.run(
           {
             sourceAction: stage.run.action,
             ...(stage.run.input ? { with: stage.run.input } : {}),
           },
           context,
         );
-        const summary = `Completed source action ${stage.run.action}`;
-        this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} completed.`);
+        const stageResult = outcome
+          ? {
+              outcome: outcome.outcome,
+              status: outcome.status,
+              summary: outcome.summary,
+              reason: outcome.reason,
+              metrics: {},
+            }
+          : {
+              outcome: "success" as const,
+              status: stage.successStatuses?.[0] ?? "done",
+              summary: `Completed source action ${stage.run.action}`,
+              reason: null,
+              metrics: {},
+            };
+        this.conveyorMessage(
+          issue.id,
+          stage.id,
+          null,
+          outcome ? outcome.summary : `${displayName(stage.id)} completed.`,
+        );
         return {
-          stageResult: {
-            outcome: "success",
-            status: stage.successStatuses?.[0] ?? "done",
-            summary,
-            reason: null,
-            metrics: {},
-          },
+          stageResult,
           sessionId: null,
           usage: { ...EMPTY_USAGE },
           cost: { ...UNAVAILABLE_COST },
@@ -260,7 +273,10 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           stderr: "",
         };
       } catch (error) {
-        this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} failed: ${error instanceof Error ? error.message : String(error)}`);
+        // A pending external condition is polled quietly; only real failures are narrated.
+        if (!(error instanceof ExternalWaitError)) {
+          this.conveyorMessage(issue.id, stage.id, null, `${displayName(stage.id)} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
         throw error;
       }
     }

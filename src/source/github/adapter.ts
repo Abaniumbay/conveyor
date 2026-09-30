@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import type { CiCheckRun } from "../../app/ci-gate";
 import type { PullRequestReference, SourceIssue } from "../types";
 import {
   parseManagedSections,
@@ -12,6 +13,8 @@ export interface GitHubTransportRequest {
   path: string;
   body?: unknown;
   paginate?: boolean;
+  /** Return stdout as text instead of parsing JSON (e.g. job logs). */
+  raw?: boolean;
 }
 
 export interface GitHubTransport {
@@ -60,6 +63,7 @@ export class GhCliTransport implements GitHubTransport {
         stderr,
       );
     }
+    if (request.raw) return stdout as T;
     if (stdout.trim().length === 0) return null as T;
     const decoded = JSON.parse(stdout) as unknown;
     if (request.paginate && Array.isArray(decoded)) {
@@ -119,6 +123,7 @@ interface GitHubPullRequest {
 }
 
 interface GitHubCheckRun {
+  app?: { slug?: string } | null;
   id: number;
   name: string;
   status: string;
@@ -547,6 +552,83 @@ export class GitHubAdapter {
         completedAt: check.completed_at,
       })),
     };
+  }
+
+  async getPullRequestHead(
+    address: string,
+    pullRequestNumber: number,
+  ): Promise<{ sha: string }> {
+    const pullRequest = await this.transport.request<GitHubPullRequest>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}`,
+    });
+    if (!pullRequest.head?.sha) {
+      throw new Error(`GitHub pull request #${pullRequestNumber} has no head commit`);
+    }
+    return { sha: pullRequest.head.sha };
+  }
+
+  async listCheckRuns(address: string, sha: string): Promise<CiCheckRun[]> {
+    const pages = await this.transport.request<Array<{ check_runs?: GitHubCheckRun[] }> | { check_runs?: GitHubCheckRun[] }>({
+      method: "GET",
+      path: `repos/${address}/commits/${sha}/check-runs?per_page=100`,
+      paginate: true,
+    });
+    const runs = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page?.check_runs ?? []);
+    return runs.map((check) => ({
+      id: check.id,
+      name: check.name,
+      status: check.status,
+      conclusion: check.conclusion,
+      url: check.details_url,
+      actionsJob: check.app?.slug === "github-actions",
+    }));
+  }
+
+  async workflowExists(address: string, workflow: string, ref: string): Promise<boolean> {
+    try {
+      await this.transport.request<unknown>({
+        method: "GET",
+        path: `repos/${address}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${encodeURIComponent(ref)}`,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return false;
+      throw error;
+    }
+  }
+
+  /** Remove (if present) and re-add a PR label so a `labeled` workflow runs for the current head. */
+  async retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void> {
+    try {
+      await this.transport.request<unknown>({
+        method: "DELETE",
+        path: `repos/${address}/issues/${pullRequestNumber}/labels/${encodeURIComponent(label)}`,
+      });
+    } catch (error) {
+      if (!(error instanceof GitHubTransportError && /\b404\b|Not Found|does not exist/i.test(error.message))) throw error;
+    }
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/issues/${pullRequestNumber}/labels`,
+      body: { labels: [label] },
+    });
+  }
+
+  async rerunJob(address: string, jobId: number): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/actions/jobs/${jobId}/rerun`,
+    });
+  }
+
+  async jobLogTail(address: string, jobId: number, lines: number): Promise<string> {
+    const text = await this.transport.request<string>({
+      method: "GET",
+      path: `repos/${address}/actions/jobs/${jobId}/logs`,
+      raw: true,
+    });
+    return String(text ?? "").split(/\r?\n/).slice(-lines).join("\n");
   }
 
   async squashMerge(

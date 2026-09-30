@@ -313,6 +313,42 @@ describe("PipelineEngine", () => {
     });
   });
 
+  test("returns review changes past an intermediate CI stage to the configured stage", async () => {
+    const base = pipeline();
+    const [implementation, review] = base.stages;
+    const withCi = {
+      ...base,
+      stages: [
+        implementation!,
+        {
+          id: "ci",
+          run: { type: "source-action" as const, action: "pullRequest.awaitChecks" },
+          concurrency: 4,
+          failurePolicies: { "changes-requested": { action: "returnToPrevious" as const } },
+          afterSuccess: [],
+        },
+        {
+          ...review!,
+          failurePolicies: {
+            "changes-requested": { action: "returnToPrevious" as const, stage: "implementation" },
+          },
+        },
+      ],
+    };
+    const fake = dependencies({
+      checks: [passed],
+      producers: [envelope("failure", "changes-requested", "Rename the flag")],
+    });
+    const engine = new PipelineEngine(withCi, fake.value, 2);
+
+    const result = await engine.executeStage("review", {
+      issue: { id: "issue-1" },
+      workspace: "/tmp/workspace",
+    });
+
+    expect(result).toMatchObject({ kind: "correction", targetStageId: "implementation" });
+  });
+
   test("does not advance when a lifecycle action fails", async () => {
     const fake = dependencies({ actionError: new Error("GitHub unavailable") });
     const engine = new PipelineEngine(pipeline(), fake.value, 2);

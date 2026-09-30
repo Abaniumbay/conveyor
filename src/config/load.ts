@@ -204,6 +204,16 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
         errors.push(`${prefix}.run.runner references unknown runner "${stage.run.runner}"`);
       }
+      const stageIndex = pipeline.stages.indexOf(stage);
+      for (const [status, policy] of Object.entries(stage.failurePolicies)) {
+        if (!policy.stage) continue;
+        const targetIndex = pipeline.stages.findIndex((candidate) => candidate.id === policy.stage);
+        if (targetIndex < 0 || targetIndex >= stageIndex) {
+          errors.push(
+            `${prefix}.failurePolicies.${status}.stage must name an earlier stage, not "${policy.stage}"`,
+          );
+        }
+      }
       if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
         if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
           errors.push(
