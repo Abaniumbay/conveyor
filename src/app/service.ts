@@ -211,6 +211,8 @@ export class ConveyorService {
   readonly #ciMemory = createCiGateMemory();
   /** Issues polling an external condition (CI); not schedulable before this time. */
   readonly #deferredUntil = new Map<string, number>();
+  /** Why a deferred issue is waiting; re-applied after reconciliation resets warnings. */
+  readonly #waitReasons = new Map<string, string>();
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
@@ -481,6 +483,24 @@ export class ConveyorService {
     }
   }
 
+  private restoreWaitReasons(repositoryId: string): void {
+    for (const [issueId, reason] of this.#waitReasons) {
+      const issue = this.store.getIssue(issueId);
+      if (!issue || issue.repositoryId !== repositoryId) continue;
+      if (issue.projectedState !== "active") {
+        this.#waitReasons.delete(issueId);
+        this.#deferredUntil.delete(issueId);
+        continue;
+      }
+      if (issue.warning) continue;
+      this.store.setIssueProjection(issueId, {
+        stage: issue.projectedStage,
+        state: issue.projectedState,
+        warning: reason,
+      });
+    }
+  }
+
   /** Park an issue whose stage is waiting on an external system; no permit is held meanwhile. */
   private async deferForExternalWait(issue: StoredIssue, error: ExternalWaitError): Promise<void> {
     const current = this.store.getStageState(issue.id);
@@ -505,6 +525,7 @@ export class ConveyorService {
       });
     }
     this.#deferredUntil.set(issue.id, Date.now() + error.retryAfterMs);
+    this.#waitReasons.set(issue.id, error.message);
     setTimeout(() => this.schedule(), error.retryAfterMs + 50);
   }
 
@@ -570,6 +591,7 @@ export class ConveyorService {
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
     await this.reconcileRelationships(repositoryId, repository.address);
+    this.restoreWaitReasons(repositoryId);
     this.interruptIneligibleRuns();
   }
 
@@ -1003,6 +1025,7 @@ export class ConveyorService {
       now: Date.now(),
     });
     this.#deferredUntil.delete(context.issue.id);
+    this.#waitReasons.delete(context.issue.id);
     if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
       // Stop an implementation<->CI loop that is not converging.
       const transitions = this.store.listStageTransitions(context.issue.id);
