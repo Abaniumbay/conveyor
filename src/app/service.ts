@@ -219,7 +219,7 @@ export class ConveyorService {
     this.store = store;
     this.github = github;
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
-    const webhookSource = Object.values(config.sources).find((source) => source.type === "github");
+    const webhookSource = Object.values(config.sources ?? {}).find((source) => source.type === "github");
     this.#webhookProvider = new GitHubWebhookProvider(
       store,
       Object.entries(config.repositories).map(([id, repository]) => ({ id, address: repository.address })),
