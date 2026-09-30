@@ -182,4 +182,81 @@ repositories:
       expect(message).toContain("repositories.broken.folder");
     }
   });
+
+  test("loads named CI providers from split files and defaults repositories to native CI", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "base.yml"), `
+settings: {}
+labels:
+  stageTemplate: "ci:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: ci, run: { sourceAction: ci.await }, concurrency: 1 }
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`);
+    await writeFile(path.join(directory, "ci.yml"), `
+ci:
+  actions:
+    type: github-actions
+    triggers:
+      - { label: go, workflow: build.yml, check: Build }
+`);
+    const config = await loadConfig(directory);
+    expect(config.ci.actions?.triggers[0]).toMatchObject({ label: "go", workflow: "build.yml", check: "Build" });
+    expect(config.repositories.sample?.ci).toBeUndefined();
+  });
+
+  test("reports unknown CI provider references with the repository path", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "config.yml"), `
+settings: {}
+labels:
+  stageTemplate: "ci:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages: [{ id: work, run: { sourceAction: ci.await }, concurrency: 1 }]
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default, ci: absent }
+`);
+    await expect(loadConfig(directory)).rejects.toThrow(/repositories.sample.ci references unknown CI provider/);
+  });
+
+  test("rejects conflicting provider and legacy stage triggers with the stage path", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "config.yml"), `
+settings: {}
+labels:
+  stageTemplate: "ci:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+ci:
+  actions:
+    type: github-actions
+    triggers: [{ label: provider, workflow: provider.yml, check: Provider }]
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - id: work
+        run: { sourceAction: pullRequest.awaitChecks, with: { triggers: [{ label: stage, workflow: stage.yml, check: Stage }] } }
+        concurrency: 1
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`);
+    await expect(loadConfig(directory)).rejects.toThrow(/pipelines.default.stages.0.run.with.triggers conflicts with ci.actions.triggers/);
+  });
 });

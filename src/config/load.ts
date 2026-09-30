@@ -11,6 +11,7 @@ const NAMED_SECTIONS = [
   "runners",
   "agents",
   "checks",
+  "ci",
   "pipelines",
   "repositories",
 ] as const;
@@ -204,6 +205,26 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
         errors.push(`${prefix}.run.runner references unknown runner "${stage.run.runner}"`);
       }
+      if (stage.run.type === "source-action" && stage.run.input?.triggers !== undefined && stage.run.action === "ci.await") {
+        errors.push(`${prefix}.run.with.triggers is only supported by the deprecated pullRequest.awaitChecks action`);
+      }
+      if (stage.run.type === "source-action" && stage.run.input?.triggers !== undefined) {
+        const triggers = stage.run.input.triggers;
+        if (!Array.isArray(triggers)) errors.push(`${prefix}.run.with.triggers must be a list`);
+        else triggers.forEach((trigger, triggerIndex) => {
+          const triggerPath = `${prefix}.run.with.triggers.${triggerIndex}`;
+          if (!isObject(trigger)) {
+            errors.push(`${triggerPath} must be an object`);
+            return;
+          }
+          if (typeof trigger.label !== "string" || !trigger.label) errors.push(`${triggerPath}.label must be a non-empty string`);
+          if (typeof trigger.workflow !== "string" || !/^[\w.-]+\.ya?ml$/.test(trigger.workflow)) errors.push(`${triggerPath}.workflow must be a workflow file name`);
+          if (typeof trigger.check !== "string" || !trigger.check) errors.push(`${triggerPath}.check must be a non-empty string`);
+          if (trigger.replaces !== undefined && (!Array.isArray(trigger.replaces) || trigger.replaces.some((name) => typeof name !== "string" || !name))) {
+            errors.push(`${triggerPath}.replaces must be a list of names`);
+          }
+        });
+      }
       const stageIndex = pipeline.stages.indexOf(stage);
       for (const [status, policy] of Object.entries(stage.failurePolicies)) {
         if (!policy.stage) continue;
@@ -233,6 +254,20 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       errors.push(
         `repositories.${name}.pipeline references unknown pipeline "${repository.pipeline}"`,
       );
+    }
+    if (repository.ci && !config.ci[repository.ci]) {
+      errors.push(`repositories.${name}.ci references unknown CI provider "${repository.ci}"`);
+    }
+    if (repository.ci && config.ci[repository.ci]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
+      errors.push(`repositories.${name}.ci is incompatible with sources.${repository.source}`);
+    }
+    {
+      const providerName = repository.ci ?? Object.entries(config.ci).find(([, provider]) => provider.type === "github-actions")?.[0] ?? "actions";
+      const provider = config.ci[providerName];
+      for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
+        if (stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
+        if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
+      }
     }
   }
   return errors;

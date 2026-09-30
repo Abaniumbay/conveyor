@@ -16,6 +16,8 @@ import {
   type AcceptanceCriterion,
 } from "../source/github/managed-sections";
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
+import type { CiChange, CiProvider } from "./ci-provider";
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
@@ -24,7 +26,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
-import { createCiGateMemory, evaluateCiGate, ExternalWaitError, focusLog, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
+import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
   repositoryId: string;
@@ -209,6 +211,7 @@ export class ConveyorService {
   readonly #onboardingErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
+  readonly #ciProviders = new Map<string, CiProvider>();
   /** Issues polling an external condition (CI); not schedulable before this time. */
   readonly #deferredUntil = new Map<string, number>();
   /** Why a deferred issue is waiting; re-applied after reconciliation resets warnings. */
@@ -546,7 +549,30 @@ export class ConveyorService {
         ? { mergedAt: delivery.pullRequest.mergedAt ?? stored.mergedAt }
         : {}),
     });
-    return delivery;
+    const change: CiChange = { repository: address, changeId: String(stored.number), url: delivery.pullRequest.url };
+    const checks = await this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "").list(change, delivery.pullRequest.headSha);
+    return { pullRequest: delivery.pullRequest, checks };
+  }
+
+  private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
+    const providerName = repository.ci ?? Object.entries(this.config.ci).find(([, provider]) => provider.type === "github-actions")?.[0] ?? "actions";
+    const configured = this.config.ci[providerName];
+    const stageTriggers = stageInput?.triggers;
+    const configuredTriggers = configured?.triggers;
+    const triggers = parseGitHubActionsTriggers(
+      configuredTriggers?.length ? configuredTriggers : stageTriggers,
+      configuredTriggers?.length ? `ci.${providerName}.triggers` : "pullRequest.awaitChecks.with.triggers",
+    );
+    const key = `${repositoryId}:${providerName}:${JSON.stringify(triggers)}`;
+    let provider = this.#ciProviders.get(key);
+    if (!provider) {
+      if (configured && configured.type !== "github-actions") throw new Error(`unsupported CI provider: ${providerName}`);
+      provider = new GitHubActionsCiProvider(this.github, triggers);
+      this.#ciProviders.set(key, provider);
+    }
+    return provider;
   }
 
   /** A stage that only runs an in-process source action: no producer or verifier process. */
@@ -937,7 +963,7 @@ export class ConveyorService {
           });
           return;
         }
-        if (action.sourceAction === "pullRequest.awaitChecks") {
+        if (action.sourceAction === "ci.await" || action.sourceAction === "pullRequest.awaitChecks") {
           return this.awaitPullRequestChecks(context, workspace, action.with);
         }
         if (action.sourceAction === "pullRequest.squashMerge") {
@@ -1015,12 +1041,10 @@ export class ConveyorService {
       state: pullRequest.state,
     });
     const outcome = await evaluateCiGate({
-      address: context.repository.address,
-      pullRequestNumber: pullRequest.number,
-      pullRequestUrl: pullRequest.url,
+      change: { repository: context.repository.address, changeId: String(pullRequest.number), url: pullRequest.url },
       issueKey: context.issue.id,
       options,
-      github: this.github,
+      provider: this.ciProvider(context.issue.repositoryId, input),
       memory: this.#ciMemory,
       now: Date.now(),
     });
@@ -1057,21 +1081,20 @@ export class ConveyorService {
     const { sha } = await this.github.getPullRequestHead(address, stored.number);
     const requested = typeof input.checkName === "string" ? input.checkName : null;
     const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
-    const runs = await this.github.listCheckRuns(address, sha);
-    const selected = runs.filter((check) =>
-      requested
-        ? check.name === requested
-        : check.status === "completed" && !["success", "skipped", "neutral"].includes(check.conclusion ?? ""),
-    );
+    const change: CiChange = { repository: address, changeId: String(stored.number), url: stored.url };
+    const provider = this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "");
+    const runs = await provider.list(change, sha);
+    const selected = runs.filter((run) => requested
+      ? run.name === requested
+      : run.state === "failed" || run.state === "cancelled");
     const checks = [];
-    for (const check of selected.slice(0, 5)) {
+    for (const run of selected.slice(0, 5)) {
       let log: string | null = null;
-      if (check.actionsJob) {
-        log = await this.github.jobLog(address, check.id)
-          .then((text) => focusLog(text, lines))
+      if (run.hasLog) {
+        log = await provider.log(change, run.id, lines)
           .catch((error) => `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
       }
-      checks.push({ name: check.name, status: check.status, conclusion: check.conclusion, url: check.url, log });
+      checks.push({ ...run, log });
     }
     return { pullRequest: { number: stored.number, url: stored.url, headSha: sha }, checks };
   }
