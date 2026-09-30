@@ -1,0 +1,33 @@
+name: Check
+
+# The CI gate Conveyor waits for on its own pull requests: every test and the
+# TypeScript typecheck. Runs on every push to a pull request and on main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Configure git for workspace tests
+        run: |
+          git config --global user.name "Conveyor CI"
+          git config --global user.email "ci@conveyor.invalid"
+          git config --global init.defaultBranch main
+      - run: bun install --frozen-lockfile
+      - run: bun run check
