@@ -31,11 +31,16 @@ describe("provider-neutral CI gate", () => {
     const error = await gate(provider).catch((caught) => caught);
     expect(error).toBeInstanceOf(ExternalWaitError);
     expect((error as ExternalWaitError).message).toContain("Browser tests to start");
+    expect((error as ExternalWaitError).retryAfterMs).toBe(options.pollMs);
     expect(provider.started).toEqual([{ commit: provider.sha, retryWindowMs: options.retriggerAfterMs }]);
   });
   test("waits for pending runs and settle window, then passes", async () => {
     const provider = new FakeProvider(); provider.runs = [run("1", "Tests", "running")];
-    await expect(gate(provider)).rejects.toThrow("Waiting for CI");
+    const tracked: string[] = [];
+    const error = await evaluateCiGate({ change, issueKey: "issue-1", options, provider, memory: createCiGateMemory(), now: 1_000_000, onCommit: (sha) => tracked.push(sha) }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ExternalWaitError);
+    expect((error as ExternalWaitError).commitSha).toBe(provider.sha);
+    expect(tracked).toEqual([provider.sha]);
     provider.runs = [run("2", "Tests", "passed")];
     const memory = createCiGateMemory(); memory.firstSeen.set(`issue-1@${provider.sha}`, 0);
     expect(await gate(provider, memory, 1_000_000)).toMatchObject({ outcome: "success", status: "done" });

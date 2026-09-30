@@ -3,7 +3,12 @@ import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 
 export class ExternalWaitError extends Error {
   override readonly name = "ExternalWaitError";
-  constructor(message: string, readonly retryAfterMs: number, readonly announcement: string | null = null) {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+    readonly announcement: string | null = null,
+    readonly commitSha: string | null = null,
+  ) {
     super(message);
   }
 }
@@ -71,11 +76,13 @@ export interface CiGateInput {
   provider: CiProvider;
   memory: CiGateMemory;
   now: number;
+  onCommit?: (commitSha: string) => void;
 }
 
 export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOutcome> {
   const { change, options, provider, memory, now } = input;
   const sha = input.headSha;
+  input.onCommit?.(sha);
   const short = sha.slice(0, 7);
   const key = `${input.issueKey}@${sha}`;
   const firstSeen = memory.firstSeen.get(key) ?? now;
@@ -128,7 +135,7 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
       memory.announced.add(key);
       announcement = [`CI started for ${short}: ${change.url}/checks`, ...checks.map((run) => `- ${run.name}: ${run.url ?? "no link"}`), ...awaitingStart.map((name) => `- ${name}: starting`)].join("\n");
     }
-    throw new ExternalWaitError(`Waiting for CI at ${short}: ${waitingOn.join(", ") || "checks to register"}.`, options.pollMs, announcement);
+    throw new ExternalWaitError(`Waiting for CI at ${short}: ${waitingOn.join(", ") || "checks to register"}.`, options.pollMs, announcement, sha);
   }
   return {
     outcome: "success", status: "done", reason: null,
