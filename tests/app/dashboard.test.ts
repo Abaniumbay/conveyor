@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { parseManagedSections } from "../../src/source/github/managed-sections";
 
 const temporaryDirectories: string[] = [];
 
@@ -291,6 +292,142 @@ describe("ConveyorService dashboard", () => {
     expect(store.listRunEvents("run-1")).toMatchObject([
       { type: "report_progress", payload: { message: "Compatibility is preserved; focused tests pass." } },
     ]);
+    await lease.close();
+    store.close();
+  });
+
+  test("atomically creates child issues with managed criteria and configured system labels", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-child-contract-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces") },
+      web: { listen: "127.0.0.1:4300" },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { blocked: "conveyor:blocked" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          stages: [
+            { id: "refinement" },
+            { id: "implementation" },
+          ],
+        },
+      },
+      repositories: {
+        repo: {
+          source: "github",
+          address: "owner/repo",
+          folder: root,
+          baseBranch: "main",
+          pipeline: "default",
+          systemLabels: ["ci", "mobile", "web"],
+        },
+      },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({
+      id: "repo",
+      configName: "repo",
+      source: "github",
+      address: "owner/repo",
+      folder: root,
+      configHash: config.hash,
+    });
+    store.upsertIssue({
+      id: "parent",
+      repositoryId: "repo",
+      sourceNumber: 1,
+      sourceUrl: "https://github.com/owner/repo/issues/1",
+      title: "Parent",
+      body: "Parent body",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    });
+    store.createRun({
+      id: "run-child",
+      issueId: "parent",
+      stageId: "refinement",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: config.hash,
+      startedAt: "2026-09-29T00:00:00Z",
+    });
+    let createInput: {
+      address: string;
+      parentNumber: number;
+      title: string;
+      body: string;
+      labels: readonly string[];
+    } | null = null;
+    const github = {
+      async createChildIssue(input: NonNullable<typeof createInput>) {
+        createInput = input;
+        return {
+          id: "child",
+          number: 2,
+          url: "https://github.com/owner/repo/issues/2",
+          title: input.title,
+          body: input.body,
+          state: "open" as const,
+          stateReason: null,
+          labels: [...input.labels],
+          updatedAt: "2026-09-29T00:01:00Z",
+        };
+      },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    const factory = (service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();
+    const lease = await factory.create({
+      runId: "run-child",
+      stageId: "refinement",
+      context: {
+        issue: store.getIssue("parent")!,
+        repository: { id: "repo", address: "owner/repo", folder: root, baseBranch: "main" },
+        workspace: { path: root, branch: "conveyor/1" },
+        sourceGuidance: "Create complete child contracts.",
+      },
+      allowedTools: ["source.create_child"],
+      actor: { id: "refiner", name: "Refiner", title: "Product Owner" },
+    });
+    const control = JSON.parse(await readFile(path.join(root, "artifacts/run-child/mcp-context.json"), "utf8")) as {
+      control: { token: string };
+    };
+
+    const child = await service.handleMcp({
+      tool: "source.create_child",
+      input: {
+        title: "CI child",
+        body: "Human-owned child context.",
+        acceptanceCriteria: [
+          { id: "AC-1", text: "Runs in GitHub Actions." },
+          { id: "AC-2", text: "Uploads diagnostics.", completed: true },
+        ],
+        systemLabels: ["ci", "mobile", "not-configured"],
+      },
+    }, control.control.token) as { body: string; labels: string[] };
+
+    expect(createInput).not.toBeNull();
+    expect(createInput!.labels).toEqual([
+      "conveyor",
+      "conveyor:implementation",
+      "ci",
+      "mobile",
+    ]);
+    expect(parseManagedSections(createInput!.body).sections["acceptance-criteria"]).toBe(
+      "- [ ] Runs in GitHub Actions. <!-- conveyor:criterion:AC-1 -->\n" +
+      "- [x] Uploads diagnostics. <!-- conveyor:criterion:AC-2 -->",
+    );
+    expect(child.body).toBe(createInput!.body);
+    expect(child.labels).toEqual([...createInput!.labels]);
+
     await lease.close();
     store.close();
   });

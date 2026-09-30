@@ -8,7 +8,13 @@ import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
-import { formatAcceptanceCriteria, formatDependencies, parseManagedSections } from "../source/github/managed-sections";
+import {
+  formatAcceptanceCriteria,
+  formatDependencies,
+  parseManagedSections,
+  upsertManagedSection,
+  type AcceptanceCriterion,
+} from "../source/github/managed-sections";
 import { GhCliTransport, GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
@@ -61,6 +67,18 @@ function number(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return Number(value);
+}
+
+function acceptanceCriteria(value: unknown, name = "criteria"): AcceptanceCriterion[] {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  return value.map((entry) => {
+    const criterion = object(entry);
+    return {
+      id: string(criterion.id, "criterion.id"),
+      text: string(criterion.text, "criterion.text"),
+      completed: criterion.completed === true,
+    };
+  });
 }
 
 function displayName(value: string): string {
@@ -919,14 +937,7 @@ export class ConveyorService {
       if (tool === "source.add_comment") {
         result = { commentId: await this.github.addComment(address, issue.sourceNumber, string(input.markdown, "markdown")) };
       } else if (tool === "source.set_acceptance_criteria") {
-        const criteria = (Array.isArray(input.criteria) ? input.criteria : []).map((value) => {
-          const criterion = object(value);
-          return {
-            id: string(criterion.id, "criterion.id"),
-            text: string(criterion.text, "criterion.text"),
-            completed: criterion.completed === true,
-          };
-        });
+        const criteria = acceptanceCriteria(input.criteria);
         const current = await this.github.getIssue(address, issue.sourceNumber);
         const updated = await this.github.updateManagedSection({
           address,
@@ -941,14 +952,25 @@ export class ConveyorService {
         const pipeline = this.config.pipelines[repository.pipeline]!;
         const currentIndex = pipeline.stages.findIndex((stage) => stage.id === grant.stageId);
         const nextStage = pipeline.stages[currentIndex + 1]?.id ?? pipeline.stages[currentIndex]?.id;
-        const requestedLabels = Array.isArray(input.labels)
-          ? input.labels.filter((value): value is string => typeof value === "string" && repository.systemLabels.includes(value))
+        const requestedLabels = Array.isArray(input.systemLabels)
+          ? input.systemLabels.filter((value): value is string => typeof value === "string" && repository.systemLabels.includes(value))
           : [];
+        const criteria = acceptanceCriteria(input.acceptanceCriteria, "acceptanceCriteria");
+        if (criteria.length === 0) {
+          throw new Error("acceptanceCriteria must contain at least one criterion");
+        }
+        const suppliedBody = typeof input.body === "string" ? input.body : "";
+        const body = upsertManagedSection(
+          suppliedBody,
+          "acceptance-criteria",
+          formatAcceptanceCriteria(criteria),
+          parseManagedSections(suppliedBody).revision,
+        );
         const child = await this.github.createChildIssue({
           address,
           parentNumber: issue.sourceNumber,
           title: string(input.title, "title"),
-          body: typeof input.body === "string" ? input.body : "",
+          body,
           labels: [
             this.config.labels.enrollment,
             ...(nextStage ? [this.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
