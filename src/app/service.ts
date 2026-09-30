@@ -27,7 +27,7 @@ import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration } from "../web/format";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
-import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
+import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeDeliveryState, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
 import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
@@ -431,16 +431,7 @@ export class ConveyorService {
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,
       signal,
-      runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
-        this.config,
-        this.store,
-        context,
-        this.mcpFactory(),
-        this.sourceActions(context),
-        refreshDeliveryState,
-        {},
-        signal,
-      ),
+      runtime: (context, refreshDeliveryState) => this.createStageRuntime(context, refreshDeliveryState, signal),
     });
     try {
       await executor.execute(issue);
@@ -497,6 +488,23 @@ export class ConveyorService {
         }
       }, this.config.settings.retries.minBackoff);
     }
+  }
+
+  private createStageRuntime(
+    context: RuntimeIssueContext,
+    refreshDeliveryState: (() => Promise<RuntimeDeliveryState>) | undefined,
+    signal: AbortSignal,
+  ): ConfiguredStageRuntime {
+    return new ConfiguredStageRuntime(
+      this.config,
+      this.store,
+      context,
+      this.mcpFactory(),
+      this.sourceActions(context),
+      refreshDeliveryState,
+      { harnesses: this.#harnesses },
+      signal,
+    );
   }
 
   private restoreWaitReasons(repositoryId: string): void {
