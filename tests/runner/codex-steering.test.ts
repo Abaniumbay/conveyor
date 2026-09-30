@@ -60,5 +60,17 @@ describe("runCodexSteering", () => {
     expect(invocation.args).not.toContain("--output-schema");
     expect(invocation.args).toContain("mcp_servers.conveyor.required=true");
     expect(invocation.args).toContain('mcp_servers.conveyor.command="bun"');
+
+    await writeFile(executable, `#!/usr/bin/env bun
+      console.error("You have hit your usage limit. Try again later.");
+      process.exit(1);
+    `);
+    await expect(runCodexSteering({
+      command: executable,
+      workspace,
+      prompt: "Continue",
+      sandbox: "read-only",
+      automaticApprovals: false,
+    })).rejects.toMatchObject({ kind: "usage-limit", exitCode: 1 });
   });
 });

@@ -1,7 +1,8 @@
 import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
-import { EMPTY_USAGE } from "./result";
-import { JsonLinesParser, superviseProcess } from "./process";
-import { HarnessError, isUsageLimitFailure } from "./harness-error";
+import { superviseProcess } from "./process";
+import { HarnessError } from "./harness-error";
+import { codexEventStream, codexFailureKind } from "./codex-events";
+import type { RunEnvelope } from "./result";
 
 export interface CodexSteeringInput {
   command: string;
@@ -22,25 +23,10 @@ export interface CodexSteeringInput {
 export interface CodexSteeringResult {
   summary: string;
   sessionId: string | null;
-  usage: typeof EMPTY_USAGE;
+  usage: RunEnvelope["usage"];
   durationMs: number;
   exitCode: number;
   stderr: string;
-}
-
-interface CodexEvent {
-  type?: string;
-  thread_id?: string;
-  message?: string;
-  usage?: {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    output_tokens?: number;
-  };
-  item?: {
-    type?: string;
-    text?: string;
-  };
 }
 
 const INHERITED_ENVIRONMENT = [
@@ -110,22 +96,13 @@ function argumentsFor(input: CodexSteeringInput): string[] {
 export async function runCodexSteering(
   input: CodexSteeringInput,
 ): Promise<CodexSteeringResult> {
-  let sessionId: string | null = null;
   let summary = "";
-  const usage = { ...EMPTY_USAGE };
-  const errors: string[] = [];
-  const eventParser = new JsonLinesParser<CodexEvent>((event) => {
+  const events = codexEventStream((event) => {
     input.onEvent?.(event);
-    if (event.type === "thread.started" && event.thread_id) sessionId = event.thread_id;
-    if (event.type === "item.completed" && event.item?.type === "agent_message" && event.item.text) {
-      summary = event.item.text;
+    const codexEvent = event as { type?: string; item?: { type?: string; text?: string } };
+    if (codexEvent.type === "item.completed" && codexEvent.item?.type === "agent_message" && codexEvent.item.text) {
+      summary = codexEvent.item.text;
     }
-    if (event.type === "turn.completed" && event.usage) {
-      usage.inputTokens += event.usage.input_tokens ?? 0;
-      usage.outputTokens += event.usage.output_tokens ?? 0;
-      usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
-    }
-    if (event.type === "error" && event.message) errors.push(event.message);
   });
   let supervised;
   try {
@@ -137,7 +114,7 @@ export async function runCodexSteering(
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       ...(input.interruptGraceMs !== undefined ? { interruptGraceMs: input.interruptGraceMs } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
-      onStdoutChunk: (chunk) => eventParser.write(chunk),
+      onStdoutChunk: (chunk) => events.parser.write(chunk),
     });
   } catch (error) {
     if (error instanceof HarnessError) {
@@ -146,11 +123,11 @@ export async function runCodexSteering(
     throw error;
   }
 
-  const { invalidLine } = eventParser.end();
+  const { invalidLine } = events.parser.end();
   const { stdout: raw, stderr, exitCode, durationMs } = supervised;
-  const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");
+  const detail = [stderr.trim(), ...events.errors].filter(Boolean).join("\n");
   if (exitCode !== 0) {
-    const kind = isUsageLimitFailure(`${detail}\n${raw}`) ? "usage-limit" : "process";
+    const kind = codexFailureKind(stderr, raw, events.errors);
     throw new CodexRunnerError(`Codex steering exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
   }
   if (invalidLine) {
@@ -161,8 +138,8 @@ export async function runCodexSteering(
   }
   return {
     summary: summary.trim(),
-    sessionId,
-    usage,
+    sessionId: events.sessionId,
+    usage: events.usage,
     durationMs,
     exitCode,
     stderr,

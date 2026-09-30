@@ -1,15 +1,15 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { HarnessError, isUsageLimitFailure, type HarnessErrorKind } from "./harness-error";
+import { HarnessError, type HarnessErrorKind } from "./harness-error";
 
 import {
-  EMPTY_USAGE,
   UNAVAILABLE_COST,
   producerResultSchema,
   type RunEnvelope,
 } from "./result";
-import { JsonLinesParser, superviseProcess } from "./process";
+import { superviseProcess } from "./process";
+import { codexEventStream, codexFailureKind } from "./codex-events";
 
 export interface CodexMcpConfiguration {
   command: string;
@@ -47,17 +47,6 @@ export class CodexRunnerError extends HarnessError {
   ) {
     super(message, kind, options);
   }
-}
-
-interface CodexEvent {
-  type?: string;
-  thread_id?: string;
-  usage?: {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    output_tokens?: number;
-  };
-  message?: string;
 }
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json");
@@ -141,19 +130,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     `codex-result-${randomUUID()}.json`,
   );
   const args = buildArguments(input, outputFile);
-  let sessionId: string | null = null;
-  const usage = { ...EMPTY_USAGE };
-  const messages: string[] = [];
-  const eventParser = new JsonLinesParser<CodexEvent>((event) => {
-    input.onEvent?.(event);
-    if (event.type === "thread.started" && event.thread_id) sessionId = event.thread_id;
-    if (event.type === "turn.completed" && event.usage) {
-      usage.inputTokens += event.usage.input_tokens ?? 0;
-      usage.outputTokens += event.usage.output_tokens ?? 0;
-      usage.cachedTokens += event.usage.cached_input_tokens ?? 0;
-    }
-    if (event.type === "error" && event.message) messages.push(event.message);
-  });
+  const events = codexEventStream(input.onEvent);
   let supervised;
   try {
     supervised = await superviseProcess({
@@ -164,7 +141,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       ...(input.interruptGraceMs !== undefined ? { interruptGraceMs: input.interruptGraceMs } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
-      onStdoutChunk: (chunk) => eventParser.write(chunk),
+      onStdoutChunk: (chunk) => events.parser.write(chunk),
     });
   } catch (error) {
     if (error instanceof HarnessError) {
@@ -173,13 +150,11 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     throw error;
   }
 
-  const { invalidLine } = eventParser.end();
+  const { invalidLine } = events.parser.end();
   const { stdout: raw, stderr, exitCode, durationMs } = supervised;
-  const failureDetail = [stderr.trim(), ...messages].filter(Boolean).join("\n");
+  const failureDetail = [stderr.trim(), ...events.errors].filter(Boolean).join("\n");
   if (exitCode !== 0) {
-    const kind = isUsageLimitFailure(`${failureDetail}\n${raw}`)
-      ? "usage-limit"
-      : "process";
+    const kind = codexFailureKind(stderr, raw, events.errors);
     throw new CodexRunnerError(
       `Codex exited with code ${exitCode}${failureDetail ? `: ${failureDetail}` : ""}`,
       kind,
@@ -228,8 +203,8 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       reason: result.reason,
       metrics: result.metrics,
     },
-    sessionId,
-    usage,
+    sessionId: events.sessionId,
+    usage: events.usage,
     cost: result.cost ?? { ...UNAVAILABLE_COST },
     durationMs,
     exitCode,
