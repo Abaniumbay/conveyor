@@ -21,7 +21,19 @@ export interface ChangeDelivery {
     completedAt: string | null;
   }>;
   /** GitHub compatibility projection retained while consumers migrate to `change`. */
-  pullRequest: object;
+  pullRequest: {
+    number: number;
+    url: string;
+    state: string;
+    merged: boolean;
+    mergedAt: string | null;
+    mergeCommitSha: string | null;
+    draft: boolean;
+    mergeState: string | null;
+    headBranch: string;
+    headSha: string;
+    baseBranch: string;
+  };
 }
 
 export interface ChangeReference {

@@ -94,6 +94,12 @@ repositories:
   };
   const github = {
     async getPullRequestDelivery() { return delivery; },
+    async getPullRequestChange() {
+      return {
+        number: 9, url: "https://github.com/owner/repo/pull/9", state: "open",
+        draft: false, mergeState: "clean", headSha: "abc123", mergedAt: null,
+      };
+    },
     async getPullRequestHead() { return { sha: "abc123" }; },
     async listCheckRuns() { return rawRuns; },
     async jobLog(_address: string, id: number) { logCalls.push(String(id)); return `log-${id}`; },

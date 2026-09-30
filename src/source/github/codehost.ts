@@ -31,7 +31,11 @@ async function runGit(cwd: string, args: string[]): Promise<CommandResult> {
 
 function reference(address: string, id: string): number {
   const prefix = `github:${address}#pr-`;
-  const number = id.startsWith(prefix) ? Number(id.slice(prefix.length)) : NaN;
+  const number = id.startsWith(prefix)
+    ? Number(id.slice(prefix.length))
+    : id.startsWith("pr-")
+      ? Number(id.slice("pr-".length))
+      : NaN;
   if (!Number.isSafeInteger(number) || number <= 0) {
     throw new Error(`change id "${id}" does not belong to GitHub repository ${address}`);
   }

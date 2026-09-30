@@ -134,7 +134,7 @@ repositories:
   });
   github.listCheckRuns = async (_address, sha) => {
     requestLog.push({ op: "checks", sha });
-    return [{ id: 7, name: "Tests", status: "completed", conclusion: "failure", url: "https://checks.test/7", actionsJob: true }];
+    return [{ id: 7, name: "Tests", status: "completed", conclusion: "success", details_url: "https://checks.test/7", started_at: null, completed_at: null, app: { slug: "github-actions" } }];
   };
   github.jobLog = async (_address, id) => { requestLog.push({ op: "log", id }); return "test failed\n"; };
   const service = new ConveyorService(config, store, github);
@@ -198,7 +198,8 @@ describe("CodeHost service integration", () => {
   test("pullRequest.awaitChecks obtains the current head through CodeHost", async () => {
     const { service, context, store, setDeliveryMerged } = await setup();
     const handler = (service as unknown as { sourceActions(context: RuntimeIssueContext): SourceActionHandler }).sourceActions(context);
-    await handler.run({ sourceAction: "pullRequest.awaitChecks" }, { issue: context.issue as unknown as Record<string, unknown>, workspace: context.workspace!.path, stageId: "implementation", attempt: 1, feedback: null });
+    await handler.run({ sourceAction: "pullRequest.awaitChecks" }, { issue: context.issue as unknown as Record<string, unknown>, workspace: context.workspace!.path, stageId: "implementation", attempt: 1, feedback: null })
+      .catch((error) => expect(error).toMatchObject({ name: "ExternalWaitError" }));
     expect(requestLog).toContainEqual({ op: "change", number: 23 });
     expect(requestLog).toContainEqual({ op: "checks", sha: "head-sha-23" });
     store.close();
@@ -213,12 +214,12 @@ describe("CodeHost service integration", () => {
       const token = JSON.parse(await readFile(file, "utf8")).control.token as string;
       try { return await service.handleMcp({ tool, input }, token); } finally { await lease.close(); }
     };
-    expect(await call("delivery.get_state")).toEqual({ pullRequest: null, checks: [] });
+    expect(await call("delivery.get_state")).toEqual({ change: null, pullRequest: null, checks: [] });
     store.upsertPullRequest({ issueId: "issue", id: "github:owner/repo#pr-23", number: 23, url: "https://github.com/owner/repo/pull/23", state: "open" });
     expect(await call("delivery.get_state")).toMatchObject({
       change: { id: "github:owner/repo#pr-23", number: 23, state: "open", headSha: "head-sha-23", draft: false, mergeable: true },
       pullRequest: { number: 23, state: "open", headSha: "head-sha-23" },
-      checks: [{ name: "Tests", conclusion: "success" }],
+      checks: [{ name: "Tests", state: "passed" }],
     });
     store.upsertPullRequest({ issueId: "issue", id: "github:owner/repo#pr-23", number: 23, url: "https://github.com/owner/repo/pull/23", state: "merged", mergedAt: "2026-01-02T00:00:00.000Z" });
     setDeliveryMerged(true);
