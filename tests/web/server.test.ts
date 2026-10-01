@@ -6,6 +6,7 @@ import type { DashboardViewModel } from "../../src/web/types";
 const model: DashboardViewModel = {
   title: "Test board",
   project: "org/repo",
+  totalUsage: "12M in · 80K out",
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
@@ -35,6 +36,7 @@ const model: DashboardViewModel = {
     issues: [],
   },
   questions: [],
+  needsYou: [],
   systemWarnings: [],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
   csrfToken: "filled-by-handler",
@@ -133,6 +135,7 @@ function setup(overrides: Record<string, unknown> = {}) {
       calls.issueJourney.push(args);
       return {
         issueId: String(args[0]),
+        now: { stage: "review", state: "stopped", reason: "A race can return null.", since: "2026-09-29T12:00:00Z" },
         transitions: [{
           id: "transition-1",
           fromStage: "review",
@@ -177,6 +180,12 @@ describe("createWebHandler", () => {
     expect(unauthenticated.status).toBe(303);
     expect(unauthenticated.headers.get("location")).toBe("/login");
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
+  });
+
+  test("links the app favicon from the login page", async () => {
+    const { handler } = setup();
+    const loginPage = await handler(new Request("http://localhost/login"));
+    expect(await loginPage.text()).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml">');
   });
 
   test("logs in, serves dashboard, and clears the session on logout", async () => {
@@ -284,6 +293,17 @@ describe("createWebHandler", () => {
     const asset = await handler(new Request("http://localhost/assets/dashboard.js"));
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toContain("javascript");
+    for (const font of [
+      "ibm-plex-sans-400.woff2",
+      "ibm-plex-sans-500.woff2",
+      "ibm-plex-sans-600.woff2",
+      "ibm-plex-mono-400.woff2",
+    ]) {
+      const response = await handler(new Request(`http://localhost/assets/fonts/${font}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect(response.headers.get("cache-control")).toContain("immutable");
+    }
     const favicon = await handler(new Request("http://localhost/favicon.svg"));
     expect(favicon.status).toBe(200);
     expect(favicon.headers.get("content-type")).toContain("image/svg+xml");
@@ -330,6 +350,29 @@ describe("createWebHandler", () => {
     expect(await events.text()).toContain('"text":"Done"');
   });
 
+  test("keeps the dashboard event stream alive with ping comments at least every five seconds", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const updates = await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }));
+    const reader = updates.body!.getReader();
+    const decoder = new TextDecoder();
+    let streamed = "";
+
+    const readThroughTwoPings = async () => {
+      while ((streamed.match(/: ping\n\n/g) ?? []).length < 2) {
+        const next = await reader.read();
+        if (next.done) throw new Error("dashboard event stream closed");
+        streamed += decoder.decode(next.value);
+      }
+    };
+
+    await Promise.race([
+      readThroughTwoPings(),
+      Bun.sleep(5_500).then(() => { throw new Error("dashboard heartbeat took longer than five seconds"); }),
+    ]);
+    await reader.cancel();
+  });
+
   test("serves authenticated persisted activity for an encoded issue id", async () => {
     const { handler, calls } = setup();
     expect((await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/activity"))).status).toBe(401);
@@ -361,6 +404,7 @@ describe("createWebHandler", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       issueId: "github:owner/repo#1",
+      now: { stage: "review", state: "stopped" },
       transitions: [{ kind: "correction", actor: "Reviewer · Senior Code Reviewer" }],
     });
     expect(calls.issueJourney).toEqual([["github:owner/repo#1"]]);
@@ -484,7 +528,7 @@ describe("createWebHandler", () => {
 
     const page = await handler(new Request("http://localhost/agents/kaveh", { headers: { cookie } }));
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain("<h1>Kaveh</h1>");
+    expect(await page.text()).toContain('<span class="agent-page-title">Kaveh</span>');
 
     expect((await handler(new Request("http://localhost/agents/nobody", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request("http://localhost/agents/kaveh", { method: "POST", headers: { cookie } }))).status).toBe(405);

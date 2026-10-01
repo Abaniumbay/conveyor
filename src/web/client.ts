@@ -34,6 +34,12 @@ export const dashboardClient = String.raw`(() => {
     }).format(date);
   };
 
+  const formatClock = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value || '');
+    return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date);
+  };
+
   // Plain-text messages with http(s) URLs made clickable. Built from text nodes
   // and anchors, never innerHTML, so message content cannot inject markup.
   const appendLinkedText = (parent, text) => {
@@ -53,9 +59,79 @@ export const dashboardClient = String.raw`(() => {
     if (last < text.length) parent.append(text.slice(last));
   };
 
+  const appendInlineMarkdown = (parent, value) => {
+    const pattern = /(\x60[^\x60\n]+\x60|\[[^\]\n]+\]\([^\s)]+\)|\*\*[^*\n]+\*\*|\*[^*\n]+\*|_[^_\n]+_)/g;
+    let last = 0;
+    for (const match of value.matchAll(pattern)) {
+      if (match.index > last) appendLinkedText(parent, value.slice(last, match.index));
+      const token = match[0];
+      let element = null;
+      let content = '';
+      if (token.charCodeAt(0) === 96) {
+        element = document.createElement('code');
+        content = token.slice(1, -1);
+      } else if (token.startsWith('[')) {
+        const parts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+        try {
+          const url = new URL(parts ? parts[2] : '', location.origin);
+          if (parts && (url.protocol === 'http:' || url.protocol === 'https:')) {
+            element = document.createElement('a');
+            element.href = url.href;
+            element.target = '_blank';
+            element.rel = 'noopener noreferrer';
+            content = parts[1];
+          }
+        } catch {}
+      } else if (token.startsWith('**')) {
+        element = document.createElement('strong');
+        content = token.slice(2, -2);
+      } else {
+        element = document.createElement('em');
+        content = token.slice(1, -1);
+      }
+      if (element) {
+        appendLinkedText(element, content);
+        parent.append(element);
+      } else parent.append(token);
+      last = match.index + token.length;
+    }
+    if (last < value.length) appendLinkedText(parent, value.slice(last));
+  };
+
+  const appendMarkdown = (parent, value) => {
+    let list = null;
+    for (const line of String(value).replace(/\r\n?/g, '\n').split('\n')) {
+      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+      const numbered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
+      const listName = bullet ? 'ul' : numbered ? 'ol' : null;
+      if (listName) {
+        if (!list || list.localName !== listName) {
+          list = document.createElement(listName);
+          parent.append(list);
+        }
+        const item = document.createElement('li');
+        appendInlineMarkdown(item, (bullet || numbered)[1]);
+        list.append(item);
+      } else {
+        list = null;
+        if (!line.trim()) continue;
+        const paragraph = document.createElement('p');
+        appendInlineMarkdown(paragraph, line);
+        parent.append(paragraph);
+      }
+    }
+  };
+
   const localizeTimes = (root = document) => {
-    for (const time of root.querySelectorAll('time[datetime]')) {
+    for (const time of root.querySelectorAll('time[datetime]:not([data-relative-time]):not([data-local-clock])')) {
       time.textContent = formatDateTime(time.getAttribute('datetime'));
+    }
+    for (const time of root.querySelectorAll('time[data-local-clock][datetime]')) {
+      time.textContent = formatClock(time.getAttribute('datetime'));
+    }
+    for (const time of root.querySelectorAll('time[data-relative-time][datetime]')) {
+      const changedAt = new Date(time.getAttribute('datetime')).getTime();
+      if (!Number.isNaN(changedAt)) time.textContent = formatElapsed((Date.now() - changedAt) / 1000);
     }
   };
 
@@ -110,8 +186,9 @@ export const dashboardClient = String.raw`(() => {
       time.dateTime = String(message.createdAt || '');
       time.textContent = formatDateTime(message.createdAt);
       meta.append(time);
-      const body = document.createElement('p');
-      appendLinkedText(body, String(message.message || ''));
+      const body = document.createElement('div');
+      body.className = 'markdown';
+      appendMarkdown(body, String(message.message || ''));
       header.append(actor, meta);
       item.append(header, body);
       root.append(item);
@@ -159,6 +236,35 @@ export const dashboardClient = String.raw`(() => {
     status.textContent = transitions.length === 0
       ? 'No stage changes have been recorded yet.'
       : transitions.length + (transitions.length === 1 ? ' recorded stage change.' : ' recorded stage changes.');
+    const now = journey.now && typeof journey.now === 'object' ? journey.now : null;
+    if (now) {
+      const item = document.createElement('li');
+      item.className = 'journey-entry journey-entry--now';
+      const header = document.createElement('header');
+      const title = document.createElement('strong');
+      title.textContent = (now.stage ? humanize(now.stage) + ' · ' : '') + humanize(now.state || 'active');
+      const badge = document.createElement('span');
+      badge.className = 'journey-kind';
+      badge.textContent = 'Now';
+      header.append(title, badge);
+      item.append(header);
+      if (now.since) {
+        const meta = document.createElement('p');
+        meta.className = 'journey-meta';
+        const time = document.createElement('time');
+        time.dateTime = String(now.since);
+        time.textContent = formatDateTime(now.since);
+        meta.append('Since ', time);
+        item.append(meta);
+      }
+      if (now.reason) {
+        const reason = document.createElement('p');
+        reason.className = 'journey-reason';
+        reason.textContent = String(now.reason);
+        item.append(reason);
+      }
+      root.append(item);
+    }
     for (const transition of transitions) {
       const item = document.createElement('li');
       const kind = String(transition.kind || 'observed').replace(/[^a-z0-9_-]/gi, '');
@@ -436,8 +542,9 @@ export const dashboardClient = String.raw`(() => {
     const id = opener.getAttribute('data-dialog-open');
     const dialog = id ? document.getElementById(id) : null;
     if (dialog instanceof HTMLDialogElement && !dialog.open) {
+      for (const openDialog of document.querySelectorAll('dialog[data-issue-id][open]')) openDialog.close();
       selectDetailTab(dialog, 'summary');
-      dialog.showModal();
+      dialog.show();
       const issueId = dialog.dataset.issueId;
       if (updateUrl && issueId && new URL(location.href).searchParams.get('issue') !== issueId) {
         history.pushState({ conveyorIssue: issueId }, '', issueUrl(issueId));
@@ -458,8 +565,9 @@ export const dashboardClient = String.raw`(() => {
 
   const openDialogElement = (dialog) => {
     if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
+    for (const openDialog of document.querySelectorAll('dialog[data-issue-id][open]')) openDialog.close();
     selectDetailTab(dialog, validDetailTab(new URL(location.href).searchParams.get('tab')));
-    dialog.showModal();
+    dialog.show();
   };
 
   document.addEventListener('click', (event) => {
@@ -497,6 +605,14 @@ export const dashboardClient = String.raw`(() => {
   });
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      const inspector = document.querySelector('dialog[data-issue-id][open]');
+      if (inspector instanceof HTMLDialogElement) {
+        event.preventDefault();
+        inspector.close();
+      }
+      return;
+    }
     if (event.key !== 'Enter' && event.key !== ' ') return;
     if (!(event.target instanceof Element)) return;
     const opener = event.target.closest('[data-dialog-open]');
@@ -853,9 +969,10 @@ export const dashboardClient = String.raw`(() => {
         item.dataset.sequence = String(event.sequence);
         const role = document.createElement('span');
         role.className = 'agent-event-role';
-        role.textContent = event.type === 'user' ? 'You' : event.type === 'report' ? 'Report' : 'Agent';
-        const text = document.createElement('p');
-        text.textContent = String(event.text || '');
+        role.textContent = event.type === 'user' ? 'You' : event.type === 'report' ? 'Report' : 'Operator';
+        const text = document.createElement('div');
+        text.className = 'markdown';
+        appendMarkdown(text, String(event.text || ''));
         const time = document.createElement('time');
         time.dateTime = String(event.createdAt || '');
         time.textContent = formatDateTime(event.createdAt);

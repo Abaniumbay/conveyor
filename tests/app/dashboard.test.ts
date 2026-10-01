@@ -573,7 +573,8 @@ describe("ConveyorService dashboard", () => {
         default: {
           stages: [
             { id: "refinement", run: { type: "agent", agent: "refiner" } },
-            { id: "implementation", run: { type: "agent", agent: "implementer" } },
+            { id: "implementation", name: "Build", run: { type: "agent", agent: "implementer" } },
+            { id: "ci", run: { type: "agent", agent: "implementer" } },
           ],
         },
       },
@@ -727,6 +728,79 @@ describe("ConveyorService dashboard", () => {
       feedbackCycle: 0,
       configHash: config.hash,
     });
+    store.upsertIssue({
+      id: "github:owner/repo#30",
+      repositoryId: "repo",
+      sourceNumber: 30,
+      sourceUrl: "https://github.com/owner/repo/issues/30",
+      title: "Finished roll-up parent",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation", "conveyor:done"],
+      sourceUpdatedAt: "2026-09-29T02:00:00Z",
+    });
+    store.setIssueProjection("github:owner/repo#30", {
+      stage: "implementation",
+      state: "done",
+      warning: null,
+    });
+    store.replaceRelationships(
+      "github:owner/repo#27",
+      { parentId: "github:owner/repo#30", siblingOrder: 1 },
+      ["github:owner/repo#1"],
+    );
+    store.upsertIssue({
+      id: "github:owner/repo#31",
+      repositoryId: "repo",
+      sourceNumber: 31,
+      sourceUrl: "https://github.com/owner/repo/issues/31",
+      title: "Waiting for CI",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:implementation"],
+      sourceUpdatedAt: "2026-09-29T03:00:00Z",
+    });
+    store.setIssueProjection("github:owner/repo#31", {
+      stage: "implementation",
+      state: "active",
+      warning: "Waiting for CI for 7c0ea55",
+    });
+    store.setStageState({
+      issueId: "github:owner/repo#31",
+      stageId: "implementation",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
+    const journal = store.executions();
+    const epoch = journal.stageEpoch("github:owner/repo#31");
+    const pending = journal.planExecution({
+      itemId: "github:owner/repo#31",
+      stage: "implementation",
+      stageEpoch: epoch,
+      attempt: 1,
+      list: "exit-gate",
+      taskInstanceId: "ciGate",
+    }).record;
+    journal.markPending(pending.id, {
+      wakeAt: "2026-09-29T03:12:00Z",
+      deadlineAt: "2026-09-29T12:00:00Z",
+      message: "Waiting for CI for 7c0ea55",
+    }, epoch);
+    journal.saveCursor({
+      issueId: "github:owner/repo#31",
+      stage: "implementation",
+      stageEpoch: epoch,
+      attempt: 1,
+      returns: 0,
+      list: "exit-gate",
+      taskInstanceId: "ciGate",
+      state: "pending",
+      feedback: null,
+      pendingSince: "2026-09-29T03:02:00Z",
+      wakeAt: "2026-09-29T03:12:00Z",
+      deadlineAt: "2026-09-29T12:00:00Z",
+    }, epoch);
 
     const service = new ConveyorService(config, store, {} as never);
     const dashboard = service.dashboard("csrf", {
@@ -739,19 +813,36 @@ describe("ConveyorService dashboard", () => {
     });
     const implementation = dashboard.stages.find((column) => column.id === "stage:implementation");
 
-    expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Implementation"]);
+    expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Build", "CI"]);
     expect(implementation).toMatchObject({
       actors: [{ type: "agent", name: "Implementer", title: "Senior Developer" }],
-      totalIssues: 2,
+      totalIssues: 3,
       page: 1,
       totalPages: 1,
     });
-    expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29]);
+    expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29, 31]);
     expect(implementation?.issues[0]).toMatchObject({
       dependencies: [{ number: 1, satisfied: true }],
       working: true,
     });
     expect(implementation?.issues[1]).toMatchObject({ working: true });
+    expect(implementation?.issues[2]).toMatchObject({
+      activity: "implementation › ciGate",
+      waiting: {
+        reason: "Waiting for CI for 7c0ea55",
+        since: "2026-09-29T03:02:00Z",
+        nextCheckAt: "2026-09-29T03:12:00Z",
+        deadline: "2026-09-29T12:00:00Z",
+      },
+    });
+    expect(service.issueJourney("github:owner/repo#31")).toMatchObject({
+      now: {
+        stage: "implementation",
+        state: "waiting",
+        reason: "Waiting for CI for 7c0ea55",
+        since: "2026-09-29T03:02:00Z",
+      },
+    });
     expect(dashboard.activeWork).toMatchObject({
       runnerCount: 2,
       runnerCapacity: 3,
@@ -776,20 +867,21 @@ describe("ConveyorService dashboard", () => {
       payload: { message: "Step 7" },
     });
     expect(dashboard.backlog.map((issue) => issue.number)).toEqual([26]);
-    expect(dashboard.done).toMatchObject({ totalIssues: 25 });
+    expect(dashboard.done).toMatchObject({ totalIssues: 26 });
     expect(dashboard.done.issues).toHaveLength(20);
     expect(dashboard.done.issues[0]).toMatchObject({
-      number: 25,
-      state: "completed",
+      number: 30,
+      state: "done",
       tone: "success",
       inconsistent: false,
+      children: [{ number: 27 }],
     });
     expect(dashboard.attention).toMatchObject({ totalIssues: 1 });
     expect(dashboard.attention.issues[0]).toMatchObject({
       number: 28,
       reason: "No valid configured stage label is present.",
     });
-    expect(dashboard.counts).toEqual({ board: 28, attention: 1 });
+    expect(dashboard.counts).toEqual({ board: 4, attention: 1 });
 
     const expanded = service.dashboard("csrf", {
       view: "board",
@@ -799,7 +891,7 @@ describe("ConveyorService dashboard", () => {
       runId: null,
       issueId: null,
     });
-    expect(expanded.done.issues).toHaveLength(25);
+    expect(expanded.done.issues).toHaveLength(26);
     store.close();
   });
 });

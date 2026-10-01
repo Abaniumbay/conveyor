@@ -100,6 +100,19 @@ describe("criteriaFromBody", () => {
     expect(criteriaFromBody(criteriaBody("- [ ] First <!-- conveyor:criterion:a -->", "- [x] [Manual] Second"))).toEqual(["First", "[Manual] Second"]);
     expect(criteriaFromBody("no section")).toEqual([]);
   });
+
+  test("falls back to task-list items under an acceptance criteria heading", () => {
+    expect(criteriaFromBody([
+      "Issue context.",
+      "",
+      "## Acceptance criteria",
+      "- [ ] Works offline",
+      "- [x] Preserves **existing** data",
+      "",
+      "## Implementation notes",
+      "- [ ] This is not a criterion",
+    ].join("\n"))).toEqual(["Works offline", "Preserves **existing** data"]);
+  });
 });
 
 async function world() {

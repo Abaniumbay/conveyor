@@ -6,7 +6,8 @@ describe("dashboard browser client", () => {
   test("is valid standalone JavaScript", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
-    expect(dashboardClient).toContain("appendLinkedText(body, String(message.message");
+    expect(dashboardClient).toContain("appendLinkedText(parent, value.slice");
+    expect(dashboardClient).toContain("appendMarkdown(body, String(message.message");
     expect(dashboardClient).toContain("'/backlog/move'");
     expect(dashboardClient).toContain("addEventListener('dragend'");
     expect(dashboardClient).toContain("data-detail-tab");
@@ -15,6 +16,8 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("addEventListener('activity'");
     expect(dashboardClient).toContain("scheduleActivityRefresh");
     expect(dashboardClient).toContain("loadIssueJourney");
+    expect(dashboardClient).toContain("journey.now");
+    expect(dashboardClient).toContain("journey-entry--now");
     expect(dashboardClient).toContain("scheduleJourneyRefresh");
     expect(dashboardClient).not.toContain("/api/dashboard-revision");
     expect(dashboardClient).toContain("url.searchParams.set('tab', name)");
@@ -25,6 +28,11 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("name === 'journey'");
     expect(dashboardClient).toContain("new DOMParser()");
     expect(dashboardClient).toContain("currentDashboard.replaceWith(nextDashboard)");
+    expect(dashboardClient).toContain("time[data-relative-time][datetime]");
     expect(dashboardClient).not.toContain("location.reload()")
+    expect(dashboardClient).toContain("dialog.show();");
+    expect(dashboardClient).not.toContain("showModal()");
+    expect(dashboardClient).toContain("event.key === 'Escape'");
+    expect(dashboardClient).toContain(": 'Operator'");
   });
 });

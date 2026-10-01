@@ -15,13 +15,18 @@ const parent: IssueCardViewModel = {
   reason: "Waiting for checks",
   cost: "$0.42",
   duration: "3m 12s",
+  stateChangedAt: "2026-09-29T11:30:00Z",
+  waiting: null,
   blocked: true,
   inconsistent: false,
   closable: true,
   tone: "warning",
   parent: null,
   children: [{ id: "child", repository: "sample", number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42", satisfied: false }],
-  dependencies: [{ id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true }],
+  dependencies: [
+    { id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true },
+    { id: "dependency-open", repository: "foundation", number: 39, title: "Open foundation", url: "https://github.com/sample/repo/issues/39", satisfied: false },
+  ],
   working: true,
 };
 
@@ -38,6 +43,8 @@ const backlogIssue: IssueCardViewModel = {
   reason: "Awaiting capacity",
   cost: null,
   duration: "1h",
+  stateChangedAt: "2026-09-29T10:00:00Z",
+  waiting: null,
   blocked: false,
   inconsistent: false,
   closable: false,
@@ -59,9 +66,25 @@ const completedIssue: IssueCardViewModel = {
   reason: null,
 };
 
+const waitingIssue = {
+  ...backlogIssue,
+  id: "stage-child",
+  number: 45,
+  title: "Executable child",
+  activity: "implementation › ciGate",
+  reason: null,
+  waiting: {
+    reason: "Waiting for CI for 7c0ea55",
+    since: "2026-09-29T11:40:00Z",
+    nextCheckAt: "2026-09-29T12:10:00Z",
+    deadline: "2026-09-29T22:48:00Z",
+  },
+} as IssueCardViewModel;
+
 const dashboard: DashboardViewModel = {
   title: "Conveyor",
   project: "sample/repo",
+  totalUsage: "664M in · 2.2M out",
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
@@ -89,7 +112,7 @@ const dashboard: DashboardViewModel = {
       totalIssues: 41,
       page: 2,
       totalPages: 3,
-      issues: [parent, { ...backlogIssue, id: "stage-child", number: 45, title: "Executable child" }],
+      issues: [parent, waitingIssue],
     },
     {
       id: "stage:review",
@@ -126,13 +149,16 @@ const dashboard: DashboardViewModel = {
   questions: [
     {
       id: "question/1",
+      issueId: "backlog",
       issueNumber: 43,
+      issueTitle: "Next item",
       prompt: "Which layout?",
       reason: "Both satisfy the acceptance criteria.",
       options: [{ id: "compact", label: "Compact" }],
       allowFreeText: false,
     },
   ],
+  needsYou: [parent],
   systemWarnings: ["meal-planner webhook is unavailable"],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
   selectedIssue: null,
@@ -145,6 +171,7 @@ describe("renderDashboard", () => {
 
     expect(html).toContain("Delivery board");
     expect(html).toContain(">Backlog</h2>");
+    expect(html).toContain('class="stage-heading stage-heading--simple"');
     expect(html).toContain(">Build</h2>");
     expect(html).toContain(">Review</h2>");
     expect(html).toContain("Implementer");
@@ -161,17 +188,25 @@ describe("renderDashboard", () => {
     expect(html).toContain(">Roll-up parents</h3>");
     expect(html).toContain(">Issues</h3>");
     expect(html).toContain("Executable child");
+    expect(html).toContain("Waiting for CI for 7c0ea55");
+    expect(html).toContain("next check");
+    expect(html).toContain("gives up");
+    expect(html).toContain('data-local-clock="true"');
+    expect(html).toContain('aria-label="1 waiting"');
     expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
+    expect(html).toContain('Waiting on <a href="/?issue=dependency-open">#39</a>');
     expect(html).toContain('class="relation-link--satisfied"');
     expect(html).toContain("Issue relationships for #41");
-    expect(html).toContain("in_progress");
+    expect(html).toContain(">Working</strong>");
     expect(html).toContain("Keyboard usable");
     expect(html).toContain("Running verification");
     expect(html).toContain("Waiting for checks");
     expect(html).toContain("Needs attention");
-    expect(html).toContain("Needs your input");
+    expect(html).toContain("Needs you <span>(2)</span>");
+    expect(html).toContain("#41 Build &lt;safe> &amp; sound");
+    expect(html).toContain('<a class="needs-you-action" href="/?issue=parent">Open</a>');
     expect(html).toContain("/questions/question%2F1/answer");
     expect(html).toContain('name="csrf" value="csrf-token"');
     expect(html).toContain("System attention");
@@ -181,9 +216,9 @@ describe("renderDashboard", () => {
     expect(html).toContain('src="/assets/dashboard.js"');
     expect(html).toContain('data-dialog-open="issue-parent-41"');
     expect(html).toContain('aria-label="Open details for issue #41"');
-    expect(html).toContain("1 runner working");
-    expect(html).toContain("1 of 4 runner slots active");
-    expect(html).toContain("Working now");
+    expect(html).toContain("<summary><strong>1 of 4</strong> runners</summary>");
+    expect(html).toContain("<h2>Active work</h2>");
+    expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain('href="/?issue=parent"');
     expect(html).toContain("sample:#41");
     expect(html).toContain('href="/?issue=child"');
@@ -194,7 +229,8 @@ describe("renderDashboard", () => {
     expect(html).toContain("Conversation");
     expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
     expect(html).toContain("grid-auto-rows:max-content");
-    expect(html).toContain(".agent-events{flex:1;max-height:none;min-height:15rem;align-content:start;grid-auto-rows:max-content}");
+    expect(html).toContain(".agent-events{display:grid;flex:1;");
+    expect(html).toContain("align-content:start;grid-auto-rows:max-content");
     expect(html).toContain('data-detail-tab="journey"');
     expect(html).toContain('data-journey-url="/api/issues/parent/journey"');
     expect(html).toContain("Journey");
@@ -204,16 +240,45 @@ describe("renderDashboard", () => {
     expect(html).not.toContain(">Details</button>");
     expect(html).not.toContain("details-button");
     expect(html).toContain("<dialog");
+    expect(html).toContain('class="issue-details issue-inspector"');
     expect(html).not.toContain("indicator-blocked");
     expect(html).not.toContain('class="labels"');
-    expect(html).toContain("@keyframes working-pulse");
+    expect(html).toContain("@media(prefers-reduced-motion:no-preference)");
+    expect(html).toContain("@keyframes belt");
+    expect(html).not.toContain("working-pulse");
     expect(html).toContain('rel="icon" href="/favicon.svg"');
     expect(html).toContain("data-server-status");
     expect(html).toContain("data-local-time");
     expect(html).toContain("page-loader");
-    expect(html).toContain("min-height:calc(100vh - 11rem)");
+    expect(html).toContain('<nav class="line" aria-labelledby="line-heading">');
+    expect(html).toContain('data-station-link="stage:build"');
+    expect(html).toContain('href="#station-stage-build"');
+    expect(html).toContain('class="line-station line-station--running"');
+    expect(html).toContain("andon--run");
+    expect(html).toContain('<time datetime="2026-09-29T11:30:00Z" data-relative-time="true">recently</time>');
+    expect(html).toContain("Roll-up · 1 child, 0 done");
+    expect(html).toContain('class="stage stage--empty" id="station-stage-review"');
+    expect(html).toContain(".stage--empty .stage-heading h2{writing-mode:vertical-rl");
+    const parentCardStart = html.indexOf('data-issue-id="parent" data-dialog-open');
+    const parentCard = html.slice(parentCardStart, html.indexOf("<dialog", parentCardStart));
+    expect(parentCard).toContain("Implementer");
+    expect(parentCard).not.toContain("Required foundation");
+    expect(html).toContain(".agent-panel{min-height:calc(100vh - 12rem);display:flex");
     expect(html).toContain("grid-template-columns:minmax(0,1fr) auto");
-    expect(html).toContain("height:calc(100dvh - 1rem)");
+    expect(html).toContain("width:min(560px,100vw);height:100dvh");
+    expect(html).toContain(".conversation-compose{display:grid;flex:0 0 auto");
+    expect(html).toContain(".line ol{position:relative;display:grid}");
+    expect(html).toContain(".issue-details.issue-inspector{width:100vw;height:100dvh");
+    expect(html).toContain("--concrete:#E8EBE8");
+    expect(html).toContain("--panel:#F8F9F7");
+    expect(html).toContain("--ink:#1C2328");
+    expect(html).toContain("--steel:#5D6970");
+    expect(html).toContain("--run:#1E8A5A");
+    expect(html).toContain("--wait:#B8720E");
+    expect(html).toContain("--stop:#BD3B26");
+    expect(html).toContain("--signal:#2A5BD7");
+    expect(html).toContain('font-family:"IBM Plex Sans"');
+    expect(html).toContain('font-family:"IBM Plex Mono"');
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
@@ -224,6 +289,26 @@ describe("renderDashboard", () => {
     expect(html).toContain("https://github.com/sample/repo/issues/41?x=1&amp;y=2");
     expect(html).not.toContain('href="javascript:');
     expect(html).not.toContain("<script>alert(1)</script>");
+  });
+
+  test("labels token totals as usage rather than cost", () => {
+    const html = renderDashboard(dashboard);
+    expect(html).toContain("<dt>Usage</dt><dd>$0.42</dd>");
+    expect(html).not.toContain("<dt>Cost</dt>");
+  });
+
+  test("gives long stage usage its own non-overlapping header row", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      stages: [{
+        ...dashboard.stages[0]!,
+        cost: "585M in (564M cached) · 1.8M out · 331 runs",
+      }],
+    });
+
+    expect(html).toContain("585M in (564M cached) · 1.8M out · 331 runs");
+    expect(html).toContain(".stage-heading{display:grid;grid-template-columns:minmax(0,1fr)");
+    expect(html).toContain(".stage-summary{display:flex;min-width:0;align-items:center;justify-content:space-between");
   });
 
   test("renders backlog ordering inside the board", () => {
@@ -240,11 +325,12 @@ describe("renderDashboard", () => {
       ...dashboard,
       agents: [{ id: "kaveh", name: "Kaveh", title: "Senior Developer" }, { id: "darya", name: "Darya", title: "Product Owner" }],
     });
-    expect(html).toContain('<nav class="agents-strip" aria-label="Agents">');
+    expect(html).toContain('<details class="agents-menu">');
+    expect(html).toContain('href="/agents"');
     expect(html).toContain('href="/agents/kaveh"');
     expect(html).toContain('href="/agents/darya"');
     expect(html).toContain("Product Owner");
-    expect(renderDashboard({ ...dashboard, agents: [] })).not.toContain("<nav class=\"agents-strip\"");
+    expect(renderDashboard({ ...dashboard, agents: [] })).toContain("View all agents");
   });
 
   test("renders invalid stage labels on the separate attention tab", () => {
@@ -268,18 +354,24 @@ describe("renderDashboard", () => {
           finishedAt: null,
           events: [
             { sequence: 1, type: "user", text: "Inspect the board", createdAt: "2026-09-29T12:00:00Z" },
-            { sequence: 2, type: "report", text: "Fixed the labels", createdAt: "2026-09-29T12:01:00Z" },
+            { sequence: 2, type: "report", text: "Fixed **the** `labels`:\n- [Details](https://example.test)\n- <script>alert(1)</script>", createdAt: "2026-09-29T12:01:00Z" },
           ],
         },
         recent: [{ id: "run-1", status: "running", startedAt: "2026-09-29T12:00:00Z" }],
       },
     });
 
-    expect(html).toContain("Agent");
+    expect(html).toContain(">Operator</a>");
+    expect(html).toContain("<h2>Operator</h2>");
     expect(html).toContain("Inspect the board");
-    expect(html).toContain("Fixed the labels");
+    expect(html).toContain("Fixed <strong>the</strong> <code>labels</code>:");
+    expect(html).toContain('<a href="https://example.test/" target="_blank" rel="noopener noreferrer">Details</a>');
+    expect(html).toContain("<ul><li>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain('action="/steering"');
     expect(html).toContain('data-steering-run="run-1"');
+    expect(html).toContain("Send to operator");
   });
 
   test("renders a deep-linked issue dialog even when its card is not on the current page", () => {

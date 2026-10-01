@@ -242,6 +242,7 @@ const failurePolicySchema = z
 const stageSchema = z
   .object({
     id: identifierSchema,
+    name: identifierSchema.optional(),
     run: stageRunSchema,
     concurrency: z.number().int().positive(),
     enterCheck: identifierSchema.optional(),
@@ -295,6 +296,7 @@ const taskEntrySchema = z
 const nativeStageSchema = z
   .object({
     id: identifierSchema,
+    name: identifierSchema.optional(),
     concurrency: z.number().int().positive(),
     retries: z.number().int().nonnegative().default(2),
     childrenStartAt: identifierSchema.optional(),
