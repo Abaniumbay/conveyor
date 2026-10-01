@@ -229,11 +229,12 @@ export class IssueExecutor {
     const cursor = journal.getCursor(issueId);
     if (!stored || !cursor || cursor.stage !== stageId || stored.context.configHash === config.hash) return;
     journal.onStageChange(issueId);
+    const message = `The pipeline plan changed since ${stageId} started; the stage restarted from the beginning.`;
     store.appendConversationMessage({
       issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
-      actorName: "Conveyor", actorTitle: "Orchestrator",
-      message: `The pipeline plan changed since ${stageId} started; the stage restarted from the beginning.`,
+      actorName: "Conveyor", actorTitle: "Orchestrator", message,
     });
+    store.recordJourneyEvent({ issueId, stage: stageId, kind: "restarted", reason: message });
   }
 }
 

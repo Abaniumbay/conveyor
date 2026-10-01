@@ -774,6 +774,16 @@ export class ConveyorStore {
     };
   }
 
+  /** A completed journey entry that is not a label transition Conveyor applied (a resume, a restart). */
+  recordJourneyEvent(input: { issueId: string; stage: string | null; kind: string; reason: string }): void {
+    const id = randomUUID();
+    this.beginStageTransition({
+      id, issueId: input.issueId, fromStage: input.stage, toStage: input.stage, kind: input.kind, sourceMutationId: null,
+      detail: { reason: input.reason, requiredFixes: [], resultStatus: null, actor: { name: "Conveyor", title: "Orchestrator" } },
+    });
+    this.completeStageTransition(id);
+  }
+
   beginStageTransition(input: {
     id: string;
     issueId: string;

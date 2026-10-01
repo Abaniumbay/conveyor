@@ -20,6 +20,9 @@ export interface ReconcileRepositoryResult {
   missing: number;
 }
 
+/** Projected states an item resumes from when its stopping label is removed (or enrolment restored). */
+const STOPPED_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected", "paused", "waiting"]);
+
 function isConveyorIssue(labels: readonly string[], enrollment: string): boolean {
   return labels.some(
     (label) => label === enrollment || label.startsWith(`${enrollment}:`),
@@ -87,6 +90,16 @@ export async function reconcileRepository(
         input.expectedPostMergeClosure?.(issueId) ?? false,
     });
     const projectedState = projected.state ?? projected.mode;
+    if (prior && projectedState === "active" && prior.projectedState && STOPPED_STATES.has(prior.projectedState)) {
+      input.store.recordJourneyEvent({
+        issueId,
+        stage: projected.stage,
+        kind: "resumed",
+        reason: prior.projectedState === "paused"
+          ? `Resumed: the ${input.labels.enrollment} label was added back.`
+          : `Resumed from ${prior.projectedState}: the ${prior.projectedState} label was removed.`,
+      });
+    }
     input.store.setIssueProjection(issueId, {
       stage: projected.visible ? projected.stage : null,
       state: projectedState,
