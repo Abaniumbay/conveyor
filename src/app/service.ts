@@ -27,6 +27,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
+import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
@@ -1718,6 +1719,9 @@ export class ConveyorService {
       selectedIssue: pagination.issueId && byId.has(pagination.issueId)
         ? card(byId.get(pagination.issueId)!)
         : null,
+      agents: Object.entries(this.config.agents)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, agent]) => ({ id, name: agent.name ?? displayName(id), title: agent.title ?? "AI Agent" })),
       csrfToken,
     };
   }
@@ -1996,6 +2000,9 @@ export class ConveyorService {
       getIssueJourney: (issueId) => this.issueJourney(issueId),
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
       dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
+      getAgentProfiles: () => buildAgentProfiles(this.config),
+      getAgentProfile: async (agentId) =>
+        (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
   }
 }
