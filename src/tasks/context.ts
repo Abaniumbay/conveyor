@@ -225,6 +225,10 @@ export interface AdvisoryCiWatch {
   repositoryId: string;
   itemId: string;
   headSha: string;
+  stage: string;                      // the stage that started it; its messages are attributed there
+  changeId: string;
+  changeUrl: string;
+  settleMs: number;
   state: "active" | "superseded" | "passed" | "failed" | "timed-out";
   startedAt: string;
   wakeAt: string;

@@ -215,7 +215,7 @@ describe("ci.start", () => {
   test("advisory mode also starts the durable watch; required mode does not", async () => {
     const w = await world();
     await run("ci.start", { context: gateCtx(ci(), repository("advisory")), deps: w.deps });
-    expect(w.watches).toEqual([{ itemId: "i1", headSha: "head1" }]);
+    expect(w.watches).toEqual([{ itemId: "i1", headSha: "head1", stage: "impl", changeId: "5", changeUrl: PR_URL }]);
     await run("ci.start", { context: gateCtx(ci(), repository("required")), deps: w.deps });
     expect(w.watches).toHaveLength(1);
   });

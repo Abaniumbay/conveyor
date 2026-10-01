@@ -430,4 +430,28 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    sql: `
+      -- Durable advisory CI watches: outlive the stage that started them and never route the item.
+      CREATE TABLE advisory_ci_watches (
+        id TEXT PRIMARY KEY,
+        repository_id TEXT NOT NULL,
+        item_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        head_sha TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        change_id TEXT NOT NULL,
+        change_url TEXT NOT NULL,
+        state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        settle_ms INTEGER NOT NULL,
+        wake_at TEXT NOT NULL,
+        deadline_at TEXT NOT NULL,
+        announced_at TEXT,
+        final_message_at TEXT,
+        UNIQUE (repository_id, item_id, head_sha)
+      );
+      CREATE INDEX advisory_ci_watches_wake_idx ON advisory_ci_watches(state, wake_at);
+    `,
+  },
 ];

@@ -17,6 +17,10 @@ A stage is a chain of tasks. Every stage has two lists: \`actions\` (do the stag
 - **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it \`invalidates\` and is safe to resume after a crash. Only acts appear in \`actions\`.
 - **tool**: callable only through an agent's MCP grant. Never listed in a stage.
 
+## Advisory CI
+
+With \`ci.mode: advisory\`, CI never gates or routes an item: the stage runs \`ci.start\` only. \`ci.start\` creates (or reuses) one durable watch per (repository, item, head commit); the service polls it every minute, outside the stage and without a runner permit. The watch reports once to the item's conversation (stage = the stage that started it): a pass, a failure with focused logs, or a timeout after 3 hours. A new head supersedes the older watch, whose result is then never posted. The result is recorded in the same transaction as the watch's final state, so it is posted exactly once even across restarts.
+
 ## Results
 
 A task returns one of:

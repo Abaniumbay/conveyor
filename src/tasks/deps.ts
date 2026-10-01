@@ -39,8 +39,8 @@ export interface TaskDeps {
   /** The CI provider (the ci group); resolved lazily so repositories with CI disabled never need one. */
   ci?: {
     provider: () => CiProvider;
-    /** Advisory mode: starts the durable watch for a head (until the watch exists this is absent). */
-    watchAdvisory?: (input: { itemId: string; headSha: string }) => void | Promise<void>;
+    /** Advisory mode: starts the durable watch for a head (absent when no watch store is wired). */
+    watchAdvisory?: (input: { itemId: string; headSha: string; stage: string; changeId: string; changeUrl: string }) => void | Promise<void>;
   };
   /** Posts a conversation message for a stage (the CI start announcement). */
   notify?: (message: string, stageId: string) => void | Promise<void>;

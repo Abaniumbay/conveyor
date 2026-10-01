@@ -121,7 +121,9 @@ const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
     if (announced && marks.markCi(deps.issueId, head, "announced", "", at.toISOString()).fresh) {
       await deps.notify?.(ciAnnouncement(change.url, short(head), snapshot.runs, waiting), instance.stage);
     }
-    if (context.repository?.ciMode === "advisory") await deps.ci?.watchAdvisory?.({ itemId: deps.issueId, headSha: head });
+    if (context.repository?.ciMode === "advisory") {
+      await deps.ci?.watchAdvisory?.({ itemId: deps.issueId, headSha: head, stage: instance.stage, changeId: target.changeId, changeUrl: target.url });
+    }
     return pass();
   },
 };

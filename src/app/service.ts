@@ -32,6 +32,7 @@ import { criteriaFromBody } from "../tasks/item";
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
+import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -203,6 +204,9 @@ export class ConveyorService {
   readonly #ciProviders = new Map<string, CiProvider>();
   /** Fires a schedule pass at the earliest persisted wake-up of a parked item. */
   #wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires an advisory CI poll at the earliest wake-up of an active watch. */
+  #advisoryTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #advisoryWatches: AdvisoryCiWatches;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
@@ -221,6 +225,20 @@ export class ConveyorService {
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? { codex: codexHarness };
+    this.#advisoryWatches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
+      resolve: (repositoryId) => ({
+        provider: this.ciProvider(repositoryId),
+        address: this.config.repositories[repositoryId]?.address ?? "",
+        ignoreChecks: this.config.repositories[repositoryId]?.ci.ignoreChecks ?? [],
+      }),
+      post: (itemId, stage, message) => {
+        this.store.appendConversationMessage({
+          issueId: itemId, runId: null, stageId: stage, actorType: "conveyor", actorId: "conveyor",
+          actorName: "Conveyor", actorTitle: "Orchestrator", message,
+        });
+      },
+      onError: (watch, error) => console.warn(`Advisory CI watch for ${watch.itemId}@${watch.headSha.slice(0, 7)} failed: ${error instanceof Error ? error.message : String(error)}`),
+    });
   }
 
   static async create(
@@ -330,6 +348,8 @@ export class ConveyorService {
     this.#timer = null;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     this.#wakeTimer = null;
+    if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
+    this.#advisoryTimer = null;
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     while (this.#active.size > 0 || this.#steeringActive.size > 0) await Bun.sleep(25);
@@ -342,6 +362,7 @@ export class ConveyorService {
     try {
       await this.reconcileAll();
       this.schedule();
+      await this.pollAdvisoryCi();
     } finally {
       this.#tickRunning = false;
     }
@@ -426,6 +447,20 @@ export class ConveyorService {
     this.armWakeTimer();
   }
 
+  /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
+  private async pollAdvisoryCi(): Promise<void> {
+    if (this.#shuttingDown) return;
+    await this.#advisoryWatches.pollDueWatches(Date.now());
+    if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
+    this.#advisoryTimer = null;
+    const next = this.#advisoryWatches.nextWakeAt();
+    if (next === null || this.#shuttingDown) return;
+    this.#advisoryTimer = setTimeout(() => {
+      this.#advisoryTimer = null;
+      void this.pollAdvisoryCi().catch(() => {});
+    }, Math.max(0, Date.parse(next) - Date.now()) + 50);
+  }
+
   /** A parked item is schedulable only once its persisted wake-up time has passed. */
   private wakeupReached(issueId: string): boolean {
     const wakeAt = this.store.executions().wakeAt(issueId);
@@ -460,7 +495,16 @@ export class ConveyorService {
       harnesses: this.#harnesses,
       delivery: () => this.loadDeliveryState(issueId, repository.address),
       codeHost: this.codeHostFor(repository.id),
-      ci: { provider: () => this.ciProvider(repository.id) },
+      ci: {
+        provider: () => this.ciProvider(repository.id),
+        watchAdvisory: (input) => {
+          this.#advisoryWatches.ensureWatch({
+            repositoryId: repository.id, itemId: input.itemId, headSha: input.headSha, stage: input.stage,
+            change: { changeId: input.changeId, url: input.changeUrl }, now: Date.now(),
+          });
+          void this.pollAdvisoryCi().catch(() => {});
+        },
+      },
       notify: (message, stageId) => {
         this.store.appendConversationMessage({
           issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
