@@ -105,6 +105,32 @@ function validateStatus(config: LegacyWith, result: RunEnvelope): void {
   }
 }
 
+const CAPTURED_TEXT_LIMIT = 4_000;
+
+function keepStart(text: string): string {
+  return text.length <= CAPTURED_TEXT_LIMIT ? text : `${text.slice(0, CAPTURED_TEXT_LIMIT)}… (${text.length - CAPTURED_TEXT_LIMIT} characters omitted)`;
+}
+
+function keepEnd(text: string): string {
+  return text.length <= CAPTURED_TEXT_LIMIT ? text : `(${text.length - CAPTURED_TEXT_LIMIT} characters omitted) …${text.slice(-CAPTURED_TEXT_LIMIT)}`;
+}
+
+/**
+ * The envelope as stored in the item context, which is size-bounded: a script can print megabytes
+ * (e.g. while it waits on a deploy workflow), so free text keeps its start, and stderr its end.
+ */
+function capturedEnvelope(result: RunEnvelope): RunEnvelope {
+  return {
+    ...result,
+    stderr: keepEnd(result.stderr),
+    stageResult: {
+      ...result.stageResult,
+      summary: keepStart(result.stageResult.summary),
+      reason: result.stageResult.reason === null ? null : keepStart(result.stageResult.reason),
+    },
+  };
+}
+
 const produce: TaskDefinition<LegacyWith, unknown, LegacyRuntime> = {
   name: "legacy.produce",
   kind: "act",
@@ -120,6 +146,7 @@ const produce: TaskDefinition<LegacyWith, unknown, LegacyRuntime> = {
       return pending(error.message, { after: error.retryAfterMs });
     }
     validateStatus(config, result);
+    result = capturedEnvelope(result);
     const stageResult = result.stageResult;
     if (stageResult.outcome === "success") return pass(result);
     const reason = stageResult.reason ?? stageResult.summary;
