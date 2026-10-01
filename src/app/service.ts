@@ -29,6 +29,7 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
 import { criteriaFromBody } from "../tasks/item";
+import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
@@ -1214,12 +1215,21 @@ export class ConveyorService {
     this.schedule();
   }
 
-  /** Wakes an item whose cursor is parked in the stage of the run that asked the question. */
+  /**
+   * Wakes an item whose cursor is parked on `agent.run` in the stage of the run that asked the
+   * question. Any other parked task, and every legacy stage, keeps the restart behaviour.
+   */
   private wakeParkedAgent(question: { issueId: string; runId: string | null }): boolean {
     const journal = this.store.executions();
     const cursor = journal.getCursor(question.issueId);
     const run = question.runId ? this.store.getRun(question.runId) : null;
-    return cursor?.state === "pending" && run?.stageId === cursor.stage && journal.wakeNow(question.issueId);
+    const issue = this.store.getIssue(question.issueId);
+    if (!cursor || cursor.state !== "pending" || cursor.list !== "actions" || run?.stageId !== cursor.stage || !issue) return false;
+    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
+      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
+    const stage = plan.stages.find((candidate) => candidate.id === cursor.stage);
+    const task = stage?.actions.find((candidate) => candidate.id === cursor.taskInstanceId);
+    return stage !== undefined && !stage.legacy && task?.task === "agent.run" && journal.wakeNow(question.issueId);
   }
 
   async answerQuestion(questionId: string, answer: string): Promise<void> {

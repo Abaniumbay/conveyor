@@ -148,6 +148,22 @@ describe("agent.run through the service", () => {
   });
 });
 
+describe("answering a question for a stage not parked on agent.run", () => {
+  test("restarts the stage instead of waking it", async () => {
+    const w = await setup();
+    await w.execute();
+    const journal = w.store.executions();
+    const parked = journal.getCursor("issue")!;
+    // Parked on a different task of the same stage: not ours to wake.
+    journal.saveCursor({ ...parked, list: "exit-gate", taskInstanceId: "item.criteriaDefined" }, parked.stageEpoch);
+    const before = journal.wakeAt("issue");
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    expect(journal.wakeAt("issue")).toBe(before);
+    expect(w.labelWrites.at(-1)).toContain("conveyor:refinement");
+    await w.service.close();
+  });
+});
+
 describe("legacy MCP names delegate to the agent tools", () => {
   test("run.* and conversation.get behave as before, and both artifact names record one event type", async () => {
     const w = await setup();

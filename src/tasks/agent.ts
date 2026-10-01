@@ -13,7 +13,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type { StoredQuestion, StoredRun } from "../db/store";
+import type { StoredQuestion } from "../db/store";
 import type { Harness } from "../harness/types";
 import type { RunEnvelope } from "../runner/result";
 import {
@@ -42,13 +42,19 @@ function answerText(question: StoredQuestion): string {
 
 interface Answered { question: string; answer: string; sessionId: string | null }
 
-/** Reads back what the previous invocation left: an open question, an answered one, or nothing. */
-function priorQuestion(deps: Deps, stage: string): { open: StoredQuestion } | { answered: Answered } | null {
-  const prior: StoredRun | null = deps.store.getLatestRun(deps.issueId, stage, KIND);
-  const question = prior ? deps.store.getQuestionForRun(prior.id) : null;
-  if (!prior || !question) return null;
-  if (question.status === "open") return { open: question };
-  return { answered: { question: question.prompt, answer: answerText(question), sessionId: prior.sessionId } };
+/**
+ * Reads back what this execution left: its runs are linked by the act's idempotency key, and the
+ * most recent run that opened a question decides (open: still waiting; answered: continue). Walking
+ * back over the runs keeps the answer when the resumed run itself crashed.
+ */
+function priorQuestion(deps: Deps, stage: string, executionKey: string): { open: StoredQuestion } | { answered: Answered } | null {
+  for (const prior of deps.store.listRunsForExecution(deps.issueId, stage, KIND, executionKey)) {
+    const question = deps.store.getQuestionForRun(prior.id);
+    if (!question) continue;
+    if (question.status === "open") return { open: question };
+    return { answered: { question: question.prompt, answer: answerText(question), sessionId: prior.sessionId } };
+  }
+  return null;
 }
 
 const FAILURE_STOPS = ["blocked", "rejected"];
@@ -83,7 +89,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
     const { store } = deps;
     let answered: Answered | null = null;
     if (instance.resumed) {
-      const prior = priorQuestion(deps, instance.stage);
+      const prior = priorQuestion(deps, instance.stage, instance.idempotencyKey);
       if (prior && "open" in prior) return pending(waiting(prior.open.prompt));
       answered = prior?.answered ?? null;
     }
@@ -101,6 +107,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
 
     const stageId = instance.stage;
     const runId = startRun(store, { issueId: issue.id, stageId, kind: KIND, configHash: deps.config.hash });
+    store.appendRunEvent(runId, "execution", { idempotencyKey: instance.idempotencyKey });
     const started = performance.now();
     try {
       const lease = await deps.mcp.create({

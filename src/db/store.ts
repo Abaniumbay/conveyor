@@ -1132,15 +1132,21 @@ export class ConveyorStore {
     };
   }
 
-  /** The newest run of a kind for an issue's stage, by start time. */
-  getLatestRun(issueId: string, stageId: string, kind: string): StoredRun | null {
-    const row = this.#database
+  /** Runs of a kind that logged an `execution` event with this key, newest first. */
+  listRunsForExecution(issueId: string, stageId: string, kind: string, executionKey: string): StoredRun[] {
+    const rows = this.#database
       .query(
-        `SELECT id FROM runs WHERE issue_id = ? AND stage_id = ? AND kind = ?
-         ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+        `SELECT r.id FROM runs r
+         WHERE r.issue_id = ? AND r.stage_id = ? AND r.kind = ?
+           AND EXISTS (
+             SELECT 1 FROM run_events e
+             WHERE e.run_id = r.id AND e.type = 'execution'
+               AND json_extract(e.payload_json, '$.idempotencyKey') = ?
+           )
+         ORDER BY r.started_at DESC, r.rowid DESC`,
       )
-      .get(issueId, stageId, kind) as { id: string } | null;
-    return row ? this.getRun(row.id) : null;
+      .all(issueId, stageId, kind, executionKey) as Array<{ id: string }>;
+    return rows.map((row) => this.getRun(row.id)!);
   }
 
   listActiveIssueRuns(): ActiveIssueRun[] {

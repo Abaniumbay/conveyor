@@ -5,7 +5,7 @@ import { z } from "zod";
 import { defineGroup, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
-const getInput = z.object({ limit: z.number().optional() }).strict();
+const getInput = z.object({ limit: z.number().optional() });
 
 const get: TaskDefinition<unknown, z.output<typeof getInput>, TaskDeps> = {
   name: "conversation.get",

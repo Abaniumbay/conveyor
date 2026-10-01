@@ -81,7 +81,7 @@ async function world(options: { sessionResume?: boolean } = {}) {
       context, deps, config,
       instance: { id: "implement", stage: "implementation", idempotencyKey: "key-1", resumed },
     });
-  return { store, run, calls, leases, controller, setBehaviour: (b: Behaviour) => { behaviour = b; } };
+  return { store, run, deps, calls, leases, controller, setBehaviour: (b: Behaviour) => { behaviour = b; } };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -131,7 +131,7 @@ describe("agent.run", () => {
     const result = await w.run(false);
     expect(result).toEqual({ status: "pending", message: "Waiting for an answer: Which database?" });
     expect(w.leases[0]!.closed).toBe(true);
-    expect(w.store.getLatestRun("i1", "implementation", "producer")).toMatchObject({ status: "succeeded", sessionId: "sess-1" });
+    expect(w.store.listRunsForExecution("i1", "implementation", "producer", "key-1")[0]).toMatchObject({ status: "succeeded", sessionId: "sess-1" });
   });
 
   test("a question answered before the run returned is continued on the next poll", async () => {
@@ -198,6 +198,35 @@ describe("agent.run", () => {
     expect((await w.run(true)).status).toBe("pass");
     expect(w.calls[1]!.resumeSessionId).toBeUndefined();
     expect(w.calls[1]!.prompt).toContain("Which?");
+  });
+
+  test("a crash during the resumed run keeps the answer for the next attempt", async () => {
+    const w = await world({ sessionResume: false });
+    w.setBehaviour(asks("Which database?"));
+    await w.run(false);
+    answer(w, "PostgreSQL");
+    w.setBehaviour(() => { throw new Error("crashed"); });
+    await expect(w.run(true)).rejects.toThrow("crashed");
+    w.setBehaviour(() => ({ summary: "Used PostgreSQL" }));
+    expect((await w.run(true)).status).toBe("pass");
+    expect(w.calls[2]!.prompt).toContain("Which database?");
+    expect(w.calls[2]!.prompt).toContain("PostgreSQL");
+  });
+
+  test("an answered question from another execution of the stage is not picked up", async () => {
+    const w = await world();
+    w.setBehaviour(asks("Old question?"));
+    await w.run(false);
+    answer(w, "old answer");
+    w.setBehaviour(() => ({}));
+    // A later visit of the same stage: a different execution key, resumed after a crash before any run.
+    const other = await runTask(registry.require("agent.run"), {
+      context: {}, config: { agent: "kaveh" }, deps: w.deps,
+      instance: { id: "implement", stage: "implementation", idempotencyKey: "key-2", resumed: true },
+    });
+    expect(other.status).toBe("pass");
+    expect(w.calls[1]!.resumeSessionId).toBeUndefined();
+    expect(w.calls[1]!.prompt).not.toContain("old answer");
   });
 
   test("a resumed execution that never asked a question runs a fresh attempt", async () => {
@@ -321,6 +350,7 @@ describe("agent tools", () => {
     expect(result.messages).toHaveLength(2);
     const all = outcome(await tool(w, "conversation.get", {}, undefined)) as { messages: unknown[] };
     expect(all.messages.length).toBeGreaterThanOrEqual(3);
+    expect((await tool(w, "conversation.get", { limit: 1, extra: true }, undefined)).status).toBe("pass");
     expect(registry.require("conversation.get")).toMatchObject({ kind: "tool" });
   });
 });
