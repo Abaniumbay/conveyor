@@ -583,6 +583,7 @@ describe("ConveyorService dashboard", () => {
         implementer: { name: "Implementer", title: "Senior Developer" },
       },
       repositories: {
+        earlier: { source: "github", address: "owner/earlier", folder: root, pipeline: "default" },
         repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
       },
     } as unknown as ConveyorConfig;
@@ -854,6 +855,7 @@ describe("ConveyorService dashboard", () => {
     expect(dashboard.selectedIssue).toMatchObject({
       id: "github:owner/repo#27",
       repository: "repo",
+      repositoryColor: 2,
     });
     expect(service.issueActivity("github:owner/repo#27")).toMatchObject({
       issueId: "github:owner/repo#27",
