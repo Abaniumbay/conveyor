@@ -248,7 +248,7 @@ function baseContext(issue: StoredIssue, configHash: string, repository: TaskCon
     },
     repository,
     item: {
-      id: issue.id, number: issue.sourceNumber, title: issue.title, body: issue.body, url: issue.sourceUrl,
+      id: issue.id, number: issue.sourceNumber, title: issue.title, url: issue.sourceUrl,
       labels: issue.labels, state: issue.sourceState, criteria: [], children: [], dependencies: [], systemLabels: [],
     },
     checkpoints: { ciPassed: null, reviewPassed: null },

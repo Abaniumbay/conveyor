@@ -452,7 +452,7 @@ describe("a cancelled run through the stage executor", () => {
       schemaVersion: 1, configHash: "h",
       run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: new Date(T0).toISOString(), feedback: null },
       repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: "required", systemLabels: [] },
-      item: { id: "i1", number: 7, title: "T", body: "", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+      item: { id: "i1", number: 7, title: "T", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
       checkpoints: { ciPassed: null, reviewPassed: null },
     };
     const execute = () => executor.execute({ issueId: "i1", pipeline, stageId: "implementation", baseContext, deps: w.deps });
