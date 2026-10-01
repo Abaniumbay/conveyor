@@ -72,7 +72,7 @@ function context(extra: Partial<TaskContext> = {}): TaskContext {
     },
     repository: { id: "repo-1", address: "owner/sample", folder: "/srv/sample", baseBranch: "main", ciMode: "required", systemLabels: [] },
     item: {
-      id: "issue-1", number: 1, title: "T", body: "B", url: "u", labels: [], state: "open",
+      id: "issue-1", number: 1, title: "T", url: "u", labels: [], state: "open",
       criteria: [], children: [], dependencies: [], systemLabels: [],
     },
     checkpoints: { ciPassed: null, reviewPassed: null },

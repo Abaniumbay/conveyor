@@ -29,7 +29,7 @@ function context(): TaskContext {
     },
     repository: { id: "r", address: "o/r", folder: "/r", baseBranch: "main", ciMode: "required", systemLabels: [] },
     item: {
-      id: "i", number: 1, title: "T", body: "B", url: "u", labels: ["a"], state: "open",
+      id: "i", number: 1, title: "T", url: "u", labels: ["a"], state: "open",
       criteria: [], children: [], dependencies: [], systemLabels: [],
     },
     checkpoints: { ciPassed: null, reviewPassed: null },

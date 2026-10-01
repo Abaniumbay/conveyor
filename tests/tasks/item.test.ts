@@ -25,7 +25,7 @@ const criteriaBody = (...lines: string[]) =>
 
 function item(overrides: Partial<ItemContext> = {}): ItemContext {
   return {
-    id: "i1", number: 1, title: "T", body: "", url: "u", labels: [], state: "open",
+    id: "i1", number: 1, title: "T", url: "u", labels: [], state: "open",
     criteria: [], children: [], dependencies: [], systemLabels: [], ...overrides,
   };
 }
@@ -169,7 +169,6 @@ describe("item.load", () => {
     expect(result.status).toBe("pass");
     expect(result.output).toEqual({
       id: "i1", number: 1, title: "Issue 1", url: "https://x/1", state: "open",
-      body: criteriaBody("- [ ] Do it <!-- conveyor:criterion:c1 -->", "- [ ] [Manual] Look at it <!-- conveyor:criterion:c2 -->", "- [x] Bare"),
       labels: ["area:api", "conveyor", "other"],
       criteria: [
         { id: "c1", text: "Do it", manual: false },
