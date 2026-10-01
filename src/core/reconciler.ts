@@ -100,7 +100,10 @@ export async function reconcileRepository(
       const awaitingDifferentStage =
         stageState?.status === "awaiting-source" &&
         stageState.stageId !== projected.stage;
-      if (!awaitingDifferentStage && stageState?.status !== "running") {
+      // A stage that failed is resumed by its retry backoff; a reconcile (for example the webhook of
+      // Conveyor's own status-comment update) must not restart it at once, which bypassed the backoff.
+      const backingOff = stageState?.status === "error" && stageState.stageId === projected.stage;
+      if (!awaitingDifferentStage && !backingOff && stageState?.status !== "running") {
         input.store.setStageState({
           issueId,
           stageId: projected.stage,

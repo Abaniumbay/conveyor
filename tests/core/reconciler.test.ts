@@ -217,6 +217,28 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("leaves a failed stage in error for its retry backoff, but a relabel to another stage resets it", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "review"],
+      labels,
+    };
+    const at = (stage: string) => ({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", `conveyor:${stage}`])]; } } });
+    await reconcileRepository(at("refinement"));
+    store.setStageState({ issueId: "github:owner/repo#1", stageId: "refinement", status: "error", feedbackCycle: 0, configHash: "hash-1" });
+
+    // e.g. the webhook from Conveyor's own status-comment update: same stage, must not bypass backoff.
+    await reconcileRepository(at("refinement"));
+    expect(store.getStageState("github:owner/repo#1")).toMatchObject({ stageId: "refinement", status: "error" });
+
+    await reconcileRepository(at("review"));
+    expect(store.getStageState("github:owner/repo#1")).toMatchObject({ stageId: "review", status: "ready" });
+    store.close();
+  });
+
   test("stops scheduling closed and missing source issues with visible reasons", async () => {
     const store = await openStore();
     const common = {
