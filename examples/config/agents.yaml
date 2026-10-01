@@ -8,7 +8,7 @@ agents:
     effort: high
     instructions: ./instructions/darya.md
     access: read-only
-    tasks: [item.get, item.guidance, workspace.get, change.get, conversation.get,
+    tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
             agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
             agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria,
             item.setSystemLabels, item.setParent, item.setDependencies, item.createChild]

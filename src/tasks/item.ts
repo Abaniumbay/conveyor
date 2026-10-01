@@ -221,6 +221,32 @@ const get = tool("item.get", "Read the latest source state of the current issue.
 const guidance = tool("item.guidance", "Read source-specific agent guidance.", emptyInput, false,
   async ({ deps }) => deps.sourceGuidance);
 
+const LIST_BODY_CHARS = 2000;
+
+const listOpen = tool(
+  "item.listOpen",
+  "List the repository's other open Conveyor items (number, title, stage, state, parent, dependencies, work branch when one exists, and the start of the body), to find work that will change the same files as the current issue. A branch can be compared with the base in the workspace.",
+  emptyInput, false,
+  async ({ deps }, current) => {
+    const { store, config } = deps;
+    const numberOf = (id: string | null | undefined) => (id ? store.getIssue(id)?.sourceNumber ?? null : null);
+    const items = store.listIssues(current.repositoryId)
+      .filter((issue) => issue.id !== current.id && issue.sourceState === "open" && issue.projectedState !== "done"
+        && issue.labels.includes(config.labels.enrollment))
+      .sort((left, right) => left.sourceNumber - right.sourceNumber)
+      .map((issue) => ({
+        number: issue.sourceNumber,
+        title: issue.title,
+        stage: issue.projectedStage,
+        state: issue.projectedState,
+        parentNumber: numberOf(issue.parentId),
+        dependsOn: store.listDependencies(issue.id).flatMap((id) => numberOf(id) ?? []),
+        branch: store.getActiveWorkspace(issue.id)?.branch ?? null,
+        body: issue.body.length > LIST_BODY_CHARS ? `${issue.body.slice(0, LIST_BODY_CHARS)}…` : issue.body,
+      }));
+    return { items };
+  });
+
 const comment = tool("item.comment", "Add a Markdown comment to the current issue.", commentInput, true,
   async ({ deps, input }, issue) => ({
     commentId: await deps.items.addComment(deps.repository.address, issue.sourceNumber, input!.markdown),
@@ -309,5 +335,5 @@ const createChild = tool("item.createChild",
 
 export const itemGroup = defineGroup("item", [
   load, criteriaDefined, labelsValid, childrenValid, dependenciesMet,
-  get, guidance, comment, setCriteria, setSystemLabels, setParent, setDependencies, createChild,
+  get, guidance, listOpen, comment, setCriteria, setSystemLabels, setParent, setDependencies, createChild,
 ]);
