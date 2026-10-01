@@ -90,6 +90,24 @@ describe("provider-neutral CI gate", () => {
     expect(focused.split("\n").length).toBeLessThanOrEqual(45);
   });
 
+  test("focused logs include a Flutter failure reported inside a ##[group] block", () => {
+    const log = [
+      "##[group]❌ /work/mobile/test/ui/broken_calculator_how_to_play_test.dart: pressing works again after dismissal (failed)",
+      ...Array.from({ length: 30 }, (_, index) => `Warning: hit test detail ${index}`),
+      "══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════",
+      "The following TestFailure was thrown running a test:",
+      "Expected: non-empty",
+      "  Actual: WhereIterable<Text>:[]",
+      ...Array.from({ length: 400 }, (_, index) => `✅ passing test ${index}`),
+      "  MOBILE: failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n");
+    const focused = focusGitHubActionsLog(log, 40);
+    expect(focused).toContain("broken_calculator_how_to_play_test.dart");
+    expect(focused).toContain("Expected: non-empty");
+    expect(focused).toContain("Actual: WhereIterable<Text>:[]");
+  });
+
   test("focused logs recognise common test-runner failure markers", () => {
     for (const marker of ["✖ adds numbers", "❌ test/a_test.dart: adds numbers", "FAIL src/a.test.ts", "--- FAIL: TestAdd (0.00s)", "AssertionError [ERR_ASSERTION]: 1 == 2"]) {
       const log = [marker, ...Array.from({ length: 200 }, (_, index) => `line ${index}`), "##[error]failed"].join("\n");

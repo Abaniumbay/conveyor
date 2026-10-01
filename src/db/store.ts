@@ -184,6 +184,16 @@ function parseJson<T>(value: string | null): T | null {
 /** Status changes the stage executor makes to itself; they never fence the item. */
 const EXECUTOR_STATUSES = new Set(["ready", "running", "error", "interrupted"]);
 
+const CONVERSATION_MESSAGE_LIMIT = 4_000;
+
+/** Keeps the start of a system message (the summary and first failures) and says how much was cut. */
+function trimToLimit(message: string): string {
+  const note = (omitted: number) => `\n… (${omitted} characters omitted)`;
+  const budget = CONVERSATION_MESSAGE_LIMIT - note(message.length).length;
+  const cut = message.lastIndexOf("\n", budget) > budget / 2 ? message.lastIndexOf("\n", budget) : budget;
+  return `${message.slice(0, cut).trimEnd()}${note(message.length - cut)}`;
+}
+
 export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
@@ -1652,9 +1662,14 @@ export class ConveyorStore {
     actorTitle: string | null;
     message: string;
   }): StoredConversationMessage {
-    const message = input.message.trim();
+    let message = input.message.trim();
     if (!message) throw new Error("conversation message must not be empty");
-    if (message.length > 4_000) throw new Error("conversation message must not exceed 4000 characters");
+    if (message.length > CONVERSATION_MESSAGE_LIMIT) {
+      // A person's message is validated where it is typed. A message Conveyor or an agent produces
+      // (e.g. a CI failure with logs) is trimmed: dropping it would fail the stage that reports it.
+      if (input.actorType === "user") throw new Error("conversation message must not exceed 4000 characters");
+      message = trimToLimit(message);
+    }
     const createdAt = now();
     const result = this.#database
       .query(
