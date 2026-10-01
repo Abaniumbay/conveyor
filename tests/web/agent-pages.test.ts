@@ -27,7 +27,7 @@ describe("agent pages", () => {
 
   test("a profile shows identity, configuration, usage, grants and escaped instructions", () => {
     const html = renderAgentProfile(kaveh);
-    expect(html).toContain("<h1>Kaveh</h1>");
+    expect(html).toContain('<span class="agent-page-title">Kaveh</span>');
     expect(html).toContain("Senior Developer");
     expect(html).toContain("gpt-6-luna");
     expect(html).toContain("workspace-write");
@@ -37,6 +37,8 @@ describe("agent pages", () => {
     expect(html).toContain("You are &lt;Kaveh");
     expect(html).not.toContain("<Kaveh>");
     expect(html).toContain('href="/agents"');
+    expect(html).toContain('class="mini-line"');
+    expect(html).toContain("<span>Implementation</span>");
   });
 
   test("a profile is read-only: no forms or buttons", () => {

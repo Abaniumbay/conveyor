@@ -26,12 +26,30 @@ function Shell({ title, children }: { title: string; children: ComponentChildren
   );
 }
 
+function Header({ page, parent }: { page: string; parent?: { href: string; label: string } }) {
+  return (
+    <header class="dashboard-header agent-page-header">
+      <h1 class="wordmark"><a href="/">Conveyor</a></h1>
+      <span class="agent-page-title">{page}</span>
+      <nav aria-label="Page links">
+        {parent && <a href={parent.href}>{parent.label}</a>}
+        <a href="/">Dashboard</a>
+      </nav>
+    </header>
+  );
+}
+
+function stageName(value: string): string {
+  const acronyms = new Set(["api", "ci", "qa", "sre", "ui", "ux"]);
+  return value.split(/[-_]/).filter(Boolean).map((part) => acronyms.has(part.toLowerCase())
+    ? part.toUpperCase()
+    : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`).join(" ");
+}
+
 function AgentList({ agents }: { agents: readonly AgentSummaryViewModel[] }) {
   return (
     <Shell title="Agents">
-      <header class="dashboard-header">
-        <div><p class="eyebrow"><a href="/">Conveyor</a></p><h1>Agents</h1></div>
-      </header>
+      <Header page="Agents" />
       <ul class="agent-list">
         {agents.map((agent) => (
           <li key={agent.id}><a href={agentHref(agent.id)}><strong>{agent.name}</strong> <span>{agent.title}</span></a></li>
@@ -46,11 +64,17 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 function AgentProfile({ agent }: { agent: AgentProfileViewModel }) {
+  const stations = [...new Set(agent.usage.flatMap((use) => use.stage ? [use.stage] : []))];
   return (
     <Shell title={agent.name}>
-      <header class="dashboard-header">
-        <div><p class="eyebrow"><a href="/">Conveyor</a> · <a href="/agents">Agents</a></p><h1>{agent.name}</h1><p class="project-meta">{agent.title}</p></div>
-      </header>
+      <Header page={agent.name} parent={{ href: "/agents", label: "Agents" }} />
+      <p class="agent-title">{agent.title}</p>
+      <nav class="mini-line" aria-label={`${agent.name}'s stations`}>
+        <h2>Stations</h2>
+        {stations.length > 0
+          ? <ol>{stations.map((stage) => <li key={stage}><span>{stageName(stage)}</span></li>)}</ol>
+          : <p>No pipeline stations assigned.</p>}
+      </nav>
       <section class="agent-section" aria-labelledby="agent-config">
         <h2 id="agent-config">Configuration</h2>
         <dl class="agent-facts">

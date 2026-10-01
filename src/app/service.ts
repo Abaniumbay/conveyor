@@ -23,7 +23,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -89,10 +89,13 @@ function number(value: unknown, name: string): number {
 }
 
 function displayName(value: string): string {
+  const acronyms = new Set(["api", "ci", "qa", "sre", "ui", "ux"]);
   return value
     .split(/[-_]/)
     .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .map((part) => acronyms.has(part.toLowerCase())
+      ? part.toUpperCase()
+      : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join(" ");
 }
 
@@ -167,7 +170,11 @@ export class ConveyorService {
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   /** Consecutive infrastructure failures per issue, for the stage they happened in. */
-  readonly #infrastructureFailures = new Map<string, { stageId: string; count: number }>();
+  readonly #infrastructureFailures = new Map<string, {
+    stageId: string;
+    count: number;
+    waiting?: IssueWaitingViewModel;
+  }>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -548,9 +555,18 @@ export class ConveyorService {
     const stageId = this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage ?? "";
     const previous = this.#infrastructureFailures.get(issue.id);
     const failures = previous?.stageId === stageId ? previous.count + 1 : 1;
-    this.#infrastructureFailures.set(issue.id, { stageId, count: failures });
     const decision = infrastructureRetry({ failures, usageLimit: isUsageLimitError(error), retries: this.config.settings.retries });
     if ("retryInMs" in decision) {
+      const now = new Date();
+      const waiting: IssueWaitingViewModel = {
+        reason: `Execution failed: ${message}`,
+        since: previous?.stageId === stageId && previous.waiting
+          ? previous.waiting.since
+          : now.toISOString(),
+        nextCheckAt: new Date(now.getTime() + decision.retryInMs).toISOString(),
+        deadline: null,
+      };
+      this.#infrastructureFailures.set(issue.id, { stageId, count: failures, waiting });
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
@@ -590,6 +606,11 @@ export class ConveyorService {
 
   private retryLater(issueId: string, delayMs: number): void {
     setTimeout(() => {
+      const failure = this.#infrastructureFailures.get(issueId);
+      if (failure) this.#infrastructureFailures.set(issueId, {
+        stageId: failure.stageId,
+        count: failure.count,
+      });
       const current = this.store.getStageState(issueId);
       if (current?.status === "error") {
         this.store.setStageState({
@@ -1490,6 +1511,8 @@ export class ConveyorService {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const activeRuns = this.store.listActiveIssueRuns();
     const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
+    const openQuestions = this.store.listOpenQuestions();
+    const questionIssueIds = new Set(openQuestions.map((question) => question.issueId));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     const relation = (issue: StoredIssue): IssueRelationViewModel => ({
       id: issue.id,
@@ -1529,6 +1552,19 @@ export class ConveyorService {
         });
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
+      const cursor = this.store.executions().getCursor(issue.id);
+      const parked = cursor?.state === "pending" && !questionIssueIds.has(issue.id)
+        ? {
+            reason: this.store.executions().pendingMessage(issue.id) ?? issue.warning ?? "Waiting for the next check",
+            since: cursor.pendingSince ?? state?.updatedAt ?? issue.sourceUpdatedAt,
+            nextCheckAt: cursor.wakeAt,
+            deadline: cursor.deadlineAt,
+          }
+        : null;
+      const retry = !activeIssueIds.has(issue.id)
+        ? this.#infrastructureFailures.get(issue.id)?.waiting ?? null
+        : null;
+      const waiting = parked ?? retry;
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -1538,10 +1574,14 @@ export class ConveyorService {
         state: projectedState,
         labels: issue.labels,
         acceptanceCriteria: criteriaFromBody(issue.body),
-        activity: state ? `${state.stageId} · ${state.status}` : null,
+        activity: cursor?.state === "pending"
+          ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
+          : state ? `${state.stageId} · ${state.status}` : null,
         reason: issue.warning ?? options.reason ?? null,
         cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
+        stateChangedAt: state?.updatedAt ?? issue.sourceUpdatedAt,
+        waiting,
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
         inconsistent: issue.projectedState === "inconsistent",
         closable: issue.labels.includes(this.config.labels.metadata.closable),
@@ -1556,9 +1596,13 @@ export class ConveyorService {
       const first = this.config.pipelines[repository.pipeline]?.stages[0]?.id;
       return first ? [first] : [];
     }));
-    const stages = [...new Set(Object.values(this.config.pipelines).flatMap((pipeline) =>
-      pipeline.stages.map((stage) => stage.id),
-    ))];
+    const stageNames = new Map<string, string>();
+    for (const pipeline of Object.values(this.config.pipelines)) {
+      for (const stage of pipeline.stages) {
+        if (!stageNames.has(stage.id)) stageNames.set(stage.id, stage.name ?? displayName(stage.id));
+      }
+    }
+    const stages = [...stageNames.keys()];
     const actorsForStage = (stageId: string): StageActorViewModel[] => {
       const actors: StageActorViewModel[] = [];
       for (const pipeline of Object.values(this.config.pipelines)) {
@@ -1571,7 +1615,7 @@ export class ConveyorService {
         const agent = this.config.agents[stage.run.agent];
         actors.push({
           type: "agent",
-          name: agent?.name ?? title(stage.run.agent),
+          name: agent?.name ?? displayName(stage.run.agent),
           title: agent?.title ?? "AI agent",
         });
       }
@@ -1597,15 +1641,21 @@ export class ConveyorService {
       issue.projectedState !== "done" &&
       issue.projectedState !== "inconsistent" &&
       (sourceStages(issue).length === 1 || issue.projectedState === "active");
+    const finishedRollupIds = new Set(issues
+      .filter((issue) => ["done", "completed"].includes(issue.projectedState ?? ""))
+      .filter((issue) => this.store.listChildren(issue.id).length > 0)
+      .map((issue) => issue.id));
     const closedIssues = issues
-      .filter((issue) => issue.sourceState === "closed" && !remainsInWorkflow(issue))
+      .filter((issue) =>
+        (issue.sourceState === "closed" && !remainsInWorkflow(issue)) || finishedRollupIds.has(issue.id)
+      )
       .sort((left, right) =>
         right.sourceUpdatedAt.localeCompare(left.sourceUpdatedAt) ||
         left.repositoryId.localeCompare(right.repositoryId) ||
         right.sourceNumber - left.sourceNumber
       );
     const workflowIssues = issues.filter((issue) =>
-      issue.sourceState !== "closed" || remainsInWorkflow(issue)
+      !finishedRollupIds.has(issue.id) && (issue.sourceState !== "closed" || remainsInWorkflow(issue))
     );
     const backlogIssues = workflowIssues.filter((issue) => {
       if (issue.sourceState === "closed") return false;
@@ -1628,11 +1678,6 @@ export class ConveyorService {
     const attentionIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) && !stagedIds.has(issue.id),
     );
-    const title = (value: string) => value
-      .split(/[-_]/)
-      .filter(Boolean)
-      .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-      .join(" ");
     const column = (
       id: string,
       name: string,
@@ -1656,7 +1701,7 @@ export class ConveyorService {
         issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map(issueCard),
       };
     };
-    const questions: QuestionViewModel[] = this.store.listOpenQuestions().flatMap((question) => {
+    const questions: QuestionViewModel[] = openQuestions.flatMap((question) => {
       const issue = byId.get(question.issueId);
       if (!issue) return [];
       const options = question.options.flatMap((value) => {
@@ -1669,7 +1714,9 @@ export class ConveyorService {
       });
       return [{
         id: question.id,
+        issueId: issue.id,
         issueNumber: issue.sourceNumber,
+        issueTitle: issue.title,
         prompt: question.prompt,
         reason: question.reason,
         options,
@@ -1700,12 +1747,13 @@ export class ConveyorService {
     ]).size;
     return {
       title: "Conveyor",
-      project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${formatUsage(total) ?? "0 runs"}`,
+      project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""}`,
+      totalUsage: formatUsage(total) ?? "0 runs",
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       revision: this.store.dashboardRevision(),
       view: pagination.view,
       counts: {
-        board: backlogIssues.length + stagedIssues.length + closedIssues.length,
+        board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,
       },
       activeWork: {
@@ -1715,7 +1763,7 @@ export class ConveyorService {
       },
       stages: stages.map((stage) => column(
           `stage:${stage}`,
-          title(stage),
+          stageNames.get(stage) ?? displayName(stage),
           stagedIssues.filter((issue) => issue.projectedStage === stage),
           formatUsage(this.store.costSummary({ stageId: stage })),
           (issue) => card(issue),
@@ -1731,7 +1779,9 @@ export class ConveyorService {
         page: 1,
         totalPages: 1,
         issues: closedIssues.slice(0, pagination.doneLimit).map((issue) => card(issue, {
-          state: issue.sourceStateReason === "completed" ? "completed" : "closed",
+          state: finishedRollupIds.has(issue.id)
+            ? issue.projectedState ?? "done"
+            : issue.sourceStateReason === "completed" ? "completed" : "closed",
           reason: issue.sourceStateReason && issue.sourceStateReason !== "completed"
             ? `GitHub close reason: ${issue.sourceStateReason.replaceAll("_", " ")}.`
             : null,
@@ -1749,6 +1799,9 @@ export class ConveyorService {
         }),
       ),
       questions,
+      needsYou: workflowIssues
+        .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""))
+        .map((issue) => card(issue)),
       systemWarnings: [
         ...this.#onboardingErrors.entries(),
         ...this.#repositoryErrors.entries(),
@@ -1821,6 +1874,15 @@ export class ConveyorService {
         candidate.address === issue.repositoryId
       );
     const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
+    const stageState = this.store.getStageState(issueId);
+    const cursor = this.store.executions().getCursor(issueId);
+    const pending = cursor?.state === "pending";
+    const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
+    const stopped = ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? "");
+    const nowState = pending ? "waiting" : activeRun ? "running" : stopped ? "stopped" : issue.projectedState ?? issue.sourceState;
+    const nowReason = pending
+      ? this.store.executions().pendingMessage(issueId) ?? issue.warning
+      : stopped ? issue.warning : null;
     const actorFor = (stageId: string | null): string => {
       if (!stageId) return "Conveyor · Orchestrator";
       const found = pipeline?.stages.find((candidate) => candidate.id === stageId);
@@ -1834,6 +1896,14 @@ export class ConveyorService {
     };
     return {
       issueId,
+      now: {
+        stage: cursor?.stage ?? stageState?.stageId ?? issue.projectedStage,
+        state: nowState,
+        reason: nowReason,
+        since: pending
+          ? cursor.pendingSince
+          : activeRun?.startedAt ?? stageState?.updatedAt ?? issue.sourceUpdatedAt,
+      },
       transitions: this.store.listStageTransitions(issueId).map((transition) => ({
         id: transition.id,
         fromStage: transition.fromStage,

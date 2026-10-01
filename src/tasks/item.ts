@@ -35,18 +35,38 @@ const emptyInput = z.object({}).strict();
 
 interface ParsedCriterion { id: string; text: string }
 
+function parseTaskList(markdown: string): ParsedCriterion[] {
+  const criteria: ParsedCriterion[] = [];
+  for (const line of markdown.split(/\r?\n/)) {
+    const match = /^- \[[ xX]\]\s+(.+?)(?:\s+<!-- conveyor:criterion:([^\s>]+) -->)?$/.exec(line.trim());
+    if (match?.[1]) criteria.push({ id: match[2] ?? `criterion-${criteria.length + 1}`, text: match[1] });
+  }
+  return criteria;
+}
+
+function parseHeadingCriteria(body: string): ParsedCriterion[] {
+  const lines = body.split(/\r?\n/);
+  let headingLevel = 0;
+  const section: string[] = [];
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.trim());
+    if (headingLevel === 0) {
+      if (heading && /^acceptance criteria:?$/i.test(heading[2]!)) headingLevel = heading[1]!.length;
+      continue;
+    }
+    if (heading && heading[1]!.length <= headingLevel) break;
+    section.push(line);
+  }
+  return parseTaskList(section.join("\n"));
+}
+
 function parseCriteria(body: string): ParsedCriterion[] {
   try {
     const markdown = parseManagedSections(body).sections["acceptance-criteria"];
-    if (!markdown) return [];
-    const criteria: ParsedCriterion[] = [];
-    for (const line of markdown.split(/\r?\n/)) {
-      const match = /^- \[[ xX]\]\s+(.+?)(?:\s+<!-- conveyor:criterion:([^\s>]+) -->)?$/.exec(line.trim());
-      if (match?.[1]) criteria.push({ id: match[2] ?? `criterion-${criteria.length + 1}`, text: match[1] });
-    }
-    return criteria;
+    const managed = markdown ? parseTaskList(markdown) : [];
+    return managed.length > 0 ? managed : parseHeadingCriteria(body);
   } catch {
-    return [];
+    return parseHeadingCriteria(body);
   }
 }
 

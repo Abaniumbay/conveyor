@@ -166,3 +166,19 @@ Conveyor *is* a production line, so the dashboard reads like the control board o
   8. Phone layout.
   9. Screenshots at 1440×900 and 390×844 for the PR.
 - **Gate:** `bun test` and `bunx tsc --noEmit` pass after every step.
+
+## Follow-up: a generic waiting status
+
+Owner request (2026-10-01): waiting must be visible. Today a parked item shows only "Activity: implementation · ready"; its wait reason is shown on the card only when the item stopped, and in the dialog as "Source note".
+
+Any pending task produces the same record: the pending message, `pending_since`, `wake_at` and `deadline_at` on the stage cursor and execution (`src/engine/journal.ts`). Show it generically, with no special case per kind of wait (CI, dependency, mergeability, a timed retry or backoff, an external webhook):
+
+- **View model:** `waiting: { reason, since, nextCheckAt, deadline } | null` for every parked item, built from the journal (`pendingMessage`, cursor times). The infrastructure retry backoff ("will retry in …") uses the same shape.
+- **Card:** an amber andon and one line: the reason in plain words, then "for 12 min · next check 14:53 · gives up 22:48". Times are local; "gives up" is omitted when there is no deadline.
+- **Inspector Summary:** the same, plus the stage and task instance waiting (for example "implementation › ciGate").
+- **The line:** each station counts its waiting items under the amber light, separate from running (green) and stopped (red).
+- **Waits on the owner** (an agent's open question) go to "Needs you" instead.
+
+## Follow-up: the journey shows "now"
+
+Owner report (2026-10-01): midgame#161's journey ended with "Implementation stopped" while the item was active again. The engine now records `resumed` and `restarted` entries (PR #41). The journey also opens with a "Now" line, built from the item's current state rather than the history: the stage, the state (running, waiting with its reason, stopped with its reason) and since when. History entries below it stay in time order.
