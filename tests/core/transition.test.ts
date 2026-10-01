@@ -236,7 +236,21 @@ describe("applyStageTransition", () => {
     expect(calls[0]).toContain("conveyor:blocked");
     expect(calls[1]).toContain("conveyor:implementation");
     expect(calls[1]).not.toContain("conveyor:blocked");
+
+    // A legacy producer can stop with a status that has no state label (e.g. changes-requested at
+    // implementation): it stops as blocked, keeping the original status in the reason, instead of throwing.
+    await applyStageTransition({
+      ...common,
+      transitionId: "run-unlabelled",
+      result: { kind: "stopped", stageId: "implementation", state: "changes-requested", reason: "A seeded win path is not reachable", requiredFixes: [], feedbackCycles: 0, result: null },
+    });
+    expect(calls[2]).toContain("conveyor:blocked");
+    expect(store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "blocked" });
     expect(store.listStageTransitions("issue").at(-1)).toMatchObject({
+      id: "run-unlabelled",
+      reason: "Stopped as changes-requested (no label is configured for that state): A seeded win path is not reachable",
+    });
+    expect(store.listStageTransitions("issue").find((transition) => transition.id === "run-correction")).toMatchObject({
       id: "run-correction",
       fromStage: "review",
       toStage: "implementation",
