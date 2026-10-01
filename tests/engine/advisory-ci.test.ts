@@ -163,4 +163,34 @@ describe("AdvisoryCiWatches", () => {
     await watches.pollDueWatches(T0 + 3 * MIN);
     expect(watches.nextWakeAt()).toBeNull();
   });
+
+  test("an unreadable provider before the deadline retries; past it one timeout message is posted", async () => {
+    const { watches, provider, posted } = await setup();
+    provider.list = async () => { throw new Error("api down"); };
+    ensure(watches, "head1", T0, { timeoutMs: 10 * MIN });
+    await watches.pollDueWatches(T0 + 2 * MIN);
+    expect(posted).toHaveLength(0);
+    expect(watches.get(ID, "head1")!.state).toBe("active");
+    await watches.pollDueWatches(T0 + 11 * MIN);
+    await watches.pollDueWatches(T0 + 30 * MIN);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.message).toContain("could not be read");
+    expect(posted[0]!.message).toContain("api down");
+    expect(watches.get(ID, "head1")!.state).toBe("timed-out");
+  });
+
+  test("an overlapping pollDueWatches call is a no-op", async () => {
+    const { watches, provider, posted } = await setup();
+    provider.runs = [run("build", "running")];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    provider.list = async () => { provider.listed++; await gate; return provider.runs; };
+    ensure(watches, "head1");
+    const first = watches.pollDueWatches(T0 + MIN);
+    await watches.pollDueWatches(T0 + MIN);
+    expect(provider.listed).toBe(1);
+    release();
+    await first;
+    expect(posted).toHaveLength(1);
+  });
 });

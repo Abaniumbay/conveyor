@@ -207,6 +207,7 @@ export class ConveyorService {
   /** Fires an advisory CI poll at the earliest wake-up of an active watch. */
   #advisoryTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #advisoryWatches: AdvisoryCiWatches;
+  #advisoryPolling = false;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
@@ -362,10 +363,11 @@ export class ConveyorService {
     try {
       await this.reconcileAll();
       this.schedule();
-      await this.pollAdvisoryCi();
     } finally {
       this.#tickRunning = false;
     }
+    // Not awaited: a slow CI provider must not stall reconcile and scheduling.
+    void this.pollAdvisoryCi().catch((error) => console.warn(`Advisory CI poll failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   private schedule(): void {
@@ -449,8 +451,10 @@ export class ConveyorService {
 
   /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
   private async pollAdvisoryCi(): Promise<void> {
-    if (this.#shuttingDown) return;
-    await this.#advisoryWatches.pollDueWatches(Date.now());
+    if (this.#shuttingDown || this.#advisoryPolling) return;
+    this.#advisoryPolling = true;
+    try { await this.#advisoryWatches.pollDueWatches(Date.now()); }
+    finally { this.#advisoryPolling = false; }
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
     const next = this.#advisoryWatches.nextWakeAt();

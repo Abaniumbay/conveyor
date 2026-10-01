@@ -122,7 +122,12 @@ export class AdvisoryCiWatches {
         try { await this.#poll(watch, now); }
         catch (error) {
           this.#options.onError?.(watch, error);
-          this.#reschedule(watch, now);
+          // An unreadable provider must not keep a watch alive past its deadline.
+          if (now >= Date.parse(watch.deadlineAt)) {
+            const sha = short(watch.headSha);
+            this.#finish(watch, "timed-out", now, bounded(
+              `CI for ${sha} could not be read before the deadline (${error instanceof Error ? error.message : String(error)}). ${watch.changeUrl}/checks`));
+          } else this.#reschedule(watch, now);
         }
       }
     } finally {
@@ -152,8 +157,8 @@ export class AdvisoryCiWatches {
 
     // The one start announcement per head is shared with ci.start through the ci_marks table.
     if (watch.announcedAt === null && runs.length > 0) {
-      const mark = this.#marks.markCi(watch.itemId, watch.headSha, "announced", "", iso(now));
       this.#db.transaction(() => {
+        const mark = this.#marks.markCi(watch.itemId, watch.headSha, "announced", "", iso(now));
         if (mark.fresh && this.#isActive(watch.id)) this.#options.post(watch.itemId, watch.stage, ciAnnouncement(watch.changeUrl, sha, runs, []));
         this.#db.query("UPDATE advisory_ci_watches SET announced_at = ? WHERE id = ?").run(mark.at, watch.id);
       })();
