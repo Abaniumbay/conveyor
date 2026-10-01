@@ -111,7 +111,9 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 - constrained label, acceptance-criteria, hierarchy, dependency, comment, and PR metadata changes;
 - scoped workspace fetch, push, and artifact operations.
 
-Source and workspace mutations pass back through the Conveyor service, where scope, idempotency, and branch rules are enforced. Verifiers receive a read/report-only subset even if their agent definition lists mutation tools.
+Tools are the registry's `tool` tasks, named in camelCase (`item.get`, `item.comment`, `item.setCriteria`, `item.setSystemLabels`, `item.setParent`, `item.setDependencies`, `item.createChild`, `item.guidance`, `workspace.get`, `workspace.fetch`, `workspace.push`, `change.get`, `change.setMetadata`, `ci.getLogs`, `conversation.get`, `agent.askQuestion`, `agent.reportProgress`, `agent.reportRationale`, `agent.reportBlocker`, `agent.reportResult`, `agent.reportMilestone`, `agent.recordArtifact`). `agents.<id>.tasks` is the exact grant (default: every grantable tool); `change.dismissFinding` can never be granted to an agent. The legacy snake_case names remain accepted as aliases in grants (`tools:` is normalised to `tasks`; using both is an error) and in calls: `source.get_issue` -> `item.get`, `source.get_guidance` -> `item.guidance`, `source.add_comment` -> `item.comment`, `source.set_acceptance_criteria` -> `item.setCriteria`, `source.set_system_labels` -> `item.setSystemLabels`, `source.set_parent` -> `item.setParent`, `source.set_dependencies` -> `item.setDependencies`, `source.create_child` -> `item.createChild`, `source.set_pull_request_metadata` -> `change.setMetadata`, `workspace.get_context` -> `workspace.get`, `workspace.request_fetch` -> `workspace.fetch`, `workspace.request_push` -> `workspace.push`, `delivery.get_state` -> `change.get`, `delivery.get_check_logs` -> `ci.getLogs`, `run.report_*` / `run.ask_question` -> `agent.report*` / `agent.askQuestion`, and `run.record_artifact` / `workspace.record_artifact` -> `agent.recordArtifact`.
+
+Every call goes through one dispatcher in the service that re-checks the grant, validates input, actor and preconditions (an input `headSha` must equal the live change head), and journals mutating calls by MCP call id so a duplicate delivery returns the stored response. Read tools are always live. Source and workspace mutations pass back through the Conveyor service, where scope, idempotency, and branch rules are enforced. Verifiers receive a read/report-only subset even if their agent definition lists mutation tools.
 
 ## Reliability and recovery
 
@@ -211,16 +213,16 @@ agents:
     runner: codex
     effort: high
     instructions: ./instructions/implementer.md
-    tools:
-      - source.get_issue
-      - source.get_guidance
-      - workspace.get_context
-      - delivery.get_state
+    tasks:
+      - item.get
+      - item.guidance
+      - workspace.get
+      - change.get
       - conversation.get
-      - run.report_progress
-      - run.ask_question
-      - workspace.request_fetch
-      - workspace.request_push
+      - agent.reportProgress
+      - agent.askQuestion
+      - workspace.fetch
+      - workspace.push
   verifier:
     name: Verifier
     title: Quality Engineer

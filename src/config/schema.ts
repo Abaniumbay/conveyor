@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { MCP_AGENT_TOOLS, type McpAgentTool } from "../mcp/tools";
+import { agentGrantableTools } from "../mcp/tools";
+import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 
 import type { Route } from "../tasks/contract";
 
@@ -141,21 +142,39 @@ const agentSchema = z
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     instructions: absolutePathSchema,
     workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
-    tools: z.array(z.string()).superRefine((tools, context) => {
-      tools.forEach((tool, index) => {
-        if (tool === "source.set_labels") {
-          context.addIssue({
-            code: "custom",
-            path: [index],
-            message: "source.set_labels is no longer available: workflow labels are engine-owned, so remove it from tools",
-          });
-        } else if (!(MCP_AGENT_TOOLS as readonly string[]).includes(tool)) {
-          context.addIssue({ code: "custom", path: [index], message: `unknown tool "${tool}"` });
-        }
-      });
-    }).transform((tools) => tools as McpAgentTool[]).default([...MCP_AGENT_TOOLS]),
+    /** The exact grant: canonical camelCase tool task names. Defaults to every grantable tool. */
+    tasks: z.array(z.string()).optional(),
+    /** Legacy snake_case grant; normalised to `tasks` through the alias table. */
+    tools: z.array(z.string()).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((agent, context) => {
+    if (agent.tasks && agent.tools) {
+      context.addIssue({ code: "custom", path: ["tools"], message: 'use either "tasks" or the legacy "tools", not both' });
+      return;
+    }
+    const key = agent.tasks ? "tasks" : "tools";
+    const granted = new Set<string>();
+    (agent.tasks ?? agent.tools ?? []).forEach((entry, index) => {
+      const name = agent.tasks ? entry : canonicalToolName(entry);
+      const fail = (message: string) => context.addIssue({ code: "custom", path: [key, index], message });
+      if (entry === "source.set_labels") {
+        fail("source.set_labels is no longer available: workflow labels are engine-owned, so remove it from the grant");
+      } else if (AGENT_DENIED_TOOLS.includes(name)) {
+        fail(`${name} can never be granted to an agent`);
+      } else if (!agentGrantableTools().includes(name)) {
+        fail(`unknown task "${entry}"`);
+      } else if (granted.has(name) && agent.tasks) {
+        fail(`task "${name}" is granted more than once`);
+      }
+      granted.add(name);
+    });
+  })
+  .transform(({ tasks, tools, ...agent }) => ({
+    ...agent,
+    tasks: tasks ?? (tools ? [...new Set(tools.map(canonicalToolName))] : agentGrantableTools()),
+  }));
+
 
 const checkSchema = z
   .object({

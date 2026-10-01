@@ -95,7 +95,7 @@ describe("native stages with item tasks through the service", () => {
 });
 
 describe("legacy MCP names delegate to the item tools", () => {
-  test("source.add_comment runs item.comment once per identical request, and source.set_labels is gone", async () => {
+  test("source.add_comment runs item.comment once per MCP call id, and source.set_labels is gone", async () => {
     const w = await setup();
     const issue = w.enroll("mcp", 3, "");
     const comments: Array<[string, number, string]> = [];
@@ -111,10 +111,14 @@ describe("legacy MCP names delegate to the item tools", () => {
       allowedTools: ["source.add_comment", "source.get_issue"], actor: { id: "a", name: "A", title: "T" },
     });
     const token = (JSON.parse(await readFile(path.join(w.root, "artifacts/run-1/mcp-context.json"), "utf8")) as { control: { token: string } }).control.token;
-    const call = (tool: string, input: unknown) => w.service.handleMcp({ tool, input }, token);
-    expect(await call("source.add_comment", { markdown: "hello" })).toEqual({ commentId: 7 });
-    expect(await call("source.add_comment", { markdown: "hello" })).toEqual({ commentId: 7 });
+    const call = (tool: string, input: unknown, callId?: string) => w.service.handleMcp({ tool, input, ...(callId ? { callId } : {}) }, token);
+    expect(await call("source.add_comment", { markdown: "hello" }, "call-1")).toEqual({ commentId: 7 });
+    expect(await call("item.comment", { markdown: "hello" }, "call-1")).toEqual({ commentId: 7 });
     expect(comments).toEqual([["owner/repo", 3, "hello"]]);
+    expect(await call("item.comment", { markdown: "hello" }, "call-2")).toEqual({ commentId: 7 });
+    expect(comments).toHaveLength(2);
+    await expect(call("item.comment", { markdown: "hello" })).rejects.toThrow("needs an MCP call id");
+    await expect(call("item.comment", { markdown: "" }, "call-3")).rejects.toThrow("Invalid input for task item.comment");
     expect(await call("source.get_issue", {})).toMatchObject({ body: "B" });
     await expect(call("source.set_labels", { labels: [] })).rejects.toThrow(/not granted/);
     await lease.close();

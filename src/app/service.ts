@@ -18,6 +18,8 @@ import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
+import { canonicalToolName } from "../tasks/aliases";
+import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration } from "../web/format";
@@ -128,41 +130,6 @@ function listenPort(listen: string): number {
   }
   return port;
 }
-
-/** Legacy MCP tool names served by the `item` tool tasks. */
-const ITEM_TOOLS: Record<string, string> = {
-  "source.get_issue": "item.get",
-  "source.add_comment": "item.comment",
-  "source.set_acceptance_criteria": "item.setCriteria",
-  "source.set_system_labels": "item.setSystemLabels",
-  "source.set_parent": "item.setParent",
-  "source.set_dependencies": "item.setDependencies",
-  "source.create_child": "item.createChild",
-};
-
-/** Legacy MCP tool names served by the `workspace` tool tasks. */
-const WORKSPACE_TOOLS: Record<string, string> = {
-  "workspace.request_fetch": "workspace.fetch",
-  "workspace.request_push": "workspace.push",
-};
-
-/** Legacy MCP tool names served by the `change` tool tasks. */
-const CHANGE_TOOLS: Record<string, string> = {
-  "delivery.get_state": "change.get",
-  "source.set_pull_request_metadata": "change.setMetadata",
-};
-
-/** Legacy MCP names served by the `agent` tool tasks (`workspace.record_artifact` shares `agent.recordArtifact`). */
-const AGENT_TOOLS: Record<string, string> = {
-  "run.report_progress": "agent.reportProgress",
-  "run.ask_question": "agent.askQuestion",
-  "run.report_rationale": "agent.reportRationale",
-  "run.report_blocker": "agent.reportBlocker",
-  "run.report_result": "agent.reportResult",
-  "run.report_milestone": "agent.reportMilestone",
-  "run.record_artifact": "agent.recordArtifact",
-  "workspace.record_artifact": "agent.recordArtifact",
-};
 
 function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   const repository = config.repositories[repositoryId]!;
@@ -907,7 +874,7 @@ export class ConveyorService {
           runId,
           stageId,
           context,
-          allowedTools: new Set(allowedTools),
+          allowedTools: new Set(allowedTools.map(canonicalToolName)),
           actor,
         });
         const directory = path.join(this.config.settings.artifacts, runId);
@@ -935,7 +902,7 @@ export class ConveyorService {
           delivery: context.delivery ?? { pullRequest: null, checks: [] },
           sourceGuidance: context.sourceGuidance,
           control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-          allowedTools,
+          allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
         }), { mode: 0o600 });
         await chmod(contextFile, 0o600);
         return {
@@ -962,7 +929,7 @@ export class ConveyorService {
       runId,
       stageId: "steering",
       context: null,
-      allowedTools: new Set(allowedTools),
+      allowedTools: new Set(allowedTools.map(canonicalToolName)),
       actor: null,
     });
     const directory = path.join(this.config.settings.artifacts, runId);
@@ -990,7 +957,7 @@ export class ConveyorService {
       delivery: { pullRequest: null, checks: [] },
       sourceGuidance: "This is a system-scoped steering run. Only explicitly granted reporting tools are available.",
       control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-      allowedTools,
+      allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
     }), { mode: 0o600 });
     await chmod(contextFile, 0o600);
     return {
@@ -1110,93 +1077,48 @@ export class ConveyorService {
     return outcome;
   }
 
-  private async runItemTool(
-    name: string,
-    grant: McpGrant,
-    input: Record<string, unknown>,
-    idempotencyKey: string,
-  ): Promise<unknown> {
-    const context = grant.context;
-    // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
-    const deps: TaskDeps = context
-      ? this.taskDeps(context.issue.id, context.repository)
-      : ({ store: this.store, config: this.config, issueId: "" } as TaskDeps);
-    deps.run = { id: grant.runId, actor: grant.actor };
-    const result = await runTask(createTaskRegistry().require(name), {
-      config: {},
-      context: {},
-      deps,
-      input,
-      ...(grant.actor ? { actor: grant.actor.id } : {}),
-      instance: { id: name, stage: grant.stageId, idempotencyKey, resumed: false },
-    });
-    if (result.status !== "pass") throw new Error(result.status === "fail" || result.status === "pending" ? result.message : name);
-    return result.output ?? { accepted: true };
-  }
-
+  /** An MCP tool call: a thin wrapper over the task dispatcher, which enforces the grant and journals mutations. */
   async handleMcp(payload: unknown, token: string): Promise<unknown> {
     const grant = this.#mcpGrants.get(token);
     if (!grant) throw new Error("expired MCP grant");
     const request = object(payload);
-    const tool = string(request.tool, "tool");
-    if (!grant.allowedTools.has(tool)) throw new Error(`MCP tool is not granted: ${tool}`);
-    const input = object(request.input ?? {});
-    if (tool === "conversation.get") {
-      if (!grant.context) throw new Error("conversation requires an issue-scoped MCP grant");
-      return this.runItemTool("conversation.get", grant, input, "");
-    }
-    if (AGENT_TOOLS[tool] && tool !== "workspace.record_artifact") {
-      if (tool === "run.ask_question") {
-        if (!grant.context) throw new Error("structured questions require an issue-scoped MCP grant");
-        const result = await this.runItemTool(AGENT_TOOLS[tool]!, grant, input, "");
-        await this.updateStatusComment(grant.context.issue.id);
-        return result;
-      }
-      return this.runItemTool(AGENT_TOOLS[tool]!, grant, input, "");
-    }
-
-    if (!grant.context) throw new Error(`${tool} requires an issue-scoped MCP grant`);
-    const issue = grant.context.issue;
-    const address = grant.context.repository.address;
-
-    if (tool === "source.get_issue") {
-      return this.runItemTool(ITEM_TOOLS[tool]!, grant, input, "");
-    }
-    if (tool === "delivery.get_state") {
-      return this.runItemTool(CHANGE_TOOLS[tool]!, grant, input, "");
-    }
-    if (tool === "delivery.get_check_logs") {
-      return this.runItemTool("ci.getLogs", grant, input, "");
-    }
-
-    const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
-    const mutation = this.store.beginSourceMutation({
-      idempotencyKey,
-      source: "github",
-      operation: tool,
-      request: input,
+    const context = grant.context;
+    // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
+    const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
+    const callId = typeof request.callId === "string" && request.callId ? request.callId : undefined;
+    const taskDeps = (): TaskDeps => context
+      // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
+      ? this.taskDeps(context.issue.id, context.repository)
+      : ({ store: this.store, config: this.config, issueId: "" } as TaskDeps);
+    const result = await dispatchTool({
+      name: string(request.tool, "tool"),
+      input,
+      actor: grant.actor,
+      grant: {
+        runId: grant.runId,
+        stageId: grant.stageId,
+        issueScoped: context !== null,
+        actor: grant.actor,
+        tasks: grant.allowedTools,
+      },
+      ...(callId ? { callId } : {}),
+    }, {
+      registry: createTaskRegistry(),
+      deps: taskDeps,
+      liveHeadSha: async () => {
+        if (!context) return null;
+        const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
+          change?: { headSha?: string } | null;
+          pullRequest?: { headSha?: string } | null;
+        };
+        return state.change?.headSha ?? state.pullRequest?.headSha ?? null;
+      },
+      store: this.store,
     });
-    if (mutation.status === "succeeded") return mutation.response ?? { accepted: true };
-    try {
-      let result: unknown = { accepted: true };
-      const itemTool = ITEM_TOOLS[tool];
-      if (itemTool) {
-        result = await this.runItemTool(itemTool, grant, input, idempotencyKey);
-      } else if (WORKSPACE_TOOLS[tool]) {
-        result = await this.runItemTool(WORKSPACE_TOOLS[tool]!, grant, input, idempotencyKey);
-      } else if (tool === "workspace.record_artifact") {
-        result = await this.runItemTool(AGENT_TOOLS[tool]!, grant, input, idempotencyKey);
-      } else if (CHANGE_TOOLS[tool]) {
-        result = await this.runItemTool(CHANGE_TOOLS[tool]!, grant, input, idempotencyKey);
-      } else {
-        throw new Error(`unsupported MCP tool: ${tool}`);
-      }
-      this.store.completeSourceMutation(mutation.id, result);
-      return result;
-    } catch (error) {
-      this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
-      throw error;
+    if (context && canonicalToolName(string(request.tool, "tool")) === "agent.askQuestion") {
+      await this.updateStatusComment(context.issue.id);
     }
+    return result;
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
@@ -1318,7 +1240,7 @@ export class ConveyorService {
     const started = performance.now();
     let lease: ScopedMcpLease | null = null;
     try {
-      lease = await this.steeringMcpLease(runId, workspace, agent.tools);
+      lease = await this.steeringMcpLease(runId, workspace, agent.tasks);
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await this.#runSteering({
         command: runner.command,

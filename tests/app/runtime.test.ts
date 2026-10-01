@@ -212,8 +212,8 @@ repositories:
 
     expect(producerInputs).toHaveLength(1);
     expect(checkInputs).toHaveLength(1);
-    expect(grants[0]).toEqual(["source.get_issue", "conversation.get", "run.report_progress", "workspace.request_fetch"]);
-    expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
+    expect(grants[0]).toEqual(["item.get", "conversation.get", "agent.reportProgress", "workspace.fetch"]);
+    expect(grants[1]).toEqual(["item.get", "agent.reportProgress"]);
     expect(deliveryStates[1]).toEqual({
       pullRequest: { number: 18, state: "merged", merged: true },
       checks: [{ name: "Tests", conclusion: "success" }],

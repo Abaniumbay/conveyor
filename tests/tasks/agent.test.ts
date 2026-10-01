@@ -45,7 +45,7 @@ async function world(options: { sessionResume?: boolean } = {}) {
   const config = {
     hash: "cfg",
     settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100 },
-    agents: { kaveh: { runner: "codex", instructions, tools: ["run.report_progress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" } },
+    agents: { kaveh: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" } },
     runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
   } as unknown as ConveyorConfig;
 
@@ -109,7 +109,7 @@ describe("agent.run", () => {
     expect(call.prompt).toContain('"stageId": "implementation"');
     expect(call.mcp).toEqual({ command: "bun", args: ["mcp"] });
     expect(call.resumeSessionId).toBeUndefined();
-    expect(w.leases).toEqual([{ runId: expect.any(String), allowedTools: ["run.report_progress"], closed: true }]);
+    expect(w.leases).toEqual([{ runId: expect.any(String), allowedTools: ["agent.reportProgress"], closed: true }]);
     const runId = w.leases[0]!.runId;
     expect(outcome(result)).toEqual({ agentId: "kaveh", status: "done", summary: "Implemented", reason: null, sessionId: "sess-9", runId });
     expect(w.store.getRun(runId)).toMatchObject({ status: "succeeded", sessionId: "sess-9", kind: "producer", stageId: "implementation" });

@@ -1,9 +1,11 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { randomUUID } from "node:crypto";
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import {
-  commentInput, createChildInput, dependenciesInput, parentInput, setCriteriaInput, systemLabelsInput,
-} from "../tasks/item";
+import { canonicalToolName } from "../tasks/aliases";
+import { createTaskRegistry } from "../tasks/catalogue";
 
 export interface RunMcpContext {
   version: 1;
@@ -26,7 +28,8 @@ export interface RunMcpContext {
 }
 
 export interface ControlClient {
-  call(tool: string, input: unknown): Promise<unknown>;
+  /** `callId` identifies this tools/call request; the service journals mutating calls by it. */
+  call(tool: string, input: unknown, callId?: string): Promise<unknown>;
 }
 
 export class HttpControlClient implements ControlClient {
@@ -36,14 +39,14 @@ export class HttpControlClient implements ControlClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async call(tool: string, input: unknown): Promise<unknown> {
+  async call(tool: string, input: unknown, callId?: string): Promise<unknown> {
     const response = await this.fetchImpl(this.url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ tool, input }),
+      body: JSON.stringify({ tool, input, ...(callId ? { callId } : {}) }),
     });
     if (!response.ok) {
       throw new Error(`control request failed (${response.status}): ${await response.text()}`);
@@ -52,135 +55,55 @@ export class HttpControlClient implements ControlClient {
   }
 }
 
-const questionOption = z.object({ id: z.string(), label: z.string() });
-const questionInput = {
-  prompt: z.string().min(1),
-  reason: z.string().min(1),
-  options: z.array(questionOption).min(1),
-  minSelections: z.number().int().min(0),
-  maxSelections: z.number().int().min(1),
-  allowFreeText: z.boolean(),
-};
+const errorResult = (message: string) => ({ isError: true as const, content: [{ type: "text" as const, text: message }] });
 
-const progressInput = {
-  message: z.string().min(1).max(4_000),
-  details: z.record(z.string(), z.unknown()).optional(),
-};
-
-const passthroughInput = z.object({}).passthrough();
-
-const controlTools: Record<string, { description: string; schema: z.ZodType }> = {
-  "source.get_issue": {
-    description: "Read the latest GitHub state of the current scoped issue.",
-    schema: z.object({}).strict(),
-  },
-  "delivery.get_state": {
-    description: "Read the live delivery state for this issue: its pull request, current head SHA, and every CI check on that head. Always current; call it again after pushing.",
-    schema: z.object({}).strict(),
-  },
-  "delivery.get_check_logs": {
-    description: "Read CI job logs for this issue's pull request head. Without checkName, returns the failing checks. Use it to diagnose CI failures; you cannot call GitHub directly.",
-    schema: z.object({
-      checkName: z.string().min(1).optional(),
-      lines: z.number().int().min(20).max(1_000).optional(),
-    }).strict(),
-  },
-  "conversation.get": {
-    description: "Read the concise shared issue conversation. Use it for handoffs and user steering; it does not contain raw harness logs.",
-    schema: z.object({ limit: z.number().int().min(1).max(100).optional() }),
-  },
-  "run.report_progress": {
-    description: "Publish a concise user-facing progress update to the shared conversation. This is the exclusive channel for interim messages the user should see; omit commands, raw output, tool mechanics, and private reasoning.",
-    schema: z.object(progressInput),
-  },
-  "run.ask_question": { description: "Ask the user a structured question.", schema: z.object(questionInput) },
-  "run.report_rationale": { description: "Record a rationale summary.", schema: passthroughInput },
-  "run.report_blocker": { description: "Report a run blocker.", schema: passthroughInput },
-  "run.report_result": { description: "Report a stage result.", schema: passthroughInput },
-  "run.record_artifact": { description: "Record a run artifact.", schema: passthroughInput },
-  "run.report_milestone": { description: "Report a run milestone.", schema: passthroughInput },
-  "source.set_system_labels": {
-    description: "Replace the issue's configured system-area labels while preserving workflow and unmanaged labels.",
-    schema: systemLabelsInput,
-  },
-  "source.add_comment": {
-    description: "Add a Markdown comment to the current scoped issue.",
-    schema: commentInput,
-  },
-  "source.set_acceptance_criteria": {
-    description: "Replace acceptance criteria on the current scoped issue only.",
-    schema: setCriteriaInput,
-  },
-  "source.set_parent": {
-    description: "Set the parent of the current scoped issue.",
-    schema: parentInput,
-  },
-  "source.set_dependencies": {
-    description: "Replace dependencies of the current scoped issue.",
-    schema: dependenciesInput,
-  },
-  "source.create_child": {
-    description: "Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels.",
-    schema: createChildInput,
-  },
-  "source.set_pull_request_metadata": { description: "Update PR metadata.", schema: passthroughInput },
-  "workspace.request_fetch": { description: "Request a scoped workspace fetch.", schema: passthroughInput },
-  "workspace.request_push": {
-    description: "Request a scoped workspace push. Set forceWithLease only after rebasing the supplied Conveyor feature branch.",
-    schema: z.object({ forceWithLease: z.boolean().optional() }),
-  },
-  "workspace.record_artifact": { description: "Record a workspace artifact.", schema: passthroughInput },
-};
-
-type ReadToolName = "source.get_guidance" | "workspace.get_context";
-
-export function createConveyorMcpServer(context: RunMcpContext, control: ControlClient): McpServer {
-  const server = new McpServer(
+/**
+ * Lists the registry's `tool` tasks the grant allows (canonical camelCase names; legacy
+ * snake_case grant entries are resolved through the alias table) and forwards every call, with a
+ * fresh call id, to the service, which enforces the grant again and runs the task.
+ */
+export function createConveyorMcpServer(context: RunMcpContext, control: ControlClient): Server {
+  const server = new Server(
     { name: "conveyor", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
 
-  const reads: Record<ReadToolName, { description: string; value: unknown }> = {
-    "source.get_guidance": { description: "Read source-specific agent guidance.", value: context.sourceGuidance },
-    "workspace.get_context": { description: "Read scoped workspace metadata.", value: context.workspace },
-  };
-
+  const tools = new Map(createTaskRegistry().list("tool").map((task) => [task.name, task]));
   const granted = new Set<string>();
-  for (const name of context.allowedTools) {
-    if (granted.has(name)) throw new Error(`duplicate MCP tool grant: ${name}`);
-    if (!(name in reads) && !(name in controlTools)) {
-      throw new Error(`unsupported MCP tool grant: ${name}`);
-    }
+  for (const entry of context.allowedTools) {
+    const name = canonicalToolName(entry);
+    if (!tools.has(name)) throw new Error(`unsupported MCP tool grant: ${entry}`);
+    if (granted.has(name)) throw new Error(`duplicate MCP tool grant: ${entry}`);
     granted.add(name);
   }
 
-  for (const name of context.allowedTools) {
-    if (name in reads) {
-      const readName = name as ReadToolName;
-      const read = reads[readName];
-      server.registerTool(readName, { description: read.description, inputSchema: {} }, async () => ({
-        content: [{ type: "text", text: JSON.stringify(read.value) }],
-      }));
-      continue;
-    }
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [...granted].map((name) => {
+      const task = tools.get(name)!;
+      const { $schema: _ignored, ...inputSchema } = z.toJSONSchema(task.input!, { io: "input", unrepresentable: "any" });
+      return { name, description: task.description, inputSchema: { type: "object" as const, ...inputSchema } };
+    }),
+  }));
 
-    const definition = controlTools[name];
-    if (!definition) continue;
-    server.registerTool(name, {
-      description: definition.description,
-      inputSchema: definition.schema,
-    }, async (input) => {
-      const data = input as Record<string, unknown>;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const name = canonicalToolName(request.params.name);
+    const task = tools.get(name);
+    if (!task || !granted.has(name)) return errorResult(`MCP tool is not granted: ${request.params.name}`);
+    const parsed = task.input!.safeParse(request.params.arguments ?? {});
+    if (!parsed.success) return errorResult(`Invalid input for ${name}: ${parsed.error.message}`);
+    try {
       const result = await control.call(name, {
-        ...data,
+        ...(parsed.data as Record<string, unknown>),
         runId: context.runId,
         stageId: context.stageId,
         repositoryId: context.repository.id,
         issueId: context.issue.id,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    });
-  }
+      }, randomUUID());
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : String(error));
+    }
+  });
 
   return server;
 }

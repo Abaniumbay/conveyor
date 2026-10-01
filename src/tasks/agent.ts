@@ -117,7 +117,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
           issue, repository: deps.repository, workspace: { path: workspace.path, branch: workspace.branch },
           sourceGuidance: deps.sourceGuidance, ...(deps.delivery ? { delivery: await deps.delivery() } : {}),
         },
-        allowedTools: agent.tools,
+        allowedTools: agent.tasks,
         actor: agentActor(deps.config, config.agent),
       });
       let result: RunEnvelope;
@@ -158,7 +158,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
                 conversation: conversationForPrompt(store, issue.id),
               },
               instructions,
-              { progressReporting: agent.tools.includes("run.report_progress") },
+              { progressReporting: agent.tasks.includes("agent.reportProgress") },
             ),
           });
         }

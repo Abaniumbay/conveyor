@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   createConveyorMcpServer,
+  HttpControlClient,
   type ControlClient,
   type RunMcpContext,
 } from "../../src/mcp/server";
@@ -42,13 +43,13 @@ const context: RunMcpContext = {
     token: "secret-token",
   },
   allowedTools: [
-    "source.get_issue",
-    "source.get_guidance",
-    "workspace.get_context",
-    "delivery.get_state",
+    "item.get",
+    "item.guidance",
+    "workspace.get",
+    "change.get",
     "conversation.get",
-    "run.report_progress",
-    "run.ask_question",
+    "agent.reportProgress",
+    "agent.askQuestion",
   ],
 };
 
@@ -72,133 +73,88 @@ function text(result: Awaited<ReturnType<Client["callTool"]>>): unknown {
   return JSON.parse(item.text);
 }
 
+interface Seen { tool: string; input: unknown; callId?: string | undefined }
+
 describe("Conveyor MCP server", () => {
-  test("exposes only explicitly allowed scoped tools", async () => {
-    const calls: string[] = [];
-    const client = await connectedClient({
-      async call(tool) {
-        calls.push(tool);
-        if (tool === "source.get_issue") return context.issue;
-        throw new Error("unexpected control endpoint call");
-      },
-    });
-
+  test("lists only the granted tools, under canonical camelCase names with registry descriptions and schemas", async () => {
+    const client = await connectedClient({ async call() { throw new Error("no call expected"); } });
     const tools = await client.listTools();
-
-    expect(tools.tools.map((tool) => tool.name).sort()).toEqual(
-      [...context.allowedTools].sort(),
-    );
-    expect(text(await client.callTool({ name: "source.get_issue", arguments: {} }))).toEqual(
-      context.issue,
-    );
-    expect(calls).toEqual(["source.get_issue"]);
-    expect(
-      text(await client.callTool({ name: "workspace.get_context", arguments: {} })),
-    ).toEqual(context.workspace);
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...context.allowedTools].sort());
+    const progress = tools.tools.find((tool) => tool.name === "agent.reportProgress")!;
+    expect(progress.description).toContain("progress");
+    expect(progress.inputSchema.properties).toHaveProperty("message");
   });
 
-  test("serves delivery state live through the control client instead of a start-of-run snapshot", async () => {
-    const calls: string[] = [];
-    const live = { pullRequest: { number: 9, headSha: "new" }, checks: [{ name: "Tests" }] };
+  test("a legacy snake_case grant lists canonical names and legacy names still work in calls", async () => {
+    const seen: Seen[] = [];
     const client = await connectedClient({
-      async call(tool) {
-        calls.push(tool);
-        if (tool === "delivery.get_state") return live;
-        if (tool === "delivery.get_check_logs") return { checks: [] };
-        throw new Error("unexpected control endpoint call");
-      },
-    }, ["delivery.get_state", "delivery.get_check_logs"]);
-
-    expect(text(await client.callTool({ name: "delivery.get_state", arguments: {} }))).toEqual(live);
-    expect(text(await client.callTool({ name: "delivery.get_check_logs", arguments: { checkName: "Tests" } }))).toEqual({ checks: [] });
-    expect(calls).toEqual(["delivery.get_state", "delivery.get_check_logs"]);
+      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { ok: true }; },
+    }, ["source.get_issue", "run.report_progress", "workspace.record_artifact"]);
+    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["agent.recordArtifact", "agent.reportProgress", "item.get"]);
+    expect(text(await client.callTool({ name: "source.get_issue", arguments: {} }))).toEqual({ ok: true });
+    expect(seen[0]?.tool).toBe("item.get");
   });
 
-  test("routes progress and structured questions through the control client", async () => {
-    const calls: Array<{ tool: string; input: unknown }> = [];
+  test("serves every getter live through the control client, workspace.get included", async () => {
+    const seen: Seen[] = [];
     const client = await connectedClient({
-      async call(tool, input) {
-        calls.push({ tool, input });
-        return { accepted: true };
-      },
+      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { tool }; },
     });
+    expect(text(await client.callTool({ name: "workspace.get", arguments: {} }))).toEqual({ tool: "workspace.get" });
+    expect(text(await client.callTool({ name: "item.guidance", arguments: {} }))).toEqual({ tool: "item.guidance" });
+    expect(text(await client.callTool({ name: "change.get", arguments: {} }))).toEqual({ tool: "change.get" });
+    expect(seen.map((call) => call.tool)).toEqual(["workspace.get", "item.guidance", "change.get"]);
+  });
 
-    expect(
-      text(
-        await client.callTool({
-          name: "conversation.get",
-          arguments: { limit: 25 },
-        }),
-      ),
-    ).toEqual({ accepted: true });
-    expect(
-      text(
-        await client.callTool({
-          name: "run.report_progress",
-          arguments: { message: "Running tests", details: { suite: "unit" } },
-        }),
-      ),
-    ).toEqual({ accepted: true });
-    expect(
-      text(
-        await client.callTool({
-          name: "run.ask_question",
-          arguments: {
-            prompt: "Which layout should be used?",
-            reason: "Both satisfy the issue",
-            options: [
-              { id: "compact", label: "Compact" },
-              { id: "spacious", label: "Spacious" },
-            ],
-            minSelections: 1,
-            maxSelections: 1,
-            allowFreeText: true,
-          },
-        }),
-      ),
-    ).toEqual({ accepted: true });
-    expect(calls.map((call) => call.tool)).toEqual([
-      "conversation.get",
-      "run.report_progress",
-      "run.ask_question",
-    ]);
-    expect(calls[2]?.input).toMatchObject({ runId: "run-1", stageId: "implementation" });
+  test("every tools/call gets a fresh MCP call id and the run scope", async () => {
+    const seen: Seen[] = [];
+    const client = await connectedClient({
+      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { accepted: true }; },
+    });
+    await client.callTool({ name: "agent.reportProgress", arguments: { message: "one" } });
+    await client.callTool({ name: "agent.reportProgress", arguments: { message: "one" } });
+    expect(seen[0]?.callId).toBeString();
+    expect(seen[0]?.callId).not.toBe(seen[1]?.callId);
+    expect(seen[0]?.input).toMatchObject({ message: "one", runId: "run-1", stageId: "implementation", repositoryId: "repo-1", issueId: "issue-1" });
+  });
+
+  test("a tool outside the grant is refused without reaching the control client", async () => {
+    const seen: Seen[] = [];
+    const client = await connectedClient({ async call(tool, input) { seen.push({ tool, input }); return {}; } });
+    const result = await client.callTool({ name: "item.comment", arguments: { markdown: "x" } });
+    expect(result.isError).toBe(true);
+    expect(seen).toEqual([]);
+  });
+
+  test("invalid input is an MCP error carrying the validation message", async () => {
+    const seen: Seen[] = [];
+    const client = await connectedClient({ async call(tool, input) { seen.push({ tool, input }); return {}; } });
+    const result = await client.callTool({ name: "agent.reportProgress", arguments: { message: 5 } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("message");
+    expect(seen).toEqual([]);
+  });
+
+  test("a control failure is returned as an MCP error", async () => {
+    const client = await connectedClient({ async call() { throw new Error("headSha old is not the current change head new"); } });
+    const result = await client.callTool({ name: "change.get", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("headSha old is not the current change head new");
   });
 
   test("rejects unknown or duplicate tool grants instead of silently weakening config", () => {
     const control: ControlClient = { async call() {} };
-    expect(() =>
-      createConveyorMcpServer(
-        { ...context, allowedTools: ["source.get_issue", "source.typo"] },
-        control,
-      ),
-    ).toThrow("unsupported MCP tool");
-    expect(() =>
-      createConveyorMcpServer(
-        { ...context, allowedTools: ["source.get_issue", "source.get_issue"] },
-        control,
-      ),
-    ).toThrow("duplicate MCP tool");
+    expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.typo"] }, control)).toThrow("unsupported MCP tool");
+    expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.get_issue"] }, control)).toThrow("duplicate MCP tool");
   });
 
-  test("rejects child-target overrides on context-bound source mutations", async () => {
-    const calls: Array<{ tool: string; input: unknown }> = [];
-    const client = await connectedClient({
-      async call(tool, input) {
-        calls.push({ tool, input });
-        return { accepted: true };
-      },
-    }, ["source.set_acceptance_criteria"]);
-
-    const result = await client.callTool({
-      name: "source.set_acceptance_criteria",
-      arguments: {
-        issueId: "different-issue",
-        criteria: [{ id: "AC-1", text: "Must remain scoped." }],
-      },
-    });
-
-    expect(result.isError).toBe(true);
-    expect(calls).toEqual([]);
+  test("the HTTP control client sends the call id with the request", async () => {
+    let body: unknown;
+    const control = new HttpControlClient("http://x/internal/mcp", "tok", (async (_url: unknown, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response("{}");
+    }) as unknown as typeof fetch);
+    await control.call("item.get", { a: 1 }, "call-9");
+    expect(body).toEqual({ tool: "item.get", input: { a: 1 }, callId: "call-9" });
   });
 });

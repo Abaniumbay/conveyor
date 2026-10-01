@@ -48,7 +48,7 @@ describe("ConveyorService steering", () => {
           effort: "medium",
           instructions,
           workspaceAccess: "workspace-write",
-          tools: ["run.report_progress", "run.report_rationale", "run.report_result"],
+          tasks: ["agent.reportProgress", "agent.reportRationale", "agent.reportResult"],
         },
       },
       pipelines: {},

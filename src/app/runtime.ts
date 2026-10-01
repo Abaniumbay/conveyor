@@ -261,7 +261,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           runId,
           stageId: stage.id,
           context: this.context,
-          allowedTools: agent.tools,
+          allowedTools: agent.tasks,
           actor: this.agentActor(stage.run.agent),
         });
         try {
@@ -281,7 +281,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
                 conversation: conversationForPrompt(this.store, issue.id),
               },
               instructions,
-              { progressReporting: agent.tools.includes("run.report_progress") },
+              { progressReporting: agent.tasks.includes("agent.reportProgress") },
             ),
             ...(agent.model ? { model: agent.model } : {}),
             ...(agent.effort ? { effort: agent.effort } : {}),
@@ -384,7 +384,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         runId,
         stageId: context.stageId,
         context: this.context,
-        allowedTools: verifierToolGrant(agent.tools),
+        allowedTools: verifierToolGrant(agent.tasks),
         actor: this.agentActor(definition.verifier),
       });
       const instructions = await readFile(agent.instructions, "utf8");
@@ -406,7 +406,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
             conversation: conversationForPrompt(this.store, issue.id),
           },
           instructions,
-          { progressReporting: agent.tools.includes("run.report_progress") },
+          { progressReporting: agent.tasks.includes("agent.reportProgress") },
         ),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),

@@ -403,6 +403,7 @@ describe("ConveyorService dashboard", () => {
 
     const child = await service.handleMcp({
       tool: "source.create_child",
+      callId: "call-child",
       input: {
         title: "CI child",
         body: "Human-owned child context.",

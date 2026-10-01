@@ -1,49 +1,34 @@
-export const MCP_READ_TOOLS = [
-  "source.get_issue",
-  "source.get_guidance",
-  "workspace.get_context",
-  "delivery.get_state",
-  "delivery.get_check_logs",
+import { AGENT_DENIED_TOOLS } from "../tasks/aliases";
+import { createTaskRegistry } from "../tasks/catalogue";
+
+/** The canonical names of every registered tool task. */
+export function registeredToolNames(): string[] {
+  return createTaskRegistry().list("tool").map((task) => task.name);
+}
+
+/** Every tool an agent may be granted: the registered tools minus the never-grantable ones. */
+export function agentGrantableTools(): string[] {
+  return registeredToolNames().filter((name) => !AGENT_DENIED_TOOLS.includes(name));
+}
+
+/** What a verifier (a read-only checker) may use: the item/change/CI/workspace/conversation getters and the report tools. */
+export const MCP_VERIFIER_TOOLS: readonly string[] = [
+  "item.get",
+  "item.guidance",
+  "workspace.get",
+  "change.get",
+  "ci.getLogs",
   "conversation.get",
-] as const;
+  "agent.askQuestion",
+  "agent.reportProgress",
+  "agent.reportRationale",
+  "agent.reportBlocker",
+  "agent.reportResult",
+  "agent.reportMilestone",
+  "agent.recordArtifact",
+];
 
-export const MCP_REPORT_TOOLS = [
-  "run.report_progress",
-  "run.ask_question",
-  "run.report_rationale",
-  "run.report_blocker",
-  "run.report_result",
-  "run.record_artifact",
-  "run.report_milestone",
-] as const;
-
-export const MCP_MUTATION_TOOLS = [
-  "source.set_system_labels",
-  "source.add_comment",
-  "source.set_acceptance_criteria",
-  "source.set_parent",
-  "source.set_dependencies",
-  "source.create_child",
-  "source.set_pull_request_metadata",
-  "workspace.request_fetch",
-  "workspace.request_push",
-  "workspace.record_artifact",
-] as const;
-
-export const MCP_AGENT_TOOLS = [
-  ...MCP_READ_TOOLS,
-  ...MCP_REPORT_TOOLS,
-  ...MCP_MUTATION_TOOLS,
-] as const;
-
-export const MCP_VERIFIER_TOOLS = [
-  ...MCP_READ_TOOLS,
-  ...MCP_REPORT_TOOLS,
-] as const;
-
-export type McpAgentTool = (typeof MCP_AGENT_TOOLS)[number];
-
-export function verifierToolGrant(tools: readonly McpAgentTool[]): McpAgentTool[] {
-  const permitted = new Set<McpAgentTool>(MCP_VERIFIER_TOOLS);
-  return tools.filter((tool) => permitted.has(tool));
+export function verifierToolGrant(tasks: readonly string[]): string[] {
+  const permitted = new Set(MCP_VERIFIER_TOOLS);
+  return tasks.filter((task) => permitted.has(task));
 }
