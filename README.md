@@ -119,7 +119,26 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 - scoped workspace fetch, push, and artifact operations;
 - read-only CI logs and review findings.
 
-Tools are the registry's `tool` tasks, named in camelCase (`item.get`, `item.comment`, `item.setCriteria`, `item.setSystemLabels`, `item.setParent`, `item.setDependencies`, `item.createChild`, `item.guidance`, `workspace.get`, `workspace.fetch`, `workspace.push`, `change.get`, `change.setMetadata`, `change.checkCriterion`, `change.uncheckCriterion`, `change.comment`, `change.resolveFinding`, `change.listFindings`, `ci.getLogs`, `conversation.get`, `agent.askQuestion`, `agent.reportProgress`, `agent.reportRationale`, `agent.reportBlocker`, `agent.reportResult`, `agent.reportMilestone`, `agent.recordArtifact`). `agents.<id>.tasks` is the exact grant (default: every grantable tool); `change.dismissFinding` can never be granted to an agent. The legacy snake_case names remain accepted as aliases in grants (`tools:` is normalised to `tasks`; using both is an error) and in calls: `source.get_issue` -> `item.get`, `source.get_guidance` -> `item.guidance`, `source.add_comment` -> `item.comment`, `source.set_acceptance_criteria` -> `item.setCriteria`, `source.set_system_labels` -> `item.setSystemLabels`, `source.set_parent` -> `item.setParent`, `source.set_dependencies` -> `item.setDependencies`, `source.create_child` -> `item.createChild`, `source.set_pull_request_metadata` -> `change.setMetadata`, `workspace.get_context` -> `workspace.get`, `workspace.request_fetch` -> `workspace.fetch`, `workspace.request_push` -> `workspace.push`, `delivery.get_state` -> `change.get`, `delivery.get_check_logs` -> `ci.getLogs`, `run.report_*` / `run.ask_question` -> `agent.report*` / `agent.askQuestion`, and `run.record_artifact` / `workspace.record_artifact` -> `agent.recordArtifact`.
+Tools are the registry's `tool` tasks, named in camelCase:
+
+- `item.*`: `get`, `comment`, `setCriteria`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`, `guidance`
+- `workspace.*`: `get`, `fetch`, `push`
+- `change.*`: `get`, `setMetadata`, `checkCriterion`, `uncheckCriterion`, `comment`, `resolveFinding`, `listFindings`
+- `ci.getLogs`, `conversation.get`
+- `agent.*`: `askQuestion`, `reportProgress`, `reportRationale`, `reportBlocker`, `reportResult`, `reportMilestone`, `recordArtifact`
+
+`agents.<id>.tasks` is the exact grant (default: every grantable tool); `change.dismissFinding` can never be granted to an agent. The legacy snake_case names remain accepted as aliases in grants (`tools:` is normalised to `tasks`; using both is an error) and in calls:
+
+| Legacy name | Canonical name |
+| --- | --- |
+| `source.get_issue`, `source.get_guidance`, `source.add_comment` | `item.get`, `item.guidance`, `item.comment` |
+| `source.set_acceptance_criteria`, `source.set_system_labels` | `item.setCriteria`, `item.setSystemLabels` |
+| `source.set_parent`, `source.set_dependencies`, `source.create_child` | `item.setParent`, `item.setDependencies`, `item.createChild` |
+| `source.set_pull_request_metadata`, `delivery.get_state` | `change.setMetadata`, `change.get` |
+| `delivery.get_check_logs` | `ci.getLogs` |
+| `workspace.get_context`, `workspace.request_fetch`, `workspace.request_push` | `workspace.get`, `workspace.fetch`, `workspace.push` |
+| `run.report_*`, `run.ask_question` | `agent.report*`, `agent.askQuestion` |
+| `run.record_artifact`, `workspace.record_artifact` | `agent.recordArtifact` |
 
 Review findings are recorded by Conveyor, not by the code host: an agent creates one with `change.comment` (an inline review comment when `path` and `line` are in the diff, otherwise a managed change comment), and `change.load` imports native human review (unresolved threads and changes-requested reviews; ordinary conversation comments are ignored). A finding is `open` until it is resolved (`change.resolveFinding`, or the thread resolved on the host), dismissed by a person, or withdrawn because its native comment was deleted; every change is kept in an audit trail. The `change.findingsResolved` check fails while any finding is open, and the review gate passing records the `reviewPassed` checkpoint that `change.merge` requires. A reviewer agent that returns `changes-requested` without recording a finding stops with an error. An operator dismisses a finding with `POST /api/issues/:issueId/findings/:findingId/dismiss` (signed-in session, `X-CSRF-Token` header, JSON `{ "reason": "..." }`, reason required); there is no dismiss button in the web UI yet.
 

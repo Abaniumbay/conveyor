@@ -155,7 +155,7 @@ The canonical configuration names the three provider roles and the harnesses: `p
 
 A task entry has `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when that name occurs once in the list and is required otherwise; instance ids are unique within a stage. Overrides, execution records, script results and idempotency keys address the instance id, never an array index or task name. `with` is validated against the task's schema at load time. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires); each field comes from the repository override, else the entry, else the task's own default, else `settings.taskDefaults.wait` (default timeout 30m, poll 1m). `onFail` is `retry`, `{ return: <stage> }` or `{ stop: <state> }` (section 8). `when` is a guard from a closed vocabulary, `ci.enabled`, `ci.required` or `ci.advisory`, evaluated at load time from the repository's CI mode; a task whose guard is false is left out of the plan, and an exit gate must still be non-empty. There are no expressions, loops, variables or message templates.
 
-A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`). Naming a stage, list or instance that does not exist is an error. Each repository also declares `agentEgress` (section 19); these are security inputs, not task expressions. A repository's `ci` is `{ provider, mode: required | advisory | disabled, ignoreChecks }` (section 8, CI modes).
+A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`). Naming a stage, list or instance that does not exist is an error. A repository may declare `agentEgress` (section 19; optional, and without it agents get the sanitized environment only); these are security inputs, not task expressions. A repository's `ci` is `{ provider, mode: required | advisory | disabled, ignoreChecks }` (section 8, CI modes).
 
 Settings added by task chains: `maxReturns` (default 5, the cross-stage `return` budget), `taskDefaults.wait`, and `history.contextSummaryBytes` (default 65536, the bound on the stored item context).
 
@@ -621,7 +621,7 @@ Stage execution posts conversation messages only for failures, routing and stops
 
 ### No AI verifier
 
-Native stages contain no AI verifier. Mitra and `agent.verify` are legacy-only. Deterministic checks own every gate over structured evidence; judgement lives in the refiner, implementer and reviewer agents, and the reviewer's judgement reaches the gate only as criterion approvals and findings (Review evidence, below).
+Native stages contain no AI verifier. The AI verifier agent and the `checks:` section are legacy-only, behind `legacy.enterCheck` and `legacy.exitCheck`. Deterministic checks own every gate over structured evidence; judgement lives in the refiner, implementer and reviewer agents, and the reviewer's judgement reaches the gate only as criterion approvals and findings (Review evidence, below).
 
 ### Durable execution
 
@@ -1005,7 +1005,7 @@ This limits accidental damage but is not a security boundary against malicious r
 
 ### Agent network egress
 
-Each repository declares `agentEgress`: `allowLoopbackMcp` (default `true`) and `httpsHosts` (default `[]`), exact lowercase DNS names only, with no wildcards, IP literals, CIDRs, ports, schemes, trailing dots or duplicates, and never `api.github.com` or `uploads.github.com`. A missing package host fails closed and is added through reviewed configuration, never opened dynamically. The allowlist governs the agent's sandbox, that is every command the agent runs and its children; the harness's own connection to its model API runs outside that sandbox through a separate authenticated proxy and is not reachable from agent commands.
+A repository may declare `agentEgress` (optional; without it agents get the sanitized environment only): `allowLoopbackMcp` (default `true`) and `httpsHosts` (default `[]`), exact lowercase DNS names only, with no wildcards, IP literals, CIDRs, ports, schemes, trailing dots or duplicates, and never `api.github.com` or `uploads.github.com`. A missing package host fails closed and is added through reviewed configuration, never opened dynamically. The allowlist governs the agent's sandbox, that is every command the agent runs and its children; the harness's own connection to its model API runs outside that sandbox through a separate authenticated proxy and is not reachable from agent commands.
 
 Repositories that declare `agentEgress` run every Codex agent process (every `agent.run`, and legacy verifier checks) inside `bwrap --unshare-net --unshare-pid --die-with-parent --dev-bind / / --proc /proc` (the whole sandbox dies with bwrap; host processes are hidden); repositories without the block are unchanged (sanitized environment only). Steering runs are system-scoped (no repository) and are not sandboxed.
 
