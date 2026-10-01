@@ -175,7 +175,7 @@ export function renderStatusComment(input: StatusCommentInput): string {
     const runLines = [
       `- State: ${text(run.state)} · Duration: ${duration(run.durationMs)}`,
       `- Usage: ${usage}`,
-      `- Cost: ${cost(run.costUsd)}`,
+      ...(run.costUsd === null ? [] : [`- Cost: ${cost(run.costUsd)}`]),
       optionalLine("Run ID", run.id),
     ];
     lines.push("", ...section("Latest run", runLines));
