@@ -122,7 +122,6 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       id: issue.id,
       number: issue.sourceNumber,
       title: issue.title,
-      body: issue.body,
       url: issue.sourceUrl,
       labels: issue.labels,
       state: issue.sourceState,

@@ -128,7 +128,7 @@ function baseContext(): TaskContext {
     run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: "2026-01-01T00:00:00.000Z", feedback: null },
     repository: { id: "repo-1", address: "owner/sample", folder: "/srv/sample", baseBranch: "main", ciMode: "required", systemLabels: [] },
     item: {
-      id: "issue-1", number: 1, title: "T", body: "B", url: "u", labels: [], state: "open",
+      id: "issue-1", number: 1, title: "T", url: "u", labels: [], state: "open",
       criteria: [], children: [], dependencies: [], systemLabels: [],
     },
     checkpoints: { ciPassed: null, reviewPassed: null },

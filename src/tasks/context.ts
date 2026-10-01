@@ -22,11 +22,11 @@ export interface RepositoryContext {
   systemLabels: string[];
 }
 
+/** The body is not kept: it can be tens of kilobytes, and tasks and scripts read it from the stored issue. */
 export interface ItemContext {
   id: string;
   number: number;
   title: string;
-  body: string;
   url: string;
   labels: string[];
   state: string;
