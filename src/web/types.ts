@@ -20,6 +20,8 @@ export interface IssueWaitingViewModel {
 export interface IssueCardViewModel {
   id: string;
   repository: string;
+  /** One-based palette slot assigned by repository configuration order. */
+  repositoryColor: number;
   number: number;
   title: string;
   url: string | null;
@@ -40,6 +42,8 @@ export interface IssueCardViewModel {
   children: readonly IssueRelationViewModel[];
   dependencies: readonly IssueRelationViewModel[];
   working: boolean;
+  /** True for stopped states and any item surfaced in Needs you. */
+  needsAttention: boolean;
 }
 
 export interface ActiveRunViewModel {
@@ -186,6 +190,9 @@ export interface SteeringViewModel {
 export interface QuestionViewModel {
   id: string;
   issueId: string;
+  repository: string;
+  /** One-based palette slot assigned by repository configuration order. */
+  repositoryColor: number;
   issueNumber: number;
   issueTitle: string;
   prompt: string;

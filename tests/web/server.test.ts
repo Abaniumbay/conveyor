@@ -151,6 +151,12 @@ function setup(overrides: Record<string, unknown> = {}) {
         }],
       };
     },
+    getIssueRoute: async (reference: { id?: string; repository?: string; number?: number }) => {
+      if (reference.id === "github:owner/repo#1" || (reference.repository === "repo" && reference.number === 1)) {
+        return { id: "github:owner/repo#1", repository: "repo", number: 1 };
+      }
+      return null;
+    },
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
     ...overrides,
@@ -188,6 +194,19 @@ describe("createWebHandler", () => {
     expect(await loginPage.text()).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml">');
   });
 
+  test("renders the login page with the same flash-free system, light, and dark theme tokens", async () => {
+    const { handler } = setup();
+    const loginPage = await handler(new Request("http://localhost/login"));
+    const html = await loginPage.text();
+
+    expect(html).toContain('<script src="/assets/theme.js"></script>');
+    expect(html).toContain('<meta name="color-scheme" content="light dark">');
+    expect(html).toContain(':root[data-theme="dark"]{color-scheme:dark;');
+    expect(html).toContain('@media(prefers-color-scheme:dark){:root:not([data-theme="light"])');
+    expect(html).toContain('background:var(--concrete)');
+    expect(html).toContain('color:var(--ink)');
+  });
+
   test("logs in, serves dashboard, and clears the session on logout", async () => {
     const dashboardCalls: unknown[][] = [];
     const { handler, auth } = setup({
@@ -198,10 +217,10 @@ describe("createWebHandler", () => {
     });
     const { response, cookie } = await login(handler);
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/");
+    expect(response.headers.get("location")).toBe("/board");
     expect(response.headers.get("set-cookie")).toContain("HttpOnly");
 
-    const page = await handler(new Request("http://localhost/?column=stage%3Areview&page=4&doneLimit=40&issue=github%3Aowner%2Frepo%231", { headers: { cookie } }));
+    const page = await handler(new Request("http://localhost/issues/repo/1?column=stage%3Areview&page=4&doneLimit=40", { headers: { cookie } }));
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
     expect(await page.text()).toContain("Test board");
@@ -222,6 +241,57 @@ describe("createWebHandler", () => {
     }));
     expect(logout.status).toBe(303);
     expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  test("serves REST dashboard paths, redirects legacy URLs permanently, and rejects unknown resources", async () => {
+    const dashboardCalls: Array<{ view: string; runId: string | null; issueId: string | null }> = [];
+    const profile = {
+      id: "kaveh", name: "Kaveh", title: "Developer", harness: "codex", model: null, effort: null,
+      access: "workspace-write", usage: [], tasks: [], instructions: null,
+    };
+    const { handler } = setup({
+      getDashboard: (_csrf: string, page: { view: string; runId: string | null; issueId: string | null }) => {
+        dashboardCalls.push(page);
+        return { ...model, view: page.view, selectedIssue: null };
+      },
+      getIssueRoute: async (reference: { id?: string; repository?: string; number?: number }) => {
+        if (reference.id === "github:owner/repo#1" || (reference.repository === "midgame" && reference.number === 1)) {
+          return { id: "github:owner/repo#1", repository: "midgame", number: 1 };
+        }
+        return null;
+      },
+      getAgentProfiles: async () => [profile],
+      getAgentProfile: async (id: string) => id === "kaveh" ? profile : null,
+      getSteeringRun: async (id: string) => id === "run-1" ? { id, status: "succeeded" } : null,
+    });
+    const { cookie } = await login(handler);
+    const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+
+    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"]] as const) {
+      expect((await get(path)).status).toBe(200);
+      expect(dashboardCalls.at(-1)?.view).toBe(view);
+    }
+    expect((await get("/team/kaveh")).status).toBe(200);
+    expect((await get("/operator/runs/run-1")).status).toBe(200);
+    expect((await get("/issues/midgame/1/conversation?column=stage%3Areview&page=2")).status).toBe(200);
+    expect(dashboardCalls.at(-1)).toMatchObject({ view: "board", issueId: "github:owner/repo#1" });
+
+    for (const [oldPath, location] of [
+      ["/?view=attention", "/attention"],
+      ["/?issue=github%3Aowner%2Frepo%231&tab=journey", "/issues/midgame/1/journey"],
+      ["/?view=team&agent=kaveh", "/team/kaveh"],
+      ["/?view=agent&run=run-1", "/operator/runs/run-1"],
+      ["/agents", "/team"],
+      ["/agents/kaveh", "/team/kaveh"],
+    ] as const) {
+      const response = await get(oldPath);
+      expect(response.status).toBe(301);
+      expect(response.headers.get("location")).toBe(location);
+    }
+
+    for (const path of ["/issues/unknown/1", "/issues/midgame/999", "/team/nobody", "/operator/runs/missing"]) {
+      expect((await get(path)).status).toBe(404);
+    }
   });
 
   test("requires CSRF for question answers and backlog reorder callbacks", async () => {
@@ -246,7 +316,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ issueId: "i-2", direction: "up", csrf }),
     }));
     expect(reorder.status).toBe(303);
-    expect(reorder.headers.get("location")).toBe("/?view=board");
+    expect(reorder.headers.get("location")).toBe("/board");
     expect(calls.reorders).toEqual([["i-2", "up"]]);
 
     const scripted = await handler(new Request("http://localhost/backlog/reorder", {
@@ -293,6 +363,14 @@ describe("createWebHandler", () => {
     const asset = await handler(new Request("http://localhost/assets/dashboard.js"));
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toContain("javascript");
+    // The theme runs before first paint; it must be a file, since the CSP forbids inline scripts.
+    const theme = await handler(new Request("http://localhost/assets/theme.js"));
+    expect(theme.status).toBe(200);
+    expect(theme.headers.get("content-type")).toContain("javascript");
+    expect(await theme.text()).toContain("dataset.theme");
+    const loginPage = await (await handler(new Request("http://localhost/login"))).text();
+    expect(loginPage).toContain('<script src="/assets/theme.js"></script>');
+    expect(loginPage).not.toMatch(/<script>[^<]/);
     for (const font of [
       "ibm-plex-sans-400.woff2",
       "ibm-plex-sans-500.woff2",
@@ -342,7 +420,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ prompt: "Fix the board", csrf }),
     }));
     expect(started.status).toBe(303);
-    expect(started.headers.get("location")).toBe("/?view=agent&run=run-1");
+    expect(started.headers.get("location")).toBe("/operator/runs/run-1");
     expect(calls.steering).toEqual([["Fix the board"]]);
 
     const events = await handler(new Request("http://localhost/steering/run-1/events", { headers: { cookie } }));
@@ -522,18 +600,18 @@ describe("createWebHandler", () => {
     expect((await handler(new Request("http://localhost/agents/kaveh"))).headers.get("location")).toBe("/login");
 
     const { cookie } = await login(handler);
-    const team = await handler(new Request("http://localhost/?view=team", { headers: { cookie } }));
+    const team = await handler(new Request("http://localhost/team", { headers: { cookie } }));
     expect(team.status).toBe(200);
     expect(await team.text()).toContain('data-agent-id="kaveh"');
     const board = await handler(new Request("http://localhost/", { headers: { cookie } }));
     expect(await board.text()).not.toContain('data-agent-id="kaveh"');
 
     const list = await handler(new Request("http://localhost/agents", { headers: { cookie } }));
-    expect(list.status).toBe(303);
-    expect(list.headers.get("location")).toBe("/?view=team");
+    expect(list.status).toBe(301);
+    expect(list.headers.get("location")).toBe("/team");
     const page = await handler(new Request("http://localhost/agents/kaveh", { headers: { cookie } }));
-    expect(page.status).toBe(303);
-    expect(page.headers.get("location")).toBe("/?view=team&agent=kaveh");
+    expect(page.status).toBe(301);
+    expect(page.headers.get("location")).toBe("/team/kaveh");
 
     expect((await handler(new Request("http://localhost/agents/nobody", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request("http://localhost/agents/kaveh", { method: "POST", headers: { cookie } }))).status).toBe(405);

@@ -1,7 +1,7 @@
 import type { AgentProfileViewModel } from "./types";
 
 export function agentHref(agentId: string): string {
-  return `/?view=team&agent=${encodeURIComponent(agentId)}`;
+  return `/team/${encodeURIComponent(agentId)}`;
 }
 
 function agentDialogId(agentId: string): string {
