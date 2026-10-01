@@ -1,4 +1,4 @@
-import { ConfigError } from "./load";
+import { ConfigError } from "./errors";
 
 type Document = Record<string, unknown>;
 
@@ -78,4 +78,76 @@ export function normalizeRoleNames(input: Document): Document {
   renameEntries(document.agents, AGENT_RENAMES, "agents");
   renameEntries(document.repositories, REPOSITORY_RENAMES, "repositories");
   return document;
+}
+
+const CONCEPTS: [canonical: string, legacy: string][] = [
+  ["providers.items", "sources"],
+  ["providers.code", "codeHosts"],
+  ["providers.ci", "ci"],
+  ["harnesses", "runners"],
+];
+
+export interface NamedDocument {
+  filename: string;
+  document: Document;
+}
+
+/**
+ * Normalises every document and enforces role-name consistency across all of them: a
+ * concept may not appear in both forms in any two files, and every item provider in
+ * every file shares one labels block, which becomes the single top-level `labels`.
+ */
+export function normalizeRoleDocuments(documents: NamedDocument[]): NamedDocument[] {
+  for (const [canonical, legacy] of CONCEPTS) {
+    const role = canonical.split(".")[1];
+    const canonicalFile = documents.find(({ document }) =>
+      role ? isObject(document.providers) && role in document.providers : canonical in document,
+    )?.filename;
+    const legacyFile = documents.find(({ document }) => legacy in document)?.filename;
+    if (canonicalFile && legacyFile) {
+      throw new ConfigError(
+        `configuration uses both "${canonical}" (in ${canonicalFile}) and "${legacy}" (in ${legacyFile}); use only "${canonical}"`,
+      );
+    }
+  }
+
+  const providers: { filename: string; name: string; labels: unknown; labelled: boolean }[] = [];
+  for (const { filename, document } of documents) {
+    const items = isObject(document.providers) ? document.providers.items : undefined;
+    if (!isObject(items)) continue;
+    for (const [name, entry] of Object.entries(items)) {
+      const labelled = isObject(entry) && "labels" in entry;
+      providers.push({ filename, name, labelled, labels: labelled ? (entry as Document).labels : undefined });
+    }
+  }
+  const first = providers.find((provider) => provider.labelled);
+  if (first) {
+    const topLevel = documents.find(({ document }) => "labels" in document);
+    if (topLevel) {
+      throw new ConfigError(
+        `configuration uses both "providers.items.${first.name}.labels" (in ${first.filename}) and "labels" (in ${topLevel.filename}); use only one`,
+      );
+    }
+    for (const provider of providers) {
+      if (!provider.labelled || !Bun.deepEquals(provider.labels, first.labels, true)) {
+        throw new ConfigError(
+          `providers.items.${provider.name}.labels (${provider.filename}) must equal providers.items.${first.name}.labels (${first.filename}): every item provider shares one labels block`,
+        );
+      }
+    }
+  }
+
+  let labelsKept = false;
+  return documents.map(({ filename, document }) => {
+    const normalised = normalizeRoleNames(document);
+    const derived =
+      isObject(document.providers) &&
+      isObject(document.providers.items) &&
+      Object.values(document.providers.items).some((entry) => isObject(entry) && "labels" in entry);
+    if (derived) {
+      if (labelsKept) delete normalised.labels;
+      labelsKept = true;
+    }
+    return { filename, document: normalised };
+  });
 }

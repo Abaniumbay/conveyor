@@ -8,8 +8,9 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskRegistry } from "../tasks/contract";
 import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
 
+import { ConfigError } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
-import { normalizeRoleNames } from "./roles";
+import { normalizeRoleDocuments } from "./roles";
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
@@ -35,13 +36,7 @@ export interface ConveyorConfig extends ConveyorConfigData {
   import?: Pick<ResolvedImport, "repository" | "ref" | "path" | "sha">;
 }
 
-export class ConfigError extends Error {
-  override readonly name = "ConfigError";
-
-  constructor(message: string) {
-    super(message);
-  }
-}
+export { ConfigError };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -150,8 +145,6 @@ async function configurationFiles(target: string): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name))
     .map((entry) => path.join(entry.parentPath, entry.name))
-    // Materialised imports live under settings.artifacts, which may sit inside the configuration directory.
-    .filter((file) => !path.relative(target, file).split(path.sep).includes("config-imports"))
     .sort();
 }
 
@@ -368,28 +361,40 @@ export async function loadConfig(
     throw new ConfigError(`no YAML configuration files found in ${resolvedTarget}`);
   }
 
-  const local: { filename: string; document: ConfigurationDocument }[] = [];
+  const rawLocal: { filename: string; document: ConfigurationDocument }[] = [];
+  for (const filename of files) rawLocal.push({ filename, document: await readDocument(filename) });
+
+  // Materialised imports live under <settings.artifacts>/config-imports, which may sit inside the
+  // configuration directory; skip exactly those copies. Only files outside any config-imports
+  // directory may declare the artifacts path that identifies them.
+  const artifactDirectories = rawLocal
+    .filter(({ filename }) => !filename.split(path.sep).includes("config-imports"))
+    .map(({ filename, document }) => {
+      const resolved = isObject(document.settings)
+        ? resolvePath(document.settings.artifacts, path.dirname(filename))
+        : undefined;
+      return typeof resolved === "string" && path.isAbsolute(resolved) ? resolved : undefined;
+    })
+    .filter((value): value is string => value !== undefined);
+  const copies = artifactDirectories.map((directory) => path.join(directory, "config-imports") + path.sep);
+  const localDocuments = rawLocal.filter(({ filename }) => !copies.some((copy) => filename.startsWith(copy)));
+
   let importSpec: ImportSpec | undefined;
   let importOrigin = "";
-  for (const filename of files) {
-    const parsed = await readDocument(filename);
-    if ("import" in parsed) {
-      if (importSpec) {
-        throw new ConfigError(`only one configuration file may declare import; found it in ${importOrigin} and ${filename}`);
-      }
-      importSpec = parseImportSpec(parsed.import, filename);
-      importOrigin = filename;
-      delete parsed.import;
+  for (const { filename, document } of localDocuments) {
+    if (!("import" in document)) continue;
+    if (importSpec) {
+      throw new ConfigError(`only one configuration file may declare import; found it in ${importOrigin} and ${filename}`);
     }
-    local.push({ filename, document: normalizeDocumentPaths(normalizeRoleNames(parsed), filename) });
+    importSpec = parseImportSpec(document.import, filename);
+    importOrigin = filename;
+    delete document.import;
   }
 
   let resolvedImport: ResolvedImport | undefined;
-  const imported: { filename: string; document: ConfigurationDocument }[] = [];
+  const importedRaw: { filename: string; document: ConfigurationDocument }[] = [];
   if (importSpec) {
-    const artifacts = local
-      .map(({ document }) => (isObject(document.settings) ? document.settings.artifacts : undefined))
-      .find((value) => typeof value === "string" && path.isAbsolute(value)) as string | undefined;
+    const artifacts = artifactDirectories[0];
     if (!artifacts) {
       throw new ConfigError(
         `import in ${importOrigin} needs settings.artifacts defined in a local configuration file: imported files are materialised under <artifacts>/config-imports`,
@@ -397,15 +402,20 @@ export async function loadConfig(
     }
     resolvedImport = await materialiseImport(importSpec, artifacts);
     for (const filename of resolvedImport.yamlFiles) {
-      const parsed = await readDocument(filename);
-      if ("import" in parsed) throw new ConfigError(`${filename}: an imported file cannot declare import`);
-      imported.push({ filename, document: normalizeDocumentPaths(normalizeRoleNames(parsed), filename) });
+      const document = await readDocument(filename);
+      if ("import" in document) throw new ConfigError(`${filename}: an imported file cannot declare import`);
+      importedRaw.push({ filename, document });
     }
   }
 
+  const documents = normalizeRoleDocuments([...importedRaw, ...localDocuments]).map(({ filename, document }) => ({
+    filename,
+    document: normalizeDocumentPaths(document, filename),
+  }));
+
   const merged: ConfigurationDocument = {};
   const origins = new Map<string, string>();
-  for (const { filename, document } of [...imported, ...local]) {
+  for (const { filename, document } of documents) {
     mergeDocument(merged, document, origins, filename);
   }
 

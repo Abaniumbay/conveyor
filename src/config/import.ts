@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { ConfigError } from "./load";
+import { ConfigError } from "./errors";
 
 export interface ImportSpec {
   repository: string;
@@ -28,6 +28,7 @@ export function parseImportSpec(value: unknown, filename: string): ImportSpec {
   for (const key of ["repository", "ref", "path"]) {
     if (typeof record[key] !== "string" || record[key] === "") fail(`.${key} must be a non-empty string`);
   }
+  if ((record.ref as string).startsWith("-")) fail('.ref must not start with "-"');
   const repository = record.repository as string;
   if (!path.isAbsolute(repository)) fail(".repository must be an absolute path to a git checkout");
   const directory = path.posix.normalize(record.path as string).replace(/\/+$/, "");
@@ -52,15 +53,16 @@ async function git(repository: string, args: string[]): Promise<{ ok: boolean; s
  * under it to `<artifacts>/config-imports/<sha>/<path>/...`, idempotently.
  */
 export async function materialiseImport(spec: ImportSpec, artifacts: string): Promise<ResolvedImport> {
-  const resolved = await git(spec.repository, ["rev-parse", "--verify", "--quiet", `${spec.ref}^{commit}`]);
+  const resolved = await git(spec.repository, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${spec.ref}^{commit}`]);
   if (!resolved.ok) {
     throw new ConfigError(
       `import.ref "${spec.ref}" does not resolve to a commit in ${spec.repository}${resolved.stderr ? `: ${resolved.stderr}` : ""}`,
     );
   }
   const sha = resolved.stdout.toString("utf8").trim();
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new ConfigError(`import.ref "${spec.ref}" resolved to an unexpected value`);
 
-  const listing = await git(spec.repository, ["ls-tree", "-r", "-z", "--name-only", sha, "--", spec.path]);
+  const listing = await git(spec.repository, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", sha, "--", spec.path]);
   if (!listing.ok) throw new ConfigError(`cannot list ${spec.path} at ${spec.ref} in ${spec.repository}: ${listing.stderr}`);
   const files = listing.stdout.toString("utf8").split("\0").filter(Boolean).sort();
 
@@ -70,10 +72,16 @@ export async function materialiseImport(spec: ImportSpec, artifacts: string): Pr
     const content = await git(spec.repository, ["show", `${sha}:${file}`]);
     if (!content.ok) throw new ConfigError(`cannot read ${file} at ${spec.ref}: ${content.stderr}`);
     const destination = path.join(copy, file);
+    const inside = path.relative(path.join(copy, spec.path), destination);
+    if (inside === "" || inside.startsWith("..") || path.isAbsolute(inside)) {
+      throw new ConfigError(`refusing to materialise ${file}: it is outside import.path ${spec.path}`);
+    }
     const existing = await readFile(destination).catch(() => undefined);
     if (!existing || !existing.equals(content.stdout)) {
       await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, content.stdout);
+      const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+      await writeFile(temporary, content.stdout);
+      await rename(temporary, destination);
     }
     if (/\.ya?ml$/i.test(file)) yamlFiles.push(destination);
   }

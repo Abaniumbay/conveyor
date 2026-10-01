@@ -180,3 +180,48 @@ describe("loadConfig with canonical names", () => {
     );
   });
 });
+
+describe("role names across files", () => {
+  async function loadFiles(files: Record<string, string>) {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-roles-"));
+    directories.push(directory);
+    for (const [name, body] of Object.entries(files)) await writeFile(path.join(directory, name), body);
+    return loadConfig(directory);
+  }
+
+  test("rejects old and new names for one concept in different files", async () => {
+    await expect(
+      loadFiles({
+        "a.yml": "runners:\n  codex: { type: codex }\n",
+        "b.yml": "harnesses:\n  other: { type: json-process }\n",
+      }),
+    ).rejects.toThrow(/harnesses.*runners|runners.*harnesses/);
+    await expect(
+      loadFiles({
+        "a.yml": "sources:\n  github: { type: github }\n",
+        "b.yml": "providers:\n  items:\n    poll: { type: github }\n",
+      }),
+    ).rejects.toThrow(/providers\.items.*sources|sources.*providers\.items/);
+  });
+
+  test("shares one labels block across item providers split over files", async () => {
+    const labels = `labels:${LABELS.replace(/\n  /g, "\n        ")}`;
+    const provider = (name: string) =>
+      `providers:\n  items:\n    ${name}:\n      type: github\n      ${labels.replace(/\n/g, "\n      ")}\n`;
+    const body = [SETTINGS, PIPELINE, "repositories:\n  s:\n    items: a\n    address: o/s\n    folder: /tmp/s\n    pipeline: default\n"].join("");
+    const config = await loadFiles({ "a.yml": provider("a"), "b.yml": provider("b"), "c.yml": body });
+    expect(Object.keys(config.sources)).toEqual(["a", "b"]);
+    expect(config.labels.states.done).toBe("conveyor:done");
+  });
+
+  test("rejects differing or missing labels across files, naming providers.items", async () => {
+    const withLabels = "providers:\n  items:\n    a:\n      type: github\n      labels: { stageTemplate: 'x:{stage}', states: {}, metadata: {} }\n";
+    await expect(
+      loadFiles({ "a.yml": withLabels, "b.yml": withLabels.replace("    a:", "    b:").replace("x:{stage}", "y:{stage}") }),
+    ).rejects.toThrow(/providers\.items\.b\.labels.*providers\.items\.a\.labels/);
+    await expect(
+      loadFiles({ "a.yml": withLabels, "b.yml": "providers:\n  items:\n    b: { type: github }\n" }),
+    ).rejects.toThrow(/providers\.items\.b\.labels/);
+    await expect(loadFiles({ "a.yml": withLabels, "b.yml": "labels: {}\n" })).rejects.toThrow(/providers\.items.*labels/);
+  });
+});

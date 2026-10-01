@@ -215,4 +215,22 @@ describe("pinned configuration import", () => {
     await write(path.join(other.directory, "local.yaml"), (await readFile(path.join(other.directory, "local.yaml"), "utf8")).replace("examples/config", "../x"));
     await expect(loadConfig(other.directory)).rejects.toThrow(/import\.path/);
   });
+
+  test("rejects a ref that could be read as a git option", async () => {
+    const { repository } = await referenceRepository();
+    for (const ref of ["--output=/tmp/x", "-q"]) {
+      const { directory } = await localDirectory(repository, `"${ref}"`);
+      await expect(loadConfig(directory)).rejects.toThrow(/import\.ref.*must not start with "-"/);
+    }
+  });
+
+  test("reads a local directory named config-imports that is not the import copy", async () => {
+    const { repository } = await referenceRepository();
+    const { directory } = await localDirectory(repository, "v1");
+    await write(
+      path.join(directory, "config-imports/extra.yaml"),
+      "repositories:\n  extra:\n    source: github\n    address: owner/extra\n    folder: /tmp/extra\n    pipeline: default\n",
+    );
+    expect(Object.keys((await loadConfig(directory)).repositories)).toContain("extra");
+  });
 });
