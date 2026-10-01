@@ -64,4 +64,36 @@ describe("provider-neutral CI gate", () => {
     await expect(gate(provider)).rejects.toThrow(ExternalWaitError);
     expect(focusGitHubActionsLog("before\n##[error]bad\nPost job cleanup.\nafter", 5)).toBe("before\n##[error]bad");
   });
+
+  test("focused logs include a failing test that is far above the final error", () => {
+    const noise = (count: number, label: string) => Array.from({ length: count }, (_, index) => `ok ${index} - ${label} ${index}`);
+    const log = [
+      ...noise(300, "early"),
+      "# Subtest: concurrent solve calls and a timeout claim resolve once and apply Elo once",
+      "not ok 89 - concurrent solve calls and a timeout claim resolve once and apply Elo once",
+      "  ---",
+      "  name: 'AssertionError'",
+      "  expected: 1",
+      "  actual: 2",
+      "  ...",
+      ...noise(800, "late"),
+      "# fail 1",
+      "##[error]Process completed with exit code 1.",
+      "Post job cleanup.",
+    ].map((line) => `2026-10-01T03:14:22.2215186Z ${line}`).join("\n");
+    const focused = focusGitHubActionsLog(log, 20);
+    expect(focused).toContain("not ok 89 - concurrent solve calls");
+    expect(focused).toContain("name: 'AssertionError'");
+    expect(focused).toContain("actual: 2");
+    expect(focused).toContain("##[error]Process completed with exit code 1.");
+    expect(focused).not.toContain("Post job cleanup.");
+    expect(focused.split("\n").length).toBeLessThanOrEqual(45);
+  });
+
+  test("focused logs recognise common test-runner failure markers", () => {
+    for (const marker of ["✖ adds numbers", "❌ test/a_test.dart: adds numbers", "FAIL src/a.test.ts", "--- FAIL: TestAdd (0.00s)", "AssertionError [ERR_ASSERTION]: 1 == 2"]) {
+      const log = [marker, ...Array.from({ length: 200 }, (_, index) => `line ${index}`), "##[error]failed"].join("\n");
+      expect(focusGitHubActionsLog(log, 10)).toContain(marker);
+    }
+  });
 });
