@@ -134,6 +134,15 @@ const codexRunnerSchema = z
   })
   .strict();
 
+const claudeCodeRunnerSchema = z
+  .object({
+    type: z.literal("claude-code"),
+    command: z.string().min(1).default("claude"),
+    /** Claude Code's config directory (login and sessions); defaults to ~/.claude, the service user's login. */
+    configDir: absolutePathSchema.optional(),
+  })
+  .strict();
+
 const processRunnerSchema = z
   .object({
     type: z.literal("json-process"),
@@ -142,6 +151,7 @@ const processRunnerSchema = z
 
 const runnerSchema = z.discriminatedUnion("type", [
   codexRunnerSchema,
+  claudeCodeRunnerSchema,
   processRunnerSchema,
 ]);
 

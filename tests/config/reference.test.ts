@@ -31,7 +31,7 @@ describe("reference configuration", () => {
   test("has no AI verifier, no checks and no legacy stages", async () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});
-    expect(Object.keys(config.agents).sort()).toEqual(["darya", "kaveh", "omid", "shirin"]);
+    expect(Object.keys(config.agents).sort()).toEqual(["darya", "kaveh", "omid", "shaghayegh", "shirin"]);
     for (const pipeline of Object.values(config.pipelines)) for (const stage of pipeline.stages) expect("run" in stage).toBe(false);
     for (const plan of config.plans) {
       for (const stage of plan.stages) {
@@ -109,16 +109,29 @@ describe("reference configuration", () => {
 
   test("the agent instructions name no verifier and use only canonical task names", async () => {
     const dir = path.join(EXAMPLES, "config/instructions");
-    for (const agent of ["darya", "kaveh", "shirin", "omid"]) {
-      const text = await readFile(path.join(dir, `${agent}.md`), "utf8");
+    for (const file of ["darya", "kaveh", "reviewer", "omid"]) {
+      const text = await readFile(path.join(dir, `${file}.md`), "utf8");
       expect(text).not.toMatch(/mitra|verifier/i);
       expect(text).not.toMatch(/\b(source|run|delivery)\.[a-z]+_[a-z_]+|workspace\.(request|get_)\w*/);
     }
   });
 
+  test("reviews go to Shaghayegh on Claude Code first, then Shirin on Codex; a writable Claude agent is refused", async () => {
+    const config = await loadReference();
+    expect(config.runners[config.agents.shaghayegh!.runner]!.type).toBe("claude-code");
+    expect(config.runners[config.agents.shirin!.runner]!.type).toBe("codex");
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const agentsFile = path.join(directory, "agents.yaml");
+    const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, { access?: string }> };
+    agents.agents.shaghayegh!.access = "workspace-write";
+    await writeFile(agentsFile, stringify(agents));
+    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which supports only access: read-only");
+  });
+
   test("the instructions mention the tasks each agent is granted to do its new duties", async () => {
     const config = await loadReference();
-    const read = (agent: string) => readFile(path.join(EXAMPLES, "config/instructions", `${agent}.md`), "utf8");
+    const read = (agent: string) => readFile(config.agents[agent]!.instructions, "utf8");
     const mentions = async (agent: string, names: string[]) => {
       const text = await read(agent);
       for (const name of names) {
@@ -128,7 +141,9 @@ describe("reference configuration", () => {
     };
     await mentions("darya", ["item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild"]);
     await mentions("kaveh", ["workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
-    await mentions("shirin", ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
+    for (const reviewer of ["shaghayegh", "shirin"]) {
+      await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
+    }
   });
 });
 

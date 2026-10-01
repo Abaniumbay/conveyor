@@ -58,7 +58,10 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
   const config = {
     hash: "cfg",
     settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
-    agents: { kaveh: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" } },
+    agents: {
+      kaveh: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" },
+      shirin: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Shirin", title: "Reviewer", workspaceAccess: "read-only" },
+    },
     runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
   } as unknown as ConveyorConfig;
 
@@ -111,6 +114,39 @@ const answer = (w: World, text: string) => {
 };
 
 describe("agent.run", () => {
+  test("runs the next listed agent when the first one's harness cannot run, and says so", async () => {
+    const w = await world();
+    let calls = 0;
+    w.setBehaviour(() => {
+      if (++calls === 1) throw Object.assign(new Error("Claude usage limit reached"), { kind: "usage-limit" });
+      return {};
+    });
+    const result = await w.run(false, { agents: ["kaveh", "shirin"] });
+    expect(result.status).toBe("pass");
+    expect(outcome(result)).toMatchObject({ agentId: "shirin", status: "done" });
+    const notes = w.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor").map((message) => message.message);
+    expect(notes).toEqual(["Kaveh could not run (Claude usage limit reached); Shirin takes this implementation instead."]);
+  });
+
+  test("does not fall back when the run was interrupted, or when the last agent fails", async () => {
+    const w = await world();
+    w.setBehaviour(() => { throw Object.assign(new Error("stopped"), { kind: "interrupted" }); });
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toThrow("stopped");
+    expect(w.calls).toHaveLength(1);
+    w.setBehaviour(() => { throw new Error("broken"); });
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toThrow("broken");
+    expect(w.calls).toHaveLength(3);
+  });
+
+  test("takes exactly one of agent or agents", () => {
+    const schema = registry.require("agent.run").config!;
+    expect(schema.safeParse({ agent: "kaveh" }).success).toBe(true);
+    expect(schema.safeParse({ agents: ["kaveh", "shirin"] }).success).toBe(true);
+    expect(schema.safeParse({ agent: "kaveh", agents: ["shirin"] }).success).toBe(false);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ agents: [] }).success).toBe(false);
+  });
+
   test("warns in the conversation when a run passes the token budget, without stopping it", async () => {
     const w = await world();
     usage = { ...EMPTY_USAGE, inputTokens: 39_600_000 };
