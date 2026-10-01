@@ -1,13 +1,13 @@
 import type { CompiledPipeline, CompiledTask } from "./plan";
 
-function formatMs(ms: number): string {
+export function formatMs(ms: number): string {
   for (const [unit, size] of [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000], ["s", 1_000]] as const) {
     if (ms % size === 0) return `${ms / size}${unit}`;
   }
   return `${ms}ms`;
 }
 
-function renderOnFail(task: CompiledTask, list: "actions" | "exit-gate"): string {
+export function renderOnFail(task: CompiledTask, list: "actions" | "exit-gate"): string {
   const route = task.onFail;
   if (!route && task.label) return "onFail decided by the task";
   if (!route) return list === "actions" ? "onFail stop blocked (default)" : "onFail retry (default)";

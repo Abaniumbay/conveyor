@@ -2,6 +2,7 @@
 import { loadConfig } from "./config/load";
 import { createTaskRegistry } from "./tasks/catalogue";
 import type { TaskRegistry } from "./tasks/contract";
+import { comparePlans } from "./tasks/compare-plans";
 import { renderPlan } from "./tasks/plan";
 import { ConveyorService } from "./app/service";
 import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
@@ -33,6 +34,19 @@ export async function checkConfig(
   const config = await loadConfig(configPath, registry);
   const plans = config.plans.map(renderPlan);
   return [`Configuration is valid (${config.hash})`, ...plans].join("\n\n");
+}
+
+/** Shadow comparison: compiles both configurations and prints their plans side by side. */
+export async function compareConfigs(
+  leftPath: string,
+  rightPath: string,
+  registry: TaskRegistry = createTaskRegistry(),
+): Promise<string> {
+  const [left, right] = await Promise.all([loadConfig(leftPath, registry), loadConfig(rightPath, registry)]);
+  return [
+    `Configuration is valid (${left.hash}) | Configuration is valid (${right.hash})`,
+    comparePlans(left.plans, right.plans, { left: leftPath, right: rightPath }),
+  ].join("\n\n");
 }
 
 async function serve(configPath: string): Promise<void> {
@@ -97,7 +111,8 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
     throw new Error(`usage: conveyor ${command ?? "serve"} --config <file-or-directory>`);
   }
   if (command === "check-config") {
-    console.log(await checkConfig(configPath));
+    const compare = option(args, "--compare");
+    console.log(compare ? await compareConfigs(configPath, compare) : await checkConfig(configPath));
     return;
   }
   if (command === "serve") {

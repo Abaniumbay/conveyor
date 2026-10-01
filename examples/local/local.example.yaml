@@ -1,0 +1,34 @@
+# Machine-local settings. Copy next to the operator's other local files (for example
+# ~/.config/conveyor-v2/00-core.yaml) and adjust. Settings cannot be imported: paths and
+# limits are per machine, and a setting may be declared in one file only.
+#
+# `import` pins the versioned reference configuration (providers, harnesses, agents, pipelines
+# and instructions in examples/config) at a git ref; see docs/migration.md.
+import:
+  repository: /home/ubuntu/codes/conveyor-v2
+  ref: <commit-sha-or-tag>
+  path: examples/config
+
+settings:
+  runners: 4
+  database: /home/ubuntu/.local/share/conveyor-v2/conveyor.sqlite
+  logs: /home/ubuntu/.local/share/conveyor-v2/logs
+  workspaces: /home/ubuntu/.local/share/conveyor-v2/worktrees
+  artifacts: /home/ubuntu/.local/share/conveyor-v2/artifacts
+  reconcileInterval: 5m
+  maxReturns: 5
+  history:
+    contextSummaryBytes: 65536
+  retries:
+    infrastructureAttempts: 5
+    usageLimitAttempts: unlimited
+    minBackoff: 30s
+    maxBackoff: 30m
+  taskDefaults:
+    wait: { timeout: 30m, poll: 1m }
+
+web:
+  listen: 127.0.0.1:4300
+  steering:
+    agent: omid
+    workspace: /home/ubuntu/codes/conveyor-v2

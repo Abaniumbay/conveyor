@@ -351,6 +351,12 @@ bun run src/cli.ts check-config --config /srv/conveyor/config
 bun run src/cli.ts hash-password --password 'choose-a-strong-password'
 ```
 
+To compare two configurations (for example the current files with the reference configuration in `examples/config`), print their compiled plans side by side with a summary of added, removed and changed tasks, routes and waits. See [docs/migration.md](docs/migration.md).
+
+```sh
+bun run src/cli.ts check-config --config /srv/conveyor/config --compare /path/to/other/config
+```
+
 Set the runtime environment through your service manager or secret store:
 
 ```text

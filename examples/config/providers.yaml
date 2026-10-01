@@ -1,0 +1,46 @@
+# Providers (by role), harnesses and the shared label scheme. Versioned reference
+# configuration: imported and pinned by the live service (see docs/migration.md).
+providers:
+  items:
+    github:
+      type: github
+      webhookPath: /hooks/github
+      autoConfigureWebhook: true
+      allowedHumanLogins: [AmirRaptoR]
+      labels: &github-labels
+        enrollment: conveyor
+        stageTemplate: "conveyor:{stage}"
+        states:
+          done: conveyor:done
+          rejected: conveyor:reject
+          blocked: conveyor:blocked
+          error: conveyor:error
+          needs-input: conveyor:needs-input
+          needs-intervention: conveyor:needs-intervention
+          waiting: conveyor:waiting
+        metadata:
+          closable: conveyor:closable
+          orderTemplate: "conveyor:order:{number}"
+    github-poll:
+      type: github
+      autoConfigureWebhook: false
+      allowedHumanLogins: [AmirRaptoR]
+      labels: *github-labels
+  code:
+    github: { type: github }
+  ci:
+    actions:
+      type: github-actions
+    midgame-actions:
+      type: github-actions
+      triggers:
+        - { label: run-web-e2e, workflow: web-e2e.yml, check: Headless Chrome smoke test }
+        - { label: run-android-e2e, workflow: android-e2e.yml, check: Android emulator smoke }
+        - label: run-full-suite
+          workflow: full-suite.yml
+          check: Full suite
+          replaces: [run-web-e2e, run-android-e2e]
+
+harnesses:
+  codex: { type: codex, command: codex, sandbox: workspace-write, automaticApprovals: true }
+  process: { type: json-process }
