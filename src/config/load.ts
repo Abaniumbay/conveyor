@@ -8,6 +8,8 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskRegistry } from "../tasks/contract";
 import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
 
+import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
+import { normalizeRoleNames } from "./roles";
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
@@ -29,6 +31,8 @@ export interface ConveyorConfig extends ConveyorConfigData {
   root: string;
   /** Compiled plans of the native-only repositories (empty when compilation is skipped). */
   plans: CompiledPipeline[];
+  /** The pinned reference-configuration import, when the local files declare one. */
+  import?: Pick<ResolvedImport, "repository" | "ref" | "path" | "sha">;
 }
 
 export class ConfigError extends Error {
@@ -146,6 +150,8 @@ async function configurationFiles(target: string): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name))
     .map((entry) => path.join(entry.parentPath, entry.name))
+    // Materialised imports live under settings.artifacts, which may sit inside the configuration directory.
+    .filter((file) => !path.relative(target, file).split(path.sep).includes("config-imports"))
     .sort();
 }
 
@@ -326,10 +332,25 @@ function stableValue(value: unknown): unknown {
   );
 }
 
-function configurationHash(config: ConveyorConfigData): string {
+function configurationHash(config: ConveyorConfigData, pinnedSha?: string): string {
   const hasher = new CryptoHasher("sha256");
-  hasher.update(JSON.stringify(stableValue(config)));
+  hasher.update(JSON.stringify(stableValue(pinnedSha ? { config, importSha: pinnedSha } : config)));
   return hasher.digest("hex");
+}
+
+async function readDocument(filename: string): Promise<ConfigurationDocument> {
+  let parsed: unknown;
+  try {
+    parsed = parse(await readFile(filename, "utf8"));
+  } catch (error) {
+    throw new ConfigError(
+      `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!isObject(parsed)) {
+    throw new ConfigError(`${filename} must contain a YAML object at its root`);
+  }
+  return parsed;
 }
 
 export async function loadConfig(
@@ -347,26 +368,45 @@ export async function loadConfig(
     throw new ConfigError(`no YAML configuration files found in ${resolvedTarget}`);
   }
 
-  const merged: ConfigurationDocument = {};
-  const origins = new Map<string, string>();
+  const local: { filename: string; document: ConfigurationDocument }[] = [];
+  let importSpec: ImportSpec | undefined;
+  let importOrigin = "";
   for (const filename of files) {
-    let parsed: unknown;
-    try {
-      parsed = parse(await readFile(filename, "utf8"));
-    } catch (error) {
+    const parsed = await readDocument(filename);
+    if ("import" in parsed) {
+      if (importSpec) {
+        throw new ConfigError(`only one configuration file may declare import; found it in ${importOrigin} and ${filename}`);
+      }
+      importSpec = parseImportSpec(parsed.import, filename);
+      importOrigin = filename;
+      delete parsed.import;
+    }
+    local.push({ filename, document: normalizeDocumentPaths(normalizeRoleNames(parsed), filename) });
+  }
+
+  let resolvedImport: ResolvedImport | undefined;
+  const imported: { filename: string; document: ConfigurationDocument }[] = [];
+  if (importSpec) {
+    const artifacts = local
+      .map(({ document }) => (isObject(document.settings) ? document.settings.artifacts : undefined))
+      .find((value) => typeof value === "string" && path.isAbsolute(value)) as string | undefined;
+    if (!artifacts) {
       throw new ConfigError(
-        `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+        `import in ${importOrigin} needs settings.artifacts defined in a local configuration file: imported files are materialised under <artifacts>/config-imports`,
       );
     }
-    if (!isObject(parsed)) {
-      throw new ConfigError(`${filename} must contain a YAML object at its root`);
+    resolvedImport = await materialiseImport(importSpec, artifacts);
+    for (const filename of resolvedImport.yamlFiles) {
+      const parsed = await readDocument(filename);
+      if ("import" in parsed) throw new ConfigError(`${filename}: an imported file cannot declare import`);
+      imported.push({ filename, document: normalizeDocumentPaths(normalizeRoleNames(parsed), filename) });
     }
-    mergeDocument(
-      merged,
-      normalizeDocumentPaths(parsed, filename),
-      origins,
-      filename,
-    );
+  }
+
+  const merged: ConfigurationDocument = {};
+  const origins = new Map<string, string>();
+  for (const { filename, document } of [...imported, ...local]) {
+    mergeDocument(merged, document, origins, filename);
   }
 
   const settings = (merged.settings ??= {}) as Record<string, unknown>;
@@ -401,8 +441,11 @@ export async function loadConfig(
 
   return {
     ...parsed.data,
-    hash: configurationHash(parsed.data),
+    hash: configurationHash(parsed.data, resolvedImport?.sha),
     root,
     plans,
+    ...(resolvedImport
+      ? { import: { repository: resolvedImport.repository, ref: resolvedImport.ref, path: resolvedImport.path, sha: resolvedImport.sha } }
+      : {}),
   };
 }

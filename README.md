@@ -292,6 +292,21 @@ repositories:
     concurrency: 2
 ```
 
+### Canonical role names and pinned imports
+
+The canonical configuration names the three provider roles and the harnesses: `providers.items` (issue trackers), `providers.code`, `providers.ci`, `harnesses`, agent `harness` and `access`, and repository `items` and `code`. The loader translates them to the older names (`sources`, `codeHosts`, `ci`, `runners`, `runner`, `workspaceAccess`, `source`, `codeHost`), which keep working. `labels` may sit on the item providers (all of them must carry an identical block, which a YAML alias gives you) or at the top level. Using the old and the new name for the same thing is an error, and equivalent documents produce the same configuration hash.
+
+One local file may import reference configuration from a git repository at a fixed ref:
+
+```yaml
+import:
+  repository: /srv/conveyor-reference   # absolute path to a git checkout
+  ref: v1.4.0                           # tag or commit; resolved to a SHA
+  path: examples/config                 # directory inside the repository
+```
+
+The loader reads that directory at the ref with `git ls-tree` and `git show`, never from the working tree, and merges its YAML files before the local ones. Local files add repositories, settings and secrets but cannot redefine an imported pipeline, agent, provider or harness, and a singleton section (`settings`, `web`, `labels`) may come from one side only. Relative paths in imported files (instructions, scripts) resolve against a copy of the directory written to `<settings.artifacts>/config-imports/<sha>/<path>/`, so `settings.artifacts` must be defined in a local file. The resolved SHA is part of the configuration hash.
+
 ### CI providers
 
 CI pipelines are configured separately from stage timing. Select a named provider on a repository, or omit `repositories.<name>.ci` to use the source's native CI provider (GitHub Actions for GitHub):
