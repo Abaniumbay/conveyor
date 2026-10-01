@@ -36,6 +36,7 @@ describe("runCodexSteering", () => {
     const result = await runCodexSteering({
       command: executable,
       workspace,
+      artifactsDirectory: path.join(directory, "artifacts", "run-1"),
       prompt: "Make the requested UI change",
       model: "gpt-test",
       effort: "medium",

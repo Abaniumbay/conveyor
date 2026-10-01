@@ -140,6 +140,12 @@ Conveyor is intended for a trusted single-user server, not hostile multi-tenant 
 - Worktree and branch operations are constrained to the run's configured repository and feature branch.
 - Secrets, runtime configuration, databases, logs, artifacts, and managed worktrees are deliberately excluded from this repository.
 
+### Agent isolation
+
+Every Codex agent process (task runs, verifier checks and steering) starts from a sanitized environment: `GH_TOKEN`, `GITHUB_TOKEN`, their enterprise variants, `GIT_ASKPASS`, `SSH_AUTH_SOCK`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`, every `CONVEYOR_*` variable and anything named like a token, secret, password or API key are removed. `HOME` points at a per-run home under the run's artifacts directory (`<artifacts>/<runId>/home`) that holds only a `.gitconfig` with the repository's `user.name` and `user.email`. Codex keeps authenticating through `CODEX_HOME`, which stays pointed at the real `~/.codex`.
+
+Each repository also declares `agentEgress` (`allowLoopbackMcp`, default `true`, and `httpsHosts`, default `[]`): exact lowercase DNS names only, with no wildcards, IP literals, CIDRs, ports, schemes, trailing dots or duplicates, and never `api.github.com` or `uploads.github.com`. Network enforcement of this policy arrives in a later change; today it is validated configuration.
+
 ## Requirements
 
 - Linux or another environment supported by Bun

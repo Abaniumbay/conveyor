@@ -1,3 +1,4 @@
+import { prepareCodexEnvironment } from "../isolation/environment";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -69,34 +70,6 @@ interface CodexEvent {
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
-const INHERITED_ENVIRONMENT = [
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "PATH",
-  "SHELL",
-  "TERM",
-  "COLORTERM",
-  "LANG",
-  "LC_ALL",
-  "TMPDIR",
-  "CODEX_HOME",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-] as const;
-
-function environment(overrides?: Record<string, string>): Record<string, string> {
-  const selected: Record<string, string> = {};
-  for (const key of INHERITED_ENVIRONMENT) {
-    const value = process.env[key];
-    if (value !== undefined) selected[key] = value;
-  }
-  return { ...selected, ...overrides };
-}
-
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -195,7 +168,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   const startedAt = performance.now();
   const child = Bun.spawn([input.command, ...args], {
     cwd: input.workspace,
-    env: environment(input.env),
+    env: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

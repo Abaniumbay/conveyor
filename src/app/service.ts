@@ -1243,6 +1243,7 @@ export class ConveyorService {
       const result = await this.#runSteering({
         command: runner.command,
         workspace,
+        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
         prompt: [
           instructions.trim(),
           "",

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { agentGrantableTools } from "../mcp/tools";
+import { agentEgressSchema } from "../isolation/egress-policy";
 import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 
 import type { Route } from "../tasks/contract";
@@ -414,6 +415,7 @@ const repositorySchema = z
       })
       .strict()
       .optional(),
+    agentEgress: agentEgressSchema.prefault({}),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
   })

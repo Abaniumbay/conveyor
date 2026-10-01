@@ -1,9 +1,12 @@
+import { prepareCodexEnvironment } from "../isolation/environment";
 import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
 import { EMPTY_USAGE } from "./result";
 
 export interface CodexSteeringInput {
   command: string;
   workspace: string;
+  /** Per-run directory that hosts the sanitized home. */
+  artifactsDirectory: string;
   prompt: string;
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -42,34 +45,6 @@ interface CodexEvent {
 }
 
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
-const INHERITED_ENVIRONMENT = [
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "PATH",
-  "SHELL",
-  "TERM",
-  "COLORTERM",
-  "LANG",
-  "LC_ALL",
-  "TMPDIR",
-  "CODEX_HOME",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-] as const;
-
-function environment(overrides?: Record<string, string>): Record<string, string> {
-  const selected: Record<string, string> = {};
-  for (const key of INHERITED_ENVIRONMENT) {
-    const value = process.env[key];
-    if (value !== undefined) selected[key] = value;
-  }
-  return { ...selected, ...overrides };
-}
-
 function argumentsFor(input: CodexSteeringInput): string[] {
   const args = [
     "exec",
@@ -145,7 +120,7 @@ export async function runCodexSteering(
   const started = performance.now();
   const child = Bun.spawn([input.command, ...argumentsFor(input)], {
     cwd: input.workspace,
-    env: environment(input.env),
+    env: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

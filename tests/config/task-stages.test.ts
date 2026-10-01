@@ -253,3 +253,33 @@ pipelines:
     });
   });
 });
+
+describe("repository agentEgress", () => {
+  test("defaults to loopback MCP only", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository());
+    expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [] });
+  });
+
+  test("accepts exact hosts", async () => {
+    const { config } = await load(
+      NATIVE_PIPELINE + repository("    agentEgress: { allowLoopbackMcp: false, httpsHosts: [registry.npmjs.org, github.com] }\n"),
+    );
+    expect(config.repositories.sample!.agentEgress).toEqual({
+      allowLoopbackMcp: false,
+      httpsHosts: ["registry.npmjs.org", "github.com"],
+    });
+  });
+
+  test("names the offending entry and rule", async () => {
+    await expect(
+      load(NATIVE_PIPELINE + repository('    agentEgress: { httpsHosts: [a.example.com, b.example.com, "*.npmjs.org"] }\n')),
+    ).rejects.toThrow('agentEgress.httpsHosts[2] "*.npmjs.org": wildcards are not allowed');
+    await expect(
+      load(NATIVE_PIPELINE + repository("    agentEgress: { httpsHosts: [api.github.com] }\n")),
+    ).rejects.toThrow("provider APIs are never reachable from agent sandboxes");
+  });
+
+  test("rejects unknown keys", async () => {
+    await expect(load(NATIVE_PIPELINE + repository("    agentEgress: { hosts: [] }\n"))).rejects.toThrow();
+  });
+});
