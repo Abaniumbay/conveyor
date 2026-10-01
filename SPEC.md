@@ -588,7 +588,7 @@ A stage is two task lists run for one item by the stage executor:
 
 There are no entrance gates. Conditions the next stage requires belong to the previous exit gate. A person may relabel an item straight into a stage and so skip that gate; acts therefore validate their own safety preconditions (for example `change.merge` checks the reviewed head and `workspace.ensure` checks the workspace).
 
-A task returns `pass`, `pending` or `fail`. A thrown error is an infrastructure error, not a domain failure, and uses the bounded infrastructure and usage-limit retry policy without consuming a stage retry.
+A task returns `pass`, `pending` or `fail`. A thrown error is an infrastructure error, not a domain failure, and uses the bounded infrastructure and usage-limit retry policy without consuming a stage retry. Retries back off exponentially from `settings.retries.minBackoff`, doubling up to `maxBackoff`. After `infrastructureAttempts` consecutive failures of the same stage the item stops as `error`, with one conversation note giving the reason; usage-limit failures (runner usage limits, provider rate limits) are bounded by `usageLimitAttempts` instead, which defaults to unlimited. A successful execution resets the count.
 
 ### Waiting
 
@@ -605,7 +605,7 @@ A failing task is routed, in order, by the route the task result carries, the in
 - `{ return: <stage> }`: leave this stage and return to another stage of the pipeline (normally an earlier one; the compiler rejects an unknown stage and the stage's own id) with the failure as required fixes and evidence. The number of returns is counted per item in the context; reaching `settings.maxReturns` stops the item as `blocked` with a loop-guard reason. The counter resets when the item leaves the pipeline or is stopped, so a person's unblock starts with a fresh budget.
 - `{ stop: <state> }` (default for an action failure is `stop: blocked`): stop the item in a `labels.states` state with the failure reason as the required action.
 
-Stage execution posts conversation messages only for failures, routing and stops. The one-time CI start announcement and the single final advisory-CI result are the explicit engine-owned exceptions.
+Stage execution posts conversation messages only for failures, routing and stops. The one-time CI start announcement and the single final advisory-CI result are the explicit engine-owned exceptions. A conversation message holds at most 4,000 characters. An owner's message over the limit is rejected where it is typed; a longer message from Conveyor or an agent (for example a CI failure with log excerpts) keeps its beginning and is trimmed with a note of how much was cut, so reporting a failure never fails the stage.
 
 ### Producers: agents and scripts
 
