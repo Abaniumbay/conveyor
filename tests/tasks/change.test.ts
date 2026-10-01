@@ -397,6 +397,10 @@ describe("criteria checks", () => {
   const approval = { reviewer: "r", headSha: "head1", checkedAt: "t" };
   const crit = (id: string, approved: boolean) => ({ id, projectedChecked: approved, approval: approved ? approval : null });
 
+  test("criteriaInSync failures are repaired by change.ensure, not by the agent", () => {
+    expect(registry.require("change.criteriaInSync").repairedByActions).toBe(true);
+  });
+
   test("criteriaInSync passes when the projection lists exactly the item's ids", async () => {
     const ok = ctx({ item: item as never, change: change({ projectedCriterionIds: ["m", "b", "a"] }) });
     expect((await run("change.criteriaInSync", { context: ok })).status).toBe("pass");

@@ -87,6 +87,8 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   input?: ZodType<I>;
   defaultWait?: { timeoutMs: number | null; pollMs: number };
   checkpoint?: { name: "ciPassed" | "reviewPassed"; scope: "task" | "gate" };
+  /** Checks only: a failure here is repaired by the stage's own non-agent actions on the next round, so it is not the agent's to fix. */
+  repairedByActions?: boolean;
   /** Tools only: whether the tool changes external state. */
   mutating?: boolean;
   /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */

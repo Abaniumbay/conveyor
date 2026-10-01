@@ -93,7 +93,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
       context, deps, config,
       instance: { id: "implement", stage: "implementation", idempotencyKey: "key-1", resumed },
     });
-  return { store, run, deps, calls, leases, controller, managerCalls, root, setBehaviour: (b: Behaviour) => { behaviour = b; } };
+  return { store, run, context, deps, calls, leases, controller, managerCalls, root, setBehaviour: (b: Behaviour) => { behaviour = b; } };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -110,6 +110,15 @@ const answer = (w: World, text: string) => {
 };
 
 describe("agent.run", () => {
+  test("skips the agent when the only feedback is a failure the stage's own actions repair", async () => {
+    const w = await world();
+    (w.context.run as { feedback: unknown }).feedback = {
+      from: { stage: "implementation", taskInstanceId: "criteriaSynced" }, message: "checklist out of sync", repairedByActions: true,
+    };
+    expect(await w.run(false)).toEqual({ status: "pass" });
+    expect(w.calls).toHaveLength(0);
+  });
+
   test("ensures the workspace itself when none is recorded and invalidates the workspace context", async () => {
     const w = await world({ noWorkspace: true });
     expect(registry.require("agent.run").invalidates).toContain("workspace");
