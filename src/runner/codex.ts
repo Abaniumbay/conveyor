@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { prepareCodexEnvironment } from "../isolation/environment";
+import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   EMPTY_USAGE,
   UNAVAILABLE_COST,
@@ -34,7 +35,14 @@ export interface CodexRunInput {
   persistSession?: boolean;
   /** Continue this session with `codex exec resume` instead of starting a new one. */
   resumeSessionId?: string;
+  /**
+   * Network isolation: when set, codex runs inside a network-less sandbox whose only exits are the
+   * allowlisted proxies. Absent means the legacy behaviour (sanitized environment only).
+   */
+  egress?: EgressInput;
 }
+
+export { CODEX_CONTROL_PLANE_HOSTS };
 
 export type CodexErrorKind =
   | "usage-limit"
@@ -128,7 +136,7 @@ function mcpArguments(input: CodexRunInput): string[] {
 
 // `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
 // takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
-function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string): string[] {
+function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, extra: string[]): string[] {
   const args = ["exec", "resume", "--json", "--output-schema", OUTPUT_SCHEMA, "-o", outputFile];
   args.push("-c", `sandbox_mode=${tomlString(input.sandbox)}`);
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
@@ -136,12 +144,12 @@ function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: st
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
-  args.push(...mcpArguments(input), sessionId, "-");
+  args.push(...extra, ...mcpArguments(input), sessionId, "-");
   return args;
 }
 
-function buildArguments(input: CodexRunInput, outputFile: string): string[] {
-  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile);
+function buildArguments(input: CodexRunInput, outputFile: string, extra: string[] = []): string[] {
+  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile, extra);
   const args = ["exec", "--json", "--color", "never"];
   if (!input.persistSession) args.push("--ephemeral");
   args.push("-C", input.workspace, "--output-schema", OUTPUT_SCHEMA, "-o", outputFile);
@@ -154,8 +162,12 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(...mcpArguments(input), "-");
+  args.push(...extra, ...mcpArguments(input), "-");
   return args;
+}
+
+function spawnPiped(argv: string[], cwd: string, env: Record<string, string>) {
+  return Bun.spawn(argv, { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
 }
 
 export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
@@ -164,15 +176,24 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     input.artifactsDirectory,
     `codex-result-${randomUUID()}.json`,
   );
-  const args = buildArguments(input, outputFile);
   const startedAt = performance.now();
-  const child = Bun.spawn([input.command, ...args], {
-    cwd: input.workspace,
-    env: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  let network: RunNetwork | null = null;
+  let child: ReturnType<typeof spawnPiped>;
+  try {
+    const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    const launch = await codexLaunch({
+      command: input.command,
+      environment,
+      artifactsDirectory: input.artifactsDirectory,
+      egress: input.egress,
+      buildArguments: (extra) => buildArguments(input, outputFile, extra),
+    });
+    network = launch.network;
+    child = spawnPiped(launch.argv, input.workspace, launch.env);
+  } catch (error) {
+    await network?.close();
+    throw error;
+  }
   child.stdin.write(input.prompt);
   child.stdin.end();
 
@@ -220,6 +241,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   try {
     exitCode = await child.exited;
   } finally {
+    await network?.close();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

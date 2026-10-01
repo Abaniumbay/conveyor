@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { agentGrantableTools } from "../mcp/tools";
-import { agentEgressSchema } from "../isolation/egress-policy";
+import { agentEgressSchema, validateHttpsHosts } from "../isolation/egress-policy";
 import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 
 import type { Route } from "../tasks/contract";
@@ -120,6 +120,15 @@ const codexRunnerSchema = z
     command: z.string().min(1).default("codex"),
     sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("workspace-write"),
     automaticApprovals: z.boolean().default(true),
+    /** Hosts the Codex process itself may reach when egress is enforced (default: ChatGPT and OpenAI). */
+    controlPlaneHosts: z
+      .array(z.string())
+      .optional()
+      .superRefine((hosts, context) => {
+        for (const issue of validateHttpsHosts(hosts ?? [])) {
+          context.addIssue({ code: "custom", message: issue.message.replace("agentEgress.httpsHosts", "controlPlaneHosts") });
+        }
+      }),
   })
   .strict();
 
@@ -415,7 +424,7 @@ const repositorySchema = z
       })
       .strict()
       .optional(),
-    agentEgress: agentEgressSchema.prefault({}),
+    agentEgress: agentEgressSchema.optional(),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
   })

@@ -3,6 +3,7 @@
 
 import type { HarnessCapabilities, HarnessResumeInput } from "../tasks/context";
 import type { RunEnvelope } from "../runner/result";
+import type { EgressInput } from "../isolation/run-network";
 
 export interface HarnessRunInput {
   /** The runner's executable. */
@@ -21,6 +22,8 @@ export interface HarnessRunInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  /** Network isolation policy for the run; absent keeps the legacy (environment-only) behaviour. */
+  egress?: EgressInput;
 }
 
 export interface Harness {

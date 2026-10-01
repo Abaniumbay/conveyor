@@ -8,6 +8,7 @@ import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
 import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
 import { createWebAuth, hashPassword } from "./web/auth";
 import { createWebHandler } from "./web/server";
+import { mcpSocketPath, serveMcpSocket } from "./isolation/mcp-socket";
 
 function option(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -63,6 +64,10 @@ async function serve(configPath: string): Promise<void> {
       return new Response("Internal server error", { status: 500 });
     },
   });
+  // Sandboxed agents reach the MCP endpoint (only) through this Unix socket via the sandbox bridge.
+  const mcpSocket = Object.values(config.repositories).some((repository) => repository.agentEgress?.allowLoopbackMcp)
+    ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
+    : null;
   service.start();
   console.log(`Conveyor ${config.hash.slice(0, 12)} listening on ${server.url}`);
 
@@ -72,6 +77,7 @@ async function serve(configPath: string): Promise<void> {
     stopping = true;
     console.log(`Received ${signal}; stopping Conveyor`);
     await server.stop(false);
+    await mcpSocket?.stop();
     await service.close();
   };
   process.on("SIGINT", () => void stop("SIGINT"));

@@ -16,6 +16,7 @@ import { z } from "zod";
 import type { StoredQuestion } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
+import { agentEgressFor } from "../isolation/agent-egress";
 import type { RunEnvelope } from "../runner/result";
 import {
   agentActor, agentMessage, conversationForPrompt, failedEnvelope, finishRun,
@@ -139,6 +140,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
           sandbox: agent.workspaceAccess === "read-only" ? ("read-only" as const) : runner.sandbox,
           automaticApprovals: runner.automaticApprovals,
           mcp: lease.configuration,
+          ...egressFor(deps, runner),
           interruptGraceMs: deps.config.settings.interruptGraceMs,
           ...(deps.signal ? { signal: deps.signal } : {}),
           onEvent: (event: unknown) => { store.appendRunEvent(runId, "harness", event); },
@@ -256,3 +258,8 @@ export const agentGroup = defineGroup("agent", [
   event("agent.reportMilestone", "Record a milestone the agent reached.", "report_milestone", looseInput),
   event("agent.recordArtifact", "Record an artifact (a log, a report, a file) produced during the run.", "record_artifact", looseInput, undefined, true),
 ]);
+
+function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {
+  const egress = agentEgressFor(deps.config, deps.repository.id, runner);
+  return egress ? { egress } : {};
+}

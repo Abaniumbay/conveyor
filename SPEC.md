@@ -725,6 +725,17 @@ This is a trusted single-user VPS tool, not a hostile multi-tenant execution ser
 
 This limits accidental damage but is not a security boundary against malicious repository code.
 
+### Agent network egress
+
+Repositories that declare `agentEgress` run every Codex agent process (task runs and verifier checks) inside `bwrap --unshare-net --die-with-parent --dev-bind / /`; repositories without the block are unchanged (sanitized environment only). Steering runs are system-scoped (no repository) and are not sandboxed.
+
+- `src/isolation/egress-proxy.ts`: a CONNECT-only proxy on a Unix socket. Only `CONNECT <exact allowed host>:443` is served; plain HTTP is 403, a missing or wrong `Proxy-Authorization` token is 407, IP-literal targets are 403, and DNS is resolved by the proxy, which refuses (403) any answer in loopback, private, link-local, CGNAT, unique-local, multicast or unspecified ranges and then dials the resolved address itself. Every CONNECT is evaluated independently, so every redirect hop is checked.
+- `src/isolation/bridge.ts` runs inside the namespace: it listens on `127.0.0.1:<port>` for each forward, pipes each connection to the corresponding Unix socket, runs the wrapped command and mirrors its exit code and signals. `src/isolation/sandbox.ts` builds the bwrap argv and the proxy environment (`NO_PROXY` is empty, or `127.0.0.1` when the MCP forward exists).
+- Two proxies per run live under `<artifacts>/<runId>/net/` and are closed when the run ends: the data plane (the repository's `httpsHosts`) for commands, and the control plane (the runner's `controlPlaneHosts`, default `chatgpt.com`, `api.openai.com`, `auth.openai.com`, protected by a random per-run token) for Codex itself. Codex's own `HTTPS_PROXY` is `http://conveyor:<token>@127.0.0.1:<port>`; commands it runs receive the data-plane proxy through `-c shell_environment_policy.exclude=[...]` and `-c shell_environment_policy.set={...}`, and `-c sandbox_workspace_write.network_access=true` lets them reach the loopback bridge (the namespace and the proxy are the enforcement, identical for read-only and workspace-write runs).
+- With `allowLoopbackMcp`, the service serves `/internal/mcp` (only) on a Unix socket `<artifacts>/mcp.sock`; the bridge forwards the exact web port to it. No other host loopback service is visible in the namespace.
+- Residual risk: a process running as the same user can read the control-plane token from `/proc/<codex pid>/environ`, and Codex's own shell-policy handling is trusted to keep proxy variables out of commands. The token only authenticates a proxy that reaches the model hosts and dies with the run. The `shell_environment_policy` and `sandbox_workspace_write.network_access` keys follow Codex's documented configuration and were not exercised against a live Codex run; run `scripts/check-agent-egress.ts` and one canary agent run before relying on them.
+- Operator verification: `bun scripts/check-agent-egress.ts <repository-id> --config <dir>` (real network; not part of `bun test`).
+
 ## 20. Definition of done for v0.1
 
 V0.1 is complete when a configured GitHub issue can demonstrate this path after a service restart at any point:

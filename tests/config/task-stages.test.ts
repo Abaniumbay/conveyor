@@ -255,8 +255,13 @@ pipelines:
 });
 
 describe("repository agentEgress", () => {
-  test("defaults to loopback MCP only", async () => {
+  test("is absent (no enforcement, legacy behaviour) unless the repository declares it", async () => {
     const { config } = await load(NATIVE_PIPELINE + repository());
+    expect(config.repositories.sample!.agentEgress).toBeUndefined();
+  });
+
+  test("an empty block enforces loopback MCP only", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository("    agentEgress: {}\n"));
     expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [] });
   });
 

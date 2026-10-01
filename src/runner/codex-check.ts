@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
 import { prepareCodexEnvironment } from "../isolation/environment";
+import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   CodexRunnerError,
   type CodexMcpConfiguration,
@@ -27,6 +28,8 @@ export interface CodexCheckInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  /** Network isolation policy; absent keeps the legacy (environment-only) behaviour. */
+  egress?: EgressInput;
 }
 
 export interface CodexCheckRunResult extends CheckResult {
@@ -133,7 +136,7 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
-function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
+function buildArguments(input: CodexCheckInput, outputFile: string, extra: string[] = []): string[] {
   const args = [
     "exec",
     "--json",
@@ -157,6 +160,7 @@ function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
   args.push(
+    ...extra,
     "-c",
     `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
     "-c",
@@ -184,15 +188,19 @@ export async function runCodexCheck(
   );
   const startedAt = performance.now();
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  let network: RunNetwork | null = null;
   try {
-    child = Bun.spawn([input.command, ...buildArguments(input, outputFile)], {
-      cwd: input.workspace,
-      env: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+    const launch = await codexLaunch({
+      command: input.command,
+      environment: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
+      artifactsDirectory: input.artifactsDirectory,
+      egress: input.egress,
+      buildArguments: (extra) => buildArguments(input, outputFile, extra),
     });
+    network = launch.network;
+    child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   } catch (error) {
+    await network?.close();
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -249,6 +257,7 @@ export async function runCodexCheck(
   try {
     exitCode = await child.exited;
   } finally {
+    await network?.close();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

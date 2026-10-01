@@ -12,6 +12,8 @@ import type {
 } from "../core/pipeline";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { verifierToolGrant } from "../mcp/tools";
+import type { EgressInput } from "../isolation/run-network";
+import { agentEgressFor } from "../isolation/agent-egress";
 import { runCodex, type CodexMcpConfiguration, type CodexRunInput } from "../runner/codex";
 import {
   runCodexCheck,
@@ -157,6 +159,11 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     this.#jsonProcess = implementations.jsonProcess ?? runJsonProcess;
   }
 
+  private egressInput(runner: { controlPlaneHosts?: string[] | undefined }): { egress?: EgressInput } {
+    const egress = agentEgressFor(this.config, this.context.repository.id, runner);
+    return egress ? { egress } : {};
+  }
+
   private configuredStatuses(stageId: string): {
     allowedSuccessStatuses: string[];
     allowedFailureStatuses: string[];
@@ -289,6 +296,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
               agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
             automaticApprovals: runner.automaticApprovals,
             mcp: lease.configuration,
+            ...this.egressInput(runner),
             interruptGraceMs: this.config.settings.interruptGraceMs,
             ...(this.signal ? { signal: this.signal } : {}),
             onEvent: (event) => {
@@ -413,6 +421,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
         sandbox: "read-only",
         automaticApprovals: false,
         mcp: lease.configuration,
+        ...this.egressInput(runner),
         interruptGraceMs: this.config.settings.interruptGraceMs,
         ...(this.signal ? { signal: this.signal } : {}),
         onEvent: (event) => {
