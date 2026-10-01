@@ -321,7 +321,10 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
-    while (this.#active.size > 0 || this.#steeringActive.size > 0) await Bun.sleep(25);
+    // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#tickRunning || this.#advisoryPolling) {
+      await Bun.sleep(25);
+    }
     this.store.close();
   }
 
