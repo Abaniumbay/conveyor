@@ -292,7 +292,7 @@ describe("ci.passed", () => {
     expect(result.message).toContain("Ext (failed)");
     const details = result.details as { requiredFixes: string[]; evidence: string[] };
     expect(details.requiredFixes[0]).toContain('"Tests"');
-    expect(details.requiredFixes[0]).toContain("delivery.get_check_logs");
+    expect(details.requiredFixes[0]).toContain("ci.getLogs");
     expect(details.evidence[0]).toContain("### Tests — failed");
     expect(details.evidence[0]).toContain("##[error]boom");
   });

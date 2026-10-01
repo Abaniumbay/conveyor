@@ -16,7 +16,7 @@ export function prompt(
       ? [
           "",
           "User-facing progress contract:",
-          "- Publish every interim update intended for the user exclusively through `run.report_progress`.",
+          "- Publish every interim update intended for the user exclusively through `agent.reportProgress`.",
           "- The normal agent stream is a technical log and is not shown in the shared conversation; never rely on an ordinary assistant message to communicate progress.",
           "- Report after the initial diagnosis, after each material discovery or change of direction, when blocked, and with one short heartbeat when meaningful work or a long check continues for ten minutes without another report.",
           "- Keep reports concise and outcome-focused. Never include private reasoning, command names, raw command output, tool-call mechanics, or routine edit/test narration.",

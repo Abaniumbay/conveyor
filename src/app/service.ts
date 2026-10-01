@@ -1085,7 +1085,6 @@ export class ConveyorService {
     const context = grant.context;
     // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
     const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
-    const callId = typeof request.callId === "string" && request.callId ? request.callId : undefined;
     const taskDeps = (): TaskDeps => context
       // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
       ? this.taskDeps(context.issue.id, context.repository)
@@ -1101,7 +1100,6 @@ export class ConveyorService {
         actor: grant.actor,
         tasks: grant.allowedTools,
       },
-      ...(callId ? { callId } : {}),
     }, {
       registry: createTaskRegistry(),
       deps: taskDeps,
@@ -1250,7 +1248,7 @@ export class ConveyorService {
           "",
           "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
-          "Use run.report_progress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
+          "Use agent.reportProgress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
           "",
           "User request:",
           userPrompt,

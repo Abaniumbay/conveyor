@@ -194,9 +194,10 @@ function runOf(deps: Deps): NonNullable<Deps["run"]> {
   return deps.run;
 }
 
-function event<I>(name: string, description: string, type: string, input: z.ZodType<I>, after?: (args: TaskArgs<unknown, I, Deps>, run: NonNullable<Deps["run"]>) => void): TaskDefinition<unknown, I, Deps> {
+function event<I>(name: string, description: string, type: string, input: z.ZodType<I>, after?: (args: TaskArgs<unknown, I, Deps>, run: NonNullable<Deps["run"]>) => void, mutating = false): TaskDefinition<unknown, I, Deps> {
   return {
     name, kind: "tool", description, reads: [], writes: [], invalidates: [], input,
+    ...(mutating ? { mutating: true } : {}),
     run(args) {
       const run = runOf(args.deps);
       args.deps.store.appendRunEvent(run.id, type, args.input);
@@ -246,5 +247,5 @@ export const agentGroup = defineGroup("agent", [
   event("agent.reportBlocker", "Record a blocker the agent hit.", "report_blocker", looseInput),
   event("agent.reportResult", "Record the agent's result report.", "report_result", looseInput),
   event("agent.reportMilestone", "Record a milestone the agent reached.", "report_milestone", looseInput),
-  event("agent.recordArtifact", "Record an artifact (a log, a report, a file) produced during the run.", "record_artifact", looseInput),
+  event("agent.recordArtifact", "Record an artifact (a log, a report, a file) produced during the run.", "record_artifact", looseInput, undefined, true),
 ]);

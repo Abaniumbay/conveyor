@@ -223,7 +223,7 @@ repositories:
       { id: "checker", name: "Verifier", title: "Quality Verifier" },
     ]);
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("Preserve the existing API.");
-    expect((producerInputs[0] as { prompt: string }).prompt).toContain("Publish every interim update intended for the user exclusively through `run.report_progress`");
+    expect((producerInputs[0] as { prompt: string }).prompt).toContain("Publish every interim update intended for the user exclusively through `agent.reportProgress`");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("continues for ten minutes without another report");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain('"allowedFailureStatuses": [');
     expect((checkInputs[0] as { prompt: string }).prompt).toContain('"allowedFailureStatuses": [');

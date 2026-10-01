@@ -1,6 +1,8 @@
 // The one entry point for agent tool calls arriving over MCP. The MCP server filters tools by
 // the grant first; this enforces it again, then validates input, actor and preconditions, and
-// journals mutating calls by MCP call id so a duplicate delivery returns the stored response.
+// journals mutating calls by run, tool and input so a retried call returns the stored response.
+
+import { createHash } from "node:crypto";
 
 import type { ConveyorStore } from "../db/store";
 import { canonicalToolName } from "./aliases";
@@ -37,7 +39,7 @@ const ITEM_FREE_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 export async function dispatchTool(
-  call: { name: string; input: unknown; actor: AgentActor | null; grant: ToolGrant; callId?: string },
+  call: { name: string; input: unknown; actor: AgentActor | null; grant: ToolGrant },
   env: DispatchEnv,
 ): Promise<unknown> {
   const name = canonicalToolName(call.name);
@@ -46,12 +48,9 @@ export async function dispatchTool(
   const definition = env.registry.get(name);
   if (!definition || definition.kind !== "tool") throw new Error(`Unknown MCP tool: ${name}`);
 
-  let input = call.input ?? {};
-  if (definition.input) {
-    const parsed = definition.input.safeParse(input);
-    if (!parsed.success) throw new TaskInputError(name, parsed.error.message);
-    input = parsed.data;
-  }
+  const parsed = definition.input!.safeParse(call.input ?? {});
+  if (!parsed.success) throw new TaskInputError(name, parsed.error.message);
+  const input: unknown = parsed.data;
 
   if (!grant.issueScoped && !ITEM_FREE_TOOLS.has(name)) throw new Error(`${name} requires an issue-scoped MCP grant`);
   if (grant.issueScoped && !call.actor) throw new Error(`${name} requires an actor`);
@@ -64,8 +63,10 @@ export async function dispatchTool(
   }
 
   const mutating = definition.mutating === true;
-  if (mutating && !call.callId) throw new Error(`${name} is mutating and needs an MCP call id`);
-  const idempotencyKey = mutating ? `mcp:${grant.runId}:${call.callId}` : "";
+  // A client retry is a new request, so the key is the call's content, not a transport id.
+  const idempotencyKey = mutating
+    ? `mcp:${grant.runId}:${name}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`
+    : "";
 
   const execute = async (): Promise<unknown> => {
     const deps = env.deps();

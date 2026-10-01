@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -28,8 +26,7 @@ export interface RunMcpContext {
 }
 
 export interface ControlClient {
-  /** `callId` identifies this tools/call request; the service journals mutating calls by it. */
-  call(tool: string, input: unknown, callId?: string): Promise<unknown>;
+  call(tool: string, input: unknown): Promise<unknown>;
 }
 
 export class HttpControlClient implements ControlClient {
@@ -39,14 +36,14 @@ export class HttpControlClient implements ControlClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async call(tool: string, input: unknown, callId?: string): Promise<unknown> {
+  async call(tool: string, input: unknown): Promise<unknown> {
     const response = await this.fetchImpl(this.url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ tool, input, ...(callId ? { callId } : {}) }),
+      body: JSON.stringify({ tool, input }),
     });
     if (!response.ok) {
       throw new Error(`control request failed (${response.status}): ${await response.text()}`);
@@ -98,7 +95,7 @@ export function createConveyorMcpServer(context: RunMcpContext, control: Control
         stageId: context.stageId,
         repositoryId: context.repository.id,
         issueId: context.issue.id,
-      }, randomUUID());
+      });
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     } catch (error) {
       return errorResult(error instanceof Error ? error.message : String(error));

@@ -96,7 +96,7 @@ export function describeCiFailure(changeUrl: string, short: string, failed: Fail
   return {
     names,
     reason: `CI failed on ${changeUrl} at ${short}: ${names}.`,
-    requiredFixes: failed.map((run) => `Make the "${run.name}" check pass on the pull request head (${run.url ?? "no URL"}); read its log with delivery.get_check_logs.`),
+    requiredFixes: failed.map((run) => `Make the "${run.name}" check pass on the pull request head (${run.url ?? "no URL"}); read its log with ci.getLogs.`),
     sections: failed.map((run) => `### ${run.name} — ${run.state}\n${run.url ?? ""}${run.log ? `\n\n\`\`\`\n${run.log}\n\`\`\`` : ""}`),
   };
 }

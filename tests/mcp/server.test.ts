@@ -4,7 +4,6 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   createConveyorMcpServer,
-  HttpControlClient,
   type ControlClient,
   type RunMcpContext,
 } from "../../src/mcp/server";
@@ -73,7 +72,7 @@ function text(result: Awaited<ReturnType<Client["callTool"]>>): unknown {
   return JSON.parse(item.text);
 }
 
-interface Seen { tool: string; input: unknown; callId?: string | undefined }
+interface Seen { tool: string; input: unknown }
 
 describe("Conveyor MCP server", () => {
   test("lists only the granted tools, under canonical camelCase names with registry descriptions and schemas", async () => {
@@ -88,7 +87,7 @@ describe("Conveyor MCP server", () => {
   test("a legacy snake_case grant lists canonical names and legacy names still work in calls", async () => {
     const seen: Seen[] = [];
     const client = await connectedClient({
-      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { ok: true }; },
+      async call(tool, input) { seen.push({ tool, input }); return { ok: true }; },
     }, ["source.get_issue", "run.report_progress", "workspace.record_artifact"]);
     expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["agent.recordArtifact", "agent.reportProgress", "item.get"]);
     expect(text(await client.callTool({ name: "source.get_issue", arguments: {} }))).toEqual({ ok: true });
@@ -98,7 +97,7 @@ describe("Conveyor MCP server", () => {
   test("serves every getter live through the control client, workspace.get included", async () => {
     const seen: Seen[] = [];
     const client = await connectedClient({
-      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { tool }; },
+      async call(tool, input) { seen.push({ tool, input }); return { tool }; },
     });
     expect(text(await client.callTool({ name: "workspace.get", arguments: {} }))).toEqual({ tool: "workspace.get" });
     expect(text(await client.callTool({ name: "item.guidance", arguments: {} }))).toEqual({ tool: "item.guidance" });
@@ -106,15 +105,12 @@ describe("Conveyor MCP server", () => {
     expect(seen.map((call) => call.tool)).toEqual(["workspace.get", "item.guidance", "change.get"]);
   });
 
-  test("every tools/call gets a fresh MCP call id and the run scope", async () => {
+  test("the run scope is added to every call and overwrites an agent-supplied issueId", async () => {
     const seen: Seen[] = [];
     const client = await connectedClient({
-      async call(tool, input, callId) { seen.push({ tool, input, callId }); return { accepted: true }; },
+      async call(tool, input) { seen.push({ tool, input }); return { accepted: true }; },
     });
-    await client.callTool({ name: "agent.reportProgress", arguments: { message: "one" } });
-    await client.callTool({ name: "agent.reportProgress", arguments: { message: "one" } });
-    expect(seen[0]?.callId).toBeString();
-    expect(seen[0]?.callId).not.toBe(seen[1]?.callId);
+    await client.callTool({ name: "agent.reportProgress", arguments: { message: "one", issueId: "other", runId: "forged" } });
     expect(seen[0]?.input).toMatchObject({ message: "one", runId: "run-1", stageId: "implementation", repositoryId: "repo-1", issueId: "issue-1" });
   });
 
@@ -146,15 +142,5 @@ describe("Conveyor MCP server", () => {
     const control: ControlClient = { async call() {} };
     expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.typo"] }, control)).toThrow("unsupported MCP tool");
     expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.get_issue"] }, control)).toThrow("duplicate MCP tool");
-  });
-
-  test("the HTTP control client sends the call id with the request", async () => {
-    let body: unknown;
-    const control = new HttpControlClient("http://x/internal/mcp", "tok", (async (_url: unknown, init: RequestInit) => {
-      body = JSON.parse(String(init.body));
-      return new Response("{}");
-    }) as unknown as typeof fetch);
-    await control.call("item.get", { a: 1 }, "call-9");
-    expect(body).toEqual({ tool: "item.get", input: { a: 1 }, callId: "call-9" });
   });
 });
