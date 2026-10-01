@@ -1,42 +1,11 @@
-import type { ComponentChildren } from "preact";
-import renderToString from "preact-render-to-string";
-
-import { dashboardCss } from "./styles";
-import type { AgentProfileViewModel, AgentSummaryViewModel } from "./types";
+import type { AgentProfileViewModel } from "./types";
 
 export function agentHref(agentId: string): string {
-  return `/agents/${encodeURIComponent(agentId)}`;
+  return `/?view=team&agent=${encodeURIComponent(agentId)}`;
 }
 
-function Shell({ title, children }: { title: string; children: ComponentChildren }) {
-  return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="light" />
-        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-        <title>{title} · Conveyor</title>
-        <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
-      </head>
-      <body>
-        <main class="dashboard agent-page">{children}</main>
-      </body>
-    </html>
-  );
-}
-
-function Header({ page, parent }: { page: string; parent?: { href: string; label: string } }) {
-  return (
-    <header class="dashboard-header agent-page-header">
-      <h1 class="wordmark"><a href="/">Conveyor</a></h1>
-      <span class="agent-page-title">{page}</span>
-      <nav aria-label="Page links">
-        {parent && <a href={parent.href}>{parent.label}</a>}
-        <a href="/">Dashboard</a>
-      </nav>
-    </header>
-  );
+function agentDialogId(agentId: string): string {
+  return `agent-${agentId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 function stageName(value: string): string {
@@ -46,29 +15,21 @@ function stageName(value: string): string {
     : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`).join(" ");
 }
 
-function AgentList({ agents }: { agents: readonly AgentSummaryViewModel[] }) {
-  return (
-    <Shell title="Agents">
-      <Header page="Agents" />
-      <ul class="agent-list">
-        {agents.map((agent) => (
-          <li key={agent.id}><a href={agentHref(agent.id)}><strong>{agent.name}</strong> <span>{agent.title}</span></a></li>
-        ))}
-      </ul>
-    </Shell>
-  );
-}
-
 function Fact({ label, value }: { label: string; value: string }) {
   return <><dt>{label}</dt><dd>{value}</dd></>;
 }
 
-function AgentProfile({ agent }: { agent: AgentProfileViewModel }) {
+function AgentProfile({ agent, id }: { agent: AgentProfileViewModel; id: string }) {
   const stations = [...new Set(agent.usage.flatMap((use) => use.stage ? [use.stage] : []))];
   return (
-    <Shell title={agent.name}>
-      <Header page={agent.name} parent={{ href: "/agents", label: "Agents" }} />
-      <p class="agent-title">{agent.title}</p>
+    <dialog class="agent-dialog" id={id} aria-labelledby={`${id}-title`} data-agent-id={agent.id}>
+      <header class="details-header">
+        <div>
+          <h2 id={`${id}-title`}>{agent.name}</h2>
+          <p class="agent-title">{agent.title}</p>
+        </div>
+        <form method="dialog"><button class="dialog-close" aria-label={`Close ${agent.name}'s profile`}>×</button></form>
+      </header>
       <nav class="mini-line" aria-label={`${agent.name}'s stations`}>
         <h2>Stations</h2>
         {stations.length > 0
@@ -109,14 +70,30 @@ function AgentProfile({ agent }: { agent: AgentProfileViewModel }) {
           ? <p>Instructions could not be read.</p>
           : <pre class="agent-instructions">{agent.instructions}</pre>}
       </section>
-    </Shell>
+    </dialog>
   );
 }
 
-export function renderAgentList(agents: readonly AgentSummaryViewModel[]): string {
-  return `<!doctype html>${renderToString(<AgentList agents={agents} />)}`;
-}
-
-export function renderAgentProfile(agent: AgentProfileViewModel): string {
-  return `<!doctype html>${renderToString(<AgentProfile agent={agent} />)}`;
+export function Team({ agents }: { agents: readonly AgentProfileViewModel[] }) {
+  if (agents.length === 0) return <section class="team"><p class="team-empty">No agents are configured.</p></section>;
+  return (
+    <section class="team" aria-label="Team">
+      <ul class="team-list">
+        {agents.map((agent) => {
+          const id = agentDialogId(agent.id);
+          const stations = [...new Set(agent.usage.flatMap((use) => use.stage ? [use.stage] : []))];
+          return (
+            <li key={agent.id}>
+              <article class="team-card" data-dialog-open={id} tabIndex={0} aria-haspopup="dialog" aria-label={`Open ${agent.name}'s profile`}>
+                <h3>{agent.name}</h3>
+                <p class="team-card-title">{agent.title}</p>
+                <p class="team-card-meta">{stations.length > 0 ? stations.map(stageName).join(", ") : agent.usage[0]?.role ?? "No stations"} · {agent.model ?? agent.harness}</p>
+                <AgentProfile agent={agent} id={id} />
+              </article>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }

@@ -538,16 +538,36 @@ export const dashboardClient = String.raw`(() => {
     return url.pathname + url.search + url.hash;
   };
 
+  // The card (or team member) whose modal is open is marked, so the selection stays visible behind the overlay.
+  const markOpener = (dialog, selected) => {
+    const openers = new Set(document.querySelectorAll('[data-dialog-open="' + CSS.escape(dialog.id) + '"]'));
+    if (dialog.dataset.issueId) {
+      for (const card of document.querySelectorAll('.issue[data-issue-id="' + CSS.escape(dialog.dataset.issueId) + '"]')) openers.add(card);
+    }
+    for (const opener of openers) opener.classList.toggle('is-selected', selected);
+  };
+
+  const showDialog = (dialog) => {
+    for (const openDialog of document.querySelectorAll('dialog[open]')) openDialog.close();
+    dialog.showModal();
+    markOpener(dialog, true);
+  };
+
   const openIssueDialog = (opener, updateUrl = true) => {
     const id = opener.getAttribute('data-dialog-open');
     const dialog = id ? document.getElementById(id) : null;
     if (dialog instanceof HTMLDialogElement && !dialog.open) {
-      for (const openDialog of document.querySelectorAll('dialog[data-issue-id][open]')) openDialog.close();
       selectDetailTab(dialog, 'summary');
-      dialog.show();
+      showDialog(dialog);
       const issueId = dialog.dataset.issueId;
       if (updateUrl && issueId && new URL(location.href).searchParams.get('issue') !== issueId) {
         history.pushState({ conveyorIssue: issueId }, '', issueUrl(issueId));
+      }
+      const agentId = dialog.dataset.agentId;
+      if (updateUrl && agentId && new URL(location.href).searchParams.get('agent') !== agentId) {
+        const url = new URL(location.href);
+        url.searchParams.set('agent', agentId);
+        history.pushState({ conveyorAgent: agentId }, '', url.pathname + url.search + url.hash);
       }
     }
   };
@@ -563,11 +583,17 @@ export const dashboardClient = String.raw`(() => {
     return null;
   };
 
+  const findAgentDialog = (agentId) => {
+    for (const dialog of document.querySelectorAll('dialog[data-agent-id]')) {
+      if (dialog.dataset.agentId === agentId && dialog instanceof HTMLDialogElement) return dialog;
+    }
+    return null;
+  };
+
   const openDialogElement = (dialog) => {
     if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
-    for (const openDialog of document.querySelectorAll('dialog[data-issue-id][open]')) openDialog.close();
     selectDetailTab(dialog, validDetailTab(new URL(location.href).searchParams.get('tab')));
-    dialog.show();
+    showDialog(dialog);
   };
 
   document.addEventListener('click', (event) => {
@@ -606,7 +632,7 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      const inspector = document.querySelector('dialog[data-issue-id][open]');
+      const inspector = document.querySelector('dialog[open]');
       if (inspector instanceof HTMLDialogElement) {
         event.preventDefault();
         inspector.close();
@@ -670,8 +696,15 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('close', (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
-    const issueId = event.target.dataset.issueId;
+    markOpener(event.target, false);
     const url = new URL(location.href);
+    const agentId = event.target.dataset.agentId;
+    if (agentId && url.searchParams.get('agent') === agentId) {
+      url.searchParams.delete('agent');
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+      return;
+    }
+    const issueId = event.target.dataset.issueId;
     if (!issueId || url.searchParams.get('issue') !== issueId) return;
     url.searchParams.delete('issue');
     url.searchParams.delete('tab');
@@ -683,6 +716,12 @@ export const dashboardClient = String.raw`(() => {
   }, true);
 
   window.addEventListener('popstate', () => {
+    const requestedAgent = new URL(location.href).searchParams.get('agent');
+    for (const dialog of document.querySelectorAll('dialog[data-agent-id][open]')) {
+      if (dialog.dataset.agentId !== requestedAgent) dialog.close();
+    }
+    const agentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
+    if (agentDialog && !agentDialog.open) showDialog(agentDialog);
     const requested = new URL(location.href).searchParams.get('issue');
     for (const dialog of document.querySelectorAll('dialog[data-issue-id][open]')) {
       if (dialog.dataset.issueId !== requested) dialog.close();
@@ -848,6 +887,9 @@ export const dashboardClient = String.raw`(() => {
 
   const requestedIssue = new URL(location.href).searchParams.get('issue');
   if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
+  const requestedAgent = new URL(location.href).searchParams.get('agent');
+  const requestedAgentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
+  if (requestedAgentDialog) showDialog(requestedAgentDialog);
 
   localizeTimes();
 
