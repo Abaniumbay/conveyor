@@ -404,6 +404,7 @@ describe("criteria checks", () => {
     expect(bad.status).toBe("fail");
     expect(bad.message).toContain("b");
     expect(bad.message).toContain("q");
+    expect(bad.message).toContain("Conveyor rewrites this checklist when it pushes the change; do not edit the pull request description.");
     expect(await run("change.criteriaInSync", { context: ctx({ item: item as never, change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
   });
 
