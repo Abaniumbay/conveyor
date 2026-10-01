@@ -67,6 +67,7 @@ export class GitHubCodeHost implements CodeHost {
   async pushBranch(input: {
     address: string;
     workspace: { path: string; branch: string };
+    base?: string;
   }): Promise<BranchPushResult> {
     const { path, branch } = input.workspace;
     const fetched = await this.git(path, [
@@ -103,9 +104,47 @@ export class GitHubCodeHost implements CodeHost {
     } else if (!/couldn't find remote ref|remote ref does not exist|not found/i.test(fetched.stderr)) {
       throw new Error(`cannot fetch origin/${branch}: ${fetched.stderr || "Git error"}`);
     }
+    if (input.base) {
+      const synced = await this.syncWithBase(path, branch, input.base);
+      if (synced) return synced;
+    }
     const pushed = await this.git(path, ["push", "--set-upstream", "origin", branch]);
     if (pushed.exitCode !== 0) throw new Error(`cannot push ${branch}: ${pushed.stderr || "Git error"}`);
     return { pushed: true };
+  }
+
+  /**
+   * Brings the branch up to date with its base before it is pushed, so CI runs the base's current
+   * workflows and a strict "branch must be up to date" rule can be met. A merge (not a rebase) keeps
+   * later pushes fast-forward; a conflict is aborted and handed back to implementation.
+   */
+  private async syncWithBase(path: string, branch: string, base: string): Promise<BranchPushResult | null> {
+    const fetched = await this.git(path, ["fetch", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`]);
+    if (fetched.exitCode !== 0) {
+      // A base the remote does not have yet leaves nothing to merge.
+      if (/couldn't find remote ref|remote ref does not exist|not found/i.test(fetched.stderr)) return null;
+      throw new Error(`cannot fetch origin/${base}: ${fetched.stderr || "Git error"}`);
+    }
+    const upToDate = (await this.git(path, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"])).exitCode === 0;
+    if (upToDate) return null;
+    const status = await this.git(path, ["status", "--porcelain"]);
+    if (status.stdout.length > 0) {
+      return {
+        pushed: false,
+        status: "changes-requested",
+        reason: `The branch ${branch} is behind origin/${base} and has uncommitted changes; commit or discard them so it can be updated.`,
+      };
+    }
+    const merged = await this.git(path, ["merge", "--no-edit", `origin/${base}`]);
+    if (merged.exitCode === 0) return null;
+    const conflicts = await this.git(path, ["diff", "--name-only", "--diff-filter=U"]);
+    await this.git(path, ["merge", "--abort"]);
+    const files = conflicts.stdout.trim().split("\n").filter(Boolean);
+    return {
+      pushed: false,
+      status: "changes-requested",
+      reason: `The branch ${branch} conflicts with origin/${base}${files.length ? ` in ${files.join(", ")}` : ""}; merge origin/${base} into it, resolve the conflicts keeping both sides' intent, run the tests and push.`,
+    };
   }
 
   async ensureChange(input: {

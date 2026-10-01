@@ -39,6 +39,22 @@ function canRerun(status: string, conclusion: string | null): boolean {
   return status === "completed" && ["failure", "cancelled", "timed_out", "action_required", "stale"].includes(conclusion ?? "");
 }
 
+/** Lines that mark an individual failing test in common runners' output. */
+const FAILURE_MARKERS = [
+  /^not ok \d+/, // TAP (node --test, tap)
+  /^\s*(✖|✗|❌|×)\s/, // node, mocha, flutter/dart reporters
+  /^\s*FAIL\s/, // jest, vitest
+  /^--- FAIL:/, // go test
+  /AssertionError|Assertion failed/,
+];
+const FAILURE_CONTEXT_BEFORE = 1;
+const FAILURE_CONTEXT_AFTER = 12;
+
+/**
+ * The part of a job log that explains a failure: every failing-test block found anywhere in the
+ * log (a runner can report it hundreds of lines before the job's final error), followed by the
+ * `lines` lines that end at the last `##[error]`. Cleanup output is dropped.
+ */
 export function focusGitHubActionsLog(text: string, lines: number): string {
   const all = text
     .split(/\r?\n/)
@@ -50,7 +66,17 @@ export function focusGitHubActionsLog(text: string, lines: number): string {
   for (let index = body.length - 1; index >= 0; index -= 1) {
     if (body[index]!.startsWith("##[error]")) { end = index + 1; break; }
   }
-  return body.slice(Math.max(0, end - lines), end).join("\n");
+  const tailStart = Math.max(0, end - lines);
+  const picked = new Set<number>();
+  for (let index = 0; index < tailStart && picked.size < lines; index += 1) {
+    if (!FAILURE_MARKERS.some((marker) => marker.test(body[index]!))) continue;
+    const from = Math.max(0, index - FAILURE_CONTEXT_BEFORE);
+    const to = Math.min(tailStart, index + FAILURE_CONTEXT_AFTER + 1);
+    for (let line = from; line < to && picked.size < lines; line += 1) picked.add(line);
+  }
+  const failures = [...picked].sort((left, right) => left - right).map((index) => body[index]!);
+  const tail = body.slice(tailStart, end);
+  return failures.length > 0 ? [...failures, "…", ...tail].join("\n") : tail.join("\n");
 }
 
 const CHANGE_EVENTS = ["pull_request", "pull_request_target", "push"];

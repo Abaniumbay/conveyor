@@ -29,7 +29,7 @@ export async function pushAndEnsureChange(input: {
   base: string;
   closes: boolean;
 }): Promise<EnsuredChange> {
-  const pushed = await input.codeHost.pushBranch({ address: input.address, workspace: input.workspace });
+  const pushed = await input.codeHost.pushBranch({ address: input.address, workspace: input.workspace, base: input.base });
   if (!pushed.pushed) return pushed;
   const change = await input.codeHost.ensureChange({
     address: input.address,

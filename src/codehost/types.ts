@@ -62,9 +62,11 @@ export interface ReviewArtifact {
 }
 
 export interface CodeHost {
+  /** Pushes the workspace branch; with `base`, first brings it up to date with that base branch. */
   pushBranch(input: {
     address: string;
     workspace: { path: string; branch: string };
+    base?: string;
   }): Promise<BranchPushResult>;
   ensureChange(input: {
     address: string;
