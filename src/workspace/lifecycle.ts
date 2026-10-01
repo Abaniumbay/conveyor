@@ -2,6 +2,7 @@
 // executor pre-creation, the `workspace.*` tasks and the `workspace.cleanup` source action.
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 
 import type { ConveyorStore, StoredIssue, StoredWorkspace } from "../db/store";
 import type { WorkspaceManager } from "./manager";
@@ -49,6 +50,32 @@ export async function createWorkspace(input: {
   const workspace = store.getActiveWorkspace(issue.id);
   if (!workspace) throw new Error(`workspace for issue ${issue.id} was not recorded`);
   return workspace;
+}
+
+/** The item's active workspace: created when none is recorded, re-attached to its branch when the directory went missing. */
+export async function ensureWorkspace(input: {
+  store: ConveyorStore;
+  manager: Pick<WorkspaceManager, "create" | "restore">;
+  issueId: string;
+  repository: WorkspaceRepository;
+}): Promise<StoredWorkspace> {
+  const { store, manager, issueId, repository } = input;
+  const existing = store.getActiveWorkspace(issueId);
+  if (existing) {
+    if (!existsSync(existing.path)) {
+      // The directory is gone: re-attach it to the recorded branch (which keeps any unpushed commits).
+      await manager.restore({
+        repositoryPath: repository.folder,
+        workspacePath: existing.path,
+        branch: existing.branch,
+        baseBranch: repository.baseBranch,
+      });
+    }
+    return existing;
+  }
+  const issue = store.getIssue(issueId);
+  if (!issue) throw new Error(`issue ${issueId} is not stored`);
+  return createWorkspace({ store, manager, issue, repository });
 }
 
 /** Removes the worktree and its local branch and marks the record removed. Missing workspace is done. */

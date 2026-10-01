@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { WorkspaceContext } from "./context";
 import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
-import { createWorkspace, removeWorkspace } from "../workspace/lifecycle";
+import { ensureWorkspace, removeWorkspace } from "../workspace/lifecycle";
 
 type Deps = TaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
@@ -88,22 +88,7 @@ const ensure: TaskDefinition<unknown, unknown, Deps> = {
   writes: [],
   invalidates: ["workspace"],
   async run({ deps }: Args) {
-    const existing = deps.store.getActiveWorkspace(deps.issueId);
-    if (existing) {
-      if (!existsSync(existing.path)) {
-        // The directory is gone: re-attach it to the recorded branch (which keeps any unpushed commits).
-        await deps.workspaces.restore({
-          repositoryPath: deps.repository.folder,
-          workspacePath: existing.path,
-          branch: existing.branch,
-          baseBranch: deps.repository.baseBranch,
-        });
-      }
-      return pass();
-    }
-    const issue = deps.store.getIssue(deps.issueId);
-    if (!issue) throw new Error(`issue ${deps.issueId} is not stored`);
-    await createWorkspace({ store: deps.store, manager: deps.workspaces, issue, repository: deps.repository });
+    await ensureWorkspace({ store: deps.store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
     return pass();
   },
 };

@@ -28,7 +28,7 @@ const envelope = (over: ReturnType<Behaviour>): RunEnvelope => ({
   usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 5, exitCode: 0, artifacts: [], stderr: "",
 });
 
-async function world(options: { sessionResume?: boolean } = {}) {
+async function world(options: { sessionResume?: boolean; noWorkspace?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -40,7 +40,18 @@ async function world(options: { sessionResume?: boolean } = {}) {
   const enrollment = store.activateEnrollment("i1");
   const workspace = path.join(root, "ws");
   await mkdir(workspace);
-  store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/7", status: "active" });
+  if (!options.noWorkspace) store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/7", status: "active" });
+  const managerCalls: Array<{ op: string; input: Record<string, unknown> }> = [];
+  const workspaces = {
+    create: async (input: Record<string, unknown>) => {
+      managerCalls.push({ op: "create", input });
+      const created = path.join(root, "created");
+      await mkdir(created, { recursive: true });
+      return { path: created, branch: "conveyor/7-fix-it" };
+    },
+    restore: async (input: Record<string, unknown>) => { managerCalls.push({ op: "restore", input }); await mkdir(input.workspacePath as string, { recursive: true }); },
+    remove: async () => {},
+  };
   const instructions = path.join(root, "kaveh.md");
   await writeFile(instructions, "You are Kaveh.");
   const config = {
@@ -63,7 +74,7 @@ async function world(options: { sessionResume?: boolean } = {}) {
   };
   const controller = new AbortController();
   const deps = {
-    store, config, items: {} as never, git: {} as never, workspaces: {} as never,
+    store, config, items: {} as never, git: {} as never, workspaces,
     repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" },
     issueId: "i1", sourceGuidance: "GUIDE", signal: controller.signal,
     harnesses: { codex: harness },
@@ -82,7 +93,7 @@ async function world(options: { sessionResume?: boolean } = {}) {
       context, deps, config,
       instance: { id: "implement", stage: "implementation", idempotencyKey: "key-1", resumed },
     });
-  return { store, run, deps, calls, leases, controller, setBehaviour: (b: Behaviour) => { behaviour = b; } };
+  return { store, run, deps, calls, leases, controller, managerCalls, root, setBehaviour: (b: Behaviour) => { behaviour = b; } };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -99,6 +110,26 @@ const answer = (w: World, text: string) => {
 };
 
 describe("agent.run", () => {
+  test("ensures the workspace itself when none is recorded and invalidates the workspace context", async () => {
+    const w = await world({ noWorkspace: true });
+    expect(registry.require("agent.run").invalidates).toContain("workspace");
+    const result = await w.run(false);
+    expect(result.status).toBe("pass");
+    expect(w.managerCalls.map((c) => c.op)).toEqual(["create"]);
+    const stored = w.store.getActiveWorkspace("i1")!;
+    expect(stored.branch).toBe("conveyor/7-fix-it");
+    expect(w.calls[0]!.workspace).toBe(stored.path);
+  });
+
+  test("restores the recorded workspace when its directory is missing", async () => {
+    const w = await world();
+    await rm(w.store.getActiveWorkspace("i1")!.path, { recursive: true, force: true });
+    const result = await w.run(false);
+    expect(result.status).toBe("pass");
+    expect(w.managerCalls.map((c) => c.op)).toEqual(["restore"]);
+    expect(w.managerCalls[0]!.input).toMatchObject({ workspacePath: w.store.getActiveWorkspace("i1")!.path, branch: "conveyor/7", baseBranch: "main" });
+  });
+
   test("runs the agent through the harness, records the run and captures the result", async () => {
     const w = await world();
     w.setBehaviour(() => ({ summary: "Implemented", sessionId: "sess-9" }));

@@ -86,6 +86,16 @@ describe("AdvisoryCiWatches", () => {
     expect(posted).toHaveLength(2);
   });
 
+  test("a watch that never saw a run settles with an explicit no-runs message", async () => {
+    const { watches, provider, posted } = await setup();
+    provider.runs = [];
+    ensure(watches, "head1abcdef", T0, { settleMs: 60_000 });
+    await watches.pollDueWatches(T0 + 2 * MIN);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.message).toContain("no CI runs were reported for head1ab");
+    expect(posted[0]!.message).not.toContain("CI passed");
+  });
+
   test("a failure posts one message with focused logs", async () => {
     const { watches, provider, posted } = await setup();
     provider.runs = [run("build", "failed"), run("lint", "passed")];

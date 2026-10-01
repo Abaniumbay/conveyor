@@ -181,7 +181,7 @@ export class AdvisoryCiWatches {
       const lines = runs.map((run) => `- ${run.name} (${run.state}): ${run.url ?? "no link"}`);
       return this.#finish(watch, "passed", now, bounded(runs.length > 0
         ? [`CI passed at ${sha}: ${watch.changeUrl}/checks`, ...lines].join("\n")
-        : `No CI checks reported for ${sha}.`));
+        : `CI finished, but no CI runs were reported for ${sha}: ${watch.changeUrl}/checks`));
     }
     if (now >= Date.parse(watch.deadlineAt)) {
       const minutes = Math.round((Date.parse(watch.deadlineAt) - Date.parse(watch.startedAt)) / 60_000);

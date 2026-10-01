@@ -641,6 +641,23 @@ describe("checkpoints", () => {
     await h.run(simple(h, gate), "implementation");
     expect(h.journal.getContext("issue-1")!.context.checkpoints.reviewPassed).toBeNull();
   });
+
+  test("a gate-scope checkpoint appears only on the run in which every gate task passes", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.changeSha = "def456";
+    const gate = [ct(h.registry, "review", "test.reviewPassed"), ct(h.registry, "gate", "test.check")];
+    const plan = simple(h, gate, { retries: 3 });
+    h.world.checkResult.gate = () => fail("red");
+    const first = await h.run(plan, "implementation");
+    expect(first.kind).not.toBe("advance");
+    expect(h.journal.getContext("issue-1")!.context.checkpoints.reviewPassed).toBeNull();
+    delete h.world.checkResult.gate;
+    h.activate();
+    const second = await h.run(plan, "implementation");
+    expect(second.kind).toBe("advance");
+    expect(h.journal.getContext("issue-1")!.context.checkpoints.reviewPassed).toMatchObject({ sha: "def456", taskInstanceId: "review" });
+  });
 });
 
 test("thrown errors propagate", async () => {

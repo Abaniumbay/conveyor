@@ -25,6 +25,7 @@ import {
 import type { AgentContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
+import { ensureWorkspace } from "../workspace/lifecycle";
 
 type Deps = TaskDeps;
 
@@ -87,10 +88,10 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "agent.run",
   kind: "act",
   description:
-    "Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the run recorded a finding with `change.comment` and otherwise stops as an error, and an invalid result stops as an error.",
+    "Runs a configured agent through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the run recorded a finding with `change.comment` and otherwise stops as an error, and an invalid result stops as an error.",
   reads: ["run"],
   writes: ["agent"],
-  invalidates: [],
+  invalidates: ["workspace"],
   config: runConfig,
   defaultWait: { timeoutMs: null, pollMs: 60_000 },
   async run({ context, config, deps, instance }: TaskArgs<RunConfig, unknown, Deps>) {
@@ -110,8 +111,8 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
     if (!runner || runner.type !== "codex") throw new Error(`agent ${config.agent} must use a Codex runner in v0.1`);
     const harness: Harness | undefined = deps.harnesses?.[runner.type];
     if (!harness || !deps.mcp) throw new InfrastructureError(`no harness is available for runner type ${runner.type}`);
-    const workspace = store.getActiveWorkspace(deps.issueId);
-    if (!workspace) throw new Error(`agent stage ${instance.stage} requires a workspace`);
+    // The agent works in the item's workspace; a stage whose first action is this one gets it created here.
+    const workspace = await ensureWorkspace({ store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
 
     const stageId = instance.stage;
     const runId = startRun(store, { issueId: issue.id, stageId, kind: KIND, configHash: deps.config.hash });

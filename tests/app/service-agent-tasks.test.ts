@@ -22,7 +22,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup() {
+async function setup(options: { noWorkspace?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -102,15 +102,37 @@ repositories:
   store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
   const enrollment = store.activateEnrollment("issue");
   const workspace = path.join(root, "ws");
-  await mkdir(workspace);
-  store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/1", status: "active" });
+  const created: Array<Record<string, unknown>> = [];
+  if (options.noWorkspace) {
+    Object.assign(service as object, {
+      workspaceManager: {
+        create: async (input: Record<string, unknown>) => { created.push(input); await mkdir(workspace, { recursive: true }); return { path: workspace, branch: "conveyor/1-issue" }; },
+        restore: async () => {}, remove: async () => {},
+      },
+    });
+  } else {
+    await mkdir(workspace);
+    store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/1", status: "active" });
+  }
 
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
-  return { store, service, execute, calls, labelWrites, comments, root, setResume: (value: boolean) => { sessionResume = value; } };
+  return { store, service, execute, calls, created, workspace, labelWrites, comments, root, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
+  test("a native stage whose first action is agent.run gets a workspace on an item that has none", async () => {
+    const w = await setup({ noWorkspace: true });
+    expect(w.store.getActiveWorkspace("issue")).toBeNull();
+    w.setResume(true);
+    // The fake harness asks first; the second call completes. Run until the agent has been invoked in a workspace.
+    await w.execute();
+    expect(w.created).toHaveLength(1);
+    expect(w.store.getActiveWorkspace("issue")).toMatchObject({ path: w.workspace, branch: "conveyor/1-issue" });
+    expect(w.calls[0]!.workspace).toBe(w.workspace);
+    await w.service.close();
+  });
+
   test("passes the run's abort signal, parks on a question and continues the session after the answer", async () => {
     const w = await setup();
     const controller = new AbortController();
