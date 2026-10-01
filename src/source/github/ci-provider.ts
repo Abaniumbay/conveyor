@@ -42,7 +42,8 @@ function canRerun(status: string, conclusion: string | null): boolean {
 /** Lines that mark an individual failing test in common runners' output. */
 const FAILURE_MARKERS = [
   /^not ok \d+/, // TAP (node --test, tap)
-  /^\s*(✖|✗|❌|×)\s/, // node, mocha, flutter/dart reporters
+  /^(##\[group\])?\s*(✖|✗|❌|×)\s/, // node, mocha, flutter/dart reporters (GitHub groups failed tests)
+  /EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK/, // followed by the Expected/Actual of a Flutter test
   /^\s*FAIL\s/, // jest, vitest
   /^--- FAIL:/, // go test
   /AssertionError|Assertion failed/,

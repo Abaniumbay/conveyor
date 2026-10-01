@@ -279,6 +279,28 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("trims an over-long system message to fit instead of failing, but still rejects over-long user input", async () => {
+    const store = await openStore();
+    store.upsertRepository({ id: "repo-1", configName: "sample", source: "github", address: "owner/sample", folder: "/srv/sample", configHash: "h" });
+    store.upsertIssue({
+      id: "issue-1", repositoryId: "repo-1", sourceNumber: 12, sourceUrl: "https://github.com/owner/sample/issues/12",
+      title: "CI", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const long = `CI failed at abc1234: Full suite (failed).\n${"log line\n".repeat(1_000)}`;
+    for (const actorType of ["conveyor", "agent"] as const) {
+      const stored = store.appendConversationMessage({
+        issueId: "issue-1", runId: null, stageId: "ci", actorType, actorId: actorType, actorName: actorType, actorTitle: null, message: long,
+      });
+      expect(stored.message.length).toBeLessThanOrEqual(4_000);
+      expect(stored.message.startsWith("CI failed at abc1234: Full suite (failed).")).toBe(true);
+      expect(stored.message).toContain("characters omitted");
+    }
+    expect(() => store.appendConversationMessage({
+      issueId: "issue-1", runId: null, stageId: "ci", actorType: "user", actorId: "op", actorName: "You", actorTitle: null, message: "x".repeat(4_001),
+    })).toThrow("must not exceed 4000 characters");
+    store.close();
+  });
+
   test("separates stable board revisions from conversation and technical activity", async () => {
     const store = await openStore();
     store.upsertRepository({

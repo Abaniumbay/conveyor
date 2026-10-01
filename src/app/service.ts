@@ -7,7 +7,7 @@ import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
-import { applyRollupTransition } from "../core/transition";
+import { applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
@@ -27,6 +27,7 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
+import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
 import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
@@ -165,6 +166,8 @@ export class ConveyorService {
   readonly #active = new Map<string, ActiveRun>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
+  /** Consecutive infrastructure failures per issue, for the stage they happened in. */
+  readonly #infrastructureFailures = new Map<string, { stageId: string; count: number }>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -529,28 +532,76 @@ export class ConveyorService {
       this.schedule();
     } catch (error) {
       if (signal.aborted) return;
+      await this.handleInfrastructureFailure(issue, error);
+      return;
+    }
+    this.#infrastructureFailures.delete(issue.id);
+  }
+
+  /**
+   * A stage that failed outside its own tasks (runner crash, provider outage, a bug in Conveyor) is
+   * retried with exponential backoff and, once `settings.retries` is used up, stopped as `error` with
+   * the reason, instead of retrying the same deterministic failure forever.
+   */
+  private async handleInfrastructureFailure(issue: StoredIssue, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    const stageId = this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage ?? "";
+    const previous = this.#infrastructureFailures.get(issue.id);
+    const failures = previous?.stageId === stageId ? previous.count + 1 : 1;
+    this.#infrastructureFailures.set(issue.id, { stageId, count: failures });
+    const decision = infrastructureRetry({ failures, usageLimit: isUsageLimitError(error), retries: this.config.settings.retries });
+    if ("retryInMs" in decision) {
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
-        warning: `Execution failed and will retry: ${error instanceof Error ? error.message : String(error)}`,
+        warning: `Execution failed and will retry in ${formatDuration(decision.retryInMs)}: ${message}`,
       });
       await this.updateStatusComment(issue.id).catch((statusError) => {
         console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
       });
-      setTimeout(() => {
-        const current = this.store.getStageState(issue.id);
-        if (current?.status === "error") {
-          this.store.setStageState({
-            issueId: issue.id,
-            stageId: current.stageId,
-            status: "ready",
-            feedbackCycle: current.feedbackCycle,
-            configHash: this.config.hash,
-          });
-          this.schedule();
-        }
-      }, this.config.settings.retries.minBackoff);
+      this.retryLater(issue.id, decision.retryInMs);
+      return;
     }
+    this.#infrastructureFailures.delete(issue.id);
+    const repository = this.config.repositories[issue.repositoryId]!;
+    const pipeline = this.config.pipelines[repository.pipeline]!;
+    const reason = `${displayName(stageId)} stopped after ${failures} failed attempts: ${message}`;
+    this.store.appendConversationMessage({
+      issueId: issue.id, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
+      actorName: "Conveyor", actorTitle: "Orchestrator", message: reason,
+    });
+    await applyStageTransition({
+      store: this.store,
+      source: this.github,
+      sourceName: repository.source,
+      address: repository.address,
+      configHash: this.config.hash,
+      transitionId: randomUUID(),
+      issue,
+      stages: pipeline.stages.map((stage) => stage.id),
+      labels: this.config.labels,
+      result: { kind: "stopped", stageId, state: "error", reason, requiredFixes: [], feedbackCycles: 0, result: null },
+      actor: { name: "Conveyor", title: "Orchestrator" },
+    }).catch((transitionError) => {
+      console.error(`Stopping ${issue.id} as error failed: ${transitionError instanceof Error ? transitionError.message : String(transitionError)}`);
+    });
+    await this.updateStatusComment(issue.id).catch(() => {});
+  }
+
+  private retryLater(issueId: string, delayMs: number): void {
+    setTimeout(() => {
+      const current = this.store.getStageState(issueId);
+      if (current?.status === "error") {
+        this.store.setStageState({
+          issueId,
+          stageId: current.stageId,
+          status: "ready",
+          feedbackCycle: current.feedbackCycle,
+          configHash: this.config.hash,
+        });
+        this.schedule();
+      }
+    }, delayMs);
   }
 
   /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
