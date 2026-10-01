@@ -788,6 +788,10 @@ describe("ConveyorStore", () => {
       runs: 0,
       stages: 0,
     });
+    // A stage waiting on an in-memory retry timer when the process stopped retries after restart.
+    store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "error", feedbackCycle: 1, configHash: "config-hash" });
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1 });
+    expect(store.getStageState("issue-1")).toMatchObject({ stageId: "implementation", status: "ready" });
     store.close();
   });
 

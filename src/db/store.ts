@@ -1040,12 +1040,13 @@ export class ConveyorStore {
       }
 
       const runningStages = this.#database
-        .query("SELECT COUNT(*) AS count FROM stage_states WHERE status = 'running'")
+        .query("SELECT COUNT(*) AS count FROM stage_states WHERE status IN ('running', 'error')")
         .get() as { count: number };
+      // 'error' stages were waiting on an in-memory retry timer that did not survive the restart.
       this.#database
         .query(
           `UPDATE stage_states SET status = 'ready', config_hash = ?, updated_at = ?
-           WHERE status = 'running'`,
+           WHERE status IN ('running', 'error')`,
         )
         .run(configHash, timestamp);
       return {
