@@ -9,6 +9,13 @@ export interface IssueRelationViewModel {
   satisfied: boolean;
 }
 
+export interface IssueWaitingViewModel {
+  reason: string;
+  since: string;
+  nextCheckAt: string | null;
+  deadline: string | null;
+}
+
 /** A server-ready issue card with lightweight hierarchy references. */
 export interface IssueCardViewModel {
   id: string;
@@ -23,6 +30,8 @@ export interface IssueCardViewModel {
   reason: string | null;
   cost: string | null;
   duration: string | null;
+  stateChangedAt: string | null;
+  waiting: IssueWaitingViewModel | null;
   blocked: boolean;
   inconsistent: boolean;
   closable: boolean;
@@ -115,6 +124,12 @@ export interface IssueJourneyTransitionViewModel {
 
 export interface IssueJourneyViewModel {
   issueId: string;
+  now: {
+    stage: string | null;
+    state: string;
+    reason: string | null;
+    since: string | null;
+  };
   transitions: readonly IssueJourneyTransitionViewModel[];
 }
 
@@ -170,7 +185,9 @@ export interface SteeringViewModel {
 
 export interface QuestionViewModel {
   id: string;
+  issueId: string;
   issueNumber: number;
+  issueTitle: string;
   prompt: string;
   reason: string;
   options: readonly { id: string; label: string }[];
@@ -180,6 +197,7 @@ export interface QuestionViewModel {
 export interface DashboardViewModel {
   title: string;
   project: string;
+  totalUsage: string;
   updatedAt: string;
   revision: string;
   view: DashboardView;
@@ -194,6 +212,7 @@ export interface DashboardViewModel {
   done: StageColumnViewModel;
   attention: StageColumnViewModel;
   questions: readonly QuestionViewModel[];
+  needsYou: readonly IssueCardViewModel[];
   systemWarnings: readonly string[];
   steering: SteeringViewModel;
   selectedIssue: IssueCardViewModel | null;

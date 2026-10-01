@@ -56,6 +56,12 @@ const DEFAULT_DONE_LIMIT = 20;
 const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#087f72"/><path d="M15 21h34M15 43h34" stroke="#dff8f0" stroke-width="6" stroke-linecap="round"/><path d="m25 14 10 18-10 18" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const FONT_ASSETS = new Map<string, URL>([
+  ["/assets/fonts/ibm-plex-sans-400.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2", import.meta.url)],
+  ["/assets/fonts/ibm-plex-sans-500.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2", import.meta.url)],
+  ["/assets/fonts/ibm-plex-sans-600.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2", import.meta.url)],
+  ["/assets/fonts/ibm-plex-mono-400.woff2", new URL("../../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2", import.meta.url)],
+]);
 
 function response(body: BodyInit | null, status: number, contentType: string, headers?: HeadersInit): Response {
   const responseHeaders = new Headers(headers);
@@ -63,7 +69,7 @@ function response(body: BodyInit | null, status: number, contentType: string, he
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
   if (!responseHeaders.has("cache-control")) responseHeaders.set("cache-control", "no-store");
-  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
 }
 
@@ -100,7 +106,7 @@ function escapeHtml(value: string): string {
 
 function loginPage(message = ""): string {
   const error = message ? `<p role="alert" class="error">${escapeHtml(message)}</p>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>Sign in · Conveyor</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f8f6;color:#172126;font:16px/1.5 ui-sans-serif,system-ui,sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:white;border:1px solid #dce5e3;border-radius:14px;box-shadow:0 8px 32px #17212612}h1{margin:0 0 .35rem;font-size:1.6rem}.muted{margin:0 0 1.25rem;color:#627176}label{display:block;margin:.8rem 0 .4rem;font-weight:650}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #9cadaa;border-radius:7px;font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:#087f72;color:white;font:inherit;font-weight:700;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #49aa9a;outline-offset:2px}.error{color:#a43c37}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#E8EBE8;color:#1C2328;font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:#F8F9F7;border:1px solid #C9CECA;border-radius:14px;box-shadow:0 8px 32px #1C232812}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:#5D6970}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #8A959B;border-radius:7px;font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:#2A5BD7;color:white;font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #2A5BD7;outline-offset:2px}.error{color:#BD3B26}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<Uint8Array | Response> {
@@ -336,8 +342,8 @@ function dashboardEventStream(dependencies: WebHandlerDependencies): ReadableStr
               // Retry on the next loop while keeping the SSE connection alive.
             }
           }
-          if (now - lastHeartbeat >= 15_000) {
-            controller.enqueue(encoder.encode(": keep-alive\n\n"));
+          if (now - lastHeartbeat >= 4_000) {
+            controller.enqueue(encoder.encode(": ping\n\n"));
             lastHeartbeat = now;
           }
           await Bun.sleep(1_000);
@@ -375,6 +381,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/assets/dashboard.js") {
       const methodError = requireMethod(request, "GET");
       return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
+    }
+
+    const fontAsset = FONT_ASSETS.get(path);
+    if (fontAsset) {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(Bun.file(fontAsset), 200, "font/woff2", {
+        "cache-control": "public, max-age=31536000, immutable",
+      });
     }
 
     if (path === "/favicon.svg") {
