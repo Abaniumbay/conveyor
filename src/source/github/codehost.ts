@@ -4,7 +4,7 @@ import type {
   ChangeRequest,
   CodeHost,
 } from "../../codehost/types";
-import { GitHubAdapter } from "./adapter";
+import { GitHubAdapter, GitHubTransportError } from "./adapter";
 
 interface CommandResult {
   stdout: string;
@@ -119,11 +119,21 @@ export class GitHubCodeHost implements CodeHost {
     };
   }
 
-  async mergeChange(input: { address: string; id: string; method: "squash" }): Promise<{ merged: boolean; sha?: string }> {
-    return this.github.squashMerge(
-      input.address,
-      reference(input.address, input.id),
-    );
+  async mergeChange(input: {
+    address: string;
+    id: string;
+    method: "squash";
+    expectedHeadSha?: string;
+  }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }> {
+    try {
+      return await this.github.squashMerge(input.address, reference(input.address, input.id), input.expectedHeadSha);
+    } catch (error) {
+      // GitHub answers HTTP 409 when the `sha` in the merge request is no longer the head.
+      if (input.expectedHeadSha && error instanceof GitHubTransportError && /HTTP 409|Head branch was modified/i.test(error.stderr)) {
+        return { merged: false, headMoved: true };
+      }
+      throw error;
+    }
   }
 
   async getChangeDelivery(input: { address: string; id: string }): Promise<ChangeDelivery> {

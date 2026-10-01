@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
 import { GitHubCodeHost } from "../../src/source/github/codehost";
 
 class FakeTransport implements GitHubTransport {
@@ -62,5 +62,17 @@ describe("CodeHost contract: GitHub", () => {
     const broken = new GitHubCodeHost(new GitHubAdapter(failed, "conveyor"));
     await expect(broken.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
       .rejects.toThrow("merge blocked");
+  });
+
+  test("sends the expected head SHA with the merge and reports a moved head", async () => {
+    const fenced = new FakeTransport([pull(8), { merged: true, sha: "merge123" }]);
+    const host = new GitHubCodeHost(new GitHubAdapter(fenced, "conveyor"));
+    await host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" });
+    expect(fenced.requests[1]).toMatchObject({ method: "PUT", body: { merge_method: "squash", sha: "abc123" } });
+
+    const moved = new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "gh: Head branch was modified. Review and try the merge again. (HTTP 409)")]);
+    const movedHost = new GitHubCodeHost(new GitHubAdapter(moved, "conveyor"));
+    await expect(movedHost.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" }))
+      .resolves.toEqual({ merged: false, headMoved: true });
   });
 });

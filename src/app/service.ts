@@ -16,7 +16,7 @@ import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTrigg
 import type { CiChange, CiProvider } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
-import { changeAction } from "../codehost/actions";
+import { changeAction, pushAndEnsureChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
@@ -143,6 +143,12 @@ const ITEM_TOOLS: Record<string, string> = {
 const WORKSPACE_TOOLS: Record<string, string> = {
   "workspace.request_fetch": "workspace.fetch",
   "workspace.request_push": "workspace.push",
+};
+
+/** Legacy MCP tool names served by the `change` tool tasks. */
+const CHANGE_TOOLS: Record<string, string> = {
+  "delivery.get_state": "change.get",
+  "source.set_pull_request_metadata": "change.setMetadata",
 };
 
 /** Legacy MCP names served by the `agent` tool tasks (`workspace.record_artifact` shares `agent.recordArtifact`). */
@@ -453,6 +459,7 @@ export class ConveyorService {
       mcp: this.mcpFactory(),
       harnesses: this.#harnesses,
       delivery: () => this.loadDeliveryState(issueId, repository.address),
+      codeHost: this.codeHostFor(repository.id),
       ...(signal ? { signal } : {}),
     };
   }
@@ -961,23 +968,12 @@ export class ConveyorService {
         if (changeOperation === "ensure") {
           const codeHost = this.codeHostFor(context.repository.id);
           if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
-          const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
-          if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
-          const pullRequest = await codeHost.ensureChange({
-            address: context.repository.address,
-            issueNumber: context.issue.sourceNumber,
-            branch: workspace.branch,
-            base: context.repository.baseBranch,
-            title: context.issue.title,
-            closes: action.with?.closingReference !== false,
+          const ensured = await pushAndEnsureChange({
+            codeHost, store: this.store, address: context.repository.address,
+            issue: { id: context.issue.id, sourceNumber: context.issue.sourceNumber, title: context.issue.title },
+            workspace, base: context.repository.baseBranch, closes: action.with?.closingReference !== false,
           });
-          this.store.upsertPullRequest({
-            issueId: context.issue.id,
-            id: pullRequest.id,
-            number: pullRequest.number,
-            url: pullRequest.url,
-            state: pullRequest.state,
-          });
+          if (!ensured.pushed) return { outcome: "failure", status: ensured.status, reason: ensured.reason, summary: ensured.reason };
           return;
         }
         if (action.sourceAction === "ci.await" || action.sourceAction === "pullRequest.awaitChecks") {
@@ -1023,23 +1019,13 @@ export class ConveyorService {
     const maxCorrections = typeof input?.maxCorrections === "number" ? input.maxCorrections : 5;
     const codeHost = this.codeHostFor(context.repository.id);
     if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
-    const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
-    if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
-    const pullRequest = await codeHost.ensureChange({
-      address: context.repository.address,
-      issueNumber: context.issue.sourceNumber,
-      branch: workspace.branch,
-      base: context.repository.baseBranch,
-      title: context.issue.title,
-      closes: input?.closingReference !== false,
+    const ensured = await pushAndEnsureChange({
+      codeHost, store: this.store, address: context.repository.address,
+      issue: { id: context.issue.id, sourceNumber: context.issue.sourceNumber, title: context.issue.title },
+      workspace, base: context.repository.baseBranch, closes: input?.closingReference !== false,
     });
-    this.store.upsertPullRequest({
-      issueId: context.issue.id,
-      id: pullRequest.id,
-      number: pullRequest.number,
-      url: pullRequest.url,
-      state: pullRequest.state,
-    });
+    if (!ensured.pushed) return { outcome: "failure", status: ensured.status, reason: ensured.reason, summary: ensured.reason };
+    const pullRequest = ensured.change;
     const outcome = await evaluateCiGate({
       change: { repository: context.repository.address, changeId: String(pullRequest.number), url: pullRequest.url },
       issueKey: context.issue.id,
@@ -1161,7 +1147,7 @@ export class ConveyorService {
       return this.runItemTool(ITEM_TOOLS[tool]!, grant, input, "");
     }
     if (tool === "delivery.get_state") {
-      return this.loadDeliveryState(issue.id, address);
+      return this.runItemTool(CHANGE_TOOLS[tool]!, grant, input, "");
     }
     if (tool === "delivery.get_check_logs") {
       return this.checkLogs(issue.id, address, input);
@@ -1184,8 +1170,8 @@ export class ConveyorService {
         result = await this.runItemTool(WORKSPACE_TOOLS[tool]!, grant, input, idempotencyKey);
       } else if (tool === "workspace.record_artifact") {
         result = await this.runItemTool(AGENT_TOOLS[tool]!, grant, input, idempotencyKey);
-      } else if (tool === "source.set_pull_request_metadata") {
-        this.store.appendRunEvent(grant.runId, tool, input);
+      } else if (CHANGE_TOOLS[tool]) {
+        result = await this.runItemTool(CHANGE_TOOLS[tool]!, grant, input, idempotencyKey);
       } else {
         throw new Error(`unsupported MCP tool: ${tool}`);
       }

@@ -65,7 +65,9 @@ export interface CodeHost {
     address: string;
     id: string;
     method: "squash";
-  }): Promise<{ merged: boolean; sha?: string }>;
+    /** Only squash this head: the host refuses when the change's head has moved. */
+    expectedHeadSha?: string;
+  }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }>;
   getChangeDelivery(input: {
     address: string;
     id: string;

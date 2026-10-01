@@ -63,7 +63,7 @@ export interface TaskContext {
   repository: RepositoryContext;    // engine/config
   item: ItemContext;                // item.load only
   workspace?: WorkspaceContext;     // workspace.load only
-  change?: ChangeContext;           // change.load only
+  change?: ChangeContext | null;    // change.load only; null until a change request exists
   ci?: CiContext;                   // ci.load only
   agent?: AgentContext;             // engine-captured agent.run result
   script?: ScriptContext;           // engine-captured script.run results

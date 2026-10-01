@@ -1,5 +1,6 @@
 import { TaskRegistry } from "./contract";
 import { agentGroup } from "./agent";
+import { changeGroup } from "./change";
 import { conversationGroup } from "./conversation";
 import { itemGroup } from "./item";
 import { legacyGroup } from "./legacy";
@@ -11,6 +12,7 @@ export function createTaskRegistry(): TaskRegistry {
   const registry = new TaskRegistry();
   registry.register(itemGroup);
   registry.register(workspaceGroup);
+  registry.register(changeGroup);
   registry.register(agentGroup);
   registry.register(conversationGroup);
   registry.register(scriptGroup);

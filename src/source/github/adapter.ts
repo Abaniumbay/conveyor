@@ -675,6 +675,7 @@ export class GitHubAdapter {
   async squashMerge(
     address: string,
     pullRequestNumber: number,
+    expectedHeadSha?: string,
   ): Promise<{ merged: boolean; sha?: string }> {
     const current = await this.transport.request<GitHubPullRequest>({
       method: "GET",
@@ -689,7 +690,7 @@ export class GitHubAdapter {
     return this.transport.request<{ merged: boolean; sha?: string }>({
       method: "PUT",
       path: `repos/${address}/pulls/${pullRequestNumber}/merge`,
-      body: { merge_method: "squash" },
+      body: expectedHeadSha ? { merge_method: "squash", sha: expectedHeadSha } : { merge_method: "squash" },
     });
   }
 

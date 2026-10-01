@@ -1,6 +1,7 @@
 // The dependencies the engine hands to non-check tasks of native stages. Each task group
 // extends this interface with the fields it needs; the IssueExecutor builds one value per item.
 
+import type { CodeHost } from "../codehost/types";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore } from "../db/store";
 import type { GitHubAdapter } from "../source/github/adapter";
@@ -32,6 +33,8 @@ export interface TaskDeps {
   git: GitOps;
   /** Creates and removes worktrees. */
   workspaces: WorkspaceLifecycleManager;
+  /** The repository's code host (the change group); null when none is configured. */
+  codeHost?: CodeHost | null;
   /** Interrupts a running script (the script group passes it to the process). */
   signal?: AbortSignal;
   /** Leases the run-scoped MCP endpoint an agent talks to (the agent group). */

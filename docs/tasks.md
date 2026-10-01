@@ -83,6 +83,19 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `agent.reportResult` | tool | - | - | Record the agent's result report. |
 | `agent.run` | act | run | writes agent | Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides), and an invalid result stops as an error. |
 
+### change
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `change.ensure` | act | repository | invalidates change, workspace | Pushes the workspace branch and opens the change request for it, reusing an existing one. A rejected push fails and retries the stage. |
+| `change.get` | tool | - | - | Read the live change request, its pull request projection and its CI checks. |
+| `change.headUnchanged` | check | change, checkpoints | - | Passes when the change head equals the SHA CI passed for. |
+| `change.load` | load | - | writes change | Loads the item's change request live from the code host (state, head, mergeability); null until one exists. |
+| `change.merge` | act | repository, change, checkpoints | invalidates change | Squash-merges the change only at the head that review passed (and CI, when CI is required); stops as blocked otherwise. An already merged change passes. |
+| `change.mergeable` | check | change | - | Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts. |
+| `change.merged` | check | change | - | Passes when the change request is merged. |
+| `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
+
 ### conversation
 
 | Task | Kind | Reads | Writes / invalidates | Description |
