@@ -137,6 +137,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.get` | tool | - | - | Read the latest source state of the current issue. |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |
 | `item.labelsValid` | check | item, repository | - | Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones). |
+| `item.listOpen` | tool | - | - | List the repository's other open Conveyor items (number, title, stage, state, parent, dependencies, work branch when one exists, and the start of the body), to find work that will change the same files as the current issue. A branch can be compared with the base in the workspace. |
 | `item.load` | load | - | writes item | Loads the stored issue with its acceptance criteria, children, dependencies and system labels. |
 | `item.setCriteria` | tool | - | invalidates item | Replace acceptance criteria on the current issue. |
 | `item.setDependencies` | tool | - | invalidates item | Replace dependencies of the current issue. |

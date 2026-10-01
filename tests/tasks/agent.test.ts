@@ -22,10 +22,11 @@ const registry = createTaskRegistry();
 type Call = HarnessRunInput & HarnessResumeInput;
 type Behaviour = (call: Call, runId: string, store: ConveyorStore) => Partial<RunEnvelope["stageResult"]> & { sessionId?: string | null };
 
+let usage: RunEnvelope["usage"] = { ...EMPTY_USAGE };
 const envelope = (over: ReturnType<Behaviour>): RunEnvelope => ({
   stageResult: { outcome: "success", status: "done", summary: "All done", reason: null, metrics: {}, ...over },
   sessionId: over.sessionId === undefined ? "sess-1" : over.sessionId,
-  usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 5, exitCode: 0, artifacts: [], stderr: "",
+  usage: { ...usage }, cost: { ...UNAVAILABLE_COST }, durationMs: 5, exitCode: 0, artifacts: [], stderr: "",
 });
 
 async function world(options: { sessionResume?: boolean; noWorkspace?: boolean } = {}) {
@@ -56,7 +57,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
   await writeFile(instructions, "You are Kaveh.");
   const config = {
     hash: "cfg",
-    settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100 },
+    settings: { artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, agentRunTokenWarning: 15_000_000 },
     agents: { kaveh: { runner: "codex", instructions, tasks: ["agent.reportProgress"], name: "Kaveh", title: "Implementer", workspaceAccess: "write" } },
     runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
   } as unknown as ConveyorConfig;
@@ -110,6 +111,23 @@ const answer = (w: World, text: string) => {
 };
 
 describe("agent.run", () => {
+  test("warns in the conversation when a run passes the token budget, without stopping it", async () => {
+    const w = await world();
+    usage = { ...EMPTY_USAGE, inputTokens: 39_600_000 };
+    try {
+      expect((await w.run(false)).status).toBe("pass");
+    } finally {
+      usage = { ...EMPTY_USAGE };
+    }
+    const warnings = w.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor");
+    expect(warnings.map((message) => message.message)).toEqual([
+      "Kaveh's run used 39.6M input tokens, over the 15M budget. It was not stopped. A run this large usually means the item is too big or coupled with other work; consider refining it.",
+    ]);
+    const second = await world();
+    await second.run(false);
+    expect(second.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor")).toEqual([]);
+  });
+
   test("skips the agent when the only feedback is a failure the stage's own actions repair", async () => {
     const w = await world();
     (w.context.run as { feedback: unknown }).feedback = {

@@ -234,6 +234,7 @@ settings:
   artifacts: /srv/conveyor/state/artifacts
   reconcileInterval: 5m
   maxReturns: 5
+  agentRunTokenWarning: 15000000   # warn (never stop) when one agent run uses more input tokens
   history:
     contextSummaryBytes: 65536
   retries:

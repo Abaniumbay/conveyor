@@ -197,7 +197,7 @@ describe("item tools", () => {
     for (const name of ["item.setCriteria", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
       expect(registry.require(name)).toMatchObject({ kind: "tool", mutating: true, invalidates: ["item"] });
     }
-    for (const name of ["item.get", "item.guidance"]) {
+    for (const name of ["item.get", "item.guidance", "item.listOpen"]) {
       expect(registry.require(name)).toMatchObject({ kind: "tool", invalidates: [] });
       expect(registry.require(name).mutating).toBeFalsy();
     }
@@ -208,6 +208,28 @@ describe("item tools", () => {
     expect((await tool("item.get", w.deps(), {})).output).toMatchObject({ body: "B" });
     expect(w.calls[0]).toEqual(["getIssue", ["o/r", 5]]);
     expect((await tool("item.guidance", w.deps(), {})).output).toBe("GUIDE");
+  });
+
+  test("listOpen lists the repository's other open items with their branch, so overlapping work can be found", async () => {
+    const w = await world();
+    w.add("i1", 5);
+    w.add("i2", 6, { body: "Edits the duel registry.", projected: "active" });
+    w.add("i3", 7, { projected: "done" });
+    w.add("i4", 8, { state: "closed" });
+    w.add("i5", 9, { labels: [] });
+    w.add("parent", 4, { projected: "active" });
+    w.store.replaceRelationships("i2", { parentId: "parent", siblingOrder: 1 }, ["i1"]);
+    const enrollment = w.store.activateEnrollment("i2");
+    w.store.recordWorkspace({ id: "ws", enrollmentId: enrollment.id, path: "/w", branch: "conveyor/6-duels", status: "active" });
+    const listed = (await tool("item.listOpen", w.deps(), {})).output as { items: Array<Record<string, unknown>> };
+    expect(listed.items.map((item) => item.number)).toEqual([4, 6]);
+    expect(listed.items[1]).toEqual({
+      number: 6, title: "Issue 6", stage: null, state: "active", parentNumber: 4, dependsOn: [5],
+      branch: "conveyor/6-duels", body: "Edits the duel registry.",
+    });
+    w.add("long", 10, { body: "x".repeat(5000) });
+    const long = ((await tool("item.listOpen", w.deps(), {})).output as { items: Array<{ number: number; body: string }> }).items.find((item) => item.number === 10)!;
+    expect(long.body.length).toBeLessThanOrEqual(2001);
   });
 
   test("comment returns the comment id", async () => {
