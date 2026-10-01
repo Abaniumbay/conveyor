@@ -1,10 +1,10 @@
-import { prepareCodexEnvironment } from "../isolation/environment";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
+import { prepareCodexEnvironment } from "../isolation/environment";
 import {
   CodexRunnerError,
   type CodexMcpConfiguration,

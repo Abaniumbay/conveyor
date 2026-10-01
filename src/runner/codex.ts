@@ -1,8 +1,8 @@
-import { prepareCodexEnvironment } from "../isolation/environment";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { prepareCodexEnvironment } from "../isolation/environment";
 import {
   EMPTY_USAGE,
   UNAVAILABLE_COST,

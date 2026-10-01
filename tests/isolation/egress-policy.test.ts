@@ -19,6 +19,9 @@ describe("validateHttpsHosts", () => {
     ["Registry.NPMJS.org", "must be lowercase"],
     ["localhost", "must be a fully qualified DNS name"],
     ["", "must be a fully qualified DNS name"],
+    ["127.1", "IP literals are not allowed"],
+    ["1.2.3", "IP literals are not allowed"],
+    ["0x7f.1", "IP literals are not allowed"],
     ["api.github.com", "provider APIs are never reachable from agent sandboxes (D6)"],
     ["uploads.github.com", "provider APIs are never reachable from agent sandboxes (D6)"],
   ])("rejects %p", (host, rule) => {

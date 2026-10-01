@@ -65,6 +65,33 @@ describe("sanitizedAgentEnvironment", () => {
     expect(env.GH_TOKEN).toBeUndefined();
   });
 
+  test("drops git, gh, xdg, credential and cloud-key variables", () => {
+    const names = [
+      "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_SYSTEM", "GIT_SSH", "GIT_SSH_COMMAND",
+      "GIT_CREDENTIAL_HELPER", "GIT_ASKPASS", "GH_HOST", "GH_PROMPT_DISABLED", "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_SHARED_CREDENTIAL", "AWS_ACCESS_KEY_ID",
+    ];
+    const env = sanitizedAgentEnvironment(
+      { PATH: "/p", XDG_RUNTIME_DIR: "/run/user/1", ...Object.fromEntries(names.map((n) => [n, "x"])) },
+      { home: "/h", controlPlane: [] },
+    );
+    expect(env).toEqual({ PATH: "/p", XDG_RUNTIME_DIR: "/run/user/1", HOME: "/h" });
+  });
+
+  test("strips userinfo from proxy values", () => {
+    const env = sanitizedAgentEnvironment(
+      { HTTPS_PROXY: "http://user:pw@proxy.local:3128", HTTP_PROXY: "http://proxy.local:3128", NO_PROXY: "localhost" },
+      { home: "/h", controlPlane: [] },
+    );
+    expect(env).toMatchObject({ HTTPS_PROXY: "http://proxy.local:3128", HTTP_PROXY: "http://proxy.local:3128", NO_PROXY: "localhost" });
+  });
+
+  test("throws when ~/.codex cannot be located", () => {
+    expect(() => sanitizedAgentEnvironment({ PATH: "/p" }, { home: "/h", controlPlane: ["CODEX_HOME"] })).toThrow(
+      "neither CODEX_HOME nor HOME",
+    );
+  });
+
   test("never mutates the base", () => {
     const copy = { ...base };
     sanitizedAgentEnvironment(base, { home: "/h", controlPlane: [] });
@@ -89,6 +116,12 @@ describe("prepareSanitizedHome", () => {
     expect(await readFile(path.join(home, ".gitconfig"), "utf8")).toBe("");
     const quoted = await prepareSanitizedHome({ root, runId: "q", gitUser: { name: 'A "B"\nC' } });
     expect(await readFile(path.join(quoted, ".gitconfig"), "utf8")).toBe('[user]\n\tname = "A \\"B\\" C"\n');
+  });
+
+  test("strips control characters from git user values", async () => {
+    const root = await temporary();
+    const home = await prepareSanitizedHome({ root, runId: "c", gitUser: { name: "A\u0000B\u001bC\u007f", email: "a@b" } });
+    expect(await readFile(path.join(home, ".gitconfig"), "utf8")).toBe('[user]\n\tname = "A B C "\n\temail = "a@b"\n');
   });
 
   test("is idempotent and rewrites a stale home", async () => {

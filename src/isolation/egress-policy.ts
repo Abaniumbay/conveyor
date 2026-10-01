@@ -23,6 +23,7 @@ function hostRule(host: string): string | null {
   if (host !== host.toLowerCase()) return "must be lowercase";
   if (FORBIDDEN_PROVIDER_HOSTS.includes(host)) return "provider APIs are never reachable from agent sandboxes (D6)";
   const labels = host.split(".");
+  if (/^(\d+|0x[0-9a-f]+)$/i.test(labels[labels.length - 1]!)) return "IP literals are not allowed";
   if (labels.length < 2 || !labels.every((label) => label.length <= 63 && DNS_LABEL.test(label))) {
     return "must be a fully qualified DNS name";
   }
