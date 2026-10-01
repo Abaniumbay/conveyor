@@ -96,6 +96,16 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `change.merged` | check | change | - | Passes when the change request is merged. |
 | `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
 
+### ci
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `ci.defined` | check | change, ci | - | Passes when CI is defined for the change head. Fails as blocked when no workflow applies or the provider cannot tell, so required CI never passes by having nothing to run. |
+| `ci.getLogs` | tool | - | - | Read the failing (or named) CI job logs for the change head, bounded to 20-1000 lines (default 200). |
+| `ci.load` | load | change | writes ci | Loads the CI runs of the change's current head from the provider (ignoring `ci.ignoreChecks`), whether CI is defined for it, and the durable gate facts; null until a change request exists. |
+| `ci.passed` | check | change, ci | - | Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running; fails with focused logs when a run failed. |
+| `ci.start` | act | repository, change, ci | invalidates ci | Starts label-triggered CI runs for the change head, reruns a cancelled run once per head, announces CI once per head and, in advisory mode, starts the durable watch. |
+
 ### conversation
 
 | Task | Kind | Reads | Writes / invalidates | Description |

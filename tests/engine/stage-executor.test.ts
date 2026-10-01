@@ -94,7 +94,10 @@ function buildRegistry(world: World): TaskRegistry {
         name: "test.ciLoad", kind: "load", writes: ["ci"],
         run: () => {
           world.loads.ci++;
-          const ci: CiContext = { headSha: world.ciSha, defined: true, definitionSummary: "", runs: [] };
+          const ci: CiContext = {
+            headSha: world.ciSha, defined: true, definitionProvable: true, definitionSummary: "", observedAt: "", firstSeenAt: "",
+            reruns: [], awaitingStart: [], runs: [],
+          };
           return pass(ci);
         },
       }),

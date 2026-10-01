@@ -75,4 +75,18 @@ describe("CodeHost contract: GitHub", () => {
     await expect(movedHost.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" }))
       .resolves.toEqual({ merged: false, headMoved: true });
   });
+
+  test("maps GitHub mergeable_state to mergeable true, false or unknown (null)", async () => {
+    const expected: Array<[string | undefined, boolean | null]> = [
+      ["clean", true], ["has_hooks", true], ["unstable", true], ["dirty", false],
+      ["blocked", null], ["behind", null], ["unknown", null], ["draft", null], [undefined, null],
+    ];
+    for (const [state, mergeable] of expected) {
+      const raw = { ...pull(8), mergeable_state: state };
+      const viaChange = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([raw]), "conveyor"));
+      expect((await viaChange.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).mergeable).toBe(mergeable);
+      const viaDelivery = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([raw, { check_runs: [] }]), "conveyor"));
+      expect((await viaDelivery.getChangeDelivery({ address: "owner/repo", id: "github:owner/repo#pr-8" })).change.mergeable).toBe(mergeable);
+    }
+  });
 });

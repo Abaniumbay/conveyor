@@ -64,7 +64,7 @@ export interface TaskContext {
   item: ItemContext;                // item.load only
   workspace?: WorkspaceContext;     // workspace.load only
   change?: ChangeContext | null;    // change.load only; null until a change request exists
-  ci?: CiContext;                   // ci.load only
+  ci?: CiContext | null;            // ci.load only; null until a change request exists
   agent?: AgentContext;             // engine-captured agent.run result
   script?: ScriptContext;           // engine-captured script.run results
   legacy?: RunEnvelope;             // engine-captured legacy.produce envelope
@@ -137,10 +137,23 @@ export interface ChangeContext {
   }>;
 }
 
+/**
+ * Checks are pure and have no clock or database, so everything `ci.passed` needs about time and
+ * history is in the snapshot: `observedAt` is the load time, `firstSeenAt` the first time this
+ * head was loaded (durable, so a restart keeps the settle window), `reruns` the run names
+ * `ci.start` already reran for this head, and `awaitingStart` the label-triggered checks it
+ * started that have not registered a run yet. Runs named in `repository.ci.ignoreChecks` are excluded.
+ */
 export interface CiContext {
   headSha: string;
   defined: boolean;
+  /** False when the provider could not tell whether CI is defined. */
+  definitionProvable: boolean;
   definitionSummary: string;
+  observedAt: string;
+  firstSeenAt: string;
+  reruns: string[];
+  awaitingStart: string[];
   runs: Array<{
     id: string;
     name: string;
@@ -148,6 +161,8 @@ export interface CiContext {
     url: string | null;
     rerunnable: boolean;
     hasLog: boolean;
+    /** Focused, bounded log of a failed or cancelled run; null when there is none. */
+    log: string | null;
   }>;
 }
 

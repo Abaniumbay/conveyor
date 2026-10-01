@@ -639,6 +639,29 @@ export class GitHubAdapter {
     }
   }
 
+  /** File names in `.github/workflows` at a ref; null when the directory does not exist. */
+  async listWorkflowFiles(address: string, ref: string): Promise<string[] | null> {
+    try {
+      const entries = await this.transport.request<Array<{ name: string; type?: string }>>({
+        method: "GET",
+        path: `repos/${address}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`,
+      });
+      return (Array.isArray(entries) ? entries : []).filter((entry) => entry.type !== "dir").map((entry) => entry.name);
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
+  async workflowSource(address: string, workflow: string, ref: string): Promise<string> {
+    const file = await this.transport.request<{ content?: string; encoding?: string }>({
+      method: "GET",
+      path: `repos/${address}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${encodeURIComponent(ref)}`,
+    });
+    if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error(`workflow ${workflow} has no readable content`);
+    return Buffer.from(file.content, "base64").toString("utf8");
+  }
+
   /** Remove (if present) and re-add a PR label so a `labeled` workflow runs for the current head. */
   async retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void> {
     try {

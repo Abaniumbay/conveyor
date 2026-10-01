@@ -43,6 +43,13 @@ function reference(address: string, id: string): number {
 }
 
 /** GitHub implementation of the provider-neutral branch and change contract. */
+/** Only a conflict is a definite no; blocked/behind/unknown/draft say nothing about conflicts, so they stay unknown. */
+function mergeable(mergeState: string | null): boolean | null {
+  if (mergeState === "clean" || mergeState === "has_hooks" || mergeState === "unstable") return true;
+  if (mergeState === "dirty") return false;
+  return null;
+}
+
 export class GitHubCodeHost implements CodeHost {
   constructor(private readonly github: GitHubAdapter, private readonly git: GitRunner = runGit) {}
 
@@ -114,7 +121,7 @@ export class GitHubCodeHost implements CodeHost {
       state: pull.state,
       headSha: pull.headSha,
       draft: pull.draft,
-      mergeable: pull.mergeState === null ? null : pull.mergeState === "clean" || pull.mergeState === "has_hooks",
+      mergeable: mergeable(pull.mergeState),
       mergedAt: pull.mergedAt,
     };
   }
@@ -146,9 +153,7 @@ export class GitHubCodeHost implements CodeHost {
         state: delivery.pullRequest.state,
         headSha: delivery.pullRequest.headSha,
         draft: delivery.pullRequest.draft,
-        mergeable: delivery.pullRequest.mergeState === null
-          ? null
-          : delivery.pullRequest.mergeState === "clean" || delivery.pullRequest.mergeState === "has_hooks",
+        mergeable: mergeable(delivery.pullRequest.mergeState),
         mergedAt: delivery.pullRequest.mergedAt,
       },
       pullRequest: delivery.pullRequest,

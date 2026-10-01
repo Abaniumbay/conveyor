@@ -460,6 +460,13 @@ export class ConveyorService {
       harnesses: this.#harnesses,
       delivery: () => this.loadDeliveryState(issueId, repository.address),
       codeHost: this.codeHostFor(repository.id),
+      ci: { provider: () => this.ciProvider(repository.id) },
+      notify: (message, stageId) => {
+        this.store.appendConversationMessage({
+          issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
+          actorName: "Conveyor", actorTitle: "Orchestrator", message,
+        });
+      },
       ...(signal ? { signal } : {}),
     };
   }
@@ -1055,45 +1062,6 @@ export class ConveyorService {
     return outcome;
   }
 
-  /** Failing (or named) CI job logs for the issue's PR head, read on the agent's behalf. */
-  private async checkLogs(
-    issueId: string,
-    address: string,
-    input: Record<string, unknown>,
-  ): Promise<unknown> {
-    const stored = this.store.getCurrentPullRequest(issueId);
-    if (!stored) return { change: null, pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." };
-    const repositoryId = this.store.getIssue(issueId)?.repositoryId;
-    const codeHost = repositoryId ? this.codeHostFor(repositoryId) : null;
-    if (!codeHost) throw new Error(`no code host configured for ${issueId}`);
-    const delivery = await codeHost.getChangeDelivery({ address, id: stored.id });
-    const sha = delivery.change.headSha;
-    const requested = typeof input.checkName === "string" ? input.checkName : null;
-    const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
-    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
-    const provider = this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "");
-    const runs = await provider.list(change, sha);
-    const selected = runs.filter((run) => requested
-      ? run.name === requested
-      : run.state === "failed" || run.state === "cancelled");
-    const checks = [];
-    for (const run of selected.slice(0, 5)) {
-      let log: string | null = null;
-      if (run.hasLog) {
-        log = await provider.log(change, run.id, lines)
-          .catch((error) => `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
-      }
-      checks.push({ ...run, log });
-    }
-    return {
-      change: delivery.change,
-      pullRequest: delivery.pullRequest
-        ? { number: delivery.pullRequest.number, url: delivery.pullRequest.url, headSha: delivery.pullRequest.headSha }
-        : null,
-      checks,
-    };
-  }
-
   private async runItemTool(
     name: string,
     grant: McpGrant,
@@ -1150,7 +1118,7 @@ export class ConveyorService {
       return this.runItemTool(CHANGE_TOOLS[tool]!, grant, input, "");
     }
     if (tool === "delivery.get_check_logs") {
-      return this.checkLogs(issue.id, address, input);
+      return this.runItemTool("ci.getLogs", grant, input, "");
     }
 
     const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;

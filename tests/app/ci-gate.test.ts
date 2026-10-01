@@ -12,6 +12,7 @@ class FakeProvider implements CiProvider {
   logs = "2026-01-01T00:00:00.0000000Z step one\n2026-01-01T00:00:01.0000000Z ##[error]boom";
   async start(_change: CiChange, commit: string, retryWindowMs: number) { this.started.push({ commit, retryWindowMs }); return this.waiting; }
   async list() { return this.runs; }
+  async definitions() { return { defined: true, provable: true, summary: "fake" }; }
   async rerun(_change: CiChange, runId: string) { this.reruns.push(runId); }
   async log() { return this.logs; }
 }

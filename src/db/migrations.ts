@@ -416,4 +416,18 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX stage_cursors_wake_idx ON stage_cursors(wake_at);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      -- Durable CI gate facts per (item, head): first sight, announcement, reruns, started checks.
+      CREATE TABLE ci_marks (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        head_sha TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, head_sha, kind, name)
+      );
+    `,
+  },
 ];

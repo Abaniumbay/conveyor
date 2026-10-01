@@ -1,5 +1,5 @@
 /** Provider-neutral CI gate. A pending gate releases all runner permits. */
-import type { CiChange, CiProvider, CiRun } from "./ci-provider";
+import type { CiChange, CiProvider, CiRun, CiRunState } from "./ci-provider";
 
 export class ExternalWaitError extends Error {
   override readonly name = "ExternalWaitError";
@@ -63,6 +63,56 @@ export function parseCiGateOptions(input: Record<string, unknown> | undefined): 
   };
 }
 
+/**
+ * Sorts a head's runs. A cancelled run that can be rerun (and has not been rerun for this head) is
+ * `rerun`; every other cancelled or failed run is `failed`. Shared by the legacy gate and the `ci` tasks.
+ */
+export function classifyRuns<T extends { state: CiRunState }>(
+  runs: T[],
+  canRerunNow: (run: T) => boolean,
+): { running: T[]; failed: T[]; rerun: T[] } {
+  const running: T[] = [];
+  const failed: T[] = [];
+  const rerun: T[] = [];
+  for (const run of runs) {
+    if (run.state === "queued" || run.state === "running") running.push(run);
+    else if (run.state === "passed" || run.state === "skipped") continue;
+    else if (run.state === "cancelled" && canRerunNow(run)) rerun.push(run);
+    else failed.push(run);
+  }
+  return { running, failed, rerun };
+}
+
+export interface FailedRun { name: string; state: CiRunState; url: string | null; log: string | null }
+
+/** The failure message, required fixes and per-run log sections for failed runs. */
+export function describeCiFailure(changeUrl: string, short: string, failed: FailedRun[]): {
+  reason: string;
+  names: string;
+  requiredFixes: string[];
+  sections: string[];
+} {
+  const names = failed.map((run) => `${run.name} (${run.state})`).join(", ");
+  return {
+    names,
+    reason: `CI failed on ${changeUrl} at ${short}: ${names}.`,
+    requiredFixes: failed.map((run) => `Make the "${run.name}" check pass on the pull request head (${run.url ?? "no URL"}); read its log with delivery.get_check_logs.`),
+    sections: failed.map((run) => `### ${run.name} — ${run.state}\n${run.url ?? ""}${run.log ? `\n\n\`\`\`\n${run.log}\n\`\`\`` : ""}`),
+  };
+}
+
+/** The one conversation message that says CI started for a head. */
+export function ciAnnouncement(changeUrl: string, short: string, runs: Array<{ name: string; url: string | null }>, awaitingStart: string[]): string {
+  return [`CI started for ${short}: ${changeUrl}/checks`, ...runs.map((run) => `- ${run.name}: ${run.url ?? "no link"}`), ...awaitingStart.map((name) => `- ${name}: starting`)].join("\n");
+}
+
+/** A failed run's log, bounded; an unreadable log becomes a note instead of an error. */
+export async function readRunLog(provider: CiProvider, change: CiChange, run: CiRun, lines: number): Promise<string | null> {
+  if (!run.hasLog) return null;
+  try { return await provider.log(change, run.id, lines); }
+  catch (error) { return `(log unavailable: ${error instanceof Error ? error.message : String(error)})`; }
+}
+
 export interface CiGateInput {
   change: CiChange;
   headSha: string;
@@ -86,35 +136,22 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
   const ignored = new Set(options.ignoreChecks);
   const allRuns = await provider.list(change, sha);
   const checks = allRuns.filter((run) => !ignored.has(run.name) && !awaitingStart.includes(run.name));
-  const running: CiRun[] = [];
-  const failed: CiRun[] = [];
-  for (const run of checks) {
-    if (run.state === "queued" || run.state === "running") { running.push(run); continue; }
-    if (run.state === "passed" || run.state === "skipped") continue;
-    const rerunKey = `${key}:${run.name}`;
-    if (run.state === "cancelled" && run.canRerun && !memory.reruns.has(rerunKey)) {
-      memory.reruns.add(rerunKey);
-      await provider.rerun(change, run.id);
-      running.push(run);
-    } else failed.push(run);
+  const { running, failed, rerun } = classifyRuns(checks, (run) => run.canRerun && !memory.reruns.has(`${key}:${run.name}`));
+  for (const run of rerun) {
+    memory.reruns.add(`${key}:${run.name}`);
+    await provider.rerun(change, run.id);
+    running.push(run);
   }
 
   if (failed.length > 0) {
-    const sections: string[] = [];
-    for (const run of failed) {
-      let log = "";
-      if (run.hasLog) {
-        try { log = await provider.log(change, run.id, options.logLines); }
-        catch (error) { log = `(log unavailable: ${error instanceof Error ? error.message : String(error)})`; }
-      }
-      sections.push(`### ${run.name} — ${run.state}\n${run.url ?? ""}${log ? `\n\n\`\`\`\n${log}\n\`\`\`` : ""}`);
-    }
-    const names = failed.map((run) => `${run.name} (${run.state})`).join(", ");
+    const logged: FailedRun[] = [];
+    for (const run of failed) logged.push({ name: run.name, state: run.state, url: run.url, log: await readRunLog(provider, change, run, options.logLines) });
+    const report = describeCiFailure(change.url, short, logged);
     return {
       outcome: "failure", status: "changes-requested",
-      reason: `CI failed on ${change.url} at ${short}: ${names}.`,
-      requiredFixes: failed.map((run) => `Make the "${run.name}" check pass on the pull request head (${run.url ?? "no URL"}); read its log with delivery.get_check_logs.`),
-      summary: `CI failed at ${short}: ${names}.\n${change.url}/checks\n\n${sections.join("\n\n")}`,
+      reason: report.reason,
+      requiredFixes: report.requiredFixes,
+      summary: `CI failed at ${short}: ${report.names}.\n${change.url}/checks\n\n${report.sections.join("\n\n")}`,
     };
   }
 
@@ -126,7 +163,7 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
     let announcement: string | null = null;
     if (checks.length > 0 && !memory.announced.has(key)) {
       memory.announced.add(key);
-      announcement = [`CI started for ${short}: ${change.url}/checks`, ...checks.map((run) => `- ${run.name}: ${run.url ?? "no link"}`), ...awaitingStart.map((name) => `- ${name}: starting`)].join("\n");
+      announcement = ciAnnouncement(change.url, short, checks, awaitingStart);
     }
     throw new ExternalWaitError(`Waiting for CI at ${short}: ${waitingOn.join(", ") || "checks to register"}.`, options.pollMs, announcement);
   }

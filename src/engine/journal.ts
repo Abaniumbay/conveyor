@@ -33,6 +33,8 @@ export interface StageCursor {
   deadlineAt: string | null;
 }
 
+export type CiMarkKind = "first-seen" | "announced" | "rerun" | "started";
+
 export interface StoredContext {
   context: TaskContext;
   version: number;
@@ -276,6 +278,27 @@ export class ExecutionStore {
         );
       return { record: this.#execution(id), resumed: false };
     });
+  }
+
+  /**
+   * Records a CI gate fact once per (item, head, kind, name). Returns whether this call recorded
+   * it and when it was first recorded, so a repeat (or a restart) sees the original.
+   */
+  markCi(issueId: string, headSha: string, kind: CiMarkKind, name: string, at: string): { fresh: boolean; at: string } {
+    const inserted = this.#db
+      .query("INSERT OR IGNORE INTO ci_marks(issue_id, head_sha, kind, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(issueId, headSha, kind, name, at);
+    const row = this.#db
+      .query("SELECT created_at FROM ci_marks WHERE issue_id = ? AND head_sha = ? AND kind = ? AND name = ?")
+      .get(issueId, headSha, kind, name) as { created_at: string };
+    return { fresh: inserted.changes > 0, at: row.created_at };
+  }
+
+  ciMarks(issueId: string, headSha: string, kind: CiMarkKind): string[] {
+    const rows = this.#db
+      .query("SELECT name FROM ci_marks WHERE issue_id = ? AND head_sha = ? AND kind = ? ORDER BY created_at, name")
+      .all(issueId, headSha, kind) as Array<{ name: string }>;
+    return rows.map((row) => row.name);
   }
 
   getExecution(id: string): TaskExecutionRecord | null {

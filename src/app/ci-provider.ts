@@ -16,10 +16,18 @@ export interface CiChange {
   url: string;
 }
 
+/** Whether CI is defined for a commit. `provable: false` means the provider could not tell. */
+export interface CiDefinition {
+  defined: boolean;
+  summary: string;
+  provable: boolean;
+}
+
 export interface CiProvider {
   start(change: CiChange, commit: string, retryWindowMs: number, now: number): Promise<string[]>;
   list(change: CiChange, commit: string): Promise<CiRun[]>;
   rerun(change: CiChange, runId: string): Promise<void>;
+  definitions(change: CiChange, commit: string): Promise<CiDefinition>;
   log(change: CiChange, runId: string, lines?: number): Promise<string>;
 }
 

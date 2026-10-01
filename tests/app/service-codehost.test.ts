@@ -14,6 +14,9 @@ import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-r
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { CodeHost } from "../../src/codehost/types";
 import type { CiProvider } from "../../src/app/ci-provider";
+import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { runTask } from "../../src/tasks/contract";
+import type { TaskDeps } from "../../src/tasks/deps";
 
 const roots: string[] = [];
 const requestLog: Array<Record<string, unknown>> = [];
@@ -247,7 +250,7 @@ describe("CodeHost service integration", () => {
       codeHostFor(repositoryId: string): CodeHost;
       ciProvider(repositoryId: string): CiProvider;
       loadDeliveryState(issueId: string, address: string): Promise<{ change: any; pullRequest: unknown; checks: unknown[] }>;
-      checkLogs(issueId: string, address: string, input: Record<string, unknown>): Promise<{ change: any; pullRequest: unknown; checks: unknown[] }>;
+      taskDeps(issueId: string, repository: { id: string; address: string; folder: string; baseBranch: string }): TaskDeps;
     };
     internal.codeHostFor = () => changeHost;
     internal.ciProvider = () => ({
@@ -255,6 +258,7 @@ describe("CodeHost service integration", () => {
       async list(change, sha) { listed.push({ change, sha }); return []; },
       async log() { return ""; },
       async rerun() {},
+      async definitions() { return { defined: true, provable: true, summary: "fake" }; },
     });
 
     const delivery = await internal.loadDeliveryState("issue", "owner/repo");
@@ -264,7 +268,12 @@ describe("CodeHost service integration", () => {
       change: { repository: "owner/repo", changeId: "23", url: "https://code.example/repo/changes/23" },
       sha: "neutral-head",
     }]);
-    const logs = await internal.checkLogs("issue", "owner/repo", {});
+    const logsResult = await runTask(createTaskRegistry().require("ci.getLogs"), {
+      config: {}, context: {}, input: {},
+      deps: internal.taskDeps("issue", { id: "repo", address: "owner/repo", folder: "/f", baseBranch: "main" }),
+      instance: { id: "ci.getLogs", stage: "implementation", idempotencyKey: "", resumed: false },
+    });
+    const logs = logsResult.status === "pass" ? logsResult.output : null;
     expect(logs).toMatchObject({ change: { id: "host:repo#change-23", headSha: "neutral-head" }, pullRequest: null, checks: [] });
     expect(listed).toHaveLength(2);
     expect(listed[1]?.sha).toBe("neutral-head");
