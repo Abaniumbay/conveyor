@@ -265,7 +265,7 @@ describe("renderDashboard", () => {
     expect(parentCard).not.toContain("Required foundation");
     expect(html).toContain(".agent-panel{min-height:calc(100vh - 12rem);display:flex");
     expect(html).toContain("grid-template-columns:minmax(0,1fr) auto");
-    expect(html).toContain("width:min(560px,100vw);height:100dvh");
+    expect(html).toContain("width:min(560px,100vw);max-width:none;height:100dvh");
     expect(html).toContain(".conversation-compose{display:grid;flex:0 0 auto");
     expect(html).toContain(".line ol{position:relative;display:grid}");
     expect(html).toContain(".issue-details.issue-inspector{width:100vw;height:100dvh");
@@ -320,17 +320,38 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("?view=backlog");
   });
 
-  test("lists the configured agents, each linking to its profile page", () => {
-    const html = renderDashboard({
-      ...dashboard,
-      agents: [{ id: "kaveh", name: "Kaveh", title: "Senior Developer" }, { id: "darya", name: "Darya", title: "Product Owner" }],
-    });
-    expect(html).toContain('<details class="agents-menu">');
-    expect(html).toContain('href="/agents"');
-    expect(html).toContain('href="/agents/kaveh"');
-    expect(html).toContain('href="/agents/darya"');
+  test("the team view lists every agent, each opening its read-only profile in a modal", () => {
+    const kaveh = {
+      id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: "gpt-6-luna", effort: "high",
+      access: "workspace-write",
+      usage: [{ pipeline: "delivery", stage: "implementation", role: "runs the stage action" }],
+      tasks: [{ group: "workspace", tasks: ["workspace.fetch", "workspace.push"] }],
+      instructions: "You are <Kaveh>.",
+    };
+    const html = renderDashboard({ ...dashboard, view: "team", team: [kaveh, { ...kaveh, id: "darya", name: "Darya", title: "Product Owner", model: null, effort: null, usage: [], instructions: null }] });
+    expect(html).toContain('href="/?view=team"');
+    expect(html).not.toContain("agents-menu");
+    expect(html).toContain('data-dialog-open="agent-kaveh"');
+    expect(html).toContain('data-dialog-open="agent-darya"');
+    expect(html).toContain('<dialog class="agent-dialog" id="agent-kaveh" aria-labelledby="agent-kaveh-title" data-agent-id="kaveh">');
     expect(html).toContain("Product Owner");
-    expect(renderDashboard({ ...dashboard, agents: [] })).toContain("View all agents");
+    expect(html).toContain("gpt-6-luna");
+    expect(html).toContain("workspace.push");
+    expect(html).toContain("<span>Implementation</span>");
+    expect(html).toContain("You are &lt;Kaveh");
+    expect(html).not.toContain("<Kaveh>");
+    expect(html).toContain("Harness default");
+    expect(html).toContain("Not used by any pipeline stage.");
+    expect(renderDashboard({ ...dashboard, view: "team", team: [{ ...kaveh, usage: [{ pipeline: null, stage: null, role: "steers Conveyor from the dashboard" }] }] }))
+      .toContain('<p class="team-card-meta">steers Conveyor from the dashboard');
+    expect(html).toContain("Instructions could not be read.");
+    const profile = html.slice(html.indexOf('id="agent-kaveh"'), html.indexOf("</dialog>", html.indexOf('id="agent-kaveh"')));
+    expect(profile).not.toContain("<input");
+    expect(profile).not.toContain('method="post"');
+  });
+
+  test("an empty team says so", () => {
+    expect(renderDashboard({ ...dashboard, view: "team", team: [] })).toContain("No agents are configured.");
   });
 
   test("renders invalid stage labels on the separate attention tab", () => {

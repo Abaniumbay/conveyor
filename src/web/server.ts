@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
-import { renderAgentList, renderAgentProfile } from "./agent-pages";
+import { agentHref } from "./agent-pages";
 import { renderDashboard } from "./render";
 import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
 
@@ -195,7 +195,7 @@ function requireMethod(request: Request, method: string): Response | null {
 function dashboardPage(url: URL): DashboardPageSelection {
   const requestedViews = url.searchParams.getAll("view");
   const requestedView = requestedViews.length === 1 ? requestedViews[0] : null;
-  const view = requestedView === "attention" || requestedView === "agent"
+  const view = requestedView === "attention" || requestedView === "agent" || requestedView === "team"
     ? requestedView
     : "board";
   const requestedRuns = url.searchParams.getAll("run");
@@ -450,8 +450,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const currentSession = session(request);
       if (!currentSession) return redirect("/login");
       try {
-        const model = await dependencies.getDashboard(currentSession.csrfToken, dashboardPage(url));
-        return response(renderDashboard(model), 200, "text/html; charset=utf-8");
+        const page = dashboardPage(url);
+        const model = await dependencies.getDashboard(currentSession.csrfToken, page);
+        const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
+        return response(renderDashboard(team ? { ...model, team } : model), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
@@ -472,11 +474,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       if (!session(request)) return redirect("/login");
-      try {
-        return response(renderAgentList(await dependencies.getAgentProfiles()), 200, "text/html; charset=utf-8");
-      } catch {
-        return text("Agents are temporarily unavailable", 503);
-      }
+      return redirect("/?view=team");
     }
 
     const agentProfile = /^\/agents\/([^/]{1,200})$/.exec(path);
@@ -493,7 +491,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       try {
         const profile = await dependencies.getAgentProfile(agentId);
         return profile
-          ? response(renderAgentProfile(profile), 200, "text/html; charset=utf-8")
+          ? redirect(agentHref(profile.id))
           : text("Agent not found", 404);
       } catch {
         return text("Agent profile is temporarily unavailable", 503);

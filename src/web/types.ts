@@ -159,7 +159,7 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent";
+export type DashboardView = "board" | "attention" | "agent" | "team";
 
 export interface SteeringEventViewModel {
   sequence: number;
@@ -216,8 +216,8 @@ export interface DashboardViewModel {
   systemWarnings: readonly string[];
   steering: SteeringViewModel;
   selectedIssue: IssueCardViewModel | null;
-  /** Configured agents, each linking to its read-only profile page. */
-  agents?: readonly AgentSummaryViewModel[];
+  /** Read-only agent profiles, loaded only for the team view. */
+  team?: readonly AgentProfileViewModel[];
   csrfToken: string;
 }
 

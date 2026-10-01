@@ -1815,9 +1815,6 @@ export class ConveyorService {
       selectedIssue: pagination.issueId && byId.has(pagination.issueId)
         ? card(byId.get(pagination.issueId)!)
         : null,
-      agents: Object.entries(this.config.agents)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, agent]) => ({ id, name: agent.name ?? displayName(id), title: agent.title ?? "AI Agent" })),
       csrfToken,
     };
   }

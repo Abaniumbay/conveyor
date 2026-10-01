@@ -1,7 +1,7 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
 
-import { agentHref } from "./agent-pages";
+import { Team } from "./agent-pages";
 import { renderSafeMarkdown } from "./markdown";
 import { dashboardCss } from "./styles";
 import type {
@@ -369,6 +369,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
   const tabs: Array<{ view: DashboardView; label: string; count: number | null }> = [
     { view: "board", label: "Board", count: model.counts.board },
     { view: "attention", label: "Needs attention", count: model.counts.attention },
+    { view: "team", label: "Team", count: null },
     { view: "agent", label: "Operator", count: null },
   ];
   return (
@@ -555,22 +556,11 @@ function RunnerStatus({ model }: { model: DashboardViewModel }) {
   );
 }
 
-function AgentsMenu({ agents }: { agents: DashboardViewModel["agents"] }) {
-  return (
-    <details class="agents-menu">
-      <summary>Agents</summary>
-      <div class="header-popover">
-        <a class="agents-all" href="/agents">View all agents</a>
-        {agents && agents.length > 0 && <ul>{agents.map((agent) => <li key={agent.id}><a href={agentHref(agent.id)}><strong>{agent.name}</strong><span>{agent.title}</span></a></li>)}</ul>}
-      </div>
-    </details>
-  );
-}
-
 function Page({ model }: { model: DashboardViewModel }) {
   let content: ComponentChildren;
   if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
+  else if (model.view === "team") content = <Team agents={model.team ?? []} />;
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />
@@ -604,7 +594,6 @@ function Page({ model }: { model: DashboardViewModel }) {
             </details>
             <RunnerStatus model={model} />
             <span class="total-usage">{model.totalUsage}</span>
-            <AgentsMenu agents={model.agents} />
             <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
           </header>
           <Line model={model} />
