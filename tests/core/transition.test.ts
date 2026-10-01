@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { ConveyorStore } from "../../src/db/store";
+import { ExecutionStore } from "../../src/engine/journal";
 
 const directories: string[] = [];
 
@@ -243,6 +244,57 @@ describe("applyStageTransition", () => {
       reason: "Tests fail",
       requiredFixes: ["Fix tests"],
     });
+    store.close();
+  });
+
+  test("an applied stage transition fences the item once and drops its cursor", async () => {
+    const store = await setup();
+    const journal = new ExecutionStore(store.sqlite());
+    store.setStageState({ issueId: "issue", stageId: "implementation", status: "running", feedbackCycle: 0, configHash: "hash" });
+    const before = journal.stageEpoch("issue");
+    journal.saveCursor({
+      issueId: "issue", stage: "implementation", stageEpoch: before, attempt: 1, returns: 0, list: "actions",
+      taskInstanceId: "t", state: "running", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
+    }, before);
+
+    await applyStageTransition({
+      store,
+      source: { async replaceConveyorLabels() {} },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-epoch",
+      issue: store.getIssue("issue")!,
+      stages: ["implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance", stageId: "implementation", nextStageId: "review", result: {} as never, feedbackCycles: 0 },
+    });
+
+    expect(journal.stageEpoch("issue")).toBe(before + 1);
+    expect(journal.getCursor("issue")).toBeNull();
+    store.close();
+  });
+
+  test("a roll-up transition fences the item once", async () => {
+    const store = await setup();
+    const journal = new ExecutionStore(store.sqlite());
+    store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "hash" });
+    const before = journal.stageEpoch("issue");
+
+    await applyRollupTransition({
+      store,
+      source: { async replaceConveyorLabels() {} },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "rollup-epoch",
+      issue: store.getIssue("issue")!,
+      targetStageId: "review",
+      reason: "children advanced",
+      labels: labelConfig,
+    });
+
+    expect(journal.stageEpoch("issue")).toBe(before + 1);
     store.close();
   });
 });

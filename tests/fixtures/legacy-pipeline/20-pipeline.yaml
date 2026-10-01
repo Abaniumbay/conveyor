@@ -1,0 +1,173 @@
+pipelines:
+  caravan-delivery:
+    successStatuses: &success-statuses [done, skipped]
+    failureStatuses: &failure-statuses [blocked, rejected, error, changes-requested, needs-input, needs-intervention]
+    stages:
+      - &refinement-stage
+        id: refinement
+        run: { agent: darya }
+        concurrency: 3
+        childrenStartAt: next
+        enterCheck: generic
+        exitCheck: refinement-exit
+        feedbackCycles: 2
+      - &implementation-stage
+        id: implementation
+        run: { agent: kaveh }
+        concurrency: 2
+        enterCheck: generic
+        exitCheck: implementation-exit
+        feedbackCycles: 2
+        afterSuccess:
+          - sourceAction: pullRequest.ensure
+            with: { closingReference: true }
+      - &ci-stage
+        id: ci
+        run:
+          sourceAction: pullRequest.awaitChecks
+          with: { settleSeconds: 120, pollSeconds: 60, timeoutMinutes: 180, maxCorrections: 5 }
+        concurrency: 8
+        feedbackCycles: 0
+        failurePolicies:
+          changes-requested: { action: returnToPrevious }
+      - &review-stage
+        id: review
+        run: { agent: shirin }
+        concurrency: 1
+        enterCheck: generic
+        exitCheck: generic
+        feedbackCycles: 2
+        failurePolicies:
+          changes-requested: { action: returnToPrevious, stage: implementation }
+      - &merge-stage
+        id: merge
+        run: { sourceAction: pullRequest.squashMerge }
+        concurrency: 1
+        enterCheck: generic
+        exitCheck: generic
+      - id: deploy
+        run: { runner: process, script: /srv/conveyor/stages/deploy-caravan.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - id: verify
+        run: { runner: process, script: /srv/conveyor/stages/verify-caravan.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - &cleanup-stage
+        id: cleanup
+        run: { sourceAction: workspace.cleanup }
+        concurrency: 4
+        feedbackCycles: 0
+        failureState: needs-intervention
+
+  conveyor-delivery:
+    successStatuses: *success-statuses
+    failureStatuses: *failure-statuses
+    stages:
+      - *refinement-stage
+      - *implementation-stage
+      - *ci-stage
+      - *review-stage
+      - *merge-stage
+      - id: deploy
+        run: { runner: process, script: /srv/conveyor/stages/skip-conveyor-self-deploy.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - id: verify
+        run: { runner: process, script: /srv/conveyor/stages/verify-conveyor.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - *cleanup-stage
+
+  meal-planner-delivery:
+    successStatuses: *success-statuses
+    failureStatuses: *failure-statuses
+    stages:
+      - *refinement-stage
+      - *implementation-stage
+      - *ci-stage
+      - *review-stage
+      - *merge-stage
+      - id: deploy
+        run: { runner: process, script: /srv/conveyor/stages/deploy-meal-planner.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - id: verify
+        run: { runner: process, script: /srv/conveyor/stages/verify-meal-planner.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - *cleanup-stage
+
+  midgame-delivery:
+    successStatuses: *success-statuses
+    failureStatuses: *failure-statuses
+    stages:
+      - *refinement-stage
+      - id: implementation
+        run: { agent: kaveh }
+        concurrency: 2
+        enterCheck: generic
+        exitCheck: implementation-exit-midgame
+        feedbackCycles: 2
+        afterSuccess:
+          - sourceAction: pullRequest.ensure
+            with: { closingReference: true }
+      - id: ci
+        run:
+          sourceAction: pullRequest.awaitChecks
+          with:
+            settleSeconds: 120
+            pollSeconds: 60
+            timeoutMinutes: 180
+            maxCorrections: 5
+            triggers:
+              - { label: run-web-e2e, workflow: web-e2e.yml, check: Headless Chrome smoke test }
+              - { label: run-android-e2e, workflow: android-e2e.yml, check: Android emulator smoke }
+              - label: run-full-suite
+                workflow: full-suite.yml
+                check: Full suite
+                replaces: [run-web-e2e, run-android-e2e]
+        concurrency: 8
+        feedbackCycles: 0
+        failurePolicies:
+          changes-requested: { action: returnToPrevious }
+      - *review-stage
+      - *merge-stage
+      - id: deploy
+        run: { runner: process, script: /srv/conveyor/stages/deploy-midgame-action.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - id: verify
+        run: { runner: process, script: /srv/conveyor/stages/verify-midgame.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - *cleanup-stage
+
+  quesshi-delivery:
+    successStatuses: *success-statuses
+    failureStatuses: *failure-statuses
+    stages:
+      - *refinement-stage
+      - *implementation-stage
+      - *ci-stage
+      - *review-stage
+      - *merge-stage
+      - id: deploy
+        run: { runner: process, script: /srv/conveyor/stages/deploy-quesshi.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - id: verify
+        run: { runner: process, script: /srv/conveyor/stages/verify-quesshi.ts }
+        concurrency: 1
+        feedbackCycles: 0
+        failureState: needs-intervention
+      - *cleanup-stage

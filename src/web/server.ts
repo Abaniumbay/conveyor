@@ -42,6 +42,8 @@ export interface WebHandlerDependencies {
     message: string,
     username: string,
   ) => unknown | Promise<unknown>;
+  /** Dismisses an open review finding on behalf of the signed-in operator; rejects when it cannot be dismissed. */
+  dismissFinding: (issueId: string, findingId: string, reason: string, username: string) => void | Promise<void>;
   maxBodyBytes?: number;
 }
 
@@ -546,6 +548,43 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return activity ? json(activity) : text("Issue not found", 404);
       } catch {
         return json({ error: "activity unavailable" }, 503);
+      }
+    }
+
+    const findingDismissal = /^\/api\/issues\/([^/]{1,1000})\/findings\/([^/]{1,200})\/dismiss$/.exec(path);
+    if (findingDismissal) {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+      if (mediaType !== "application/json") return text("Expected application/json", 415);
+      if (!dependencies.auth.validateCsrf(request.headers.get("cookie") ?? undefined, request.headers.get("x-csrf-token") ?? undefined)) {
+        return json({ error: "forbidden" }, 403);
+      }
+      let issueId: string;
+      let findingId: string;
+      try {
+        issueId = decodeURIComponent(findingDismissal[1]!);
+        findingId = decodeURIComponent(findingDismissal[2]!);
+      } catch {
+        return text("Invalid finding path", 400);
+      }
+      const body = await readBody(request, maxBodyBytes);
+      if (isBodyError(body)) return body;
+      let reason: unknown;
+      try {
+        reason = (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as { reason?: unknown } | null)?.reason;
+      } catch {
+        return json({ error: "malformed JSON" }, 400);
+      }
+      if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > 2000) {
+        return json({ error: "a reason is required" }, 400);
+      }
+      try {
+        await dependencies.dismissFinding(issueId, findingId, reason.trim(), dependencies.username);
+        return json({ ok: true });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "Unable to dismiss finding" }, 409);
       }
     }
 

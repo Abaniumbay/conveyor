@@ -1,10 +1,15 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config/load";
+import { createTaskRegistry } from "./tasks/catalogue";
+import type { TaskRegistry } from "./tasks/contract";
+import { comparePlans } from "./tasks/compare-plans";
+import { renderPlan } from "./tasks/plan";
 import { ConveyorService } from "./app/service";
 import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
 import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
 import { createWebAuth, hashPassword } from "./web/auth";
 import { createWebHandler } from "./web/server";
+import { mcpSocketPath, serveMcpSocket } from "./isolation/mcp-socket";
 
 function option(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -19,6 +24,29 @@ function listenAddress(value: string): { hostname: string; port: number } {
     throw new Error(`invalid listen address: ${value}`);
   }
   return { hostname, port };
+}
+
+/** The check-config report: the hash, then the expanded plan of each compilable repository. */
+export async function checkConfig(
+  configPath: string,
+  registry: TaskRegistry = createTaskRegistry(),
+): Promise<string> {
+  const config = await loadConfig(configPath, registry);
+  const plans = config.plans.map(renderPlan);
+  return [`Configuration is valid (${config.hash})`, ...plans].join("\n\n");
+}
+
+/** Shadow comparison: compiles both configurations and prints their plans side by side. */
+export async function compareConfigs(
+  leftPath: string,
+  rightPath: string,
+  registry: TaskRegistry = createTaskRegistry(),
+): Promise<string> {
+  const [left, right] = await Promise.all([loadConfig(leftPath, registry), loadConfig(rightPath, registry)]);
+  return [
+    `Configuration is valid (${left.hash}) | Configuration is valid (${right.hash})`,
+    comparePlans(left.plans, right.plans, { left: leftPath, right: rightPath }),
+  ].join("\n\n");
 }
 
 async function serve(configPath: string): Promise<void> {
@@ -50,6 +78,10 @@ async function serve(configPath: string): Promise<void> {
       return new Response("Internal server error", { status: 500 });
     },
   });
+  // Sandboxed agents reach the MCP endpoint (only) through this Unix socket via the sandbox bridge.
+  const mcpSocket = Object.values(config.repositories).some((repository) => repository.agentEgress?.allowLoopbackMcp)
+    ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
+    : null;
   service.start();
   console.log(`Conveyor ${config.hash.slice(0, 12)} listening on ${server.url}`);
 
@@ -59,6 +91,7 @@ async function serve(configPath: string): Promise<void> {
     stopping = true;
     console.log(`Received ${signal}; stopping Conveyor`);
     await server.stop(false);
+    await mcpSocket?.stop();
     await service.close();
   };
   process.on("SIGINT", () => void stop("SIGINT"));
@@ -78,8 +111,8 @@ export async function main(args = Bun.argv.slice(2)): Promise<void> {
     throw new Error(`usage: conveyor ${command ?? "serve"} --config <file-or-directory>`);
   }
   if (command === "check-config") {
-    const config = await loadConfig(configPath);
-    console.log(`Configuration is valid (${config.hash})`);
+    const compare = option(args, "--compare");
+    console.log(compare ? await compareConfigs(configPath, compare) : await checkConfig(configPath));
     return;
   }
   if (command === "serve") {

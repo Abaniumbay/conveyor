@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { ExecutionStore } from "../engine/journal";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {
@@ -180,11 +181,16 @@ function parseJson<T>(value: string | null): T | null {
   return value === null ? null : (JSON.parse(value) as T);
 }
 
+/** Status changes the stage executor makes to itself; they never fence the item. */
+const EXECUTOR_STATUSES = new Set(["ready", "running", "error", "interrupted"]);
+
 export class ConveyorStore {
   readonly #database: Database;
+  readonly #executions: ExecutionStore;
 
   private constructor(database: Database) {
     this.#database = database;
+    this.#executions = new ExecutionStore(database);
   }
 
   static async open(filename: string): Promise<ConveyorStore> {
@@ -200,6 +206,16 @@ export class ConveyorStore {
 
   close(): void {
     this.#database.close(false);
+  }
+
+  /** The durable task-chain journal: context, cursor, wake-ups and epochs. */
+  executions(): ExecutionStore {
+    return this.#executions;
+  }
+
+  /** The underlying database, shared with ExecutionStore. */
+  sqlite(): Database {
+    return this.#database;
   }
 
   pragma(name: "journal_mode" | "foreign_keys"): unknown[] {
@@ -354,7 +370,26 @@ export class ConveyorStore {
     return Number(row.maximum) + 10;
   }
 
+  /** A change of projected stage or state fences the item; a warning-only change does not. */
   setIssueProjection(
+    issueId: string,
+    projection: { stage: string | null; state: string | null; warning: string | null },
+  ): void {
+    this.#database.transaction(() => {
+      const before = this.#database
+        .query("SELECT projected_stage, projected_state FROM issues WHERE id = ?")
+        .get(issueId) as { projected_stage: string | null; projected_state: string | null } | null;
+      this.writeIssueProjection(issueId, projection);
+      if (
+        before &&
+        (before.projected_stage !== projection.stage || before.projected_state !== projection.state)
+      ) {
+        this.#executions.onStageChange(issueId);
+      }
+    })();
+  }
+
+  private writeIssueProjection(
     issueId: string,
     projection: { stage: string | null; state: string | null; warning: string | null },
   ): void {
@@ -489,6 +524,7 @@ export class ConveyorStore {
         )
         .get(issueId) as Record<string, SQLQueryBindings> | null;
       if (active) return this.mapEnrollment(active);
+      this.#executions.onStageChange(issueId);
 
       const latest = this.#database
         .query(
@@ -525,12 +561,13 @@ export class ConveyorStore {
            ) AND status = 'active'`,
         )
         .run(issueId);
-      this.#database
+      const ended = this.#database
         .query(
           `UPDATE enrollments SET status = ?, ended_at = ?
            WHERE issue_id = ? AND status = 'active'`,
         )
         .run(status, timestamp, issueId);
+      if (ended.changes > 0) this.#executions.onStageChange(issueId);
     })();
   }
 
@@ -656,7 +693,29 @@ export class ConveyorStore {
     return row?.found === 1;
   }
 
+  /**
+   * Fences the item when the stage changes, or the status changes into anything other than
+   * the executor's own bookkeeping statuses (ready, running, error, interrupted).
+   */
   setStageState(state: {
+    issueId: string;
+    stageId: string;
+    status: string;
+    feedbackCycle: number;
+    configHash: string;
+  }): void {
+    this.#database.transaction(() => {
+      const before = this.getStageState(state.issueId);
+      this.writeStageState(state);
+      const stageChanged = before?.stageId !== state.stageId;
+      const statusChanged = before?.status !== state.status;
+      if (stageChanged || (statusChanged && !EXECUTOR_STATUSES.has(state.status))) {
+        this.#executions.onStageChange(state.issueId);
+      }
+    })();
+  }
+
+  private writeStageState(state: {
     issueId: string;
     stageId: string;
     status: string;
@@ -1073,6 +1132,23 @@ export class ConveyorStore {
     };
   }
 
+  /** Runs of a kind that logged an `execution` event with this key, newest first. */
+  listRunsForExecution(issueId: string, stageId: string, kind: string, executionKey: string): StoredRun[] {
+    const rows = this.#database
+      .query(
+        `SELECT r.id FROM runs r
+         WHERE r.issue_id = ? AND r.stage_id = ? AND r.kind = ?
+           AND EXISTS (
+             SELECT 1 FROM run_events e
+             WHERE e.run_id = r.id AND e.type = 'execution'
+               AND json_extract(e.payload_json, '$.idempotencyKey') = ?
+           )
+         ORDER BY r.started_at DESC, r.rowid DESC`,
+      )
+      .all(issueId, stageId, kind, executionKey) as Array<{ id: string }>;
+    return rows.map((row) => this.getRun(row.id)!);
+  }
+
   listActiveIssueRuns(): ActiveIssueRun[] {
     const rows = this.#database
       .query(
@@ -1448,6 +1524,18 @@ export class ConveyorStore {
          WHERE q.id = ?`,
       )
       .get(questionId) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapQuestion(row) : null;
+  }
+
+  /** The question a run opened (an issue has at most one open question at a time). */
+  getQuestionForRun(runId: string): StoredQuestion | null {
+    const row = this.#database
+      .query(
+        `SELECT q.*, a.answer_json
+         FROM questions q LEFT JOIN answers a ON a.question_id = q.id
+         WHERE q.run_id = ? ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1`,
+      )
+      .get(runId) as Record<string, SQLQueryBindings> | null;
     return row ? this.mapQuestion(row) : null;
   }
 

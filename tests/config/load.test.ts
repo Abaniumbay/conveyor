@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfigError, loadConfig } from "../../src/config/load";
+import type { StageConfig } from "../../src/config/schema";
 
 const temporaryDirectories: string[] = [];
 
@@ -124,11 +125,8 @@ sources:
       name: "Verifier",
       title: "Quality Verifier",
     });
-    expect(config.agents.checker?.tools).toEqual([
-      "source.get_issue",
-      "run.report_progress",
-    ]);
-    expect(config.pipelines.default?.stages[0]?.run).toEqual({
+    expect(config.agents.checker?.tasks).toEqual(["item.get", "agent.reportProgress"]);
+    expect((config.pipelines.default?.stages[0] as StageConfig | undefined)?.run).toEqual({
       type: "script",
       runner: "process",
       script: path.join(directory, "scripts/inspect.ts"),
@@ -137,6 +135,100 @@ sources:
       path.resolve(directory, "../sample"),
     );
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("rejects an agent granting source.set_labels because workflow labels are engine-owned", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "conveyor.yml"),
+      `
+settings: {}
+labels:
+  stageTemplate: "conveyor:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+runners: { codex: { type: codex, command: codex } }
+agents:
+  worker:
+    runner: codex
+    instructions: /tmp/worker.md
+    tools: [source.get_issue, source.set_labels]
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: work, run: { agent: worker }, concurrency: 1 }
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`,
+    );
+    await expect(loadConfig(directory)).rejects.toThrow(/source\.set_labels.*workflow labels are engine-owned/);
+  });
+
+  describe("agent task grants", () => {
+    const configWith = (agentLines: string) => `
+settings: {}
+labels:
+  stageTemplate: "conveyor:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+runners: { codex: { type: codex, command: codex } }
+agents:
+  worker:
+    runner: codex
+    instructions: /tmp/worker.md
+${agentLines}
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: work, run: { agent: worker }, concurrency: 1 }
+repositories:
+  sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
+`;
+    async function load(agentLines: string) {
+      const directory = await temporaryDirectory();
+      await writeFile(path.join(directory, "conveyor.yml"), configWith(agentLines));
+      return loadConfig(directory);
+    }
+
+    test("tasks is the exact grant, in camelCase", async () => {
+      const config = await load("    tasks: [item.get, change.setMetadata]");
+      expect(config.agents.worker?.tasks).toEqual(["item.get", "change.setMetadata"]);
+    });
+
+    test("legacy tools are normalised to tasks through the alias table", async () => {
+      const config = await load("    tools: [source.get_issue, workspace.request_push, run.record_artifact, workspace.record_artifact]");
+      expect(config.agents.worker?.tasks).toEqual(["item.get", "workspace.push", "agent.recordArtifact"]);
+    });
+
+    test("the default grant is every agent-grantable tool", async () => {
+      const config = await load("    name: Worker");
+      expect(config.agents.worker?.tasks).toContain("item.setCriteria");
+      expect(config.agents.worker?.tasks).toContain("ci.getLogs");
+      expect(config.agents.worker?.tasks).not.toContain("change.dismissFinding");
+    });
+
+    test("tasks and tools together are a config error", async () => {
+      await expect(load("    tasks: [item.get]\n    tools: [source.get_issue]")).rejects.toThrow(/either "tasks" or the legacy "tools"/);
+    });
+
+    test("an unknown task is a config error", async () => {
+      await expect(load("    tasks: [item.typo]")).rejects.toThrow(/unknown task "item\.typo"/);
+    });
+
+    test("change.dismissFinding can never be granted to an agent, even before the tool exists", async () => {
+      await expect(load("    tasks: [change.dismissFinding]")).rejects.toThrow(/change\.dismissFinding can never be granted to an agent/);
+      await expect(load("    tools: [change.dismissFinding]")).rejects.toThrow(/can never be granted to an agent/);
+    });
+
+    test("a task granted twice is a config error", async () => {
+      await expect(load("    tasks: [item.get, item.get]")).rejects.toThrow(/granted more than once/);
+    });
   });
 
   test("rejects duplicate named definitions across files", async () => {
@@ -210,7 +302,7 @@ ci:
 `);
     const config = await loadConfig(directory);
     expect(config.ci.actions?.triggers[0]).toMatchObject({ label: "go", workflow: "build.yml", check: "Build" });
-    expect(config.repositories.sample?.ci).toBeUndefined();
+    expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
 
   test("reports unknown CI provider references with the repository path", async () => {
@@ -285,6 +377,6 @@ repositories:
   sample: { source: github, address: owner/sample, folder: /tmp/sample, pipeline: default }
 `);
     const config = await loadConfig(directory);
-    expect(config.repositories.sample?.ci).toBeUndefined();
+    expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
 });

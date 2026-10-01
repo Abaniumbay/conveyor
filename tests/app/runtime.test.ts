@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { ConfiguredStageRuntime } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
+import type { StageConfig } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 import type { RunEnvelope } from "../../src/runner/result";
 
@@ -190,7 +191,7 @@ repositories:
         },
       },
     );
-    const stage = config.pipelines.default!.stages[0]!;
+    const stage = config.pipelines.default!.stages[0]! as StageConfig;
     const context = {
       issue: issue as unknown as Record<string, unknown>,
       workspace: repository,
@@ -204,15 +205,15 @@ repositories:
       decision: "fail",
       sessionId: "check-thread",
     });
-    expect(await runtime.runProducer(config.pipelines.default!.stages[1]!, {
+    expect(await runtime.runProducer(config.pipelines.default!.stages[1]! as StageConfig, {
       ...context,
       stageId: "deploy",
     })).toMatchObject({ stageResult: { summary: "Deployment completed" } });
 
     expect(producerInputs).toHaveLength(1);
     expect(checkInputs).toHaveLength(1);
-    expect(grants[0]).toEqual(["source.get_issue", "conversation.get", "run.report_progress", "workspace.request_fetch"]);
-    expect(grants[1]).toEqual(["source.get_issue", "run.report_progress"]);
+    expect(grants[0]).toEqual(["item.get", "conversation.get", "agent.reportProgress", "workspace.fetch"]);
+    expect(grants[1]).toEqual(["item.get", "agent.reportProgress"]);
     expect(deliveryStates[1]).toEqual({
       pullRequest: { number: 18, state: "merged", merged: true },
       checks: [{ name: "Tests", conclusion: "success" }],
@@ -222,7 +223,7 @@ repositories:
       { id: "checker", name: "Verifier", title: "Quality Verifier" },
     ]);
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("Preserve the existing API.");
-    expect((producerInputs[0] as { prompt: string }).prompt).toContain("Publish every interim update intended for the user exclusively through `run.report_progress`");
+    expect((producerInputs[0] as { prompt: string }).prompt).toContain("Publish every interim update intended for the user exclusively through `agent.reportProgress`");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain("continues for ten minutes without another report");
     expect((producerInputs[0] as { prompt: string }).prompt).toContain('"allowedFailureStatuses": [');
     expect((checkInputs[0] as { prompt: string }).prompt).toContain('"allowedFailureStatuses": [');

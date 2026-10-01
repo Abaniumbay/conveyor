@@ -102,3 +102,65 @@ describe("GitHub Actions CiProvider contract", () => {
     expect(transport.requests.filter((request) => request.method === "POST" && request.path.endsWith("/labels"))).toHaveLength(1);
   });
 });
+
+describe("GitHub Actions CI definitions", () => {
+  const b64 = (text: string) => ({ encoding: "base64", content: Buffer.from(text).toString("base64") });
+  class WorkflowTransport implements GitHubTransport {
+    readonly requests: GitHubTransportRequest[] = [];
+    files: Record<string, string> | Error = {};
+    async request<T>(request: GitHubTransportRequest): Promise<T> {
+      this.requests.push(request);
+      const match = /\/contents\/\.github\/workflows(?:\/([^?]+))?\?ref=(.+)$/.exec(request.path);
+      if (!match) throw new Error(`unexpected transport path: ${request.path}`);
+      if (this.files instanceof Error) throw this.files;
+      if (!match[1]) return Object.keys(this.files).map((name) => ({ name, type: "file" })) as T;
+      const text = this.files[decodeURIComponent(match[1])];
+      if (text === undefined) throw new GitHubTransportError("404 Not Found", 1, "404 Not Found");
+      return b64(text) as T;
+    }
+  }
+  const make = (transport: WorkflowTransport, triggers = triggerSet) => new GitHubActionsCiProvider(new GitHubAdapter(transport, "conveyor"), triggers);
+
+  test("a workflow triggered by pull_request, push or pull_request_target (string, list or map) is applicable", async () => {
+    for (const on of ["on: pull_request", "on: [push, workflow_dispatch]", "on:\n  pull_request_target:\n    branches: [main]", "on:\n  push:\n    branches: [main]"]) {
+      const transport = new WorkflowTransport();
+      transport.files = { "ci.yml": `name: CI\n${on}\njobs: {}\n` };
+      const result = await make(transport, []).definitions(change, "sha1");
+      expect(result).toMatchObject({ defined: true, provable: true });
+      expect(result.summary).toContain("ci.yml");
+      expect(transport.requests[0]?.path).toBe("repos/owner/repo/contents/.github/workflows?ref=sha1");
+    }
+  });
+  test("workflows that never run for a change are not a definition", async () => {
+    const transport = new WorkflowTransport();
+    transport.files = { "nightly.yml": "on:\n  schedule:\n    - cron: '0 0 * * *'\njobs: {}\n", "notes.txt": "x", "bad.yml": ": : :\n\t-" };
+    const result = await make(transport, []).definitions(change, "sha1");
+    expect(result).toMatchObject({ defined: false, provable: true });
+  });
+  test("a configured trigger whose workflow is present counts as a definition", async () => {
+    const transport = new WorkflowTransport();
+    transport.files = { "web-e2e.yml": "on: workflow_dispatch\njobs: {}\n" };
+    const result = await make(transport).definitions(change, "sha1");
+    expect(result).toMatchObject({ defined: true, provable: true });
+    expect(result.summary).toContain("run-web-e2e");
+  });
+  test("a missing workflows directory is provably undefined; other errors are not provable", async () => {
+    const missing = new WorkflowTransport();
+    missing.files = new GitHubTransportError("404 Not Found", 1, "404 Not Found");
+    expect(await make(missing, []).definitions(change, "sha1")).toMatchObject({ defined: false, provable: true });
+    const broken = new WorkflowTransport();
+    broken.files = new Error("HTTP 502");
+    expect(await make(broken, []).definitions(change, "sha1")).toMatchObject({ defined: false, provable: false });
+  });
+  test("a provable answer is cached per commit; an unprovable one is retried", async () => {
+    const transport = new WorkflowTransport();
+    transport.files = { "ci.yml": "on: push\njobs: {}\n" };
+    const instance = make(transport, []);
+    await instance.definitions(change, "sha1");
+    const first = transport.requests.length;
+    await instance.definitions(change, "sha1");
+    expect(transport.requests).toHaveLength(first);
+    await instance.definitions(change, "sha2");
+    expect(transport.requests.length).toBeGreaterThan(first);
+  });
+});

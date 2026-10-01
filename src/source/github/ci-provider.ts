@@ -1,4 +1,6 @@
-import type { CiChange, CiProvider, CiRun } from "../../app/ci-provider";
+import { parse as parseYaml } from "yaml";
+
+import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../app/ci-provider";
 import type { GitHubAdapter } from "./adapter";
 
 export interface GitHubActionsTrigger {
@@ -51,9 +53,22 @@ export function focusGitHubActionsLog(text: string, lines: number): string {
   return body.slice(Math.max(0, end - lines), end).join("\n");
 }
 
+const CHANGE_EVENTS = ["pull_request", "pull_request_target", "push"];
+
+/** The change-triggering events a workflow listens to (`on` as a string, list or map). Branch filters are ignored. */
+function changeEvents(source: string): string[] {
+  let on: unknown;
+  try { on = (parseYaml(source) as { on?: unknown } | null)?.on; } catch { return []; }
+  const events = typeof on === "string" ? [on]
+    : Array.isArray(on) ? on.filter((event): event is string => typeof event === "string")
+    : on && typeof on === "object" ? Object.keys(on) : [];
+  return events.filter((event) => CHANGE_EVENTS.includes(event));
+}
+
 /** GitHub Actions adapter. GitHub vocabulary stays at this provider boundary. */
 export class GitHubActionsCiProvider implements CiProvider {
   readonly #started = new Map<string, number>();
+  readonly #definitions = new Map<string, CiDefinition>();
 
   constructor(
     private readonly github: GitHubAdapter,
@@ -111,5 +126,31 @@ export class GitHubActionsCiProvider implements CiProvider {
 
   async log(change: CiChange, runId: string, lines = 200): Promise<string> {
     return focusGitHubActionsLog(await this.github.jobLog(change.repository, Number(runId)), lines);
+  }
+
+  /** Workflow files at the commit that run for a change, plus configured label triggers whose workflow exists. */
+  async definitions(change: CiChange, commit: string): Promise<CiDefinition> {
+    const key = `${change.repository}@${commit}`;
+    const cached = this.#definitions.get(key);
+    if (cached) return cached;
+    let files: string[] | null;
+    const applicable: string[] = [];
+    try {
+      files = await this.github.listWorkflowFiles(change.repository, commit);
+      for (const file of (files ?? []).filter((name) => /\.ya?ml$/.test(name))) {
+        const events = changeEvents(await this.github.workflowSource(change.repository, file, commit));
+        if (events.length > 0) applicable.push(`${file} (${events.join(", ")})`);
+      }
+    } catch (error) {
+      return { defined: false, provable: false, summary: `Could not read the workflows at ${commit.slice(0, 7)}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const present = new Set(files ?? []);
+    const triggers = this.triggers.filter((trigger) => present.has(trigger.workflow)).map((trigger) => `label ${trigger.label} -> ${trigger.workflow}`);
+    const parts = [...applicable.map((entry) => `workflow ${entry}`), ...triggers.map((entry) => `trigger ${entry}`)];
+    const result: CiDefinition = parts.length > 0
+      ? { defined: true, provable: true, summary: parts.join("; ") }
+      : { defined: false, provable: true, summary: files === null ? "No .github/workflows directory" : "No workflow runs for pull requests or pushes" };
+    this.#definitions.set(key, result);
+    return result;
   }
 }

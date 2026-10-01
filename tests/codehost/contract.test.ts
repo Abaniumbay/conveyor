@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
 import { GitHubCodeHost } from "../../src/source/github/codehost";
 
 class FakeTransport implements GitHubTransport {
@@ -34,7 +34,7 @@ describe("CodeHost contract: GitHub", () => {
 
     expect(change).toEqual({
       id: "github:owner/repo#pr-8", number: 8,
-      url: "https://github.com/owner/repo/pull/8", state: "open", headSha: "abc123", draft: true, mergeable: true, mergedAt: null,
+      url: "https://github.com/owner/repo/pull/8", state: "open", headSha: "abc123", draft: true, mergeable: true, mergedAt: null, body: "",
     });
     expect(transport.requests).toHaveLength(2);
     expect(transport.requests.some((request) => request.method === "POST")).toBe(false);
@@ -62,5 +62,47 @@ describe("CodeHost contract: GitHub", () => {
     const broken = new GitHubCodeHost(new GitHubAdapter(failed, "conveyor"));
     await expect(broken.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
       .rejects.toThrow("merge blocked");
+  });
+
+  test("sends the expected head SHA with the merge and reports a moved head", async () => {
+    const fenced = new FakeTransport([pull(8), { merged: true, sha: "merge123" }]);
+    const host = new GitHubCodeHost(new GitHubAdapter(fenced, "conveyor"));
+    await host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" });
+    expect(fenced.requests[1]).toMatchObject({ method: "PUT", body: { merge_method: "squash", sha: "abc123" } });
+
+    const moved = new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "gh: Head branch was modified. Review and try the merge again. (HTTP 409)")]);
+    const movedHost = new GitHubCodeHost(new GitHubAdapter(moved, "conveyor"));
+    await expect(movedHost.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" }))
+      .resolves.toEqual({ merged: false, headMoved: true });
+  });
+
+  test("maps GitHub mergeable_state to mergeable true, false or unknown (null)", async () => {
+    const expected: Array<[string | undefined, boolean | null]> = [
+      ["clean", true], ["has_hooks", true], ["unstable", true], ["dirty", false],
+      ["blocked", null], ["behind", null], ["unknown", null], ["draft", null], [undefined, null],
+    ];
+    for (const [state, mergeable] of expected) {
+      const raw = { ...pull(8), mergeable_state: state };
+      const viaChange = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([raw]), "conveyor"));
+      expect((await viaChange.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).mergeable).toBe(mergeable);
+      const viaDelivery = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([raw, { check_runs: [] }]), "conveyor"));
+      expect((await viaDelivery.getChangeDelivery({ address: "owner/repo", id: "github:owner/repo#pr-8" })).change.mergeable).toBe(mergeable);
+    }
+  });
+
+  test("setChangeChecklist upserts the managed section in the pull request body and keeps human text", async () => {
+    const transport = new FakeTransport([{ ...pull(8), body: "Human intro\n" }, { ...pull(8) }]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+    await host.setChangeChecklist({ address: "owner/repo", id: "github:owner/repo#pr-8", markdown: "- [x] A <!-- conveyor:criterion:a -->" });
+    expect(transport.requests[1]).toMatchObject({
+      method: "PATCH", path: "repos/owner/repo/pulls/8",
+      body: { body: "Human intro\n\n<!-- conveyor:acceptance-criteria:start -->\n- [x] A <!-- conveyor:criterion:a -->\n<!-- conveyor:acceptance-criteria:end -->\n" },
+    });
+  });
+
+  test("getChange exposes the pull request body", async () => {
+    const host = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([{ ...pull(8), body: "Hi" }, { ...pull(8), body: null }]), "conveyor"));
+    expect((await host.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).body).toBe("Hi");
+    expect((await host.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).body).toBe("");
   });
 });

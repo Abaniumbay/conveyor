@@ -12,6 +12,7 @@ class FakeProvider implements CiProvider {
   logs = "2026-01-01T00:00:00.0000000Z step one\n2026-01-01T00:00:01.0000000Z ##[error]boom";
   async start(_change: CiChange, commit: string, retryWindowMs: number) { this.started.push({ commit, retryWindowMs }); return this.waiting; }
   async list() { return this.runs; }
+  async definitions() { return { defined: true, provable: true, summary: "fake" }; }
   async rerun(_change: CiChange, runId: string) { this.reruns.push(runId); }
   async log() { return this.logs; }
 }
@@ -45,7 +46,7 @@ describe("provider-neutral CI gate", () => {
     const outcome = await gate(provider);
     expect(outcome.status).toBe("changes-requested");
     expect(outcome.summary).toContain("##[error]boom");
-    expect(outcome.requiredFixes?.[0]).toContain("delivery.get_check_logs");
+    expect(outcome.requiredFixes?.[0]).toContain("ci.getLogs");
   });
   test("reruns a cancelled capable run once, and times out pending CI", async () => {
     const provider = new FakeProvider(); provider.runs = [run("1", "Tests", "cancelled", { canRerun: true })];

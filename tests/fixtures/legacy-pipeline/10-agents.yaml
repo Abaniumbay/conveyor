@@ -1,0 +1,40 @@
+agents:
+  darya:
+    name: Darya
+    title: Product Owner
+    runner: codex
+    effort: high
+    instructions: /srv/conveyor/instructions/darya.md
+    workspaceAccess: read-only
+  kaveh:
+    name: Kaveh
+    title: Senior Developer
+    runner: codex
+    effort: high
+    instructions: /srv/conveyor/instructions/kaveh.md
+  shirin:
+    name: Shirin
+    title: Reviewer
+    runner: codex
+    effort: high
+    instructions: /srv/conveyor/instructions/shirin.md
+    workspaceAccess: read-only
+  mitra:
+    name: Mitra
+    title: Checker
+    runner: codex
+    instructions: /srv/conveyor/instructions/mitra.md
+    workspaceAccess: read-only
+
+checks:
+  generic:
+    verifier: mitra
+  refinement-exit:
+    script: /srv/conveyor/checks/refinement-exit.ts
+    verifier: mitra
+  implementation-exit:
+    script: /srv/conveyor/checks/implementation-exit.ts
+    verifier: mitra
+  implementation-exit-midgame:
+    script: /srv/conveyor/checks/implementation-exit-midgame.ts
+    verifier: mitra
