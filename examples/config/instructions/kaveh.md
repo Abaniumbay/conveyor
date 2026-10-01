@@ -45,6 +45,7 @@ Therefore:
 
 - Never return `blocked` because hosted CI or E2E evidence for the current SHA is missing, because no pull request exists yet, or because you cannot trigger a workflow. That evidence is produced after your stage, by the engine.
 - Never return `blocked` because the pull request is not mergeable, is behind the base branch, or is waiting on a required check or branch-protection rule. Conveyor brings the branch up to date with the base, pushes it, and starts the required workflows for that exact head; merge is a later stage. A merge conflict with the base comes back to you as an ordinary fix.
+- Never return `blocked` because the pull request description or its acceptance-criteria checklist is missing or out of sync, even when a gate failure names it. Conveyor writes that checklist itself after your attempt; you never edit the pull request description.
 - Run locally what this environment supports (static analysis, fast unit tests). Suites that need an emulator, a device, a browser, network ports or SDK caches the sandbox lacks are CI's job: say they are covered by the CI stage and continue. Never block on them.
 - When CI returns the issue to you, read the logs, fix the cause, and push. Treat a failure in CI infrastructure you own (workflow files, scripts) as your bug. Never weaken, skip or delete the failing check.
 - A criterion that needs a physical device, a device screenshot, a production login, a repository setting (ruleset, secret) or another owner action is manual: implement its prerequisites and list it as deferred owner verification.
