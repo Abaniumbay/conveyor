@@ -62,6 +62,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 function host(state: { change: ChangeRequest }): CodeHost {
   return {
     async getChange() { return state.change; },
+    async listReviewArtifacts() { return []; },
     async getChangeDelivery(): Promise<ChangeDelivery> {
       const change = state.change;
       return {

@@ -85,22 +85,27 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `agent.reportProgress` | tool | - | - | Report a concise user-facing progress update; it is posted to the shared conversation. |
 | `agent.reportRationale` | tool | - | - | Record the agent's rationale for the audit trail. |
 | `agent.reportResult` | tool | - | - | Record the agent's result report. |
-| `agent.run` | act | run | writes agent | Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides), and an invalid result stops as an error. |
+| `agent.run` | act | run | writes agent | Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the run recorded a finding with `change.comment` and otherwise stops as an error, and an invalid result stops as an error. |
 
 ### change
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
 | `change.checkCriterion` | tool | - | invalidates change | Approve one acceptance criterion for the current change head and tick it in the pull request checklist. headSha must be the current head. |
+| `change.comment` | tool | - | invalidates change | Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). headSha must be the current head. |
 | `change.criteriaChecked` | check | item, change | - | Passes when every non-manual criterion is approved for the current change head; manual criteria are excluded. |
 | `change.criteriaInSync` | check | item, change | - | Passes when the pull request checklist lists exactly the item's criteria ids. |
+| `change.dismissFinding` | tool | - | invalidates change | Dismiss an open finding with a reason. Operator only: never grantable to an agent; called by the authenticated web route. |
 | `change.ensure` | act | repository | invalidates change, workspace | Pushes the workspace branch and opens the change request for it, reusing an existing one. A rejected push fails and retries the stage. |
+| `change.findingsResolved` | check | change | - | Passes when no review finding is open (resolved, dismissed and withdrawn findings do not block); the message lists the open ones with their URLs. The review gate passing at this head records the `reviewPassed` checkpoint. |
 | `change.get` | tool | - | - | Read the live change request, its pull request projection and its CI checks. |
 | `change.headUnchanged` | check | change, checkpoints | - | Passes when the change head equals the SHA CI passed for. |
-| `change.load` | load | - | writes change | Loads the item's change request live from the code host (state, head, mergeability); null until one exists. |
+| `change.listFindings` | tool | - | - | List the review findings of the change (id, author, state, location, URL, text), optionally only those in one state. |
+| `change.load` | load | - | writes change | Loads the item's change request live from the code host (state, head, mergeability) and imports its native human review as findings; null until a change request exists. |
 | `change.merge` | act | repository, change, checkpoints | invalidates change | Squash-merges the change only at the head that review passed (and CI, when CI is required); stops as blocked otherwise. An already merged change passes. |
 | `change.mergeable` | check | change | - | Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts. |
 | `change.merged` | check | change | - | Passes when the change request is merged. |
+| `change.resolveFinding` | tool | - | invalidates change | Mark a finding resolved (the problem it names is fixed). A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved. |
 | `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
 | `change.uncheckCriterion` | tool | - | invalidates change | Withdraw the approval of one acceptance criterion and untick it in the pull request checklist. headSha must be the current head. |
 

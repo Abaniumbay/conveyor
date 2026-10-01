@@ -164,6 +164,47 @@ interface GitHubHook {
   config: { url?: string };
 }
 
+export interface GitHubReviewThread {
+  id: string;
+  isResolved: boolean;
+  comments: { nodes: Array<{
+    id: string;
+    databaseId: number;
+    author: { login: string } | null;
+    body: string;
+    url: string;
+    path: string | null;
+    line: number | null;
+    createdAt: string;
+    pullRequestReview: { databaseId: number } | null;
+  }> };
+}
+
+export interface GitHubReview {
+  id: number;
+  state: string;
+  user: { login: string } | null;
+  body: string | null;
+  html_url: string;
+  submitted_at?: string;
+}
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { id databaseId author { login } body url path line createdAt pullRequestReview { databaseId } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
 const STATUS_MARKER = "<!-- conveyor:status -->";
 
 function labelName(label: GitHubLabel | string): string {
@@ -459,6 +500,67 @@ export class GitHubAdapter {
       body: { body: markdown },
     });
     return comment.id;
+  }
+
+  /** Creates an issue/pull request comment and returns where it lives. */
+  async createComment(address: string, issueNumber: number, markdown: string): Promise<{ id: number; url: string }> {
+    const comment = await this.transport.request<GitHubComment & { html_url: string }>({
+      method: "POST",
+      path: `repos/${address}/issues/${issueNumber}/comments`,
+      body: { body: markdown },
+    });
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  async updateComment(address: string, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({ method: "PATCH", path: `repos/${address}/issues/comments/${commentId}`, body: { body: markdown } });
+  }
+
+  /** An inline review comment on the pull request diff (right side) at `commitId`. */
+  async createReviewComment(address: string, pullRequestNumber: number, input: {
+    body: string; commitId: string; path: string; line: number;
+  }): Promise<{ id: number; url: string }> {
+    const comment = await this.transport.request<{ id: number; html_url: string }>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments`,
+      body: { body: input.body, commit_id: input.commitId, path: input.path, line: input.line, side: "RIGHT" },
+    });
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  async replyToReviewComment(address: string, pullRequestNumber: number, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments/${commentId}/replies`,
+      body: { body: markdown },
+    });
+  }
+
+  /** The pull request's review threads (first page of 100) with their first comment, through GraphQL. */
+  async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
+    const [owner, name] = address.split("/");
+    const response = await this.transport.request<{
+      data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: GitHubReviewThread[] } } | null } | null };
+      errors?: Array<{ message?: string }>;
+    }>({
+      method: "POST",
+      path: "graphql",
+      body: { query: REVIEW_THREADS_QUERY, variables: { owner, name, number: pullRequestNumber } },
+    });
+    if (response.errors?.length) {
+      throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+    }
+    const nodes = response.data?.repository?.pullRequest?.reviewThreads?.nodes;
+    if (!nodes) throw new Error(`GitHub GraphQL returned no review threads for ${address}#${pullRequestNumber}`);
+    return nodes;
+  }
+
+  async listReviews(address: string, pullRequestNumber: number): Promise<GitHubReview[]> {
+    return this.transport.request<GitHubReview[]>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}/reviews?per_page=100`,
+      paginate: true,
+    });
   }
 
   async updateManagedSection(input: {

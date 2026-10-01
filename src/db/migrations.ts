@@ -469,4 +469,40 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    sql: `
+      -- Review findings (agent-created and imported from the provider's native review) and their append-only audit.
+      CREATE TABLE findings (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        run_id TEXT,
+        provider_key TEXT,
+        author TEXT NOT NULL,
+        source TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        state TEXT NOT NULL,
+        path TEXT,
+        line INTEGER,
+        url TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL,
+        projection_json TEXT,
+        dismissal_json TEXT,
+        withdrawal_json TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (issue_id, provider_key)
+      );
+      CREATE INDEX findings_run_idx ON findings(run_id);
+      CREATE TABLE finding_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT,
+        at TEXT NOT NULL,
+        detail_json TEXT
+      );
+      CREATE INDEX finding_events_finding_idx ON finding_events(finding_id, id);
+    `,
+  },
 ];

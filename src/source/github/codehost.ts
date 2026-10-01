@@ -3,6 +3,7 @@ import type {
   ChangeDelivery,
   ChangeRequest,
   CodeHost,
+  ReviewArtifact,
 } from "../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "./adapter";
 
@@ -41,6 +42,16 @@ function reference(address: string, id: string): number {
   }
   return number;
 }
+
+const findingMarker = (findingId: string) => `<!-- conveyor:finding:${findingId} -->`;
+const OWN_MARKER = "<!-- conveyor:finding:";
+
+function findingComment(findingId: string, body: string, where: string | null, resolvedBy?: string): string {
+  const heading = resolvedBy ? `✅ Resolved by ${resolvedBy}` : "**Review finding**";
+  return `${findingMarker(findingId)}\n${heading}${where ? ` (${where})` : ""}\n\n${body}`;
+}
+
+const isBot = (login: string) => login.endsWith("[bot]");
 
 /** GitHub implementation of the provider-neutral branch and change contract. */
 /** Only a conflict is a definite no; blocked/behind/unknown/draft say nothing about conflicts, so they stay unknown. */
@@ -165,5 +176,66 @@ export class GitHubCodeHost implements CodeHost {
       pullRequest: delivery.pullRequest,
       checks: delivery.checks,
     };
+  }
+
+  async createFinding(input: {
+    address: string; id: string; findingId: string; body: string; headSha: string; path?: string; line?: number;
+  }): Promise<{ url: string; projection: string }> {
+    const number = reference(input.address, input.id);
+    const positioned = input.path !== undefined && input.line !== undefined;
+    if (positioned) {
+      try {
+        const created = await this.github.createReviewComment(input.address, number, {
+          body: findingComment(input.findingId, input.body, null), commitId: input.headSha, path: input.path!, line: input.line!,
+        });
+        return { url: created.url, projection: `inline:${created.id}` };
+      } catch (error) {
+        // GitHub answers HTTP 422 when the line is not part of the diff: fall back to a change comment.
+        if (!(error instanceof GitHubTransportError && /HTTP 422/.test(error.stderr))) throw error;
+      }
+    }
+    const where = input.path ? `${input.path}${input.line !== undefined ? `:${input.line}` : ""}` : null;
+    const created = await this.github.createComment(input.address, number, findingComment(input.findingId, input.body, where));
+    return { url: created.url, projection: `comment:${created.id}` };
+  }
+
+  async resolveFindingProjection(input: {
+    address: string; id: string; findingId: string; projection: string; body: string; actor: string;
+  }): Promise<void> {
+    const [kind, rawId] = input.projection.split(":");
+    const commentId = Number(rawId);
+    if (!Number.isSafeInteger(commentId)) throw new Error(`unknown finding projection "${input.projection}"`);
+    if (kind === "inline") {
+      await this.github.replyToReviewComment(input.address, reference(input.address, input.id), commentId, `Resolved by ${input.actor}`);
+    } else {
+      await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.actor));
+    }
+  }
+
+  async listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]> {
+    const number = reference(input.address, input.id);
+    const [threads, reviews] = await Promise.all([
+      this.github.listReviewThreads(input.address, number),
+      this.github.listReviews(input.address, number),
+    ]);
+    const artifacts: ReviewArtifact[] = [];
+    const threadedReviews = new Set<number>();
+    for (const thread of threads) {
+      const first = thread.comments.nodes[0];
+      if (!first) continue;
+      if (first.pullRequestReview) threadedReviews.add(first.pullRequestReview.databaseId);
+      const author = first.author?.login ?? "ghost";
+      if (isBot(author) || first.body.includes(OWN_MARKER)) continue;
+      artifacts.push({ providerKey: `thread:${thread.id}`, author, body: first.body, url: first.url, path: first.path, line: first.line, resolved: thread.isResolved });
+    }
+    const ordered = [...reviews].sort((a, b) => a.id - b.id);
+    for (const review of ordered) {
+      const author = review.user?.login ?? "ghost";
+      const body = review.body ?? "";
+      if (review.state !== "CHANGES_REQUESTED" || isBot(author) || body.includes(OWN_MARKER) || threadedReviews.has(review.id)) continue;
+      const approved = ordered.some((later) => later.id > review.id && later.user?.login === author && later.state === "APPROVED");
+      artifacts.push({ providerKey: `review:${review.id}`, author, body, url: review.html_url, path: null, line: null, resolved: approved });
+    }
+    return artifacts;
   }
 }

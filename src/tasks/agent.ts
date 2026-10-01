@@ -14,6 +14,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { StoredQuestion } from "../db/store";
+import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import type { RunEnvelope } from "../runner/result";
 import {
@@ -69,7 +70,13 @@ function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelo
     if (question) return pending(waiting(question.prompt), { after: 0 });
     return fail("Agent returned an invalid result: it reported needs-input but opened no question; it must call agent.askQuestion first", { route: { stop: "error" } });
   }
-  if (status === "changes-requested") return pass(captured);
+  if (status === "changes-requested") {
+    // Requested changes must be recorded as findings, or the exit gate has nothing to hold the stage on.
+    if (new ReviewFindings(deps.store.sqlite()).countForRun(runId) === 0) {
+      return fail("Reviewer requested changes without recording a finding", { route: { stop: "error" } });
+    }
+    return pass(captured);
+  }
   if (FAILURE_STOPS.includes(status)) return fail(reason ?? summary, { route: { stop: status } });
   if (outcome === "success") return pass(captured);
   return fail(`Agent returned an invalid result: unexpected failure status "${status}" (${reason ?? summary})`, { route: { stop: "error" } });
@@ -79,7 +86,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "agent.run",
   kind: "act",
   description:
-    "Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides), and an invalid result stops as an error.",
+    "Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the run recorded a finding with `change.comment` and otherwise stops as an error, and an invalid result stops as an error.",
   reads: ["run"],
   writes: ["agent"],
   invalidates: [],

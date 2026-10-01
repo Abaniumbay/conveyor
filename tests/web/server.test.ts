@@ -52,6 +52,7 @@ interface CallLog {
   issueConversation: unknown[][];
   issueJourney: unknown[][];
   messages: unknown[][];
+  dismissals: unknown[][];
 }
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -60,7 +61,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], dismissals: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -148,6 +149,7 @@ function setup(overrides: Record<string, unknown> = {}) {
       };
     },
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
+    dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
     ...overrides,
   };
   return { handler: createWebHandler(dependencies as never), auth, calls };
@@ -390,6 +392,37 @@ describe("createWebHandler", () => {
     expect(posted.status).toBe(201);
     expect(calls.issueConversation).toEqual([["github:owner/repo#1"]]);
     expect(calls.messages).toEqual([["github:owner/repo#1", "Please preserve the public API.", "operator"]]);
+  });
+
+  test("dismisses a finding only for an authenticated session with CSRF and a reason", async () => {
+    const { handler, auth, calls } = setup({ maxBodyBytes: 4096 });
+    const url = "http://localhost/api/issues/github%3Aowner%2Frepo%231/findings/F-1/dismiss";
+    const post = (headers: Record<string, string>, body: string) => handler(new Request(url, { method: "POST", headers, body }));
+    const json = { "content-type": "application/json" };
+    expect((await post(json, JSON.stringify({ reason: "ok" }))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    expect((await post({ ...json, cookie }, JSON.stringify({ reason: "ok" }))).status).toBe(403);
+    expect((await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ reason: "  " }))).status).toBe(400);
+    expect((await post({ ...json, cookie, "x-csrf-token": csrf }, "not json")).status).toBe(400);
+    expect((await post({ cookie, "x-csrf-token": csrf, "content-type": "text/plain" }, "{}")).status).toBe(415);
+    expect((await handler(new Request(url, { headers: { cookie } }))).status).toBe(405);
+    expect(calls.dismissals).toEqual([]);
+    const ok = await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ reason: "Not applicable" }));
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true });
+    expect(calls.dismissals).toEqual([["github:owner/repo#1", "F-1", "Not applicable", "operator"]]);
+  });
+
+  test("a rejected dismissal is a conflict with the reason", async () => {
+    const { handler, auth } = setup({ maxBodyBytes: 4096, dismissFinding: async () => { throw new Error("Finding F-1 is resolved, not open"); } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const response = await handler(new Request("http://localhost/api/issues/i1/findings/F-1/dismiss", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify({ reason: "x" }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Finding F-1 is resolved, not open" });
   });
 
   test("delegates configured webhook raw body and headers without requiring a session", async () => {

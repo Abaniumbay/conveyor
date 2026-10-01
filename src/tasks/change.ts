@@ -9,6 +9,7 @@ import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, syncChecklist, uncheckCriterion } from "./change-criteria";
+import { findingsResolved, findingsView, findingTools, importNativeReview } from "./change-findings";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -45,14 +46,14 @@ function toContext(delivery: ChangeDelivery, deps: Deps): ChangeContext {
     criteria: criteriaView(deps, change.body ?? "", change.headSha),
     projectedCriterionIds: [...projectedChecklist(change.body ?? "").checked.keys()],
     projectionError: projectedChecklist(change.body ?? "").error,
-    findings: [],
+    findings: findingsView(deps),
   };
 }
 
 const load: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.load",
   kind: "load",
-  description: "Loads the item's change request live from the code host (state, head, mergeability); null until one exists.",
+  description: "Loads the item's change request live from the code host (state, head, mergeability) and imports its native human review as findings; null until a change request exists.",
   reads: [],
   writes: ["change"],
   invalidates: [],
@@ -60,6 +61,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     const stored = deps.store.getCurrentPullRequest(deps.issueId);
     if (!stored) return pass(null);
     const delivery = await codeHostOf(deps).getChangeDelivery({ address: deps.repository.address, id: stored.id });
+    await importNativeReview(deps, stored.id, delivery.change.headSha);
     return pass(toContext(delivery, deps));
   },
 };
@@ -206,4 +208,4 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
   },
 };
 
-export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, get, setMetadata, checkCriterion, uncheckCriterion]);
+export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, get, setMetadata, checkCriterion, uncheckCriterion, findingsResolved, ...findingTools]);

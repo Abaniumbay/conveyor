@@ -1942,6 +1942,26 @@ export class ConveyorService {
     return { status, stageId };
   }
 
+  /** An operator's dismissal of a review finding: the dispatcher runs `change.dismissFinding` as that human, never an agent. */
+  async dismissFinding(issueId: string, findingId: string, reason: string, username: string): Promise<void> {
+    const issue = this.store.getIssue(issueId);
+    const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+    if (!issue || !repository) throw new Error("issue not found");
+    const actor = { id: `human:${username}`, name: username, title: "Operator" };
+    await dispatchTool({
+      name: "change.dismissFinding",
+      input: { findingId, reason },
+      actor,
+      grant: { runId: `web:${username}`, stageId: issue.projectedStage ?? "", issueScoped: true, actor, tasks: new Set(["change.dismissFinding"]) },
+    }, {
+      registry: createTaskRegistry(),
+      deps: () => this.taskDeps(issue.id, { id: issue.repositoryId, address: repository.address, folder: repository.folder, baseBranch: repository.baseBranch }),
+      liveHeadSha: async () => null,
+      store: this.store,
+    });
+    await this.updateStatusComment(issue.id);
+  }
+
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
     const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
@@ -1971,6 +1991,7 @@ export class ConveyorService {
       getIssueConversation: (issueId) => this.issueConversation(issueId),
       getIssueJourney: (issueId) => this.issueJourney(issueId),
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
+      dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
     };
   }
 }

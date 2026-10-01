@@ -49,6 +49,18 @@ export type BranchPushResult =
   | { pushed: true }
   | { pushed: false; status: "changes-requested"; reason: string };
 
+/** A review artifact of the code host's native review (a thread or a changes-requested review), as a finding source. */
+export interface ReviewArtifact {
+  /** Stable key of the artifact on the host; dedupes imports. */
+  providerKey: string;
+  author: string;
+  body: string;
+  url: string;
+  path: string | null;
+  line: number | null;
+  resolved: boolean;
+}
+
 export interface CodeHost {
   pushBranch(input: {
     address: string;
@@ -76,4 +88,29 @@ export interface CodeHost {
     address: string;
     id: string;
   }): Promise<ChangeDelivery>;
+  /**
+   * Projects a finding onto the change: an inline review comment at path/line of `headSha` when
+   * the host accepts that position, otherwise a managed change comment carrying the finding id.
+   * `projection` is an opaque reference for `resolveFindingProjection`.
+   */
+  createFinding(input: {
+    address: string;
+    id: string;
+    findingId: string;
+    body: string;
+    headSha: string;
+    path?: string;
+    line?: number;
+  }): Promise<{ url: string; projection: string }>;
+  /** Marks a finding's projection resolved (a reply on an inline comment, an edit of a managed comment). */
+  resolveFindingProjection(input: {
+    address: string;
+    id: string;
+    findingId: string;
+    projection: string;
+    body: string;
+    actor: string;
+  }): Promise<void>;
+  /** Human review artifacts of the change's native review; Conveyor's own comments and bots are excluded. */
+  listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]>;
 }

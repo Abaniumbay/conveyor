@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ScopedMcpFactory } from "../../src/app/runtime";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
@@ -188,6 +189,20 @@ describe("legacy MCP names delegate to the agent tools", () => {
     expect(await call("conversation.get", { limit: 5 })).toMatchObject({ issueId: "issue", messages: [{ actorName: "Worker", message: "Halfway" }] });
     expect(w.store.listRunEvents("run-1").map((e) => e.type)).toEqual(["report_progress", "question", "record_artifact", "record_artifact", "report_rationale"]);
     await lease.close();
+    await w.service.close();
+  });
+});
+
+describe("operator dismissal of findings", () => {
+  test("dismisses through the dispatcher as the signed-in human and audits it", async () => {
+    const w = await setup();
+    const findings = new ReviewFindings(w.store.sqlite());
+    const finding = findings.create({ issueId: "issue", runId: "run-1", author: "worker", headSha: "h1", body: "Fix" });
+    await w.service.dismissFinding("issue", finding.id, "Not applicable here", "operator");
+    expect(findings.get("issue", finding.id)).toMatchObject({ state: "dismissed", dismissal: { actor: "human:operator", reason: "Not applicable here" } });
+    expect(findings.events(finding.id).at(-1)).toMatchObject({ kind: "dismissed", actor: "human:operator" });
+    await expect(w.service.dismissFinding("issue", finding.id, "again", "operator")).rejects.toThrow("not open");
+    await expect(w.service.dismissFinding("missing", finding.id, "x", "operator")).rejects.toThrow("issue not found");
     await w.service.close();
   });
 });

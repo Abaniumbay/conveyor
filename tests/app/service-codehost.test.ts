@@ -167,6 +167,9 @@ describe("CodeHost service integration", () => {
       async getChange() { throw new Error("not expected"); },
       async mergeChange() { throw new Error("not expected"); },
       async setChangeChecklist() { throw new Error("not expected"); },
+      async createFinding() { throw new Error("not expected"); },
+      async resolveFindingProjection() { throw new Error("not expected"); },
+      async listReviewArtifacts() { throw new Error("not expected"); },
       async getChangeDelivery() { throw new Error("not expected"); },
     };
     config.repositories.repo!.codeHost = "custom";

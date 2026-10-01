@@ -5,8 +5,9 @@ import path from "node:path";
 
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
 import { dispatchTool } from "../../src/tasks/dispatch";
-import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
+import type { ChangeDelivery, ChangeRequest, CodeHost, ReviewArtifact } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, TaskContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
@@ -31,6 +32,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
   merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
+  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean;
 } = {}) {
   let body = state.body ?? "";
   const calls: Array<[string, unknown]> = [];
@@ -43,6 +45,20 @@ function hostFake(state: {
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
     },
     async mergeChange(input) { calls.push(["merge", input]); return state.merge ?? { merged: true, sha: "merge1" }; },
+    async createFinding(input) {
+      calls.push(["createFinding", input]);
+      if (state.projectFails) throw new Error("GitHub is down");
+      return { url: `https://x/finding/${input.findingId}`, projection: input.path ? "inline:11" : "comment:12" };
+    },
+    async resolveFindingProjection(input) {
+      calls.push(["resolveFinding", input]);
+      if (state.projectFails) throw new Error("GitHub is down");
+    },
+    async listReviewArtifacts(input) {
+      calls.push(["listArtifacts", input]);
+      if (state.listFails) throw new Error("GraphQL failed");
+      return state.artifacts ?? [];
+    },
     async getChangeDelivery(input): Promise<ChangeDelivery> {
       calls.push(["delivery", input]);
       const change = { ...(state.change ?? request()), body };
@@ -486,5 +502,152 @@ describe("approvals bound to criterion text", () => {
     });
     const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
     expect(loaded.criteria[0]!.approval).toBeNull();
+  });
+});
+
+describe("findings", () => {
+  const actor = { id: "reviewer", name: "Reviewer", title: "Reviewer" };
+  const dispatch = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, who: typeof actor | null = actor, live = "head1") =>
+    dispatchTool(
+      { name, input, actor: who as never, grant: { runId: "run1", stageId: "review", issueScoped: true, actor: null, tasks: new Set([name]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => live, store: w.store },
+    );
+  const findings = (w: Awaited<ReturnType<typeof world>>) => new ReviewFindings(w.store.sqlite());
+  const artifact = (over: Partial<ReviewArtifact> = {}): ReviewArtifact => ({
+    providerKey: "thread:T1", author: "alice", body: "Rename", url: "https://x/t1", path: "a.ts", line: 3, resolved: false, ...over,
+  });
+
+  test("change.comment records an open agent finding first and then projects it to the code host", async () => {
+    const w = await world();
+    const output = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string; url: string };
+    const [finding] = findings(w).list("i1");
+    expect(finding).toMatchObject({ id: output.findingId, state: "open", source: "agent", author: "reviewer", runId: "run1", headSha: "head1", path: "a.ts", line: 3, url: output.url, projection: "inline:11" });
+    expect(w.host.calls.find(([name]) => name === "createFinding")![1]).toMatchObject({ findingId: finding!.id, body: "Fix this", headSha: "head1", path: "a.ts", line: 3 });
+  });
+
+  test("change.comment without a position makes a change-level finding", async () => {
+    const w = await world();
+    await dispatch(w, "change.comment", { body: "General concern", headSha: "head1" });
+    expect(findings(w).list("i1")[0]).toMatchObject({ path: null, line: null, projection: "comment:12" });
+  });
+
+  test("a retried change.comment returns the journaled response instead of creating a second finding", async () => {
+    const w = await world();
+    const input = { body: "Fix this", headSha: "head1" };
+    const first = await dispatch(w, "change.comment", input);
+    const second = await dispatch(w, "change.comment", input);
+    expect(second).toEqual(first);
+    expect(findings(w).list("i1")).toHaveLength(1);
+  });
+
+  test("change.comment is rejected for a stale head before anything is recorded", async () => {
+    const w = await world();
+    await expect(dispatch(w, "change.comment", { body: "x", headSha: "old" })).rejects.toThrow("not the current change head");
+    expect(findings(w).list("i1")).toHaveLength(0);
+  });
+
+  test("a failed projection keeps the open finding and says so", async () => {
+    const w = await world({ projectFails: true });
+    const output = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1" }) as { findingId: string; projection: string };
+    expect(output.projection).toContain("could not be created: GitHub is down");
+    expect(findings(w).get("i1", output.findingId)).toMatchObject({ state: "open", url: "" });
+  });
+
+  test("change.resolveFinding resolves once, projects best-effort and is a no-op the second time", async () => {
+    const w = await world();
+    const { findingId } = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string };
+    await dispatch(w, "change.resolveFinding", { findingId }, { id: "kaveh", name: "K", title: "T" });
+    await dispatch(w, "change.resolveFinding", { findingId }, { id: "kaveh", name: "K", title: "T" });
+    expect(findings(w).get("i1", findingId)!.state).toBe("resolved");
+    const projections = w.host.calls.filter(([name]) => name === "resolveFinding");
+    expect(projections).toHaveLength(1);
+    expect(projections[0]![1]).toMatchObject({ findingId, projection: "inline:11", body: "Fix this", actor: "kaveh" });
+    expect(findings(w).events(findingId).map((e) => [e.kind, e.actor])).toEqual([["created", "reviewer"], ["resolved", "kaveh"]]);
+  });
+
+  test("a projection failure does not undo the resolution; an unknown finding fails", async () => {
+    const w = await world();
+    const { findingId } = await dispatch(w, "change.comment", { body: "x", headSha: "head1" }) as { findingId: string };
+    const broken = await world({ projectFails: true });
+    const created = findings(broken).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
+    findings(broken).project(created.id, "u", "comment:1");
+    await dispatch(broken, "change.resolveFinding", { findingId: created.id });
+    expect(findings(broken).get("i1", created.id)!.state).toBe("resolved");
+    await expect(dispatch(w, "change.resolveFinding", { findingId: "nope" })).rejects.toThrow("Unknown finding");
+    expect(findingId).toBeTruthy();
+  });
+
+  test("change.resolveFinding cannot resolve a dismissed finding", async () => {
+    const w = await world();
+    const f = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
+    findings(w).dismiss("i1", f.id, { actor: "human:amir", reason: "fine", at: "t" });
+    await expect(dispatch(w, "change.resolveFinding", { findingId: f.id })).rejects.toThrow("dismissed");
+    expect(findings(w).get("i1", f.id)!.state).toBe("dismissed");
+  });
+
+  test("change.listFindings lists all findings or only those in a state", async () => {
+    const w = await world();
+    const a = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "a" });
+    findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "b" });
+    findings(w).resolve("i1", a.id, "kaveh");
+    const all = await dispatch(w, "change.listFindings", {}) as { findings: Array<{ id: string }> };
+    const open = await dispatch(w, "change.listFindings", { state: "open" }) as { findings: Array<{ body: string }> };
+    expect(all.findings).toHaveLength(2);
+    expect(open.findings.map((f) => f.body)).toEqual(["b"]);
+  });
+
+  test("change.load imports native review and puts the findings in the change context", async () => {
+    const w = await world({ artifacts: [artifact()] });
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+    expect((result.output as ChangeContext).findings).toEqual([
+      { id: expect.any(String), providerKey: "thread:T1", author: "alice", source: "human", headSha: "head1", state: "open", path: "a.ts", line: 3, url: "https://x/t1" },
+    ]);
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(findings(w).list("i1")).toHaveLength(1);
+  });
+
+  test("change.load carries dismissal and withdrawal audit in the context", async () => {
+    const state: Parameters<typeof hostFake>[0] = { artifacts: [artifact(), artifact({ providerKey: "thread:T2" })] };
+    const w = await world(state);
+    await run("change.load", { context: {}, deps: w.deps });
+    const [one] = findings(w).list("i1");
+    findings(w).dismiss("i1", one!.id, { actor: "human:amir", reason: "ok", at: "t1" });
+    state.artifacts = [artifact({ providerKey: "thread:T1" })];
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+    const byKey = Object.fromEntries((result.output as ChangeContext).findings.map((f) => [f.providerKey, f]));
+    expect(byKey["thread:T1"]).toMatchObject({ state: "dismissed", dismissal: { actor: "human:amir", reason: "ok", at: "t1" } });
+    expect(byKey["thread:T2"]).toMatchObject({ state: "withdrawn", withdrawal: { actor: "provider", reason: "provider-artifact-deleted" } });
+  });
+
+  test("a GraphQL failure while importing is an infrastructure error", async () => {
+    const w = await world({ listFails: true });
+    await expect(run("change.load", { context: {}, deps: w.deps })).rejects.toThrow("GraphQL failed");
+  });
+
+  test("change.findingsResolved passes with no open findings and lists open ones with URLs", async () => {
+    const task = registry.require("change.findingsResolved");
+    expect(task.kind).toBe("check");
+    expect(task.checkpoint).toEqual({ name: "reviewPassed", scope: "gate" });
+    const finding = (state: "open" | "resolved" | "dismissed" | "withdrawn", id: string): ChangeContext["findings"][number] =>
+      ({ id, providerKey: null, author: "a", source: "agent", headSha: "head1", state, path: "a.ts", line: 3, url: `https://x/${id}` });
+    expect((await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("resolved", "r"), finding("dismissed", "d"), finding("withdrawn", "w")] }) }) })).status).toBe("pass");
+    const failed = await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("open", "o1"), finding("resolved", "r")] }) }) }) as Fail;
+    expect(failed.status).toBe("fail");
+    expect(failed.message).toContain("o1");
+    expect(failed.message).toContain("https://x/o1");
+    expect(failed.message).not.toContain("https://x/r");
+    expect((await run("change.findingsResolved", { context: ctx({ change: null }) })).status).toBe("fail");
+  });
+
+  test("change.dismissFinding records the human, reason and time and audits it", async () => {
+    const w = await world();
+    const f = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
+    const human = { id: "human:amir", name: "amir", title: "Operator" };
+    await expect(dispatch(w, "change.dismissFinding", { findingId: f.id, reason: "  " }, human)).rejects.toThrow();
+    await dispatch(w, "change.dismissFinding", { findingId: f.id, reason: "Not applicable here" }, human);
+    expect(findings(w).get("i1", f.id)).toMatchObject({ state: "dismissed", dismissal: { actor: "human:amir", reason: "Not applicable here" } });
+    expect(findings(w).events(f.id).at(-1)).toMatchObject({ kind: "dismissed", actor: "human:amir", reason: "Not applicable here" });
+    await expect(dispatch(w, "change.dismissFinding", { findingId: f.id, reason: "again" }, human)).rejects.toThrow("not open");
+    expect(registry.require("change.dismissFinding")).toMatchObject({ kind: "tool", mutating: true, journal: false });
   });
 });

@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { HarnessResumeInput, TaskContext } from "../../src/tasks/context";
@@ -246,12 +247,25 @@ describe("agent.run", () => {
     expect(await w.run(false)).toEqual({ status: "fail", message: reason, route: { stop: status } });
   });
 
-  test("changes-requested passes so the gates decide", async () => {
+  test("changes-requested with a finding recorded in the run passes so the gates decide", async () => {
     const w = await world();
-    w.setBehaviour(() => ({ outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "see findings" }));
+    w.setBehaviour((_call, runId, store) => {
+      new ReviewFindings(store.sqlite()).create({ issueId: "i1", runId, author: "kaveh", headSha: "h1", body: "Rename this" });
+      return { outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "see findings" };
+    });
     const result = await w.run(false);
     expect(result.status).toBe("pass");
     expect(outcome(result)).toMatchObject({ status: "changes-requested", reason: "see findings" });
+  });
+
+  test("changes-requested without a finding created in this run is an error stop", async () => {
+    const w = await world();
+    // A finding from another run does not count.
+    new ReviewFindings(w.store.sqlite()).create({ issueId: "i1", runId: "earlier", author: "kaveh", headSha: "h1", body: "Old" });
+    w.setBehaviour(() => ({ outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "see findings" }));
+    expect(await w.run(false)).toEqual({
+      status: "fail", message: "Reviewer requested changes without recording a finding", route: { stop: "error" },
+    });
   });
 
   test("an unknown failure status is an actionable invalid result", async () => {
