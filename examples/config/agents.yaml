@@ -25,13 +25,26 @@ agents:
             agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
             workspace.fetch, workspace.push, change.setMetadata,
             change.listFindings, change.comment, change.resolveFinding]
-  shirin:
+  shaghayegh:                              # reviews first; Claude Code (read-only)
+    name: Shaghayegh
+    title: Senior Reviewer
+    harness: claude-code
+    model: claude-opus-5-5
+    effort: high
+    instructions: ./instructions/reviewer.md
+    access: read-only
+    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+            agent.reportMilestone, agent.recordArtifact,
+            change.listFindings, change.comment, change.resolveFinding,
+            change.checkCriterion, change.uncheckCriterion]
+  shirin:                                  # reviews when Shaghayegh cannot run
     name: Shirin
     title: Senior Reviewer
     harness: codex
     model: gpt-5.6-terra
     effort: high
-    instructions: ./instructions/shirin.md
+    instructions: ./instructions/reviewer.md
     access: read-only
     tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
             agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,

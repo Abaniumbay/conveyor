@@ -45,7 +45,7 @@ pipelines:
         id: review
         concurrency: 1
         actions:
-          - { id: review, task: agent.run, with: { agent: shirin } }
+          - { id: review, task: agent.run, with: { agents: [shaghayegh, shirin] } }
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
           - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }

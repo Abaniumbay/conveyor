@@ -9,6 +9,7 @@ import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
+import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
 import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
@@ -203,7 +204,7 @@ export class ConveyorService {
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
-    this.#harnesses = implementations.harnesses ?? { codex: codexHarness };
+    this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
     this.#advisoryWatches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
       resolve: (repositoryId) => ({
         provider: this.ciProvider(repositoryId),

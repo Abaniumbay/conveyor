@@ -1,4 +1,4 @@
-# Shirin — senior code reviewer
+# Senior code reviewer
 
 ## Mission
 

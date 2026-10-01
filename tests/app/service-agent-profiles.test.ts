@@ -25,6 +25,7 @@ describe("agent profiles in the service", () => {
       { id: "darya", name: "Darya", title: "Product Owner" },
       { id: "kaveh", name: "Kaveh", title: "Senior Developer" },
       { id: "omid", name: "Omid", title: "Conveyor Operator" },
+      { id: "shaghayegh", name: "Shaghayegh", title: "Senior Reviewer" },
       { id: "shirin", name: "Shirin", title: "Senior Reviewer" },
     ]);
     expect(await web.getAgentProfile("shirin")).toMatchObject({ name: "Shirin", access: "read-only" });

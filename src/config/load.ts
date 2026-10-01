@@ -208,8 +208,11 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
     );
   }
   for (const [name, agent] of Object.entries(config.agents)) {
-    if (!config.runners[agent.runner]) {
+    const runner = config.runners[agent.runner];
+    if (!runner) {
       errors.push(`agents.${name}.runner references unknown runner "${agent.runner}"`);
+    } else if (runner.type === "claude-code" && agent.workspaceAccess !== "read-only") {
+      errors.push(`agents.${name} runs on Claude Code, which supports only access: read-only for now`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {

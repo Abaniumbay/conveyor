@@ -71,7 +71,7 @@ flowchart LR
 | Stage executor | Runs one compiled stage as a durable task chain: implicit loads, journaled acts, the exit gate, waiting, `onFail` routing, retries and the `maxReturns` guard. |
 | Execution journal | Persists the item context and its append-only history, each task execution with its idempotency key, the stage cursor, stage epochs (fencing tokens) and persisted wake-ups. |
 | Legacy compatibility compiler | Compiles the deprecated `run` / `enterCheck` / `exitCheck` stage shape into a task plan (`legacy.*` tasks) so existing configurations keep working. |
-| Harness (Codex) | Starts non-interactive structured agent runs with a chosen model, effort level, sandbox, approvals policy, output schema, scoped MCP configuration and, where the harness advertises it, session resume after a question. |
+| Harness (Codex, Claude Code) | Starts non-interactive structured agent runs with a chosen model, effort level, sandbox, approvals policy, output schema, scoped MCP configuration and, where the harness advertises it, session resume after a question. Claude Code agents are read-only for now: the process runs in bubblewrap with the filesystem mounted read-only (except its config directory and a private `/tmp`), the service's secrets hidden, no user or project settings, and only the read tools, Bash and the Conveyor MCP tools. |
 | JSON-process runner | Executes repository-defined programs that accept JSON on stdin and return exactly one validated JSON result. |
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
@@ -278,6 +278,9 @@ harnesses:
     command: codex
     sandbox: workspace-write
     automaticApprovals: true
+  claude-code:
+    type: claude-code
+    command: claude          # configDir: defaults to ~/.claude, the service user's login
   process:
     type: json-process
 
@@ -345,7 +348,7 @@ pipelines:
       - id: review
         concurrency: 1
         actions:
-          - { id: review, task: agent.run, with: { agent: reviewer } }
+          - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
           - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
@@ -384,7 +387,7 @@ repositories:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
 
-Task entries take `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when it occurs once in the list and is required for duplicates; overrides, execution records, script results and idempotency keys use the instance id. `when` is a guard from a closed vocabulary (`ci.enabled`, `ci.required`, `ci.advisory`) evaluated at load time from the repository's CI mode; there are no expressions, variables or loops. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires; the default comes from the task, else `settings.taskDefaults.wait`). A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`); naming something that does not exist is an error. `settings.maxReturns` (default 5) bounds `return` loops between stages.
+Task entries take `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when it occurs once in the list and is required for duplicates; overrides, execution records, script results and idempotency keys use the instance id. `when` is a guard from a closed vocabulary (`ci.enabled`, `ci.required`, `ci.advisory`) evaluated at load time from the repository's CI mode; there are no expressions, variables or loops. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires; the default comes from the task, else `settings.taskDefaults.wait`). A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`); naming something that does not exist is an error. `settings.maxReturns` (default 5) bounds `return` loops between stages. `agent.run` takes `agent: <id>` or `agents: [<id>, ...]` in order of preference: when an agent's harness cannot run (a usage limit, a login failure, a crash), the next one takes the same step and the item's conversation says so; a result the agent returned, of any status, is never retried on another agent. An answered question goes back to the agent that asked it first.
 
 Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` section are not part of the native shape.
 

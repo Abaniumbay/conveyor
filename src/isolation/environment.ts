@@ -115,14 +115,25 @@ export async function prepareCodexEnvironment(options: {
   overrides?: Record<string, string> | undefined;
   parent?: Environment;
 }): Promise<Record<string, string>> {
+  return prepareAgentEnvironment({ ...options, controlPlane: CODEX_CONTROL_PLANE });
+}
+
+/** The same for any harness, keeping the variables its own control plane needs (`controlPlane`). */
+export async function prepareAgentEnvironment(options: {
+  artifactsDirectory: string;
+  workspace: string;
+  overrides?: Record<string, string> | undefined;
+  parent?: Environment;
+  controlPlane: readonly string[];
+}): Promise<Record<string, string>> {
   const parent = options.parent ?? process.env;
   const base: Environment = {};
-  for (const name of INHERITED) base[name] = parent[name];
+  for (const name of [...INHERITED, ...options.controlPlane]) base[name] = parent[name];
   Object.assign(base, options.overrides);
   const home = await prepareSanitizedHome({
     root: path.dirname(options.artifactsDirectory),
     runId: path.basename(options.artifactsDirectory),
     gitUser: await readGitUser(options.workspace, parent),
   });
-  return sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: CODEX_CONTROL_PLANE });
+  return sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: options.controlPlane });
 }
