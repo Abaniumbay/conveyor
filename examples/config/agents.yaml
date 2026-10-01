@@ -29,7 +29,7 @@ agents:
     name: Shaghayegh
     title: Senior Reviewer
     harness: claude-code
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     effort: high
     instructions: ./instructions/reviewer.md
     access: read-only
