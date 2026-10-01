@@ -91,7 +91,7 @@ describe("GitHub status comment renderer", () => {
 
     expect(markdown).toContain("- State: unavailable · Duration: unavailable");
     expect(markdown).toContain("- Usage: unavailable");
-    expect(markdown).toContain("- Cost: unavailable");
+    expect(markdown).not.toContain("- Cost:");
     expect(markdown).not.toContain("### Acceptance criteria");
     expect(markdown).not.toContain("### Relationships");
     expect(markdown).toContain("Conveyor never closes issues.");
