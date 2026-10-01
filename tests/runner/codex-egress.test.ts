@@ -5,11 +5,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { runCodex } from "../../src/runner/codex";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
-const bwrap = Bun.spawnSync(["bwrap", "--unshare-net", "--dev-bind", "/", "/", "true"], { stderr: "pipe" });
-const available = bwrap.exitCode === 0;
-if (!available) console.warn("SKIPPED codex egress tests: `bwrap --unshare-net` is unavailable");
-const describeSandbox = available ? describe : describe.skip;
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED codex egress tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
 
 const directories: string[] = [];
 const servers: net.Server[] = [];

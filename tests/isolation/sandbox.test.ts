@@ -8,13 +8,11 @@ import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-p
 import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
 import { sandboxCommand } from "../../src/isolation/sandbox";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
-const bwrap = Bun.spawnSync(["bwrap", "--unshare-net", "--dev-bind", "/", "/", "true"], { stderr: "pipe" });
-const available = bwrap.exitCode === 0;
-const describeSandbox = available ? describe : describe.skip;
-if (!available) {
-  console.warn(`SKIPPED sandbox tests: \`bwrap --unshare-net\` is unavailable (${bwrap.stderr.toString().trim() || "bwrap missing"})`);
-}
+const unavailable = bwrapUnavailableReason();
+const describeSandbox = unavailable ? describe.skip : describe;
+if (unavailable) console.warn(`SKIPPED sandbox tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
 
 const SCRATCH = path.join(homedir(), ".cache", "conveyor-test");
 const TOKEN = "per-run-token-1234";
@@ -98,7 +96,7 @@ async function echo(): Promise<{ server: net.Server; port: number }> {
 }
 
 beforeAll(async () => {
-  if (!available) return;
+  if (unavailable) return;
   // Not under /tmp: the sandbox mounts a private /tmp.
   await mkdir(SCRATCH, { recursive: true });
   directory = await mkdtemp(path.join(SCRATCH, "sbx-"));
@@ -122,7 +120,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!available) return;
+  if (unavailable) return;
   await data.close();
   await control.close();
   for (const server of upstreams) server.close();
