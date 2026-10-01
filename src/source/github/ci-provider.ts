@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 
+import { FOCUSED_LOG_BREAK } from "../../app/ci-gate";
 import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../app/ci-provider";
 import type { GitHubAdapter } from "./adapter";
 
@@ -77,7 +78,7 @@ export function focusGitHubActionsLog(text: string, lines: number): string {
   }
   const failures = [...picked].sort((left, right) => left - right).map((index) => body[index]!);
   const tail = body.slice(tailStart, end);
-  return failures.length > 0 ? [...failures, "…", ...tail].join("\n") : tail.join("\n");
+  return failures.length > 0 ? [...failures, FOCUSED_LOG_BREAK, ...tail].join("\n") : tail.join("\n");
 }
 
 const CHANGE_EVENTS = ["pull_request", "pull_request_target", "push"];

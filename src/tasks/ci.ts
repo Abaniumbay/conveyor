@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 
-import { classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
+import { boundLog, boundSnapshotLogs, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import type { ChangeContext, CiContext } from "./context";
@@ -20,8 +20,13 @@ type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 const NO_CHANGE = "No change request exists yet";
 const SETTLE_SECONDS = 120;
 const LOG_LINES = 60;
-/** Logs are read once at load time with this bound; `ci.passed` keeps the last `with.logLines` of them. */
+/**
+ * Logs are read once at load time with this bound; `ci.passed` keeps their failing-test blocks and
+ * the last `with.logLines` lines of their tail.
+ */
 const LOAD_LOG_LINES = 200;
+/** All failed runs' logs together stay within this, so a red suite cannot outgrow the item context. */
+const LOAD_LOG_BYTES = 24 * 1024;
 const blocked = (message: string) => fail(message, { route: { stop: "blocked" } });
 
 const startConfig = z.object({ retriggerMinutes: z.number().positive().default(10) });
@@ -83,7 +88,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       awaitingStart: started.filter((name) => !runs.some((run) => run.name === name && run.state !== "skipped")),
       runs,
     };
-    return pass(snapshot);
+    return pass(boundSnapshotLogs(snapshot, LOAD_LOG_BYTES));
   },
 };
 
@@ -167,7 +172,7 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const { running, failed, rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable && !reran.has(run.name));
 
     if (failed.length > 0) {
-      const bounded = failed.map((run) => ({ ...run, log: run.log === null ? null : run.log.split("\n").slice(-config.logLines).join("\n") }));
+      const bounded = failed.map((run) => ({ ...run, log: run.log === null ? null : boundLog(run.log, { lines: config.logLines }) }));
       const report = describeCiFailure(change.url, sha, bounded);
       return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }

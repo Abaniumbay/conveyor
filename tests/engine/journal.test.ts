@@ -124,6 +124,23 @@ describe("ExecutionStore context", () => {
     store.close();
   });
 
+  test("shrinks CI logs to fit an oversized context instead of rejecting it", async () => {
+    const { store, journal } = await setup({ contextSummaryBytes: 4000 });
+    const log = ["❌ a_test.dart: hides the button (failed)", "Expected: nothing", "…", ...Array.from({ length: 200 }, (_, i) => `✅ passing ${i}`)].join("\n");
+    const run = { id: "1", name: "Tests", state: "failed" as const, url: null, rerunnable: false, hasLog: true, log };
+    const big = context({
+      ci: {
+        headSha: "h", defined: true, definitionProvable: true, definitionSummary: "", observedAt: "", firstSeenAt: "",
+        reruns: [], awaitingStart: [], runs: [run, { ...run, id: "2", name: "Full suite" }],
+      },
+    });
+    expect(journal.saveContext("issue-1", big, { stage: "s", taskInstanceId: "t", expectedEpoch: 0 })).toBe(1);
+    const saved = journal.getContext("issue-1")!.context;
+    expect(Buffer.byteLength(JSON.stringify(saved))).toBeLessThanOrEqual(4000);
+    expect(saved.ci!.runs[0]!.log).toContain("Expected: nothing");
+    store.close();
+  });
+
   test("rejects an oversized context naming the largest key", async () => {
     const { store, journal } = await setup({ contextSummaryBytes: 2000 });
     const big = context({ agent: { agentId: "a", status: "s", summary: "x".repeat(3000), reason: null, sessionId: null, runId: "r" } });
