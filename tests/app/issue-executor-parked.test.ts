@@ -147,6 +147,9 @@ describe("IssueExecutor parked stages", () => {
     const notes = h.messages();
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/plan changed.*restart/i);
+    expect(h.store.listStageTransitions("issue").at(-1)).toMatchObject({
+      kind: "restarted", fromStage: "implementation", toStage: "implementation", reason: notes[0],
+    });
     expect(h.producers).toEqual(["implementation", "implementation", "implementation"]);
     h.store.close();
   });

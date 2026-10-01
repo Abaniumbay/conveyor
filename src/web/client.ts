@@ -170,6 +170,7 @@ export const dashboardClient = String.raw`(() => {
       if (kind === 'onboarded') title.textContent = 'Entered ' + (to || 'Conveyor');
       else if (kind === 'correction') title.textContent = (from || 'Stage') + ' returned to ' + (to || 'previous stage');
       else if (kind === 'stopped') title.textContent = (from || to || 'Stage') + ' stopped';
+      else if (kind === 'resumed' || kind === 'restarted') title.textContent = (to || from || 'Stage') + ' ' + kind;
       else if (from && to && from !== to) title.textContent = from + ' advanced to ' + to;
       else title.textContent = (to || from || 'Stage') + ' completed';
       const badge = document.createElement('span');
