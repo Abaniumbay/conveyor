@@ -190,6 +190,8 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     });
     network = launch.network;
     child = spawnPiped(launch.argv, input.workspace, launch.env);
+    // Release the per-run network whenever the process ends, even if later setup throws.
+    void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();
     throw error;

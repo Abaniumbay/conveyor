@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
@@ -16,6 +16,7 @@ if (!available) {
   console.warn(`SKIPPED sandbox tests: \`bwrap --unshare-net\` is unavailable (${bwrap.stderr.toString().trim() || "bwrap missing"})`);
 }
 
+const SCRATCH = path.join(homedir(), ".cache", "conveyor-test");
 const TOKEN = "per-run-token-1234";
 const PROBES = `
 import net from "node:net";
@@ -98,7 +99,9 @@ async function echo(): Promise<{ server: net.Server; port: number }> {
 
 beforeAll(async () => {
   if (!available) return;
-  directory = await mkdtemp(path.join(tmpdir(), "sbx-"));
+  // Not under /tmp: the sandbox mounts a private /tmp.
+  await mkdir(SCRATCH, { recursive: true });
+  directory = await mkdtemp(path.join(SCRATCH, "sbx-"));
   await writeFile(path.join(directory, "probes.ts"), PROBES);
   await writeFile(path.join(directory, "harness.ts"), HARNESS);
   const model = await echo();
@@ -152,8 +155,10 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
   setDefaultTimeout(30_000);
   test("argv wraps the bridge in a fresh network namespace", () => {
     const sandboxed = sandboxCommand({ argv: ["echo", "x"], env: { PATH: "/usr/bin" }, dataProxySocket: "/tmp/d.sock" });
-    expect(sandboxed.argv.slice(0, 6)).toEqual(["bwrap", "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/"]);
-    expect(sandboxed.argv[6]).toBe("--");
+    expect(sandboxed.argv.slice(0, 7)).toEqual(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/"]);
+    expect(sandboxed.argv).toContain("--proc");
+    expect(sandboxed.argv.join(" ")).toContain("--tmpfs /tmp");
+    expect(sandboxed.argv).toContain("--");
   });
 
   test.each(["read-only", "workspace-write"] as const)(
@@ -201,14 +206,37 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     expect(await Bun.spawn(sandboxed.argv, { env: sandboxed.env }).exited).toBe(7);
   });
 
-  test("terminates the wrapped command when the sandbox is sent SIGTERM", async () => {
-    const sandboxed = sandboxCommand({ argv: ["sleep", "30"], env: { PATH: process.env.PATH ?? "" }, dataProxySocket: data.socketPath });
+  const pgrep = (pattern: string): boolean => Bun.spawnSync(["pgrep", "-f", pattern]).exitCode === 0;
+
+  test.each(["SIGTERM", "SIGKILL"] as const)("%s to the wrapper leaves no wrapped grandchild running", async (signal) => {
+    const marker = signal === "SIGTERM" ? "sleep 41" : "sleep 42";
+    const sandboxed = sandboxCommand({ argv: ["sh", "-c", `${marker} & wait`], env: { PATH: process.env.PATH ?? "" }, dataProxySocket: data.socketPath });
     const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env });
-    await Bun.sleep(700);
-    child.kill("SIGTERM");
-    const code = await Promise.race([child.exited, Bun.sleep(5000).then(() => "hung")]);
-    expect(code).not.toBe("hung");
-    expect(code).not.toBe(0);
+    for (let i = 0; i < 50 && !pgrep(marker); i++) await Bun.sleep(100);
+    expect(pgrep(marker)).toBe(true);
+    child.kill(signal);
+    await child.exited;
+    for (let i = 0; i < 50 && pgrep(marker); i++) await Bun.sleep(100);
+    expect(pgrep(marker)).toBe(false);
+  });
+
+  test("host sockets under /tmp are not visible inside the sandbox", async () => {
+    const hostSocket = path.join("/tmp", `conveyor-sbx-${process.pid}.sock`);
+    const server = net.createServer().listen(hostSocket);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const sandboxed = sandboxCommand({ argv: ["sh", "-c", `test -e ${hostSocket} && echo visible || echo hidden`], env: { PATH: process.env.PATH ?? "" }, dataProxySocket: data.socketPath });
+      const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe" });
+      expect((await new Response(child.stdout).text()).trim()).toBe("hidden");
+    } finally {
+      server.close();
+    }
+  });
+
+  test("host processes are not visible inside the sandbox", async () => {
+    const sandboxed = sandboxCommand({ argv: ["sh", "-c", "ls /proc | grep -c '^[0-9]'"], env: { PATH: process.env.PATH ?? "" }, dataProxySocket: data.socketPath });
+    const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe" });
+    expect(Number((await new Response(child.stdout).text()).trim())).toBeLessThan(20);
   });
 
   test("MCP forward exposes only the service's MCP endpoint on the exact port", async () => {

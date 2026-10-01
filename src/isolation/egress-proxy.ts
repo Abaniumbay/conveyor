@@ -23,6 +23,8 @@ export interface EgressProxy {
 }
 
 const MAX_HEAD_BYTES = 16 * 1024;
+const CONNECT_TIMEOUT_MS = 10_000;
+const IDLE_TIMEOUT_MS = 5 * 60_000;
 
 function ipv4Blocked(address: string): boolean {
   const [a = 0, b = 0, c = 0] = address.split(".").map(Number);
@@ -37,22 +39,40 @@ function ipv4Blocked(address: string): boolean {
   );
 }
 
-/** True for loopback, private, link-local, CGNAT, ULA, multicast and unspecified addresses. */
+function expandIpv6(address: string): number[] | null {
+  let text = address.toLowerCase().split("%")[0]!;
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (tail) {
+    const [a = 0, b = 0, c = 0, d = 0] = tail[1]!.split(".").map(Number);
+    text = text.slice(0, -tail[1]!.length) + ((a << 8) | b).toString(16) + ":" + ((c << 8) | d).toString(16);
+  }
+  const [head = "", rest, ...extra] = text.split("::");
+  if (extra.length > 0) return null;
+  const left = head ? head.split(":") : [];
+  const right = rest ? rest.split(":") : [];
+  const fill = rest === undefined ? 0 : 8 - left.length - right.length;
+  const groups = [...left, ...Array<string>(Math.max(fill, 0)).fill("0"), ...right].map((group) => parseInt(group, 16));
+  return groups.length === 8 && groups.every((group) => Number.isInteger(group)) ? groups : null;
+}
+
+/** True for loopback, private, link-local, CGNAT, ULA, multicast, unspecified, IPv4-compatible/-mapped/6to4/NAT64 private addresses. */
 export function isNonPublicAddress(address: string): boolean {
   const version = net.isIP(address);
   if (version === 4) return ipv4Blocked(address);
   if (version !== 6) return true;
-  const lower = address.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return ipv4Blocked(mapped[1]!);
-  if (/^::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(lower)) return true;
-  const first = parseInt(lower.split(":")[0] || "0", 16);
+  const groups = expandIpv6(address);
+  if (!groups) return true;
+  const [first = 0] = groups;
+  if (groups.slice(0, 6).every((group) => group === 0)) return true; // ::/96 (unspecified, loopback, IPv4-compatible)
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return ipv4Blocked(`${groups[6]! >> 8}.${groups[6]! & 255}.${groups[7]! >> 8}.${groups[7]! & 255}`);
+  }
   return (
-    lower === "::" || lower === "::1" ||
+    first === 0x2002 || // 6to4 embeds an arbitrary IPv4 address
     (first & 0xfe00) === 0xfc00 || // fc00::/7 unique local
     (first & 0xffc0) === 0xfe80 || // fe80::/10 link local
     (first & 0xff00) === 0xff00 || // multicast
-    lower.startsWith("64:ff9b:") // NAT64 can embed private v4
+    first === 0x64 && groups[1] === 0xff9b // NAT64 can embed private v4
   );
 }
 
@@ -116,6 +136,11 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
 
     const upstream = dial(addresses[0]!, 443);
     sockets.add(upstream);
+    const connectTimer = setTimeout(() => upstream.destroy(), CONNECT_TIMEOUT_MS);
+    upstream.once("connect", () => clearTimeout(connectTimer));
+    upstream.once("close", () => clearTimeout(connectTimer));
+    upstream.setTimeout(IDLE_TIMEOUT_MS, () => upstream.destroy());
+    client.setTimeout(IDLE_TIMEOUT_MS, () => client.destroy());
     upstream.once("close", () => sockets.delete(upstream));
     let connected = false;
     upstream.once("error", () => {
@@ -142,7 +167,10 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       buffered = Buffer.concat([buffered, chunk]);
       const end = buffered.indexOf("\r\n\r\n");
       if (end < 0) {
-        if (buffered.length > MAX_HEAD_BYTES) reply(client, 431, "Request Header Fields Too Large");
+        if (buffered.length > MAX_HEAD_BYTES) {
+          client.off("data", onData);
+          reply(client, 431, "Request Header Fields Too Large");
+        }
         return;
       }
       client.off("data", onData);

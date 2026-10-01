@@ -199,6 +199,8 @@ export async function runCodexCheck(
     });
     network = launch.network;
     child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // Release the per-run network whenever the process ends, even if later setup throws.
+    void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();
     throw new CodexRunnerError(

@@ -51,6 +51,7 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
     await Promise.all(proxies.map((proxy) => proxy.close()));
     throw error;
   }
+  let closed: Promise<void> | undefined;
   return {
     wrap(env, build) {
       const probe = sandboxCommand({ argv: [], env, dataProxySocket: dataSocket, ...(policy.mcp ? { mcp: policy.mcp } : {}) });
@@ -63,8 +64,9 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
         ...(policy.mcp ? { mcp: policy.mcp } : {}),
       });
     },
-    async close() {
-      await Promise.all(proxies.map((proxy) => proxy.close()));
+    close() {
+      closed ??= Promise.all(proxies.map((proxy) => proxy.close())).then(() => undefined);
+      return closed;
     },
   };
 }

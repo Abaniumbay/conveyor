@@ -82,6 +82,15 @@ describe("EgressProxy", () => {
     expect(dialed).toEqual([]);
   });
 
+  test("rejects uppercase, trailing-dot and punycode variants of listed hosts", async () => {
+    const { socket, dialed } = await proxy({ allowedHosts: ["registry.example.com", "xn--bcher-kva.example"] });
+    for (const target of ["REGISTRY.EXAMPLE.COM:443", "registry.example.com.:443", "xn--bcher-kva.example.:443", "b\u00fccher.example:443"]) {
+      expect((await request(socket, connect(target))).status).toBe(403);
+    }
+    expect((await request(socket, connect("xn--bcher-kva.example:443"))).status).toBe(200);
+    expect(dialed.length).toBe(1);
+  });
+
   test("rejects any port other than 443", async () => {
     const { socket } = await proxy();
     expect((await request(socket, connect("registry.example.com:80"))).status).toBe(403);
@@ -98,7 +107,7 @@ describe("EgressProxy", () => {
 
   test.each([
     "127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
-    "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.1",
+    "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.1", "::10.0.0.1", "::8.8.8.8", "2002:0a00:0001::1", "2002:0808:0808::1",
   ])("rejects a DNS answer in a non-public range: %s", async (address) => {
     const { socket, dialed } = await proxy({ resolve: async () => [address] });
     expect((await request(socket, connect("registry.example.com:443"))).status).toBe(403);

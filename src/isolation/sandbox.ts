@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 export const PROXY_VARIABLES = [
@@ -41,6 +42,23 @@ function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
 }
 
 /**
+ * Hides common host path-based sockets and processes: a private /proc (PID namespace), /tmp and
+ * /run/user/<uid> (user bus, ssh/gpg agents), and the Docker socket. Other path sockets stay reachable.
+ */
+function isolationMounts(): string[] {
+  const mounts = ["--proc", "/proc", "--tmpfs", "/tmp"];
+  const runtime = `/run/user/${process.getuid?.() ?? 0}`;
+  if (existsSync(runtime)) mounts.push("--tmpfs", runtime);
+  // /var/run is usually a symlink to /run; bwrap cannot mount through it, so mask resolved paths once.
+  const sockets = new Set<string>();
+  for (const socket of ["/var/run/docker.sock", "/run/docker.sock"]) {
+    if (existsSync(socket)) sockets.add(realpathSync(socket));
+  }
+  for (const socket of sockets) mounts.push("--ro-bind", "/dev/null", socket);
+  return mounts;
+}
+
+/**
  * Wraps a command in `bwrap --unshare-net`: the namespace has only a loopback, so the only way out
  * is the bridge, which forwards loopback ports to the per-run proxy Unix sockets (and, optionally,
  * the one MCP port) and then runs the command with the proxy environment set.
@@ -72,7 +90,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
   const spec = JSON.stringify({ forwards, command: options.argv });
   return {
-    argv: ["bwrap", "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/", "--", process.execPath, BRIDGE, spec],
+    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(), "--", process.execPath, BRIDGE, spec],
     env: { ...options.env, ...commandEnv },
     dataEnv,
   };
