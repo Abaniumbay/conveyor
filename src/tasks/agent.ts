@@ -20,8 +20,7 @@ import { agentEgressFor } from "../isolation/agent-egress";
 import type { RunEnvelope } from "../runner/result";
 import {
   agentActor, agentMessage, conversationForPrompt, failedEnvelope, finishRun,
-  producerConversationMessage, prompt, startRun,
-} from "./agent-support";
+  producerConversationMessage, prompt, startRun, warnOnTokenUsage } from "./agent-support";
 import type { AgentContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -179,6 +178,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
         await lease.close();
       }
       finishRun(store, runId, "succeeded", result);
+      warnOnTokenUsage(store, deps.config, issue.id, stageId, runId, config.agent, result.usage.inputTokens);
       agentMessage(store, deps.config, issue.id, stageId, runId, config.agent, producerConversationMessage(stageId, result));
       return outcomeOf(deps, runId, config.agent, result);
     } catch (error) {

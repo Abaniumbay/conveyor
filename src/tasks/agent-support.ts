@@ -143,6 +143,25 @@ export function conveyorMessage(
   });
 }
 
+const millions = (tokens: number) => `${Number((tokens / 1_000_000).toFixed(1))}M`;
+
+/** Posts a warning when a finished agent run passed the token budget. A warning only: hands-off runs are never stopped for it. */
+export function warnOnTokenUsage(
+  store: ConveyorStore,
+  config: Pick<ConveyorConfig, "agents" | "settings">,
+  issueId: string,
+  stageId: string,
+  runId: string,
+  agentId: string,
+  inputTokens: number,
+): void {
+  const budget = config.settings.agentRunTokenWarning;
+  if (inputTokens <= budget) return;
+  const { name } = agentActor(config, agentId);
+  conveyorMessage(store, issueId, stageId, runId,
+    `${name}'s run used ${millions(inputTokens)} input tokens, over the ${millions(budget)} budget. It was not stopped. A run this large usually means the item is too big or coupled with other work; consider refining it.`);
+}
+
 export function agentMessage(
   store: ConveyorStore,
   config: Pick<ConveyorConfig, "agents">,

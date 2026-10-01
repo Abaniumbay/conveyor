@@ -59,6 +59,8 @@ const settingsSchema = z
     interruptGrace: durationSchema.prefault("10s"),
     retries: retrySchema,
     maxReturns: z.number().int().nonnegative().default(5),
+    /** Input tokens (cached included) above which a finished agent run posts a warning; the run is never stopped. */
+    agentRunTokenWarning: z.number().int().positive().default(15_000_000),
     taskDefaults: z
       .object({
         wait: z
