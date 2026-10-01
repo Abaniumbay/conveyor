@@ -80,3 +80,30 @@ describe("golden plan", () => {
     expect(output).toContain("legacy.produce (agent kaveh)");
   });
 });
+
+describe("legacy.produce captured envelope", () => {
+  test("keeps the captured envelope small enough for the item context, whatever the script printed", async () => {
+    const { createTaskRegistry } = await import("../../src/tasks/catalogue");
+    const { runTask } = await import("../../src/tasks/contract");
+    const produce = createTaskRegistry().require("legacy.produce");
+    const stage = { id: "deploy", run: { type: "script", runner: "process", script: "/s.ts" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] };
+    const envelope = (outcome: "success" | "failure") => ({
+      stageResult: { outcome, status: outcome === "success" ? "done" : "blocked", summary: `S${"s".repeat(20_000)}`, reason: outcome === "success" ? null : `R${"r".repeat(20_000)}`, metrics: {} },
+      sessionId: null, usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 }, cost: { amount: 0, currency: "USD", source: "unavailable" },
+      durationMs: 1, exitCode: 0, artifacts: [], stderr: `${"workflow log line\n".repeat(30_000)}FINAL ERROR LINE`,
+    });
+    for (const outcome of ["success", "failure"] as const) {
+      const result = await runTask(produce, {
+        context: { run: { stage: "deploy", stageEpoch: 1, attempt: 1, maxAttempts: 1, taskInstanceId: "legacy.produce", enteredAt: "", feedback: null } } as never,
+        config: { stage, stageIds: ["deploy"], successStatuses: ["done"], failureStatuses: ["blocked"] },
+        deps: { input: {}, runProducer: async () => envelope(outcome) } as never,
+        instance: { id: "legacy.produce", stage: "deploy", idempotencyKey: "k", resumed: false },
+      });
+      const captured = (result.status === "pass" ? result.output : (result as { details: { legacy: unknown } }).details.legacy) as ReturnType<typeof envelope>;
+      expect(JSON.stringify(captured).length).toBeLessThan(16_000);
+      expect(captured.stageResult.outcome).toBe(outcome);
+      expect(captured.stderr.endsWith("FINAL ERROR LINE")).toBe(true);
+      expect(captured.stageResult.summary.startsWith("S")).toBe(true);
+    }
+  });
+});
