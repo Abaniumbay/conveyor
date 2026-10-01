@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { referenceConfigDirectory } from "./reference-fixture";
@@ -129,5 +129,50 @@ describe("reference configuration", () => {
     await mentions("darya", ["item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild"]);
     await mentions("kaveh", ["workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
     await mentions("shirin", ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
+  });
+});
+
+describe("canary: reference import combined with converted legacy sections", () => {
+  /** The conversion docs/migration.md describes, applied to tests/fixtures/legacy-pipeline. */
+  async function legacyConverted(): Promise<string> {
+    const dir = path.resolve(import.meta.dir, "../fixtures/legacy-pipeline");
+    const docs = await Promise.all(
+      ["10-agents.yaml", "20-pipeline.yaml", "30-repositories.yaml"].map(async (file) => parse(await readFile(path.join(dir, file), "utf8")) as Record<string, any>),
+    );
+    const [agentsDoc, pipelineDoc, repositoriesDoc] = docs as [Record<string, any>, Record<string, any>, Record<string, any>];
+    // 1. Rename the four legacy agents that collide with the reference agents; mitra and checks stay.
+    const renamed = new Map(["darya", "kaveh", "shirin", "omid"].map((name) => [name, `${name}-legacy`]));
+    const agents: Record<string, unknown> = {};
+    for (const [name, agent] of Object.entries(agentsDoc.agents)) agents[renamed.get(name) ?? name] = agent;
+    // 2. Update every run.agent in the legacy pipelines.
+    for (const pipeline of Object.values<any>(pipelineDoc.pipelines)) {
+      for (const stage of pipeline.stages) {
+        if (stage.run?.agent && renamed.has(stage.run.agent)) stage.run.agent = renamed.get(stage.run.agent);
+      }
+    }
+    // 3. The legacy pipeline named like a reference pipeline (midgame-delivery) is renamed, and its repository follows.
+    pipelineDoc.pipelines["midgame-delivery-legacy"] = pipelineDoc.pipelines["midgame-delivery"];
+    delete pipelineDoc.pipelines["midgame-delivery"];
+    repositoriesDoc.repositories.midgame.pipeline = "midgame-delivery-legacy";
+    // 4. The migrated repository (conveyor) comes from the reference; the rest stay legacy.
+    delete repositoriesDoc.repositories["conveyor-v2"];
+    // sources, runners, labels and settings are dropped: the import provides the same names and labels.
+    return stringify({ agents, checks: agentsDoc.checks, ...pipelineDoc, ...repositoriesDoc });
+  }
+
+  test("loads and compiles every repository", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const local = parse(await readFile(path.join(directory, "local.yaml"), "utf8")) as { repositories: Record<string, unknown> };
+    for (const id of Object.keys(local.repositories)) if (id !== "conveyor") delete local.repositories[id];
+    await writeFile(path.join(directory, "local.yaml"), stringify(local));
+    await writeFile(path.join(directory, "legacy.yaml"), await legacyConverted());
+    const config = await loadConfig(directory);
+    expect(config.plans.map((plan) => plan.repositoryId).sort()).toEqual(["caravan-v2", "conveyor", "meal-planner", "midgame", "quesshi"]);
+    const byId = (id: string) => config.plans.find((plan) => plan.repositoryId === id)!;
+    expect(byId("conveyor").stages.every((stage) => !stage.legacy)).toBe(true);
+    expect(byId("quesshi").stages.some((stage) => stage.legacy)).toBe(true);
+    expect(config.agents["kaveh-legacy"]).toBeDefined();
+    expect(config.agents.kaveh!.instructions).toContain("instructions/kaveh.md");
   });
 });
