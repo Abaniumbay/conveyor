@@ -161,7 +161,7 @@ describe("ci.load", () => {
     w.provider.logs["id-Tests"] = "##[error]boom";
     const out = (await run("ci.load", { context: { change: change() }, deps: w.deps }) as Pass).output as CiContext;
     expect(out.runs.map((r) => [r.name, r.log])).toEqual([["Tests", "##[error]boom"], ["Ok", null], ["Ext", null]]);
-    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual(["log id-Tests 60"]);
+    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual(["log id-Tests 200"]);
   });
 
   test("a log that cannot be read does not fail the load", async () => {
@@ -310,6 +310,22 @@ describe("ci.passed", () => {
     expect(second.message).toContain("Tests (cancelled)");
   });
 
+  test("logLines keeps only the last lines of a failed run's log", async () => {
+    const log = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
+    const snapshot = ci({ runs: [crun("Tests", "failed", { log })] });
+    const keep = async (config: Record<string, unknown>) => {
+      const result = await run("ci.passed", { context: gateCtx(snapshot), config }) as Fail;
+      return (result.details as { evidence: string[] }).evidence[0]!;
+    };
+    const dflt = await keep({});
+    expect(dflt).toContain("line 99");
+    expect(dflt).toContain("line 40");
+    expect(dflt).not.toContain("line 39\n");
+    const few = await keep({ logLines: 2 });
+    expect(few).toContain("line 98");
+    expect(few).not.toContain("line 97");
+  });
+
   test("a non-rerunnable cancelled run is a failure straight away", async () => {
     const result = await run("ci.passed", { context: gateCtx(ci({ runs: [crun("Tests", "cancelled")] })) }) as Fail;
     expect(result.message).toContain("Tests (cancelled)");
@@ -392,6 +408,30 @@ describe("ci modes", () => {
     const stage = plan("disabled");
     expect(stage.actions).toEqual([]);
     expect(stage.exitGate.map((t) => t.task)).toEqual(["change.mergeable"]);
+  });
+});
+
+describe("a rerun run the provider still reports as cancelled", () => {
+  test("is pending, not failed, until it changes; a new run id is classified normally", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "cancelled", { canRerun: true })];
+    const load = async () => (await run("ci.load", { context: { change: change() }, deps: w.deps }) as Pass).output as CiContext;
+    const before = await load();
+    expect(before.runs[0]!.state).toBe("cancelled");
+    await run("ci.start", { context: gateCtx(before), deps: w.deps });
+    const stale = await load();
+    expect(stale.runs[0]).toMatchObject({ state: "running", log: null });
+    const result = await run("ci.passed", { context: gateCtx(stale) }) as Pending;
+    expect(result.status).toBe("pending");
+    expect(result.message).toContain("Tests");
+    w.provider.runs = [ciRun("Tests", "passed", { canRerun: true })];
+    w.clock.now += 300_000;
+    expect((await run("ci.passed", { context: gateCtx(await load()) })).status).toBe("pass");
+    // The rerun produced a new run id that was cancelled again: normal classification, now a failure.
+    w.provider.runs = [ciRun("Tests", "cancelled", { id: "id-new", canRerun: true })];
+    const again = await load();
+    expect(again.runs[0]!.state).toBe("cancelled");
+    expect((await run("ci.passed", { context: gateCtx(again) }) as Fail).message).toContain("Tests (cancelled)");
   });
 });
 

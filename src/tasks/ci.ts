@@ -20,10 +20,15 @@ type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 const NO_CHANGE = "No change request exists yet";
 const SETTLE_SECONDS = 120;
 const LOG_LINES = 60;
+/** Logs are read once at load time with this bound; `ci.passed` keeps the last `with.logLines` of them. */
+const LOAD_LOG_LINES = 200;
 const blocked = (message: string) => fail(message, { route: { stop: "blocked" } });
 
 const startConfig = z.object({ retriggerMinutes: z.number().positive().default(10) });
-const passedConfig = z.object({ settleSeconds: z.number().positive().default(SETTLE_SECONDS) });
+const passedConfig = z.object({
+  settleSeconds: z.number().positive().default(SETTLE_SECONDS),
+  logLines: z.number().int().positive().max(LOAD_LOG_LINES).default(LOG_LINES),
+});
 const logsInput = z.object({ checkName: z.string().optional(), lines: z.number().optional() });
 
 function providerOf(deps: Deps): CiProvider {
@@ -59,12 +64,15 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     const definition = await provider.definitions(target, head);
     const reruns = marks.ciMarks(deps.issueId, head, "rerun");
     const started = marks.ciMarks(deps.issueId, head, "started");
+    // The provider may keep reporting the rerun run as cancelled for a while: that same id is still running.
+    const rerunIds = new Set(marks.ciMarks(deps.issueId, head, "rerun-id"));
     const runs: CiContext["runs"] = [];
     for (const run of listed) {
-      const wantsRerun = run.state === "cancelled" && run.canRerun && !reruns.includes(run.name);
-      const log = (run.state === "failed" || run.state === "cancelled") && !wantsRerun
-        ? await readRunLog(provider, target, run, LOG_LINES) : null;
-      runs.push({ id: run.id, name: run.name, state: run.state, url: run.url, rerunnable: run.canRerun, hasLog: run.hasLog, log });
+      const state = run.state === "cancelled" && rerunIds.has(run.id) ? "running" : run.state;
+      const wantsRerun = state === "cancelled" && run.canRerun && !reruns.includes(run.name);
+      const log = (state === "failed" || state === "cancelled") && !wantsRerun
+        ? await readRunLog(provider, target, run, LOAD_LOG_LINES) : null;
+      runs.push({ id: run.id, name: run.name, state, url: run.url, rerunnable: run.canRerun, hasLog: run.hasLog, log });
     }
     const snapshot: CiContext = {
       headSha: head,
@@ -103,7 +111,10 @@ const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
     // Marked before the rerun so a crash in between loses one rerun rather than repeating it.
     const { rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable);
     for (const run of rerun) {
-      if (marks.markCi(deps.issueId, head, "rerun", run.name, at.toISOString()).fresh) await provider.rerun(target, run.id);
+      if (marks.markCi(deps.issueId, head, "rerun", run.name, at.toISOString()).fresh) {
+        marks.markCi(deps.issueId, head, "rerun-id", run.id, at.toISOString());
+        await provider.rerun(target, run.id);
+      }
     }
 
     const announced = snapshot.defined || snapshot.runs.length > 0 || waiting.length > 0;
@@ -154,7 +165,8 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const { running, failed, rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable && !reran.has(run.name));
 
     if (failed.length > 0) {
-      const report = describeCiFailure(change.url, sha, failed);
+      const bounded = failed.map((run) => ({ ...run, log: run.log === null ? null : run.log.split("\n").slice(-config.logLines).join("\n") }));
+      const report = describeCiFailure(change.url, sha, bounded);
       return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }
     if (rerun.length > 0) {

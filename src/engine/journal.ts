@@ -33,7 +33,7 @@ export interface StageCursor {
   deadlineAt: string | null;
 }
 
-export type CiMarkKind = "first-seen" | "announced" | "rerun" | "started";
+export type CiMarkKind = "first-seen" | "announced" | "rerun" | "rerun-id" | "started";
 
 export interface StoredContext {
   context: TaskContext;
