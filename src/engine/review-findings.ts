@@ -104,8 +104,9 @@ export class ReviewFindings {
     return (this.#db.query("SELECT * FROM findings WHERE issue_id = ? ORDER BY created_at, rowid").all(issueId) as Row[]).map(toFinding);
   }
 
+  /** Findings created by the run that are still open. */
   countForRun(runId: string): number {
-    return (this.#db.query("SELECT COUNT(*) AS n FROM findings WHERE run_id = ?").get(runId) as { n: number }).n;
+    return (this.#db.query("SELECT COUNT(*) AS n FROM findings WHERE run_id = ? AND state = 'open'").get(runId) as { n: number }).n;
   }
 
   events(findingId: string): FindingEvent[] {
@@ -164,6 +165,11 @@ export class ReviewFindings {
         this.#event(existing.id, "edited", artifact.author, at, null, { from: existing.body });
       }
       if (artifact.resolved) this.resolve(issueId, existing.id, "provider", at);
+      else if (existing.state === "resolved" || existing.state === "withdrawn") {
+        // The provider is authoritative for imported findings: an unresolved thread is open again.
+        this.#db.query("UPDATE findings SET state = 'open', withdrawal_json = NULL WHERE id = ?").run(existing.id);
+        this.#event(existing.id, "reopened", artifact.author, at, null, { from: existing.state });
+      }
     }
     for (const finding of imported.values()) {
       if (seen.has(finding.providerKey!) || finding.state === "dismissed" || finding.state === "withdrawn") continue;

@@ -214,10 +214,8 @@ export class GitHubCodeHost implements CodeHost {
 
   async listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]> {
     const number = reference(input.address, input.id);
-    const [threads, reviews] = await Promise.all([
-      this.github.listReviewThreads(input.address, number),
-      this.github.listReviews(input.address, number),
-    ]);
+    const threads = await this.github.listReviewThreads(input.address, number);
+    const reviews = await this.github.listReviews(input.address, number);
     const artifacts: ReviewArtifact[] = [];
     const threadedReviews = new Set<number>();
     for (const thread of threads) {

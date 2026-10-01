@@ -101,6 +101,24 @@ describe("GitHub native review import", () => {
     expect(artifact).toMatchObject({ providerKey: "review:1", resolved: true });
   });
 
+  test("reads every page of review threads", async () => {
+    const page = (nodes: unknown[], hasNextPage: boolean, endCursor: string | null) =>
+      ({ data: { repository: { pullRequest: { reviewThreads: { nodes, pageInfo: { hasNextPage, endCursor } } } } } });
+    const { transport, host: h } = host([page([thread()], true, "c1"), page([thread({ id: "T2" })], false, null), []]);
+    const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
+    expect(artifacts.map((a) => a.providerKey)).toEqual(["thread:T1", "thread:T2"]);
+    expect(transport.requests[0]!.body).toMatchObject({ variables: { cursor: null } });
+    expect(transport.requests[1]!.body).toMatchObject({ variables: { cursor: "c1" } });
+  });
+
+  test("a page that cannot be continued fails instead of returning a partial set", async () => {
+    const broken = { data: { repository: { pullRequest: { reviewThreads: { nodes: [thread()], pageInfo: { hasNextPage: true, endCursor: null } } } } } };
+    const { host: h } = host([broken, []]);
+    await expect(h.listReviewArtifacts({ address: "o/r", id: ID })).rejects.toThrow("cannot be paginated");
+    const failing = host([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [thread()], pageInfo: { hasNextPage: true, endCursor: "c" } } } } } }, new Error("page 2 failed"), []]);
+    await expect(failing.host.listReviewArtifacts({ address: "o/r", id: ID })).rejects.toThrow("page 2 failed");
+  });
+
   test("a GraphQL error is thrown as an infrastructure failure", async () => {
     const { host: h } = host([{ errors: [{ message: "boom" }] }]);
     await expect(h.listReviewArtifacts({ address: "o/r", id: ID })).rejects.toThrow("boom");

@@ -62,6 +62,24 @@ describe("ReviewFindings", () => {
     findings.create(created);
     findings.create({ ...created, runId: "other" });
     expect(findings.countForRun("run1")).toBe(1);
+    findings.resolve("i1", findings.list("i1")[0]!.id, "kaveh");
+    expect(findings.countForRun("run1")).toBe(0);
+  });
+
+  test("the provider is authoritative: an unresolved artifact reopens resolved and withdrawn findings, never dismissed ones", async () => {
+    const findings = await open();
+    findings.importNative("i1", [artifact(), artifact({ providerKey: "thread:T2" }), artifact({ providerKey: "thread:T3" })], "h1", "t1");
+    findings.importNative("i1", [artifact({ resolved: true }), artifact({ providerKey: "thread:T3" })], "h1", "t2");
+    const by = () => Object.fromEntries(findings.list("i1").map((f) => [f.providerKey, f]));
+    expect(by()["thread:T1"]!.state).toBe("resolved");
+    expect(by()["thread:T2"]!.state).toBe("withdrawn");
+    findings.dismiss("i1", by()["thread:T3"]!.id, { actor: "human:amir", reason: "fine", at: "t3" });
+    findings.importNative("i1", [artifact(), artifact({ providerKey: "thread:T2" }), artifact({ providerKey: "thread:T3" })], "h1", "t4");
+    expect(by()["thread:T1"]!.state).toBe("open");
+    expect(by()["thread:T2"]).toMatchObject({ state: "open" });
+    expect(by()["thread:T2"]!.withdrawal).toBeUndefined();
+    expect(by()["thread:T3"]!.state).toBe("dismissed");
+    expect(findings.events(by()["thread:T1"]!.id).map((e) => e.kind)).toEqual(["created", "resolved", "reopened"]);
   });
 
   test("import creates open human findings, dedupes by provider key and updates edits", async () => {

@@ -105,7 +105,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `change.merge` | act | repository, change, checkpoints | invalidates change | Squash-merges the change only at the head that review passed (and CI, when CI is required); stops as blocked otherwise. An already merged change passes. |
 | `change.mergeable` | check | change | - | Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts. |
 | `change.merged` | check | change | - | Passes when the change request is merged. |
-| `change.resolveFinding` | tool | - | invalidates change | Mark a finding resolved (the problem it names is fixed). A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved. |
+| `change.resolveFinding` | tool | - | invalidates change | Mark a finding you created resolved (the problem it names is fixed); human review findings are resolved on the provider or dismissed by an operator. A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved. |
 | `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
 | `change.uncheckCriterion` | tool | - | invalidates change | Withdraw the approval of one acceptance criterion and untick it in the pull request checklist. headSha must be the current head. |
 

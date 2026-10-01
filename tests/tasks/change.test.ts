@@ -565,16 +565,27 @@ describe("findings", () => {
     expect(findings(w).events(findingId).map((e) => [e.kind, e.actor])).toEqual([["created", "reviewer"], ["resolved", "kaveh"]]);
   });
 
-  test("a projection failure does not undo the resolution; an unknown finding fails", async () => {
+  test("a projection failure does not undo the resolution", async () => {
+    const w = await world({ projectFails: true });
+    const created = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
+    findings(w).project(created.id, "u", "comment:1");
+    await dispatch(w, "change.resolveFinding", { findingId: created.id });
+    expect(w.host.calls.some(([name]) => name === "resolveFinding")).toBe(true);
+    expect(findings(w).get("i1", created.id)!.state).toBe("resolved");
+  });
+
+  test("an unknown finding cannot be resolved", async () => {
     const w = await world();
-    const { findingId } = await dispatch(w, "change.comment", { body: "x", headSha: "head1" }) as { findingId: string };
-    const broken = await world({ projectFails: true });
-    const created = findings(broken).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
-    findings(broken).project(created.id, "u", "comment:1");
-    await dispatch(broken, "change.resolveFinding", { findingId: created.id });
-    expect(findings(broken).get("i1", created.id)!.state).toBe("resolved");
     await expect(dispatch(w, "change.resolveFinding", { findingId: "nope" })).rejects.toThrow("Unknown finding");
-    expect(findingId).toBeTruthy();
+  });
+
+  test("a human finding is not resolvable by a tool call", async () => {
+    const w = await world({ artifacts: [artifact()] });
+    await run("change.load", { context: {}, deps: w.deps });
+    const [human] = findings(w).list("i1");
+    await expect(dispatch(w, "change.resolveFinding", { findingId: human!.id })).rejects.toThrow("resolved on the provider");
+    expect(findings(w).get("i1", human!.id)!.state).toBe("open");
+    expect(w.host.calls.some(([name]) => name === "resolveFinding")).toBe(false);
   });
 
   test("change.resolveFinding cannot resolve a dismissed finding", async () => {

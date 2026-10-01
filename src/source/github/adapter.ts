@@ -189,10 +189,11 @@ export interface GitHubReview {
   submitted_at?: string;
 }
 
-const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
@@ -536,23 +537,33 @@ export class GitHubAdapter {
     });
   }
 
-  /** The pull request's review threads (first page of 100) with their first comment, through GraphQL. */
+  /** All of the pull request's review threads with their first comment, through paginated GraphQL; throws unless every page was read. */
   async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
     const [owner, name] = address.split("/");
-    const response = await this.transport.request<{
-      data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: GitHubReviewThread[] } } | null } | null };
-      errors?: Array<{ message?: string }>;
-    }>({
-      method: "POST",
-      path: "graphql",
-      body: { query: REVIEW_THREADS_QUERY, variables: { owner, name, number: pullRequestNumber } },
-    });
-    if (response.errors?.length) {
-      throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+    const threads: GitHubReviewThread[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 100; page += 1) {
+      const response: {
+        data?: { repository?: { pullRequest?: { reviewThreads?: {
+          nodes?: GitHubReviewThread[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        } } | null } | null };
+        errors?: Array<{ message?: string }>;
+      } = await this.transport.request({
+        method: "POST",
+        path: "graphql",
+        body: { query: REVIEW_THREADS_QUERY, variables: { owner, name, number: pullRequestNumber, cursor } },
+      });
+      if (response.errors?.length) {
+        throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+      }
+      const connection = response.data?.repository?.pullRequest?.reviewThreads;
+      if (!connection?.nodes) throw new Error(`GitHub GraphQL returned no review threads for ${address}#${pullRequestNumber}`);
+      threads.push(...connection.nodes);
+      if (!connection.pageInfo?.hasNextPage) return threads;
+      if (!connection.pageInfo.endCursor) throw new Error(`GitHub GraphQL review threads of ${address}#${pullRequestNumber} cannot be paginated`);
+      cursor = connection.pageInfo.endCursor;
     }
-    const nodes = response.data?.repository?.pullRequest?.reviewThreads?.nodes;
-    if (!nodes) throw new Error(`GitHub GraphQL returned no review threads for ${address}#${pullRequestNumber}`);
-    return nodes;
+    throw new Error(`GitHub pull request ${address}#${pullRequestNumber} has too many review threads to import`);
   }
 
   async listReviews(address: string, pullRequestNumber: number): Promise<GitHubReview[]> {

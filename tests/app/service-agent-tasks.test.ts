@@ -205,4 +205,18 @@ describe("operator dismissal of findings", () => {
     await expect(w.service.dismissFinding("missing", finding.id, "x", "operator")).rejects.toThrow("issue not found");
     await w.service.close();
   });
+
+  test("wakes an item parked on its exit gate so the gate re-evaluates", async () => {
+    const w = await setup();
+    await w.execute();
+    const journal = w.store.executions();
+    const parked = journal.getCursor("issue")!;
+    journal.saveCursor({ ...parked, list: "exit-gate", taskInstanceId: "change.findingsResolved" }, parked.stageEpoch);
+    const finding = new ReviewFindings(w.store.sqlite()).create({ issueId: "issue", runId: null, author: "worker", headSha: "h1", body: "Fix" });
+    const future = Date.now() + 3_600_000;
+    w.store.sqlite().query("UPDATE stage_cursors SET wake_at = ? WHERE issue_id = 'issue'").run(new Date(future).toISOString());
+    await w.service.dismissFinding("issue", finding.id, "Not applicable", "operator");
+    expect(Date.parse(journal.wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
+    await w.service.close();
+  });
 });

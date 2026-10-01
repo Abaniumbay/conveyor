@@ -91,7 +91,7 @@ const comment: TaskDefinition<unknown, CommentInput, Deps> = {
 const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Deps> = {
   name: "change.resolveFinding",
   kind: "tool",
-  description: "Mark a finding resolved (the problem it names is fixed). A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved.",
+  description: "Mark a finding you created resolved (the problem it names is fixed); human review findings are resolved on the provider or dismissed by an operator. A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved.",
   reads: [], writes: [], invalidates: ["change"],
   mutating: true,
   // A state change that is idempotent by itself: replaying a journaled response is never needed.
@@ -102,6 +102,9 @@ const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Dep
     const findings = findingsOf(deps);
     const finding = findings.get(deps.issueId, input!.findingId);
     if (!finding) return fail(`Unknown finding "${input!.findingId}"; read change.listFindings`);
+    if (finding.source === "human") {
+      return fail("Human review findings are resolved on the provider (resolve the thread) or dismissed by an operator");
+    }
     if (finding.state === "resolved") return pass({ findingId: finding.id, state: "resolved" });
     if (finding.state !== "open") return fail(`Finding ${finding.id} is ${finding.state}, not open`);
     const actor = actorOf("change.resolveFinding", args);

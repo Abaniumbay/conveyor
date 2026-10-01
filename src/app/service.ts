@@ -1959,6 +1959,9 @@ export class ConveyorService {
       liveHeadSha: async () => null,
       store: this.store,
     });
+    // An item parked on its review gate re-evaluates now instead of at the next poll.
+    const cursor = this.store.executions().getCursor(issueId);
+    if (cursor?.state === "pending" && cursor.list === "exit-gate" && this.store.executions().wakeNow(issueId)) this.schedule();
     await this.updateStatusComment(issue.id);
   }
 
