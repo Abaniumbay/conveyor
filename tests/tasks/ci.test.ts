@@ -105,7 +105,7 @@ async function world(options: { ignoreChecks?: string[]; withChange?: boolean } 
 
 const change = (over: Partial<ChangeContext> = {}): ChangeContext => ({
   ref: { provider: "github", id: ID, number: 5 }, url: PR_URL, state: "open", draft: false,
-  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], findings: [], ...over,
+  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], findings: [], ...over,
 });
 const repository = (ciMode: "required" | "advisory" | "disabled" = "required"): Partial<TaskContext> => ({
   repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode, systemLabels: [] },

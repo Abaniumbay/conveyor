@@ -50,6 +50,11 @@ function parseCriteria(body: string): ParsedCriterion[] {
   }
 }
 
+/** The criteria (id, text, manual flag) in the managed section of an issue body. */
+export function criteriaOf(body: string): Array<{ id: string; text: string; manual: boolean }> {
+  return parseCriteria(body).map(({ id, text }) => ({ id, text, manual: text.startsWith("[Manual]") }));
+}
+
 /** The acceptance-criteria texts in the managed section of an issue body. */
 export function criteriaFromBody(body: string): string[] {
   return parseCriteria(body).map((criterion) => criterion.text);
@@ -101,7 +106,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       url: issue.sourceUrl,
       labels: issue.labels,
       state: issue.sourceState,
-      criteria: parseCriteria(issue.body).map(({ id, text }) => ({ id, text, manual: text.startsWith("[Manual]") })),
+      criteria: criteriaOf(issue.body),
       children,
       dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
       systemLabels: issue.labels.filter((label) => systemLabels.includes(label)),

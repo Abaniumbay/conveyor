@@ -122,6 +122,8 @@ export interface ChangeContext {
       checkedAt: string;
     };
   }>;
+  /** Criterion ids listed by the change's PR checklist projection (a Conveyor extension to Appendix B). */
+  projectedCriterionIds: string[];
   findings: Array<{
     id: string;
     providerKey: string | null;       // stable key for imported native artifacts

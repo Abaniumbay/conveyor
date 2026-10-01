@@ -454,4 +454,18 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX advisory_ci_watches_wake_idx ON advisory_ci_watches(state, wake_at);
     `,
   },
+  {
+    version: 9,
+    sql: `
+      -- Reviewer approvals of acceptance criteria, bound to the change head they were given for.
+      CREATE TABLE criterion_approvals (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        criterion_id TEXT NOT NULL,
+        reviewer TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, criterion_id)
+      );
+    `,
+  },
 ];

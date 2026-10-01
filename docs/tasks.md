@@ -91,6 +91,9 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
+| `change.checkCriterion` | tool | - | invalidates change | Approve one acceptance criterion for the current change head and tick it in the pull request checklist. headSha must be the current head. |
+| `change.criteriaChecked` | check | item, change | - | Passes when every non-manual criterion is approved for the current change head; manual criteria are excluded. |
+| `change.criteriaInSync` | check | item, change | - | Passes when the pull request checklist lists exactly the item's criteria ids. |
 | `change.ensure` | act | repository | invalidates change, workspace | Pushes the workspace branch and opens the change request for it, reusing an existing one. A rejected push fails and retries the stage. |
 | `change.get` | tool | - | - | Read the live change request, its pull request projection and its CI checks. |
 | `change.headUnchanged` | check | change, checkpoints | - | Passes when the change head equals the SHA CI passed for. |
@@ -99,6 +102,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `change.mergeable` | check | change | - | Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts. |
 | `change.merged` | check | change | - | Passes when the change request is merged. |
 | `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
+| `change.uncheckCriterion` | tool | - | invalidates change | Withdraw the approval of one acceptance criterion and untick it in the pull request checklist. headSha must be the current head. |
 
 ### ci
 

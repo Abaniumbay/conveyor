@@ -7,6 +7,8 @@ export interface ChangeRequest {
   draft: boolean;
   mergeable: boolean | null;
   mergedAt?: string | null;
+  /** The change request's description (Markdown); empty when it has none. */
+  body?: string;
 }
 
 export interface ChangeDelivery {
@@ -68,6 +70,8 @@ export interface CodeHost {
     /** Only squash this head: the host refuses when the change's head has moved. */
     expectedHeadSha?: string;
   }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }>;
+  /** Writes the criteria checklist into the change's description as a Conveyor-managed section; human text is kept. */
+  setChangeChecklist(input: { address: string; id: string; markdown: string }): Promise<void>;
   getChangeDelivery(input: {
     address: string;
     id: string;

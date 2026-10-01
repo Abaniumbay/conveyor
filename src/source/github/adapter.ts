@@ -116,6 +116,7 @@ interface GitHubPullRequest {
   state: string;
   merged?: boolean;
   merged_at?: string | null;
+  body?: string | null;
   merge_commit_sha?: string | null;
   draft?: boolean;
   mergeable_state?: string;
@@ -144,6 +145,7 @@ export interface GitHubDeliveryState {
     headBranch: string;
     headSha: string;
     baseBranch: string;
+    body?: string;
   };
   checks: Array<{
     id: number;
@@ -562,6 +564,7 @@ export class GitHubAdapter {
         headBranch: pullRequest.head.ref,
         headSha: pullRequest.head.sha,
         baseBranch: pullRequest.base.ref,
+        body: pullRequest.body ?? "",
       },
       checks: response.check_runs.map((check) => ({
         id: check.id,
@@ -583,6 +586,7 @@ export class GitHubAdapter {
     mergeState: string | null;
     headSha: string;
     mergedAt: string | null;
+    body?: string;
   }> {
     const pullRequest = await this.transport.request<GitHubPullRequest>({
       method: "GET",
@@ -599,7 +603,17 @@ export class GitHubAdapter {
       mergeState: pullRequest.mergeable_state ?? null,
       headSha: pullRequest.head.sha,
       mergedAt: pullRequest.merged_at ?? null,
+      body: pullRequest.body ?? "",
     };
+  }
+
+  /** Upserts the acceptance-criteria managed section in a pull request body, keeping the rest. */
+  async setPullRequestChecklist(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    const path = `repos/${address}/pulls/${pullRequestNumber}`;
+    const current = await this.transport.request<GitHubPullRequest>({ method: "GET", path });
+    const body = current.body ?? "";
+    const updated = upsertManagedSection(body, "acceptance-criteria", markdown, parseManagedSections(body).revision);
+    if (updated !== body) await this.transport.request<GitHubPullRequest>({ method: "PATCH", path, body: { body: updated } });
   }
 
   async getPullRequestHead(

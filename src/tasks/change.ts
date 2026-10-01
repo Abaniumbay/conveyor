@@ -8,6 +8,7 @@ import { pushAndEnsureChange } from "../codehost/actions";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
+import { checkCriterion, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, syncChecklist, uncheckCriterion } from "./change-criteria";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -18,7 +19,7 @@ const blocked = (message: string) => fail(message, { route: { stop: "blocked" } 
 
 const ensureConfig = z.object({
   closingReference: z.boolean().optional(),
-  /** Accepted for configuration compatibility; the criteria checklist is rendered by a later task. */
+  /** Render the item's criteria as a managed checklist in the change request body. */
   criteriaChecklist: z.boolean().optional(),
 });
 const mergeConfig = z.object({ method: z.literal("squash").default("squash") });
@@ -30,7 +31,7 @@ function codeHostOf(deps: Deps): CodeHost {
   return deps.codeHost;
 }
 
-function toContext(delivery: ChangeDelivery): ChangeContext {
+function toContext(delivery: ChangeDelivery, deps: Deps): ChangeContext {
   const { change, pullRequest } = delivery;
   return {
     ref: { provider: change.id.split(":")[0] ?? "", id: change.id, number: change.number },
@@ -41,7 +42,8 @@ function toContext(delivery: ChangeDelivery): ChangeContext {
     baseBranch: pullRequest?.baseBranch ?? "",
     mergeable: change.mergeable === null ? "unknown" : change.mergeable ? "yes" : "no",
     mergeCommitSha: pullRequest?.mergeCommitSha ?? null,
-    criteria: [],
+    criteria: criteriaView(deps, change.body ?? "", change.headSha),
+    projectedCriterionIds: [...projectedChecklist(change.body ?? "").keys()],
     findings: [],
   };
 }
@@ -57,7 +59,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     const stored = deps.store.getCurrentPullRequest(deps.issueId);
     if (!stored) return pass(null);
     const delivery = await codeHostOf(deps).getChangeDelivery({ address: deps.repository.address, id: stored.id });
-    return pass(toContext(delivery));
+    return pass(toContext(delivery, deps));
   },
 };
 
@@ -79,6 +81,10 @@ const ensure: TaskDefinition<z.output<typeof ensureConfig>, unknown, Deps> = {
       base: deps.repository.baseBranch, closes: config.closingReference !== false,
     });
     if (!ensured.pushed) return fail(ensured.reason, { route: { retry: true } });
+    if (config.criteriaChecklist) {
+      const stored = deps.store.getCurrentPullRequest(deps.issueId);
+      if (stored) await syncChecklist(codeHostOf(deps), deps, stored.id);
+    }
     return pass();
   },
 };
@@ -198,4 +204,4 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
   },
 };
 
-export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, get, setMetadata]);
+export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, get, setMetadata, checkCriterion, uncheckCriterion]);

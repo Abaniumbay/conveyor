@@ -258,7 +258,7 @@ describe("migration", () => {
 
     const store = await ConveyorStore.open(file);
     expect(store.schemaVersion()).toBe(migrations.at(-1)!.version);
-    expect(migrations.at(-1)!.version).toBe(8);
+    expect(migrations.at(-1)!.version).toBe(9);
     seed(store);
     const journal = new ExecutionStore(store.sqlite());
     expect(journal.bumpStageEpoch("issue-1")).toBe(1);

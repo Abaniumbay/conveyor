@@ -123,6 +123,7 @@ export class GitHubCodeHost implements CodeHost {
       draft: pull.draft,
       mergeable: mergeable(pull.mergeState),
       mergedAt: pull.mergedAt,
+      body: pull.body ?? "",
     };
   }
 
@@ -143,6 +144,10 @@ export class GitHubCodeHost implements CodeHost {
     }
   }
 
+  async setChangeChecklist(input: { address: string; id: string; markdown: string }): Promise<void> {
+    await this.github.setPullRequestChecklist(input.address, reference(input.address, input.id), input.markdown);
+  }
+
   async getChangeDelivery(input: { address: string; id: string }): Promise<ChangeDelivery> {
     const delivery = await this.github.getPullRequestDelivery(input.address, reference(input.address, input.id));
     return {
@@ -155,6 +160,7 @@ export class GitHubCodeHost implements CodeHost {
         draft: delivery.pullRequest.draft,
         mergeable: mergeable(delivery.pullRequest.mergeState),
         mergedAt: delivery.pullRequest.mergedAt,
+        body: delivery.pullRequest.body ?? "",
       },
       pullRequest: delivery.pullRequest,
       checks: delivery.checks,

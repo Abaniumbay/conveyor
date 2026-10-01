@@ -435,6 +435,7 @@ describe("GitHubAdapter", () => {
         headBranch: "conveyor/12-r1-feature",
         headSha: "abc123",
         baseBranch: "main",
+        body: "",
       },
       checks: [{
         id: 91,

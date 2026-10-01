@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -28,17 +29,22 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
-  merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null;
+  merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
 } = {}) {
+  let body = state.body ?? "";
   const calls: Array<[string, unknown]> = [];
   const host: CodeHost = {
     async pushBranch(input) { calls.push(["push", input]); return state.push ?? { pushed: true }; },
     async ensureChange(input) { calls.push(["ensure", input]); return state.change ?? request(); },
-    async getChange(input) { calls.push(["get", input]); return state.change ?? request(); },
+    async getChange(input) { calls.push(["get", input]); return { ...(state.change ?? request()), body }; },
+    async setChangeChecklist(input) {
+      calls.push(["checklist", input]);
+      body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
+    },
     async mergeChange(input) { calls.push(["merge", input]); return state.merge ?? { merged: true, sha: "merge1" }; },
     async getChangeDelivery(input): Promise<ChangeDelivery> {
       calls.push(["delivery", input]);
-      const change = state.change ?? request();
+      const change = { ...(state.change ?? request()), body };
       return {
         change, checks: [],
         pullRequest: {
@@ -52,13 +58,13 @@ function hostFake(state: {
   return { host, calls };
 }
 
-async function world(hostState: Parameters<typeof hostFake>[0] = {}, withChange = true) {
+async function world(hostState: Parameters<typeof hostFake>[0] = {}, withChange = true, issueBody = "") {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-change-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "o/r", folder: "/f", configHash: "h" });
   store.upsertIssue({
-    id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "Fix the Thing!", body: "",
+    id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "Fix the Thing!", body: issueBody,
     sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
   const enrollment = store.activateEnrollment("i1");
@@ -83,7 +89,7 @@ const repository = (ciMode: "required" | "advisory" | "disabled" = "required"): 
 });
 const change = (over: Partial<ChangeContext> = {}): ChangeContext => ({
   ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], findings: [], ...over,
+  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], findings: [], ...over,
 });
 const ctx = (over: Partial<TaskContext> = {}): Partial<TaskContext> => ({
   ...repository(), change: change(),
@@ -105,7 +111,7 @@ describe("change.load", () => {
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
     expect(result.output).toEqual({
       ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], findings: [],
+      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], projectedCriterionIds: [], findings: [],
     });
   });
 
@@ -278,5 +284,127 @@ describe("change tools", () => {
     expect(result.output).toEqual({ accepted: true });
     expect(w.store.listRunEvents("run1")).toEqual([expect.objectContaining({ type: "source.set_pull_request_metadata", payload: input })]);
     expect(registry.require("change.setMetadata").mutating).toBe(true);
+  });
+});
+
+const BODY = [
+  "<!-- conveyor:acceptance-criteria:start -->",
+  "- [ ] It works <!-- conveyor:criterion:a -->",
+  "- [ ] It is fast <!-- conveyor:criterion:b -->",
+  "- [ ] [Manual] Looks right <!-- conveyor:criterion:m -->",
+  "<!-- conveyor:acceptance-criteria:end -->",
+].join("\n");
+const PR_BODY = "Human intro\n";
+const lastChecklist = (w: Awaited<ReturnType<typeof world>>) =>
+  (w.host.calls.filter(([n]) => n === "checklist").at(-1)?.[1] as { markdown: string }).markdown;
+const approve = (w: Awaited<ReturnType<typeof world>>, criterionId: string, headSha = "head1") =>
+  run("change.checkCriterion", { context: {}, deps: { ...w.deps, run: { id: "run1", actor: { id: "reviewer-1" } } }, input: { criterionId, headSha }, actor: "reviewer-1" });
+
+describe("criterion approvals", () => {
+  test("checkCriterion records the approval for the head and re-renders the PR checklist", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    const result = await approve(w, "a");
+    expect(result.status).toBe("pass");
+    expect(lastChecklist(w)).toBe([
+      "- [x] It works <!-- conveyor:criterion:a -->",
+      "- [ ] It is fast <!-- conveyor:criterion:b -->",
+      "- [ ] [Manual] Looks right <!-- conveyor:criterion:m -->",
+    ].join("\n"));
+    const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+    expect(loaded.criteria).toEqual([
+      { id: "a", projectedChecked: true, approval: { reviewer: "reviewer-1", headSha: "head1", checkedAt: expect.any(String) } },
+      { id: "b", projectedChecked: false, approval: null },
+      { id: "m", projectedChecked: false, approval: null },
+    ]);
+    expect(loaded.projectedCriterionIds).toEqual(["a", "b", "m"]);
+    const def = registry.require("change.checkCriterion");
+    expect([def.kind, def.mutating, def.invalidates]).toEqual(["tool", true, ["change"]]);
+  });
+
+  test("an unknown criterion id fails and lists the valid ids", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    const result = await approve(w, "zzz") as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("zzz");
+    expect(result.message).toContain("a, b, m");
+    expect(w.host.calls.some(([n]) => n === "checklist")).toBe(false);
+  });
+
+  test("an approval for an older head shows as null and is not projected as checked", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    await approve(w, "a");
+    w.store.sqlite().query("UPDATE criterion_approvals SET head_sha = 'old'").run();
+    const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+    expect(loaded.criteria.find((c) => c.id === "a")!.approval).toBeNull();
+    expect(w.store.sqlite().query("SELECT head_sha FROM criterion_approvals").get()).toEqual({ head_sha: "old" });
+  });
+
+  test("uncheckCriterion removes the approval and unchecks the projection", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    await approve(w, "a");
+    const result = await run("change.uncheckCriterion", { context: {}, deps: w.deps, input: { criterionId: "a", headSha: "head1" }, actor: "reviewer-1" });
+    expect(result.status).toBe("pass");
+    expect(lastChecklist(w)).toContain("- [ ] It works <!-- conveyor:criterion:a -->");
+    const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+    expect(loaded.criteria[0]!.approval).toBeNull();
+    expect(registry.require("change.uncheckCriterion").mutating).toBe(true);
+  });
+
+  test("a head that moved since the call refuses to record", async () => {
+    const w = await world({ body: PR_BODY, change: request({ headSha: "head2" }) }, true, BODY);
+    const result = await approve(w, "a", "head1") as Fail;
+    expect(result.status).toBe("fail");
+    expect(w.store.sqlite().query("SELECT COUNT(*) AS n FROM criterion_approvals").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("change.ensure criteriaChecklist", () => {
+  test("writes the checklist once, preserving human text, and skips when unchanged", async () => {
+    const w = await world({ body: PR_BODY }, false, BODY);
+    await run("change.ensure", { context: repository(), deps: w.deps, config: { criteriaChecklist: true } });
+    expect(w.host.calls.filter(([n]) => n === "checklist")).toHaveLength(1);
+    expect(lastChecklist(w)).toContain("- [ ] It works <!-- conveyor:criterion:a -->");
+    await run("change.ensure", { context: repository(), deps: w.deps, config: { criteriaChecklist: true } });
+    expect(w.host.calls.filter(([n]) => n === "checklist")).toHaveLength(1);
+  });
+
+  test("without criteriaChecklist the PR body is untouched", async () => {
+    const w = await world({ body: PR_BODY }, false, BODY);
+    await run("change.ensure", { context: repository(), deps: w.deps, config: {} });
+    expect(w.host.calls.some(([n]) => n === "checklist")).toBe(false);
+  });
+});
+
+describe("criteria checks", () => {
+  const item = { criteria: [{ id: "a", text: "x", manual: false }, { id: "b", text: "y", manual: false }, { id: "m", text: "[Manual] z", manual: true }] };
+  const approval = { reviewer: "r", headSha: "head1", checkedAt: "t" };
+  const crit = (id: string, approved: boolean) => ({ id, projectedChecked: approved, approval: approved ? approval : null });
+
+  test("criteriaInSync passes when the projection lists exactly the item's ids", async () => {
+    const ok = ctx({ item: item as never, change: change({ projectedCriterionIds: ["m", "b", "a"] }) });
+    expect((await run("change.criteriaInSync", { context: ok })).status).toBe("pass");
+    const bad = await run("change.criteriaInSync", { context: ctx({ item: item as never, change: change({ projectedCriterionIds: ["a", "q"] }) }) }) as Fail;
+    expect(bad.status).toBe("fail");
+    expect(bad.message).toContain("b");
+    expect(bad.message).toContain("q");
+    expect(await run("change.criteriaInSync", { context: ctx({ item: item as never, change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
+  });
+
+  test("criteriaChecked needs every non-manual criterion approved and names the missing ones", async () => {
+    const missing = await run("change.criteriaChecked", { context: ctx({ item: item as never, change: change({ criteria: [crit("a", true), crit("b", false), crit("m", false)] }) }) }) as Fail;
+    expect(missing.status).toBe("fail");
+    expect(missing.message).toContain("b");
+    expect(missing.message).not.toContain("m,");
+    const done = await run("change.criteriaChecked", { context: ctx({ item: item as never, change: change({ criteria: [crit("a", true), crit("b", true), crit("m", false)] }) }) });
+    expect(done.status).toBe("pass");
+    const stale = change({ criteria: [crit("a", true), { id: "b", projectedChecked: true, approval: { ...approval, headSha: "old" } }, crit("m", false)] });
+    expect((await run("change.criteriaChecked", { context: ctx({ item: item as never, change: stale }) })).status).toBe("fail");
+  });
+
+  test("both are pure checks reading item and change", () => {
+    for (const name of ["change.criteriaInSync", "change.criteriaChecked"]) {
+      const def = registry.require(name);
+      expect([def.kind, def.reads, def.writes, def.invalidates]).toEqual(["check", ["item", "change"], [], []]);
+    }
   });
 });
