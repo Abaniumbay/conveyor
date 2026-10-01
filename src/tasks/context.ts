@@ -124,6 +124,8 @@ export interface ChangeContext {
   }>;
   /** Criterion ids listed by the change's PR checklist projection (a Conveyor extension to Appendix B). */
   projectedCriterionIds: string[];
+  /** Why the PR body's managed checklist cannot be read (malformed markers), else null. */
+  projectionError: string | null;
   findings: Array<{
     id: string;
     providerKey: string | null;       // stable key for imported native artifacts

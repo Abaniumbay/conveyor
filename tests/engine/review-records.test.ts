@@ -26,14 +26,14 @@ async function open() {
 describe("CriterionApprovals", () => {
   test("records one approval per criterion; a later head replaces it", async () => {
     const { approvals } = await open();
-    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1" });
-    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r2", headSha: "h2", checkedAt: "t2" });
-    expect(approvals.list("i1")).toEqual([{ criterionId: "a", reviewer: "r2", headSha: "h2", checkedAt: "t2" }]);
+    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1", textHash: "x1" });
+    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r2", headSha: "h2", checkedAt: "t2", textHash: "x2" });
+    expect(approvals.list("i1")).toEqual([{ criterionId: "a", reviewer: "r2", headSha: "h2", checkedAt: "t2", textHash: "x2" }]);
   });
 
   test("withdraw removes an approval and ignores a missing one", async () => {
     const { approvals } = await open();
-    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1" });
+    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1", textHash: "x1" });
     approvals.withdraw("i1", "a");
     approvals.withdraw("i1", "a");
     expect(approvals.list("i1")).toEqual([]);
@@ -41,7 +41,7 @@ describe("CriterionApprovals", () => {
 
   test("approvals are removed with their issue", async () => {
     const { store, approvals } = await open();
-    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1" });
+    approvals.approve({ issueId: "i1", criterionId: "a", reviewer: "r1", headSha: "h1", checkedAt: "t1", textHash: "x1" });
     store.sqlite().query("DELETE FROM issues WHERE id = 'i1'").run();
     expect(approvals.list("i1")).toEqual([]);
   });

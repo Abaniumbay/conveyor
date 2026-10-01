@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
+import { dispatchTool } from "../../src/tasks/dispatch";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -89,7 +90,7 @@ const repository = (ciMode: "required" | "advisory" | "disabled" = "required"): 
 });
 const change = (over: Partial<ChangeContext> = {}): ChangeContext => ({
   ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], findings: [], ...over,
+  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], ...over,
 });
 const ctx = (over: Partial<TaskContext> = {}): Partial<TaskContext> => ({
   ...repository(), change: change(),
@@ -111,7 +112,7 @@ describe("change.load", () => {
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
     expect(result.output).toEqual({
       ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], projectedCriterionIds: [], findings: [],
+      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], projectedCriterionIds: [], projectionError: null, findings: [],
     });
   });
 
@@ -406,5 +407,84 @@ describe("criteria checks", () => {
       const def = registry.require(name);
       expect([def.kind, def.reads, def.writes, def.invalidates]).toEqual(["check", ["item", "change"], [], []]);
     }
+  });
+});
+
+describe("criterion tools through the dispatcher", () => {
+  const dispatch = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, live = "head1") =>
+    dispatchTool(
+      { name, input, actor: { id: "kaveh", name: "K", title: "T" } as never, grant: { runId: "run1", stageId: "review", issueScoped: true, actor: null, tasks: new Set([name]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => live, store: w.store },
+    );
+
+  test("a stale headSha is rejected before any row is written", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    await expect(dispatch(w, "change.checkCriterion", { criterionId: "a", headSha: "old" })).rejects.toThrow("not the current change head");
+    expect(w.store.sqlite().query("SELECT COUNT(*) AS n FROM criterion_approvals").get()).toEqual({ n: 0 });
+  });
+
+  test("check, uncheck, check in one run records again (not replayed from the journal)", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    const input = { criterionId: "a", headSha: "head1" };
+    const count = () => (w.store.sqlite().query("SELECT COUNT(*) AS n FROM criterion_approvals").get() as { n: number }).n;
+    await dispatch(w, "change.checkCriterion", input);
+    expect(count()).toBe(1);
+    await dispatch(w, "change.uncheckCriterion", input);
+    expect(count()).toBe(0);
+    await dispatch(w, "change.checkCriterion", input);
+    expect(count()).toBe(1);
+  });
+});
+
+describe("malformed PR markers and invalid criteria", () => {
+  const BROKEN = "Intro\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!-- conveyor:criterion:a -->\n";
+
+  test("checkCriterion still records the approval but reports the checklist could not be updated", async () => {
+    const w = await world({ body: BROKEN }, true, BODY);
+    const result = await approve(w, "a") as Pass;
+    expect(result.status).toBe("pass");
+    expect(JSON.stringify(result.output)).toContain("could not be updated");
+    expect(JSON.stringify(result.output)).toContain("malformed");
+    expect(w.store.sqlite().query("SELECT COUNT(*) AS n FROM criterion_approvals").get()).toEqual({ n: 1 });
+    expect(w.host.calls.some(([n]) => n === "checklist")).toBe(false);
+  });
+
+  test("change.load flags the projection error; criteriaInSync says so instead of listing missing ids", async () => {
+    const w = await world({ body: BROKEN }, true, BODY);
+    const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+    expect(loaded.projectionError).toContain("incomplete");
+    const item = { criteria: [{ id: "a", text: "x", manual: false }] };
+    const result = await run("change.criteriaInSync", { context: ctx({ item: item as never, change: loaded }) }) as Fail;
+    expect(result.message).toMatch(/^PR checklist markers are malformed: .*; restore or remove the conveyor managed section$/);
+  });
+
+  test("change.ensure fails with a retry route and writes nothing", async () => {
+    const w = await world({ body: BROKEN }, false, BODY);
+    const result = await run("change.ensure", { context: repository(), deps: w.deps, config: { criteriaChecklist: true } }) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("PR checklist markers are malformed");
+    expect(result.route).toEqual({ retry: true });
+    expect(w.host.calls.some(([n]) => n === "checklist")).toBe(false);
+  });
+
+  test("duplicate criterion ids fail as a domain failure", async () => {
+    const dup = BODY.replace("conveyor:criterion:b", "conveyor:criterion:a");
+    const w = await world({ body: PR_BODY }, false, dup);
+    const result = await run("change.ensure", { context: repository(), deps: w.deps, config: { criteriaChecklist: true } }) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("duplicate");
+  });
+});
+
+describe("approvals bound to criterion text", () => {
+  test("editing a criterion's text drops its approval", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    await approve(w, "a");
+    w.store.upsertIssue({
+      id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "t", body: BODY.replace("It works", "It works differently"),
+      sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+    expect(loaded.criteria[0]!.approval).toBeNull();
   });
 });

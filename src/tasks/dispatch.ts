@@ -62,7 +62,7 @@ export async function dispatchTool(
     if (live !== headSha) throw new Error(`${name}: headSha ${headSha} is not the current change head ${live}; read change.get and retry`);
   }
 
-  const mutating = definition.mutating === true;
+  const mutating = definition.mutating === true && definition.journal !== false;
   // A client retry is a new request, so the key is the call's content, not a transport id.
   const idempotencyKey = mutating
     ? `mcp:${grant.runId}:${name}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`

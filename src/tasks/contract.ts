@@ -89,6 +89,8 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   checkpoint?: { name: "ciPassed" | "reviewPassed"; scope: "task" | "gate" };
   /** Tools only: whether the tool changes external state. */
   mutating?: boolean;
+  /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */
+  journal?: boolean;
   run(args: TaskArgs<C, I, D>): TaskResult | Promise<TaskResult>;
 }
 

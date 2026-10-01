@@ -464,6 +464,7 @@ export const migrations: readonly Migration[] = [
         reviewer TEXT NOT NULL,
         head_sha TEXT NOT NULL,
         checked_at TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
         PRIMARY KEY (issue_id, criterion_id)
       );
     `,

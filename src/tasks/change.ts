@@ -43,7 +43,8 @@ function toContext(delivery: ChangeDelivery, deps: Deps): ChangeContext {
     mergeable: change.mergeable === null ? "unknown" : change.mergeable ? "yes" : "no",
     mergeCommitSha: pullRequest?.mergeCommitSha ?? null,
     criteria: criteriaView(deps, change.body ?? "", change.headSha),
-    projectedCriterionIds: [...projectedChecklist(change.body ?? "").keys()],
+    projectedCriterionIds: [...projectedChecklist(change.body ?? "").checked.keys()],
+    projectionError: projectedChecklist(change.body ?? "").error,
     findings: [],
   };
 }
@@ -83,7 +84,8 @@ const ensure: TaskDefinition<z.output<typeof ensureConfig>, unknown, Deps> = {
     if (!ensured.pushed) return fail(ensured.reason, { route: { retry: true } });
     if (config.criteriaChecklist) {
       const stored = deps.store.getCurrentPullRequest(deps.issueId);
-      if (stored) await syncChecklist(codeHostOf(deps), deps, stored.id);
+      const synced = stored ? await syncChecklist(codeHostOf(deps), deps, stored.id) : null;
+      if (synced && !synced.ok) return fail(synced.message, synced.malformed ? { route: { retry: true } } : {});
     }
     return pass();
   },
