@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
+import { prepareCodexEnvironment } from "../isolation/environment";
+import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   CodexRunnerError,
   type CodexMcpConfiguration,
@@ -26,6 +28,8 @@ export interface CodexCheckInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  /** Network isolation policy; absent keeps the legacy (environment-only) behaviour. */
+  egress?: EgressInput;
 }
 
 export interface CodexCheckRunResult extends CheckResult {
@@ -90,34 +94,6 @@ type CheckEvent = {
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/check-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
-const INHERITED_ENVIRONMENT = [
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "PATH",
-  "SHELL",
-  "TERM",
-  "COLORTERM",
-  "LANG",
-  "LC_ALL",
-  "TMPDIR",
-  "CODEX_HOME",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-] as const;
-
-function environment(overrides?: Record<string, string>): Record<string, string> {
-  const selected: Record<string, string> = {};
-  for (const key of INHERITED_ENVIRONMENT) {
-    const value = process.env[key];
-    if (value !== undefined) selected[key] = value;
-  }
-  return { ...selected, ...overrides };
-}
-
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -160,7 +136,7 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
-function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
+function buildArguments(input: CodexCheckInput, outputFile: string, extra: string[] = []): string[] {
   const args = [
     "exec",
     "--json",
@@ -184,6 +160,7 @@ function buildArguments(input: CodexCheckInput, outputFile: string): string[] {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
   args.push(
+    ...extra,
     "-c",
     `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
     "-c",
@@ -211,15 +188,21 @@ export async function runCodexCheck(
   );
   const startedAt = performance.now();
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  let network: RunNetwork | null = null;
   try {
-    child = Bun.spawn([input.command, ...buildArguments(input, outputFile)], {
-      cwd: input.workspace,
-      env: environment(input.env),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+    const launch = await codexLaunch({
+      command: input.command,
+      environment: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
+      artifactsDirectory: input.artifactsDirectory,
+      egress: input.egress,
+      buildArguments: (extra) => buildArguments(input, outputFile, extra),
     });
+    network = launch.network;
+    child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // Release the per-run network whenever the process ends, even if later setup throws.
+    void child.exited.finally(() => network?.close());
   } catch (error) {
+    await network?.close();
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -276,6 +259,7 @@ export async function runCodexCheck(
   try {
     exitCode = await child.exited;
   } finally {
+    await network?.close();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

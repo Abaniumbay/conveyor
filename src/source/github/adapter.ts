@@ -116,6 +116,7 @@ interface GitHubPullRequest {
   state: string;
   merged?: boolean;
   merged_at?: string | null;
+  body?: string | null;
   merge_commit_sha?: string | null;
   draft?: boolean;
   mergeable_state?: string;
@@ -144,6 +145,7 @@ export interface GitHubDeliveryState {
     headBranch: string;
     headSha: string;
     baseBranch: string;
+    body?: string;
   };
   checks: Array<{
     id: number;
@@ -161,6 +163,48 @@ interface GitHubHook {
   active: boolean;
   config: { url?: string };
 }
+
+export interface GitHubReviewThread {
+  id: string;
+  isResolved: boolean;
+  comments: { nodes: Array<{
+    id: string;
+    databaseId: number;
+    author: { login: string } | null;
+    body: string;
+    url: string;
+    path: string | null;
+    line: number | null;
+    createdAt: string;
+    pullRequestReview: { databaseId: number } | null;
+  }> };
+}
+
+export interface GitHubReview {
+  id: number;
+  state: string;
+  user: { login: string } | null;
+  body: string | null;
+  html_url: string;
+  submitted_at?: string;
+}
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { id databaseId author { login } body url path line createdAt pullRequestReview { databaseId } }
+          }
+        }
+      }
+    }
+  }
+}`;
 
 const STATUS_MARKER = "<!-- conveyor:status -->";
 
@@ -316,20 +360,37 @@ export class GitHubAdapter {
     });
   }
 
-  async addDependency(input: {
+  async setDependencies(input: {
     address: string;
     issueNumber: number;
-    blockerNumber: number;
+    blockerNumbers: readonly number[];
   }): Promise<void> {
-    const blocker = await this.transport.request<GitHubIssue>({
-      method: "GET",
-      path: `repos/${input.address}/issues/${input.blockerNumber}`,
-    });
-    await this.transport.request<unknown>({
-      method: "POST",
-      path: `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`,
-      body: { issue_id: blocker.id },
-    });
+    const base = `repos/${input.address}/issues/${input.issueNumber}/dependencies/blocked_by`;
+    const current = await this.listBlockedBy(input.address, input.issueNumber);
+    const wanted = new Set(input.blockerNumbers);
+    const present = new Set(current.map((issue) => issue.number));
+    for (const issue of current) {
+      if (wanted.has(issue.number)) continue;
+      await this.transport.request<unknown>({ method: "DELETE", path: `${base}/${issue.id}` });
+    }
+    for (const blockerNumber of wanted) {
+      if (present.has(blockerNumber)) continue;
+      const blocker = await this.transport.request<GitHubIssue>({
+        method: "GET",
+        path: `repos/${input.address}/issues/${blockerNumber}`,
+      });
+      try {
+        await this.transport.request<unknown>({
+          method: "POST",
+          path: base,
+          body: { issue_id: blocker.id },
+        });
+      } catch (error) {
+        // A concurrent writer already created the link.
+        if (error instanceof GitHubTransportError && /\(HTTP 422\)/.test(error.stderr)) continue;
+        throw error;
+      }
+    }
   }
 
   async listSubIssues(address: string, issueNumber: number): Promise<SourceIssue[]> {
@@ -344,14 +405,17 @@ export class GitHubAdapter {
   }
 
   async listDependencies(address: string, issueNumber: number): Promise<SourceIssue[]> {
+    const issues = await this.listBlockedBy(address, issueNumber);
+    return issues.map((issue) => sourceIssue(address, issue));
+  }
+
+  private async listBlockedBy(address: string, issueNumber: number): Promise<GitHubIssue[]> {
     const issues = await this.transport.request<GitHubIssue[]>({
       method: "GET",
       path: `repos/${address}/issues/${issueNumber}/dependencies/blocked_by?per_page=100`,
       paginate: true,
     });
-    return issues
-      .filter((issue) => issue.pull_request === undefined)
-      .map((issue) => sourceIssue(address, issue));
+    return issues.filter((issue) => issue.pull_request === undefined);
   }
 
   async replaceConveyorLabels(
@@ -437,6 +501,77 @@ export class GitHubAdapter {
       body: { body: markdown },
     });
     return comment.id;
+  }
+
+  /** Creates an issue/pull request comment and returns where it lives. */
+  async createComment(address: string, issueNumber: number, markdown: string): Promise<{ id: number; url: string }> {
+    const comment = await this.transport.request<GitHubComment & { html_url: string }>({
+      method: "POST",
+      path: `repos/${address}/issues/${issueNumber}/comments`,
+      body: { body: markdown },
+    });
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  async updateComment(address: string, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({ method: "PATCH", path: `repos/${address}/issues/comments/${commentId}`, body: { body: markdown } });
+  }
+
+  /** An inline review comment on the pull request diff (right side) at `commitId`. */
+  async createReviewComment(address: string, pullRequestNumber: number, input: {
+    body: string; commitId: string; path: string; line: number;
+  }): Promise<{ id: number; url: string }> {
+    const comment = await this.transport.request<{ id: number; html_url: string }>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments`,
+      body: { body: input.body, commit_id: input.commitId, path: input.path, line: input.line, side: "RIGHT" },
+    });
+    return { id: comment.id, url: comment.html_url };
+  }
+
+  async replyToReviewComment(address: string, pullRequestNumber: number, commentId: number, markdown: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/pulls/${pullRequestNumber}/comments/${commentId}/replies`,
+      body: { body: markdown },
+    });
+  }
+
+  /** All of the pull request's review threads with their first comment, through paginated GraphQL; throws unless every page was read. */
+  async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
+    const [owner, name] = address.split("/");
+    const threads: GitHubReviewThread[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 100; page += 1) {
+      const response: {
+        data?: { repository?: { pullRequest?: { reviewThreads?: {
+          nodes?: GitHubReviewThread[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        } } | null } | null };
+        errors?: Array<{ message?: string }>;
+      } = await this.transport.request({
+        method: "POST",
+        path: "graphql",
+        body: { query: REVIEW_THREADS_QUERY, variables: { owner, name, number: pullRequestNumber, cursor } },
+      });
+      if (response.errors?.length) {
+        throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+      }
+      const connection = response.data?.repository?.pullRequest?.reviewThreads;
+      if (!connection?.nodes) throw new Error(`GitHub GraphQL returned no review threads for ${address}#${pullRequestNumber}`);
+      threads.push(...connection.nodes);
+      if (!connection.pageInfo?.hasNextPage) return threads;
+      if (!connection.pageInfo.endCursor) throw new Error(`GitHub GraphQL review threads of ${address}#${pullRequestNumber} cannot be paginated`);
+      cursor = connection.pageInfo.endCursor;
+    }
+    throw new Error(`GitHub pull request ${address}#${pullRequestNumber} has too many review threads to import`);
+  }
+
+  async listReviews(address: string, pullRequestNumber: number): Promise<GitHubReview[]> {
+    return this.transport.request<GitHubReview[]>({
+      method: "GET",
+      path: `repos/${address}/pulls/${pullRequestNumber}/reviews?per_page=100`,
+      paginate: true,
+    });
   }
 
   async updateManagedSection(input: {
@@ -542,6 +677,7 @@ export class GitHubAdapter {
         headBranch: pullRequest.head.ref,
         headSha: pullRequest.head.sha,
         baseBranch: pullRequest.base.ref,
+        body: pullRequest.body ?? "",
       },
       checks: response.check_runs.map((check) => ({
         id: check.id,
@@ -563,6 +699,7 @@ export class GitHubAdapter {
     mergeState: string | null;
     headSha: string;
     mergedAt: string | null;
+    body?: string;
   }> {
     const pullRequest = await this.transport.request<GitHubPullRequest>({
       method: "GET",
@@ -579,7 +716,17 @@ export class GitHubAdapter {
       mergeState: pullRequest.mergeable_state ?? null,
       headSha: pullRequest.head.sha,
       mergedAt: pullRequest.merged_at ?? null,
+      body: pullRequest.body ?? "",
     };
+  }
+
+  /** Upserts the acceptance-criteria managed section in a pull request body, keeping the rest. */
+  async setPullRequestChecklist(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    const path = `repos/${address}/pulls/${pullRequestNumber}`;
+    const current = await this.transport.request<GitHubPullRequest>({ method: "GET", path });
+    const body = current.body ?? "";
+    const updated = upsertManagedSection(body, "acceptance-criteria", markdown, parseManagedSections(body).revision);
+    if (updated !== body) await this.transport.request<GitHubPullRequest>({ method: "PATCH", path, body: { body: updated } });
   }
 
   async getPullRequestHead(
@@ -619,6 +766,29 @@ export class GitHubAdapter {
     }
   }
 
+  /** File names in `.github/workflows` at a ref; null when the directory does not exist. */
+  async listWorkflowFiles(address: string, ref: string): Promise<string[] | null> {
+    try {
+      const entries = await this.transport.request<Array<{ name: string; type?: string }>>({
+        method: "GET",
+        path: `repos/${address}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`,
+      });
+      return (Array.isArray(entries) ? entries : []).filter((entry) => entry.type !== "dir").map((entry) => entry.name);
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
+  async workflowSource(address: string, workflow: string, ref: string): Promise<string> {
+    const file = await this.transport.request<{ content?: string; encoding?: string }>({
+      method: "GET",
+      path: `repos/${address}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${encodeURIComponent(ref)}`,
+    });
+    if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error(`workflow ${workflow} has no readable content`);
+    return Buffer.from(file.content, "base64").toString("utf8");
+  }
+
   /** Remove (if present) and re-add a PR label so a `labeled` workflow runs for the current head. */
   async retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void> {
     try {
@@ -655,6 +825,7 @@ export class GitHubAdapter {
   async squashMerge(
     address: string,
     pullRequestNumber: number,
+    expectedHeadSha?: string,
   ): Promise<{ merged: boolean; sha?: string }> {
     const current = await this.transport.request<GitHubPullRequest>({
       method: "GET",
@@ -669,7 +840,7 @@ export class GitHubAdapter {
     return this.transport.request<{ merged: boolean; sha?: string }>({
       method: "PUT",
       path: `repos/${address}/pulls/${pullRequestNumber}/merge`,
-      body: { merge_method: "squash" },
+      body: expectedHeadSha ? { merge_method: "squash", sha: expectedHeadSha } : { merge_method: "squash" },
     });
   }
 

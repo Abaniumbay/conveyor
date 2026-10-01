@@ -35,7 +35,15 @@ function processErrorMessage(prefix: string, stderr: string): string {
   return detail.length > 0 ? `${prefix}: ${detail}` : prefix;
 }
 
-export async function runJsonProcess(input: JsonProcessInput): Promise<RunEnvelope> {
+export interface ProcessOutput {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  durationMs: number;
+}
+
+/** Runs a command with the JSON input on stdin; a timeout, interrupt or non-zero exit throws RunnerProcessError. */
+export async function runProcess(input: JsonProcessInput): Promise<ProcessOutput> {
   if (input.command.length === 0) throw new Error("runner command cannot be empty");
   const startedAt = performance.now();
   const child = Bun.spawn(input.command, {
@@ -113,6 +121,11 @@ export async function runJsonProcess(input: JsonProcessInput): Promise<RunEnvelo
     );
   }
 
+  return { stdout, stderr, exitCode, durationMs };
+}
+
+export async function runJsonProcess(input: JsonProcessInput): Promise<RunEnvelope> {
+  const { stdout, stderr, exitCode, durationMs } = await runProcess(input);
   let decoded: unknown;
   try {
     decoded = JSON.parse(stdout);

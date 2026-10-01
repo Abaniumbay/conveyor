@@ -6,7 +6,9 @@ import path from "node:path";
 import { ExternalWaitError } from "../../src/app/ci-gate";
 import { ConfiguredStageRuntime, type SourceActionHandler } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
-import { PipelineEngine } from "../../src/core/pipeline";
+import type { PipelineDefinition } from "../../src/core/pipeline";
+import { PipelineEngine } from "../engine/reference-engine";
+import type { StageConfig } from "../../src/config/schema";
 import { ConveyorStore } from "../../src/db/store";
 
 const directories: string[] = [];
@@ -98,7 +100,7 @@ describe("source-action stages", () => {
           return { outcome: "success", status: "done", reason: null, summary: "CI passed." };
         },
       }, action);
-      const engine = new PipelineEngine(config.pipelines.default!, runtime, 2);
+      const engine = new PipelineEngine(config.pipelines.default! as PipelineDefinition, runtime, 2);
       const result = await engine.executeStage("ci", { issue: issue as unknown as Record<string, unknown>, workspace: null });
       expect(result).toMatchObject({ kind: "advance", nextStageId: null });
       expect(invoked).toBe(action);
@@ -116,7 +118,7 @@ describe("source-action stages", () => {
         };
       },
     });
-    const engine = new PipelineEngine(config.pipelines.default!, runtime, 2);
+    const engine = new PipelineEngine(config.pipelines.default! as PipelineDefinition, runtime, 2);
 
     const result = await engine.executeStage("ci", { issue: issue as unknown as Record<string, unknown>, workspace: null });
 
@@ -138,7 +140,7 @@ describe("source-action stages", () => {
         return { outcome: "success", status: "done", reason: null, summary: "CI passed at abc1234: Tests (success)." };
       },
     });
-    const engine = new PipelineEngine(config.pipelines.default!, runtime, 2);
+    const engine = new PipelineEngine(config.pipelines.default! as PipelineDefinition, runtime, 2);
     const input = { issue: issue as unknown as Record<string, unknown>, workspace: null };
 
     await expect(engine.executeStage("ci", input)).rejects.toBeInstanceOf(ExternalWaitError);

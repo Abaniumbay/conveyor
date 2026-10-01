@@ -2,6 +2,8 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { prepareCodexEnvironment } from "../isolation/environment";
+import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   EMPTY_USAGE,
   UNAVAILABLE_COST,
@@ -29,7 +31,18 @@ export interface CodexRunInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  /** Keep the session on disk so it can be resumed later (the default run is ephemeral). */
+  persistSession?: boolean;
+  /** Continue this session with `codex exec resume` instead of starting a new one. */
+  resumeSessionId?: string;
+  /**
+   * Network isolation: when set, codex runs inside a network-less sandbox whose only exits are the
+   * allowlisted proxies. Absent means the legacy behaviour (sanitized environment only).
+   */
+  egress?: EgressInput;
 }
+
+export { CODEX_CONTROL_PLANE_HOSTS };
 
 export type CodexErrorKind =
   | "usage-limit"
@@ -65,34 +78,6 @@ interface CodexEvent {
 
 const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
-const INHERITED_ENVIRONMENT = [
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "PATH",
-  "SHELL",
-  "TERM",
-  "COLORTERM",
-  "LANG",
-  "LC_ALL",
-  "TMPDIR",
-  "CODEX_HOME",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-] as const;
-
-function environment(overrides?: Record<string, string>): Record<string, string> {
-  const selected: Record<string, string> = {};
-  for (const key of INHERITED_ENVIRONMENT) {
-    const value = process.env[key];
-    if (value !== undefined) selected[key] = value;
-  }
-  return { ...selected, ...overrides };
-}
-
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -136,20 +121,38 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
-function buildArguments(input: CodexRunInput, outputFile: string): string[] {
-  const args = [
-    "exec",
-    "--json",
-    "--color",
-    "never",
-    "--ephemeral",
-    "-C",
-    input.workspace,
-    "--output-schema",
-    OUTPUT_SCHEMA,
-    "-o",
-    outputFile,
+function mcpArguments(input: CodexRunInput): string[] {
+  return [
+    "-c",
+    `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
+    "-c",
+    `mcp_servers.conveyor.args=${tomlArray(input.mcp.args)}`,
+    "-c",
+    "mcp_servers.conveyor.required=true",
+    "-c",
+    'mcp_servers.conveyor.default_tools_approval_mode="approve"',
   ];
+}
+
+// `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
+// takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
+function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, extra: string[]): string[] {
+  const args = ["exec", "resume", "--json", "--output-schema", OUTPUT_SCHEMA, "-o", outputFile];
+  args.push("-c", `sandbox_mode=${tomlString(input.sandbox)}`);
+  if (input.automaticApprovals && input.sandbox === "workspace-write") {
+    args.push("-c", `approvals_reviewer=${tomlString("auto_review")}`);
+  }
+  if (input.model) args.push("--model", input.model);
+  if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
+  args.push(...extra, ...mcpArguments(input), sessionId, "-");
+  return args;
+}
+
+function buildArguments(input: CodexRunInput, outputFile: string, extra: string[] = []): string[] {
+  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile, extra);
+  const args = ["exec", "--json", "--color", "never"];
+  if (!input.persistSession) args.push("--ephemeral");
+  args.push("-C", input.workspace, "--output-schema", OUTPUT_SCHEMA, "-o", outputFile);
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("--approve-for-me");
   } else {
@@ -159,18 +162,12 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(
-    "-c",
-    `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
-    "-c",
-    `mcp_servers.conveyor.args=${tomlArray(input.mcp.args)}`,
-    "-c",
-    "mcp_servers.conveyor.required=true",
-    "-c",
-    'mcp_servers.conveyor.default_tools_approval_mode="approve"',
-    "-",
-  );
+  args.push(...extra, ...mcpArguments(input), "-");
   return args;
+}
+
+function spawnPiped(argv: string[], cwd: string, env: Record<string, string>) {
+  return Bun.spawn(argv, { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
 }
 
 export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
@@ -179,15 +176,26 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     input.artifactsDirectory,
     `codex-result-${randomUUID()}.json`,
   );
-  const args = buildArguments(input, outputFile);
   const startedAt = performance.now();
-  const child = Bun.spawn([input.command, ...args], {
-    cwd: input.workspace,
-    env: environment(input.env),
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  let network: RunNetwork | null = null;
+  let child: ReturnType<typeof spawnPiped>;
+  try {
+    const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    const launch = await codexLaunch({
+      command: input.command,
+      environment,
+      artifactsDirectory: input.artifactsDirectory,
+      egress: input.egress,
+      buildArguments: (extra) => buildArguments(input, outputFile, extra),
+    });
+    network = launch.network;
+    child = spawnPiped(launch.argv, input.workspace, launch.env);
+    // Release the per-run network whenever the process ends, even if later setup throws.
+    void child.exited.finally(() => network?.close());
+  } catch (error) {
+    await network?.close();
+    throw error;
+  }
   child.stdin.write(input.prompt);
   child.stdin.end();
 
@@ -235,6 +243,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   try {
     exitCode = await child.exited;
   } finally {
+    await network?.close();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

@@ -4,24 +4,22 @@ import { freemem, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
+import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
-import {
-  formatAcceptanceCriteria,
-  formatDependencies,
-  parseManagedSections,
-  upsertManagedSection,
-  type AcceptanceCriterion,
-} from "../source/github/managed-sections";
+import { codexHarness } from "../harness/codex";
+import type { Harness } from "../harness/types";
 import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
-import { changeAction } from "../codehost/actions";
+import { changeAction, pushAndEnsureChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
+import { canonicalToolName } from "../tasks/aliases";
+import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration } from "../web/format";
@@ -29,7 +27,15 @@ import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
-import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
+import { createTaskRegistry } from "../tasks/catalogue";
+import { runTask } from "../tasks/contract";
+import type { TaskDeps } from "../tasks/deps";
+import { criteriaFromBody } from "../tasks/item";
+import { compilePipeline } from "../tasks/plan";
+import { cliGit } from "../workspace/git";
+import { removeWorkspace } from "../workspace/lifecycle";
+import { AdvisoryCiWatches } from "../engine/advisory-ci";
+import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
   repositoryId: string;
@@ -50,6 +56,8 @@ interface McpGrant {
 interface ServiceImplementations {
   steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   codeHosts?: CodeHostRegistry;
+  /** Agent harnesses by runner type; defaults to Codex. */
+  harnesses?: Record<string, Harness>;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
@@ -76,18 +84,6 @@ function number(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive integer`);
   }
   return Number(value);
-}
-
-function acceptanceCriteria(value: unknown, name = "criteria"): AcceptanceCriterion[] {
-  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
-  return value.map((entry) => {
-    const criterion = object(entry);
-    return {
-      id: string(criterion.id, "criterion.id"),
-      text: string(criterion.text, "criterion.text"),
-      completed: criterion.completed === true,
-    };
-  });
 }
 
 function displayName(value: string): string {
@@ -135,30 +131,6 @@ function listenPort(listen: string): number {
   return port;
 }
 
-async function git(cwd: string, args: string[]): Promise<void> {
-  const child = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
-  const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-  if (exitCode !== 0) throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${exitCode}`}`);
-}
-
-function criteriaFromBody(body: string): string[] {
-  try {
-    const markdown = parseManagedSections(body).sections["acceptance-criteria"];
-    if (!markdown) return [];
-    return markdown.split(/\r?\n/).flatMap((line) => {
-      const match = /^- \[[ xX]\]\s+(.+?)(?:\s+<!-- conveyor:criterion:[^>]+ -->)?$/.exec(line.trim());
-      return match?.[1] ? [match[1]] : [];
-    });
-  } catch {
-    return [];
-  }
-}
-
 function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   const repository = config.repositories[repositoryId]!;
   const pipeline = config.pipelines[repository.pipeline]!;
@@ -197,13 +169,16 @@ export class ConveyorService {
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
-  /** Issues polling an external condition (CI); not schedulable before this time. */
-  readonly #deferredUntil = new Map<string, number>();
-  /** Why a deferred issue is waiting; re-applied after reconciliation resets warnings. */
-  readonly #waitReasons = new Map<string, string>();
+  /** Fires a schedule pass at the earliest persisted wake-up of a parked item. */
+  #wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires an advisory CI poll at the earliest wake-up of an active watch. */
+  #advisoryTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #advisoryWatches: AdvisoryCiWatches;
+  #advisoryPolling = false;
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
+  readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 
   constructor(
@@ -217,6 +192,21 @@ export class ConveyorService {
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
+    this.#harnesses = implementations.harnesses ?? { codex: codexHarness };
+    this.#advisoryWatches = new AdvisoryCiWatches(store.sqlite(), store.executions(), {
+      resolve: (repositoryId) => ({
+        provider: this.ciProvider(repositoryId),
+        address: this.config.repositories[repositoryId]?.address ?? "",
+        ignoreChecks: this.config.repositories[repositoryId]?.ci.ignoreChecks ?? [],
+      }),
+      post: (itemId, stage, message) => {
+        this.store.appendConversationMessage({
+          issueId: itemId, runId: null, stageId: stage, actorType: "conveyor", actorId: "conveyor",
+          actorName: "Conveyor", actorTitle: "Orchestrator", message,
+        });
+      },
+      onError: (watch, error) => console.warn(`Advisory CI watch for ${watch.itemId}@${watch.headSha.slice(0, 7)} failed: ${error instanceof Error ? error.message : String(error)}`),
+    });
   }
 
   static async create(
@@ -302,6 +292,7 @@ export class ConveyorService {
           expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
         });
         await this.reconcileRelationships(id, repository.address);
+        this.restorePendingStatus(id);
         this.#repositoryErrors.delete(id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -323,6 +314,10 @@ export class ConveyorService {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    this.#wakeTimer = null;
+    if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
+    this.#advisoryTimer = null;
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     while (this.#active.size > 0 || this.#steeringActive.size > 0) await Bun.sleep(25);
@@ -338,6 +333,8 @@ export class ConveyorService {
     } finally {
       this.#tickRunning = false;
     }
+    // Not awaited: a slow CI provider must not stall reconcile and scheduling.
+    void this.pollAdvisoryCi().catch((error) => console.warn(`Advisory CI poll failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   private schedule(): void {
@@ -364,7 +361,7 @@ export class ConveyorService {
           issue.projectedState === "active" &&
           state.status === "ready" &&
           !this.#active.has(issue.id) &&
-          (this.#deferredUntil.get(issue.id) ?? 0) <= Date.now() &&
+          this.wakeupReached(issue.id) &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly: this.store.listChildren(issue.id).length > 0,
@@ -416,6 +413,77 @@ export class ConveyorService {
         this.#active.delete(issue.id);
       });
     }
+    this.armWakeTimer();
+  }
+
+  /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
+  private async pollAdvisoryCi(): Promise<void> {
+    if (this.#shuttingDown || this.#advisoryPolling) return;
+    this.#advisoryPolling = true;
+    try { await this.#advisoryWatches.pollDueWatches(Date.now()); }
+    finally { this.#advisoryPolling = false; }
+    if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
+    this.#advisoryTimer = null;
+    const next = this.#advisoryWatches.nextWakeAt();
+    if (next === null || this.#shuttingDown) return;
+    this.#advisoryTimer = setTimeout(() => {
+      this.#advisoryTimer = null;
+      void this.pollAdvisoryCi().catch(() => {});
+    }, Math.max(0, Date.parse(next) - Date.now()) + 50);
+  }
+
+  /** A parked item is schedulable only once its persisted wake-up time has passed. */
+  private wakeupReached(issueId: string): boolean {
+    const wakeAt = this.store.executions().wakeAt(issueId);
+    return wakeAt === null || Date.parse(wakeAt) <= Date.now();
+  }
+
+  /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
+  private armWakeTimer(): void {
+    if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
+    this.#wakeTimer = null;
+    if (this.#shuttingDown) return;
+    const next = this.store.executions().nextWakeupAfter(new Date());
+    if (next === null) return;
+    this.#wakeTimer = setTimeout(() => {
+      this.#wakeTimer = null;
+      this.schedule();
+    }, Math.max(0, Date.parse(next) - Date.now()) + 50);
+  }
+
+  /** What native-stage tasks and MCP tools receive. */
+  private taskDeps(issueId: string, repository: TaskDeps["repository"], signal?: AbortSignal): TaskDeps {
+    return {
+      store: this.store,
+      config: this.config,
+      items: this.github,
+      repository,
+      issueId,
+      sourceGuidance: SOURCE_GUIDANCE,
+      git: cliGit,
+      workspaces: this.workspaceManager,
+      mcp: this.mcpFactory(),
+      harnesses: this.#harnesses,
+      delivery: () => this.loadDeliveryState(issueId, repository.address),
+      codeHost: this.codeHostFor(repository.id),
+      ci: {
+        provider: () => this.ciProvider(repository.id),
+        watchAdvisory: (input) => {
+          this.#advisoryWatches.ensureWatch({
+            repositoryId: repository.id, itemId: input.itemId, headSha: input.headSha, stage: input.stage,
+            change: { changeId: input.changeId, url: input.changeUrl }, now: Date.now(),
+          });
+          void this.pollAdvisoryCi().catch(() => {});
+        },
+      },
+      notify: (message, stageId) => {
+        this.store.appendConversationMessage({
+          issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
+          actorName: "Conveyor", actorTitle: "Orchestrator", message,
+        });
+      },
+      ...(signal ? { signal } : {}),
+    };
   }
 
   private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
@@ -430,6 +498,7 @@ export class ConveyorService {
       loadDeliveryState: async (currentIssue, currentRepository) =>
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,
+      taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository, signal),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
@@ -443,16 +512,19 @@ export class ConveyorService {
       ),
     });
     try {
-      await executor.execute(issue);
-      await this.reconcileRepository(issue.repositoryId);
-      await this.updateStatusComment(issue.id);
+      const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
+      const outcome = await executor.execute(issue);
+      if (outcome.kind === "parked") {
+        // A parked poll changes nothing at the source: no reconcile, just the status line.
+        this.restorePendingStatus(issue.repositoryId);
+        if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);
+      } else {
+        await this.reconcileRepository(issue.repositoryId);
+        await this.updateStatusComment(issue.id);
+      }
       this.schedule();
     } catch (error) {
       if (signal.aborted) return;
-      if (error instanceof ExternalWaitError) {
-        await this.deferForExternalWait(issue, error);
-        return;
-      }
       this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: "active",
@@ -477,50 +549,18 @@ export class ConveyorService {
     }
   }
 
-  private restoreWaitReasons(repositoryId: string): void {
-    for (const [issueId, reason] of this.#waitReasons) {
-      const issue = this.store.getIssue(issueId);
-      if (!issue || issue.repositoryId !== repositoryId) continue;
-      if (issue.projectedState !== "active") {
-        this.#waitReasons.delete(issueId);
-        this.#deferredUntil.delete(issueId);
-        continue;
-      }
-      if (issue.warning) continue;
-      this.store.setIssueProjection(issueId, {
+  /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
+  private restorePendingStatus(repositoryId: string): void {
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (issue.projectedState !== "active" || issue.warning) continue;
+      const message = this.store.executions().pendingMessage(issue.id);
+      if (message === null) continue;
+      this.store.setIssueProjection(issue.id, {
         stage: issue.projectedStage,
         state: issue.projectedState,
-        warning: reason,
+        warning: message,
       });
     }
-  }
-
-  /** Park an issue whose stage is waiting on an external system; no permit is held meanwhile. */
-  private async deferForExternalWait(issue: StoredIssue, error: ExternalWaitError): Promise<void> {
-    const current = this.store.getStageState(issue.id);
-    if (current) {
-      this.store.setStageState({
-        issueId: issue.id,
-        stageId: current.stageId,
-        status: "ready",
-        feedbackCycle: current.feedbackCycle,
-        configHash: this.config.hash,
-      });
-    }
-    const previous = this.store.getIssue(issue.id)?.warning ?? null;
-    this.store.setIssueProjection(issue.id, {
-      stage: issue.projectedStage,
-      state: "active",
-      warning: error.message,
-    });
-    if (previous !== error.message) {
-      await this.updateStatusComment(issue.id).catch((statusError) => {
-        console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
-      });
-    }
-    this.#deferredUntil.set(issue.id, Date.now() + error.retryAfterMs);
-    this.#waitReasons.set(issue.id, error.message);
-    setTimeout(() => this.schedule(), error.retryAfterMs + 50);
   }
 
   private async loadDeliveryState(
@@ -551,10 +591,10 @@ export class ConveyorService {
   private ciProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
     const repository = this.config.repositories[repositoryId];
     if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
-    const providerName = repository.ci ?? "actions";
+    const providerName = repository.ci.provider ?? "actions";
     // Unreferenced named providers are inert. An omitted repository reference
     // selects its source-native provider with no named-provider configuration.
-    const configured = repository.ci ? this.config.ci[repository.ci] : undefined;
+    const configured = repository.ci.provider ? this.config.ci[repository.ci.provider] : undefined;
     const stageTriggers = stageInput?.triggers;
     const configuredTriggers = configured?.triggers;
     const triggers = parseGitHubActionsTriggers(
@@ -584,7 +624,12 @@ export class ConveyorService {
     const stage = repository
       ? this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId)
       : undefined;
-    return Boolean(stage && stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck);
+    if (!stage) return false;
+    // A native stage is lightweight when it launches no agent or script process.
+    if (isNativeStage(stage)) {
+      return ![...stage.actions, ...(stage.exitGate ?? [])].some((entry) => /^(agent|script)\.run$/.test(entry.task));
+    }
+    return stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck;
   }
 
   private interruptIneligibleRuns(): void {
@@ -620,7 +665,7 @@ export class ConveyorService {
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
     await this.reconcileRelationships(repositoryId, repository.address);
-    this.restoreWaitReasons(repositoryId);
+    this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
   }
 
@@ -752,16 +797,13 @@ export class ConveyorService {
         continue;
       }
       if (runningIssueIds.has(parent.id)) continue;
-      const workspace = this.store.getActiveWorkspace(parent.id);
-      const parentStage = this.store.getStageState(parent.id);
-      if (workspace && parentStage?.status !== "running") {
-        await this.workspaceManager.remove({
-          repositoryPath: this.config.repositories[repositoryId]!.folder,
-          workspacePath: workspace.path,
-          branch: workspace.branch,
-          deleteBranch: true,
+      if (this.store.getStageState(parent.id)?.status !== "running") {
+        await removeWorkspace({
+          store: this.store,
+          manager: this.workspaceManager,
+          issueId: parent.id,
+          repositoryFolder: this.config.repositories[repositoryId]!.folder,
         });
-        this.store.markWorkspaceRemoved(workspace.id);
       }
 
       const allChildrenSatisfied = children.every((child) => satisfied(child.issueId));
@@ -832,7 +874,7 @@ export class ConveyorService {
           runId,
           stageId,
           context,
-          allowedTools: new Set(allowedTools),
+          allowedTools: new Set(allowedTools.map(canonicalToolName)),
           actor,
         });
         const directory = path.join(this.config.settings.artifacts, runId);
@@ -860,7 +902,7 @@ export class ConveyorService {
           delivery: context.delivery ?? { pullRequest: null, checks: [] },
           sourceGuidance: context.sourceGuidance,
           control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-          allowedTools,
+          allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
         }), { mode: 0o600 });
         await chmod(contextFile, 0o600);
         return {
@@ -887,7 +929,7 @@ export class ConveyorService {
       runId,
       stageId: "steering",
       context: null,
-      allowedTools: new Set(allowedTools),
+      allowedTools: new Set(allowedTools.map(canonicalToolName)),
       actor: null,
     });
     const directory = path.join(this.config.settings.artifacts, runId);
@@ -915,7 +957,7 @@ export class ConveyorService {
       delivery: { pullRequest: null, checks: [] },
       sourceGuidance: "This is a system-scoped steering run. Only explicitly granted reporting tools are available.",
       control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
-      allowedTools,
+      allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
     }), { mode: 0o600 });
     await chmod(contextFile, 0o600);
     return {
@@ -936,38 +978,24 @@ export class ConveyorService {
         const workspace = context.workspace;
         const changeOperation = changeAction(action.sourceAction);
         if (action.sourceAction === "workspace.cleanup") {
-          const stored = this.store.getActiveWorkspace(context.issue.id);
-          if (!stored) return;
-          await this.workspaceManager.remove({
-            repositoryPath: context.repository.folder,
-            workspacePath: stored.path,
-            branch: stored.branch,
-            deleteBranch: true,
+          await removeWorkspace({
+            store: this.store,
+            manager: this.workspaceManager,
+            issueId: context.issue.id,
+            repositoryFolder: context.repository.folder,
           });
-          this.store.markWorkspaceRemoved(stored.id);
           return;
         }
         if (!workspace) throw new Error(`${action.sourceAction} requires a workspace`);
         if (changeOperation === "ensure") {
           const codeHost = this.codeHostFor(context.repository.id);
           if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
-          const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
-          if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
-          const pullRequest = await codeHost.ensureChange({
-            address: context.repository.address,
-            issueNumber: context.issue.sourceNumber,
-            branch: workspace.branch,
-            base: context.repository.baseBranch,
-            title: context.issue.title,
-            closes: action.with?.closingReference !== false,
+          const ensured = await pushAndEnsureChange({
+            codeHost, store: this.store, address: context.repository.address,
+            issue: { id: context.issue.id, sourceNumber: context.issue.sourceNumber, title: context.issue.title },
+            workspace, base: context.repository.baseBranch, closes: action.with?.closingReference !== false,
           });
-          this.store.upsertPullRequest({
-            issueId: context.issue.id,
-            id: pullRequest.id,
-            number: pullRequest.number,
-            url: pullRequest.url,
-            state: pullRequest.state,
-          });
+          if (!ensured.pushed) return { outcome: "failure", status: ensured.status, reason: ensured.reason, summary: ensured.reason };
           return;
         }
         if (action.sourceAction === "ci.await" || action.sourceAction === "pullRequest.awaitChecks") {
@@ -1013,23 +1041,13 @@ export class ConveyorService {
     const maxCorrections = typeof input?.maxCorrections === "number" ? input.maxCorrections : 5;
     const codeHost = this.codeHostFor(context.repository.id);
     if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
-    const pushed = await codeHost.pushBranch({ address: context.repository.address, workspace });
-    if (!pushed.pushed) return { outcome: "failure", status: pushed.status, reason: pushed.reason, summary: pushed.reason };
-    const pullRequest = await codeHost.ensureChange({
-      address: context.repository.address,
-      issueNumber: context.issue.sourceNumber,
-      branch: workspace.branch,
-      base: context.repository.baseBranch,
-      title: context.issue.title,
-      closes: input?.closingReference !== false,
+    const ensured = await pushAndEnsureChange({
+      codeHost, store: this.store, address: context.repository.address,
+      issue: { id: context.issue.id, sourceNumber: context.issue.sourceNumber, title: context.issue.title },
+      workspace, base: context.repository.baseBranch, closes: input?.closingReference !== false,
     });
-    this.store.upsertPullRequest({
-      issueId: context.issue.id,
-      id: pullRequest.id,
-      number: pullRequest.number,
-      url: pullRequest.url,
-      state: pullRequest.state,
-    });
+    if (!ensured.pushed) return { outcome: "failure", status: ensured.status, reason: ensured.reason, summary: ensured.reason };
+    const pullRequest = ensured.change;
     const outcome = await evaluateCiGate({
       change: { repository: context.repository.address, changeId: String(pullRequest.number), url: pullRequest.url },
       issueKey: context.issue.id,
@@ -1039,8 +1057,6 @@ export class ConveyorService {
       memory: this.#ciMemory,
       now: Date.now(),
     });
-    this.#deferredUntil.delete(context.issue.id);
-    this.#waitReasons.delete(context.issue.id);
     if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
       // Stop an implementation<->CI loop that is not converging.
       const transitions = this.store.listStageTransitions(context.issue.id);
@@ -1061,238 +1077,46 @@ export class ConveyorService {
     return outcome;
   }
 
-  /** Failing (or named) CI job logs for the issue's PR head, read on the agent's behalf. */
-  private async checkLogs(
-    issueId: string,
-    address: string,
-    input: Record<string, unknown>,
-  ): Promise<unknown> {
-    const stored = this.store.getCurrentPullRequest(issueId);
-    if (!stored) return { change: null, pullRequest: null, checks: [], note: "No pull request exists yet; CI runs after implementation opens it." };
-    const repositoryId = this.store.getIssue(issueId)?.repositoryId;
-    const codeHost = repositoryId ? this.codeHostFor(repositoryId) : null;
-    if (!codeHost) throw new Error(`no code host configured for ${issueId}`);
-    const delivery = await codeHost.getChangeDelivery({ address, id: stored.id });
-    const sha = delivery.change.headSha;
-    const requested = typeof input.checkName === "string" ? input.checkName : null;
-    const lines = Math.min(Math.max(typeof input.lines === "number" ? Math.floor(input.lines) : 200, 20), 1_000);
-    const change: CiChange = { repository: address, changeId: String(delivery.change.number), url: delivery.change.url };
-    const provider = this.ciProvider(this.store.getIssue(issueId)?.repositoryId ?? "");
-    const runs = await provider.list(change, sha);
-    const selected = runs.filter((run) => requested
-      ? run.name === requested
-      : run.state === "failed" || run.state === "cancelled");
-    const checks = [];
-    for (const run of selected.slice(0, 5)) {
-      let log: string | null = null;
-      if (run.hasLog) {
-        log = await provider.log(change, run.id, lines)
-          .catch((error) => `(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
-      }
-      checks.push({ ...run, log });
-    }
-    return {
-      change: delivery.change,
-      pullRequest: delivery.pullRequest
-        ? { number: delivery.pullRequest.number, url: delivery.pullRequest.url, headSha: delivery.pullRequest.headSha }
-        : null,
-      checks,
-    };
-  }
-
+  /** An MCP tool call: a thin wrapper over the task dispatcher, which enforces the grant and journals mutations. */
   async handleMcp(payload: unknown, token: string): Promise<unknown> {
     const grant = this.#mcpGrants.get(token);
     if (!grant) throw new Error("expired MCP grant");
     const request = object(payload);
-    const tool = string(request.tool, "tool");
-    if (!grant.allowedTools.has(tool)) throw new Error(`MCP tool is not granted: ${tool}`);
-    const input = object(request.input ?? {});
-    if (tool === "conversation.get") {
-      if (!grant.context) throw new Error("conversation requires an issue-scoped MCP grant");
-      const requestedLimit = input.limit === undefined ? 100 : number(input.limit, "limit");
-      return {
-        issueId: grant.context.issue.id,
-        messages: this.store.listConversationMessages(
-          grant.context.issue.id,
-          Math.min(requestedLimit, 100),
-        ),
-      };
-    }
-    if (tool.startsWith("run.report_") || tool === "run.ask_question" || tool === "run.record_artifact" || tool === "run.report_milestone") {
-      if (tool === "run.ask_question") {
-        if (!grant.context) throw new Error("structured questions require an issue-scoped MCP grant");
-        const issue = grant.context.issue;
-        const options = Array.isArray(input.options) ? input.options : [];
-        const question = this.store.openQuestion({
-          issueId: issue.id,
-          runId: grant.runId,
-          prompt: string(input.prompt, "prompt"),
-          reason: string(input.reason, "reason"),
-          options,
-          minSelections: typeof input.minSelections === "number" ? input.minSelections : 1,
-          maxSelections: typeof input.maxSelections === "number" ? input.maxSelections : 1,
-          allowFreeText: input.allowFreeText === true,
-        });
-        this.store.appendRunEvent(grant.runId, "question", { questionId: question.id });
-        await this.updateStatusComment(issue.id);
-        return { accepted: true, questionId: question.id };
-      }
-      this.store.appendRunEvent(grant.runId, tool.slice("run.".length), input);
-      if (tool === "run.report_progress" && grant.context && grant.actor) {
-        this.store.appendConversationMessage({
-          issueId: grant.context.issue.id,
-          runId: grant.runId,
-          stageId: grant.stageId,
-          actorType: "agent",
-          actorId: grant.actor.id,
-          actorName: grant.actor.name,
-          actorTitle: grant.actor.title,
-          message: string(input.message, "message"),
-        });
-      }
-      return { accepted: true };
-    }
-
-    if (!grant.context) throw new Error(`${tool} requires an issue-scoped MCP grant`);
-    const issue = grant.context.issue;
-    const address = grant.context.repository.address;
-
-    if (tool === "source.get_issue") {
-      return this.github.getIssue(address, issue.sourceNumber);
-    }
-    if (tool === "delivery.get_state") {
-      return this.loadDeliveryState(issue.id, address);
-    }
-    if (tool === "delivery.get_check_logs") {
-      return this.checkLogs(issue.id, address, input);
-    }
-
-    const idempotencyKey = `mcp:${grant.runId}:${tool}:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
-    const mutation = this.store.beginSourceMutation({
-      idempotencyKey,
-      source: "github",
-      operation: tool,
-      request: input,
+    const context = grant.context;
+    // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
+    const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
+    const taskDeps = (): TaskDeps => context
+      // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
+      ? this.taskDeps(context.issue.id, context.repository)
+      : ({ store: this.store, config: this.config, issueId: "" } as TaskDeps);
+    const result = await dispatchTool({
+      name: string(request.tool, "tool"),
+      input,
+      actor: grant.actor,
+      grant: {
+        runId: grant.runId,
+        stageId: grant.stageId,
+        issueScoped: context !== null,
+        actor: grant.actor,
+        tasks: grant.allowedTools,
+      },
+    }, {
+      registry: createTaskRegistry(),
+      deps: taskDeps,
+      liveHeadSha: async () => {
+        if (!context) return null;
+        const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
+          change?: { headSha?: string } | null;
+          pullRequest?: { headSha?: string } | null;
+        };
+        return state.change?.headSha ?? state.pullRequest?.headSha ?? null;
+      },
+      store: this.store,
     });
-    if (mutation.status === "succeeded") return mutation.response ?? { accepted: true };
-    try {
-      let result: unknown = { accepted: true };
-      if (tool === "source.add_comment") {
-        result = { commentId: await this.github.addComment(address, issue.sourceNumber, string(input.markdown, "markdown")) };
-      } else if (tool === "source.set_acceptance_criteria") {
-        const criteria = acceptanceCriteria(input.criteria);
-        const current = await this.github.getIssue(address, issue.sourceNumber);
-        const updated = await this.github.updateManagedSection({
-          address,
-          issueNumber: issue.sourceNumber,
-          section: "acceptance-criteria",
-          markdown: formatAcceptanceCriteria(criteria),
-          expectedRevision: this.github.managedRevision(current.body),
-        });
-        result = { revision: this.github.managedRevision(updated.body) };
-      } else if (tool === "source.create_child") {
-        const repository = this.config.repositories[issue.repositoryId]!;
-        const pipeline = this.config.pipelines[repository.pipeline]!;
-        const currentIndex = pipeline.stages.findIndex((stage) => stage.id === grant.stageId);
-        const nextStage = pipeline.stages[currentIndex + 1]?.id ?? pipeline.stages[currentIndex]?.id;
-        const requestedLabels = Array.isArray(input.systemLabels)
-          ? input.systemLabels.filter((value): value is string => typeof value === "string" && repository.systemLabels.includes(value))
-          : [];
-        const criteria = acceptanceCriteria(input.acceptanceCriteria, "acceptanceCriteria");
-        if (criteria.length === 0) {
-          throw new Error("acceptanceCriteria must contain at least one criterion");
-        }
-        const suppliedBody = typeof input.body === "string" ? input.body : "";
-        const body = upsertManagedSection(
-          suppliedBody,
-          "acceptance-criteria",
-          formatAcceptanceCriteria(criteria),
-          parseManagedSections(suppliedBody).revision,
-        );
-        const child = await this.github.createChildIssue({
-          address,
-          parentNumber: issue.sourceNumber,
-          title: string(input.title, "title"),
-          body,
-          labels: [
-            this.config.labels.enrollment,
-            ...(nextStage ? [this.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
-            ...requestedLabels,
-          ],
-        });
-        result = child;
-      } else if (tool === "source.set_parent") {
-        await this.github.setParent({
-          address,
-          childNumber: issue.sourceNumber,
-          parentNumber: number(input.parentNumber, "parentNumber"),
-        });
-      } else if (tool === "source.set_dependencies") {
-        const dependencies = Array.isArray(input.issueNumbers)
-          ? input.issueNumbers.map((value) => number(value, "dependency issue number"))
-          : [];
-        for (const blockerNumber of dependencies) {
-          await this.github.addDependency({
-            address,
-            issueNumber: issue.sourceNumber,
-            blockerNumber,
-          });
-        }
-        const current = await this.github.getIssue(address, issue.sourceNumber);
-        await this.github.updateManagedSection({
-          address,
-          issueNumber: issue.sourceNumber,
-          section: "dependencies",
-          markdown: formatDependencies(dependencies.map((value) => ({ number: value }))),
-          expectedRevision: this.github.managedRevision(current.body),
-        });
-      } else if (tool === "source.set_labels") {
-        const labels = Array.isArray(input.labels)
-          ? input.labels.filter((value): value is string =>
-              typeof value === "string" &&
-              (value === this.config.labels.enrollment || value.startsWith(`${this.config.labels.enrollment}:`)),
-            )
-          : [];
-        await this.github.replaceConveyorLabels(address, issue.sourceNumber, labels);
-      } else if (tool === "source.set_system_labels") {
-        const repository = this.config.repositories[issue.repositoryId]!;
-        const selected = Array.isArray(input.labels)
-          ? input.labels.filter((value): value is string =>
-              typeof value === "string" && repository.systemLabels.includes(value)
-            )
-          : [];
-        await this.github.replaceManagedProjectLabels(
-          address,
-          issue.sourceNumber,
-          repository.systemLabels,
-          selected,
-        );
-      } else if (tool === "workspace.request_fetch" || tool === "workspace.request_push") {
-        if (!grant.context.workspace) throw new Error("run has no workspace");
-        const forceWithLease = tool === "workspace.request_push" && input.forceWithLease === true;
-        await git(
-          grant.context.workspace.path,
-          tool.endsWith("fetch")
-            ? ["fetch", "origin", grant.context.repository.baseBranch]
-            : [
-                "push",
-                "--set-upstream",
-                ...(forceWithLease ? ["--force-with-lease"] : []),
-                "origin",
-                grant.context.workspace.branch,
-              ],
-        );
-      } else if (tool === "workspace.record_artifact" || tool === "source.set_pull_request_metadata") {
-        this.store.appendRunEvent(grant.runId, tool, input);
-      } else {
-        throw new Error(`unsupported MCP tool: ${tool}`);
-      }
-      this.store.completeSourceMutation(mutation.id, result);
-      return result;
-    } catch (error) {
-      this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
-      throw error;
+    if (context && canonicalToolName(string(request.tool, "tool")) === "agent.askQuestion") {
+      await this.updateStatusComment(context.issue.id);
     }
+    return result;
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
@@ -1313,6 +1137,23 @@ export class ConveyorService {
     this.schedule();
   }
 
+  /**
+   * Wakes an item whose cursor is parked on `agent.run` in the stage of the run that asked the
+   * question. Any other parked task, and every legacy stage, keeps the restart behaviour.
+   */
+  private wakeParkedAgent(question: { issueId: string; runId: string | null }): boolean {
+    const journal = this.store.executions();
+    const cursor = journal.getCursor(question.issueId);
+    const run = question.runId ? this.store.getRun(question.runId) : null;
+    const issue = this.store.getIssue(question.issueId);
+    if (!cursor || cursor.state !== "pending" || cursor.list !== "actions" || run?.stageId !== cursor.stage || !issue) return false;
+    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
+      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
+    const stage = plan.stages.find((candidate) => candidate.id === cursor.stage);
+    const task = stage?.actions.find((candidate) => candidate.id === cursor.taskInstanceId);
+    return stage !== undefined && !stage.legacy && task?.task === "agent.run" && journal.wakeNow(question.issueId);
+  }
+
   async answerQuestion(questionId: string, answer: string): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
@@ -1326,6 +1167,12 @@ export class ConveyorService {
       issue.sourceNumber,
       `<!-- conveyor:answer:${question.id} -->\n**Conveyor answer:** ${answer}`,
     );
+    // A stage parked on an agent's question continues where it stopped; legacy stages restart.
+    if (this.wakeParkedAgent(question)) {
+      await this.updateStatusComment(issue.id);
+      this.schedule();
+      return;
+    }
     const stage = issue.projectedStage;
     if (stage) {
       const metadata = issue.labels.filter((label) =>
@@ -1391,17 +1238,18 @@ export class ConveyorService {
     const started = performance.now();
     let lease: ScopedMcpLease | null = null;
     try {
-      lease = await this.steeringMcpLease(runId, workspace, agent.tools);
+      lease = await this.steeringMcpLease(runId, workspace, agent.tasks);
       const instructions = await readFile(agent.instructions, "utf8");
       const result = await this.#runSteering({
         command: runner.command,
         workspace,
+        artifactsDirectory: path.join(this.config.settings.artifacts, runId),
         prompt: [
           instructions.trim(),
           "",
           "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
-          "Use run.report_progress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
+          "Use agent.reportProgress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
           "",
           "User request:",
           userPrompt,
@@ -1666,7 +1514,7 @@ export class ConveyorService {
       for (const pipeline of Object.values(this.config.pipelines)) {
         const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
         if (!stage) continue;
-        if (stage.run?.type !== "agent") {
+        if (isNativeStage(stage) || stage.run?.type !== "agent") {
           actors.push({ type: "script", name: "Script", title: null });
           continue;
         }
@@ -1928,7 +1776,8 @@ export class ConveyorService {
     const pipeline = repository ? this.config.pipelines[repository.pipeline] : null;
     const actorFor = (stageId: string | null): string => {
       if (!stageId) return "Conveyor · Orchestrator";
-      const stage = pipeline?.stages.find((candidate) => candidate.id === stageId);
+      const found = pipeline?.stages.find((candidate) => candidate.id === stageId);
+      const stage = found && !isNativeStage(found) ? found : undefined;
       if (stage?.run.type === "agent") {
         const agent = this.config.agents[stage.run.agent];
         return `${agent?.name ?? displayName(stage.run.agent)} · ${agent?.title ?? "AI Agent"}`;
@@ -2094,6 +1943,29 @@ export class ConveyorService {
     return { status, stageId };
   }
 
+  /** An operator's dismissal of a review finding: the dispatcher runs `change.dismissFinding` as that human, never an agent. */
+  async dismissFinding(issueId: string, findingId: string, reason: string, username: string): Promise<void> {
+    const issue = this.store.getIssue(issueId);
+    const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+    if (!issue || !repository) throw new Error("issue not found");
+    const actor = { id: `human:${username}`, name: username, title: "Operator" };
+    await dispatchTool({
+      name: "change.dismissFinding",
+      input: { findingId, reason },
+      actor,
+      grant: { runId: `web:${username}`, stageId: issue.projectedStage ?? "", issueScoped: true, actor, tasks: new Set(["change.dismissFinding"]) },
+    }, {
+      registry: createTaskRegistry(),
+      deps: () => this.taskDeps(issue.id, { id: issue.repositoryId, address: repository.address, folder: repository.folder, baseBranch: repository.baseBranch }),
+      liveHeadSha: async () => null,
+      store: this.store,
+    });
+    // An item parked on its review gate re-evaluates now instead of at the next poll.
+    const cursor = this.store.executions().getCursor(issueId);
+    if (cursor?.state === "pending" && cursor.list === "exit-gate" && this.store.executions().wakeNow(issueId)) this.schedule();
+    await this.updateStatusComment(issue.id);
+  }
+
   webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
     const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
@@ -2123,6 +1995,7 @@ export class ConveyorService {
       getIssueConversation: (issueId) => this.issueConversation(issueId),
       getIssueJourney: (issueId) => this.issueJourney(issueId),
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
+      dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
     };
   }
 }

@@ -1,0 +1,42 @@
+settings:
+  runners: 4
+  database: /srv/conveyor/conveyor.sqlite
+  logs: /srv/conveyor/logs
+  workspaces: /srv/conveyor/worktrees
+  artifacts: /srv/conveyor/artifacts
+  reconcileInterval: 5m
+  feedbackCycles: 2
+  labelPrefix: conveyor
+
+sources:
+  github:
+    type: github
+    webhookPath: /hooks/github
+  github-poll:
+    type: github
+    webhookPath: /hooks/github
+    autoConfigureWebhook: false
+
+runners:
+  codex:
+    type: codex
+    command: codex
+    sandbox: workspace-write
+    automaticApprovals: true
+  process:
+    type: json-process
+
+labels:
+  enrollment: conveyor
+  stageTemplate: "conveyor:{stage}"
+  states:
+    done: conveyor:done
+    rejected: conveyor:reject
+    blocked: conveyor:blocked
+    error: conveyor:error
+    needs-input: conveyor:needs-input
+    needs-intervention: conveyor:needs-intervention
+    waiting: conveyor:waiting
+  metadata:
+    closable: conveyor:closable
+    orderTemplate: "conveyor:order:{number}"

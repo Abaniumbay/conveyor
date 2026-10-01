@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { reconcileRepository } from "../../src/core/reconciler";
 import { ConveyorStore } from "../../src/db/store";
+import { ExecutionStore } from "../../src/engine/journal";
 import type { SourceIssue } from "../../src/source/types";
 
 const temporaryDirectories: string[] = [];
@@ -250,6 +251,42 @@ describe("reconcileRepository", () => {
       projectedState: "missing",
       warning: expect.stringContaining("not returned"),
     });
+    store.close();
+  });
+
+  test("relabelling, pausing and offboarding fence the item once each, and a no-op pass does not", async () => {
+    const store = await openStore();
+    const journal = new ExecutionStore(store.sqlite());
+    const id = "github:owner/repo#1";
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "review"],
+      labels,
+    };
+    const pass = (issueLabels: string[]) =>
+      reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, issueLabels)]; } } });
+
+    await pass(["conveyor", "conveyor:refinement"]);
+    store.activateEnrollment(id);
+    const enrolled = journal.stageEpoch(id);
+
+    await pass(["conveyor", "conveyor:refinement"]);
+    expect(journal.stageEpoch(id)).toBe(enrolled);
+
+    await pass(["conveyor", "conveyor:refinement", "conveyor:blocked"]);
+    const paused = journal.stageEpoch(id);
+    expect(paused).toBeGreaterThan(enrolled);
+    await pass(["conveyor", "conveyor:refinement", "conveyor:blocked"]);
+    expect(journal.stageEpoch(id)).toBe(paused);
+
+    await pass(["conveyor", "conveyor:refinement"]);
+    const resumed = journal.stageEpoch(id);
+    expect(resumed).toBeGreaterThan(paused);
+
+    await pass(["backend"]);
+    expect(journal.stageEpoch(id)).toBeGreaterThan(resumed);
     store.close();
   });
 });

@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  PipelineEngine,
   PipelineExecutionError,
   type CheckResult,
   type PipelineDependencies,
   type ProducerContext,
 } from "../../src/core/pipeline";
+import { PipelineEngine } from "../engine/reference-engine";
 import type { RunEnvelope } from "../../src/runner/result";
 
 function envelope(

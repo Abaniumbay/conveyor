@@ -4,7 +4,14 @@ import path from "node:path";
 import { parse } from "yaml";
 import type { ZodIssue } from "zod";
 
-import { configSchema, type ConveyorConfigData } from "./schema";
+import { createTaskRegistry } from "../tasks/catalogue";
+import type { TaskRegistry } from "../tasks/contract";
+import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
+
+import { ConfigError } from "./errors";
+import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
+import { normalizeRoleDocuments } from "./roles";
+import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
 const NAMED_SECTIONS = [
   "sources",
@@ -23,15 +30,13 @@ type ConfigurationDocument = Record<string, unknown>;
 export interface ConveyorConfig extends ConveyorConfigData {
   hash: string;
   root: string;
+  /** Compiled plans of the native-only repositories (empty when compilation is skipped). */
+  plans: CompiledPipeline[];
+  /** The pinned reference-configuration import, when the local files declare one. */
+  import?: Pick<ResolvedImport, "repository" | "ref" | "path" | "sha">;
 }
 
-export class ConfigError extends Error {
-  override readonly name = "ConfigError";
-
-  constructor(message: string) {
-    super(message);
-  }
-}
+export { ConfigError };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,6 +47,16 @@ function resolvePath(value: unknown, baseDirectory: string): unknown {
     return value;
   }
   return path.resolve(baseDirectory, value);
+}
+
+function resolveScriptWith(holder: unknown, baseDirectory: string): void {
+  if (isObject(holder) && isObject(holder.with) && "script" in holder.with) {
+    holder.with.script = resolvePath(holder.with.script, baseDirectory);
+  }
+}
+
+function resolveScriptEntry(entry: unknown, baseDirectory: string): void {
+  if (isObject(entry) && entry.task === "script.run") resolveScriptWith(entry, baseDirectory);
 }
 
 function normalizeDocumentPaths(
@@ -88,9 +103,12 @@ function normalizeDocumentPaths(
     for (const pipeline of Object.values(document.pipelines)) {
       if (!isObject(pipeline) || !Array.isArray(pipeline.stages)) continue;
       for (const stage of pipeline.stages) {
-        if (!isObject(stage) || !isObject(stage.run)) continue;
-        if ("script" in stage.run) {
+        if (!isObject(stage)) continue;
+        if (isObject(stage.run) && "script" in stage.run) {
           stage.run.script = resolvePath(stage.run.script, baseDirectory);
+        }
+        for (const list of [stage.actions, stage["exit-gate"]]) {
+          if (Array.isArray(list)) for (const entry of list) resolveScriptEntry(entry, baseDirectory);
         }
       }
     }
@@ -100,6 +118,14 @@ function normalizeDocumentPaths(
     for (const repository of Object.values(document.repositories)) {
       if (isObject(repository) && "folder" in repository) {
         repository.folder = resolvePath(repository.folder, baseDirectory);
+      }
+      if (isObject(repository) && isObject(repository.overrides) && isObject(repository.overrides.stages)) {
+        for (const stage of Object.values(repository.overrides.stages)) {
+          if (!isObject(stage)) continue;
+          for (const group of [stage.actions, stage["exit-gate"]]) {
+            if (isObject(group)) for (const override of Object.values(group)) resolveScriptWith(override, baseDirectory);
+          }
+        }
       }
     }
   }
@@ -194,6 +220,14 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = `pipelines.${pipelineName}.stages.${index}`;
+      if (isNativeStage(stage)) {
+        if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
+          if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
+            errors.push(`${prefix}.childrenStartAt references unknown stage "${stage.childrenStartAt}"`);
+          }
+        }
+        continue;
+      }
       if (stage.enterCheck && !config.checks[stage.enterCheck]) {
         errors.push(`${prefix}.enterCheck references unknown check "${stage.enterCheck}"`);
       }
@@ -256,17 +290,18 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
         `repositories.${name}.pipeline references unknown pipeline "${repository.pipeline}"`,
       );
     }
-    if (repository.ci && !config.ci[repository.ci]) {
-      errors.push(`repositories.${name}.ci references unknown CI provider "${repository.ci}"`);
+    const ciName = repository.ci.provider;
+    if (ciName && !config.ci[ciName]) {
+      errors.push(`repositories.${name}.ci references unknown CI provider "${ciName}"`);
     }
-    if (repository.ci && config.ci[repository.ci]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
+    if (ciName && config.ci[ciName]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
       errors.push(`repositories.${name}.ci is incompatible with sources.${repository.source}`);
     }
     {
-      const providerName = repository.ci;
+      const providerName = ciName;
       const provider = providerName ? config.ci[providerName] : undefined;
       for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
-        if (stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
+        if (isNativeStage(stage) || stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
         if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
       }
     }
@@ -290,13 +325,32 @@ function stableValue(value: unknown): unknown {
   );
 }
 
-function configurationHash(config: ConveyorConfigData): string {
+function configurationHash(config: ConveyorConfigData, pinnedSha?: string): string {
   const hasher = new CryptoHasher("sha256");
-  hasher.update(JSON.stringify(stableValue(config)));
+  hasher.update(JSON.stringify(stableValue(pinnedSha ? { config, importSha: pinnedSha } : config)));
   return hasher.digest("hex");
 }
 
-export async function loadConfig(target: string): Promise<ConveyorConfig> {
+async function readDocument(filename: string): Promise<ConfigurationDocument> {
+  let parsed: unknown;
+  try {
+    parsed = parse(await readFile(filename, "utf8"));
+  } catch (error) {
+    throw new ConfigError(
+      `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!isObject(parsed)) {
+    throw new ConfigError(`${filename} must contain a YAML object at its root`);
+  }
+  return parsed;
+}
+
+export async function loadConfig(
+  target: string,
+  /** Pass null to validate the schema only, without compiling task plans. */
+  registry: TaskRegistry | null = createTaskRegistry(),
+): Promise<ConveyorConfig> {
   const resolvedTarget = path.resolve(target);
   const targetStat = await stat(resolvedTarget).catch(() => undefined);
   const root = targetStat?.isDirectory()
@@ -307,26 +361,62 @@ export async function loadConfig(target: string): Promise<ConveyorConfig> {
     throw new ConfigError(`no YAML configuration files found in ${resolvedTarget}`);
   }
 
-  const merged: ConfigurationDocument = {};
-  const origins = new Map<string, string>();
-  for (const filename of files) {
-    let parsed: unknown;
-    try {
-      parsed = parse(await readFile(filename, "utf8"));
-    } catch (error) {
+  const rawLocal: { filename: string; document: ConfigurationDocument }[] = [];
+  for (const filename of files) rawLocal.push({ filename, document: await readDocument(filename) });
+
+  // Materialised imports live under <settings.artifacts>/config-imports, which may sit inside the
+  // configuration directory; skip exactly those copies. Only files outside any config-imports
+  // directory may declare the artifacts path that identifies them.
+  const artifactDirectories = rawLocal
+    .filter(({ filename }) => !filename.split(path.sep).includes("config-imports"))
+    .map(({ filename, document }) => {
+      const resolved = isObject(document.settings)
+        ? resolvePath(document.settings.artifacts, path.dirname(filename))
+        : undefined;
+      return typeof resolved === "string" && path.isAbsolute(resolved) ? resolved : undefined;
+    })
+    .filter((value): value is string => value !== undefined);
+  const copies = artifactDirectories.map((directory) => path.join(directory, "config-imports") + path.sep);
+  const localDocuments = rawLocal.filter(({ filename }) => !copies.some((copy) => filename.startsWith(copy)));
+
+  let importSpec: ImportSpec | undefined;
+  let importOrigin = "";
+  for (const { filename, document } of localDocuments) {
+    if (!("import" in document)) continue;
+    if (importSpec) {
+      throw new ConfigError(`only one configuration file may declare import; found it in ${importOrigin} and ${filename}`);
+    }
+    importSpec = parseImportSpec(document.import, filename);
+    importOrigin = filename;
+    delete document.import;
+  }
+
+  let resolvedImport: ResolvedImport | undefined;
+  const importedRaw: { filename: string; document: ConfigurationDocument }[] = [];
+  if (importSpec) {
+    const artifacts = artifactDirectories[0];
+    if (!artifacts) {
       throw new ConfigError(
-        `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+        `import in ${importOrigin} needs settings.artifacts defined in a local configuration file: imported files are materialised under <artifacts>/config-imports`,
       );
     }
-    if (!isObject(parsed)) {
-      throw new ConfigError(`${filename} must contain a YAML object at its root`);
+    resolvedImport = await materialiseImport(importSpec, artifacts);
+    for (const filename of resolvedImport.yamlFiles) {
+      const document = await readDocument(filename);
+      if ("import" in document) throw new ConfigError(`${filename}: an imported file cannot declare import`);
+      importedRaw.push({ filename, document });
     }
-    mergeDocument(
-      merged,
-      normalizeDocumentPaths(parsed, filename),
-      origins,
-      filename,
-    );
+  }
+
+  const documents = normalizeRoleDocuments([...importedRaw, ...localDocuments]).map(({ filename, document }) => ({
+    filename,
+    document: normalizeDocumentPaths(document, filename),
+  }));
+
+  const merged: ConfigurationDocument = {};
+  const origins = new Map<string, string>();
+  for (const { filename, document } of documents) {
+    mergeDocument(merged, document, origins, filename);
   }
 
   const settings = (merged.settings ??= {}) as Record<string, unknown>;
@@ -349,9 +439,23 @@ export async function loadConfig(target: string): Promise<ConveyorConfig> {
     );
   }
 
+  let plans: CompiledPipeline[] = [];
+  if (registry) {
+    try {
+      plans = compileRepositories(parsed.data, registry);
+    } catch (error) {
+      if (error instanceof PlanError) throw new ConfigError(error.message);
+      throw error;
+    }
+  }
+
   return {
     ...parsed.data,
-    hash: configurationHash(parsed.data),
+    hash: configurationHash(parsed.data, resolvedImport?.sha),
     root,
+    plans,
+    ...(resolvedImport
+      ? { import: { repository: resolvedImport.repository, ref: resolvedImport.ref, path: resolvedImport.path, sha: resolvedImport.sha } }
+      : {}),
   };
 }

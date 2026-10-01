@@ -122,6 +122,45 @@ describe("runCodex", () => {
     );
   });
 
+  test("resumes a session with only the options exec resume accepts and persists by default only when asked", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      const prompt = await new Response(Bun.stdin.stream()).text();
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, prompt }));
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "continued", reason: null, metrics: {}, artifacts: []
+      }));
+      console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-123" }));
+    `);
+    const base = {
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+      prompt: "The answer is 42", model: "gpt-test", effort: "high" as const,
+      sandbox: "workspace-write" as const, automaticApprovals: true,
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+    };
+    const capture = async () => JSON.parse(await readFile(files.capture, "utf8")) as { args: string[]; prompt: string };
+
+    await runCodex({ ...base, resumeSessionId: "sess-9", persistSession: true });
+    const resumed = await capture();
+    expect(resumed.prompt).toBe("The answer is 42");
+    expect(resumed.args.slice(0, 2)).toEqual(["exec", "resume"]);
+    expect(resumed.args.slice(-2)).toEqual(["sess-9", "-"]);
+    for (const rejected of ["-C", "--color", "--sandbox", "--approve-for-me", "--ephemeral"]) {
+      expect(resumed.args).not.toContain(rejected);
+    }
+    expect(resumed.args).toContain('sandbox_mode="workspace-write"');
+    expect(resumed.args).toContain('approvals_reviewer="auto_review"');
+    expect(resumed.args).toContain("--output-schema");
+    expect(resumed.args).toContain('mcp_servers.conveyor.required=true');
+
+    await runCodex(base);
+    expect((await capture()).args).toContain("--ephemeral");
+    await runCodex({ ...base, persistSession: true });
+    const persisted = await capture();
+    expect(persisted.args).not.toContain("--ephemeral");
+    expect(persisted.args[1]).not.toBe("resume");
+  });
+
   test("classifies usage-limit failures for automatic retry", async () => {
     const files = await fixture(`
       console.error("You have hit your usage limit. Try again later.");
