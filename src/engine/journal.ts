@@ -3,6 +3,7 @@
 
 import type { Database } from "bun:sqlite";
 
+import { boundSnapshotLogs } from "../app/ci-gate";
 import type { Feedback, TaskContext, TaskExecutionRecord } from "../tasks/context";
 
 export const DEFAULT_CONTEXT_SUMMARY_BYTES = 65536;
@@ -182,8 +183,16 @@ export class ExecutionStore {
     context: TaskContext,
     meta: { stage: string; taskInstanceId: string; expectedEpoch: number },
   ): number {
-    const json = JSON.stringify(context);
-    const size = Buffer.byteLength(json);
+    let json = JSON.stringify(context);
+    let size = Buffer.byteLength(json);
+    // CI logs are the one part that may shrink: halve their budget until the context fits.
+    let logBytes = (context.ci?.runs ?? []).reduce((sum, run) => sum + Buffer.byteLength(run.log ?? ""), 0);
+    while (size > this.#limit && context.ci && logBytes > 0) {
+      logBytes = Math.floor(logBytes / 2);
+      context = { ...context, ci: boundSnapshotLogs(context.ci, logBytes) };
+      json = JSON.stringify(context);
+      size = Buffer.byteLength(json);
+    }
     if (size > this.#limit) {
       throw new Error(
         `Context for ${issueId} is ${size} bytes, over the ${this.#limit} byte limit; largest key is "${largestKey(context)}"`,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
-import { createCiGateMemory, evaluateCiGate, ExternalWaitError, parseCiGateOptions } from "../../src/app/ci-gate";
+import { boundLog, boundSnapshotLogs, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
 import { focusGitHubActionsLog } from "../../src/source/github/ci-provider";
 
 class FakeProvider implements CiProvider {
@@ -113,5 +113,46 @@ describe("provider-neutral CI gate", () => {
       const log = [marker, ...Array.from({ length: 200 }, (_, index) => `line ${index}`), "##[error]failed"].join("\n");
       expect(focusGitHubActionsLog(log, 10)).toContain(marker);
     }
+  });
+});
+
+describe("boundLog", () => {
+  const focused = [
+    "❌ test/a_test.dart: hides the button (failed)",
+    "Expected: no matching candidates",
+    FOCUSED_LOG_BREAK,
+    ...Array.from({ length: 100 }, (_, index) => `✅ passing test ${index}`),
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+
+  test("a line limit trims the tail but keeps the failing-test blocks", () => {
+    const bounded = boundLog(focused, { lines: 3 });
+    expect(bounded.split("\n")).toEqual([
+      "❌ test/a_test.dart: hides the button (failed)", "Expected: no matching candidates", FOCUSED_LOG_BREAK,
+      "✅ passing test 98", "✅ passing test 99", "##[error]Process completed with exit code 1.",
+    ]);
+  });
+
+  test("a byte limit keeps the start of the failing blocks and the end of the tail", () => {
+    const bounded = boundLog(focused, { bytes: 400 });
+    expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(400);
+    expect(bounded).toContain("Expected: no matching candidates");
+    expect(bounded).toContain("##[error]Process completed with exit code 1.");
+    expect(bounded).not.toContain("passing test 0\n");
+  });
+
+  test("an unfocused log is a tail; very long lines are cut", () => {
+    expect(boundLog("a\nb\nc", { lines: 2 })).toBe("b\nc");
+    expect(boundLog("x".repeat(1000), {}).length).toBeLessThan(500);
+  });
+
+  test("snapshot logs share one budget and runs without a log are untouched", () => {
+    const snapshot = { runs: [{ log: focused }, { log: null }, { log: focused }] };
+    const bounded = boundSnapshotLogs(snapshot, 1000);
+    expect(bounded.runs[1]!.log).toBeNull();
+    const total = bounded.runs.reduce((sum, run) => sum + Buffer.byteLength(run.log ?? ""), 0);
+    expect(total).toBeLessThanOrEqual(1000);
+    expect(bounded.runs[0]!.log).toContain("Expected: no matching candidates");
+    expect(boundSnapshotLogs({ runs: [{ log: null }] }, 10).runs[0]!.log).toBeNull();
   });
 });

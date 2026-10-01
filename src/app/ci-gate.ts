@@ -83,6 +83,53 @@ export function classifyRuns<T extends { state: CiRunState }>(
   return { running, failed, rerun };
 }
 
+/** The line a focused log puts between its failing-test blocks and its tail. */
+export const FOCUSED_LOG_BREAK = "…";
+const MAX_LOG_LINE = 400;
+
+function keepBytes(lines: string[], bytes: number, from: "start" | "end"): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of from === "start" ? lines : [...lines].reverse()) {
+    const size = Buffer.byteLength(line) + 1;
+    if (used + size > bytes) break;
+    kept.push(line);
+    used += size;
+  }
+  return from === "start" ? kept : kept.reverse();
+}
+
+/**
+ * Bounds a focused log without losing why it failed: the failing-test blocks before
+ * {@link FOCUSED_LOG_BREAK} are always kept ahead of the tail, the tail keeps its last `lines`
+ * lines and every line is cut to {@link MAX_LOG_LINE} characters. With `bytes`, the failing blocks
+ * take up to two thirds of the budget from their start and the tail the rest from its end.
+ */
+export function boundLog(log: string, limits: { lines?: number; bytes?: number }): string {
+  const all = log.split("\n").map((line) => line.length > MAX_LOG_LINE ? `${line.slice(0, MAX_LOG_LINE)}…` : line);
+  const cut = all.indexOf(FOCUSED_LOG_BREAK);
+  let failures = cut >= 0 ? all.slice(0, cut) : [];
+  let tail = cut >= 0 ? all.slice(cut + 1) : all;
+  if (limits.lines !== undefined) tail = tail.slice(-limits.lines);
+  if (limits.bytes !== undefined) {
+    failures = keepBytes(failures, Math.floor((limits.bytes * 2) / 3), "start");
+    const used = failures.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+    tail = keepBytes(tail, limits.bytes - used, "end");
+  }
+  return failures.length > 0 ? [...failures, FOCUSED_LOG_BREAK, ...tail].join("\n") : tail.join("\n");
+}
+
+/**
+ * Bounds every log in a CI snapshot so together they stay within `bytes`, shared evenly between
+ * the runs that have one. Returns the same snapshot when nothing changed.
+ */
+export function boundSnapshotLogs<T extends { runs: Array<{ log: string | null }> }>(snapshot: T, bytes: number): T {
+  const logged = snapshot.runs.filter((run) => run.log !== null).length;
+  if (logged === 0) return snapshot;
+  const each = Math.floor(bytes / logged);
+  return { ...snapshot, runs: snapshot.runs.map((run) => run.log === null ? run : { ...run, log: boundLog(run.log, { bytes: each }) }) };
+}
+
 export interface FailedRun { name: string; state: CiRunState; url: string | null; log: string | null }
 
 /** The failure message, required fixes and per-run log sections for failed runs. */

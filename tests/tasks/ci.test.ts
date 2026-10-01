@@ -165,6 +165,17 @@ describe("ci.load", () => {
     expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual(["log id-Tests 200"]);
   });
 
+  test("keeps all failed runs' logs within one budget, failing blocks first", async () => {
+    const w = await world();
+    w.provider.runs = ["Tests", "Full suite", "Android"].map((name) => ciRun(name, "failed"));
+    const log = ["❌ a_test.dart: hides the button (failed)", "Expected: nothing", "…", ...Array.from({ length: 200 }, (_, i) => `✅ ${"passing ".repeat(25)}${i}`)].join("\n");
+    for (const run of w.provider.runs) w.provider.logs[run.id] = log;
+    const out = (await run("ci.load", { context: { change: change() }, deps: w.deps }) as Pass).output as CiContext;
+    const total = out.runs.reduce((sum, r) => sum + Buffer.byteLength(r.log ?? ""), 0);
+    expect(total).toBeLessThanOrEqual(24 * 1024);
+    for (const r of out.runs) expect(r.log).toContain("Expected: nothing");
+  });
+
   test("a log that cannot be read does not fail the load", async () => {
     const w = await world();
     w.provider.runs = [ciRun("Tests", "failed")];
@@ -325,6 +336,15 @@ describe("ci.passed", () => {
     const few = await keep({ logLines: 2 });
     expect(few).toContain("line 98");
     expect(few).not.toContain("line 97");
+  });
+
+  test("logLines trims only the tail; the failing-test blocks of a focused log stay", async () => {
+    const log = ["❌ a_test.dart: hides the button (failed)", "Expected: nothing", "…", ...Array.from({ length: 100 }, (_, i) => `line ${i}`)].join("\n");
+    const result = await run("ci.passed", { context: gateCtx(ci({ runs: [crun("Tests", "failed", { log })] })), config: { logLines: 2 } }) as Fail;
+    const evidence = (result.details as { evidence: string[] }).evidence[0]!;
+    expect(evidence).toContain("Expected: nothing");
+    expect(evidence).toContain("line 99");
+    expect(evidence).not.toContain("line 97");
   });
 
   test("a non-rerunnable cancelled run is a failure straight away", async () => {
