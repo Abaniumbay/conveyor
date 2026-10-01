@@ -22,8 +22,16 @@ function safeUrl(value: string | null): string | null {
   }
 }
 
-function issueHref(issueId: string): string {
-  return `/?${new URLSearchParams({ issue: issueId })}`;
+function issueHref(repository: string, number: number, tab?: "conversation" | "journey" | "logs"): string {
+  const suffix = tab ? `/${tab}` : "";
+  return `/issues/${encodeURIComponent(repository)}/${number}${suffix}`;
+}
+
+function viewHref(view: DashboardView): string {
+  if (view === "attention") return "/attention";
+  if (view === "team") return "/team";
+  if (view === "agent") return "/operator";
+  return "/board";
 }
 
 function stationId(value: string): string {
@@ -42,9 +50,13 @@ function Markdown({ text }: { text: string }) {
   return <div class="markdown" dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(text) }} />;
 }
 
+function RepositoryBadge({ repository }: { repository: string }) {
+  return <span class="repository-badge"><i class="repository-dot" aria-hidden="true" />{repository}</span>;
+}
+
 function RelationLink({ relation, showCompletion = false }: { relation: IssueRelationViewModel; showCompletion?: boolean }) {
   const completed = showCompletion && relation.satisfied;
-  return <a class={completed ? "relation-link--satisfied" : undefined} href={issueHref(relation.id)}>{relation.repository}:#{relation.number} {relation.title}</a>;
+  return <a class={completed ? "relation-link--satisfied" : undefined} href={issueHref(relation.repository, relation.number)}>{relation.repository}:#{relation.number} {relation.title}</a>;
 }
 
 function Relationships({ issue }: { issue: IssueCardViewModel }) {
@@ -75,7 +87,7 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
     <div class="relation-summary" aria-label={`Relationship summary for #${issue.number}`}>
       <span class="relation-group relation-group--blocked">
         Waiting on {waiting.map((dependency, index) => (
-          <Fragment key={dependency.number}>{index > 0 && ", "}<a href={issueHref(dependency.id)}>#{dependency.number}</a></Fragment>
+          <Fragment key={dependency.number}>{index > 0 && ", "}<a href={issueHref(dependency.repository, dependency.number)}>#{dependency.number}</a></Fragment>
         ))}
       </span>
     </div>
@@ -89,10 +101,10 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
   const journeyId = `${id}-journey`;
   const activityId = `${id}-activity`;
   return (
-    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-selected-issue={selected ? "true" : undefined}>
+    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
-          <p class="details-kicker">{issue.repository}:#{issue.number}</p>
+          <p class={`details-kicker repo-color-${issue.repositoryColor}`}><RepositoryBadge repository={issue.repository} />:#{issue.number}</p>
           <h2 id={`${id}-title`}>{issue.title}</h2>
         </div>
         <div class="details-header-actions">
@@ -218,6 +230,9 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
   const completedChildren = issue.children.filter((child) => child.satisfied).length;
+  const glowClass = issue.needsAttention
+    ? " issue--glow-attention"
+    : issue.working ? " issue--glow-running" : "";
   const statusContext = issue.waiting
     ? null
     : issue.working && actors[0]
@@ -227,14 +242,14 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
       : null;
   return (
     <article
-      class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${rollup ? " issue--rollup" : ""}`}
+      class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
       tabIndex={0}
       aria-label={`Open details for issue #${issue.number}`}
       aria-haspopup="dialog"
     >
-      <p class="issue-kicker">{issue.repository}:#{issue.number}</p>
+      <p class="issue-kicker"><RepositoryBadge repository={issue.repository} />:#{issue.number}</p>
       <h3 class="issue-title">{issue.title}</h3>
       <p class="issue-status">
         <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
@@ -251,7 +266,7 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
 }
 
 function pageHref(view: DashboardView, column: string, page: number): string {
-  return `/?${new URLSearchParams({ view, column, page: String(page) })}`;
+  return `${viewHref(view)}?${new URLSearchParams({ column, page: String(page) })}`;
 }
 
 function Pagination({ column, view }: { column: StageColumnViewModel; view: DashboardView }) {
@@ -326,20 +341,20 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
       <header><h2 id="needs-you-heading">Needs you <span>({total})</span></h2></header>
       <ol>
         {stopped.map((issue) => (
-          <li class="needs-you-item" key={issue.id}>
+          <li class={`needs-you-item repo-color-${issue.repositoryColor}`} key={issue.id}>
             <span class="andon andon--stop" aria-hidden="true" />
             <div>
-              <h3>#{issue.number} {issue.title}</h3>
+              <h3><RepositoryBadge repository={issue.repository} /> · #{issue.number} {issue.title}</h3>
               <p>{issue.reason ?? issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
             </div>
-            <a class="needs-you-action" href={issueHref(issue.id)}>Open</a>
+            <a class="needs-you-action" href={issueHref(issue.repository, issue.number)}>Open</a>
           </li>
         ))}
         {model.questions.map((question, questionIndex) => (
-          <li class="needs-you-item needs-you-item--question" key={question.id}>
+          <li class={`needs-you-item needs-you-item--question repo-color-${question.repositoryColor}`} key={question.id}>
             <span class="needs-you-question" aria-hidden="true">?</span>
             <div>
-              <h3>#{question.issueNumber} {question.prompt}</h3>
+              <h3><RepositoryBadge repository={question.repository} /> · #{question.issueNumber} {question.prompt}</h3>
               <p>{question.reason}</p>
             </div>
             <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
@@ -375,7 +390,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
   return (
     <nav class="tabs" aria-label="Dashboard views">
       {tabs.map((tab) => (
-        <a href={`/?view=${tab.view}`} class={model.view === tab.view ? "tab tab--active" : "tab"} aria-current={model.view === tab.view ? "page" : undefined} key={tab.view}>
+        <a href={viewHref(tab.view)} class={model.view === tab.view ? "tab tab--active" : "tab"} aria-current={model.view === tab.view ? "page" : undefined} key={tab.view}>
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
@@ -421,7 +436,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
         {steering.recent.length > 0 && (
           <aside class="agent-history" aria-label="Recent operator runs">
             <h3>Recent</h3>
-            <ol>{steering.recent.map((run) => <li key={run.id}><a href={`/?view=agent&run=${encodeURIComponent(run.id)}`} class={selected?.id === run.id ? "history-active" : undefined}><LocalTime value={run.startedAt} /><small>{run.status}</small></a></li>)}</ol>
+            <ol>{steering.recent.map((run) => <li key={run.id}><a href={`/operator/runs/${encodeURIComponent(run.id)}`} class={selected?.id === run.id ? "history-active" : undefined}><LocalTime value={run.startedAt} /><small>{run.status}</small></a></li>)}</ol>
           </aside>
         )}
       </div>
@@ -470,8 +485,7 @@ function DoneColumn({ model }: { model: DashboardViewModel }) {
         ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
         : <p class="empty">No closed issues</p>}
       {remaining > 0 && (
-        <form class="load-more" method="get" action="/">
-          <input type="hidden" name="view" value="board" />
+        <form class="load-more" method="get" action="/board">
           <input type="hidden" name="doneLimit" value={column.issues.length + increment} />
           <button type="submit">Load {increment} more</button>
           <span>{column.issues.length} of {column.totalIssues}</span>
@@ -549,8 +563,26 @@ function RunnerStatus({ model }: { model: DashboardViewModel }) {
       <div class="header-popover">
         <h2>Active work</h2>
         {runs.length > 0
-          ? <ul>{runs.map((run) => <li key={run.id}><a href={issueHref(run.issueId)}><strong>#{run.issueNumber} {run.issueTitle}</strong><span>{run.stageId} · <LocalTime value={run.startedAt} /></span></a></li>)}</ul>
+          ? <ul>{runs.map((run) => <li key={run.id}><a href={issueHref(run.repository, run.issueNumber)}><strong>#{run.issueNumber} {run.issueTitle}</strong><span>{run.stageId} · <LocalTime value={run.startedAt} /></span></a></li>)}</ul>
           : <p>No issue is being worked on right now.</p>}
+      </div>
+    </details>
+  );
+}
+
+function ThemeControl() {
+  return (
+    <details class="theme-control" data-theme-control>
+      <summary aria-label="Choose colour theme"><strong data-theme-label>System</strong></summary>
+      <div class="header-popover theme-popover">
+        <h2>Theme</h2>
+        <div class="theme-options">
+          {(["system", "light", "dark"] as const).map((theme) => (
+            <button type="button" data-theme-choice={theme} aria-pressed={theme === "system" ? "true" : "false"} key={theme}>
+              {theme[0]!.toUpperCase()}{theme.slice(1)}
+            </button>
+          ))}
+        </div>
       </div>
     </details>
   );
@@ -574,16 +606,17 @@ function Page({ model }: { model: DashboardViewModel }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="light" />
+        <meta name="color-scheme" content="light dark" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{model.title} · Conveyor</title>
+        <script src="/assets/theme.js" />
         <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
         <script src="/assets/dashboard.js" defer />
       </head>
       <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
         <main class="dashboard">
           <header class="dashboard-header">
-            <h1 class="wordmark"><a href="/">Conveyor</a></h1>
+            <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
             <details class="server-status" data-server-status>
               <summary><span class="server-dot" aria-hidden="true" /><strong data-connection-state>Connecting</strong></summary>
               <div class="header-popover server-popover">
@@ -594,6 +627,7 @@ function Page({ model }: { model: DashboardViewModel }) {
             </details>
             <RunnerStatus model={model} />
             <span class="total-usage">{model.totalUsage}</span>
+            <ThemeControl />
             <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
           </header>
           <Line model={model} />

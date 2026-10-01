@@ -3,10 +3,13 @@ import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
 import { renderDashboard } from "./render";
+import { themeInitScript } from "./styles";
 import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
+export type IssueRouteReference = { id: string } | { repository: string; number: number };
+export interface IssueRouteTarget { id: string; repository: string; number: number }
 
 export interface WebHandlerDependencies {
   auth: WebAuthApi;
@@ -38,6 +41,7 @@ export interface WebHandlerDependencies {
   getIssueRunEvents: (issueId: string, runId: string, before?: number) => IssueRunEventsViewModel | null | Promise<IssueRunEventsViewModel | null>;
   getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
   getIssueJourney: (issueId: string) => IssueJourneyViewModel | null | Promise<IssueJourneyViewModel | null>;
+  getIssueRoute: (reference: IssueRouteReference) => IssueRouteTarget | null | Promise<IssueRouteTarget | null>;
   postIssueMessage: (
     issueId: string,
     message: string,
@@ -92,6 +96,10 @@ function redirect(location: string, headers?: HeadersInit): Response {
   return response(null, 303, "text/plain; charset=utf-8", { ...Object.fromEntries(new Headers(headers)), location });
 }
 
+function permanentRedirect(location: string): Response {
+  return response(null, 301, "text/plain; charset=utf-8", { location });
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     switch (character) {
@@ -106,7 +114,7 @@ function escapeHtml(value: string): string {
 
 function loginPage(message = ""): string {
   const error = message ? `<p role="alert" class="error">${escapeHtml(message)}</p>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#E8EBE8;color:#1C2328;font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:#F8F9F7;border:1px solid #C9CECA;border-radius:14px;box-shadow:0 8px 32px #1C232812}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:#5D6970}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #8A959B;border-radius:7px;font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:#2A5BD7;color:white;font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #2A5BD7;outline-offset:2px}.error{color:#BD3B26}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<Uint8Array | Response> {
@@ -192,20 +200,12 @@ function requireMethod(request: Request, method: string): Response | null {
   return request.method === method ? null : response(null, 405, "text/plain; charset=utf-8", { allow: method });
 }
 
-function dashboardPage(url: URL): DashboardPageSelection {
-  const requestedViews = url.searchParams.getAll("view");
-  const requestedView = requestedViews.length === 1 ? requestedViews[0] : null;
-  const view = requestedView === "attention" || requestedView === "agent" || requestedView === "team"
-    ? requestedView
-    : "board";
-  const requestedRuns = url.searchParams.getAll("run");
-  const requestedRun = requestedRuns.length === 1 && /^[A-Za-z0-9-]{1,100}$/.test(requestedRuns[0] ?? "")
-    ? requestedRuns[0]!
-    : null;
-  const requestedIssues = url.searchParams.getAll("issue");
-  const requestedIssue = requestedIssues.length === 1 && (requestedIssues[0]?.length ?? 0) > 0 && (requestedIssues[0]?.length ?? 0) <= 500
-    ? requestedIssues[0]!
-    : null;
+function dashboardPage(
+  url: URL,
+  view: DashboardPageSelection["view"],
+  runId: string | null = null,
+  issueId: string | null = null,
+): DashboardPageSelection {
   const requestedDoneLimits = url.searchParams.getAll("doneLimit");
   const rawDoneLimit = requestedDoneLimits.length === 1 ? requestedDoneLimits[0] : null;
   const parsedDoneLimit = rawDoneLimit && /^[1-9]\d*$/.test(rawDoneLimit)
@@ -217,17 +217,34 @@ function dashboardPage(url: URL): DashboardPageSelection {
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
   if (columns.length !== 1 || pages.length !== 1) {
-    return { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
+    return { view, column: null, page: 1, doneLimit, runId, issueId };
   }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
+    return { view, column: null, page: 1, doneLimit, runId, issueId };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, column, page: parsedPage, doneLimit, runId: requestedRun, issueId: requestedIssue }
-    : { view, column: null, page: 1, doneLimit, runId: requestedRun, issueId: requestedIssue };
+    ? { view, column, page: parsedPage, doneLimit, runId, issueId }
+    : { view, column: null, page: 1, doneLimit, runId, issueId };
+}
+
+function paginationSuffix(url: URL): string {
+  const pagination = new URLSearchParams();
+  for (const key of ["doneLimit", "column", "page"]) {
+    const values = url.searchParams.getAll(key);
+    if (values.length === 1) pagination.set(key, values[0]!);
+  }
+  const query = pagination.toString();
+  return query ? `?${query}` : "";
+}
+
+function issueRoutePath(target: IssueRouteTarget, tab?: string | null): string {
+  const suffix = tab === "conversation" || tab === "journey"
+    ? `/${tab}`
+    : tab === "activity" || tab === "logs" ? "/logs" : "";
+  return `/issues/${encodeURIComponent(target.repository)}/${target.number}${suffix}`;
 }
 
 function steeringEventStream(
@@ -383,6 +400,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
     }
 
+    if (path === "/assets/theme.js") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(themeInitScript, 200, "text/javascript; charset=utf-8");
+    }
+
     const fontAsset = FONT_ASSETS.get(path);
     if (fontAsset) {
       const methodError = requireMethod(request, "GET");
@@ -431,7 +453,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
       const created = dependencies.auth.createSession();
       if (!created) return text("Unable to create session", 503);
-      return redirect("/", { "set-cookie": created.cookie });
+      return redirect("/board", { "set-cookie": created.cookie });
     }
 
     if (path === "/logout") {
@@ -444,13 +466,78 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
     }
 
-    if (path === "/") {
+    const legacyDashboardQuery = path === "/" && ["view", "issue", "tab", "agent", "run"]
+      .some((key) => url.searchParams.has(key));
+    const teamProfilePath = /^\/team\/([^/]{1,200})$/.exec(path);
+    const operatorRunPath = /^\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
+    const issuePagePath = /^\/issues\/([^/]{1,200})\/([1-9]\d*)(?:\/(conversation|journey|logs))?$/.exec(path);
+    const dashboardView = path === "/" || path === "/board"
+      ? "board"
+      : path === "/attention"
+        ? "attention"
+        : path === "/team" || teamProfilePath
+          ? "team"
+          : path === "/operator" || operatorRunPath
+            ? "agent"
+            : issuePagePath ? "board" : null;
+
+    if (legacyDashboardQuery || dashboardView) {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
       if (!currentSession) return redirect("/login");
       try {
-        const page = dashboardPage(url);
+        if (legacyDashboardQuery) {
+          const legacyIssue = url.searchParams.getAll("issue");
+          if (legacyIssue.length === 1) {
+            const target = await dependencies.getIssueRoute({ id: legacyIssue[0]! });
+            if (!target) return text("Issue not found", 404);
+            return permanentRedirect(`${issueRoutePath(target, url.searchParams.get("tab"))}${paginationSuffix(url)}`);
+          }
+          const requestedView = url.searchParams.get("view");
+          if (requestedView === "team") {
+            const agentId = url.searchParams.get("agent");
+            if (agentId) {
+              const profile = await dependencies.getAgentProfile(agentId);
+              return profile ? permanentRedirect(agentHref(profile.id)) : text("Agent not found", 404);
+            }
+            return permanentRedirect(`/team${paginationSuffix(url)}`);
+          }
+          if (requestedView === "agent") {
+            const runId = url.searchParams.get("run");
+            if (runId) {
+              if (!/^[A-Za-z0-9-]{1,100}$/.test(runId) || !await dependencies.getSteeringRun(runId)) {
+                return text("Operator run not found", 404);
+              }
+              return permanentRedirect(`/operator/runs/${encodeURIComponent(runId)}${paginationSuffix(url)}`);
+            }
+            return permanentRedirect(`/operator${paginationSuffix(url)}`);
+          }
+          const legacyPath = requestedView === "attention" ? "/attention" : "/board";
+          return permanentRedirect(`${legacyPath}${paginationSuffix(url)}`);
+        }
+
+        let issueId: string | null = null;
+        if (issuePagePath) {
+          let repository: string;
+          try { repository = decodeURIComponent(issuePagePath[1]!); } catch { return text("Invalid repository id", 400); }
+          const number = Number(issuePagePath[2]);
+          if (!Number.isSafeInteger(number)) return text("Issue not found", 404);
+          const target = await dependencies.getIssueRoute({ repository, number });
+          if (!target) return text("Issue not found", 404);
+          issueId = target.id;
+        }
+
+        if (teamProfilePath) {
+          let agentId: string;
+          try { agentId = decodeURIComponent(teamProfilePath[1]!); } catch { return text("Invalid agent id", 400); }
+          if (!await dependencies.getAgentProfile(agentId)) return text("Agent not found", 404);
+        }
+
+        const runId = operatorRunPath?.[1] ?? null;
+        if (runId && !await dependencies.getSteeringRun(runId)) return text("Operator run not found", 404);
+
+        const page = dashboardPage(url, dashboardView!, runId, issueId);
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
         return response(renderDashboard(team ? { ...model, team } : model), 200, "text/html; charset=utf-8");
@@ -474,7 +561,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       if (!session(request)) return redirect("/login");
-      return redirect("/?view=team");
+      return permanentRedirect("/team");
     }
 
     const agentProfile = /^\/agents\/([^/]{1,200})$/.exec(path);
@@ -491,7 +578,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       try {
         const profile = await dependencies.getAgentProfile(agentId);
         return profile
-          ? redirect(agentHref(profile.id))
+          ? permanentRedirect(agentHref(profile.id))
           : text("Agent not found", 404);
       } catch {
         return text("Agent profile is temporarily unavailable", 503);
@@ -647,7 +734,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!prompt || prompt.length > 12_000) return text("Invalid steering prompt", 400);
       try {
         const runId = await dependencies.startSteering(prompt);
-        return redirect(`/?view=agent&run=${encodeURIComponent(runId)}`);
+        return redirect(`/operator/runs/${encodeURIComponent(runId)}`);
       } catch (error) {
         return text(error instanceof Error ? error.message : "Unable to start steering agent", 409);
       }
@@ -725,7 +812,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (answer === null || answer.length === 0) return text("Invalid answer", 400);
       try {
         await dependencies.answerQuestion(questionId, answer);
-        return redirect("/");
+        return redirect("/board");
       } catch {
         return text("Unable to record answer", 409);
       }
@@ -744,7 +831,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       try {
         await dependencies.reorderBacklog(issueId, direction);
         if (wantsJson(request)) return json({ ok: true });
-        return redirect("/?view=board");
+        return redirect("/board");
       } catch {
         return text("Unable to reorder backlog", 409);
       }

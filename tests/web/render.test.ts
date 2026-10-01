@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { renderDashboard } from "../../src/web/render";
+import { themeInitScript } from "../../src/web/styles";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
   id: "parent",
   repository: "sample",
+  repositoryColor: 1,
   number: 41,
   title: "Build <safe> & sound",
   url: "https://github.com/sample/repo/issues/41?x=1&y=2",
@@ -28,11 +30,13 @@ const parent: IssueCardViewModel = {
     { id: "dependency-open", repository: "foundation", number: 39, title: "Open foundation", url: "https://github.com/sample/repo/issues/39", satisfied: false },
   ],
   working: true,
+  needsAttention: true,
 };
 
 const backlogIssue: IssueCardViewModel = {
   id: "backlog",
   repository: "sample",
+  repositoryColor: 1,
   number: 43,
   title: "Next item",
   url: "javascript:alert(1)",
@@ -53,6 +57,7 @@ const backlogIssue: IssueCardViewModel = {
   children: [],
   dependencies: [],
   working: false,
+  needsAttention: false,
 };
 
 const completedIssue: IssueCardViewModel = {
@@ -150,6 +155,8 @@ const dashboard: DashboardViewModel = {
     {
       id: "question/1",
       issueId: "backlog",
+      repository: "sample",
+      repositoryColor: 1,
       issueNumber: 43,
       issueTitle: "Next item",
       prompt: "Which layout?",
@@ -166,6 +173,89 @@ const dashboard: DashboardViewModel = {
 };
 
 describe("renderDashboard", () => {
+  test("initializes and controls system, light, and dark themes without a first-paint flash", () => {
+    const html = renderDashboard(dashboard);
+    // A blocking script in <head>, before the stylesheet; a file, since the CSP forbids inline scripts.
+    const themeScript = html.indexOf('<script src="/assets/theme.js"></script>');
+    const stylesheet = html.indexOf("<style>");
+
+    expect(themeScript).toBeGreaterThan(0);
+    expect(themeScript).toBeLessThan(stylesheet);
+    expect(themeInitScript).toContain('localStorage.getItem("conveyor-theme")');
+    expect(themeInitScript).toContain('document.documentElement.dataset.theme');
+    expect(html).toContain('<meta name="color-scheme" content="light dark"');
+    expect(html).toContain('class="theme-control"');
+    expect(html).toContain('data-theme-choice="system"');
+    expect(html).toContain('data-theme-choice="light"');
+    expect(html).toContain('data-theme-choice="dark"');
+    expect(html).toContain(':root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D');
+    expect(html).toContain('@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;');
+    expect(html).toContain('box-shadow:var(--popover-shadow)');
+    expect(html).toContain('background:var(--overlay)');
+    expect(html).toContain('color:var(--on-signal)');
+  });
+
+  test("uses the configured repository colour for cards, inspector headers, and needs-you rows", () => {
+    const html = renderDashboard(dashboard);
+
+    expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention issue--rollup repo-color-1"');
+    expect(html).toContain('class="repository-badge"><i class="repository-dot" aria-hidden="true"></i>sample</span>:#41');
+    expect(html).toContain('class="details-kicker repo-color-1"><span class="repository-badge"');
+    expect(html).toContain('class="needs-you-item repo-color-1"');
+    expect(html).toContain('class="needs-you-item needs-you-item--question repo-color-1"');
+    expect(html).toContain('--repo-1:#7655B5');
+    expect(html).toContain(':root[data-theme="dark"]');
+    expect(html).toContain('--repo-1:#B69CFF');
+  });
+
+  test("gives running and needs-attention cards distinct accessible glows", () => {
+    const runningParent = { ...parent, blocked: false, needsAttention: false, tone: "active" as const };
+    const boardHtml = renderDashboard({
+      ...dashboard,
+      needsYou: [],
+      questions: [],
+      stages: [{ ...dashboard.stages[0]!, issues: [runningParent, waitingIssue] }, dashboard.stages[1]!],
+    });
+    const attentionHtml = renderDashboard({
+      ...dashboard,
+      view: "attention",
+      attention: { ...dashboard.attention, issues: dashboard.attention.issues.map((issue) => ({ ...issue, needsAttention: true })) },
+    });
+
+    expect(boardHtml).toContain('issue--working issue--glow-running');
+    expect(attentionHtml).toContain('issue--danger issue--glow-attention');
+    expect(boardHtml).toContain('@keyframes card-glow');
+    expect(boardHtml).toContain('animation:card-glow 2.4s ease-in-out infinite');
+    expect(boardHtml).toContain('box-shadow:0 0 0 1px var(--glow-border),0 0 12px var(--card-glow)');
+    expect(boardHtml).toContain('@media(prefers-reduced-motion:no-preference)');
+    expect(boardHtml).toContain('.issue.is-selected{outline:2px solid var(--signal);outline-offset:2px}');
+  });
+
+  test("renders REST-style navigation, issue, pagination, team, and operator URLs", () => {
+    const html = renderDashboard(dashboard);
+    const operatorHtml = renderDashboard({
+      ...dashboard,
+      view: "agent",
+      steering: {
+        enabled: true,
+        agent: "operator",
+        selected: null,
+        recent: [{ id: "run-1", status: "succeeded", startedAt: "2026-09-29T12:00:00Z" }],
+      },
+    });
+
+    expect(html).toContain('href="/board"');
+    expect(html).toContain('href="/attention"');
+    expect(html).toContain('href="/team"');
+    expect(html).toContain('href="/operator"');
+    expect(html).toContain('href="/issues/sample/41"');
+    expect(html).toContain('href="/issues/foundation/40"');
+    expect(html).toContain('href="/board?column=stage%3Abuild&amp;page=1"');
+    expect(operatorHtml).toContain('href="/operator/runs/run-1"');
+    expect(html).not.toContain('href="/?view=');
+    expect(html).not.toContain('href="/?issue=');
+  });
+
   test("renders one horizontal board column per configured stage with card status styling", () => {
     const html = renderDashboard(dashboard);
 
@@ -179,8 +269,8 @@ describe("renderDashboard", () => {
     expect(html).toContain(">Done</h2>");
     expect(html).toContain('aria-label="41 issues"');
     expect(html).toContain("Page 2 of 3");
-    expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=1");
-    expect(html).toContain("view=board&amp;column=stage%3Abuild&amp;page=3");
+    expect(html).toContain("/board?column=stage%3Abuild&amp;page=1");
+    expect(html).toContain("/board?column=stage%3Abuild&amp;page=3");
     expect(html).toContain("issue--warning");
     expect(html).toContain("issue--rollup");
     expect(html).toContain("Roll-up parent");
@@ -196,7 +286,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
-    expect(html).toContain('Waiting on <a href="/?issue=dependency-open">#39</a>');
+    expect(html).toContain('Waiting on <a href="/issues/foundation/39">#39</a>');
     expect(html).toContain('class="relation-link--satisfied"');
     expect(html).toContain("Issue relationships for #41");
     expect(html).toContain(">Working</strong>");
@@ -206,7 +296,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Needs attention");
     expect(html).toContain("Needs you <span>(2)</span>");
     expect(html).toContain("#41 Build &lt;safe> &amp; sound");
-    expect(html).toContain('<a class="needs-you-action" href="/?issue=parent">Open</a>');
+    expect(html).toContain('<a class="needs-you-action" href="/issues/sample/41">Open</a>');
     expect(html).toContain("/questions/question%2F1/answer");
     expect(html).toContain('name="csrf" value="csrf-token"');
     expect(html).toContain("System attention");
@@ -219,10 +309,10 @@ describe("renderDashboard", () => {
     expect(html).toContain("<summary><strong>1 of 4</strong> runners</summary>");
     expect(html).toContain("<h2>Active work</h2>");
     expect(html).toContain("Build &lt;safe> &amp; sound");
-    expect(html).toContain('href="/?issue=parent"');
-    expect(html).toContain("sample:#41");
-    expect(html).toContain('href="/?issue=child"');
-    expect(html).toContain('href="/?issue=dependency"');
+    expect(html).toContain('href="/issues/sample/41"');
+    expect(html).toContain(">sample</span>:#41");
+    expect(html).toContain('href="/issues/sample/42"');
+    expect(html).toContain('href="/issues/foundation/40"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
     expect(html).not.toContain(">Permalink</a>");
     expect(html).toContain('data-detail-tab="conversation"');
@@ -329,7 +419,7 @@ describe("renderDashboard", () => {
       instructions: "You are <Kaveh>.",
     };
     const html = renderDashboard({ ...dashboard, view: "team", team: [kaveh, { ...kaveh, id: "darya", name: "Darya", title: "Product Owner", model: null, effort: null, usage: [], instructions: null }] });
-    expect(html).toContain('href="/?view=team"');
+    expect(html).toContain('href="/team"');
     expect(html).not.toContain("agents-menu");
     expect(html).toContain('data-dialog-open="agent-kaveh"');
     expect(html).toContain('data-dialog-open="agent-darya"');

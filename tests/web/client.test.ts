@@ -20,7 +20,7 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("journey-entry--now");
     expect(dashboardClient).toContain("scheduleJourneyRefresh");
     expect(dashboardClient).not.toContain("/api/dashboard-revision");
-    expect(dashboardClient).toContain("url.searchParams.set('tab', name)");
+    expect(dashboardClient).toContain("issuePath(dialog, name)");
     expect(dashboardClient).toContain("data-more-runs");
     expect(dashboardClient).toContain("data-more-events");
     expect(dashboardClient).toContain("field.value = ''");
@@ -33,8 +33,18 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("dialog.showModal();");
     expect(dashboardClient).not.toContain("dialog.show();");
     expect(dashboardClient).toContain("classList.toggle('is-selected', selected)");
-    expect(dashboardClient).toContain("searchParams.get('agent')");
+    expect(dashboardClient).toContain("parseDashboardPath");
+    expect(dashboardClient).toContain("'/issues/'");
+    expect(dashboardClient).toContain("'/team/'");
     expect(dashboardClient).toContain("event.key === 'Escape'");
     expect(dashboardClient).toContain(": 'Operator'");
+    expect(dashboardClient).toContain("localStorage.setItem('conveyor-theme'");
+    expect(dashboardClient).toContain("delete document.documentElement.dataset.theme");
+    expect(dashboardClient).toContain("data-theme-choice");
+    expect(dashboardClient).toContain("closeHeaderPopovers");
+    expect(dashboardClient).toContain("document.addEventListener('toggle'");
+    expect(dashboardClient).toContain("closest('.dashboard-header details')");
+    expect(dashboardClient).toContain("openDetails.querySelector('summary')");
+    expect(dashboardClient).toContain("summary.focus()");
   });
 });

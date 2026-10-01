@@ -1509,6 +1509,9 @@ export class ConveyorService {
     },
   ): DashboardViewModel {
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
+    const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
+      [repositoryId, (index % 8) + 1],
+    ));
     const activeRuns = this.store.listActiveIssueRuns();
     const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
     const openQuestions = this.store.listOpenQuestions();
@@ -1568,6 +1571,7 @@ export class ConveyorService {
       return {
         id: issue.id,
         repository: issue.repositoryId,
+        repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
         number: issue.sourceNumber,
         title: issue.title,
         url: issue.sourceUrl,
@@ -1590,6 +1594,9 @@ export class ConveyorService {
         children,
         dependencies,
         working: activeIssueIds.has(issue.id),
+        needsAttention: questionIssueIds.has(issue.id) || [
+          "blocked", "error", "needs-input", "needs-intervention", "rejected",
+        ].includes(projectedState),
       };
     };
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
@@ -1715,6 +1722,8 @@ export class ConveyorService {
       return [{
         id: question.id,
         issueId: issue.id,
+        repository: issue.repositoryId,
+        repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
         issueNumber: issue.sourceNumber,
         issueTitle: issue.title,
         prompt: question.prompt,
@@ -1800,7 +1809,7 @@ export class ConveyorService {
       ),
       questions,
       needsYou: workflowIssues
-        .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""))
+        .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? ""))
         .map((issue) => card(issue)),
       systemWarnings: [
         ...this.#onboardingErrors.entries(),
@@ -2108,6 +2117,13 @@ export class ConveyorService {
       getIssueRunEvents: (issueId, runId, before) => this.issueRunEvents(issueId, runId, before),
       getIssueConversation: (issueId) => this.issueConversation(issueId),
       getIssueJourney: (issueId) => this.issueJourney(issueId),
+      getIssueRoute: (reference) => {
+        const issue = "id" in reference
+          ? this.store.getIssue(reference.id)
+          : this.store.listIssues(reference.repository).find((candidate) => candidate.sourceNumber === reference.number) ?? null;
+        if (!issue || issue.projectedState === "offboarded") return null;
+        return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
+      },
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
       dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
       getAgentProfiles: () => buildAgentProfiles(this.config),

@@ -7,6 +7,26 @@ export const dashboardClient = String.raw`(() => {
   let journeyRefreshTimer = null;
   let activityRefreshTimer = null;
 
+  const selectedTheme = () => {
+    const theme = document.documentElement.dataset.theme;
+    return theme === 'light' || theme === 'dark' ? theme : 'system';
+  };
+  const syncThemeControls = (root = document) => {
+    const selected = selectedTheme();
+    for (const control of root.querySelectorAll('[data-theme-control]')) {
+      const label = control.querySelector('[data-theme-label]');
+      if (label) label.textContent = selected.charAt(0).toUpperCase() + selected.slice(1);
+      for (const button of control.querySelectorAll('[data-theme-choice]')) {
+        button.setAttribute('aria-pressed', button.getAttribute('data-theme-choice') === selected ? 'true' : 'false');
+      }
+    }
+  };
+  const closeHeaderPopovers = (except = null) => {
+    for (const details of document.querySelectorAll('.dashboard-header details[open]')) {
+      if (details !== except) details.open = false;
+    }
+  };
+
   try {
     const saved = JSON.parse(sessionStorage.getItem(scrollKey) || 'null');
     if (saved && Number.isFinite(saved.y)) window.scrollTo(0, saved.y);
@@ -507,6 +527,44 @@ export const dashboardClient = String.raw`(() => {
 
   const validDetailTab = (name) => name === 'conversation' || name === 'journey' || name === 'activity' ? name : 'summary';
 
+  const paginationSearch = () => {
+    const current = new URL(location.href);
+    const kept = new URLSearchParams();
+    for (const key of ['doneLimit', 'column', 'page']) {
+      const values = current.searchParams.getAll(key);
+      if (values.length === 1) kept.set(key, values[0]);
+    }
+    const query = kept.toString();
+    return query ? '?' + query : '';
+  };
+
+  const parseDashboardPath = () => {
+    const issue = /^\/issues\/([^/]+)\/([1-9]\d*)(?:\/(conversation|journey|logs))?$/.exec(location.pathname);
+    if (issue) {
+      try {
+        return {
+          issue: { repository: decodeURIComponent(issue[1]), number: issue[2] },
+          tab: issue[3] === 'logs' ? 'activity' : validDetailTab(issue[3]),
+          agent: null,
+        };
+      } catch {}
+    }
+    const agent = /^\/team\/([^/]+)$/.exec(location.pathname);
+    if (agent) {
+      try { return { issue: null, tab: 'summary', agent: decodeURIComponent(agent[1]) }; } catch {}
+    }
+    return { issue: null, tab: 'summary', agent: null };
+  };
+
+  const issuePath = (dialog, tab = 'summary') => {
+    const repository = dialog.dataset.repositoryId || '';
+    const number = dialog.dataset.issueNumber || '';
+    const suffix = tab === 'conversation' || tab === 'journey'
+      ? '/' + tab
+      : tab === 'activity' ? '/logs' : '';
+    return '/issues/' + encodeURIComponent(repository) + '/' + encodeURIComponent(number) + suffix + paginationSearch();
+  };
+
   const selectDetailTab = (dialog, name, updateUrl = false) => {
     name = validDetailTab(name);
     for (const tab of dialog.querySelectorAll('[data-detail-tab]')) {
@@ -522,20 +580,8 @@ export const dashboardClient = String.raw`(() => {
       if (selected && name === 'journey') void loadIssueJourney(panel);
     }
     if (updateUrl && dialog.dataset.issueId) {
-      const url = new URL(location.href);
-      url.searchParams.set('issue', dialog.dataset.issueId);
-      if (name === 'summary') url.searchParams.delete('tab');
-      else url.searchParams.set('tab', name);
-      history.replaceState({ conveyorIssue: dialog.dataset.issueId, conveyorTab: name }, '', url.pathname + url.search + url.hash);
+      history.replaceState({ conveyorIssue: dialog.dataset.issueId, conveyorTab: name }, '', issuePath(dialog, name));
     }
-  };
-
-  const issueUrl = (issueId, tab = 'summary') => {
-    const url = new URL(location.href);
-    url.searchParams.set('issue', issueId);
-    if (tab === 'summary') url.searchParams.delete('tab');
-    else url.searchParams.set('tab', validDetailTab(tab));
-    return url.pathname + url.search + url.hash;
   };
 
   // The card (or team member) whose modal is open is marked, so the selection stays visible behind the overlay.
@@ -560,25 +606,24 @@ export const dashboardClient = String.raw`(() => {
       selectDetailTab(dialog, 'summary');
       showDialog(dialog);
       const issueId = dialog.dataset.issueId;
-      if (updateUrl && issueId && new URL(location.href).searchParams.get('issue') !== issueId) {
-        history.pushState({ conveyorIssue: issueId }, '', issueUrl(issueId));
+      const currentPath = parseDashboardPath();
+      if (updateUrl && issueId && (!currentPath.issue || currentPath.issue.repository !== dialog.dataset.repositoryId || currentPath.issue.number !== dialog.dataset.issueNumber)) {
+        history.pushState({ conveyorIssue: issueId }, '', issuePath(dialog));
       }
       const agentId = dialog.dataset.agentId;
-      if (updateUrl && agentId && new URL(location.href).searchParams.get('agent') !== agentId) {
-        const url = new URL(location.href);
-        url.searchParams.set('agent', agentId);
-        history.pushState({ conveyorAgent: agentId }, '', url.pathname + url.search + url.hash);
+      if (updateUrl && agentId && currentPath.agent !== agentId) {
+        history.pushState({ conveyorAgent: agentId }, '', '/team/' + encodeURIComponent(agentId) + paginationSearch());
       }
     }
   };
 
-  const findIssueDialog = (issueId) => {
+  const findIssueDialog = (issue) => {
     const dialogs = document.querySelectorAll('dialog[data-issue-id]');
     for (const dialog of dialogs) {
-      if (dialog.dataset.issueId === issueId && dialog.dataset.selectedIssue === 'true') return dialog;
+      if (dialog.dataset.repositoryId === issue.repository && dialog.dataset.issueNumber === issue.number && dialog.dataset.selectedIssue === 'true') return dialog;
     }
     for (const dialog of dialogs) {
-      if (dialog.dataset.issueId === issueId) return dialog;
+      if (dialog.dataset.repositoryId === issue.repository && dialog.dataset.issueNumber === issue.number) return dialog;
     }
     return null;
   };
@@ -590,14 +635,30 @@ export const dashboardClient = String.raw`(() => {
     return null;
   };
 
-  const openDialogElement = (dialog) => {
+  const openDialogElement = (dialog, tab = 'summary') => {
     if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
-    selectDetailTab(dialog, validDetailTab(new URL(location.href).searchParams.get('tab')));
+    selectDetailTab(dialog, validDetailTab(tab));
     showDialog(dialog);
   };
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
+
+    const clickedDetails = event.target.closest('.dashboard-header details');
+    closeHeaderPopovers(clickedDetails);
+
+    const themeButton = event.target.closest('[data-theme-choice]');
+    if (themeButton instanceof HTMLButtonElement) {
+      const theme = themeButton.getAttribute('data-theme-choice');
+      if (theme !== 'system' && theme !== 'light' && theme !== 'dark') return;
+      if (theme === 'system') delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = theme;
+      try { localStorage.setItem('conveyor-theme', theme); } catch {}
+      syncThemeControls();
+      const control = themeButton.closest('[data-theme-control]');
+      if (control instanceof HTMLDetailsElement) control.open = false;
+      return;
+    }
 
     const containingDialog = event.target.closest('dialog');
     if (containingDialog instanceof HTMLDialogElement) {
@@ -632,6 +693,14 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      const openDetails = document.querySelector('.dashboard-header details[open]');
+      if (openDetails instanceof HTMLDetailsElement) {
+        event.preventDefault();
+        openDetails.open = false;
+        const summary = openDetails.querySelector('summary');
+        if (summary instanceof HTMLElement) summary.focus();
+        return;
+      }
       const inspector = document.querySelector('dialog[open]');
       if (inspector instanceof HTMLDialogElement) {
         event.preventDefault();
@@ -646,6 +715,13 @@ export const dashboardClient = String.raw`(() => {
     event.preventDefault();
     openIssueDialog(opener);
   });
+
+  document.addEventListener('toggle', (event) => {
+    const opened = event.target;
+    if (opened instanceof HTMLDetailsElement && opened.open && opened.matches('.dashboard-header details')) {
+      closeHeaderPopovers(opened);
+    }
+  }, true);
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element) || event.defaultPrevented) return;
@@ -697,18 +773,14 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('close', (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
     markOpener(event.target, false);
-    const url = new URL(location.href);
+    const currentPath = parseDashboardPath();
     const agentId = event.target.dataset.agentId;
-    if (agentId && url.searchParams.get('agent') === agentId) {
-      url.searchParams.delete('agent');
-      history.replaceState(null, '', url.pathname + url.search + url.hash);
+    if (agentId && currentPath.agent === agentId) {
+      history.replaceState(null, '', '/team' + paginationSearch());
       return;
     }
-    const issueId = event.target.dataset.issueId;
-    if (!issueId || url.searchParams.get('issue') !== issueId) return;
-    url.searchParams.delete('issue');
-    url.searchParams.delete('tab');
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    if (!currentPath.issue || currentPath.issue.repository !== event.target.dataset.repositoryId || currentPath.issue.number !== event.target.dataset.issueNumber) return;
+    history.replaceState(null, '', '/board' + paginationSearch());
     if (pendingRefresh) {
       pendingRefresh = false;
       void refreshDashboard();
@@ -716,20 +788,21 @@ export const dashboardClient = String.raw`(() => {
   }, true);
 
   window.addEventListener('popstate', () => {
-    const requestedAgent = new URL(location.href).searchParams.get('agent');
+    const requestedPath = parseDashboardPath();
+    const requestedAgent = requestedPath.agent;
     for (const dialog of document.querySelectorAll('dialog[data-agent-id][open]')) {
       if (dialog.dataset.agentId !== requestedAgent) dialog.close();
     }
     const agentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
     if (agentDialog && !agentDialog.open) showDialog(agentDialog);
-    const requested = new URL(location.href).searchParams.get('issue');
+    const requested = requestedPath.issue;
     for (const dialog of document.querySelectorAll('dialog[data-issue-id][open]')) {
-      if (dialog.dataset.issueId !== requested) dialog.close();
+      if (!requested || dialog.dataset.repositoryId !== requested.repository || dialog.dataset.issueNumber !== requested.number) dialog.close();
     }
-    if (requested) openDialogElement(findIssueDialog(requested));
+    if (requested) openDialogElement(findIssueDialog(requested), requestedPath.tab);
     const dialog = requested ? findIssueDialog(requested) : null;
     if (dialog instanceof HTMLDialogElement && dialog.open) {
-      selectDetailTab(dialog, new URL(location.href).searchParams.get('tab'));
+      selectDetailTab(dialog, requestedPath.tab);
     }
   });
 
@@ -885,9 +958,9 @@ export const dashboardClient = String.raw`(() => {
     });
   }, true);
 
-  const requestedIssue = new URL(location.href).searchParams.get('issue');
-  if (requestedIssue) openDialogElement(findIssueDialog(requestedIssue));
-  const requestedAgent = new URL(location.href).searchParams.get('agent');
+  const requestedPath = parseDashboardPath();
+  if (requestedPath.issue) openDialogElement(findIssueDialog(requestedPath.issue), requestedPath.tab);
+  const requestedAgent = requestedPath.agent;
   const requestedAgentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
   if (requestedAgentDialog) showDialog(requestedAgentDialog);
 
@@ -947,6 +1020,7 @@ export const dashboardClient = String.raw`(() => {
         body.classList.remove('page-loading');
         board = document.querySelector('.board');
         localizeTimes(nextDashboard);
+        syncThemeControls(nextDashboard);
         bindServerStatus();
         window.scrollTo(0, scrollY);
         if (board) board.scrollLeft = scrollX;
@@ -963,6 +1037,7 @@ export const dashboardClient = String.raw`(() => {
     return dashboardRefresh;
   };
   bindServerStatus();
+  syncThemeControls();
   dashboardEvents.onopen = () => setConnection(true);
   dashboardEvents.onerror = () => setConnection(false);
   dashboardEvents.addEventListener('status', (message) => {
