@@ -239,6 +239,33 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("records a journey entry when a stopped item resumes, and none when nothing changed", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"],
+      labels,
+    };
+    const withLabels = (issueLabels: string[]) => ({ ...common, source: { async listIssues() { return [issue(1, issueLabels)]; } } });
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation", "conveyor:blocked"]));
+    const before = store.listStageTransitions("github:owner/repo#1").length;
+
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
+
+    const added = store.listStageTransitions("github:owner/repo#1").slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({
+      kind: "resumed",
+      fromStage: "implementation",
+      toStage: "implementation",
+      reason: "Resumed from blocked: the blocked label was removed.",
+    });
+    store.close();
+  });
+
   test("stops scheduling closed and missing source issues with visible reasons", async () => {
     const store = await openStore();
     const common = {
