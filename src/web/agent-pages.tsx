@@ -1,0 +1,98 @@
+import type { ComponentChildren } from "preact";
+import renderToString from "preact-render-to-string";
+
+import { dashboardCss } from "./styles";
+import type { AgentProfileViewModel, AgentSummaryViewModel } from "./types";
+
+export function agentHref(agentId: string): string {
+  return `/agents/${encodeURIComponent(agentId)}`;
+}
+
+function Shell({ title, children }: { title: string; children: ComponentChildren }) {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <title>{title} · Conveyor</title>
+        <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
+      </head>
+      <body>
+        <main class="dashboard agent-page">{children}</main>
+      </body>
+    </html>
+  );
+}
+
+function AgentList({ agents }: { agents: readonly AgentSummaryViewModel[] }) {
+  return (
+    <Shell title="Agents">
+      <header class="dashboard-header">
+        <div><p class="eyebrow"><a href="/">Conveyor</a></p><h1>Agents</h1></div>
+      </header>
+      <ul class="agent-list">
+        {agents.map((agent) => (
+          <li key={agent.id}><a href={agentHref(agent.id)}><strong>{agent.name}</strong> <span>{agent.title}</span></a></li>
+        ))}
+      </ul>
+    </Shell>
+  );
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return <><dt>{label}</dt><dd>{value}</dd></>;
+}
+
+function AgentProfile({ agent }: { agent: AgentProfileViewModel }) {
+  return (
+    <Shell title={agent.name}>
+      <header class="dashboard-header">
+        <div><p class="eyebrow"><a href="/">Conveyor</a> · <a href="/agents">Agents</a></p><h1>{agent.name}</h1><p class="project-meta">{agent.title}</p></div>
+      </header>
+      <section class="agent-section" aria-labelledby="agent-config">
+        <h2 id="agent-config">Configuration</h2>
+        <dl class="agent-facts">
+          <Fact label="Id" value={agent.id} />
+          <Fact label="Harness" value={agent.harness} />
+          <Fact label="Model" value={agent.model ?? "Harness default"} />
+          <Fact label="Effort" value={agent.effort ?? "Harness default"} />
+          <Fact label="Workspace access" value={agent.access} />
+        </dl>
+      </section>
+      <section class="agent-section" aria-labelledby="agent-usage">
+        <h2 id="agent-usage">Where it works</h2>
+        {agent.usage.length === 0
+          ? <p>Not used by any pipeline stage.</p>
+          : <ul>{agent.usage.map((use) => (
+              <li key={`${use.pipeline}:${use.stage}:${use.role}`}>
+                {use.pipeline ? <><strong>{use.pipeline}</strong> / {use.stage}: </> : null}{use.role}
+              </li>
+            ))}</ul>}
+      </section>
+      <section class="agent-section" aria-labelledby="agent-tasks">
+        <h2 id="agent-tasks">Granted tools</h2>
+        {agent.tasks.length === 0
+          ? <p>No tools are granted.</p>
+          : <dl class="agent-facts">{agent.tasks.map((group) => (
+              <Fact key={group.group} label={group.group} value={group.tasks.join(", ")} />
+            ))}</dl>}
+      </section>
+      <section class="agent-section" aria-labelledby="agent-instructions">
+        <h2 id="agent-instructions">Instructions</h2>
+        {agent.instructions === null
+          ? <p>Instructions could not be read.</p>
+          : <pre class="agent-instructions">{agent.instructions}</pre>}
+      </section>
+    </Shell>
+  );
+}
+
+export function renderAgentList(agents: readonly AgentSummaryViewModel[]): string {
+  return `<!doctype html>${renderToString(<AgentList agents={agents} />)}`;
+}
+
+export function renderAgentProfile(agent: AgentProfileViewModel): string {
+  return `<!doctype html>${renderToString(<AgentProfile agent={agent} />)}`;
+}

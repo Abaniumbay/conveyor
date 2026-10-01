@@ -461,4 +461,32 @@ describe("createWebHandler", () => {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "x=".repeat(100),
     }))).status).toBe(413);
   });
+
+  test("serves read-only agent profile pages to signed-in operators", async () => {
+    const profile = {
+      id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: null, effort: null,
+      access: "workspace-write", usage: [], tasks: [], instructions: null,
+    };
+    const { handler } = setup({
+      getAgentProfiles: async () => [profile],
+      getAgentProfile: async (id: string) => (id === "kaveh" ? profile : null),
+    });
+    const unauthenticated = await handler(new Request("http://localhost/agents"));
+    expect(unauthenticated.status).toBe(303);
+    expect(unauthenticated.headers.get("location")).toBe("/login");
+    expect((await handler(new Request("http://localhost/agents/kaveh"))).status).toBe(303);
+
+    const { cookie } = await login(handler);
+    const list = await handler(new Request("http://localhost/agents", { headers: { cookie } }));
+    expect(list.status).toBe(200);
+    expect(list.headers.get("content-type")).toContain("text/html");
+    expect(await list.text()).toContain('href="/agents/kaveh"');
+
+    const page = await handler(new Request("http://localhost/agents/kaveh", { headers: { cookie } }));
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("<h1>Kaveh</h1>");
+
+    expect((await handler(new Request("http://localhost/agents/nobody", { headers: { cookie } }))).status).toBe(404);
+    expect((await handler(new Request("http://localhost/agents/kaveh", { method: "POST", headers: { cookie } }))).status).toBe(405);
+  });
 });

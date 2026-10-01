@@ -235,6 +235,18 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("?view=backlog");
   });
 
+  test("lists the configured agents, each linking to its profile page", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      agents: [{ id: "kaveh", name: "Kaveh", title: "Senior Developer" }, { id: "darya", name: "Darya", title: "Product Owner" }],
+    });
+    expect(html).toContain('<nav class="agents-strip" aria-label="Agents">');
+    expect(html).toContain('href="/agents/kaveh"');
+    expect(html).toContain('href="/agents/darya"');
+    expect(html).toContain("Product Owner");
+    expect(renderDashboard({ ...dashboard, agents: [] })).not.toContain("<nav class=\"agents-strip\"");
+  });
+
   test("renders invalid stage labels on the separate attention tab", () => {
     const html = renderDashboard({ ...dashboard, view: "attention" });
     expect(html).toContain("missing, unknown, or conflicting stage label");
