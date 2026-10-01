@@ -110,10 +110,29 @@ function targetFor(input: ApplyStageTransitionInput): {
   };
 }
 
+/**
+ * A legacy producer may stop with any failure status it returns (e.g. `changes-requested` at
+ * implementation), not only states that have a source label. Such a stop becomes `blocked`, keeping
+ * the original status in the reason, rather than failing the transition and retrying it forever.
+ */
+function stopWithConfiguredState(input: ApplyStageTransitionInput): ApplyStageTransitionInput {
+  const result = input.result;
+  if (result.kind !== "stopped" || input.labels.states[result.state] || !input.labels.states.blocked) return input;
+  return {
+    ...input,
+    result: {
+      ...result,
+      state: "blocked",
+      reason: `Stopped as ${result.state} (no label is configured for that state): ${result.reason}`,
+    },
+  };
+}
+
 /** Apply the externally visible checkpoint once, then wait for reconciliation. */
 export async function applyStageTransition(
   input: ApplyStageTransitionInput,
 ): Promise<void> {
+  input = stopWithConfiguredState(input);
   const target = targetFor(input);
   const stageResult = input.result.result?.stageResult;
   const detail = input.result.kind === "advance"
