@@ -166,7 +166,7 @@ export const criteriaInSync: TaskDefinition<unknown, unknown, Deps> = {
       ...(missing.length ? [`missing from the checklist: ${missing.join(", ")}`] : []),
       ...(extra.length ? [`not item criteria: ${extra.join(", ")}`] : []),
     ];
-    return fail(`The pull request checklist is out of sync with the item's criteria (${parts.join("; ")})`);
+    return fail(`The pull request checklist is out of sync with the item's criteria (${parts.join("; ")}). Conveyor rewrites this checklist when it pushes the change; do not edit the pull request description.`);
   },
 };
 
