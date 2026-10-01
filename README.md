@@ -81,9 +81,9 @@ flowchart LR
 
 ## Dashboard
 
-The board shows backlog, configured stages, completed work, active runner capacity, dependency/child relationships, warnings, questions, and per-stage cost. Issue dialogs separate four concerns:
+The board shows backlog, configured stages, completed work, active runner capacity, dependency/child relationships, warnings, questions, and per-stage usage (tokens in and out, plus the dollar amount when the harness reports one; subscription harnesses do not). Issue dialogs separate four concerns:
 
-- **Summary** — current state, relationships, criteria, labels, cost, and duration.
+- **Summary** — current state, relationships, criteria, labels, token usage (and cost when known), and duration.
 - **Conversation** — concise owner and agent handoff messages that survive future runs.
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.

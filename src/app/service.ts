@@ -22,7 +22,7 @@ import { canonicalToolName } from "../tasks/aliases";
 import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
-import { formatDuration } from "../web/format";
+import { formatDuration, formatUsage } from "../web/format";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
@@ -1540,12 +1540,7 @@ export class ConveyorService {
         acceptanceCriteria: criteriaFromBody(issue.body),
         activity: state ? `${state.stageId} · ${state.status}` : null,
         reason: issue.warning ?? options.reason ?? null,
-        cost:
-          cost.runs === 0
-            ? null
-            : cost.unavailableRuns === cost.runs
-              ? `unavailable · ${cost.runs} run${cost.runs === 1 ? "" : "s"}`
-              : `$${cost.amount.toFixed(4)} · ${cost.runs} runs`,
+        cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
         inconsistent: issue.projectedState === "inconsistent",
@@ -1705,7 +1700,7 @@ export class ConveyorService {
     ]).size;
     return {
       title: "Conveyor",
-      project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${total.runs} runs · ${total.unavailableRuns === total.runs && total.runs > 0 ? "cost unavailable" : `$${total.amount.toFixed(4)}`}`,
+      project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""} · ${formatUsage(total) ?? "0 runs"}`,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       revision: this.store.dashboardRevision(),
       view: pagination.view,
@@ -1722,13 +1717,7 @@ export class ConveyorService {
           `stage:${stage}`,
           title(stage),
           stagedIssues.filter((issue) => issue.projectedStage === stage),
-          (() => {
-          const summary = this.store.costSummary({ stageId: stage });
-          if (summary.runs === 0) return null;
-          return summary.unavailableRuns === summary.runs
-            ? `${summary.runs} runs · cost unavailable`
-            : `$${summary.amount.toFixed(4)} · ${summary.runs} runs`;
-          })(),
+          formatUsage(this.store.costSummary({ stageId: stage })),
           (issue) => card(issue),
           actorsForStage(stage),
         )),
