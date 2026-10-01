@@ -395,6 +395,17 @@ export class ExecutionStore {
     return row?.wake_at ?? null;
   }
 
+  /**
+   * Makes a parked item schedulable now (an answer arrived). Only a pending cursor is
+   * touched; its deadline is unchanged. Returns whether a parked cursor was woken.
+   */
+  wakeNow(issueId: string): boolean {
+    const result = this.#db
+      .query("UPDATE stage_cursors SET wake_at = ?, updated_at = ? WHERE issue_id = ? AND state = 'pending'")
+      .run(this.#timestamp(), this.#timestamp(), issueId);
+    return result.changes > 0;
+  }
+
   /** The earliest persisted wake-up strictly after `now`, or null. */
   nextWakeupAfter(now: Date): string | null {
     const row = this.#db

@@ -1132,6 +1132,17 @@ export class ConveyorStore {
     };
   }
 
+  /** The newest run of a kind for an issue's stage, by start time. */
+  getLatestRun(issueId: string, stageId: string, kind: string): StoredRun | null {
+    const row = this.#database
+      .query(
+        `SELECT id FROM runs WHERE issue_id = ? AND stage_id = ? AND kind = ?
+         ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(issueId, stageId, kind) as { id: string } | null;
+    return row ? this.getRun(row.id) : null;
+  }
+
   listActiveIssueRuns(): ActiveIssueRun[] {
     const rows = this.#database
       .query(
@@ -1507,6 +1518,18 @@ export class ConveyorStore {
          WHERE q.id = ?`,
       )
       .get(questionId) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapQuestion(row) : null;
+  }
+
+  /** The question a run opened (an issue has at most one open question at a time). */
+  getQuestionForRun(runId: string): StoredQuestion | null {
+    const row = this.#database
+      .query(
+        `SELECT q.*, a.answer_json
+         FROM questions q LEFT JOIN answers a ON a.question_id = q.id
+         WHERE q.run_id = ? ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1`,
+      )
+      .get(runId) as Record<string, SQLQueryBindings> | null;
     return row ? this.mapQuestion(row) : null;
   }
 

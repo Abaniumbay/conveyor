@@ -70,6 +70,25 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 ## Task catalogue
 
+### agent
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `agent.askQuestion` | tool | - | - | Ask the user a structured question. The agent's run then ends with `needs-input` and the stage waits for the answer. |
+| `agent.recordArtifact` | tool | - | - | Record an artifact (a log, a report, a file) produced during the run. |
+| `agent.reportBlocker` | tool | - | - | Record a blocker the agent hit. |
+| `agent.reportMilestone` | tool | - | - | Record a milestone the agent reached. |
+| `agent.reportProgress` | tool | - | - | Report a concise user-facing progress update; it is posted to the shared conversation. |
+| `agent.reportRationale` | tool | - | - | Record the agent's rationale for the audit trail. |
+| `agent.reportResult` | tool | - | - | Record the agent's result report. |
+| `agent.run` | act | run | writes agent | Runs a configured agent through its harness in the item's workspace and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides), and an invalid result stops as an error. |
+
+### conversation
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `conversation.get` | tool | - | - | Read the shared conversation of the current item (the latest 100 messages at most). |
+
 ### item
 
 | Task | Kind | Reads | Writes / invalidates | Description |

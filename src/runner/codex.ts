@@ -29,6 +29,10 @@ export interface CodexRunInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  /** Keep the session on disk so it can be resumed later (the default run is ephemeral). */
+  persistSession?: boolean;
+  /** Continue this session with `codex exec resume` instead of starting a new one. */
+  resumeSessionId?: string;
 }
 
 export type CodexErrorKind =
@@ -136,20 +140,38 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
-function buildArguments(input: CodexRunInput, outputFile: string): string[] {
-  const args = [
-    "exec",
-    "--json",
-    "--color",
-    "never",
-    "--ephemeral",
-    "-C",
-    input.workspace,
-    "--output-schema",
-    OUTPUT_SCHEMA,
-    "-o",
-    outputFile,
+function mcpArguments(input: CodexRunInput): string[] {
+  return [
+    "-c",
+    `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
+    "-c",
+    `mcp_servers.conveyor.args=${tomlArray(input.mcp.args)}`,
+    "-c",
+    "mcp_servers.conveyor.required=true",
+    "-c",
+    'mcp_servers.conveyor.default_tools_approval_mode="approve"',
   ];
+}
+
+// `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
+// takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
+function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string): string[] {
+  const args = ["exec", "resume", "--json", "--output-schema", OUTPUT_SCHEMA, "-o", outputFile];
+  args.push("-c", `sandbox_mode=${tomlString(input.sandbox)}`);
+  if (input.automaticApprovals && input.sandbox === "workspace-write") {
+    args.push("-c", `approvals_reviewer=${tomlString("auto_review")}`);
+  }
+  if (input.model) args.push("--model", input.model);
+  if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
+  args.push(...mcpArguments(input), sessionId, "-");
+  return args;
+}
+
+function buildArguments(input: CodexRunInput, outputFile: string): string[] {
+  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile);
+  const args = ["exec", "--json", "--color", "never"];
+  if (!input.persistSession) args.push("--ephemeral");
+  args.push("-C", input.workspace, "--output-schema", OUTPUT_SCHEMA, "-o", outputFile);
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("--approve-for-me");
   } else {
@@ -159,17 +181,7 @@ function buildArguments(input: CodexRunInput, outputFile: string): string[] {
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(
-    "-c",
-    `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
-    "-c",
-    `mcp_servers.conveyor.args=${tomlArray(input.mcp.args)}`,
-    "-c",
-    "mcp_servers.conveyor.required=true",
-    "-c",
-    'mcp_servers.conveyor.default_tools_approval_mode="approve"',
-    "-",
-  );
+  args.push(...mcpArguments(input), "-");
   return args;
 }
 

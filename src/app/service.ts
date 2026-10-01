@@ -9,6 +9,8 @@ import { reconcileRepository } from "../core/reconciler";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
+import { codexHarness } from "../harness/codex";
+import type { Harness } from "../harness/types";
 import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider } from "./ci-provider";
@@ -50,6 +52,8 @@ interface McpGrant {
 interface ServiceImplementations {
   steering?: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   codeHosts?: CodeHostRegistry;
+  /** Agent harnesses by runner type; defaults to Codex. */
+  harnesses?: Record<string, Harness>;
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
@@ -140,6 +144,18 @@ const WORKSPACE_TOOLS: Record<string, string> = {
   "workspace.request_push": "workspace.push",
 };
 
+/** Legacy MCP names served by the `agent` tool tasks (`workspace.record_artifact` shares `agent.recordArtifact`). */
+const AGENT_TOOLS: Record<string, string> = {
+  "run.report_progress": "agent.reportProgress",
+  "run.ask_question": "agent.askQuestion",
+  "run.report_rationale": "agent.reportRationale",
+  "run.report_blocker": "agent.reportBlocker",
+  "run.report_result": "agent.reportResult",
+  "run.report_milestone": "agent.reportMilestone",
+  "run.record_artifact": "agent.recordArtifact",
+  "workspace.record_artifact": "agent.recordArtifact",
+};
+
 function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   const repository = config.repositories[repositoryId]!;
   const pipeline = config.pipelines[repository.pipeline]!;
@@ -183,6 +199,7 @@ export class ConveyorService {
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
+  readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 
   constructor(
@@ -196,6 +213,7 @@ export class ConveyorService {
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
+    this.#harnesses = implementations.harnesses ?? { codex: codexHarness };
   }
 
   static async create(
@@ -421,7 +439,7 @@ export class ConveyorService {
   }
 
   /** What native-stage tasks and MCP tools receive. */
-  private taskDeps(issueId: string, repository: TaskDeps["repository"]): TaskDeps {
+  private taskDeps(issueId: string, repository: TaskDeps["repository"], signal?: AbortSignal): TaskDeps {
     return {
       store: this.store,
       config: this.config,
@@ -431,6 +449,10 @@ export class ConveyorService {
       sourceGuidance: SOURCE_GUIDANCE,
       git: cliGit,
       workspaces: this.workspaceManager,
+      mcp: this.mcpFactory(),
+      harnesses: this.#harnesses,
+      delivery: () => this.loadDeliveryState(issueId, repository.address),
+      ...(signal ? { signal } : {}),
     };
   }
 
@@ -446,7 +468,7 @@ export class ConveyorService {
       loadDeliveryState: async (currentIssue, currentRepository) =>
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,
-      taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository),
+      taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository, signal),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
@@ -1091,17 +1113,16 @@ export class ConveyorService {
     input: Record<string, unknown>,
     idempotencyKey: string,
   ): Promise<unknown> {
-    const issue = grant.context!.issue;
-    const repository = this.config.repositories[issue.repositoryId]!;
+    const context = grant.context;
+    // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
+    const deps: TaskDeps = context
+      ? this.taskDeps(context.issue.id, context.repository)
+      : ({ store: this.store, config: this.config, issueId: "" } as TaskDeps);
+    deps.run = { id: grant.runId, actor: grant.actor };
     const result = await runTask(createTaskRegistry().require(name), {
       config: {},
       context: {},
-      deps: this.taskDeps(issue.id, {
-        id: issue.repositoryId,
-        address: repository.address,
-        folder: repository.folder,
-        baseBranch: repository.baseBranch,
-      }),
+      deps,
       input,
       ...(grant.actor ? { actor: grant.actor.id } : {}),
       instance: { id: name, stage: grant.stageId, idempotencyKey, resumed: false },
@@ -1119,48 +1140,16 @@ export class ConveyorService {
     const input = object(request.input ?? {});
     if (tool === "conversation.get") {
       if (!grant.context) throw new Error("conversation requires an issue-scoped MCP grant");
-      const requestedLimit = input.limit === undefined ? 100 : number(input.limit, "limit");
-      return {
-        issueId: grant.context.issue.id,
-        messages: this.store.listConversationMessages(
-          grant.context.issue.id,
-          Math.min(requestedLimit, 100),
-        ),
-      };
+      return this.runItemTool("conversation.get", grant, input, "");
     }
-    if (tool.startsWith("run.report_") || tool === "run.ask_question" || tool === "run.record_artifact" || tool === "run.report_milestone") {
+    if (AGENT_TOOLS[tool] && tool !== "workspace.record_artifact") {
       if (tool === "run.ask_question") {
         if (!grant.context) throw new Error("structured questions require an issue-scoped MCP grant");
-        const issue = grant.context.issue;
-        const options = Array.isArray(input.options) ? input.options : [];
-        const question = this.store.openQuestion({
-          issueId: issue.id,
-          runId: grant.runId,
-          prompt: string(input.prompt, "prompt"),
-          reason: string(input.reason, "reason"),
-          options,
-          minSelections: typeof input.minSelections === "number" ? input.minSelections : 1,
-          maxSelections: typeof input.maxSelections === "number" ? input.maxSelections : 1,
-          allowFreeText: input.allowFreeText === true,
-        });
-        this.store.appendRunEvent(grant.runId, "question", { questionId: question.id });
-        await this.updateStatusComment(issue.id);
-        return { accepted: true, questionId: question.id };
+        const result = await this.runItemTool(AGENT_TOOLS[tool]!, grant, input, "");
+        await this.updateStatusComment(grant.context.issue.id);
+        return result;
       }
-      this.store.appendRunEvent(grant.runId, tool.slice("run.".length), input);
-      if (tool === "run.report_progress" && grant.context && grant.actor) {
-        this.store.appendConversationMessage({
-          issueId: grant.context.issue.id,
-          runId: grant.runId,
-          stageId: grant.stageId,
-          actorType: "agent",
-          actorId: grant.actor.id,
-          actorName: grant.actor.name,
-          actorTitle: grant.actor.title,
-          message: string(input.message, "message"),
-        });
-      }
-      return { accepted: true };
+      return this.runItemTool(AGENT_TOOLS[tool]!, grant, input, "");
     }
 
     if (!grant.context) throw new Error(`${tool} requires an issue-scoped MCP grant`);
@@ -1192,7 +1181,9 @@ export class ConveyorService {
         result = await this.runItemTool(itemTool, grant, input, idempotencyKey);
       } else if (WORKSPACE_TOOLS[tool]) {
         result = await this.runItemTool(WORKSPACE_TOOLS[tool]!, grant, input, idempotencyKey);
-      } else if (tool === "workspace.record_artifact" || tool === "source.set_pull_request_metadata") {
+      } else if (tool === "workspace.record_artifact") {
+        result = await this.runItemTool(AGENT_TOOLS[tool]!, grant, input, idempotencyKey);
+      } else if (tool === "source.set_pull_request_metadata") {
         this.store.appendRunEvent(grant.runId, tool, input);
       } else {
         throw new Error(`unsupported MCP tool: ${tool}`);
@@ -1223,6 +1214,14 @@ export class ConveyorService {
     this.schedule();
   }
 
+  /** Wakes an item whose cursor is parked in the stage of the run that asked the question. */
+  private wakeParkedAgent(question: { issueId: string; runId: string | null }): boolean {
+    const journal = this.store.executions();
+    const cursor = journal.getCursor(question.issueId);
+    const run = question.runId ? this.store.getRun(question.runId) : null;
+    return cursor?.state === "pending" && run?.stageId === cursor.stage && journal.wakeNow(question.issueId);
+  }
+
   async answerQuestion(questionId: string, answer: string): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
@@ -1236,6 +1235,12 @@ export class ConveyorService {
       issue.sourceNumber,
       `<!-- conveyor:answer:${question.id} -->\n**Conveyor answer:** ${answer}`,
     );
+    // A stage parked on an agent's question continues where it stopped; legacy stages restart.
+    if (this.wakeParkedAgent(question)) {
+      await this.updateStatusComment(issue.id);
+      this.schedule();
+      return;
+    }
     const stage = issue.projectedStage;
     if (stage) {
       const metadata = issue.labels.filter((label) =>
