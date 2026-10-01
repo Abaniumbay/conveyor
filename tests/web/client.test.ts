@@ -30,8 +30,10 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("currentDashboard.replaceWith(nextDashboard)");
     expect(dashboardClient).toContain("time[data-relative-time][datetime]");
     expect(dashboardClient).not.toContain("location.reload()")
-    expect(dashboardClient).toContain("dialog.show();");
-    expect(dashboardClient).not.toContain("showModal()");
+    expect(dashboardClient).toContain("dialog.showModal();");
+    expect(dashboardClient).not.toContain("dialog.show();");
+    expect(dashboardClient).toContain("classList.toggle('is-selected', selected)");
+    expect(dashboardClient).toContain("searchParams.get('agent')");
     expect(dashboardClient).toContain("event.key === 'Escape'");
     expect(dashboardClient).toContain(": 'Operator'");
   });

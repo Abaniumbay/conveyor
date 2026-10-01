@@ -506,29 +506,34 @@ describe("createWebHandler", () => {
     }))).status).toBe(413);
   });
 
-  test("serves read-only agent profile pages to signed-in operators", async () => {
+  test("the team view carries the agent profiles, and old agent links redirect to it", async () => {
     const profile = {
       id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: null, effort: null,
       access: "workspace-write", usage: [], tasks: [], instructions: null,
     };
     const { handler } = setup({
+      getDashboard: (_csrf: string, page: { view: DashboardViewModel["view"] }) => ({ ...model, view: page.view }),
       getAgentProfiles: async () => [profile],
       getAgentProfile: async (id: string) => (id === "kaveh" ? profile : null),
     });
     const unauthenticated = await handler(new Request("http://localhost/agents"));
     expect(unauthenticated.status).toBe(303);
     expect(unauthenticated.headers.get("location")).toBe("/login");
-    expect((await handler(new Request("http://localhost/agents/kaveh"))).status).toBe(303);
+    expect((await handler(new Request("http://localhost/agents/kaveh"))).headers.get("location")).toBe("/login");
 
     const { cookie } = await login(handler);
-    const list = await handler(new Request("http://localhost/agents", { headers: { cookie } }));
-    expect(list.status).toBe(200);
-    expect(list.headers.get("content-type")).toContain("text/html");
-    expect(await list.text()).toContain('href="/agents/kaveh"');
+    const team = await handler(new Request("http://localhost/?view=team", { headers: { cookie } }));
+    expect(team.status).toBe(200);
+    expect(await team.text()).toContain('data-agent-id="kaveh"');
+    const board = await handler(new Request("http://localhost/", { headers: { cookie } }));
+    expect(await board.text()).not.toContain('data-agent-id="kaveh"');
 
+    const list = await handler(new Request("http://localhost/agents", { headers: { cookie } }));
+    expect(list.status).toBe(303);
+    expect(list.headers.get("location")).toBe("/?view=team");
     const page = await handler(new Request("http://localhost/agents/kaveh", { headers: { cookie } }));
-    expect(page.status).toBe(200);
-    expect(await page.text()).toContain('<span class="agent-page-title">Kaveh</span>');
+    expect(page.status).toBe(303);
+    expect(page.headers.get("location")).toBe("/?view=team&agent=kaveh");
 
     expect((await handler(new Request("http://localhost/agents/nobody", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request("http://localhost/agents/kaveh", { method: "POST", headers: { cookie } }))).status).toBe(405);

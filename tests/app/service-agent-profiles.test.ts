@@ -13,21 +13,20 @@ afterEach(async () => {
 });
 
 describe("agent profiles in the service", () => {
-  test("the dashboard lists every agent and the web dependencies serve their profiles", async () => {
+  test("the web dependencies serve every agent profile", async () => {
     const { directory, base } = await referenceConfigDirectory();
     bases.push(base);
     const config = await loadConfig(directory);
     const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
     const service = new ConveyorService(config, store, {} as never);
 
-    expect(service.dashboard("csrf").agents).toEqual([
+    const web = service.webDependencies({} as never, "operator");
+    expect((await web.getAgentProfiles()).map(({ id, name, title }) => ({ id, name, title }))).toEqual([
       { id: "darya", name: "Darya", title: "Product Owner" },
       { id: "kaveh", name: "Kaveh", title: "Senior Developer" },
       { id: "omid", name: "Omid", title: "Conveyor Operator" },
       { id: "shirin", name: "Shirin", title: "Senior Reviewer" },
     ]);
-    const web = service.webDependencies({} as never, "operator");
-    expect((await web.getAgentProfiles()).map((profile) => profile.id)).toEqual(["darya", "kaveh", "omid", "shirin"]);
     expect(await web.getAgentProfile("shirin")).toMatchObject({ name: "Shirin", access: "read-only" });
     expect(await web.getAgentProfile("nobody")).toBeNull();
     store.close();
