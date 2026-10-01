@@ -103,6 +103,9 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
       answered = prior?.answered ?? null;
     }
 
+    // The last round failed only on something the stage's own actions repair (e.g. the PR checklist): nothing for the agent to do.
+    if (!answered && context.run?.feedback?.repairedByActions) return pass();
+
     const issue = store.getIssue(deps.issueId);
     if (!issue) throw new InfrastructureError(`issue ${deps.issueId} is not stored`);
     const agent = deps.config.agents[config.agent];
