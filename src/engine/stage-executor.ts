@@ -309,8 +309,16 @@ export class StageExecutor {
     run.context.run = {
       stage: run.stage.id, stageEpoch: run.epoch, attempt: run.cursor.attempt,
       maxAttempts: run.stage.retries + 1, taskInstanceId, enteredAt: run.enteredAt,
-      feedback: run.cursor.feedback,
+      feedback: this.#feedback(run),
     };
+  }
+
+  /** The cursor's feedback, marked when its source check is repaired by the stage's actions (also for feedback saved earlier). */
+  #feedback(run: Run): Feedback | null {
+    const feedback = run.cursor.feedback;
+    if (!feedback || feedback.from.stage !== run.stage.id) return feedback;
+    const source = [...run.stage.actions, ...run.stage.exitGate].find((task) => task.id === feedback.from.taskInstanceId);
+    return source && this.#o.registry.get(source.task)?.repairedByActions ? { ...feedback, repairedByActions: true } : feedback;
   }
 
   #persist(run: Run, taskInstanceId: string): void {

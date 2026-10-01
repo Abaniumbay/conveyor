@@ -123,6 +123,10 @@ function buildRegistry(world: World): TaskRegistry {
         run: ({ instance }) => { world.calls.push(instance.id); return (world.checkResult[instance.id] ?? (() => pass()))(); },
       }),
       d({
+        name: "test.repaired", kind: "check", reads: ["ci"], repairedByActions: true,
+        run: ({ instance }) => { world.calls.push(instance.id); return (world.checkResult[instance.id] ?? (() => pass()))(); },
+      }),
+      d({
         name: "test.ciPassed", kind: "check", reads: ["ci"], checkpoint: { name: "ciPassed", scope: "task" },
         run: () => pass(),
       }),
@@ -440,6 +444,19 @@ describe("routing", () => {
     expect(retryRun.feedback).toEqual({ from: { stage: "implementation", taskInstanceId: "gate" }, message: "tests red", details: { n: 2 } });
     expect(h.notes).toHaveLength(1);
     expect(h.notes[0]).toContain("tests red");
+  });
+
+  test("feedback from a check the actions repair is marked, so the agent can skip its round", async () => {
+    const h = await harness();
+    h.activate();
+    let gateRuns = 0;
+    h.world.checkResult.gate = () => (++gateRuns === 1 ? fail("checklist out of sync") : pass());
+    const outcome = await h.run(simple(h, [ct(h.registry, "gate", "test.repaired")]), "implementation");
+    expect(outcome).toMatchObject({ kind: "advance", feedbackCycles: 1 });
+    const retryRun = h.journal.contextHistory("issue-1").map((row) => row.context.run).find((run) => run.attempt === 2)!;
+    expect(retryRun.feedback).toEqual({
+      from: { stage: "implementation", taskInstanceId: "gate" }, message: "checklist out of sync", repairedByActions: true,
+    });
   });
 
   test("retries are bounded by the stage retries and end as stop blocked", async () => {

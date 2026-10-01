@@ -150,6 +150,7 @@ export const criteriaInSync: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.criteriaInSync",
   kind: "check",
   description: "Passes when the pull request checklist lists exactly the item's criteria ids.",
+  repairedByActions: true,
   reads: ["item", "change"],
   writes: [],
   invalidates: [],

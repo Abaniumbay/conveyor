@@ -97,6 +97,8 @@ export interface Feedback {
   from: { stage: string; taskInstanceId: string };
   message: string;
   details?: unknown;                // bounded; large output is an artifact link
+  /** The failing task is repaired by the stage's own actions; the agent has nothing to fix. */
+  repairedByActions?: true;
 }
 
 export interface GateCheckpoints {
