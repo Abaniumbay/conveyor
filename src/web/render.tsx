@@ -1,6 +1,7 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
 
+import { agentHref } from "./agent-pages";
 import { dashboardCss } from "./styles";
 import type {
   DashboardView,
@@ -453,6 +454,16 @@ function Attention({ model }: { model: DashboardViewModel }) {
   );
 }
 
+function AgentsStrip({ agents }: { agents: DashboardViewModel["agents"] }) {
+  if (!agents || agents.length === 0) return null;
+  return (
+    <nav class="agents-strip" aria-label="Agents">
+      <h2><a href="/agents">Agents</a></h2>
+      <ul>{agents.map((agent) => <li key={agent.id}><a href={agentHref(agent.id)}><strong>{agent.name}</strong> <span>{agent.title}</span></a></li>)}</ul>
+    </nav>
+  );
+}
+
 function Page({ model }: { model: DashboardViewModel }) {
   let content: ComponentChildren;
   if (model.view === "attention") content = <Attention model={model} />;
@@ -492,6 +503,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           </header>
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Questions questions={model.questions} csrfToken={model.csrfToken} />
+          <AgentsStrip agents={model.agents} />
           <Navigation model={model} />
           <ActiveWork model={model} />
           {content}

@@ -197,5 +197,32 @@ export interface DashboardViewModel {
   systemWarnings: readonly string[];
   steering: SteeringViewModel;
   selectedIssue: IssueCardViewModel | null;
+  /** Configured agents, each linking to its read-only profile page. */
+  agents?: readonly AgentSummaryViewModel[];
   csrfToken: string;
+}
+
+export interface AgentSummaryViewModel {
+  id: string;
+  name: string;
+  title: string;
+}
+
+export interface AgentUsageViewModel {
+  /** Null for a role outside any pipeline, such as dashboard steering. */
+  pipeline: string | null;
+  stage: string | null;
+  role: string;
+}
+
+export interface AgentProfileViewModel extends AgentSummaryViewModel {
+  harness: string;
+  model: string | null;
+  effort: string | null;
+  access: string;
+  usage: readonly AgentUsageViewModel[];
+  /** Granted MCP tool tasks grouped by task group, sorted. */
+  tasks: ReadonlyArray<{ group: string; tasks: readonly string[] }>;
+  /** Instruction text, or null when the file could not be read. */
+  instructions: string | null;
 }

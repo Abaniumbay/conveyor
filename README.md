@@ -88,6 +88,8 @@ The board shows backlog, configured stages, completed work, active runner capaci
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.
 
+Above the board, every configured agent links to a read-only profile page (`/agents/<id>`; `/agents` lists them all) showing its harness, model, effort, workspace access, the pipeline stages it works in, its granted tools, and its instructions.
+
 The optional steering agent is intentionally quieter than the technical log. Only explicit MCP progress and the final report are shown; commands, tool calls, raw output, and private reasoning are not rendered.
 
 ![Conveyor user-facing agent progress](./docs/screenshots/agent-progress.png)

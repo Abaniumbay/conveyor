@@ -1,8 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
+import { renderAgentList, renderAgentProfile } from "./agent-pages";
 import { renderDashboard } from "./render";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -44,6 +45,9 @@ export interface WebHandlerDependencies {
   ) => unknown | Promise<unknown>;
   /** Dismisses an open review finding on behalf of the signed-in operator; rejects when it cannot be dismissed. */
   dismissFinding: (issueId: string, findingId: string, reason: string, username: string) => void | Promise<void>;
+  /** Read-only profiles of the configured agents. */
+  getAgentProfiles: () => readonly AgentProfileViewModel[] | Promise<readonly AgentProfileViewModel[]>;
+  getAgentProfile: (agentId: string) => AgentProfileViewModel | null | Promise<AgentProfileViewModel | null>;
   maxBodyBytes?: number;
 }
 
@@ -448,6 +452,38 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
+    }
+
+    if (path === "/agents") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return redirect("/login");
+      try {
+        return response(renderAgentList(await dependencies.getAgentProfiles()), 200, "text/html; charset=utf-8");
+      } catch {
+        return text("Agents are temporarily unavailable", 503);
+      }
+    }
+
+    const agentProfile = /^\/agents\/([^/]{1,200})$/.exec(path);
+    if (agentProfile) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return redirect("/login");
+      let agentId: string;
+      try {
+        agentId = decodeURIComponent(agentProfile[1]!);
+      } catch {
+        return text("Invalid agent id", 400);
+      }
+      try {
+        const profile = await dependencies.getAgentProfile(agentId);
+        return profile
+          ? response(renderAgentProfile(profile), 200, "text/html; charset=utf-8")
+          : text("Agent not found", 404);
+      } catch {
+        return text("Agent profile is temporarily unavailable", 503);
+      }
     }
 
     const issueJourney = /^\/api\/issues\/([^/]{1,1000})\/journey$/.exec(path);
