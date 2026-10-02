@@ -9,6 +9,7 @@ import {
 const password = "correct horse battery staple";
 const passwordHash = hashPassword(password, { salt: "0123456789abcdef" });
 const sessionSecret = "test session secret with enough entropy 0123456789";
+const sevenDaysSeconds = 7 * 24 * 60 * 60;
 
 describe("web authentication", () => {
   test("creates and verifies the documented scrypt password hash format", () => {
@@ -18,24 +19,65 @@ describe("web authentication", () => {
     expect(verifyPassword(password, "scrypt$999999999$8$1$bad$bad")).toBe(false);
   });
 
-  test("creates an opaque signed HttpOnly Strict cookie and verifies its session", () => {
+  test("creates a seven-day session with matching cookie expiry and verifies its boundary", () => {
+    let now = 1_000_000;
     const auth = createWebAuth({ passwordHash, sessionSecret }, {
-      now: () => 1_000_000,
+      now: () => now,
       randomBytes: (size) => new Uint8Array(size).fill(7),
     });
     const session = auth.createSession();
 
     expect(session).not.toBeNull();
-    expect(session!.cookie).toContain("HttpOnly");
-    expect(session!.cookie).toContain("SameSite=Strict");
-    expect(session!.cookie).toContain("Path=/");
-    expect(session!.cookie).toContain("Secure");
+    expect(session!.expiresAt).toBe(1_000_000 + sevenDaysSeconds * 1000);
+    expect(session!.cookie).toContain("; Path=/;");
+    expect(session!.cookie).toContain("; HttpOnly;");
+    expect(session!.cookie).toContain("; SameSite=Strict;");
+    expect(session!.cookie).toContain(`; Max-Age=${sevenDaysSeconds};`);
+    expect(session!.cookie).toContain(`; Expires=${new Date(session!.expiresAt).toUTCString()}`);
+    expect(session!.cookie).toContain("; Secure");
     expect(session!.cookie).not.toContain(session!.csrfToken);
     expect(auth.getSession(session!.cookie.split(";")[0])).toEqual({
       csrfToken: session!.csrfToken,
-      expiresAt: 1_000_000 + 8 * 60 * 60 * 1000,
+      expiresAt: session!.expiresAt,
     });
+    now = session!.expiresAt - 1;
+    expect(auth.getSession(session!.cookie.split(";")[0])).not.toBeNull();
+    now = session!.expiresAt;
+    expect(auth.getSession(session!.cookie.split(";")[0])).toBeNull();
     expect(auth.authenticate(password)).toBe(true);
+  });
+
+  test("uses an explicit TTL for session and cookie expiry and rejects invalid TTLs", () => {
+    const now = 50_000;
+    const auth = createWebAuth({ passwordHash, sessionSecret, sessionTtlSeconds: 123 }, {
+      now: () => now,
+      randomBytes: (size) => new Uint8Array(size).fill(8),
+    });
+    const session = auth.createSession()!;
+
+    expect(session.expiresAt).toBe(now + 123_000);
+    expect(session.cookie).toContain("; Max-Age=123;");
+    expect(session.cookie).toContain(`; Expires=${new Date(session.expiresAt).toUTCString()}`);
+    expect(auth.getSession(session.cookie.split(";")[0])?.expiresAt).toBe(session.expiresAt);
+
+    const invalid = createWebAuth({ passwordHash, sessionSecret, sessionTtlSeconds: 0 });
+    expect(invalid.isConfigured).toBe(false);
+    expect(invalid.createSession()).toBeNull();
+  });
+
+  test("keeps the embedded expiry of a session issued with the previous default", () => {
+    const issuedAt = 100_000;
+    const previousDefaultSession = createWebAuth({ passwordHash, sessionSecret, sessionTtlSeconds: 8 * 60 * 60 }, {
+      now: () => issuedAt,
+      randomBytes: (size) => new Uint8Array(size).fill(9),
+    }).createSession()!;
+    const originalExpiry = issuedAt + 8 * 60 * 60 * 1000;
+    const upgradedAuth = createWebAuth({ passwordHash, sessionSecret }, { now: () => issuedAt + 1 });
+
+    expect(upgradedAuth.getSession(previousDefaultSession.cookie.split(";")[0])).toEqual({
+      csrfToken: previousDefaultSession.csrfToken,
+      expiresAt: originalExpiry,
+    });
   });
 
   test("expires sessions and rejects tampering and duplicate session cookies", () => {
