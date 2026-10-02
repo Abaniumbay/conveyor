@@ -125,6 +125,12 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
           {issue.children.length > 0 && <span>· Roll-up</span>}
           {issue.closable && <span>· Closable</span>}
         </div>
+        {issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
+          <label for={`${id}-retry-note`}>Optional note for the next attempt</label>
+          <textarea id={`${id}-retry-note`} name="note" rows={2} maxLength={4000} placeholder="Add feedback for the next attempt…" />
+          <button type="submit" data-retry-submit>Retry</button>
+          <span role="status" aria-live="polite" data-retry-status />
+        </form>}
         {issue.waiting && <WaitingLine issue={issue} className="waiting-detail" />}
         {issue.blocked && (
           <section class="blocked-summary" aria-label="Blocking reason">
@@ -264,6 +270,7 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
         {statusContext && <> · <span class="issue-status-context" title={statusContext}>{statusContext}</span></>}
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
       </p>
+      {issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
       {rollup && <p class="rollup-summary">Roll-up · {issue.children.length} {issue.children.length === 1 ? "child" : "children"}, {completedChildren} done</p>}

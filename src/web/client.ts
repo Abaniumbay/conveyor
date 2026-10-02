@@ -662,6 +662,27 @@ export const dashboardClient = String.raw`(() => {
     const clickedDetails = event.target.closest('.dashboard-header details');
     closeHeaderPopovers(clickedDetails);
 
+    const retryCard = event.target.closest('[data-retry-card]');
+    if (retryCard instanceof HTMLButtonElement) {
+      const url = retryCard.getAttribute('data-retry-url');
+      if (!url || retryCard.disabled) return;
+      retryCard.disabled = true;
+      retryCard.setAttribute('aria-busy', 'true');
+      void fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ note: '', csrf: body.dataset.csrfToken || '' }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(await response.text() || 'Retry failed');
+        retryCard.textContent = 'Retry accepted';
+      }).catch(() => {
+        retryCard.disabled = false;
+        retryCard.removeAttribute('aria-busy');
+        retryCard.textContent = 'Retry failed · try again';
+      });
+      return;
+    }
+
     const themeButton = event.target.closest('[data-theme-choice]');
     if (themeButton instanceof HTMLButtonElement) {
       const theme = themeButton.getAttribute('data-theme-choice');
@@ -747,6 +768,33 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('submit', async (event) => {
     const form = event.target;
+    if (form instanceof HTMLFormElement && form.matches('[data-retry-form]')) {
+      event.preventDefault();
+      const url = form.getAttribute('data-retry-url');
+      const button = form.querySelector('[data-retry-submit]');
+      const status = form.querySelector('[data-retry-status]');
+      const field = form.querySelector('textarea[name="note"]');
+      if (!url || !(button instanceof HTMLButtonElement)) return;
+      button.disabled = true;
+      if (field instanceof HTMLTextAreaElement) field.disabled = true;
+      if (status) status.textContent = 'Retrying…';
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ note: field instanceof HTMLTextAreaElement ? field.value : '', csrf: body.dataset.csrfToken || '' }),
+        });
+        if (!response.ok) throw new Error(await response.text() || 'Retry failed');
+        if (status) status.textContent = 'Retry accepted. A fresh attempt is queued.';
+        if (field instanceof HTMLTextAreaElement) field.value = '';
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? 'Retry failed: ' + error.message : 'Retry failed.';
+        button.disabled = false;
+      } finally {
+        if (field instanceof HTMLTextAreaElement) field.disabled = false;
+      }
+      return;
+    }
     if (!(form instanceof HTMLFormElement) || !form.matches('[data-conversation-form]')) return;
     event.preventDefault();
     const panel = form.closest('[data-conversation-url]');
