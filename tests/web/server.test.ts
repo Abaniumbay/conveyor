@@ -54,6 +54,7 @@ interface CallLog {
   issueConversation: unknown[][];
   issueJourney: unknown[][];
   messages: unknown[][];
+  retries: unknown[][];
   dismissals: unknown[][];
 }
 
@@ -63,7 +64,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], dismissals: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -158,6 +159,7 @@ function setup(overrides: Record<string, unknown> = {}) {
       return null;
     },
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
+    retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
     ...overrides,
   };
@@ -514,6 +516,35 @@ describe("createWebHandler", () => {
     expect(posted.status).toBe(201);
     expect(calls.issueConversation).toEqual([["github:owner/repo#1"]]);
     expect(calls.messages).toEqual([["github:owner/repo#1", "Please preserve the public API.", "operator"]]);
+  });
+
+  test("retries only through a signed-in CSRF protected request and permits a blank note", async () => {
+    const { handler, auth, calls } = setup({ maxBodyBytes: 8_192 });
+    const url = "http://localhost/api/issues/github%3Aowner%2Frepo%231/retry";
+    expect((await handler(new Request(url, { method: "POST" }))).status).toBe(401);
+    const { cookie } = await login(handler);
+    expect((await handler(new Request(url, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: "note=" }))).status).toBe(403);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const post = (note: string) => handler(new Request(url, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ note, csrf }),
+    }));
+    expect((await post(" ")).status).toBe(202);
+    expect(calls.retries).toEqual([["github:owner/repo#1", "", "operator"]]);
+    expect((await post("x".repeat(4_001))).status).toBe(400);
+    expect((await handler(new Request(url, { method: "GET", headers: { cookie } }))).status).toBe(405);
+  });
+
+  test("reports a rejected source retry as a conflict", async () => {
+    const { handler, auth } = setup({ retryIssue: async () => { throw new Error("source label update failed"); } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const response = await handler(new Request("http://localhost/api/issues/i1/retry", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ note: "feedback", csrf }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.text()).toBe("source label update failed");
   });
 
   test("dismisses a finding only for an authenticated session with CSRF and a reason", async () => {

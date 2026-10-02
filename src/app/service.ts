@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
+import { evaluateIssueState } from "../core/issue-state";
 import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
 import { applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
@@ -188,6 +189,7 @@ export class ConveyorService {
   readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
+  readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   /** Consecutive infrastructure failures per issue, for the stage they happened in. */
@@ -1601,6 +1603,11 @@ export class ConveyorService {
           dependencyReason ?? issue.warning ?? options.reason ??
           "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
         : null;
+      const retryable = issue.sourceState === "open" &&
+        issue.labels.includes(this.config.labels.enrollment) &&
+        ["blocked", "error", "needs-intervention"].includes(projectedState) &&
+        !activeIssueIds.has(issue.id) &&
+        children.length === 0;
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -1627,7 +1634,10 @@ export class ConveyorService {
         children,
         dependencies,
         working: activeIssueIds.has(issue.id),
-        needsAttention: questionIssueIds.has(issue.id) || STOPPED_ISSUE_STATES.has(projectedState),
+        needsAttention: questionIssueIds.has(issue.id) || [
+          "blocked", "error", "needs-input", "needs-intervention", "rejected",
+        ].includes(projectedState),
+        retryable,
       };
     };
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
@@ -2114,6 +2124,80 @@ export class ConveyorService {
     return { status, stageId };
   }
 
+  async retryIssue(issueId: string, note: string, username: string): Promise<{ status: "started" | "queued"; stageId: string }> {
+    if (this.#retrying.has(issueId)) throw new Error("retry already in progress");
+    this.#retrying.add(issueId);
+    try {
+      const issue = this.store.getIssue(issueId);
+      const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+      if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
+      if (note.length > 4_000) throw new Error("retry note must not exceed 4000 characters");
+      if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) {
+        throw new Error("issue is closed or offboarded");
+      }
+      if (this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId)) {
+        throw new Error("issue is already running");
+      }
+      if (this.store.listChildren(issueId).length > 0) throw new Error("roll-up parents cannot be retried directly");
+
+      const pipeline = this.config.pipelines[repository.pipeline];
+      if (!pipeline) throw new Error("issue pipeline is not configured");
+      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      const evaluated = evaluateIssueState({
+        sourceState: live.state,
+        sourceLabels: live.labels,
+        labels: this.config.labels,
+        stages: pipeline.stages.map((stage) => stage.id),
+        expectedPostMergeClosure: false,
+      });
+      const stoppedStates = new Set(["blocked", "error", "needs-intervention"]);
+      if (live.number !== issue.sourceNumber || live.state !== "open" || evaluated.mode !== "stopped" ||
+        !evaluated.state || !stoppedStates.has(evaluated.state) || !evaluated.stage ||
+        evaluated.state !== issue.projectedState || evaluated.stage !== issue.projectedStage) {
+        throw new Error("issue state changed or is inconsistent; refresh before retrying");
+      }
+
+      const stageId = evaluated.stage;
+      const mutation = this.store.beginSourceMutation({
+        idempotencyKey: `web-retry:${randomUUID()}`,
+        source: repository.source,
+        operation: "issue.labels.retry",
+        request: { issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state, stageId },
+      });
+      const conveyorLabels = live.labels.filter((label) =>
+        (label === this.config.settings.labelPrefix || label.startsWith(`${this.config.settings.labelPrefix}:`)) &&
+        label !== this.config.labels.states[evaluated.state!],
+      );
+      try {
+        await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, conveyorLabels);
+        this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
+      } catch (error) {
+        this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+
+      if (note.trim()) {
+        this.store.appendConversationMessage({
+          issueId, runId: null, stageId, actorType: "user", actorId: username,
+          actorName: username, actorTitle: null, message: note.trim(),
+        });
+      }
+      await this.reconcileRepository(issue.repositoryId);
+      const refreshed = this.store.getIssue(issueId);
+      if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
+      this.schedule();
+      const status = this.#active.has(issueId) ? "started" : "queued";
+      this.store.appendConversationMessage({
+        issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
+        actorName: "Conveyor", actorTitle: "Orchestrator",
+        message: status === "started" ? `Started ${stageId} after retry.` : `Queued ${stageId} after retry. The existing worktree and run history are retained.`,
+      });
+      return { status, stageId };
+    } finally {
+      this.#retrying.delete(issueId);
+    }
+  }
+
   /** An operator's dismissal of a review finding: the dispatcher runs `change.dismissFinding` as that human, never an agent. */
   async dismissFinding(issueId: string, findingId: string, reason: string, username: string): Promise<void> {
     const issue = this.store.getIssue(issueId);
@@ -2173,6 +2257,7 @@ export class ConveyorService {
         return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
       },
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
+      retryIssue: (issueId, note, actor) => this.retryIssue(issueId, note, actor),
       dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
       getAgentProfiles: () => buildAgentProfiles(this.config),
       getAgentProfile: async (agentId) =>
