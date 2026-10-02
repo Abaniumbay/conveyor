@@ -2,6 +2,7 @@ import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
 
 import { Team } from "./agent-pages";
+import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
 import { dashboardCss } from "./styles";
 import type {
@@ -125,9 +126,15 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
           {issue.closable && <span>· Closable</span>}
         </div>
         {issue.waiting && <WaitingLine issue={issue} className="waiting-detail" />}
+        {issue.blocked && (
+          <section class="blocked-summary" aria-label="Blocking reason">
+            <h3>Blocking reason</h3>
+            <p>{issue.reason ?? "Conveyor received a stopped state, but no reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."}</p>
+          </section>
+        )}
         <dl class="details-facts">
           {issue.activity && <Fragment><dt>Current step</dt><dd>{issue.activity}</dd></Fragment>}
-          {issue.reason && <Fragment><dt>Source note</dt><dd>{issue.reason}</dd></Fragment>}
+          {!issue.blocked && issue.reason && <Fragment><dt>Source note</dt><dd>{issue.reason}</dd></Fragment>}
           {issue.cost && <Fragment><dt>Usage</dt><dd>{issue.cost}</dd></Fragment>}
           {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
         </dl>
@@ -297,12 +304,12 @@ function StageColumn({ column }: { column: StageColumnViewModel }) {
         <div class="stage-identity">
           <h2 id={headingId}>{column.name}</h2>
           {column.actors.length > 0 && (
-            <p>{column.actors.map((actor, index) => (
-              <Fragment key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
-                {index > 0 && " · "}
-                <strong>{actor.name}</strong>{actor.title && <> ({actor.title})</>}
-              </Fragment>
-            ))}</p>
+            <div class="stage-actors">{column.actors.map((actor) => (
+              <span class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
+                <AgentAvatar name={actor.name} script={actor.type === "script"} />
+                <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
+              </span>
+            ))}</div>
           )}
         </div>
         <div class="stage-summary">

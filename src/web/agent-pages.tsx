@@ -1,4 +1,5 @@
 import type { AgentProfileViewModel } from "./types";
+import { AgentAvatar } from "./avatar";
 
 export function agentHref(agentId: string): string {
   return `/team/${encodeURIComponent(agentId)}`;
@@ -24,9 +25,12 @@ function AgentProfile({ agent, id }: { agent: AgentProfileViewModel; id: string 
   return (
     <dialog class="agent-dialog" id={id} aria-labelledby={`${id}-title`} data-agent-id={agent.id}>
       <header class="details-header">
-        <div>
-          <h2 id={`${id}-title`}>{agent.name}</h2>
-          <p class="agent-title">{agent.title}</p>
+        <div class="agent-identity">
+          <AgentAvatar name={agent.name} />
+          <div>
+            <h2 id={`${id}-title`}>{agent.name}</h2>
+            <p class="agent-title">{agent.title}</p>
+          </div>
         </div>
         <form method="dialog"><button class="dialog-close" aria-label={`Close ${agent.name}'s profile`}>×</button></form>
       </header>
@@ -85,8 +89,10 @@ export function Team({ agents }: { agents: readonly AgentProfileViewModel[] }) {
           return (
             <li key={agent.id}>
               <article class="team-card" data-dialog-open={id} tabIndex={0} aria-haspopup="dialog" aria-label={`Open ${agent.name}'s profile`}>
-                <h3>{agent.name}</h3>
-                <p class="team-card-title">{agent.title}</p>
+                <div class="agent-identity">
+                  <AgentAvatar name={agent.name} />
+                  <div><h3>{agent.name}</h3><p class="team-card-title">{agent.title}</p></div>
+                </div>
                 <p class="team-card-meta">{stations.length > 0 ? stations.map(stageName).join(", ") : agent.usage[0]?.role ?? "No stations"} · {agent.model ?? agent.harness}</p>
                 <AgentProfile agent={agent} id={id} />
               </article>
