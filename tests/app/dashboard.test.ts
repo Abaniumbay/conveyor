@@ -36,18 +36,19 @@ describe("ConveyorService dashboard", () => {
       agents: {},
     } as unknown as ConveyorConfig;
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
-    const issues = ["with-note", "without-note", "failed", "stale"].map((id, index) => ({
+    const issues = ["with-note", "without-note", "failed", "stale", "error", "intervention"].map((id, index) => ({
       id, number: index + 1, url: `https://github.com/owner/repo/issues/${index + 1}`, title: id,
       body: "keep this body", state: "open" as const, stateReason: null,
-      labels: ["conveyor", "conveyor:implementation", "conveyor:blocked", "conveyor:order:7", "area:web", "priority:high"],
+      labels: ["conveyor", "conveyor:implementation", `conveyor:${id === "error" ? "error" : id === "intervention" ? "needs-intervention" : "blocked"}`, "conveyor:order:7", "area:web", "priority:high"],
       updatedAt: "2026-10-01T00:00:00Z",
     }));
     const blocker = { id: "blocker", number: 5, url: "https://github.com/owner/repo/issues/5", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
     for (const issue of issues) {
       store.upsertIssue({ id: issue.id, repositoryId: "repo", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: issue.body, sourceState: issue.state, sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
       store.setQueueRank(issue.id, issue.number);
-      store.setIssueProjection(issue.id, { stage: "implementation", state: "blocked", warning: null });
-      store.setStageState({ issueId: issue.id, stageId: "implementation", status: "blocked", feedbackCycle: 2, configHash: config.hash });
+      const stoppedState = issue.id === "error" ? "error" : issue.id === "intervention" ? "needs-intervention" : "blocked";
+      store.setIssueProjection(issue.id, { stage: "implementation", state: stoppedState, warning: null });
+      store.setStageState({ issueId: issue.id, stageId: "implementation", status: stoppedState, feedbackCycle: 2, configHash: config.hash });
     }
     store.upsertIssue({ id: blocker.id, repositoryId: "repo", sourceNumber: blocker.number, sourceUrl: blocker.url, title: blocker.title, body: blocker.body, sourceState: blocker.state, sourceStateReason: null, labels: blocker.labels, sourceUpdatedAt: blocker.updatedAt });
     store.setIssueProjection(blocker.id, { stage: null, state: "offboarded", warning: null });
@@ -67,7 +68,7 @@ describe("ConveyorService dashboard", () => {
         const issue = issues.find((candidate) => candidate.number === number)!;
         issue.labels = [...labels, ...issue.labels.filter((label) => !label.startsWith("conveyor:") && label !== "conveyor")];
       },
-      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 4 ? [blocker] : []; },
+      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 6 ? [blocker] : []; },
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
@@ -75,7 +76,11 @@ describe("ConveyorService dashboard", () => {
     await expect(service.retryIssue("without-note", "", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     await expect(service.retryIssue("failed", "do not record this", "operator")).rejects.toThrow("source label update failed");
     await expect(service.retryIssue("stale", "do not record this either", "operator")).rejects.toThrow("inconsistent; refresh before retrying");
+    await expect(service.retryIssue("error", "runner recovered", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
+    await expect(service.retryIssue("intervention", "approval is ready", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     expect(replacements).toEqual([
+      ["conveyor", "conveyor:implementation", "conveyor:order:7"],
+      ["conveyor", "conveyor:implementation", "conveyor:order:7"],
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
     ]);
@@ -90,6 +95,100 @@ describe("ConveyorService dashboard", () => {
     expect(store.getIssue("failed")).toMatchObject({ projectedState: "blocked", labels: expect.arrayContaining(["conveyor:blocked"]) });
     expect(store.listConversationMessages("failed").filter((message) => message.actorType === "user")).toEqual([]);
     expect(store.listConversationMessages("stale").filter((message) => message.actorType === "user")).toEqual([]);
+    expect(store.listConversationMessages("error").filter((message) => message.actorType === "user").map((message) => message.message)).toEqual(["runner recovered"]);
+    expect(store.listConversationMessages("intervention").filter((message) => message.actorType === "user").map((message) => message.message)).toEqual(["approval is ready"]);
+    store.close();
+  });
+
+  test("marks only eligible stopped dashboard issues retryable and rejects invalid or stale retries without side effects", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-retry-boundaries-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: {
+        enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention", "needs-input": "conveyor:needs-input", rejected: "conveyor:rejected" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["implementation", "review"].map((id) => ({ id, run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] })) } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+
+    const cases = [
+      ["blocked", "blocked", true],
+      ["error", "error", true],
+      ["intervention", "needs-intervention", true],
+      ["active", "active", true],
+      ["needs-input", "needs-input", true],
+      ["rejected", "rejected", true],
+      ["closed", "blocked", true],
+      ["unenrolled", "blocked", false],
+      ["running", "blocked", true],
+      ["rollup", "blocked", true],
+      ["offboarded", "offboarded", true],
+      ["stale-state", "blocked", true],
+      ["stale-stage", "blocked", true],
+    ] as const;
+    const liveIssues = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason: null; labels: string[]; updatedAt: string }>();
+    for (const [index, [id, projectedState, enrolled]] of cases.entries()) {
+      const number = index + 1;
+      const stop = ["blocked", "error", "needs-intervention"].includes(projectedState) ? projectedState : "blocked";
+      const labels = [...(enrolled ? ["conveyor"] : []), "conveyor:implementation", `conveyor:${stop}`];
+      const sourceIssue = {
+        id, number, url: `https://github.com/owner/repo/issues/${number}`, title: id, body: "",
+        state: id === "closed" ? "closed" as const : "open" as const, stateReason: null, labels, updatedAt: "2026-10-01T00:00:00Z",
+      };
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: sourceIssue.url, title: id, body: "", sourceState: sourceIssue.state, sourceStateReason: null, labels, sourceUpdatedAt: sourceIssue.updatedAt });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage: id === "offboarded" ? null : "implementation", state: projectedState, warning: null });
+      store.setStageState({ issueId: id, stageId: "implementation", status: projectedState, feedbackCycle: 0, configHash: config.hash });
+      const liveLabels = id === "active" || id === "stale-state"
+        ? ["conveyor", "conveyor:implementation"]
+        : id === "stale-stage"
+          ? ["conveyor", "conveyor:review", "conveyor:blocked"]
+          : labels;
+      liveIssues.set(number, { ...sourceIssue, labels: liveLabels });
+    }
+    const child = {
+      id: "rollup-child", number: 20, url: "https://github.com/owner/repo/issues/20", title: "child", body: "", state: "open" as const, stateReason: null,
+      labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-10-01T00:00:00Z",
+    };
+    store.upsertIssue({ id: child.id, repositoryId: "repo", sourceNumber: child.number, sourceUrl: child.url, title: child.title, body: child.body, sourceState: child.state, sourceStateReason: null, labels: child.labels, sourceUpdatedAt: child.updatedAt });
+    store.setIssueProjection(child.id, { stage: "implementation", state: "active", warning: null });
+    store.replaceRelationships(child.id, { parentId: "rollup", siblingOrder: null }, []);
+    store.createRun({ id: "active-run", issueId: "running", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-01T00:00:00Z" });
+
+    const replacements: string[][] = [];
+    const github = {
+      async getIssue(_address: string, number: number) {
+        const issue = liveIssues.get(number);
+        if (!issue) throw new Error("not found");
+        return issue;
+      },
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { replacements.push([...labels]); },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    const dashboard = service.dashboard("csrf");
+    const cards = [...dashboard.stages.flatMap((stage) => stage.issues), ...dashboard.attention.issues, ...dashboard.backlog];
+    const retryableById = new Map(cards.map((issue) => [issue.id, issue.retryable]));
+    expect(retryableById).toMatchObject({ blocked: true, error: true, intervention: true });
+    expect(retryableById).toMatchObject({ active: false, "needs-input": false, rejected: false, closed: false, unenrolled: false, running: false, rollup: false });
+    expect(retryableById.has("offboarded")).toBe(false);
+
+    const rejectedIds = ["active", "needs-input", "rejected", "closed", "unenrolled", "running", "rollup", "offboarded", "stale-state", "stale-stage"];
+    for (const id of rejectedIds) {
+      await expect(service.retryIssue(id, "must not be recorded", "operator")).rejects.toThrow();
+      expect(store.listConversationMessages(id)).toEqual([]);
+    }
+    await expect(service.retryIssue("missing", "", "operator")).rejects.toThrow("issue not found");
+    await expect(service.retryIssue("blocked", "x".repeat(4_001), "operator")).rejects.toThrow("4000 characters");
+    expect(store.listConversationMessages("blocked")).toEqual([]);
+    expect(replacements).toEqual([]);
     store.close();
   });
 
