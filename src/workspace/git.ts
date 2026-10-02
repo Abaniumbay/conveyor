@@ -1,3 +1,5 @@
+import path from "node:path";
+
 // The git operations workspace tasks need, behind an interface so tests use a fake.
 
 export interface GitOps {
@@ -30,6 +32,20 @@ async function mustRun(cwd: string, args: string[]): Promise<string> {
   const result = await run(cwd, args);
   if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || `exit ${result.exitCode}`}`);
   return result.stdout;
+}
+
+/**
+ * The git metadata a worktree's own commands write: its private git dir (index, HEAD, rebase state)
+ * and the shared objects, refs and reflogs. A linked worktree keeps all of these under the main
+ * repository's .git, outside the worktree, so a sandbox scoped to the worktree leaves them read-only.
+ * Only existing paths are returned; none when the directory is not a git checkout.
+ */
+export async function worktreeGitPaths(workspace: string): Promise<string[]> {
+  const result = await run(workspace, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+  if (result.exitCode !== 0) return [];
+  const [gitDir, commonDir] = result.stdout.split("\n");
+  if (!gitDir || !commonDir) return [];
+  return [gitDir, ...["objects", "refs", "logs"].map((name) => path.join(commonDir, name))];
 }
 
 /** `git` CLI implementation. Reads use local refs only; fetch and push are the sole network calls. */

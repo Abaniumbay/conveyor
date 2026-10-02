@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import path from "node:path";
+
 import { z } from "zod";
 
 import { agentGrantableTools } from "../mcp/tools";
@@ -26,6 +29,13 @@ const absolutePathSchema = z
   .string()
   .min(1)
   .refine((value) => value.startsWith("/"), "must resolve to an absolute path");
+
+/** An absolute path, or one under the service user's home written as `~/…`. */
+const homePathSchema = z
+  .string()
+  .min(1)
+  .transform((value) => (value === "~" || value.startsWith("~/") ? path.join(homedir(), value.slice(1)) : value))
+  .refine((value) => value.startsWith("/"), "must be an absolute path or start with ~/");
 
 const identifierSchema = z.string().trim().min(1).max(100);
 
@@ -164,6 +174,10 @@ const agentSchema = z
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     instructions: absolutePathSchema,
     workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
+    /** Live web search; a workspace-write agent's own commands also get the network (installs, registries). */
+    network: z.boolean().default(false),
+    /** Extra directories a workspace-write agent's commands may write, such as package caches. Missing ones are skipped. */
+    writableRoots: z.array(homePathSchema).default([]),
     /** The exact grant: canonical camelCase tool task names. Defaults to every grantable tool. */
     tasks: z.array(z.string()).optional(),
     /** Legacy snake_case grant; normalised to `tasks` through the alias table. */
