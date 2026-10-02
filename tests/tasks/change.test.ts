@@ -612,6 +612,18 @@ describe("findings", () => {
     expect(open.findings.map((f) => f.body)).toEqual(["b"]);
   });
 
+  test("change.listFindings re-reads native review first, so a thread resolved on the host since the last gate is not listed open", async () => {
+    const host: Parameters<typeof world>[0] = { artifacts: [artifact()] };
+    const w = await world(host);
+    await run("change.load", { context: {}, deps: w.deps });
+    const [imported] = findings(w).list("i1");
+    expect(imported!.state).toBe("open");
+    host.artifacts = [artifact({ resolved: true })];
+    const open = await dispatch(w, "change.listFindings", { state: "open" }) as { findings: unknown[] };
+    expect(open.findings).toEqual([]);
+    expect(findings(w).get("i1", imported!.id)!.state).toBe("resolved");
+  });
+
   test("change.load imports native review and puts the findings in the change context", async () => {
     const w = await world({ artifacts: [artifact()] });
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
