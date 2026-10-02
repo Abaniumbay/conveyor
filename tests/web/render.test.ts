@@ -407,6 +407,29 @@ describe("renderDashboard", () => {
     expect(html).toContain(".stage-summary{display:flex;min-width:0;align-items:center;justify-content:space-between");
   });
 
+  test("keeps board cards compact and ellipsizes a blocker while preserving its full summary", () => {
+    const reason = "The deployment provider rejected the expired repository credential and a repository owner must replace it before implementation can continue.";
+    const blocked = {
+      ...backlogIssue,
+      id: "blocked",
+      state: "blocked",
+      reason,
+      blocked: true,
+      tone: "danger" as const,
+    };
+    const html = renderDashboard({
+      ...dashboard,
+      needsYou: [],
+      questions: [],
+      stages: [{ ...dashboard.stages[0]!, issues: [blocked] }],
+    });
+
+    expect(html).toContain(`class="issue-status-context" title="${reason}"`);
+    expect(html).toContain(`<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p>${reason}</p>`);
+    expect(html).toContain(".stage:not(.stage--empty){width:min(20rem,86vw);min-width:min(20rem,86vw);max-width:min(20rem,86vw);flex:0 0 min(20rem,86vw)}");
+    expect(html).toContain(".issue-status-context{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}");
+  });
+
   test("renders backlog ordering inside the board", () => {
     const html = renderDashboard(dashboard);
     expect(html).toContain('Move #43 up" disabled');
