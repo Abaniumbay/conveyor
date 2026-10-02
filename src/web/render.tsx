@@ -261,7 +261,7 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
       <p class="issue-status">
         <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
         <strong>{issue.waiting ? "Waiting" : stateWords(issue)}</strong>
-        {statusContext && <> · <span>{statusContext}</span></>}
+        {statusContext && <> · <span class="issue-status-context" title={statusContext}>{statusContext}</span></>}
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
       </p>
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
