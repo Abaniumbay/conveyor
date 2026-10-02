@@ -213,6 +213,8 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       errors.push(`agents.${name}.runner references unknown runner "${agent.runner}"`);
     } else if (runner.type === "claude-code" && agent.workspaceAccess !== "read-only") {
       errors.push(`agents.${name} runs on Claude Code, which supports only access: read-only for now`);
+    } else if (runner.type === "claude-code" && (agent.network || agent.writableRoots.length > 0)) {
+      errors.push(`agents.${name} runs on Claude Code, which does not support network or writableRoots yet`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {

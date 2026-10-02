@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfigError, loadConfig } from "../../src/config/load";
@@ -195,6 +195,15 @@ repositories:
       await writeFile(path.join(directory, "conveyor.yml"), configWith(agentLines));
       return loadConfig(directory);
     }
+
+    test("network defaults off; writable roots accept absolute and ~/ paths", async () => {
+      expect((await load("")).agents.worker).toMatchObject({ network: false, writableRoots: [] });
+      const config = await load("    network: true\n    writableRoots: [/var/cache/x, ~/.bun/install/cache]");
+      expect(config.agents.worker).toMatchObject({ network: true, writableRoots: ["/var/cache/x", path.join(homedir(), ".bun/install/cache")] });
+    });
+    test("a relative writable root is a config error", async () => {
+      await expect(load("    writableRoots: [cache]")).rejects.toThrow("writableRoots");
+    });
 
     test("tasks is the exact grant, in camelCase", async () => {
       const config = await load("    tasks: [item.get, change.setMetadata]");

@@ -161,6 +161,43 @@ describe("runCodex", () => {
     expect(persisted.args[1]).not.toBe("resume");
   });
 
+  test("network and writable roots become Codex sandbox overrides, on new and resumed runs alike", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args }));
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: []
+      }));
+    `);
+    const base = {
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts, prompt: "p",
+      sandbox: "workspace-write" as const, automaticApprovals: true,
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+    };
+    const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
+    const access = { network: true, writableRoots: ["/repo/.git/worktrees/w", "/home/u/.bun/install/cache"] };
+    const expected = [
+      'web_search="live"',
+      "sandbox_workspace_write.network_access=true",
+      'sandbox_workspace_write.writable_roots=["/repo/.git/worktrees/w","/home/u/.bun/install/cache"]',
+    ];
+
+    for (const input of [{ ...base, ...access }, { ...base, ...access, resumeSessionId: "sess-1" }]) {
+      await runCodex(input);
+      const got = await args();
+      for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
+    }
+
+    await runCodex({ ...base, ...access, sandbox: "read-only", automaticApprovals: false });
+    const readOnly = await args();
+    expect(readOnly).toContain('web_search="live"');
+    expect(readOnly.some((arg) => arg.startsWith("sandbox_workspace_write."))).toBe(false);
+
+    await runCodex(base);
+    const plain = await args();
+    expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write."))).toBe(false);
+  });
+
   test("classifies usage-limit failures for automatic retry", async () => {
     const files = await fixture(`
       console.error("You have hit your usage limit. Try again later.");

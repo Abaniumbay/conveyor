@@ -211,6 +211,35 @@ describe("agent.run", () => {
     expect(w.store.listConversationMessages("i1").map((m) => [m.actorType, m.message])).toEqual([["agent", "Implementation completed: Implemented."]]);
   });
 
+  test("a workspace-write agent may write its worktree's git metadata and its existing extra roots, with network when enabled", async () => {
+    const w = await world();
+    const workspace = w.store.getActiveWorkspace("i1")!.path;
+    await mkdir(workspace, { recursive: true });
+    Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
+    Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
+    const cache = path.join(w.root, "cache");
+    await mkdir(cache);
+    Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(w.root, "missing")] });
+    expect((await w.run(false)).status).toBe("pass");
+    const git = path.join(workspace, ".git");
+    expect(w.calls[0]).toMatchObject({ network: true, writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache] });
+  });
+
+  test("a read-only agent gets network (web search) but no writable roots", async () => {
+    const w = await world();
+    Object.assign(w.deps.config.agents.shirin!, { network: true, writableRoots: [w.root] });
+    expect((await w.run(false, { agent: "shirin" })).status).toBe("pass");
+    expect(w.calls[0]!.sandbox).toBe("read-only");
+    expect(w.calls[0]!.network).toBe(true);
+    expect(w.calls[0]!.writableRoots).toBeUndefined();
+  });
+
+  test("an agent without network gets none", async () => {
+    const w = await world();
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.calls[0]!.network).toBeUndefined();
+  });
+
   test("passes the run's abort signal to the harness", async () => {
     const w = await world();
     w.setBehaviour((call) => { expect(call.signal).toBeDefined(); return {}; });

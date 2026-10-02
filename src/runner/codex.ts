@@ -40,6 +40,10 @@ export interface CodexRunInput {
    * allowlisted proxies. Absent means the legacy behaviour (sanitized environment only).
    */
   egress?: EgressInput;
+  /** Live web search, plus network for the agent's commands under workspace-write. */
+  network?: boolean;
+  /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
+  writableRoots?: string[];
 }
 
 export { CODEX_CONTROL_PLANE_HOSTS };
@@ -121,6 +125,17 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
+// Web search runs on the model side, so a read-only agent can have it too. Network for commands and
+// extra writable roots are workspace-write settings; read-only has neither.
+function accessArguments(input: CodexRunInput): string[] {
+  const args: string[] = [];
+  if (input.network) args.push("-c", `web_search=${tomlString("live")}`);
+  if (input.sandbox !== "workspace-write") return args;
+  if (input.network) args.push("-c", "sandbox_workspace_write.network_access=true");
+  if (input.writableRoots?.length) args.push("-c", `sandbox_workspace_write.writable_roots=${tomlArray(input.writableRoots)}`);
+  return args;
+}
+
 function mcpArguments(input: CodexRunInput): string[] {
   return [
     "-c",
@@ -144,7 +159,7 @@ function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: st
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
-  args.push(...extra, ...mcpArguments(input), sessionId, "-");
+  args.push(...accessArguments(input), ...extra, ...mcpArguments(input), sessionId, "-");
   return args;
 }
 
@@ -162,7 +177,7 @@ function buildArguments(input: CodexRunInput, outputFile: string, extra: string[
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(...extra, ...mcpArguments(input), "-");
+  args.push(...accessArguments(input), ...extra, ...mcpArguments(input), "-");
   return args;
 }
 
