@@ -67,6 +67,26 @@ const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP to
 const DASHBOARD_PAGE_SIZE = 20;
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
+const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
+
+function resultReason(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const direct = (value as { reason?: unknown }).reason;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const nested = (value as { stageResult?: unknown }).stageResult;
+  return nested === value ? null : resultReason(nested);
+}
+
+/** The durable stop reason survives after the transient issue warning is cleared. */
+function latestStopReason(store: ConveyorStore, issueId: string): string | null {
+  const latestTransition = [...store.listStageTransitions(issueId)].reverse().find(
+    (candidate) => candidate.status === "completed",
+  );
+  if (latestTransition) {
+    return latestTransition.kind === "stopped" ? latestTransition.reason : null;
+  }
+  return resultReason(store.listIssueRuns(issueId)[0]?.result);
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1569,6 +1589,18 @@ export class ConveyorService {
         ? this.#infrastructureFailures.get(issue.id)?.waiting ?? null
         : null;
       const waiting = parked ?? retry;
+      const stopped = STOPPED_ISSUE_STATES.has(projectedState);
+      const openQuestion = stopped ? openQuestions.find((question) => question.issueId === issue.id) : undefined;
+      const waitingDependencies = dependencies.filter((dependency) => !dependency.satisfied);
+      const dependencyReason = waitingDependencies.length > 0
+        ? `Waiting for ${waitingDependencies.map((dependency) => `#${dependency.number} ${dependency.title}`).join(", ")} to be completed.`
+        : null;
+      const stopReason = stopped
+        ? latestStopReason(this.store, issue.id) ??
+          (openQuestion ? `${openQuestion.reason}. Answer needed: ${openQuestion.prompt}` : null) ??
+          dependencyReason ?? issue.warning ?? options.reason ??
+          "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
+        : null;
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -1582,12 +1614,12 @@ export class ConveyorService {
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
           : state ? `${state.stageId} · ${state.status}` : null,
-        reason: issue.warning ?? options.reason ?? null,
+        reason: stopReason ?? issue.warning ?? options.reason ?? null,
         cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
         stateChangedAt: state?.updatedAt ?? issue.sourceUpdatedAt,
         waiting,
-        blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(issue.projectedState ?? ""),
+        blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(projectedState),
         inconsistent: issue.projectedState === "inconsistent",
         closable: issue.labels.includes(this.config.labels.metadata.closable),
         tone: tone(projectedState),
@@ -1595,9 +1627,7 @@ export class ConveyorService {
         children,
         dependencies,
         working: activeIssueIds.has(issue.id),
-        needsAttention: questionIssueIds.has(issue.id) || [
-          "blocked", "error", "needs-input", "needs-intervention", "rejected",
-        ].includes(projectedState),
+        needsAttention: questionIssueIds.has(issue.id) || STOPPED_ISSUE_STATES.has(projectedState),
       };
     };
     const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
@@ -1613,19 +1643,36 @@ export class ConveyorService {
     const stages = [...stageNames.keys()];
     const actorsForStage = (stageId: string): StageActorViewModel[] => {
       const actors: StageActorViewModel[] = [];
+      const addAgent = (agentId: string) => {
+        const agent = this.config.agents[agentId];
+        actors.push({
+          type: "agent",
+          name: agent?.name ?? displayName(agentId),
+          title: agent?.title ?? "AI agent",
+        });
+      };
       for (const pipeline of Object.values(this.config.pipelines)) {
         const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
         if (!stage) continue;
-        if (isNativeStage(stage) || stage.run?.type !== "agent") {
+        if (isNativeStage(stage)) {
+          const agentIds = stage.actions.flatMap((task) => {
+            if (task.task !== "agent.run") return [];
+            const single = task.with?.agent;
+            const listed = task.with?.agents;
+            return [
+              ...(typeof single === "string" ? [single] : []),
+              ...(Array.isArray(listed) ? listed.filter((value): value is string => typeof value === "string") : []),
+            ];
+          });
+          if (agentIds.length === 0) actors.push({ type: "script", name: "Script", title: null });
+          else agentIds.forEach(addAgent);
+          continue;
+        }
+        if (stage.run.type !== "agent") {
           actors.push({ type: "script", name: "Script", title: null });
           continue;
         }
-        const agent = this.config.agents[stage.run.agent];
-        actors.push({
-          type: "agent",
-          name: agent?.name ?? displayName(stage.run.agent),
-          title: agent?.title ?? "AI agent",
-        });
+        addAgent(stage.run.agent);
       }
       return [...new Map(actors.map((actor) => [
         `${actor.type}:${actor.name}:${actor.title ?? ""}`,
@@ -1885,11 +1932,11 @@ export class ConveyorService {
     const cursor = this.store.executions().getCursor(issueId);
     const pending = cursor?.state === "pending";
     const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
-    const stopped = ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? "");
+    const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
     const nowState = pending ? "waiting" : activeRun ? "running" : stopped ? "stopped" : issue.projectedState ?? issue.sourceState;
     const nowReason = pending
       ? this.store.executions().pendingMessage(issueId) ?? issue.warning
-      : stopped ? issue.warning : null;
+      : stopped ? latestStopReason(this.store, issueId) ?? issue.warning : null;
     const actorFor = (stageId: string | null): string => {
       if (!stageId) return "Conveyor · Orchestrator";
       const found = pipeline?.stages.find((candidate) => candidate.id === stageId);

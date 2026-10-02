@@ -107,6 +107,20 @@ describe("ConveyorService dashboard", () => {
     store.setQueueRank("issue", 10);
     store.setIssueProjection("issue", { stage: "implementation", state: "blocked", warning: null });
     store.setStageState({ issueId: "issue", stageId: "implementation", status: "blocked", feedbackCycle: 2, configHash: config.hash });
+    store.beginStageTransition({
+      id: "blocked-transition",
+      issueId: "issue",
+      fromStage: "implementation",
+      toStage: "implementation",
+      kind: "stopped",
+      sourceMutationId: null,
+      detail: {
+        reason: "The deployment API rejected the configured token with HTTP 401. A repository owner must replace the expired token before implementation can continue.",
+        requiredFixes: ["Replace the expired deployment API token."],
+        resultStatus: "blocked",
+      },
+    });
+    store.completeStageTransition("blocked-transition");
     store.setIssueProjection("blocker", { stage: null, state: "offboarded", warning: null });
     store.replaceRelationships("issue", null, ["blocker"]);
     const replaced: string[][] = [];
@@ -123,6 +137,15 @@ describe("ConveyorService dashboard", () => {
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
+
+    expect(service.dashboard("csrf").stages[0]?.issues[0]).toMatchObject({
+      state: "blocked",
+      reason: "The deployment API rejected the configured token with HTTP 401. A repository owner must replace the expired token before implementation can continue.",
+    });
+    expect(service.issueJourney("issue")?.now).toMatchObject({
+      state: "stopped",
+      reason: "The deployment API rejected the configured token with HTTP 401. A repository owner must replace the expired token before implementation can continue.",
+    });
 
     await expect(service.postIssueMessage("issue", "The API access blocker is resolved; please continue.", "operator")).resolves.toMatchObject({
       status: "queued",
@@ -574,7 +597,11 @@ describe("ConveyorService dashboard", () => {
           stages: [
             { id: "refinement", run: { type: "agent", agent: "refiner" } },
             { id: "implementation", name: "Build", run: { type: "agent", agent: "implementer" } },
-            { id: "ci", run: { type: "agent", agent: "implementer" } },
+            {
+              id: "ci",
+              actions: [{ task: "agent.run", with: { agents: ["implementer", "refiner"] } }],
+              exitGate: [{ task: "change.merged" }],
+            },
           ],
         },
       },
@@ -821,6 +848,10 @@ describe("ConveyorService dashboard", () => {
       page: 1,
       totalPages: 1,
     });
+    expect(dashboard.stages.find((column) => column.id === "stage:ci")?.actors).toEqual([
+      { type: "agent", name: "Implementer", title: "Senior Developer" },
+      { type: "agent", name: "Refiner", title: "Product Owner" },
+    ]);
     expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29, 31]);
     expect(implementation?.issues[0]).toMatchObject({
       dependencies: [{ number: 1, satisfied: true }],

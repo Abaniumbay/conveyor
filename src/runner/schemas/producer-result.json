@@ -5,8 +5,8 @@
     "version": { "type": "integer", "enum": [1] },
     "outcome": { "type": "string", "enum": ["success", "failure"] },
     "status": { "type": "string", "minLength": 1 },
-    "summary": { "type": "string", "minLength": 1 },
-    "reason": { "type": ["string", "null"] },
+    "summary": { "type": "string", "minLength": 1, "description": "A concise outcome summary. For failures, do not use this in place of the specific reason." },
+    "reason": { "type": ["string", "null"], "description": "Required for a failure. Name the concrete blocker, supporting evidence, and exact action and owner needed to continue; never merely repeat the status." },
     "metrics": { "type": "object", "properties": {}, "additionalProperties": false },
     "artifacts": {
       "type": "array",

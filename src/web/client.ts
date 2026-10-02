@@ -60,6 +60,18 @@ export const dashboardClient = String.raw`(() => {
     return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date);
   };
 
+  const actorAvatar = (name, type) => {
+    const avatar = document.createElement('span');
+    const words = String(name || 'Agent').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    avatar.textContent = words.map((word) => word.charAt(0).toUpperCase()).join('') || 'A';
+    let hash = 0;
+    for (const character of String(name || 'Agent')) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+    avatar.className = 'agent-avatar agent-avatar--' + (Math.abs(hash) % 6 + 1);
+    avatar.setAttribute('aria-hidden', 'true');
+    if (type === 'conveyor') avatar.textContent = 'C';
+    return avatar;
+  };
+
   // Plain-text messages with http(s) URLs made clickable. Built from text nodes
   // and anchors, never innerHTML, so message content cannot inject markup.
   const appendLinkedText = (parent, text) => {
@@ -200,6 +212,9 @@ export const dashboardClient = String.raw`(() => {
       const actor = document.createElement('strong');
       const actorName = message.actorType === 'user' ? 'You' : String(message.actorName || 'Agent');
       actor.textContent = actorName + (message.actorTitle ? ' · ' + String(message.actorTitle) : '');
+      const identity = document.createElement('span');
+      identity.className = 'conversation-actor';
+      identity.append(actorAvatar(actorName, message.actorType), actor);
       const meta = document.createElement('small');
       if (message.stageId) meta.append(String(message.stageId) + ' · ');
       const time = document.createElement('time');
@@ -209,7 +224,7 @@ export const dashboardClient = String.raw`(() => {
       const body = document.createElement('div');
       body.className = 'markdown';
       appendMarkdown(body, String(message.message || ''));
-      header.append(actor, meta);
+      header.append(identity, meta);
       item.append(header, body);
       root.append(item);
     }

@@ -266,6 +266,8 @@ describe("renderDashboard", () => {
     expect(html).toContain(">Review</h2>");
     expect(html).toContain("Implementer");
     expect(html).toContain("Senior Developer");
+    expect(html).toContain('class="agent-avatar agent-avatar--');
+    expect(html).toContain('class="stage-actor"');
     expect(html).toContain(">Done</h2>");
     expect(html).toContain('aria-label="41 issues"');
     expect(html).toContain("Page 2 of 3");
@@ -293,6 +295,10 @@ describe("renderDashboard", () => {
     expect(html).toContain("Keyboard usable");
     expect(html).toContain("Running verification");
     expect(html).toContain("Waiting for checks");
+    expect(html).toContain('<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p>Waiting for checks</p>');
+    expect(html).toContain('border-left:16px solid var(--repo-color,var(--line))');
+    expect(html).toContain('.blocked-summary{margin:.75rem 0 0;');
+    expect(html).toContain('color:var(--stop)');
     expect(html).toContain("Needs attention");
     expect(html).toContain("Needs you <span>(2)</span>");
     expect(html).toContain("#41 Build &lt;safe> &amp; sound");

@@ -339,6 +339,10 @@ describe("agent.run", () => {
     const w = await world();
     w.setBehaviour(() => ({ outcome: "failure", status, summary: "No go", reason }));
     expect(await w.run(false)).toEqual({ status: "fail", message: reason, route: { stop: status } });
+    expect(w.calls[0]!.prompt).toContain("name the concrete blocker, the evidence that established it, and the exact action");
+    expect(w.store.listConversationMessages("i1").at(-1)?.message).toBe(
+      `Implementation stopped as ${status}.\n\n**Why:** ${reason}.\n\n**Summary:** No go.`,
+    );
   });
 
   test("changes-requested with a finding recorded in the run passes so the gates decide", async () => {
