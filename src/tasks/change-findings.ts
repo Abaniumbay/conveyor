@@ -129,7 +129,14 @@ const listFindings: TaskDefinition<unknown, z.output<typeof listInput>, Deps> = 
   description: "List the review findings of the change (id, author, state, location, URL, text), optionally only those in one state.",
   reads: [], writes: [], invalidates: [],
   input: listInput,
-  run({ deps, input }) {
+  async run({ deps, input }) {
+    // Agents act on this list, so it must include review threads resolved or added on the code host
+    // since the last change.load; otherwise a resolved thread still reads as open.
+    const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    if (stored) {
+      const delivery = await codeHostOf(deps).getChangeDelivery({ address: deps.repository.address, id: stored.id });
+      await importNativeReview(deps, stored.id, delivery.change.headSha);
+    }
     const state = input?.state;
     const rows = findingsOf(deps).list(deps.issueId).filter((finding) => !state || finding.state === state);
     return pass({ findings: rows.map(({ projection: _projection, ...rest }: Finding) => rest) });
