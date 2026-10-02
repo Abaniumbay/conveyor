@@ -42,7 +42,7 @@ describe("ConveyorService dashboard", () => {
       labels: ["conveyor", "conveyor:implementation", `conveyor:${id === "error" ? "error" : id === "intervention" ? "needs-intervention" : "blocked"}`, "conveyor:order:7", "area:web", "priority:high"],
       updatedAt: "2026-10-01T00:00:00Z",
     }));
-    const blocker = { id: "blocker", number: 5, url: "https://github.com/owner/repo/issues/5", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
+    const blocker = { id: "blocker", number: 7, url: "https://github.com/owner/repo/issues/7", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
     for (const issue of issues) {
       store.upsertIssue({ id: issue.id, repositoryId: "repo", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: issue.body, sourceState: issue.state, sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
       store.setQueueRank(issue.id, issue.number);
@@ -175,10 +175,10 @@ describe("ConveyorService dashboard", () => {
     const service = new ConveyorService(config, store, github as never);
     const dashboard = service.dashboard("csrf");
     const cards = [...dashboard.stages.flatMap((stage) => stage.issues), ...dashboard.attention.issues, ...dashboard.backlog];
-    const retryableById = new Map(cards.map((issue) => [issue.id, issue.retryable]));
+    const retryableById = Object.fromEntries(cards.map((issue) => [issue.id, issue.retryable]));
     expect(retryableById).toMatchObject({ blocked: true, error: true, intervention: true });
     expect(retryableById).toMatchObject({ active: false, "needs-input": false, rejected: false, closed: false, unenrolled: false, running: false, rollup: false });
-    expect(retryableById.has("offboarded")).toBe(false);
+    expect(retryableById).not.toHaveProperty("offboarded");
 
     const rejectedIds = ["active", "needs-input", "rejected", "closed", "unenrolled", "running", "rollup", "offboarded", "stale-state", "stale-stage"];
     for (const id of rejectedIds) {
