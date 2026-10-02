@@ -240,4 +240,8 @@ describe("workspace tools", () => {
     expect(registry.require("workspace.push").mutating).toBe(true);
     expect(registry.require("workspace.push").invalidates).toEqual(["workspace"]);
   });
+  test("push and fetch are not journaled: an agent may push or fetch again after new commits in the same run", () => {
+    expect(registry.require("workspace.push").journal).toBe(false);
+    expect(registry.require("workspace.fetch").journal).toBe(false);
+  });
 });
