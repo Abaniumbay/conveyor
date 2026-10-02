@@ -18,6 +18,81 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("retries stopped issues at their current stage, retaining labels and recording only supplied feedback after source success", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-retry-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: {
+        enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "review", run: { type: "agent", agent: "reviewer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const issues = ["with-note", "without-note", "failed", "stale"].map((id, index) => ({
+      id, number: index + 1, url: `https://github.com/owner/repo/issues/${index + 1}`, title: id,
+      body: "keep this body", state: "open" as const, stateReason: null,
+      labels: ["conveyor", "conveyor:implementation", "conveyor:blocked", "conveyor:order:7", "area:web", "priority:high"],
+      updatedAt: "2026-10-01T00:00:00Z",
+    }));
+    const blocker = { id: "blocker", number: 5, url: "https://github.com/owner/repo/issues/5", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
+    for (const issue of issues) {
+      store.upsertIssue({ id: issue.id, repositoryId: "repo", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: issue.body, sourceState: issue.state, sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
+      store.setQueueRank(issue.id, issue.number);
+      store.setIssueProjection(issue.id, { stage: "implementation", state: "blocked", warning: null });
+      store.setStageState({ issueId: issue.id, stageId: "implementation", status: "blocked", feedbackCycle: 2, configHash: config.hash });
+    }
+    store.upsertIssue({ id: blocker.id, repositoryId: "repo", sourceNumber: blocker.number, sourceUrl: blocker.url, title: blocker.title, body: blocker.body, sourceState: blocker.state, sourceStateReason: null, labels: blocker.labels, sourceUpdatedAt: blocker.updatedAt });
+    store.setIssueProjection(blocker.id, { stage: null, state: "offboarded", warning: null });
+    for (const issue of issues) store.replaceRelationships(issue.id, null, ["blocker"]);
+    const enrollment = store.activateEnrollment("with-note");
+    store.recordWorkspace({ id: "existing-worktree", enrollmentId: enrollment.id, path: path.join(root, "existing-worktree"), branch: "conveyor/1-r1-feature", status: "active" });
+    store.createRun({ id: "prior-run", issueId: "with-note", stageId: "implementation", attempt: 1, kind: "producer", status: "completed", configHash: config.hash, startedAt: "2026-09-30T00:00:00Z" });
+    const replacements: string[][] = [];
+    const github = {
+      async getIssue(_address: string, number: number) {
+        const issue = issues.find((candidate) => candidate.number === number)!;
+        return number === 4 ? { ...issue, state: "closed" as const } : issue;
+      },
+      async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
+        if (number === 3) throw new Error("source label update failed");
+        replacements.push([...labels]);
+        const issue = issues.find((candidate) => candidate.number === number)!;
+        issue.labels = [...labels, ...issue.labels.filter((label) => !label.startsWith("conveyor:") && label !== "conveyor")];
+      },
+      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 4 ? [blocker] : []; },
+      async upsertStatusComment() { return 1; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    await expect(service.retryIssue("with-note", "Android run passed", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
+    await expect(service.retryIssue("without-note", "", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
+    await expect(service.retryIssue("failed", "do not record this", "operator")).rejects.toThrow("source label update failed");
+    await expect(service.retryIssue("stale", "do not record this either", "operator")).rejects.toThrow("inconsistent; refresh before retrying");
+    expect(replacements).toEqual([
+      ["conveyor", "conveyor:implementation", "conveyor:order:7"],
+      ["conveyor", "conveyor:implementation", "conveyor:order:7"],
+    ]);
+    expect(issues[0]!.labels).toContain("priority:high");
+    expect(issues[0]!.labels).toContain("area:web");
+    expect(store.getIssue("with-note")).toMatchObject({ projectedState: "active", projectedStage: "implementation", body: "keep this body" });
+    expect(store.listConversationMessages("with-note").filter((message) => message.actorType === "user").map((message) => message.message)).toEqual(["Android run passed"]);
+    expect(store.listConversationMessages("without-note").filter((message) => message.actorType === "user")).toEqual([]);
+    expect(store.getStageState("with-note")).toMatchObject({ stageId: "implementation", status: "ready", feedbackCycle: 0 });
+    expect(store.getActiveWorkspace("with-note")).toMatchObject({ id: "existing-worktree", path: path.join(root, "existing-worktree"), branch: "conveyor/1-r1-feature" });
+    expect(store.listIssueRuns("with-note").map((run) => run.id)).toContain("prior-run");
+    expect(store.getIssue("failed")).toMatchObject({ projectedState: "blocked", labels: expect.arrayContaining(["conveyor:blocked"]) });
+    expect(store.listConversationMessages("failed").filter((message) => message.actorType === "user")).toEqual([]);
+    expect(store.listConversationMessages("stale").filter((message) => message.actorType === "user")).toEqual([]);
+    store.close();
+  });
+
   test("a user conversation message clears a recoverable stop and queues the current stage", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-resume-"));
     temporaryDirectories.push(root);

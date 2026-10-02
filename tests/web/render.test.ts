@@ -31,6 +31,7 @@ const parent: IssueCardViewModel = {
   ],
   working: true,
   needsAttention: true,
+  retryable: false,
 };
 
 const backlogIssue: IssueCardViewModel = {
@@ -58,6 +59,7 @@ const backlogIssue: IssueCardViewModel = {
   dependencies: [],
   working: false,
   needsAttention: false,
+  retryable: false,
 };
 
 const completedIssue: IssueCardViewModel = {
@@ -173,6 +175,20 @@ const dashboard: DashboardViewModel = {
 };
 
 describe("renderDashboard", () => {
+  test("shows retry controls on stopped retryable cards and their details only", () => {
+    const stopped = { ...backlogIssue, id: "stopped", state: "blocked", retryable: true };
+    const html = renderDashboard({
+      ...dashboard,
+      stages: [{ ...dashboard.stages[0]!, issues: [stopped] }],
+      backlog: [backlogIssue],
+    });
+    expect(html.match(/>Retry</g)).toHaveLength(2);
+    expect(html).toContain('data-retry-card');
+    expect(html).toContain('data-retry-form');
+    expect(html).toContain('maxlength="4000"');
+    expect(html).toContain('role="status" aria-live="polite" data-retry-status');
+  });
+
   test("initializes and controls system, light, and dark themes without a first-paint flash", () => {
     const html = renderDashboard(dashboard);
     // A blocking script in <head>, before the stylesheet; a file, since the CSP forbids inline scripts.

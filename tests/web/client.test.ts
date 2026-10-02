@@ -46,5 +46,10 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("closest('.dashboard-header details')");
     expect(dashboardClient).toContain("openDetails.querySelector('summary')");
     expect(dashboardClient).toContain("summary.focus()");
+    expect(dashboardClient).toContain("[data-retry-card]");
+    expect(dashboardClient).toContain("[data-retry-form]");
+    expect(dashboardClient).toContain("Retry accepted. A fresh attempt is queued.");
+    expect(dashboardClient).toContain("Retry failed: ");
+    expect(dashboardClient).toContain("button.disabled = true");
   });
 });

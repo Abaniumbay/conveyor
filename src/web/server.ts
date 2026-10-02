@@ -47,6 +47,7 @@ export interface WebHandlerDependencies {
     message: string,
     username: string,
   ) => unknown | Promise<unknown>;
+  retryIssue: (issueId: string, note: string, username: string) => unknown | Promise<unknown>;
   /** Dismisses an open review finding on behalf of the signed-in operator; rejects when it cannot be dismissed. */
   dismissFinding: (issueId: string, findingId: string, reason: string, username: string) => void | Promise<void>;
   /** Read-only profiles of the configured agents. */
@@ -639,6 +640,28 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         }
       }
       return response(null, 405, "text/plain; charset=utf-8", { allow: "GET, POST" });
+    }
+
+    const issueRetry = /^\/api\/issues\/([^/]{1,1000})\/retry$/.exec(path);
+    if (issueRetry) {
+      if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "POST" });
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try { issueId = decodeURIComponent(issueRetry[1]!); } catch { return text("Invalid issue id", 400); }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const noteValues = form.getAll("note");
+      if (noteValues.length > 1 || (noteValues[0]?.length ?? 0) > 4_000) return text("Invalid retry note", 400);
+      try {
+        const result = await dependencies.retryIssue(issueId, (noteValues[0] ?? "").trim(), dependencies.username);
+        return json({ accepted: true, result: result ?? null }, 202);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to retry issue";
+        return text(message, message === "issue not found" ? 404 : 409);
+      }
     }
 
     const issueRunEvents = /^\/api\/issues\/([^/]{1,1000})\/activity\/runs\/([A-Za-z0-9-]{1,100})\/events$/.exec(path);

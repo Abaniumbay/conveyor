@@ -44,6 +44,7 @@ export interface IssueCardViewModel {
   working: boolean;
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;
+  retryable: boolean;
 }
 
 export interface ActiveRunViewModel {
