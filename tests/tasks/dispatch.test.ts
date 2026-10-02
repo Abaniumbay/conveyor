@@ -21,6 +21,10 @@ function registry(): TaskRegistry {
       input: z.object({}), run() { return pass({ thing: 1 }); },
     },
     {
+      name: "item.syncThing", kind: "tool", description: "Syncs a thing", reads: [], writes: [], invalidates: [], mutating: true, journal: false,
+      input: z.object({}), run() { runs.push("sync"); return pass({ accepted: true }); },
+    },
+    {
       name: "item.broken", kind: "tool", description: "Fails", reads: [], writes: [], invalidates: [], mutating: true,
       input: z.object({}), run() { return fail("nope"); },
     },
@@ -131,6 +135,16 @@ describe("dispatchTool", () => {
     expect(runs).toHaveLength(2);
     await dispatchTool({ name: "item.setThing", input: { value: "a" }, grant: { ...g, runId: "run-2" }, actor }, e);
     expect(runs).toHaveLength(3);
+  });
+
+  test("an unjournaled mutating call runs every time, even with identical input in the same run", async () => {
+    const e = env();
+    runs.length = 0;
+    const g = grant(["item.syncThing"]);
+    await dispatchTool({ name: "item.syncThing", input: {}, grant: g, actor }, e);
+    await dispatchTool({ name: "item.syncThing", input: {}, grant: g, actor }, e);
+    expect(runs).toEqual(["sync", "sync"]);
+    expect(e.journal.size).toBe(0);
   });
 
   test("a failed mutating call is marked failed and may be retried", async () => {

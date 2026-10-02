@@ -125,19 +125,25 @@ const tool = <I>(
   },
 });
 
+// Git push and fetch are already safe to repeat, and an agent pushes again after every fix in the
+// same run. Journaling them by run and input would replay the first call's `accepted` and silently
+// skip each later push, so they opt out and every call reaches git.
+const unjournaled = <I>(definition: TaskDefinition<unknown, I, Deps>): TaskDefinition<unknown, I, Deps> =>
+  ({ ...definition, journal: false });
+
 const get = tool("workspace.get", "Read scoped workspace metadata (path and branch).", emptyInput, false,
   async (_args, workspace) => ({ path: workspace.path, branch: workspace.branch }));
 
-const fetch = tool("workspace.fetch", "Fetch the repository base branch from origin into the workspace.", emptyInput, true,
+const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base branch from origin into the workspace.", emptyInput, true,
   async ({ deps }, workspace) => {
     await deps.git.fetch(workspace.path, "origin", deps.repository.baseBranch);
     return { accepted: true };
-  });
+  }));
 
-const push = tool("workspace.push", "Push the workspace branch to origin, optionally with --force-with-lease.", pushInput, true,
+const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin, optionally with --force-with-lease.", pushInput, true,
   async ({ deps, input }, workspace) => {
     await deps.git.push(workspace.path, workspace.branch, { forceWithLease: input!.forceWithLease === true });
     return { accepted: true };
-  }, ["workspace"]);
+  }, ["workspace"]));
 
 export const workspaceGroup = defineGroup("workspace", [load, ensure, pushed, cleanup, removed, get, fetch, push]);
