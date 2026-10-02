@@ -8,7 +8,7 @@ import {
 } from "node:crypto";
 
 const COOKIE_NAME = "conveyor_session";
-const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const HASH_BYTES = 32;
 const CSRF_BYTES = 32;
 const MAX_COOKIE_LENGTH = 4096;
