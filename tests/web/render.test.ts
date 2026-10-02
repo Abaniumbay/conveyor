@@ -203,9 +203,17 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="details-kicker repo-color-1"><span class="repository-badge"');
     expect(html).toContain('class="needs-you-item repo-color-1"');
     expect(html).toContain('class="needs-you-item needs-you-item--question repo-color-1"');
-    expect(html).toContain('--repo-1:#7655B5');
+    expect(html).toContain('--repo-1:#2563EB');
+    expect(html).toContain('--repo-2:#7C3AED');
+    expect(html).toContain('--repo-3:#0F766E');
+    expect(html).toContain('--repo-4:#657A1F');
+    expect(html).toContain('--repo-5:#0284C7');
     expect(html).toContain(':root[data-theme="dark"]');
-    expect(html).toContain('--repo-1:#B69CFF');
+    expect(html).toContain('--repo-1:#7BA8FF');
+    expect(html).toContain('--repo-2:#BEA3FF');
+    expect(html).toContain('--repo-3:#63D5C5');
+    expect(html).toContain('--repo-4:#C5D66D');
+    expect(html).toContain('--repo-5:#66C7F0');
   });
 
   test("gives running and needs-attention cards distinct accessible glows", () => {
