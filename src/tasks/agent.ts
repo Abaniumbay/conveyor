@@ -8,6 +8,7 @@
 // the session when the harness can resume and otherwise starts a fresh attempt that carries the
 // question and answer. Both paths end in the same captured result.
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -24,6 +25,7 @@ import {
 import type { AgentContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
+import { worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
 
 type Deps = TaskDeps;
@@ -198,6 +200,7 @@ async function runAgent(
               sandbox: agent.workspaceAccess === "read-only" ? ("read-only" as const) : runner.sandbox,
               automaticApprovals: runner.automaticApprovals,
               ...egressFor(deps, runner),
+              ...(await codexAccess(agent, workspace.path)),
             }
           : {
               sandbox: "read-only" as const,
@@ -322,6 +325,20 @@ export const agentGroup = defineGroup("agent", [
   event("agent.reportMilestone", "Record a milestone the agent reached.", "report_milestone", looseInput),
   event("agent.recordArtifact", "Record an artifact (a log, a report, a file) produced during the run.", "record_artifact", looseInput, undefined, true),
 ]);
+
+/**
+ * What a Codex agent may reach beyond its sandbox defaults. A workspace-write agent owns its whole
+ * worktree, including the git metadata kept under the main repository's .git, plus any configured
+ * roots (package caches) that exist on this machine.
+ */
+async function codexAccess(
+  agent: { workspaceAccess: string; network?: boolean; writableRoots?: string[] },
+  workspace: string,
+): Promise<{ network?: true; writableRoots?: string[] }> {
+  const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), ...(agent.writableRoots ?? [])];
+  const writableRoots = [...new Set(roots)].filter((root) => existsSync(root));
+  return { ...(agent.network ? { network: true as const } : {}), ...(writableRoots.length > 0 ? { writableRoots } : {}) };
+}
 
 function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {
   const egress = agentEgressFor(deps.config, deps.repository.id, runner);
