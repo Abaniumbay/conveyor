@@ -36,6 +36,15 @@ export interface StoredIssue extends IssueProjection {
   warning: string | null;
 }
 
+export interface DashboardAccount {
+  id: string;
+  username: string;
+  passwordHash: string;
+  role: "superuser" | "user";
+  avatar: string;
+  sessionVersion: number;
+}
+
 export interface SourceMutation {
   id: string;
   idempotencyKey: string;
@@ -237,6 +246,37 @@ export class ConveyorStore {
       .query("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
       .get() as { version: number };
     return row.version;
+  }
+
+  dashboardAccounts(): DashboardAccount[] {
+    return this.#database.query(`SELECT id, username, password_hash AS passwordHash, role, avatar, session_version AS sessionVersion FROM dashboard_accounts ORDER BY role DESC, username COLLATE NOCASE`).all() as DashboardAccount[];
+  }
+
+  dashboardAccountById(id: string): DashboardAccount | null {
+    return (this.#database.query(`SELECT id, username, password_hash AS passwordHash, role, avatar, session_version AS sessionVersion FROM dashboard_accounts WHERE id = ?`).get(id) as DashboardAccount | undefined) ?? null;
+  }
+
+  dashboardAccountByUsername(username: string): DashboardAccount | null {
+    return (this.#database.query(`SELECT id, username, password_hash AS passwordHash, role, avatar, session_version AS sessionVersion FROM dashboard_accounts WHERE username = ? COLLATE NOCASE`).get(username) as DashboardAccount | undefined) ?? null;
+  }
+
+  seedDashboardSuperuser(username: string, passwordHash: string): void {
+    if (this.#database.query("SELECT 1 FROM dashboard_accounts LIMIT 1").get()) return;
+    this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'superuser', ?)`).run(randomUUID(), username, passwordHash, now());
+  }
+
+  createDashboardUser(username: string, passwordHash: string): DashboardAccount {
+    const id = randomUUID();
+    this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'user', ?)`).run(id, username, passwordHash, now());
+    return this.dashboardAccountById(id)!;
+  }
+
+  changeDashboardPassword(id: string, passwordHash: string): void {
+    this.#database.query("UPDATE dashboard_accounts SET password_hash = ?, session_version = session_version + 1 WHERE id = ?").run(passwordHash, id);
+  }
+
+  changeDashboardAvatar(id: string, avatar: string): void {
+    this.#database.query("UPDATE dashboard_accounts SET avatar = ? WHERE id = ?").run(avatar, id);
   }
 
   private migrate(): void {

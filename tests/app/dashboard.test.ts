@@ -345,6 +345,7 @@ describe("ConveyorService dashboard", () => {
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
+    store.seedDashboardSuperuser("operator", "persisted-hash");
 
     expect(service.dashboard("csrf").stages[0]?.issues[0]).toMatchObject({
       state: "blocked",
@@ -367,6 +368,7 @@ describe("ConveyorService dashboard", () => {
       { actor: "operator", message: "The API access blocker is resolved; please continue." },
       { actor: "Conveyor", message: expect.stringContaining("Queued implementation") },
     ]);
+    expect(service.issueConversation("issue")?.messages[0]).toMatchObject({ actorName: "operator", actorAvatar: "🐼" });
     expect(service.dashboard("csrf").activeWork.runnerCount).toBe(0);
     store.close();
   });

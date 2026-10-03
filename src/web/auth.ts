@@ -29,6 +29,17 @@ export interface WebAuthConfig {
   sessionSecret: string | undefined;
   sessionTtlSeconds?: number;
   secureCookies?: boolean;
+  username?: string;
+  accountById?: (id: string) => WebAccountIdentity | null;
+  accountByUsername?: (username: string) => (WebAccountIdentity & { passwordHash: string }) | null;
+}
+
+export interface WebAccountIdentity {
+  id: string;
+  username: string;
+  role: "superuser" | "user";
+  avatar: string;
+  sessionVersion: number;
 }
 
 export interface WebAuthDependencies {
@@ -39,6 +50,7 @@ export interface WebAuthDependencies {
 export interface WebSession {
   csrfToken: string;
   expiresAt: number;
+  account: WebAccountIdentity;
 }
 
 export interface CreatedWebSession extends WebSession {
@@ -56,6 +68,7 @@ interface ParsedPasswordHash {
 interface SessionPayload {
   csrf: string;
   exp: number;
+  account: WebAccountIdentity;
 }
 
 function toBase64Url(value: Uint8Array): string {
@@ -173,6 +186,12 @@ function safeEqualBase64Url(left: string, right: string, byteLength: number): bo
   return timingSafeEqual(normalizedLeft, normalizedRight) && Boolean(validLengths);
 }
 
+function constantTextEquals(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
 function cookieTokenFromHeader(header: string | undefined): string | null {
   return parseCookie(header, COOKIE_NAME);
 }
@@ -217,16 +236,19 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
       decipher.setAuthTag(tag);
       const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
       const payload = JSON.parse(plaintext) as Partial<SessionPayload>;
-      if (typeof payload.csrf !== "string" || typeof payload.exp !== "number" || !Number.isSafeInteger(payload.exp)) return null;
+      if (typeof payload.csrf !== "string" || typeof payload.exp !== "number" || !Number.isSafeInteger(payload.exp) || !payload.account || typeof payload.account.id !== "string" || typeof payload.account.username !== "string" || (payload.account.role !== "user" && payload.account.role !== "superuser") || typeof payload.account.avatar !== "string" || !Number.isSafeInteger(payload.account.sessionVersion)) return null;
       const csrfBytes = fromBase64Url(payload.csrf);
       if (!csrfBytes || csrfBytes.length !== CSRF_BYTES || payload.exp <= now()) return null;
-      return { csrfToken: payload.csrf, expiresAt: payload.exp };
+      const account = config.accountById ? config.accountById(payload.account.id) : payload.account;
+      if (!account) return null;
+      if (account.sessionVersion !== payload.account.sessionVersion) return null;
+      return { csrfToken: payload.csrf, expiresAt: payload.exp, account };
     } catch {
       return null;
     }
   }
 
-  function createSession(): CreatedWebSession | null {
+  function createSession(account: WebAccountIdentity = { id: "legacy", username: config.username ?? "operator", role: "superuser", avatar: "🐼", sessionVersion: 1 }): CreatedWebSession | null {
     if (!isConfigured || !encryptionKey || !signingKey) return null;
     const issuedAt = now();
     if (!Number.isSafeInteger(issuedAt)) return null;
@@ -238,7 +260,7 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
     const iv = Buffer.from(ivBytes);
     const cipher = createCipheriv("aes-256-gcm", encryptionKey, iv);
     const ciphertext = Buffer.concat([
-      cipher.update(JSON.stringify({ csrf: csrfToken, exp: expiresAt } satisfies SessionPayload), "utf8"),
+      cipher.update(JSON.stringify({ csrf: csrfToken, exp: expiresAt, account } satisfies SessionPayload), "utf8"),
       cipher.final(),
     ]);
     const base = `v1.${toBase64Url(iv)}.${toBase64Url(ciphertext)}.${toBase64Url(cipher.getAuthTag())}`;
@@ -247,6 +269,7 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
     return {
       csrfToken,
       expiresAt,
+      account,
       cookie: serializeSessionCookie(token, expiresAt, ttl, secureCookies),
     };
   }
@@ -254,9 +277,24 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
   return {
     isConfigured,
     cookieName: COOKIE_NAME,
-    authenticate(password: string): boolean {
+    authenticate(username: string, password?: string): boolean {
+      if (config.accountByUsername) {
+        if (password === undefined) return false;
+        const account = config.accountByUsername(username);
+        const hash = account?.passwordHash ?? config.passwordHash;
+        const passwordMatches = Boolean(hash && verifyPassword(password, hash));
+        return Boolean(account && passwordMatches);
+      }
+      if (password !== undefined && config.username && !constantTextEquals(username, config.username)) return false;
+      const submittedPassword = password ?? username;
       if (!hashParts || !config.passwordHash || !secret) return false;
-      return verifyPassword(password, config.passwordHash);
+      return verifyPassword(submittedPassword, config.passwordHash);
+    },
+    findAccount(username: string): WebAccountIdentity | null {
+      const account = config.accountByUsername?.(username);
+      if (!account) return null;
+      const { passwordHash: _passwordHash, ...identity } = account;
+      return identity;
     },
     createSession,
     getSession,

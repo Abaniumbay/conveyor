@@ -555,6 +555,149 @@ describe("createWebHandler", () => {
     expect(calls.messages).toEqual([["github:owner/repo#1", "Please preserve the public API.", "operator"]]);
   });
 
+  test("ordinary accounts keep dashboard reads and conversation posting while every admin action is denied", async () => {
+    const account = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1 };
+    const hash = hashPassword("correct horse", { salt: "0123456789abcdef" });
+    const auth = createWebAuth({
+      passwordHash: hash,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: () => account,
+      accountByUsername: (username) => username === account.username ? { ...account, passwordHash: hash } : null,
+    });
+    const { handler, calls } = setup({
+      auth,
+      getAgentProfiles: () => [],
+      getReport: async () => ({
+        period: "all", since: null, repository: null, repositories: [],
+        totals: { delivered: 0, inProgress: 0, runs: 0, failedRuns: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, agentMs: 0,
+          avgTokensPerItem: 0, avgRunsPerItem: 0, avgLeadMs: 0, avgAgentMs: 0, avgChecksWaitMs: 0, avgWaitingForYouMs: 0, avgQueuedMs: 0,
+          avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: null },
+        byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
+      }),
+    });
+    const created = auth.createSession(account)!;
+    const cookie = created.cookie.split(";")[0]!;
+    const csrf = created.csrfToken;
+
+    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
+      const page = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+      expect(page.status).toBe(200);
+    }
+    const conversation = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation", { headers: { cookie } }));
+    expect(conversation.status).toBe(200);
+    const post = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/conversation", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message: "hello", username: "admin", actorId: "admin", csrf }),
+    }));
+    expect(post.status).toBe(201);
+    expect(calls.messages[0]).toEqual(["github:owner/repo#1", "hello", "reader"]);
+
+    const formPost = (path: string, fields: Record<string, string> = {}) => handler(new Request(`http://localhost${path}`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, ...fields }),
+    }));
+    for (const [path, fields] of [
+      ["/api/issues/i-1/retry", {}],
+      ["/questions/q-1/answer", { answer: "yes" }],
+      ["/backlog/reorder", { issueId: "i-1", direction: "up" }],
+      ["/backlog/move", { issueId: "i-1", beforeIssueId: "i-2" }],
+      ["/steering", { prompt: "inspect" }],
+    ] as const) expect((await formPost(path, fields)).status).toBe(403);
+    const dismissal = await handler(new Request("http://localhost/api/issues/i-1/findings/f-1/dismiss", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ reason: "resolved" }),
+    }));
+    expect(dismissal.status).toBe(403);
+    expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(403);
+    expect(calls.retries).toHaveLength(0);
+    expect(calls.answers).toHaveLength(0);
+    expect(calls.reorders).toHaveLength(0);
+    expect(calls.moves).toHaveLength(0);
+    expect(calls.steering).toHaveLength(0);
+    expect(calls.dismissals).toHaveLength(0);
+  });
+
+  test("superusers can list and create accounts, with invalid and duplicate input rejected", async () => {
+    const accounts: { id: string; username: string; role: "user"; avatar: string }[] = [];
+    const { handler, auth } = setup({
+      maxBodyBytes: 4096,
+      listAccounts: () => accounts,
+      createAccount: (username: string) => {
+        if (accounts.some((item) => item.username.toLowerCase() === username.toLowerCase())) throw new Error("duplicate");
+        const created = { id: `id-${accounts.length}`, username, role: "user" as const, avatar: "🐼" };
+        accounts.push(created);
+        return created;
+      },
+    });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const page = await handler(new Request("http://localhost/accounts", { headers: { cookie } }));
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('action="/api/accounts"');
+    expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(200);
+    const create = (username: string, password = "long enough password") => handler(new Request("http://localhost/api/accounts", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, username, password }),
+    }));
+
+    expect((await create("bad name")).status).toBe(400);
+    expect(accounts).toHaveLength(0);
+    expect((await create("reader")).status).toBe(201);
+    expect(accounts).toHaveLength(1);
+    expect((await create("reader")).status).toBe(409);
+    expect(accounts).toHaveLength(1);
+  });
+
+  test("users can change only their own avatar and password, and password changes revoke old sessions", async () => {
+    const hash = hashPassword("initial password", { salt: "0123456789abcdef" });
+    let storedHash = hash;
+    let account = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🐼", sessionVersion: 1 };
+    const auth = createWebAuth({
+      passwordHash: hash,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: () => account,
+      accountByUsername: (username) => username === account.username ? { ...account, passwordHash: storedHash } : null,
+    });
+    const dependencies = {
+      getAccount: (id: string) => id === account.id ? { ...account, passwordHash: storedHash } : null,
+      changePassword: (id: string, nextHash: string) => {
+        expect(id).toBe(account.id);
+        storedHash = nextHash;
+        account = { ...account, sessionVersion: account.sessionVersion + 1 };
+      },
+      changeAvatar: (id: string, avatar: string) => {
+        expect(id).toBe(account.id);
+        account = { ...account, avatar };
+      },
+    };
+    const { handler } = setup({ auth, maxBodyBytes: 4096, ...dependencies });
+    const created = auth.createSession(account)!;
+    const cookie = created.cookie.split(";")[0]!;
+    const csrf = created.csrfToken;
+    const post = (path: string, fields: Record<string, string>) => handler(new Request(`http://localhost${path}`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, ...fields }),
+    }));
+
+    expect((await post("/api/profile/avatar", { avatar: "invalid" })).status).toBe(400);
+    expect((await post("/api/profile/avatar", { avatar: "🦊", accountId: "another-user" })).status).toBe(200);
+    expect(account.avatar).toBe("🦊");
+    const profile = await handler(new Request("http://localhost/profile", { headers: { cookie } }));
+    expect(await profile.text()).toContain('option value="🦊" selected');
+
+    expect((await post("/api/profile/password", { currentPassword: "wrong password", newPassword: "replacement password" })).status).toBe(403);
+    expect(account.sessionVersion).toBe(1);
+    const changed = await post("/api/profile/password", { currentPassword: "initial password", newPassword: "replacement password" });
+    expect(changed.status).toBe(303);
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie } }))).status).toBe(303);
+    const loginResponse = await handler(new Request("http://localhost/login", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: "reader", password: "replacement password" }),
+    }));
+    expect(loginResponse.status).toBe(303);
+    expect(auth.authenticate("reader", "initial password")).toBe(false);
+    expect(auth.authenticate("reader", "replacement password")).toBe(true);
+  });
+
   test("retries only through a signed-in CSRF protected request and permits a blank note", async () => {
     const { handler, auth, calls } = setup({ maxBodyBytes: 8_192 });
     const url = "http://localhost/api/issues/github%3Aowner%2Frepo%231/retry";

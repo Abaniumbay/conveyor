@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { createWebAuth } from "./auth";
+import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
 import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
 import { REPORT_PERIOD_VALUES } from "./report-page";
@@ -15,6 +15,11 @@ export interface IssueRouteTarget { id: string; repository: string; number: numb
 export interface WebHandlerDependencies {
   auth: WebAuthApi;
   username: string;
+  listAccounts?: () => readonly Omit<WebAccountIdentity, "sessionVersion">[];
+  getAccount?: (id: string) => (WebAccountIdentity & { passwordHash: string }) | null;
+  createAccount?: (username: string, passwordHash: string) => WebAccountIdentity;
+  changePassword?: (id: string, passwordHash: string) => void;
+  changeAvatar?: (id: string, avatar: string) => void;
   getDashboard: (
     csrfToken: string,
     pagination: DashboardPageSelection,
@@ -60,6 +65,7 @@ export interface WebHandlerDependencies {
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+export const PROFILE_AVATARS = ["🐼", "🦊", "🐨", "🐯", "🐸", "🦉", "🐙", "🦁"] as const;
 const DEFAULT_DONE_LIMIT = 20;
 const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
@@ -390,6 +396,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     return dependencies.auth.getSession(request.headers.get("cookie") ?? undefined);
   }
 
+  function requireSuperuser(request: Request): Response | null {
+    const current = session(request);
+    return !current ? json({ error: "unauthorized" }, 401) : current.account.role !== "superuser" ? json({ error: "forbidden" }, 403) : null;
+  }
+
   return async (request: Request): Promise<Response> => {
     let url: URL;
     try {
@@ -451,11 +462,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const username = oneValue(form, "username");
       const password = oneValue(form, "password");
       if (username === null || username.length > 200 || password === null || password.length > 1024) return text("Invalid login request", 400);
-      const passwordAccepted = dependencies.auth.authenticate(password);
-      if (!constantTextEquals(username, dependencies.username) || !passwordAccepted) {
+      if (!dependencies.auth.authenticate(username, password)) {
         return response(loginPage("The credentials were not accepted."), 401, "text/html; charset=utf-8");
       }
-      const created = dependencies.auth.createSession();
+      const account = dependencies.auth.findAccount(username);
+      const created = dependencies.auth.createSession(account ?? undefined);
       if (!created) return text("Unable to create session", 503);
       return redirect("/board", { "set-cookie": created.cookie });
     }
@@ -468,6 +479,84 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
+    }
+
+    if (path === "/api/accounts") {
+      const denied = requireSuperuser(request);
+      if (denied) return denied;
+      if (request.method === "GET") return json({ accounts: dependencies.listAccounts?.() ?? [] });
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const username = oneValue(form, "username")?.trim();
+      const password = oneValue(form, "password");
+      if (!username || username.length > 64 || !/^[\p{L}\p{N}_.@-]+$/u.test(username) || !password || password.length < 12 || password.length > 1024) {
+        return json({ error: "Username must be 1–64 letters, numbers, or ._@-; password must be at least 12 characters." }, 400);
+      }
+      if (!dependencies.createAccount) return json({ error: "Account management is unavailable" }, 503);
+      try {
+        const created = await dependencies.createAccount(username, hashPassword(password));
+        return json({ account: { id: created.id, username: created.username, role: created.role, avatar: created.avatar } }, 201);
+      } catch {
+        return json({ error: "That username is already in use." }, 409);
+      }
+    }
+
+    if (path === "/accounts") {
+      const current = session(request);
+      if (!current) return redirect("/login");
+      if (current.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const accounts = dependencies.listAccounts?.() ?? [];
+      const rows = accounts.map((account) => `<li>${escapeHtml(account.avatar)} ${escapeHtml(account.username)} — ${escapeHtml(account.role)}</li>`).join("");
+      const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Accounts · Conveyor</title></head><body><main><h1>Dashboard accounts</h1><p><a href="/board">Dashboard</a> · <a href="/profile">Your profile</a></p><ul>${rows}</ul><h2>Create user</h2><form method="post" action="/api/accounts"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Username <input name="username" maxlength="64" required></label><label>Initial password <input type="password" name="password" minlength="12" required></label><button>Create account</button></form></main></body></html>`;
+      return response(page, 200, "text/html; charset=utf-8");
+    }
+
+    if (path === "/profile") {
+      const current = session(request);
+      if (!current) return redirect("/login");
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const avatars = PROFILE_AVATARS.map((avatar) => `<option value="${avatar}"${avatar === current.account.avatar ? " selected" : ""}>${avatar}</option>`).join("");
+      const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Your profile · Conveyor</title></head><body><main><h1>Your profile</h1><p>${escapeHtml(current.account.avatar)} ${escapeHtml(current.account.username)}</p><p><a href="/board">Dashboard</a></p><form method="post" action="/api/profile/avatar"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Animal avatar <select name="avatar">${avatars}</select></label><button>Save avatar</button></form><h2>Change password</h2><form method="post" action="/api/profile/password"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Current password <input name="currentPassword" type="password" autocomplete="current-password" required></label><label>New password <input name="newPassword" type="password" minlength="12" autocomplete="new-password" required></label><button>Change password</button></form></main></body></html>`;
+      return response(page, 200, "text/html; charset=utf-8");
+    }
+
+    if (path === "/api/profile/password") {
+      const current = session(request);
+      if (!current) return json({ error: "unauthorized" }, 401);
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const oldPassword = oneValue(form, "currentPassword");
+      const newPassword = oneValue(form, "newPassword");
+      const account = dependencies.getAccount?.(current.account.id);
+      if (!oldPassword || !newPassword || newPassword.length < 12 || newPassword.length > 1024) return json({ error: "New password must be at least 12 characters." }, 400);
+      if (!account || !verifyPassword(oldPassword, account.passwordHash)) return json({ error: "Current password was not accepted." }, 403);
+      if (!dependencies.changePassword) return json({ error: "Password changes are unavailable" }, 503);
+      await dependencies.changePassword(current.account.id, hashPassword(newPassword));
+      return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
+    }
+
+    if (path === "/api/profile/avatar") {
+      const current = session(request);
+      if (!current) return json({ error: "unauthorized" }, 401);
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const avatar = oneValue(form, "avatar");
+      if (!avatar || !(PROFILE_AVATARS as readonly string[]).includes(avatar)) return json({ error: "Choose an available avatar." }, 400);
+      if (!dependencies.changeAvatar) return json({ error: "Profile updates are unavailable" }, 503);
+      await dependencies.changeAvatar(current.account.id, avatar);
+      return json({ ok: true, avatar });
     }
 
     const legacyDashboardQuery = path === "/" && ["view", "issue", "tab", "agent", "run"]
@@ -560,7 +649,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const page = dashboardPage(url, dashboardView!, runId, issueId);
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
-        return response(renderDashboard({ ...model, ...(team ? { team } : {}), ...(report ? { report } : {}) }), 200, "text/html; charset=utf-8");
+        return response(renderDashboard({ ...model, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}) }), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
@@ -651,7 +740,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const message = oneValue(form, "message")?.trim();
         if (!message || message.length > 4_000) return text("Invalid conversation message", 400);
         try {
-          const result = await dependencies.postIssueMessage(issueId, message, dependencies.username);
+          const result = await dependencies.postIssueMessage(issueId, message, currentSession.account.username);
           return json({ accepted: true, result: result ?? null }, 201);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unable to add conversation message";
@@ -666,6 +755,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "POST" });
       const currentSession = session(request);
       if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       let issueId: string;
       try { issueId = decodeURIComponent(issueRetry[1]!); } catch { return text("Invalid issue id", 400); }
       if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
@@ -675,7 +765,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const noteValues = form.getAll("note");
       if (noteValues.length > 1 || (noteValues[0]?.length ?? 0) > 4_000) return text("Invalid retry note", 400);
       try {
-        const result = await dependencies.retryIssue(issueId, (noteValues[0] ?? "").trim(), dependencies.username);
+        const result = await dependencies.retryIssue(issueId, (noteValues[0] ?? "").trim(), currentSession.account.username);
         return json({ accepted: true, result: result ?? null }, 202);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unable to retry issue";
@@ -687,7 +777,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (issueRunEvents) {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
       let issueId: string;
       try {
         issueId = decodeURIComponent(issueRunEvents[1]!);
@@ -733,6 +824,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;
       if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const denied = requireSuperuser(request);
+      if (denied) return denied;
       const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
       if (mediaType !== "application/json") return text("Expected application/json", 415);
       if (!dependencies.auth.validateCsrf(request.headers.get("cookie") ?? undefined, request.headers.get("x-csrf-token") ?? undefined)) {
@@ -758,7 +851,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json({ error: "a reason is required" }, 400);
       }
       try {
-        await dependencies.dismissFinding(issueId, findingId, reason.trim(), dependencies.username);
+        await dependencies.dismissFinding(issueId, findingId, reason.trim(), session(request)!.account.username);
         return json({ ok: true });
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "Unable to dismiss finding" }, 409);
@@ -768,7 +861,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/steering") {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
@@ -786,7 +881,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (steeringEvents) {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
       const runId = steeringEvents[1]!;
       const rawAfter = url.searchParams.get("after") ?? "0";
       if (!/^\d+$/.test(rawAfter)) return text("Invalid event cursor", 400);
@@ -842,7 +938,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path.startsWith("/questions/") && path.endsWith("/answer")) {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       const encodedId = path.slice("/questions/".length, -"/answer".length);
       let questionId: string;
       try { questionId = decodeURIComponent(encodedId); } catch { return text("Invalid question id", 400); }
@@ -863,7 +961,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/backlog/reorder") {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
@@ -882,7 +982,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     if (path === "/backlog/move") {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;
-      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);

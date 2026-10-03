@@ -28,9 +28,33 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(11);
+    expect(store.schemaVersion()).toBe(12);
 
     store.close();
+  });
+
+  test("seeds one superuser once and persists accounts, changed credentials, avatars, and session versions", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-accounts-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "conveyor.sqlite");
+    const store = await ConveyorStore.open(databasePath);
+    store.seedDashboardSuperuser("admin", "initial-hash");
+    store.seedDashboardSuperuser("admin", "restart-hash");
+    const admin = store.dashboardAccountByUsername("ADMIN")!;
+    expect(store.dashboardAccounts()).toHaveLength(1);
+    expect(admin.passwordHash).toBe("initial-hash");
+    store.changeDashboardPassword(admin.id, "changed-hash");
+    store.changeDashboardAvatar(admin.id, "🦊");
+    const user = store.createDashboardUser("reader", "reader-hash");
+    store.close();
+
+    const restarted = await ConveyorStore.open(databasePath);
+    restarted.seedDashboardSuperuser("replacement", "replacement-hash");
+    expect(restarted.dashboardAccounts()).toHaveLength(2);
+    expect(restarted.dashboardAccountById(admin.id)).toMatchObject({ passwordHash: "changed-hash", avatar: "🦊", sessionVersion: 2 });
+    expect(restarted.dashboardAccountByUsername("replacement")).toBeNull();
+    expect(restarted.dashboardAccountById(user.id)).toMatchObject({ username: "reader", role: "user" });
+    restarted.close();
   });
 
   test("updates source projections without losing Conveyor queue rank", async () => {
