@@ -248,6 +248,7 @@ describe("ConveyorStore", () => {
       type: "rate_limit_event",
       rate_limit_info: { unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: "2026-10-10T00:00:00Z" } } },
     });
+    store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     store.close();
 
     store = await ConveyorStore.open(database);

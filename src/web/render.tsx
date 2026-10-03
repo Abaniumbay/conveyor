@@ -633,23 +633,24 @@ function HarnessUsage({ model }: { model: DashboardViewModel }) {
           {Object.entries(names).map(([key, label]) => {
             const window = harness.windows[key as keyof typeof names];
             if (!window) return null;
+            const remaining = Math.floor(window.remaining);
             const stale = Date.parse(window.resetsAt) <= Date.now();
             const reset = new Date(window.resetsAt).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
             const reported = new Date(window.reportedAt).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
             return (
               <span
-                class={`quota-window${window.remaining < 10 ? " quota-window--low" : ""}${stale ? " quota-window--stale" : ""}`}
+                class={`quota-window${remaining < 10 ? " quota-window--low" : ""}${stale ? " quota-window--stale" : ""}`}
                 data-quota-window
                 data-reset-at={window.resetsAt}
-                data-remaining={window.remaining}
+                data-remaining={remaining}
                 data-window-name={label}
                 tabIndex={0}
                 title={`Reset: ${reset}. Last reported: ${reported}.`}
-                aria-label={`${harness.name} ${label}: ${stale ? "stale, " : ""}${window.remaining}% remaining. Resets ${reset}. Last reported ${reported}.`}
+                aria-label={`${harness.name} ${label}: ${stale ? "stale, " : ""}${remaining}% remaining. Resets ${reset}. Last reported ${reported}.`}
                 key={key}
               >
-                <span class="quota-value">{stale ? "Stale · " : ""}{window.remaining}% left</span>
-                {window.remaining < 10 && <span class="quota-low-label">Low capacity</span>}
+                <span class="quota-value">{stale ? "Stale · " : ""}{remaining}% left</span>
+                {remaining < 10 && <span class="quota-low-label">Low capacity</span>}
                 <span class="quota-countdown" data-countdown>{stale ? "stale" : "resets in —"}</span>
                 <span class="quota-window-details">Reset: {reset}<br />Last reported: {reported}</span>
               </span>

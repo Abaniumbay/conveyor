@@ -57,6 +57,21 @@ describe("Codex quota telemetry", () => {
 
     expect(readCodexQuota(home).weekly?.remaining).toBe(99);
   });
+
+  test("reuses a recent scan instead of rereading growing session logs for every dashboard request", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-cache-"));
+    temporaryDirectories.push(home);
+    const sessions = path.join(home, "sessions");
+    await mkdir(sessions);
+    const file = path.join(sessions, "session.jsonl");
+    await writeFile(file, JSON.stringify({ timestamp: "2026-10-03T14:04:00.000Z", type: "event_msg", payload: { type: "token_count", rate_limits: {
+      primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 }, secondary: null,
+    } } }) + "\n");
+
+    expect(readCodexQuota(home).weekly?.remaining).toBe(99);
+    await writeFile(file, "not json\n");
+    expect(readCodexQuota(home).weekly?.remaining).toBe(99);
+  });
 });
 
 describe("Claude Code quota telemetry", () => {
@@ -79,7 +94,7 @@ describe("Claude Code quota telemetry", () => {
     ]);
 
     expect(quota.fiveHour).toEqual({ remaining: 80, resetsAt: "2026-10-03T19:00:00.000Z", reportedAt: "2026-10-03T14:10:00.000Z" });
-    expect(quota.weekly?.remaining).toBeCloseTo(4);
+    expect(quota.weekly?.remaining).toBe(4.0000000000000036);
     expect(quota.weekly?.resetsAt).toBe("2026-10-05T22:00:00.000Z");
     expect(quota.weekly?.reportedAt).toBe("2026-10-03T14:04:00.000Z");
   });

@@ -1614,7 +1614,9 @@ export class ConveyorStore {
        FROM run_events h
        JOIN run_events e ON e.run_id = h.run_id AND e.type = 'execution'
        WHERE h.type = 'harness'
-       ORDER BY h.id`,
+         AND json_extract(h.payload_json, '$.type') = 'rate_limit_event'
+       ORDER BY h.id DESC
+       LIMIT 1000`,
     ).all() as Array<Record<string, SQLQueryBindings>>;
     return rows.flatMap((row) => {
       const execution = parseJson<Record<string, unknown>>(String(row.execution_json));

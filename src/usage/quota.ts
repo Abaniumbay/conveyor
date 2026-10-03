@@ -11,6 +11,9 @@ export interface QuotaWindow {
 
 export type QuotaWindows = Partial<Record<QuotaWindowName, QuotaWindow>>;
 
+const CODEX_QUOTA_CACHE_MS = 30_000;
+const codexQuotaCache = new Map<string, { expiresAt: number; value: QuotaWindows }>();
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -53,6 +56,9 @@ function jsonlFiles(directory: string): string[] {
 
 /** Reads the most recent valid Codex quota value per supported window from local session logs. */
 export function readCodexQuota(codexHome: string): QuotaWindows {
+  const now = Date.now();
+  const cached = codexQuotaCache.get(codexHome);
+  if (cached && cached.expiresAt > now) return cached.value;
   const latest: QuotaWindows = {};
   const latestTimes: Partial<Record<QuotaWindowName, number>> = {};
   for (const file of jsonlFiles(path.join(codexHome, "sessions"))) {
@@ -88,6 +94,7 @@ export function readCodexQuota(codexHome: string): QuotaWindows {
       }
     }
   }
+  codexQuotaCache.set(codexHome, { expiresAt: now + CODEX_QUOTA_CACHE_MS, value: latest });
   return latest;
 }
 

@@ -1,11 +1,8 @@
+import { quotaCountdown, updateQuotaWindow } from "../usage/quota-time";
+
 export const dashboardClient = String.raw`(() => {
-  const formatQuotaCountdown = (resetAtMs, nowMs = Date.now()) => {
-    if (resetAtMs <= nowMs) return { stale: true, text: 'stale' };
-    const minutes = Math.floor((resetAtMs - nowMs) / 60000);
-    const days = Math.floor(minutes / 1440);
-    const hours = Math.floor((minutes % 1440) / 60);
-    return { stale: false, text: 'resets in ' + days + 'd ' + hours + 'h ' + (minutes % 60) + 'm' };
-  };
+  const quotaCountdown = ${quotaCountdown.toString()};
+  const updateQuotaWindow = ${updateQuotaWindow.toString()};
   const body = document.body;
   let board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
@@ -176,19 +173,8 @@ export const dashboardClient = String.raw`(() => {
   };
 
   const updateQuotaCountdowns = () => {
-    for (const window of document.querySelectorAll('[data-quota-window]')) {
-      const resetAt = new Date(window.getAttribute('data-reset-at') || '').getTime();
-      const countdown = window.querySelector('[data-countdown]');
-      if (!(countdown instanceof HTMLElement) || Number.isNaN(resetAt)) continue;
-      const result = formatQuotaCountdown(resetAt, Date.now());
-      const stale = result.stale;
-      window.classList.toggle('quota-window--stale', stale);
-      const value = window.querySelector('.quota-value');
-      if (value) value.textContent = (stale ? 'Stale · ' : '') + (window.getAttribute('data-remaining') || '0') + '% left';
-      countdown.textContent = result.text;
-      const name = window.getAttribute('data-window-name') || 'usage';
-      const harnessName = window.closest('.harness-quota')?.querySelector('strong')?.textContent || 'Harness';
-      window.setAttribute('aria-label', harnessName + ' ' + name + ': ' + (stale ? 'stale, ' : '') + (window.getAttribute('data-remaining') || '0') + '% remaining. ' + (window.getAttribute('title') || ''));
+    for (const quotaWindow of document.querySelectorAll('[data-quota-window]')) {
+      if (quotaWindow instanceof HTMLElement) updateQuotaWindow(quotaWindow);
     }
   };
 
