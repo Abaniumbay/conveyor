@@ -545,6 +545,53 @@ export class GitHubAdapter {
     });
   }
 
+  /** A reaction on an inline review comment (REST id). */
+  async reactToReviewComment(address: string, commentId: number, content: "+1" | "-1"): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/pulls/comments/${commentId}/reactions`, body: { content } });
+  }
+
+  /** A reaction on a pull request (issue) comment (REST id). */
+  async reactToIssueComment(address: string, commentId: number, content: "+1" | "-1"): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/issues/comments/${commentId}/reactions`, body: { content } });
+  }
+
+  /** Replies in a review thread (GraphQL node id). */
+  async replyToReviewThread(threadId: string, markdown: string): Promise<void> {
+    await this.#graphql(
+      `mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }`,
+      { thread: threadId, body: markdown },
+    );
+  }
+
+  /** Marks a review thread resolved (GraphQL node id). */
+  async resolveReviewThread(threadId: string): Promise<void> {
+    await this.#graphql(`mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } } }`, { thread: threadId });
+  }
+
+  /** Adds a reaction to the first comment of a review thread. */
+  async reactToReviewThread(threadId: string, content: "+1" | "-1"): Promise<void> {
+    const found = await this.#graphql<{ node?: { comments?: { nodes?: Array<{ id: string }> } } | null }>(
+      `query($thread: ID!) { node(id: $thread) { ... on PullRequestReviewThread { comments(first: 1) { nodes { id } } } } }`,
+      { thread: threadId },
+    );
+    const subject = found.node?.comments?.nodes?.[0]?.id;
+    if (!subject) throw new Error(`review thread ${threadId} has no comment to react to`);
+    await this.#graphql(
+      `mutation($subject: ID!, $content: ReactionContent!) { addReaction(input: {subjectId: $subject, content: $content}) { reaction { content } } }`,
+      { subject, content: content === "+1" ? "THUMBS_UP" : "THUMBS_DOWN" },
+    );
+  }
+
+  async #graphql<T = unknown>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await this.transport.request<{ data?: T; errors?: Array<{ message?: string }> }>({
+      method: "POST", path: "graphql", body: { query, variables },
+    });
+    if (response.errors?.length) {
+      throw new Error(`GitHub GraphQL failed: ${response.errors.map((error) => error.message ?? "error").join("; ")}`);
+    }
+    return response.data as T;
+  }
+
   /** All of the pull request's review threads with their first comment, through paginated GraphQL; throws unless every page was read. */
   async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
     const [owner, name] = address.split("/");
