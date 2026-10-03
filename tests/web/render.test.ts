@@ -568,6 +568,13 @@ describe("renderDashboard", () => {
     expect(html).toContain("reader &amp; friend");
     expect(html).toContain("href=\"/profile\"");
     expect(html).toContain('action="/logout"');
+    expect(html).toContain('<a class="header-link" href="/settings/notifications">Notifications</a>');
+    expect(html).toContain('class="account-menu"');
+    expect(html).toContain('aria-label="Account menu for reader &amp; friend"');
+    expect(html).toContain('href="/profile#change-password">Change password</a>');
+    expect(html).toContain('data-theme-choice="system"');
+    expect(html).toContain('data-theme-choice="light"');
+    expect(html).toContain('data-theme-choice="dark"');
     expect(html).not.toContain('href="/accounts"');
     expect(html).not.toContain("Move #43 up");
     expect(html).not.toContain('action="/steering"');

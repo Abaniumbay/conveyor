@@ -734,9 +734,15 @@ function Page({ model }: { model: DashboardViewModel }) {
             <HarnessUsage model={model} />
             <span class="total-usage">{model.totalUsage}</span>
             <ThemeControl />
-            <span class="signed-in-user">{model.account?.avatar} {model.account?.username}</span>
-            <a href="/settings/notifications">Notifications</a>
-            <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
+            <a class="header-link" href="/settings/notifications">Notifications</a>
+            <details class="account-menu">
+              <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
+              <div class="header-popover account-popover">
+                <a href="/profile">Profile</a>
+                <a href="/profile#change-password">Change password</a>
+                <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
+              </div>
+            </details>
           </header>
           <Line model={model} />
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
