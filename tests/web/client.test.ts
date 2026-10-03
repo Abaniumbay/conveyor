@@ -63,6 +63,10 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("quota-window--stale");
     expect(dashboardClient).toContain("[data-retry-card]");
     expect(dashboardClient).toContain("[data-retry-form]");
+    expect(dashboardClient).toContain("[data-profile-avatar-form], [data-account-create-form]");
+    expect(dashboardClient).toContain(".account-avatar, [data-profile-avatar]");
+    expect(dashboardClient).toContain("status.textContent = 'Saved.'");
+    expect(dashboardClient).toContain("new FormData(form)");
     expect(dashboardClient).toContain("Retry accepted. A fresh attempt is queued.");
     expect(dashboardClient).toContain("Retry failed: ");
     expect(dashboardClient).toContain("button.disabled = true");

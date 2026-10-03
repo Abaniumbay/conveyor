@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
 import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
@@ -73,7 +74,7 @@ export interface WebHandlerDependencies {
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
-export const PROFILE_AVATARS = ["🐼", "🦊", "🐨", "🐯", "🐸", "🦉", "🐙", "🦁"] as const;
+export { PROFILE_AVATARS } from "./account-pages";
 const DEFAULT_DONE_LIMIT = 20;
 const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
@@ -643,28 +644,6 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
-    if (path === "/accounts") {
-      const current = session(request);
-      if (!current) return redirect("/login");
-      if (current.account.role !== "superuser") return json({ error: "forbidden" }, 403);
-      const methodError = requireMethod(request, "GET");
-      if (methodError) return methodError;
-      const accounts = dependencies.listAccounts?.() ?? [];
-      const rows = accounts.map((account) => `<li>${escapeHtml(account.avatar)} ${escapeHtml(account.username)} — ${escapeHtml(account.role)}</li>`).join("");
-      const page = accountPage("Accounts", current, `<h1>Dashboard accounts</h1><ul class="account-list">${rows}</ul><h2>Create user</h2><form method="post" action="/api/accounts"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Username <input name="username" maxlength="64" required></label><label>Initial password <input type="password" name="password" minlength="12" required></label><button>Create account</button></form>`);
-      return response(page, 200, "text/html; charset=utf-8");
-    }
-
-    if (path === "/profile") {
-      const current = session(request);
-      if (!current) return redirect("/login");
-      const methodError = requireMethod(request, "GET");
-      if (methodError) return methodError;
-      const avatars = PROFILE_AVATARS.map((avatar) => `<option value="${avatar}"${avatar === current.account.avatar ? " selected" : ""}>${avatar}</option>`).join("");
-      const page = accountPage("Your profile", current, `<h1>Your profile</h1><p>${escapeHtml(current.account.avatar)} ${escapeHtml(current.account.username)}</p><form method="post" action="/api/profile/avatar"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Animal avatar <select name="avatar">${avatars}</select></label><button>Save avatar</button></form><h2 id="change-password">Change password</h2><form method="post" action="/api/profile/password"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><label>Current password <input name="currentPassword" type="password" autocomplete="current-password" required></label><label>New password <input name="newPassword" type="password" minlength="12" autocomplete="new-password" required></label><button>Change password</button></form>`);
-      return response(page, 200, "text/html; charset=utf-8");
-    }
-
     if (path === "/api/profile/password") {
       const current = session(request);
       if (!current) return json({ error: "unauthorized" }, 401);
@@ -714,13 +693,18 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
             ? "agent"
             : reportPath && dependencies.getReport
               ? "reports"
-              : issuePagePath ? "board" : null;
+              : path === "/accounts"
+                ? "accounts"
+                : path === "/profile"
+                  ? "profile"
+                  : issuePagePath ? "board" : null;
 
     if (legacyDashboardQuery || dashboardView) {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
       if (!currentSession) return redirect(issuePagePath ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
+      if (dashboardView === "accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       try {
         if (legacyDashboardQuery) {
           const legacyIssue = url.searchParams.getAll("issue");
@@ -788,7 +772,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const page = dashboardPage(url, dashboardView!, runId, issueId);
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
-        return response(renderDashboard({ ...model, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}) }), 200, "text/html; charset=utf-8");
+        const accounts = page.view === "accounts" ? dependencies.listAccounts?.() ?? [] : undefined;
+        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}) }), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }

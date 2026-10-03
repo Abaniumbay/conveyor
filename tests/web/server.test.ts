@@ -725,6 +725,7 @@ describe("createWebHandler", () => {
       method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ reason: "resolved" }),
     }));
     expect(dismissal.status).toBe(403);
+    expect((await handler(new Request("http://localhost/accounts", { headers: { cookie } }))).status).toBe(403);
     expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(403);
     expect(calls.retries).toHaveLength(0);
     expect(calls.answers).toHaveLength(0);
@@ -752,8 +753,11 @@ describe("createWebHandler", () => {
     expect(page.status).toBe(200);
     const accountsPage = await page.text();
     expect(accountsPage).toContain('action="/api/accounts"');
-    expect(accountsPage).toContain('class="account-page-content"');
-    expect(accountsPage).toContain('href="/accounts">Accounts</a>');
+    expect(accountsPage).toContain('class="dashboard"');
+    expect(accountsPage).toContain('data-dashboard-view="accounts"');
+    expect(accountsPage).toContain('href="/accounts" class="tab tab--active" aria-current="page">Accounts</a>');
+    expect(accountsPage).toContain('data-account-create-form="true"');
+    expect(accountsPage).toContain('data-account-list="true"');
     expect(accountsPage).toContain('action="/logout"');
     expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(200);
     const create = (username: string, password = "long enough password") => handler(new Request("http://localhost/api/accounts", {
@@ -805,8 +809,13 @@ describe("createWebHandler", () => {
     expect(account.avatar).toBe("🦊");
     const profile = await handler(new Request("http://localhost/profile", { headers: { cookie } }));
     const profilePage = await profile.text();
-    expect(profilePage).toContain('option value="🦊" selected');
-    expect(profilePage).toContain('id="change-password">Change password</h2>');
+    expect(profilePage).toContain('data-dashboard-view="profile"');
+    expect(profilePage).toContain('name="avatar" value="🦊" checked');
+    expect(profilePage).toContain('id="change-password" aria-labelledby="password-heading"');
+    expect(profilePage).toContain('data-profile-avatar-form="true"');
+    expect(profilePage).toContain('<button type="submit">Save</button>');
+    expect(profilePage).not.toContain('Save avatar');
+    expect(profilePage).toContain('href="/profile" class="tab tab--active" aria-current="page"');
     expect(profilePage).toContain('href="/profile#change-password">Change password</a>');
     expect(profilePage).toContain('class="dashboard-header"');
     expect(profilePage).not.toContain('href="/accounts">Accounts</a>');
