@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 // The git operations workspace tasks need, behind an interface so tests use a fake.
@@ -46,6 +48,25 @@ export async function worktreeGitPaths(workspace: string): Promise<string[]> {
   const [gitDir, commonDir] = result.stdout.split("\n");
   if (!gitDir || !commonDir) return [];
   return [gitDir, ...["objects", "refs", "logs"].map((name) => path.join(commonDir, name))];
+}
+
+/**
+ * Adds patterns to the repository's local exclude file (`info/exclude` in the common git dir, shared by
+ * every worktree), so files tools write inside a worktree are never committed. Existing lines are kept;
+ * nothing happens outside a git checkout.
+ */
+export async function ensureGitExcludes(workspace: string, patterns: readonly string[]): Promise<void> {
+  if (patterns.length === 0) return;
+  const result = await run(workspace, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (result.exitCode !== 0 || !result.stdout) return;
+  const file = path.join(result.stdout, "info", "exclude");
+  const current = existsSync(file) ? await readFile(file, "utf8") : "";
+  const present = new Set(current.split(/\r?\n/).map((line) => line.trim()));
+  const missing = [...new Set(patterns)].filter((pattern) => !present.has(pattern));
+  if (missing.length === 0) return;
+  await mkdir(path.dirname(file), { recursive: true });
+  const separator = current === "" || current.endsWith("\n") ? "" : "\n";
+  await appendFile(file, `${separator}${missing.join("\n")}\n`);
 }
 
 /** `git` CLI implementation. Reads use local refs only; fetch and push are the sole network calls. */

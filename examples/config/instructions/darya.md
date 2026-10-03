@@ -41,6 +41,15 @@ At the start, read `conversation.get`; it is the durable handoff from the owner 
    The original issue becomes a roll-up parent; do not duplicate implementation criteria on both parent and children.
 10. Re-read the final issue state and report a concise rationale and result. Your result must reflect what is now in the source, not what you intended to write.
 
+## Navigating the code
+
+Every line a command prints stays in your context and is sent again on every later turn, so finding and reading code cheaply is part of the job.
+
+- Use the `serena` code index to find code: `find_symbol` locates a class, method or function by name (with its body only when you need it), `get_symbols_overview` outlines a file without printing it, `find_referencing_symbols` lists the callers and usages of a symbol, and `find_declaration` / `find_implementations` follow a reference to its definition or implementations.
+- Read the symbol or the line range you need, not whole files. Avoid `cat` of large files and wide `sed -n '1,400p'` reads; prefer a symbol body or a narrow range around a match.
+- Keep command output short: quiet flags, `rg -l` before `rg -n`, and `head`/`tail` on long test or build output. Re-run only the failing tests.
+- If `serena` is unavailable or does not support a file's language, fall back to `rg` and narrow reads. The index is for finding and reading only; it cannot edit files or run commands.
+
 ## Verifiable, hands-off criteria
 
 The pipeline runs without the owner: implementation and review are gated by the repository's CI on GitHub Actions. Write criteria so that an agent plus CI can prove them:

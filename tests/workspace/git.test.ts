@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { cliGit } from "../../src/workspace/git";
+import { cliGit, ensureGitExcludes } from "../../src/workspace/git";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -43,4 +43,32 @@ test("cliGit reports status, heads and ahead/behind from local refs, and push up
   await sh(work, "add", "c"); await sh(work, "commit", "-m", "two");
   expect(await cliGit.aheadBehind(work, "feat")).toEqual({ ahead: 1, behind: 0 });
   await cliGit.fetch(work, "origin", "feat");
+});
+
+test("ensureGitExcludes keeps tool files out of every worktree's status, once, without touching tracked files", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  const main = path.join(root, "main");
+  const linked = path.join(root, "linked");
+  await sh(root, "init", "-b", "main", main);
+  await writeFile(path.join(main, "a"), "1");
+  await sh(main, "add", "."); await sh(main, "commit", "-m", "one");
+  await sh(main, "worktree", "add", "-b", "feat", linked);
+  await Bun.write(path.join(linked, ".serena", "project.yml"), "x");
+  expect(await cliGit.status(linked)).toEqual({ clean: false });
+
+  await ensureGitExcludes(linked, [".serena/"]);
+  await ensureGitExcludes(linked, [".serena/", ".serena/"]);
+
+  expect(await cliGit.status(linked)).toEqual({ clean: true });
+  const exclude = await readFile(path.join(main, ".git", "info", "exclude"), "utf8");
+  expect(exclude.split("\n").filter((line) => line === ".serena/")).toHaveLength(1);
+  expect(await sh(main, "status", "--porcelain")).toBe("");
+});
+
+test("ensureGitExcludes does nothing outside a git checkout or without patterns", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  await ensureGitExcludes(root, [".serena/"]);
+  await ensureGitExcludes(root, []);
 });

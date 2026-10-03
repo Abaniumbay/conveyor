@@ -225,6 +225,31 @@ describe("agent.run", () => {
     expect(w.calls[0]).toMatchObject({ network: true, writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache] });
   });
 
+  test("an agent's codexConfig and MCP servers reach the harness, and their files are git-excluded first", async () => {
+    const w = await world();
+    const workspace = w.store.getActiveWorkspace("i1")!.path;
+    await mkdir(workspace, { recursive: true });
+    Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
+    Object.assign(w.deps.config.agents.kaveh!, {
+      codexConfig: { model_auto_compact_token_limit: 80000 },
+      mcpServers: { serena: { command: "serena", args: ["start-mcp-server", "--project", "{workspace}"], env: { SERENA_HOME: "/s" }, startupTimeoutSec: 60, enabledTools: ["find_symbol"], gitExclude: [".serena/"] } },
+    });
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.calls[0]).toMatchObject({
+      config: { model_auto_compact_token_limit: 80000 },
+      mcpServers: { serena: { command: "serena", args: ["start-mcp-server", "--project", workspace], env: { SERENA_HOME: "/s" }, startupTimeoutSec: 60, enabledTools: ["find_symbol"] } },
+    });
+    expect(w.calls[0]!.mcpServers!.serena).not.toHaveProperty("gitExclude");
+    expect(await Bun.file(path.join(workspace, ".git", "info", "exclude")).text()).toContain(".serena/\n");
+  });
+
+  test("an agent without extensions passes no config or MCP servers", async () => {
+    const w = await world();
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.calls[0]!.config).toBeUndefined();
+    expect(w.calls[0]!.mcpServers).toBeUndefined();
+  });
+
   test("a read-only agent gets network (web search) but no writable roots", async () => {
     const w = await world();
     Object.assign(w.deps.config.agents.shirin!, { network: true, writableRoots: [w.root] });

@@ -129,6 +129,29 @@ describe("reference configuration", () => {
     await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which supports only access: read-only");
   });
 
+  test("Kaveh compacts long sessions, and Kaveh and Darya get a code index limited to lookups", async () => {
+    const config = await loadReference();
+    expect(config.agents.kaveh!.codexConfig).toEqual({ model_auto_compact_token_limit: 80000 });
+    const editingOrShell = /create|replace|insert|delete|rename|write|edit|execute|shell|onboarding|activate/;
+    for (const agent of ["kaveh", "darya"]) {
+      const serena = config.agents[agent]!.mcpServers.serena!;
+      expect(serena.args).toContain("{workspace}");
+      expect(serena.gitExclude).toEqual([".serena/"]);
+      expect(serena.enabledTools).toContain("find_symbol");
+      expect(serena.enabledTools!.filter((tool) => editingOrShell.test(tool))).toEqual([]);
+    }
+  });
+
+  test("a Claude Code agent with codexConfig or mcpServers is refused", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const agentsFile = path.join(directory, "agents.yaml");
+    const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, Record<string, unknown>> };
+    agents.agents.shaghayegh!.mcpServers = { serena: { command: "serena" } };
+    await writeFile(agentsFile, stringify(agents));
+    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which does not support codexConfig or mcpServers yet");
+  });
+
   test("the instructions mention the tasks each agent is granted to do its new duties", async () => {
     const config = await loadReference();
     const read = (agent: string) => readFile(config.agents[agent]!.instructions, "utf8");

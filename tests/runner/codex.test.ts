@@ -198,6 +198,49 @@ describe("runCodex", () => {
     expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write."))).toBe(false);
   });
 
+  test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args }));
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: []
+      }));
+    `);
+    const base = {
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts, prompt: "p",
+      sandbox: "workspace-write" as const, automaticApprovals: true,
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+    };
+    const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
+    const extensions = {
+      config: { model_auto_compact_token_limit: 80000, model_verbosity: "low", hide_agent_reasoning: true },
+      mcpServers: {
+        serena: { command: "serena", args: ["start-mcp-server", "--project-from-cwd"], env: { SERENA_HOME: "/home/u/.serena" }, startupTimeoutSec: 60, enabledTools: ["find_symbol", "get_symbols_overview"] },
+        plain: { command: "idx", args: [], env: {} },
+      },
+    };
+    const expected = [
+      "model_auto_compact_token_limit=80000",
+      'model_verbosity="low"',
+      "hide_agent_reasoning=true",
+      'mcp_servers.serena.command="serena"',
+      'mcp_servers.serena.args=["start-mcp-server","--project-from-cwd"]',
+      'mcp_servers.serena.env={SERENA_HOME="/home/u/.serena"}',
+      "mcp_servers.serena.startup_timeout_sec=60",
+      'mcp_servers.serena.enabled_tools=["find_symbol","get_symbols_overview"]',
+      'mcp_servers.serena.default_tools_approval_mode="approve"',
+      'mcp_servers.plain.command="idx"',
+      "mcp_servers.plain.args=[]",
+    ];
+    for (const input of [{ ...base, ...extensions }, { ...base, ...extensions, resumeSessionId: "sess-1" }]) {
+      await runCodex(input);
+      const got = await args();
+      for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
+      expect(got.some((arg) => arg.startsWith("mcp_servers.serena.required") || arg.startsWith("mcp_servers.plain.env") || arg.startsWith("mcp_servers.plain.enabled_tools"))).toBe(false);
+      expect(got).toContain("mcp_servers.conveyor.required=true");
+    }
+  });
+
   test("classifies usage-limit failures for automatic retry", async () => {
     const files = await fixture(`
       console.error("You have hit your usage limit. Try again later.");
