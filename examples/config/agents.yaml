@@ -11,7 +11,7 @@ agents:
     network: true                          # live web search; read-only, so no network for commands
     tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
             agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria,
+            agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
             item.setSystemLabels, item.setParent, item.setDependencies, item.createChild]
   kaveh:
     name: Kaveh

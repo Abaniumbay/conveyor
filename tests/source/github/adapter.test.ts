@@ -248,6 +248,19 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  test("sets the issue title without touching its body or labels", async () => {
+    const transport = new FakeTransport({});
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.setTitle("owner/repo", 7, "Players pick categories per family");
+
+    expect(transport.requests).toEqual([{
+      method: "PATCH",
+      path: "repos/owner/repo/issues/7",
+      body: { title: "Players pick categories per family" },
+    }]);
+  });
+
   test("replaces configured system labels while preserving workflow and unmanaged labels", async () => {
     const transport = new FakeTransport(
       {

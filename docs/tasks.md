@@ -143,6 +143,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.setDependencies` | tool | - | invalidates item | Replace dependencies of the current issue. |
 | `item.setParent` | tool | - | invalidates item | Set the parent of the current issue. |
 | `item.setSystemLabels` | tool | - | invalidates item | Replace the issue's configured system-area labels while preserving workflow and unmanaged labels. |
+| `item.setTitle` | tool | - | invalidates item | Replace the current issue's title so it states the refined scope. |
 
 ### legacy
 

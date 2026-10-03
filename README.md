@@ -123,7 +123,7 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 
 Tools are the registry's `tool` tasks, named in camelCase:
 
-- `item.*`: `get`, `comment`, `setCriteria`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`, `guidance`
+- `item.*`: `get`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`, `guidance`
 - `workspace.*`: `get`, `fetch`, `push`
 - `change.*`: `get`, `setMetadata`, `checkCriterion`, `uncheckCriterion`, `comment`, `resolveFinding`, `listFindings`
 - `ci.getLogs`, `conversation.get`
@@ -293,7 +293,7 @@ agents:
     instructions: ./instructions/refiner.md
     access: read-only
     tasks: [item.get, item.guidance, workspace.get, conversation.get, agent.reportProgress,
-            agent.askQuestion, item.comment, item.setCriteria, item.setSystemLabels,
+            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels,
             item.setParent, item.setDependencies, item.createChild]
   implementer:
     name: Implementer
