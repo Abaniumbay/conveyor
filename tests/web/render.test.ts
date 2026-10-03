@@ -94,6 +94,10 @@ const dashboard: DashboardViewModel = {
   title: "Conveyor",
   project: "sample/repo",
   totalUsage: "664M in · 2.2M out",
+  harnessUsage: [
+    { id: "codex", name: "Codex", windows: { weekly: { remaining: 9, resetsAt: "2026-10-09T21:11:00Z", reportedAt: "2026-10-03T14:04:00Z" } } },
+    { id: "claude", name: "Claude Code", windows: { fiveHour: { remaining: 86, resetsAt: "2026-10-03T18:30:00Z", reportedAt: "2026-10-03T14:04:00Z" } } },
+  ],
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
@@ -177,6 +181,33 @@ const dashboard: DashboardViewModel = {
 };
 
 describe("renderDashboard", () => {
+  test("renders harness quotas in the shared header with low-capacity and exact reset details", () => {
+    for (const view of ["board", "attention", "team", "reports"] as const) {
+      const html = renderDashboard({ ...dashboard, view, harnessUsage: [
+        { id: "codex", name: "Codex", windows: { weekly: { remaining: 4.0000000000000036, resetsAt: "2026-10-09T21:11:00.000Z", reportedAt: "2026-10-03T14:04:00.000Z" } } },
+        { id: "claude", name: "Claude Code", windows: { fiveHour: { remaining: 86, resetsAt: "2026-10-03T18:30:00.000Z", reportedAt: "2026-10-03T14:04:00.000Z" } } },
+        { id: "stale", name: "Stale", windows: { weekly: { remaining: 70, resetsAt: "2020-01-01T00:00:00.000Z", reportedAt: "2019-12-25T00:00:00.000Z" } } },
+        { id: "unavailable", name: "Unavailable", windows: {} },
+      ] });
+      expect(html).toContain('class="harness-usage"');
+      expect(html).toContain("Codex");
+      expect(html).toContain("Claude Code");
+      expect(html).toContain("Low capacity");
+      expect(html).toContain('data-remaining="4"');
+      expect(html).toContain("4% left");
+      expect(html).not.toContain("4.0000000000000036");
+      expect(html).toContain("Stale · 70% left");
+      expect(html).toContain("quota-window--stale");
+      expect(html).toContain("quota-window--low");
+      expect(html).toContain('tabindex="0"');
+      expect(html).toContain('data-countdown');
+      expect(html).toContain("Reset:");
+      expect(html).toContain("Last reported:");
+      expect(html).toContain("Usage unavailable");
+      expect(html).not.toContain("Unavailable 0% left");
+    }
+  });
+
   test("shows retry controls on stopped retryable cards and their details only", () => {
     const stopped = { ...backlogIssue, id: "stopped", state: "blocked", retryable: true };
     const html = renderDashboard({

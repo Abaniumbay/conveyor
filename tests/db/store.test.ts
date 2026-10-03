@@ -228,6 +228,39 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("retains Claude harness events with their emitting agent across database reopen", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-harness-events-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    let store = await ConveyorStore.open(database);
+    store.createRun({
+      id: "run-claude",
+      issueId: null,
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: "config-hash",
+      startedAt: "2026-10-03T14:00:00.000Z",
+    });
+    store.appendRunEvent("run-claude", "execution", { agentId: "implementer" });
+    store.appendRunEvent("run-claude", "harness", {
+      type: "rate_limit_event",
+      rate_limit_info: { unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: "2026-10-10T00:00:00Z" } } },
+    });
+    store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
+    store.close();
+
+    store = await ConveyorStore.open(database);
+    expect(store.listHarnessRunEvents()).toHaveLength(1);
+    expect(store.listHarnessRunEvents()[0]).toMatchObject({
+      agentId: "implementer",
+      createdAt: expect.any(String),
+      payload: { type: "rate_limit_event" },
+    });
+    store.close();
+  });
+
   test("persists a concise issue conversation independently from technical run events", async () => {
     const store = await openStore();
     store.upsertRepository({
