@@ -611,6 +611,22 @@ describe("renderDashboard", () => {
     expect(profileHtml).not.toContain('Save avatar');
   });
 
+  test("renders Notifications as a shared dashboard view", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      view: "notifications",
+      account: { id: "reader", username: "reader", role: "user", avatar: "🐸" },
+      notifications: { questions: true, stopped: false, done: true },
+    });
+    expect(html).toContain('data-dashboard-view="notifications"');
+    expect(html).toContain('class="header-link header-link--active" href="/settings/notifications" aria-current="page"');
+    expect(html).toContain('id="notification-settings" class="settings-form notification-form"');
+    expect(html).toContain('name="questions" checked');
+    expect(html).toContain('name="done" checked');
+    expect(html).toContain('<script src="/assets/notifications.js" defer></script>');
+    expect(html).not.toContain('class="account-page"');
+  });
+
   test("the team view lists every agent, each opening its read-only profile in a modal", () => {
     const kaveh = {
       id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: "gpt-6-luna", effort: "high",

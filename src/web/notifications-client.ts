@@ -1,8 +1,10 @@
 export const notificationClient = `
 (() => {
+  const bind = () => {
   const form = document.getElementById('notification-settings');
   const status = document.getElementById('notification-status');
-  if (!form || !status) return;
+  if (!form || !status || form.dataset.notificationsBound === 'true') return;
+  form.dataset.notificationsBound = 'true';
   const csrf = form.dataset.csrf;
   const fields = [...form.querySelectorAll('input[type="checkbox"]')];
   let savedPreferences = Object.fromEntries(fields.map((field) => [field.name, field.checked]));
@@ -74,6 +76,9 @@ export const notificationClient = `
       tell('Push is inactive in this browser. ' + (error.message || 'Notification setup failed.'));
     }
   });
-  refresh();
+  void refresh();
+  };
+  document.addEventListener('conveyor:dashboard-rendered', bind);
+  bind();
 })();
 `;

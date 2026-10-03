@@ -5,21 +5,8 @@ export const dashboardClient = String.raw`(() => {
   const updateQuotaWindow = ${updateQuotaWindow.toString()};
   const body = document.body;
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
-  for (const form of document.querySelectorAll('.logout-form')) {
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const button = form.querySelector('button[type="submit"]');
-      if (button) button.disabled = true;
-      try {
-        const registration = await navigator.serviceWorker?.getRegistration('/');
-        const subscription = await registration?.pushManager.getSubscription();
-        const endpoint = form.querySelector('input[name="pushEndpoint"]');
-        if (endpoint && subscription) endpoint.value = subscription.endpoint;
-      } catch {}
-      form.submit();
-    });
-  }
   let board = document.querySelector('.board');
+  let renderedUrl = location.pathname + location.search;
   const scrollKey = 'conveyor:scroll';
   let pendingRefresh = false;
   let conversationRefreshTimer = null;
@@ -845,13 +832,32 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element) || event.defaultPrevented) return;
-    const link = event.target.closest('.tab, .active-work a, .relationships a, .relation-summary a, .pagination a, .agent-history a');
-    if (!(link instanceof HTMLAnchorElement) || link.target || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    body.classList.add('page-loading');
+    const link = event.target.closest('a[href]');
+    if (!(link instanceof HTMLAnchorElement) || !link.closest('main.dashboard') || link.target || link.hasAttribute('download') || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    let destination;
+    try { destination = new URL(link.href, location.href); } catch { return; }
+    if (destination.origin !== location.origin || (destination.protocol !== 'http:' && destination.protocol !== 'https:')) return;
+    if (destination.pathname === location.pathname && destination.search === location.search && destination.hash) return;
+    event.preventDefault();
+    closeHeaderPopovers();
+    void navigateDashboard(destination);
   }, true);
 
   document.addEventListener('submit', async (event) => {
     const form = event.target;
+    if (form instanceof HTMLFormElement && form.matches('.logout-form')) {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+      try {
+        const registration = await navigator.serviceWorker?.getRegistration('/');
+        const subscription = await registration?.pushManager.getSubscription();
+        const endpoint = form.querySelector('input[name="pushEndpoint"]');
+        if (endpoint instanceof HTMLInputElement && subscription) endpoint.value = subscription.endpoint;
+      } catch {}
+      form.submit();
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('[data-profile-avatar-form], [data-account-create-form]')) {
       event.preventDefault();
       const isAvatar = form.matches('[data-profile-avatar-form]');
@@ -981,33 +987,49 @@ export const dashboardClient = String.raw`(() => {
     const agentId = event.target.dataset.agentId;
     if (agentId && currentPath.agent === agentId) {
       history.replaceState(null, '', '/team' + paginationSearch());
+      renderedUrl = '/team' + paginationSearch();
       return;
     }
     if (!currentPath.issue || currentPath.issue.repository !== event.target.dataset.repositoryId || currentPath.issue.number !== event.target.dataset.issueNumber) return;
     history.replaceState(null, '', '/board' + paginationSearch());
+    renderedUrl = '/board' + paginationSearch();
     if (pendingRefresh) {
       pendingRefresh = false;
       void refreshDashboard();
     }
   }, true);
 
-  window.addEventListener('popstate', () => {
+  const syncRouteDialogs = () => {
     const requestedPath = parseDashboardPath();
     const requestedAgent = requestedPath.agent;
+    const agentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
+    const requested = requestedPath.issue;
+    const dialog = requested ? findIssueDialog(requested) : null;
+    if (requestedAgent && !agentDialog) return false;
+    if (requested && !dialog) return false;
+    if (!requestedAgent && !requested && location.pathname + location.search !== renderedUrl) return false;
     for (const dialog of document.querySelectorAll('dialog[data-agent-id][open]')) {
       if (dialog.dataset.agentId !== requestedAgent) dialog.close();
     }
-    const agentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
     if (agentDialog && !agentDialog.open) showDialog(agentDialog);
-    const requested = requestedPath.issue;
     for (const dialog of document.querySelectorAll('dialog[data-issue-id][open]')) {
       if (!requested || dialog.dataset.repositoryId !== requested.repository || dialog.dataset.issueNumber !== requested.number) dialog.close();
     }
-    if (requested) openDialogElement(findIssueDialog(requested), requestedPath.tab);
-    const dialog = requested ? findIssueDialog(requested) : null;
+    if (requested) openDialogElement(dialog, requestedPath.tab);
     if (dialog instanceof HTMLDialogElement && dialog.open) {
       selectDetailTab(dialog, requestedPath.tab);
     }
+    if (!requested && !requestedAgent && location.hash) {
+      try {
+        const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+        if (target) target.scrollIntoView();
+      } catch {}
+    }
+    return true;
+  };
+
+  window.addEventListener('popstate', () => {
+    if (!syncRouteDialogs()) void navigateDashboard(new URL(location.href), 'none');
   });
 
   // Backlog ordering happens in place: drag a row, or use its arrow buttons. The
@@ -1162,11 +1184,7 @@ export const dashboardClient = String.raw`(() => {
     });
   }, true);
 
-  const requestedPath = parseDashboardPath();
-  if (requestedPath.issue) openDialogElement(findIssueDialog(requestedPath.issue), requestedPath.tab);
-  const requestedAgent = requestedPath.agent;
-  const requestedAgentDialog = requestedAgent ? findAgentDialog(requestedAgent) : null;
-  if (requestedAgentDialog) showDialog(requestedAgentDialog);
+  syncRouteDialogs();
 
   localizeTimes();
   updateQuotaCountdowns();
@@ -1179,6 +1197,7 @@ export const dashboardClient = String.raw`(() => {
   let latestServerStatus = null;
   let dashboardRefresh = null;
   let dashboardRefreshQueued = false;
+  let dashboardRequestVersion = 0;
   let revision = body.dataset.dashboardRevision || '';
   const dashboardEvents = new EventSource('/events/dashboard');
   const setConnection = (nextConnected) => {
@@ -1201,39 +1220,69 @@ export const dashboardClient = String.raw`(() => {
     setConnection(connected);
     renderServerStatus();
   };
+  const replaceDashboard = async (target, options = {}) => {
+    const requestVersion = ++dashboardRequestVersion;
+    const preservePosition = options.preservePosition === true;
+    const scrollX = board ? board.scrollLeft : 0;
+    const scrollY = window.scrollY;
+    try {
+      const response = await fetch(target.pathname + target.search, {
+        headers: { accept: 'text/html' },
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error('dashboard navigation failed');
+      const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const currentDashboard = document.querySelector('main.dashboard');
+      const nextDashboard = nextDocument.querySelector('main.dashboard');
+      if (!currentDashboard || !nextDashboard) throw new Error('dashboard response is incomplete');
+      if (requestVersion !== dashboardRequestVersion) return true;
+      currentDashboard.replaceWith(nextDashboard);
+      if (options.historyMode === 'push') history.pushState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
+      else if (options.historyMode === 'replace') history.replaceState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
+      renderedUrl = target.pathname + target.search;
+      document.title = nextDocument.title;
+      body.dataset.csrfToken = nextDocument.body.dataset.csrfToken || body.dataset.csrfToken || '';
+      body.dataset.dashboardView = nextDocument.body.dataset.dashboardView || body.dataset.dashboardView || '';
+      revision = nextDocument.body.dataset.dashboardRevision || revision;
+      body.dataset.dashboardRevision = revision;
+      body.classList.remove('page-loading', 'dashboard-navigating');
+      board = document.querySelector('.board');
+      localizeTimes(nextDashboard);
+      syncThemeControls(nextDashboard);
+      updateQuotaCountdowns();
+      bindServerStatus();
+      document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered'));
+      if (preservePosition) {
+        window.scrollTo(0, scrollY);
+        if (board) board.scrollLeft = scrollX;
+      } else if (target.hash) {
+        try {
+          const anchor = document.getElementById(decodeURIComponent(target.hash.slice(1)));
+          if (anchor) anchor.scrollIntoView();
+          else window.scrollTo(0, 0);
+        } catch { window.scrollTo(0, 0); }
+      } else {
+        window.scrollTo(0, 0);
+      }
+      syncRouteDialogs();
+      return true;
+    } catch {
+      return requestVersion !== dashboardRequestVersion;
+    }
+  };
+  const navigateDashboard = async (target, historyMode = 'push') => {
+    body.classList.add('dashboard-navigating');
+    const loaded = await replaceDashboard(target, { historyMode, preservePosition: false });
+    if (!loaded) location.assign(target.href);
+  };
   const refreshDashboard = async () => {
     if (dashboardRefresh) {
       dashboardRefreshQueued = true;
       return dashboardRefresh;
     }
-    const scrollX = board ? board.scrollLeft : 0;
-    const scrollY = window.scrollY;
-    dashboardRefresh = (async () => {
-      try {
-        const response = await fetch(location.pathname + location.search, {
-          headers: { accept: 'text/html' },
-          cache: 'no-store',
-        });
-        if (!response.ok) throw new Error('dashboard refresh failed');
-        const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
-        const currentDashboard = document.querySelector('main.dashboard');
-        const nextDashboard = nextDocument.querySelector('main.dashboard');
-        if (!currentDashboard || !nextDashboard) throw new Error('dashboard response is incomplete');
-        currentDashboard.replaceWith(nextDashboard);
-        body.dataset.csrfToken = nextDocument.body.dataset.csrfToken || body.dataset.csrfToken || '';
-        body.dataset.dashboardView = nextDocument.body.dataset.dashboardView || body.dataset.dashboardView || '';
-        body.dataset.dashboardRevision = revision;
-        body.classList.remove('page-loading');
-        board = document.querySelector('.board');
-        localizeTimes(nextDashboard);
-        syncThemeControls(nextDashboard);
-        bindServerStatus();
-        window.scrollTo(0, scrollY);
-        if (board) board.scrollLeft = scrollX;
-      } catch {
-        pendingRefresh = true;
-      }
-    })().finally(() => {
+    dashboardRefresh = replaceDashboard(new URL(location.href), { historyMode: 'none', preservePosition: true }).then((loaded) => {
+      if (!loaded) pendingRefresh = true;
+    }).finally(() => {
       dashboardRefresh = null;
       if (dashboardRefreshQueued) {
         dashboardRefreshQueued = false;
@@ -1278,12 +1327,20 @@ export const dashboardClient = String.raw`(() => {
   dashboardEvents.addEventListener('conversation', scheduleConversationRefresh);
   dashboardEvents.addEventListener('activity', scheduleActivityRefresh);
 
+  let steeringSource = null;
+  let steeringPanel = null;
+  const bindSteering = () => {
   const panel = document.querySelector('[data-steering-run]');
+  if (panel === steeringPanel) return;
+  if (steeringSource) steeringSource.close();
+  steeringSource = null;
+  steeringPanel = panel;
   const runId = panel && panel.getAttribute('data-steering-run');
   const events = document.getElementById('steering-events');
   if (runId && events) {
     const next = Number(events.dataset.nextSequence || '1');
     const source = new EventSource('/steering/' + encodeURIComponent(runId) + '/events?after=' + String(Math.max(0, next - 1)));
+    steeringSource = source;
     source.addEventListener('update', (message) => {
       try {
         const event = JSON.parse(message.data);
@@ -1307,7 +1364,11 @@ export const dashboardClient = String.raw`(() => {
     });
     source.addEventListener('done', () => {
       source.close();
+      if (steeringSource === source) steeringSource = null;
       setTimeout(() => void refreshDashboard(), 500);
     });
   }
+  };
+  document.addEventListener('conveyor:dashboard-rendered', bindSteering);
+  bindSteering();
 })();`;
