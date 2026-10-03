@@ -53,22 +53,26 @@ async function serve(configPath: string): Promise<void> {
   const config = await loadConfig(configPath);
   const username = process.env.CONVEYOR_USERNAME;
   if (!username) throw new Error("CONVEYOR_USERNAME is required");
-  const auth = createWebAuth({
-    passwordHash: process.env.CONVEYOR_PASSWORD_HASH,
-    sessionSecret: process.env.CONVEYOR_SESSION_SECRET,
-    secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
-  });
-  if (!auth.isConfigured) {
-    throw new Error(
-      "CONVEYOR_PASSWORD_HASH and a 32-byte CONVEYOR_SESSION_SECRET are required",
-    );
-  }
+  const passwordHash = process.env.CONVEYOR_PASSWORD_HASH;
+  if (!passwordHash) throw new Error("CONVEYOR_PASSWORD_HASH is required");
   const github = new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix);
   const service = await ConveyorService.create(
     config,
     github,
     createGitHubCodeHostRegistry(config, github),
   );
+  const auth = createWebAuth({
+    passwordHash,
+    sessionSecret: process.env.CONVEYOR_SESSION_SECRET,
+    secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
+    username,
+    accountById: (id) => service.dashboardAccountById(id),
+    accountByUsername: (name) => service.dashboardAccountByUsername(name),
+  });
+  if (!auth.isConfigured) {
+    throw new Error("CONVEYOR_PASSWORD_HASH and a 32-byte CONVEYOR_SESSION_SECRET are required");
+  }
+  service.seedDashboardSuperuser(username, passwordHash);
   const handler = createWebHandler(service.webDependencies(auth, username));
   const server = Bun.serve({
     ...listenAddress(config.web.listen),

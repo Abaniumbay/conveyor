@@ -57,6 +57,10 @@ function RepositoryBadge({ repository }: { repository: string }) {
   return <span class="repository-badge"><i class="repository-dot" aria-hidden="true" />{repository}</span>;
 }
 
+function canManageDashboard(model: DashboardViewModel): boolean {
+  return !model.account || model.account.role === "superuser";
+}
+
 function RelationLink({ relation, showCompletion = false }: { relation: IssueRelationViewModel; showCompletion?: boolean }) {
   const completed = showCompletion && relation.satisfied;
   return <a class={completed ? "relation-link--satisfied" : undefined} href={issueHref(relation.repository, relation.number)}>{relation.repository}:#{relation.number} {relation.title}</a>;
@@ -97,7 +101,7 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
   );
 }
 
-function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewModel; id: string; selected?: boolean }) {
+function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const url = safeUrl(issue.url);
   const summaryId = `${id}-summary`;
   const conversationId = `${id}-conversation`;
@@ -127,7 +131,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
           {issue.children.length > 0 && <span>· Roll-up</span>}
           {issue.closable && <span>· Closable</span>}
         </div>
-        {issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
+        {canManage && issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
           <label for={`${id}-retry-note`}>Optional note for the next attempt</label>
           <textarea id={`${id}-retry-note`} name="note" rows={2} maxLength={4000} placeholder="Add feedback for the next attempt…" />
           <button type="submit" data-retry-submit>Retry</button>
@@ -275,7 +279,7 @@ function stateWords(issue: IssueCardViewModel): string {
   return words[issue.state] ?? issue.state.replaceAll(/[-_]/g, " ").replace(/^./, (letter) => letter.toUpperCase());
 }
 
-function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"] }) {
+function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean }) {
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
   const completedChildren = issue.children.filter((child) => child.satisfied).length;
@@ -306,12 +310,12 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
         {statusContext && <> · <span class="issue-status-context" title={statusContext}>{statusContext}</span></>}
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
       </p>
-      {issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
+      {canManage && issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
       <TodoProgress issue={issue} />
       {rollup && <p class="rollup-summary">Roll-up · {issue.children.length} {issue.children.length === 1 ? "child" : "children"}, {completedChildren} done</p>}
-      <DetailsDialog issue={issue} id={dialogId} />
+      <DetailsDialog issue={issue} id={dialogId} canManage={canManage} />
     </article>
   );
 }
@@ -335,12 +339,12 @@ function Pagination({ column, view }: { column: StageColumnViewModel; view: Dash
   );
 }
 
-function StageColumn({ column }: { column: StageColumnViewModel }) {
+function StageColumn({ column, canManage = false }: { column: StageColumnViewModel; canManage?: boolean }) {
   const headingId = `stage-${column.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const rollupParents = column.issues.filter((issue) => issue.children.length > 0);
   const regularIssues = column.issues.filter((issue) => issue.children.length === 0);
   const issueList = (issues: readonly IssueCardViewModel[]) => (
-    <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={column.actors} /></li>)}</ol>
+    <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={column.actors} canManage={canManage} /></li>)}</ol>
   );
   return (
     <section class={`stage${column.issues.length === 0 ? " stage--empty" : ""}`} id={stationId(column.id)} aria-labelledby={headingId}>
@@ -383,6 +387,7 @@ function StageColumn({ column }: { column: StageColumnViewModel }) {
 }
 
 function NeedsYou({ model }: { model: DashboardViewModel }) {
+  const canManage = canManageDashboard(model);
   const questionIssueIds = new Set(model.questions.map((question) => question.issueId));
   const stopped = model.needsYou.filter((issue) => !questionIssueIds.has(issue.id));
   const total = model.questions.length + stopped.length;
@@ -408,7 +413,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <h3><RepositoryBadge repository={question.repository} /> · #{question.issueNumber} {question.prompt}</h3>
               <p>{question.reason}</p>
             </div>
-            <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
+            {canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
               <input type="hidden" name="csrf" value={model.csrfToken} />
               {question.allowFreeText ? (
                 <Fragment>
@@ -423,7 +428,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
                 </label>
               ))}
               <button class="answer-button" type="submit">Answer</button>
-            </form>
+            </form>}
           </li>
         ))}
       </ol>
@@ -446,6 +451,8 @@ function Navigation({ model }: { model: DashboardViewModel }) {
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
+      {canManageDashboard(model) && <a href="/accounts" class="tab">Accounts</a>}
+      <a href="/profile" class="tab">{model.account?.avatar ?? "🐼"} Profile</a>
     </nav>
   );
 }
@@ -475,7 +482,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
             ))}
           </ol>
           {!selected && <p class="agent-empty">No conversation yet. Send a concrete request below.</p>}
-          <form class="agent-compose" method="post" action="/steering">
+          {canManageDashboard(model) && <form class="agent-compose" method="post" action="/steering">
             <input type="hidden" name="csrf" value={model.csrfToken} />
             <label for="steering-prompt">Request</label>
             <textarea id="steering-prompt" name="prompt" maxLength={12000} rows={5} required disabled={!steering.enabled || running} placeholder="For example: inspect why issue #152 is blocked and fix any clear Conveyor configuration problem." />
@@ -483,7 +490,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
               <span>{running ? "Wait for the current agent to finish." : "The final response is retained as a report."}</span>
               <button type="submit" disabled={!steering.enabled || running}>Send to operator</button>
             </div>
-          </form>
+          </form>}
         </div>
         {steering.recent.length > 0 && (
           <aside class="agent-history" aria-label="Recent operator runs">
@@ -497,6 +504,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
 }
 
 function BacklogColumn({ model }: { model: DashboardViewModel }) {
+  const canManage = canManageDashboard(model);
   return (
     <section class={`stage stage--backlog${model.backlog.length === 0 ? " stage--empty" : ""}`} id={stationId("backlog")} aria-labelledby="backlog-heading">
       <header class="stage-heading stage-heading--simple"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label={`${model.backlog.length} issues`}>{model.backlog.length}</span></header>
@@ -504,8 +512,8 @@ function BacklogColumn({ model }: { model: DashboardViewModel }) {
         <ol class="issue-list" data-backlog-list>
           {model.backlog.map((issue, index) => (
             <li class="backlog-row" key={issue.id} data-backlog-id={issue.id} draggable>
-              <IssueCard issue={issue} />
-              <div class="reorder" role="group" aria-label={`Reorder issue #${issue.number}`}>
+              <IssueCard issue={issue} canManage={canManage} />
+              {canManage && <div class="reorder" role="group" aria-label={`Reorder issue #${issue.number}`}>
                 {(["up", "down"] as const).map((direction) => {
                   const disabled = direction === "up" ? index === 0 : index === model.backlog.length - 1;
                   return (
@@ -517,7 +525,7 @@ function BacklogColumn({ model }: { model: DashboardViewModel }) {
                     </form>
                   );
                 })}
-              </div>
+              </div>}
             </li>
           ))}
         </ol>
@@ -534,7 +542,7 @@ function DoneColumn({ model }: { model: DashboardViewModel }) {
     <section class={`stage stage--done${column.issues.length === 0 ? " stage--empty" : ""}`} id={stationId("done")} aria-labelledby="done-heading">
       <header class="stage-heading stage-heading--simple"><h2 id="done-heading">Done</h2><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
       {column.issues.length > 0
-        ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
+        ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} canManage={canManageDashboard(model)} /></li>)}</ol>
         : <p class="empty">No closed issues</p>}
       {remaining > 0 && (
         <form class="load-more" method="get" action="/board">
@@ -553,7 +561,7 @@ function Attention({ model }: { model: DashboardViewModel }) {
     <section class="panel" aria-labelledby="attention-heading">
       <header class="section-heading"><div><h2 id="attention-heading">Needs attention</h2><p>These enrolled issues have a missing, unknown, or conflicting stage label.</p></div><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
       {column.issues.length > 0
-        ? <ol class="attention-grid">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} /></li>)}</ol>
+        ? <ol class="attention-grid">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} canManage={canManageDashboard(model)} /></li>)}</ol>
         : <p class="empty">No label inconsistencies</p>}
       <Pagination column={column} view="attention" />
     </section>
@@ -682,6 +690,7 @@ function ThemeControl() {
 }
 
 function Page({ model }: { model: DashboardViewModel }) {
+  const canManage = canManageDashboard(model);
   let content: ComponentChildren;
   if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
@@ -690,7 +699,7 @@ function Page({ model }: { model: DashboardViewModel }) {
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />
-      {model.stages.map((stage) => <StageColumn column={stage} key={stage.id} />)}
+      {model.stages.map((stage) => <StageColumn column={stage} key={stage.id} canManage={canManage} />)}
       <DoneColumn model={model} />
     </section>
   );
@@ -723,6 +732,7 @@ function Page({ model }: { model: DashboardViewModel }) {
             <HarnessUsage model={model} />
             <span class="total-usage">{model.totalUsage}</span>
             <ThemeControl />
+            <span class="signed-in-user">{model.account?.avatar} {model.account?.username}</span>
             <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
           </header>
           <Line model={model} />

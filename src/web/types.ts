@@ -113,6 +113,7 @@ export interface IssueConversationMessageViewModel {
   actorType: string;
   actorId: string;
   actorName: string;
+  actorAvatar?: string | null;
   actorTitle: string | null;
   message: string;
   createdAt: string;
@@ -239,6 +240,7 @@ export interface DashboardViewModel {
   team?: readonly AgentProfileViewModel[];
   report?: ReportViewModel;
   csrfToken: string;
+  account?: { id: string; username: string; role: "superuser" | "user"; avatar: string };
 }
 
 export interface HarnessQuotaViewModel {

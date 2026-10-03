@@ -65,8 +65,14 @@ export const dashboardClient = String.raw`(() => {
     return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(date);
   };
 
-  const actorAvatar = (name, type) => {
+  const actorAvatar = (name, type, selectedAvatar) => {
     const avatar = document.createElement('span');
+    if (typeof selectedAvatar === 'string' && selectedAvatar.length <= 8) {
+      avatar.textContent = selectedAvatar;
+      avatar.className = 'agent-avatar';
+      avatar.setAttribute('aria-hidden', 'true');
+      return avatar;
+    }
     const words = String(name || 'Agent').trim().split(/\s+/).filter(Boolean).slice(0, 2);
     avatar.textContent = words.map((word) => word.charAt(0).toUpperCase()).join('') || 'A';
     let hash = 0;
@@ -221,11 +227,11 @@ export const dashboardClient = String.raw`(() => {
       item.className = 'conversation-message conversation-message--' + String(message.actorType || 'agent').replace(/[^a-z0-9_-]/gi, '');
       const header = document.createElement('header');
       const actor = document.createElement('strong');
-      const actorName = message.actorType === 'user' ? 'You' : String(message.actorName || 'Agent');
+      const actorName = String(message.actorName || (message.actorType === 'user' ? 'User' : 'Agent'));
       actor.textContent = actorName + (message.actorTitle ? ' · ' + String(message.actorTitle) : '');
       const identity = document.createElement('span');
       identity.className = 'conversation-actor';
-      identity.append(actorAvatar(actorName, message.actorType), actor);
+      identity.append(actorAvatar(actorName, message.actorType, message.actorAvatar), actor);
       const meta = document.createElement('small');
       if (message.stageId) meta.append(String(message.stageId) + ' · ');
       const time = document.createElement('time');

@@ -2039,6 +2039,7 @@ export class ConveyorService {
         actorType: message.actorType,
         actorId: message.actorId,
         actorName: message.actorName,
+        actorAvatar: message.actorType === "user" ? this.store.dashboardAccountByUsername(message.actorName)?.avatar ?? null : null,
         actorTitle: message.actorTitle,
         message: message.message,
         createdAt: message.createdAt,
@@ -2247,6 +2248,11 @@ export class ConveyorService {
     return {
       auth,
       username,
+      listAccounts: () => this.store.dashboardAccounts().map(({ id, username, role, avatar }) => ({ id, username, role, avatar })),
+      getAccount: (id) => this.store.dashboardAccountById(id),
+      createAccount: (name, passwordHash) => this.store.createDashboardUser(name, passwordHash),
+      changePassword: (id, passwordHash) => this.store.changeDashboardPassword(id, passwordHash),
+      changeAvatar: (id, avatar) => this.store.changeDashboardAvatar(id, avatar),
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getDashboardRevision: () => this.store.dashboardRevision(),
       getConversationRevision: () => this.store.conversationRevision(),
@@ -2287,6 +2293,18 @@ export class ConveyorService {
       getAgentProfile: async (agentId) =>
         (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
+  }
+
+  seedDashboardSuperuser(username: string, passwordHash: string): void {
+    this.store.seedDashboardSuperuser(username, passwordHash);
+  }
+
+  dashboardAccountById(id: string) {
+    return this.store.dashboardAccountById(id);
+  }
+
+  dashboardAccountByUsername(username: string) {
+    return this.store.dashboardAccountByUsername(username);
   }
 }
 

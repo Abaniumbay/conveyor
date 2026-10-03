@@ -9,6 +9,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("activityUrl");
     expect(dashboardClient).toContain("appendLinkedText(parent, value.slice");
     expect(dashboardClient).toContain("appendMarkdown(body, String(message.message");
+    expect(dashboardClient).toContain("String(message.actorName ||");
+    expect(dashboardClient).toContain("actorAvatar(actorName, message.actorType, message.actorAvatar)");
+    expect(dashboardClient).not.toContain("actor.textContent = 'You'");
     expect(dashboardClient).toContain("'/backlog/move'");
     expect(dashboardClient).toContain("addEventListener('dragend'");
     expect(dashboardClient).toContain("data-detail-tab");

@@ -517,4 +517,18 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 12,
+    sql: `
+      CREATE TABLE dashboard_accounts (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('superuser', 'user')),
+        avatar TEXT NOT NULL DEFAULT '🐼',
+        session_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
