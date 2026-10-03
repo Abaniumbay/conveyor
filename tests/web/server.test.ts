@@ -475,6 +475,42 @@ describe("createWebHandler", () => {
     expect(calls.issueRunEvents).toEqual([["github:owner/repo#1", "run-2", 2]]);
   });
 
+  test("serves the Reports view for every repository or one, with a period, and refuses unknown ones", async () => {
+    const reports: Array<{ period: string; repository: string | null }> = [];
+    const pages: string[] = [];
+    const report = (period: string, repository: string | null) => ({
+      period, since: null, repository, repositories: ["midgame", "quesshi"],
+      totals: {
+        delivered: 3, inProgress: 1, runs: 9, failedRuns: 1, inputTokens: 1000, outputTokens: 100, cachedTokens: 500, agentMs: 60_000,
+        avgTokensPerItem: 366, avgRunsPerItem: 3, avgLeadMs: 7_200_000, avgAgentMs: 20_000, avgChecksWaitMs: 0, avgWaitingForYouMs: 0, avgQueuedMs: 0,
+        avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
+      },
+      byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
+    });
+    const { handler } = setup({
+      getDashboard: (_csrf: string, page: { view: string }) => { pages.push(page.view); return { ...model, view: page.view, selectedIssue: null }; },
+      getReport: async (input: { period: string; repository: string | null }) => {
+        reports.push(input);
+        return input.repository === "nope" ? null : report(input.period, input.repository);
+      },
+    });
+    expect((await handler(new Request("http://localhost/reports"))).headers.get("location")).toBe("/login");
+    const { cookie } = await login(handler);
+    const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+
+    const overview = await get("/reports");
+    expect(overview.status).toBe(200);
+    const html = await overview.text();
+    expect(html).toContain("Items delivered");
+    expect(html).toContain('href="/reports/quesshi"');
+    expect(pages.at(-1)).toBe("reports");
+    expect((await get("/reports/quesshi?period=30d")).status).toBe(200);
+    expect(reports).toEqual([{ period: "all", repository: null }, { period: "30d", repository: "quesshi" }]);
+    expect((await get("/reports/nope")).status).toBe(404);
+    expect((await get("/reports?period=forever")).status).toBe(400);
+    expect(reports).toHaveLength(3);
+  });
+
   test("serves an authenticated issue journey", async () => {
     const { handler, calls } = setup();
     expect((await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/journey"))).status).toBe(401);

@@ -174,7 +174,7 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team";
+export type DashboardView = "board" | "attention" | "agent" | "team" | "reports";
 
 export interface SteeringEventViewModel {
   sequence: number;
@@ -236,6 +236,7 @@ export interface DashboardViewModel {
   selectedIssue: IssueCardViewModel | null;
   /** Read-only agent profiles, loaded only for the team view. */
   team?: readonly AgentProfileViewModel[];
+  report?: ReportViewModel;
   csrfToken: string;
 }
 
@@ -262,4 +263,93 @@ export interface AgentProfileViewModel extends AgentSummaryViewModel {
   tasks: ReadonlyArray<{ group: string; tasks: readonly string[] }>;
   /** Instruction text, or null when the file could not be read. */
   instructions: string | null;
+}
+
+export type ReportPeriod = "7d" | "30d" | "90d" | "12m" | "all";
+
+/** Delivery totals and per-item averages over a set of items and runs. Durations in milliseconds. */
+export interface ReportTotals {
+  /** Items that finished their last stage in the period. */
+  delivered: number;
+  /** Items currently enrolled and not done. */
+  inProgress: number;
+  /** Runs started in the period, and how many of them did not succeed. */
+  runs: number;
+  failedRuns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  /** Wall time of the runs started in the period. */
+  agentMs: number;
+  /** Averages over the delivered items, each counted over its whole life; null without delivered items. */
+  avgTokensPerItem: number | null;
+  avgRunsPerItem: number | null;
+  avgLeadMs: number | null;
+  avgAgentMs: number | null;
+  avgChecksWaitMs: number | null;
+  avgWaitingForYouMs: number | null;
+  avgQueuedMs: number | null;
+  avgReturnsPerItem: number | null;
+  avgStopsPerItem: number | null;
+  /** Share of delivered items that never went back to an earlier stage. */
+  firstPassRate: number | null;
+}
+
+export interface ReportRepositoryRow extends ReportTotals {
+  id: string;
+}
+
+export interface ReportMonthRow {
+  /** YYYY-MM (UTC). */
+  month: string;
+  delivered: number;
+  runs: number;
+  tokens: number;
+  agentMs: number;
+  avgTokensPerItem: number | null;
+  avgLeadMs: number | null;
+}
+
+export interface ReportStageRow {
+  id: string;
+  name: string;
+  runs: number;
+  failedRuns: number;
+  tokens: number;
+  agentMs: number;
+  avgRunMs: number | null;
+}
+
+export interface ReportItemRow {
+  repository: string;
+  number: number;
+  title: string;
+  state: string;
+  finishedAt: string | null;
+  leadMs: number | null;
+  agentMs: number;
+  checksWaitMs: number;
+  waitingForYouMs: number;
+  runs: number;
+  tokens: number;
+  returns: number;
+  stops: number;
+}
+
+export interface ReportViewModel {
+  period: ReportPeriod;
+  /** Start of the period (ISO), null for all time. */
+  since: string | null;
+  /** The drilled-into repository, or null for every repository. */
+  repository: string | null;
+  repositories: readonly string[];
+  totals: ReportTotals;
+  byRepository: readonly ReportRepositoryRow[];
+  byMonth: readonly ReportMonthRow[];
+  byStage: readonly ReportStageRow[];
+  /** The items of the drilled-into repository with activity in the period (empty for every repository). */
+  items: readonly ReportItemRow[];
+  /** Done items imported without a recorded delivery; left out of every figure. */
+  importedWithoutHistory: number;
+  generatedAt: string;
 }

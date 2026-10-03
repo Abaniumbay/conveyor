@@ -40,6 +40,7 @@ import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
+import { buildReport } from "./reports";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -2263,6 +2264,9 @@ export class ConveyorService {
       retryIssue: (issueId, note, actor) => this.retryIssue(issueId, note, actor),
       dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
       getAgentProfiles: () => buildAgentProfiles(this.config),
+      getReport: ({ period, repository }) => (repository !== null && !this.config.repositories[repository]
+        ? null
+        : buildReport({ store: this.store, config: this.config, period, repository })),
       getAgentProfile: async (agentId) =>
         (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
