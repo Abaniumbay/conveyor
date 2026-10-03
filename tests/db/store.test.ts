@@ -956,4 +956,21 @@ describe("ConveyorStore", () => {
     expect(store.listPushSubscriptions(second.id)).toHaveLength(1);
     store.close();
   });
+
+  test("moves a browser push endpoint to the account that most recently signed in", async () => {
+    const store = await openStore();
+    const first = store.createDashboardUser("first-endpoint-owner", "hash");
+    const second = store.createDashboardUser("second-endpoint-owner", "hash");
+    const endpoint = "https://push.example/shared-browser";
+    store.setPushPreferences(first.id, { questions: true, stopped: false, done: false });
+    store.setPushPreferences(second.id, { questions: true, stopped: false, done: false });
+    store.putPushSubscription(first.id, endpoint, { p256dh: "first-key", auth: "first-auth" });
+    store.putPushSubscription(second.id, endpoint, { p256dh: "second-key", auth: "second-auth" });
+
+    expect(store.listPushSubscriptions(first.id)).toEqual([]);
+    expect(store.listPushSubscriptions(second.id).map(({ endpoint: savedEndpoint }) => savedEndpoint)).toEqual([endpoint]);
+    store.recordPushEvent({ id: "shared-browser-question", category: "questions", target: "issue-1" });
+    expect(store.pushEventSubscriptions("shared-browser-question").map(({ accountId }) => accountId)).toEqual([second.id]);
+    store.close();
+  });
 });

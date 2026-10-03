@@ -292,9 +292,12 @@ export class ConveyorStore {
   }
 
   putPushSubscription(accountId: string, endpoint: string, keys: { p256dh: string; auth: string }): void {
-    this.#database.query(`INSERT INTO push_subscriptions(id, account_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
-      .run(randomUUID(), accountId, endpoint, keys.p256dh, keys.auth, now());
+    this.#database.transaction(() => {
+      this.#database.query("DELETE FROM push_subscriptions WHERE endpoint = ? AND account_id <> ?").run(endpoint, accountId);
+      this.#database.query(`INSERT INTO push_subscriptions(id, account_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
+        .run(randomUUID(), accountId, endpoint, keys.p256dh, keys.auth, now());
+    })();
   }
 
   deletePushSubscription(accountId: string, endpoint: string): void {

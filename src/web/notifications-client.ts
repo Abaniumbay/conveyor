@@ -17,11 +17,11 @@ export const notificationClient = `
     if (!response.ok) throw new Error(result.error || 'Request failed');
     return result;
   };
-  const ensureSubscription = async (publicKey) => {
+  const ensureSubscription = async (publicKey, allowPermissionRequest = true) => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) throw new Error('This browser does not support browser push notifications.');
     if (location.protocol !== 'https:' && location.hostname !== 'localhost') throw new Error('Browser push requires HTTPS.');
     let permission = Notification.permission;
-    if (permission === 'default') permission = await Notification.requestPermission();
+    if (permission === 'default' && allowPermissionRequest) permission = await Notification.requestPermission();
     if (permission !== 'granted') throw new Error(permission === 'denied' ? 'Notifications are blocked in browser settings.' : 'Notification permission was not granted.');
     const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' });
     let subscription = await registration.pushManager.getSubscription();
@@ -35,11 +35,20 @@ export const notificationClient = `
       const data = await response.json();
       for (const field of fields) field.checked = Boolean(data.preferences?.[field.name]);
       savedPreferences = Object.fromEntries(fields.map((field) => [field.name, field.checked]));
-      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) tell('This browser does not support browser push notifications.');
-      else if (location.protocol !== 'https:' && location.hostname !== 'localhost') tell('Browser push requires HTTPS.');
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) tell('Push is inactive in this browser. This browser does not support browser push notifications.');
+      else if (location.protocol !== 'https:' && location.hostname !== 'localhost') tell('Push is inactive in this browser. Browser push requires HTTPS.');
       else if (!data.publicKey) tell('Browser push is inactive because the server has no push keys configured.');
-      else tell('Notification permission: ' + Notification.permission + '. Push is configured.');
-    } catch (error) { tell(error.message || 'Unable to check notification support.'); }
+      else if (fields.some((field) => field.checked)) {
+        if (Notification.permission !== 'granted') {
+          tell('Push is inactive in this browser. Saved notification categories need browser permission; current permission: ' + Notification.permission + '.');
+          return;
+        }
+        await ensureSubscription(data.publicKey, false);
+        tell('Notification permission: granted. Push is configured for this browser.');
+      } else tell('Notification permission: ' + Notification.permission + '. Push is configured.');
+    } catch (error) {
+      tell((fields.some((field) => field.checked) ? 'Push is inactive in this browser. ' : '') + (error.message || 'Unable to check notification support.'));
+    }
   };
   form.addEventListener('submit', async (event) => {
     event.preventDefault();

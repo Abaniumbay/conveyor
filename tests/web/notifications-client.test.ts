@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { notificationClient } from "../../src/web/notifications-client";
 
-function harness(options: { publicKey: string | null; permission?: string; requestResult?: string; subscribeError?: Error }) {
+function harness(options: { publicKey: string | null; permission?: string; requestResult?: string; subscribeError?: Error; preferences?: Record<string, boolean> }) {
   const status = { textContent: "" };
   const fields = [
     { name: "questions", checked: true },
@@ -31,7 +31,10 @@ function harness(options: { publicKey: string | null; permission?: string; reque
       serviceWorker: {
         register: async () => ({ pushManager: {
           getSubscription: async () => null,
-          subscribe: async () => { throw options.subscribeError ?? new Error("subscription refused"); },
+          subscribe: async () => {
+            if (options.subscribeError) throw options.subscribeError;
+            return { toJSON: () => ({ endpoint: "https://push.example/browser" }) };
+          },
         } }),
       },
     },
@@ -40,7 +43,7 @@ function harness(options: { publicKey: string | null; permission?: string; reque
       requests.push({ url, method });
       return {
         ok: true,
-        json: async () => ({ publicKey: options.publicKey, preferences: { questions: false, stopped: false, done: false } }),
+        json: async () => ({ publicKey: options.publicKey, preferences: options.preferences ?? { questions: false, stopped: false, done: false } }),
       };
     },
   };
@@ -86,5 +89,44 @@ describe("notification settings client", () => {
     expect(failedSubscription.status.textContent).toContain("Push is inactive in this browser");
     expect(failedSubscription.fields[0]?.checked).toBe(false);
     expect(failedSubscription.requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
+  test("silently registers this browser for saved preferences after sign-in", async () => {
+    const page = harness({
+      publicKey: "public-key",
+      permission: "granted",
+      preferences: { questions: true, stopped: false, done: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(page.permissionRequests()).toBe(0);
+    expect(page.requests.filter((request) => request.url === "/api/notifications/subscriptions" && request.method === "POST")).toHaveLength(1);
+    expect(page.status.textContent).toContain("Push is configured");
+  });
+
+  test("shows saved preferences inactive when this browser has no push permission", async () => {
+    const page = harness({
+      publicKey: "public-key",
+      permission: "default",
+      preferences: { questions: true, stopped: false, done: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(page.permissionRequests()).toBe(0);
+    expect(page.requests.some((request) => request.url === "/api/notifications/subscriptions" && request.method === "POST")).toBe(false);
+    expect(page.status.textContent).toContain("inactive in this browser");
+  });
+
+  test("reports a re-registration failure as inactive while preserving the useful error", async () => {
+    const page = harness({
+      publicKey: "public-key",
+      permission: "granted",
+      subscribeError: new Error("subscription endpoint unavailable"),
+      preferences: { questions: true, stopped: false, done: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(page.status.textContent).toContain("inactive in this browser");
+    expect(page.status.textContent).toContain("subscription endpoint unavailable");
   });
 });
