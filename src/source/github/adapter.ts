@@ -344,6 +344,14 @@ export class GitHubAdapter {
     return sourceIssue(input.address, child);
   }
 
+  async setTitle(address: string, issueNumber: number, title: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { title },
+    });
+  }
+
   async setParent(input: {
     address: string;
     childNumber: number;

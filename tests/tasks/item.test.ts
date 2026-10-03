@@ -142,6 +142,7 @@ async function world() {
     setDependencies: async (i: unknown) => { calls.push(["setDependencies", i]); },
     replaceManagedProjectLabels: async (...a: unknown[]) => { calls.push(["replaceManagedProjectLabels", a]); },
     createChildIssue: async (i: unknown) => { calls.push(["createChildIssue", i]); return { id: "c", number: 99 }; },
+    setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
   } as unknown as TaskDeps["items"];
   const deps = (issueId = "i1"): TaskDeps => ({
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
@@ -194,7 +195,7 @@ describe("item tools", () => {
     run(name, { context: {}, deps, input, actor: "agent", instance: { id: name, stage, idempotencyKey: "k", resumed: false } }) as Promise<Extract<TaskResult, { status: "pass" }>>;
 
   test("are declared as mutating or not, invalidating item", () => {
-    for (const name of ["item.setCriteria", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
+    for (const name of ["item.setCriteria", "item.setTitle", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
       expect(registry.require(name)).toMatchObject({ kind: "tool", mutating: true, invalidates: ["item"] });
     }
     for (const name of ["item.get", "item.guidance", "item.listOpen"]) {
@@ -248,6 +249,12 @@ describe("item tools", () => {
     }]);
   });
 
+  test("setTitle replaces the current issue's title, trimmed", async () => {
+    const w = await world(); w.add("i1", 5);
+    expect((await tool("item.setTitle", w.deps(), { title: "  Players pick categories per family  " })).output).toEqual({ title: "Players pick categories per family" });
+    expect(w.calls).toEqual([["setTitle", ["o/r", 5, "Players pick categories per family"]]]);
+  });
+
   test("setSystemLabels keeps only configured labels", async () => {
     const w = await world(); w.add("i1", 5);
     await tool("item.setSystemLabels", w.deps(), { labels: ["area:ui", "bogus"] });
@@ -280,5 +287,8 @@ describe("item tools", () => {
     const w = await world(); w.add("i1", 5);
     await expect(tool("item.createChild", w.deps(), { title: "Kid", body: "b", acceptanceCriteria: [] })).rejects.toThrow();
     await expect(tool("item.setParent", w.deps(), { parentNumber: -1 })).rejects.toThrow();
+    await expect(tool("item.setTitle", w.deps(), { title: "   " })).rejects.toThrow();
+    await expect(tool("item.setTitle", w.deps(), { title: "x".repeat(257) })).rejects.toThrow();
+    expect(w.calls).toEqual([]);
   });
 });

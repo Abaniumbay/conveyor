@@ -238,7 +238,7 @@ agents:
     instructions: ./instructions/refiner.md
     access: read-only
     tasks: [item.get, item.guidance, workspace.get, conversation.get, agent.reportProgress,
-            agent.askQuestion, item.comment, item.setCriteria, item.setSystemLabels,
+            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels,
             item.setParent, item.setDependencies, item.createChild]
   implementer:
     name: Implementer
@@ -850,7 +850,7 @@ An explicit **Steer** action is different from an ordinary issue edit: it mirror
 
 Every agent receives a scoped MCP server for exactly one repository, issue, stage, and run, plus its worktree when that stage has one. Cleanup and source-only stages may intentionally have no worktree. The tools are the registry's `tool` tasks, exposed by task name; the registry owns each tool's schema, implementation and description, and there is no parallel MCP layer. Names are camelCase:
 
-- `item.*`: `get`, `guidance`, `comment`, `setCriteria`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`: read the issue and manage allowed labels, comments, acceptance criteria, hierarchy and dependencies.
+- `item.*`: `get`, `guidance`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`: read the issue and manage its title, allowed labels, comments, acceptance criteria, hierarchy and dependencies.
 - `agent.*`: `reportProgress`, `reportRationale`, `reportBlocker`, `reportResult`, `reportMilestone`, `recordArtifact`, `askQuestion`.
 - `workspace.*`: `get`, `fetch`, `push`: workspace/base/branch metadata and scoped fetch and push.
 - `change.*`: `get`, `setMetadata`, `comment`, `resolveFinding`, `listFindings`, `checkCriterion`, `uncheckCriterion` (and `dismissFinding`, which is never grantable).
