@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderDashboard } from "../../src/web/render";
-import { themeInitScript } from "../../src/web/styles";
+import { quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
@@ -181,6 +181,12 @@ const dashboard: DashboardViewModel = {
 };
 
 describe("renderDashboard", () => {
+  test("keeps all desktop header controls on one row and account-page links compact", () => {
+    expect(quotaHeaderCss).toContain(".dashboard-header{grid-template-columns:auto auto auto auto minmax(8rem,1fr) auto auto auto}");
+    expect(quotaHeaderCss).toContain(".dashboard-header>.account-menu{justify-self:end}");
+    expect(quotaHeaderCss).toContain(".account-page .dashboard-header>.header-link{justify-self:start}");
+  });
+
   test("renders harness quotas in the shared header with low-capacity and exact reset details", () => {
     for (const view of ["board", "attention", "team", "reports"] as const) {
       const html = renderDashboard({ ...dashboard, view, harnessUsage: [
@@ -568,6 +574,13 @@ describe("renderDashboard", () => {
     expect(html).toContain("reader &amp; friend");
     expect(html).toContain("href=\"/profile\"");
     expect(html).toContain('action="/logout"');
+    expect(html).toContain('<a class="header-link" href="/settings/notifications">Notifications</a>');
+    expect(html).toContain('class="account-menu"');
+    expect(html).toContain('aria-label="Account menu for reader &amp; friend"');
+    expect(html).toContain('href="/profile#change-password">Change password</a>');
+    expect(html).toContain('data-theme-choice="system"');
+    expect(html).toContain('data-theme-choice="light"');
+    expect(html).toContain('data-theme-choice="dark"');
     expect(html).not.toContain('href="/accounts"');
     expect(html).not.toContain("Move #43 up");
     expect(html).not.toContain('action="/steering"');
