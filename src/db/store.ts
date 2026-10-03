@@ -45,6 +45,25 @@ export interface DashboardAccount {
   sessionVersion: number;
 }
 
+export interface PushPreferences {
+  questions: boolean;
+  stopped: boolean;
+  done: boolean;
+}
+
+export interface PushSubscription {
+  id: string;
+  accountId: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+export interface PushEvent {
+  id: string;
+  category: "questions" | "stopped" | "done";
+  target: string;
+}
+
 export interface SourceMutation {
   id: string;
   idempotencyKey: string;
@@ -260,6 +279,66 @@ export class ConveyorStore {
     return (this.#database.query(`SELECT id, username, password_hash AS passwordHash, role, avatar, session_version AS sessionVersion FROM dashboard_accounts WHERE username = ? COLLATE NOCASE`).get(username) as DashboardAccount | undefined) ?? null;
   }
 
+  getPushPreferences(accountId: string): PushPreferences {
+    const row = this.#database.query("SELECT questions, stopped, done FROM push_preferences WHERE account_id = ?").get(accountId) as { questions: number; stopped: number; done: number } | null;
+    return row ? { questions: row.questions === 1, stopped: row.stopped === 1, done: row.done === 1 } : { questions: false, stopped: false, done: false };
+  }
+
+  setPushPreferences(accountId: string, preferences: PushPreferences): void {
+    this.#database.query(`INSERT INTO push_preferences(account_id, questions, stopped, done, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET questions = excluded.questions, stopped = excluded.stopped, done = excluded.done, updated_at = excluded.updated_at`)
+      .run(accountId, Number(preferences.questions), Number(preferences.stopped), Number(preferences.done), now());
+    if (!preferences.questions && !preferences.stopped && !preferences.done) this.deletePushSubscriptions(accountId);
+  }
+
+  putPushSubscription(accountId: string, endpoint: string, keys: { p256dh: string; auth: string }): void {
+    this.#database.query(`INSERT INTO push_subscriptions(id, account_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
+      .run(randomUUID(), accountId, endpoint, keys.p256dh, keys.auth, now());
+  }
+
+  deletePushSubscription(accountId: string, endpoint: string): void {
+    this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ? AND endpoint = ?").run(accountId, endpoint);
+  }
+
+  deletePushSubscriptions(accountId: string): void {
+    this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ?").run(accountId);
+  }
+
+  listPushSubscriptions(accountId: string): PushSubscription[] {
+    const rows = this.#database.query("SELECT id, account_id, endpoint, p256dh, auth FROM push_subscriptions WHERE account_id = ?").all(accountId) as Array<{ id: string; account_id: string; endpoint: string; p256dh: string; auth: string }>;
+    return rows.map((row) => ({ id: row.id, accountId: row.account_id, endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } }));
+  }
+
+  recordPushEvent(event: PushEvent): void {
+    this.#database.transaction(() => {
+      const inserted = this.#database.query("INSERT INTO push_events(id, category, target, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+        .run(event.id, event.category, event.target, now());
+      if (inserted.changes === 0) return;
+      this.#database.query(`INSERT INTO push_event_subscriptions(event_id, subscription_id)
+        SELECT ?, s.id FROM push_subscriptions s JOIN push_preferences p ON p.account_id = s.account_id WHERE p.${event.category} = 1`)
+        .run(event.id);
+    })();
+  }
+
+  pendingPushEvents(): PushEvent[] {
+    return this.#database.query(`SELECT e.id, e.category, e.target FROM push_events e
+      WHERE EXISTS (SELECT 1 FROM push_event_subscriptions es WHERE es.event_id = e.id
+        AND NOT EXISTS (SELECT 1 FROM push_deliveries d WHERE d.event_id = es.event_id AND d.subscription_id = es.subscription_id))
+      ORDER BY e.created_at, e.id`).all() as PushEvent[];
+  }
+
+  pushEventSubscriptions(eventId: string): PushSubscription[] {
+    const rows = this.#database.query(`SELECT s.id, s.account_id, s.endpoint, s.p256dh, s.auth FROM push_event_subscriptions es
+      JOIN push_subscriptions s ON s.id = es.subscription_id WHERE es.event_id = ?`).all(eventId) as Array<{ id: string; account_id: string; endpoint: string; p256dh: string; auth: string }>;
+    return rows.map((row) => ({ id: row.id, accountId: row.account_id, endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } }));
+  }
+
+  claimPushDelivery(eventId: string, subscriptionId: string): boolean {
+    const result = this.#database.query("INSERT INTO push_deliveries(event_id, subscription_id) VALUES (?, ?) ON CONFLICT DO NOTHING").run(eventId, subscriptionId);
+    return result.changes > 0;
+  }
+
   seedDashboardSuperuser(username: string, passwordHash: string): void {
     if (this.#database.query("SELECT 1 FROM dashboard_accounts LIMIT 1").get()) return;
     this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'superuser', ?)`).run(randomUUID(), username, passwordHash, now());
@@ -435,6 +514,12 @@ export class ConveyorStore {
         (before.projected_stage !== projection.stage || before.projected_state !== projection.state)
       ) {
         this.#executions.onStageChange(issueId);
+        const state = projection.state;
+        if (state === "done" && before.projected_state !== "done") {
+          this.recordPushEvent({ id: randomUUID(), category: "done", target: issueId });
+        } else if (["blocked", "error", "needs-intervention", "rejected"].includes(state ?? "") && before.projected_state !== state) {
+          this.recordPushEvent({ id: randomUUID(), category: "stopped", target: issueId });
+        }
       }
     })();
   }
@@ -1557,6 +1642,7 @@ export class ConveyorStore {
           input.allowFreeText ? 1 : 0,
           now(),
         );
+      this.recordPushEvent({ id: `question:${id}`, category: "questions", target: input.issueId });
       return this.getQuestion(id)!;
     })();
   }
