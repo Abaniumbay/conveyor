@@ -531,4 +531,42 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 13,
+    sql: `
+      CREATE TABLE push_preferences (
+        account_id TEXT PRIMARY KEY REFERENCES dashboard_accounts(id) ON DELETE CASCADE,
+        questions INTEGER NOT NULL DEFAULT 0 CHECK (questions IN (0, 1)),
+        stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
+        done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE push_subscriptions (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES dashboard_accounts(id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(account_id, endpoint)
+      );
+      CREATE INDEX push_subscriptions_account_idx ON push_subscriptions(account_id);
+      CREATE TABLE push_events (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL CHECK (category IN ('questions', 'stopped', 'done')),
+        target TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE push_event_subscriptions (
+        event_id TEXT NOT NULL REFERENCES push_events(id) ON DELETE CASCADE,
+        subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+        PRIMARY KEY(event_id, subscription_id)
+      );
+      CREATE TABLE push_deliveries (
+        event_id TEXT NOT NULL REFERENCES push_events(id) ON DELETE CASCADE,
+        subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+        PRIMARY KEY(event_id, subscription_id)
+      );
+    `,
+  },
 ];

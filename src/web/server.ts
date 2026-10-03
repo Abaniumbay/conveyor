@@ -4,6 +4,8 @@ import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
 import { REPORT_PERIOD_VALUES } from "./report-page";
 import { renderDashboard } from "./render";
+import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
+import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
 import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
@@ -17,6 +19,12 @@ export interface WebHandlerDependencies {
   username: string;
   listAccounts?: () => readonly Omit<WebAccountIdentity, "sessionVersion">[];
   getAccount?: (id: string) => (WebAccountIdentity & { passwordHash: string }) | null;
+  getPushPreferences?: (accountId: string) => { questions: boolean; stopped: boolean; done: boolean };
+  setPushPreferences?: (accountId: string, preferences: { questions: boolean; stopped: boolean; done: boolean }) => void;
+  putPushSubscription?: (accountId: string, endpoint: string, keys: { p256dh: string; auth: string }) => void;
+  deletePushSubscription?: (accountId: string, endpoint: string) => void;
+  pushPublicKey?: string | null;
+  dispatchPushEvents?: () => void | Promise<void>;
   createAccount?: (username: string, passwordHash: string) => WebAccountIdentity;
   changePassword?: (id: string, passwordHash: string) => void;
   changeAvatar?: (id: string, avatar: string) => void;
@@ -122,9 +130,20 @@ function escapeHtml(value: string): string {
   });
 }
 
-function loginPage(message = ""): string {
+function safeReturnTo(value: string | null | undefined): string | null {
+  if (!value || value.length > 2048 || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  try {
+    const target = new URL(value, "https://conveyor.invalid");
+    return target.origin === "https://conveyor.invalid" ? `${target.pathname}${target.search}${target.hash}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function loginPage(message = "", returnTo: string | null = null): string {
   const error = message ? `<p role="alert" class="error">${escapeHtml(message)}</p>` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
+  const returnField = returnTo ? `<input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login">${returnField}<label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<Uint8Array | Response> {
@@ -167,6 +186,26 @@ function isBodyError(value: Uint8Array | Response): value is Response {
   return value instanceof Response;
 }
 
+function isBase64UrlOfLength(value: unknown, length: number): value is string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try {
+    const bytes = Buffer.from(value, "base64url");
+    return bytes.byteLength === length && bytes.toString("base64url") === value;
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsEndpoint(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try {
+    const endpoint = new URL(value);
+    return endpoint.protocol === "https:" && endpoint.hostname !== "" && endpoint.username === "" && endpoint.password === "" && endpoint.hash === "";
+  } catch {
+    return false;
+  }
+}
+
 async function readForm(request: Request, maxBytes: number): Promise<URLSearchParams | Response> {
   const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== FORM_CONTENT_TYPE) return text("Expected form data", 415);
@@ -176,6 +215,19 @@ async function readForm(request: Request, maxBytes: number): Promise<URLSearchPa
     return new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
   } catch {
     return text("Malformed form data", 400);
+  }
+}
+
+async function readNotificationJson(request: Request): Promise<Record<string, unknown> | Response> {
+  const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") return text("Expected JSON", 415);
+  const body = await readBody(request, 16 * 1024);
+  if (body instanceof Response) return body;
+  try {
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : json({ error: "Invalid JSON object" }, 400);
+  } catch {
+    return json({ error: "Malformed JSON" }, 400);
   }
 }
 
@@ -410,6 +462,34 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     }
     const path = url.pathname;
 
+    if (path === "/manifest.webmanifest") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(JSON.stringify(pwaManifest), 200, "application/manifest+json; charset=utf-8", {
+        "cache-control": "public, max-age=3600",
+      });
+    }
+
+    if (path === "/service-worker.js") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(serviceWorker, 200, "text/javascript; charset=utf-8", {
+        "service-worker-allowed": "/",
+        "cache-control": "no-cache",
+      });
+    }
+
+    if (path === "/assets/notifications.js") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(notificationClient, 200, "text/javascript; charset=utf-8");
+    }
+
+    const pwaIcon = pwaIcons.get(path);
+    if (pwaIcon) {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? response(pwaIcon, 200, "image/svg+xml; charset=utf-8", {
+        "cache-control": "public, max-age=31536000, immutable",
+      });
+    }
+
     if (path === "/assets/dashboard.js") {
       const methodError = requireMethod(request, "GET");
       return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
@@ -454,21 +534,23 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     }
 
     if (path === "/login") {
-      if (request.method === "GET") return response(loginPage(), 200, "text/html; charset=utf-8");
+      const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
+      if (request.method === "GET") return response(loginPage("", returnTo), 200, "text/html; charset=utf-8");
       if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "GET, POST" });
       if (!dependencies.auth.isConfigured) return text("Web authentication is not configured", 503);
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       const username = oneValue(form, "username");
       const password = oneValue(form, "password");
+      const requestedReturnTo = safeReturnTo(oneValue(form, "returnTo"));
       if (username === null || username.length > 200 || password === null || password.length > 1024) return text("Invalid login request", 400);
       if (!dependencies.auth.authenticate(username, password)) {
-        return response(loginPage("The credentials were not accepted."), 401, "text/html; charset=utf-8");
+        return response(loginPage("The credentials were not accepted.", requestedReturnTo), 401, "text/html; charset=utf-8");
       }
       const account = dependencies.auth.findAccount(username);
       const created = dependencies.auth.createSession(account ?? undefined);
       if (!created) return text("Unable to create session", 503);
-      return redirect("/board", { "set-cookie": created.cookie });
+      return redirect(requestedReturnTo ?? "/board", { "set-cookie": created.cookie });
     }
 
     if (path === "/logout") {
@@ -478,7 +560,57 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const pushEndpoint = oneValue(form, "pushEndpoint");
+      if (pushEndpoint && isHttpsEndpoint(pushEndpoint)) {
+        dependencies.deletePushSubscription?.(session(request)!.account.id, pushEndpoint);
+      }
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
+    }
+
+    if (path === "/settings/notifications") {
+      if (request.method !== "GET") return response(null, 405, "text/plain; charset=utf-8", { allow: "GET" });
+      const current = session(request);
+      if (!current) return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
+      const preferences = dependencies.getPushPreferences?.(current.account.id) ?? { questions: false, stopped: false, done: false };
+      const checks = (["questions", "stopped", "done"] as const).map((category) => {
+        const label = category === "questions" ? "New questions requiring an answer" : category === "stopped" ? "Issues entering blocked, error, needs intervention, or rejected" : "Issues reaching done";
+        return `<label><input type="checkbox" name="${category}" ${preferences[category] ? "checked" : ""}> ${label}</label>`;
+      }).join("");
+      const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="theme-color" content="#087f72"><title>Notifications · Conveyor</title></head><body><main><h1>Browser notifications</h1><p><a href="/board">Dashboard</a> · Signed in as ${escapeHtml(current.account.username)}</p><p>Push notifications require a supported browser, notification permission, and HTTPS. Permission is requested only when you enable a category.</p><p id="notification-status" role="status" aria-live="polite">Checking browser support…</p><form id="notification-settings" data-csrf="${escapeHtml(current.csrfToken)}">${checks}<button type="submit">Save notification settings</button></form><script src="/assets/notifications.js" defer></script></main></body></html>`;
+      return response(page, 200, "text/html; charset=utf-8");
+    }
+
+    if (path === "/api/notifications/settings") {
+      const current = session(request);
+      if (!current) return json({ error: "unauthorized" }, 401);
+      if (request.method === "GET") return json({ preferences: dependencies.getPushPreferences?.(current.account.id) ?? { questions: false, stopped: false, done: false }, publicKey: dependencies.pushPublicKey ?? null });
+      if (request.method !== "POST") return response(null, 405, "application/json; charset=utf-8", { allow: "GET, POST" });
+      if (!dependencies.auth.validateCsrf(request.headers.get("cookie") ?? undefined, request.headers.get("x-csrf-token") ?? undefined)) return json({ error: "forbidden" }, 403);
+      const input = await readNotificationJson(request);
+      if (input instanceof Response) return input;
+      if (Object.keys(input).some((key) => !["questions", "stopped", "done"].includes(key)) || ["questions", "stopped", "done"].some((key) => typeof input[key] !== "boolean")) return json({ error: "Invalid notification preferences" }, 400);
+      if (!dependencies.setPushPreferences) return json({ error: "Notification settings are unavailable" }, 503);
+      const preferences = { questions: input.questions as boolean, stopped: input.stopped as boolean, done: input.done as boolean };
+      dependencies.setPushPreferences(current.account.id, preferences);
+      return json({ preferences });
+    }
+
+    if (path === "/api/notifications/subscriptions") {
+      const current = session(request);
+      if (!current) return json({ error: "unauthorized" }, 401);
+      if (request.method !== "POST" && request.method !== "DELETE") return response(null, 405, "application/json; charset=utf-8", { allow: "POST, DELETE" });
+      if (!dependencies.auth.validateCsrf(request.headers.get("cookie") ?? undefined, request.headers.get("x-csrf-token") ?? undefined)) return json({ error: "forbidden" }, 403);
+      const input = await readNotificationJson(request);
+      if (input instanceof Response) return input;
+      if (!isHttpsEndpoint(input.endpoint)) return json({ error: "Invalid subscription endpoint" }, 400);
+      if (request.method === "DELETE") {
+        dependencies.deletePushSubscription?.(current.account.id, input.endpoint);
+        return json({ removed: true });
+      }
+      const keys = input.keys as Record<string, unknown> | undefined;
+      if (!dependencies.pushPublicKey || !keys || !isBase64UrlOfLength(keys.p256dh, 65) || !isBase64UrlOfLength(keys.auth, 16) || (input.expirationTime !== undefined && input.expirationTime !== null && typeof input.expirationTime !== "number") || Object.keys(input).some((key) => !["endpoint", "expirationTime", "keys"].includes(key)) || Object.keys(keys).some((key) => !["p256dh", "auth"].includes(key))) return json({ error: dependencies.pushPublicKey ? "Invalid subscription data" : "Server push is not configured" }, 400);
+      dependencies.putPushSubscription?.(current.account.id, input.endpoint, { p256dh: keys.p256dh, auth: keys.auth });
+      return json({ registered: true }, 201);
     }
 
     if (path === "/api/accounts") {
@@ -581,7 +713,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
-      if (!currentSession) return redirect("/login");
+      if (!currentSession) return redirect(issuePagePath ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
       try {
         if (legacyDashboardQuery) {
           const legacyIssue = url.searchParams.getAll("issue");

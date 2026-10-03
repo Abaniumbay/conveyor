@@ -28,6 +28,7 @@ import { formatDuration, formatUsage } from "../web/format";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
+import { deliverPushEvents, type PushConfiguration } from "../web/push";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
 import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
@@ -2243,13 +2244,24 @@ export class ConveyorService {
     await this.updateStatusComment(issue.id);
   }
 
-  webDependencies(auth: WebAuthApi, username: string): WebHandlerDependencies {
+  webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {
     const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
       auth,
       username,
       listAccounts: () => this.store.dashboardAccounts().map(({ id, username, role, avatar }) => ({ id, username, role, avatar })),
       getAccount: (id) => this.store.dashboardAccountById(id),
+      getPushPreferences: (id) => this.store.getPushPreferences(id),
+      setPushPreferences: (id, preferences) => this.store.setPushPreferences(id, preferences),
+      putPushSubscription: (id, endpoint, keys) => this.store.putPushSubscription(id, endpoint, keys),
+      deletePushSubscription: (id, endpoint) => this.store.deletePushSubscription(id, endpoint),
+      pushPublicKey: push?.publicKey ?? null,
+      dispatchPushEvents: () => deliverPushEvents(this.store, async (issueId) => {
+        const target = this.store.getIssue(issueId);
+        return target && target.projectedState !== "offboarded"
+          ? `/issues/${encodeURIComponent(target.repositoryId)}/${target.sourceNumber}`
+          : null;
+      }, push),
       createAccount: (name, passwordHash) => this.store.createDashboardUser(name, passwordHash),
       changePassword: (id, passwordHash) => this.store.changeDashboardPassword(id, passwordHash),
       changeAvatar: (id, avatar) => this.store.changeDashboardAvatar(id, avatar),

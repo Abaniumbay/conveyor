@@ -710,6 +710,8 @@ function Page({ model }: { model: DashboardViewModel }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light dark" />
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <meta name="theme-color" content="#087f72" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{model.title} · Conveyor</title>
         <script src="/assets/theme.js" />
@@ -733,7 +735,8 @@ function Page({ model }: { model: DashboardViewModel }) {
             <span class="total-usage">{model.totalUsage}</span>
             <ThemeControl />
             <span class="signed-in-user">{model.account?.avatar} {model.account?.username}</span>
-            <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
+            <a href="/settings/notifications">Notifications</a>
+            <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
           </header>
           <Line model={model} />
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}

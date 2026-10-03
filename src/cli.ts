@@ -9,6 +9,7 @@ import { GhCliTransport, GitHubAdapter } from "./source/github/adapter";
 import { createGitHubCodeHostRegistry } from "./source/github/codehost-registry";
 import { createWebAuth, hashPassword } from "./web/auth";
 import { createWebHandler } from "./web/server";
+import { pushConfiguration } from "./web/push";
 import { mcpSocketPath, serveMcpSocket } from "./isolation/mcp-socket";
 
 function option(args: readonly string[], name: string): string | undefined {
@@ -73,7 +74,8 @@ async function serve(configPath: string): Promise<void> {
     throw new Error("CONVEYOR_PASSWORD_HASH and a 32-byte CONVEYOR_SESSION_SECRET are required");
   }
   service.seedDashboardSuperuser(username, passwordHash);
-  const handler = createWebHandler(service.webDependencies(auth, username));
+  const webDependencies = service.webDependencies(auth, username, pushConfiguration());
+  const handler = createWebHandler(webDependencies);
   const server = Bun.serve({
     ...listenAddress(config.web.listen),
     fetch: handler,
@@ -87,6 +89,9 @@ async function serve(configPath: string): Promise<void> {
     ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
     : null;
   service.start();
+  const dispatchPushEvents = () => Promise.resolve(webDependencies.dispatchPushEvents?.()).catch((error: unknown) => console.error("Push notification delivery failed", error));
+  const pushTimer = setInterval(() => void dispatchPushEvents(), 5_000);
+  void dispatchPushEvents();
   console.log(`Conveyor ${config.hash.slice(0, 12)} listening on ${server.url}`);
 
   let stopping = false;
@@ -94,6 +99,7 @@ async function serve(configPath: string): Promise<void> {
     if (stopping) return;
     stopping = true;
     console.log(`Received ${signal}; stopping Conveyor`);
+    clearInterval(pushTimer);
     await server.stop(false);
     await mcpSocket?.stop();
     await service.close();

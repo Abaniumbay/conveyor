@@ -177,6 +177,112 @@ async function login(handler: (request: Request) => Promise<Response>) {
 }
 
 describe("createWebHandler", () => {
+  test("serves same-origin PWA assets publicly without caching dashboard data", async () => {
+    const { handler } = setup();
+    const manifest = await handler(new Request("http://localhost/manifest.webmanifest"));
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toContain("application/manifest+json");
+    expect(await manifest.json()).toMatchObject({
+      name: "Conveyor",
+      start_url: "/board",
+      display: "standalone",
+      icons: expect.arrayContaining([expect.objectContaining({ sizes: "192x192" }), expect.objectContaining({ sizes: "512x512" })]),
+    });
+
+    const worker = await handler(new Request("http://localhost/service-worker.js"));
+    expect(worker.status).toBe(200);
+    expect(worker.headers.get("service-worker-allowed")).toBe("/");
+    const source = await worker.text();
+    expect(source).toContain("fetch(request)");
+    expect(source).toContain("offline</h1>");
+    expect(source).toContain("url.origin === self.location.origin");
+    expect(source).not.toContain("caches.open");
+
+    for (const path of ["/icons/conveyor-192.svg", "/icons/conveyor-512.svg"]) {
+      expect((await handler(new Request(`http://localhost${path}`))).status).toBe(200);
+    }
+  });
+
+  test("returns notification clicks to the protected page after sign-in without allowing external redirects", async () => {
+    const { handler } = setup();
+    const protectedPage = await handler(new Request("http://localhost/issues/repo/1?tab=conversation"));
+    expect(protectedPage.headers.get("location")).toBe("/login?returnTo=%2Fissues%2Frepo%2F1%3Ftab%3Dconversation");
+    const loginPage = await handler(new Request(`http://localhost${protectedPage.headers.get("location")}`));
+    expect(await loginPage.text()).toContain('name="returnTo" value="/issues/repo/1?tab=conversation"');
+    const signedIn = await handler(new Request("http://localhost/login", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: "operator", password: "correct horse", returnTo: "/issues/repo/1?tab=conversation" }),
+    }));
+    expect(signedIn.headers.get("location")).toBe("/issues/repo/1?tab=conversation");
+    const opened = await handler(new Request("http://localhost/issues/repo/1?tab=conversation", { headers: { cookie: signedIn.headers.get("set-cookie")!.split(";")[0]! } }));
+    expect(opened.status).toBe(200);
+
+    const external = await handler(new Request("http://localhost/login?returnTo=https%3A%2F%2Fattacker.example"));
+    expect(await external.text()).not.toContain('name="returnTo"');
+  });
+
+  test("protects notification preferences and subscriptions with account-bound CSRF requests", async () => {
+    let preferences = { questions: false, stopped: false, done: false };
+    const subscriptions: unknown[][] = [];
+    const { handler, auth } = setup({
+      pushPublicKey: "BExamplePushPublicKey12345678901234567890",
+      getPushPreferences: () => preferences,
+      setPushPreferences: (_accountId: string, value: typeof preferences) => { preferences = value; },
+      putPushSubscription: (...args: unknown[]) => { subscriptions.push(args); },
+    });
+    expect((await handler(new Request("http://localhost/api/notifications/settings"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const p256dh = Buffer.alloc(65, 1).toString("base64url");
+    const authKey = Buffer.alloc(16, 2).toString("base64url");
+    const page = await handler(new Request("http://localhost/settings/notifications", { headers: { cookie } }));
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("/assets/notifications.js");
+    expect((await handler(new Request("http://localhost/api/notifications/settings", { headers: { cookie } }))).status).toBe(200);
+
+    const denied = await handler(new Request("http://localhost/api/notifications/settings", {
+      method: "POST", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ questions: true, stopped: false, done: false }),
+    }));
+    expect(denied.status).toBe(403);
+    const saved = await handler(new Request("http://localhost/api/notifications/settings", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ questions: true, stopped: false, done: false }),
+    }));
+    expect(saved.status).toBe(200);
+    expect(preferences).toEqual({ questions: true, stopped: false, done: false });
+
+    const invalid = await handler(new Request("http://localhost/api/notifications/subscriptions", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ endpoint: "http://attacker.example/push", keys: { p256dh, auth: authKey } }),
+    }));
+    expect(invalid.status).toBe(400);
+    expect(subscriptions).toHaveLength(0);
+    const malformedEndpoint = await handler(new Request("http://localhost/api/notifications/subscriptions", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ endpoint: "https://", keys: { p256dh, auth: authKey } }),
+    }));
+    expect(malformedEndpoint.status).toBe(400);
+    const invalidKey = await handler(new Request("http://localhost/api/notifications/subscriptions", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ endpoint: "https://push.example/bad-key", keys: { p256dh: "short", auth: authKey } }),
+    }));
+    expect(invalidKey.status).toBe(400);
+    expect(subscriptions).toHaveLength(0);
+    const oversized = await handler(new Request("http://localhost/api/notifications/subscriptions", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ endpoint: "https://push.example/subscription", keys: { p256dh, auth: authKey }, padding: "x".repeat(17 * 1024) }),
+    }));
+    expect(oversized.status).toBe(413);
+    expect(subscriptions).toHaveLength(0);
+    const registered = await handler(new Request("http://localhost/api/notifications/subscriptions", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ endpoint: "https://push.example/subscription", keys: { p256dh, auth: authKey } }),
+    }));
+    expect(registered.status).toBe(201);
+    expect(subscriptions).toEqual([["legacy", "https://push.example/subscription", { p256dh, auth: authKey }]]);
+  });
+
   test("keeps liveness public and protects readiness and the dashboard", async () => {
     const { handler } = setup();
     const live = await handler(new Request("http://localhost/health/live"));
@@ -212,11 +318,13 @@ describe("createWebHandler", () => {
 
   test("logs in, serves dashboard, and clears the session on logout", async () => {
     const dashboardCalls: unknown[][] = [];
+    const removedPushSubscriptions: unknown[][] = [];
     const { handler, auth } = setup({
       getDashboard: (...args: unknown[]) => {
         dashboardCalls.push(args);
         return model;
       },
+      deletePushSubscription: (...args: unknown[]) => { removedPushSubscriptions.push(args); },
     });
     const { response, cookie } = await login(handler);
     expect(response.status).toBe(303);
@@ -240,10 +348,11 @@ describe("createWebHandler", () => {
     const logout = await handler(new Request("http://localhost/logout", {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf }),
+      body: new URLSearchParams({ csrf, pushEndpoint: "https://push.example/browser-a" }),
     }));
     expect(logout.status).toBe(303);
     expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(removedPushSubscriptions).toEqual([[auth.getSession(cookie)?.account.id, "https://push.example/browser-a"]]);
   });
 
   test("serves REST dashboard paths, redirects legacy URLs permanently, and rejects unknown resources", async () => {
