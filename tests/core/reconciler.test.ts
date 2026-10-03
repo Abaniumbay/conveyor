@@ -292,12 +292,14 @@ describe("reconcileRepository", () => {
     };
     const withLabels = (issueLabels: string[]) => ({ ...common, source: { async listIssues() { return [issue(1, issueLabels)]; } } });
     await reconcileRepository(withLabels(["conveyor", "conveyor:implementation", "conveyor:blocked"]));
-    const before = store.listStageTransitions("github:owner/repo#1").length;
+    // Enrolment's onboarded entry can share a millisecond with the resume, so it is left out of the count.
+    const recorded = () => store.listStageTransitions("github:owner/repo#1").filter((transition) => transition.kind !== "onboarded");
+    const before = recorded().length;
 
     await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
     await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
 
-    const added = store.listStageTransitions("github:owner/repo#1").slice(before);
+    const added = recorded().slice(before);
     expect(added).toHaveLength(1);
     expect(added[0]).toMatchObject({
       kind: "resumed",

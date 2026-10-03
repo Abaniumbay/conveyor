@@ -211,12 +211,13 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
     const runner = config.runners[agent.runner];
     if (!runner) {
       errors.push(`agents.${name}.runner references unknown runner "${agent.runner}"`);
-    } else if (runner.type === "claude-code" && agent.workspaceAccess !== "read-only") {
-      errors.push(`agents.${name} runs on Claude Code, which supports only access: read-only for now`);
-    } else if (runner.type === "claude-code" && (agent.network || agent.writableRoots.length > 0)) {
-      errors.push(`agents.${name} runs on Claude Code, which does not support network or writableRoots yet`);
-    } else if (runner.type === "claude-code" && (Object.keys(agent.codexConfig).length > 0 || Object.keys(agent.mcpServers).length > 0)) {
-      errors.push(`agents.${name} runs on Claude Code, which does not support codexConfig or mcpServers yet`);
+    } else if (runner.type === "claude-code" && agent.workspaceAccess === "workspace-write" && !agent.network) {
+      // The Claude CLI needs the network for its own API calls, so its commands cannot be cut off from it.
+      errors.push(`agents.${name} runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)`);
+    } else if (runner.type === "claude-code" && agent.workspaceAccess === "read-only" && agent.writableRoots.length > 0) {
+      errors.push(`agents.${name} is read-only, so writableRoots does not apply`);
+    } else if (runner.type === "claude-code" && Object.keys(agent.codexConfig).length > 0) {
+      errors.push(`agents.${name} runs on Claude Code, which does not take codexConfig`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {
