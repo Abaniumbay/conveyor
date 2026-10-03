@@ -104,7 +104,10 @@ export interface CodeHost {
     path?: string;
     line?: number;
   }): Promise<{ url: string; projection: string }>;
-  /** Marks a finding's projection resolved (a reply on an inline comment, an edit of a managed comment). */
+  /**
+   * Marks a finding's projection resolved: `message` as a reply on an inline comment (whose thread is
+   * then resolved) or as the heading of a managed comment, plus a thumbs up (fixed) or down (invalid).
+   */
   resolveFindingProjection(input: {
     address: string;
     id: string;
@@ -112,7 +115,24 @@ export interface CodeHost {
     projection: string;
     body: string;
     actor: string;
+    verdict: FindingVerdict;
+    message: string;
+  }): Promise<void>;
+  /**
+   * Answers and resolves a finding imported from the native review (`providerKey` from
+   * `listReviewArtifacts`): `message` as a reply, a thumbs up or down, and the thread resolved.
+   * Throws when the thread cannot be resolved, since an unresolved thread reopens the finding.
+   */
+  resolveNativeFinding(input: {
+    address: string;
+    id: string;
+    providerKey: string;
+    verdict: FindingVerdict;
+    message: string;
   }): Promise<void>;
   /** Human review artifacts of the change's native review; Conveyor's own comments and bots are excluded. */
   listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]>;
 }
+
+/** How an agent closed a finding: the problem is fixed, or the finding is invalid (wrong, not applicable or already satisfied). */
+export type FindingVerdict = "fixed" | "invalid";

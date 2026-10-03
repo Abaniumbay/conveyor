@@ -49,16 +49,69 @@ describe("GitHub findings projection", () => {
     await expect(broken.host.createFinding({ address: "o/r", id: ID, findingId: "F3", body: "x", headSha: "h", path: "a", line: 1 })).rejects.toThrow("HTTP 500");
   });
 
-  test("projects a resolution as a reply on an inline comment and an edit on a managed one", async () => {
-    const inline = host([{}]);
-    await inline.host.resolveFindingProjection({ address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh" });
-    expect(inline.transport.requests[0]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/5/comments/11/replies", body: { body: "Resolved by kaveh" } });
-    const managed = host([{}]);
-    await managed.host.resolveFindingProjection({ address: "o/r", id: ID, findingId: "F2", projection: "comment:12", body: "General", actor: "kaveh" });
+  test("projects a resolution as a reply, a reaction and a resolved thread on an inline comment", async () => {
+    const threads = { data: { repository: { pullRequest: { reviewThreads: { nodes: [
+      { id: "T9", isResolved: false, comments: { nodes: [{ id: "C9", databaseId: 11, author: { login: "conveyor" }, body: "x", url: "u", path: "a.ts", line: 1, createdAt: "t", pullRequestReview: null }] } },
+    ] } } } } };
+    const inline = host([{}, {}, threads, { data: { resolveReviewThread: { thread: { isResolved: true } } } }]);
+    await inline.host.resolveFindingProjection({
+      address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh", verdict: "fixed", message: "👍 Fixed in abc1234 by Kaveh: done",
+    });
+    expect(inline.transport.requests[0]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/5/comments/11/replies", body: { body: "👍 Fixed in abc1234 by Kaveh: done" } });
+    expect(inline.transport.requests[1]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/comments/11/reactions", body: { content: "+1" } });
+    expect(inline.transport.requests[3]).toMatchObject({ method: "POST", path: "graphql", body: { variables: { thread: "T9" } } });
+    expect((inline.transport.requests[3]!.body as { query: string }).query).toContain("resolveReviewThread");
+  });
+
+  test("a failing reaction or thread lookup does not fail an inline resolution", async () => {
+    const inline = host([{}, new Error("reactions are disabled"), new Error("GraphQL down")]);
+    await inline.host.resolveFindingProjection({
+      address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh", verdict: "fixed", message: "m",
+    });
+    expect(inline.transport.requests).toHaveLength(3);
+  });
+
+  test("edits a managed comment's heading to the resolution and reacts on it", async () => {
+    const managed = host([{}, {}]);
+    await managed.host.resolveFindingProjection({
+      address: "o/r", id: ID, findingId: "F2", projection: "comment:12", body: "General", actor: "kaveh", verdict: "invalid", message: "👎 Not changed by Kaveh: nope",
+    });
     expect(managed.transport.requests[0]).toMatchObject({ method: "PATCH", path: "repos/o/r/issues/comments/12" });
     const edited = (managed.transport.requests[0]!.body as { body: string }).body;
     expect(edited).toContain("<!-- conveyor:finding:F2 -->");
-    expect(edited).toContain("✅ Resolved");
+    expect(edited).toContain("👎 Not changed by Kaveh: nope");
+    expect(edited).toContain("General");
+    expect(managed.transport.requests[1]).toMatchObject({ method: "POST", path: "repos/o/r/issues/comments/12/reactions", body: { content: "-1" } });
+  });
+
+  test("answers an imported thread, reacts on its first comment and resolves it", async () => {
+    const native = host([
+      { data: { addPullRequestReviewThreadReply: { comment: { id: "R1" } } } },
+      { data: { node: { comments: { nodes: [{ id: "C1" }] } } } },
+      { data: { addReaction: { reaction: { content: "THUMBS_DOWN" } } } },
+      { data: { resolveReviewThread: { thread: { isResolved: true } } } },
+    ]);
+    await native.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "thread:PRRT_1", verdict: "invalid", message: "👎 Not changed by Kaveh: wrong" });
+    const bodies = native.transport.requests.map((request) => request.body as { query: string; variables: Record<string, unknown> });
+    expect(bodies[0]!.query).toContain("addPullRequestReviewThreadReply");
+    expect(bodies[0]!.variables).toEqual({ thread: "PRRT_1", body: "👎 Not changed by Kaveh: wrong" });
+    expect(bodies[2]!.variables).toEqual({ subject: "C1", content: "THUMBS_DOWN" });
+    expect(bodies[3]!.query).toContain("resolveReviewThread");
+  });
+
+  test("an imported thread that cannot be resolved fails, but a failed reaction does not", async () => {
+    const reactionFails = host([{ data: {} }, new Error("no reactions"), { data: {} }]);
+    await reactionFails.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "thread:PRRT_1", verdict: "fixed", message: "m" });
+    const resolveFails = host([{ data: {} }, { data: { node: null } }, { errors: [{ message: "Resource not accessible" }] }]);
+    await expect(resolveFails.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "thread:PRRT_1", verdict: "fixed", message: "m" }))
+      .rejects.toThrow("Resource not accessible");
+  });
+
+  test("answers a changes-requested review with a pull request comment", async () => {
+    const native = host([{ id: 77, html_url: "https://x/c77" }]);
+    await native.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "review:900", verdict: "fixed", message: "👍 Fixed in abc by Kaveh: ok" });
+    expect(native.transport.requests[0]).toMatchObject({ method: "POST", path: "repos/o/r/issues/5/comments" });
+    expect((native.transport.requests[0]!.body as { body: string }).body).toBe("👍 Fixed in abc by Kaveh: ok\n\n(Re: review 900)");
   });
 });
 

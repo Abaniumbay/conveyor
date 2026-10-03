@@ -32,7 +32,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
   merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
-  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean;
+  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean;
 } = {}) {
   let body = state.body ?? "";
   const calls: Array<[string, unknown]> = [];
@@ -53,6 +53,10 @@ function hostFake(state: {
     async resolveFindingProjection(input) {
       calls.push(["resolveFinding", input]);
       if (state.projectFails) throw new Error("GitHub is down");
+    },
+    async resolveNativeFinding(input) {
+      calls.push(["resolveNative", input]);
+      if (state.nativeFails) throw new Error("thread is locked");
     },
     async listReviewArtifacts(input) {
       calls.push(["listArtifacts", input]);
@@ -558,46 +562,84 @@ describe("findings", () => {
     expect(findings(w).get("i1", output.findingId)).toMatchObject({ state: "open", url: "" });
   });
 
-  test("change.resolveFinding resolves once, projects best-effort and is a no-op the second time", async () => {
+  const kaveh = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };
+  const fixed = { verdict: "fixed", comment: "Renamed the field" };
+
+  test("change.resolveFinding resolves once, replies with the verdict, head commit and agent, and is a no-op the second time", async () => {
     const w = await world();
     const { findingId } = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string };
-    await dispatch(w, "change.resolveFinding", { findingId }, { id: "kaveh", name: "K", title: "T" });
-    await dispatch(w, "change.resolveFinding", { findingId }, { id: "kaveh", name: "K", title: "T" });
+    await dispatch(w, "change.resolveFinding", { findingId, ...fixed }, kaveh);
+    await dispatch(w, "change.resolveFinding", { findingId, ...fixed }, kaveh);
     expect(findings(w).get("i1", findingId)!.state).toBe("resolved");
     const projections = w.host.calls.filter(([name]) => name === "resolveFinding");
     expect(projections).toHaveLength(1);
-    expect(projections[0]![1]).toMatchObject({ findingId, projection: "inline:11", body: "Fix this", actor: "kaveh" });
+    expect(projections[0]![1]).toMatchObject({
+      findingId, projection: "inline:11", body: "Fix this", actor: "kaveh", verdict: "fixed", message: "👍 Fixed in head1 by Kaveh: Renamed the field",
+    });
     expect(findings(w).events(findingId).map((e) => [e.kind, e.actor])).toEqual([["created", "reviewer"], ["resolved", "kaveh"]]);
+  });
+
+  test("an invalid finding is closed with a thumbs-down answer", async () => {
+    const w = await world();
+    const { findingId } = await dispatch(w, "change.comment", { body: "Use a map", headSha: "head1" }) as { findingId: string };
+    await dispatch(w, "change.resolveFinding", { findingId, verdict: "invalid", comment: "The list is already keyed by id" }, kaveh);
+    expect(w.host.calls.find(([name]) => name === "resolveFinding")![1]).toMatchObject({
+      verdict: "invalid", message: "👎 Not changed by Kaveh (checked at head1): The list is already keyed by id",
+    });
+    expect(findings(w).get("i1", findingId)!.state).toBe("resolved");
   });
 
   test("a projection failure does not undo the resolution", async () => {
     const w = await world({ projectFails: true });
     const created = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
     findings(w).project(created.id, "u", "comment:1");
-    await dispatch(w, "change.resolveFinding", { findingId: created.id });
+    await dispatch(w, "change.resolveFinding", { findingId: created.id, ...fixed });
     expect(w.host.calls.some(([name]) => name === "resolveFinding")).toBe(true);
     expect(findings(w).get("i1", created.id)!.state).toBe("resolved");
   });
 
-  test("an unknown finding cannot be resolved", async () => {
+  test("an unknown finding cannot be resolved, and a verdict and comment are required", async () => {
     const w = await world();
-    await expect(dispatch(w, "change.resolveFinding", { findingId: "nope" })).rejects.toThrow("Unknown finding");
+    await expect(dispatch(w, "change.resolveFinding", { findingId: "nope", ...fixed })).rejects.toThrow("Unknown finding");
+    const created = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
+    await expect(dispatch(w, "change.resolveFinding", { findingId: created.id })).rejects.toThrow();
+    await expect(dispatch(w, "change.resolveFinding", { findingId: created.id, verdict: "maybe", comment: "x" })).rejects.toThrow();
   });
 
-  test("a human finding is not resolvable by a tool call", async () => {
-    const w = await world({ artifacts: [artifact()] });
+  test("a finding from a person or a review bot is answered and resolved on its native thread by the agent", async () => {
+    const w = await world({ artifacts: [artifact({ author: "chatgpt-codex-connector" })] });
     await run("change.load", { context: {}, deps: w.deps });
-    const [human] = findings(w).list("i1");
-    await expect(dispatch(w, "change.resolveFinding", { findingId: human!.id })).rejects.toThrow("resolved on the provider");
-    expect(findings(w).get("i1", human!.id)!.state).toBe("open");
+    const [imported] = findings(w).list("i1");
+    await dispatch(w, "change.resolveFinding", { findingId: imported!.id, verdict: "invalid", comment: "Already handled by the guard" }, kaveh);
+    expect(w.host.calls.find(([name]) => name === "resolveNative")![1]).toMatchObject({
+      providerKey: "thread:T1", verdict: "invalid", message: "👎 Not changed by Kaveh (checked at head1): Already handled by the guard",
+    });
+    expect(findings(w).get("i1", imported!.id)!.state).toBe("resolved");
     expect(w.host.calls.some(([name]) => name === "resolveFinding")).toBe(false);
+  });
+
+  test("an imported finding stays open when its native thread cannot be resolved", async () => {
+    const w = await world({ artifacts: [artifact()], nativeFails: true });
+    await run("change.load", { context: {}, deps: w.deps });
+    const [imported] = findings(w).list("i1");
+    await expect(dispatch(w, "change.resolveFinding", { findingId: imported!.id, ...fixed }, kaveh)).rejects.toThrow("thread is locked");
+    expect(findings(w).get("i1", imported!.id)!.state).toBe("open");
+  });
+
+  test("an agent-resolved changes-requested review stays resolved on the next import; an unresolved thread reopens", async () => {
+    const w = await world({ artifacts: [artifact({ providerKey: "review:900", path: null, line: null }), artifact({ providerKey: "thread:T2" })] });
+    await run("change.load", { context: {}, deps: w.deps });
+    for (const finding of findings(w).list("i1")) await dispatch(w, "change.resolveFinding", { findingId: finding.id, ...fixed }, kaveh);
+    await run("change.load", { context: {}, deps: w.deps });
+    const states = Object.fromEntries(findings(w).list("i1").map((finding) => [finding.providerKey, finding.state]));
+    expect(states).toEqual({ "review:900": "resolved", "thread:T2": "open" });
   });
 
   test("change.resolveFinding cannot resolve a dismissed finding", async () => {
     const w = await world();
     const f = findings(w).create({ issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "x" });
     findings(w).dismiss("i1", f.id, { actor: "human:amir", reason: "fine", at: "t" });
-    await expect(dispatch(w, "change.resolveFinding", { findingId: f.id })).rejects.toThrow("dismissed");
+    await expect(dispatch(w, "change.resolveFinding", { findingId: f.id, ...fixed })).rejects.toThrow("dismissed");
     expect(findings(w).get("i1", f.id)!.state).toBe("dismissed");
   });
 

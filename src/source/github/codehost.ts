@@ -3,6 +3,7 @@ import type {
   ChangeDelivery,
   ChangeRequest,
   CodeHost,
+  FindingVerdict,
   ReviewArtifact,
 } from "../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "./adapter";
@@ -46,9 +47,20 @@ function reference(address: string, id: string): number {
 const findingMarker = (findingId: string) => `<!-- conveyor:finding:${findingId} -->`;
 const OWN_MARKER = "<!-- conveyor:finding:";
 
-function findingComment(findingId: string, body: string, where: string | null, resolvedBy?: string): string {
-  const heading = resolvedBy ? `✅ Resolved by ${resolvedBy}` : "**Review finding**";
+function findingComment(findingId: string, body: string, where: string | null, resolution?: string): string {
+  const heading = resolution ?? "**Review finding**";
   return `${findingMarker(findingId)}\n${heading}${where ? ` (${where})` : ""}\n\n${body}`;
+}
+
+const reaction = (verdict: FindingVerdict): "+1" | "-1" => (verdict === "fixed" ? "+1" : "-1");
+
+/** Runs a best-effort GitHub step: the finding record is the authority, its projection is a courtesy. */
+async function bestEffort(step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch {
+    // Left as is: the record stays resolved.
+  }
 }
 
 const isBot = (login: string) => login.endsWith("[bot]");
@@ -240,15 +252,44 @@ export class GitHubCodeHost implements CodeHost {
 
   async resolveFindingProjection(input: {
     address: string; id: string; findingId: string; projection: string; body: string; actor: string;
+    verdict: FindingVerdict; message: string;
   }): Promise<void> {
     const [kind, rawId] = input.projection.split(":");
     const commentId = Number(rawId);
     if (!Number.isSafeInteger(commentId)) throw new Error(`unknown finding projection "${input.projection}"`);
+    const number = reference(input.address, input.id);
     if (kind === "inline") {
-      await this.github.replyToReviewComment(input.address, reference(input.address, input.id), commentId, `Resolved by ${input.actor}`);
+      await this.github.replyToReviewComment(input.address, number, commentId, input.message);
+      await bestEffort(() => this.github.reactToReviewComment(input.address, commentId, reaction(input.verdict)));
+      await bestEffort(async () => {
+        const thread = (await this.github.listReviewThreads(input.address, number))
+          .find((candidate) => candidate.comments.nodes[0]?.databaseId === commentId);
+        if (thread && !thread.isResolved) await this.github.resolveReviewThread(thread.id);
+      });
     } else {
-      await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.actor));
+      await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.message));
+      await bestEffort(() => this.github.reactToIssueComment(input.address, commentId, reaction(input.verdict)));
     }
+  }
+
+  async resolveNativeFinding(input: {
+    address: string; id: string; providerKey: string; verdict: FindingVerdict; message: string;
+  }): Promise<void> {
+    const [kind, ...rest] = input.providerKey.split(":");
+    const key = rest.join(":");
+    if (kind === "thread") {
+      await this.github.replyToReviewThread(key, input.message);
+      await bestEffort(() => this.github.reactToReviewThread(key, reaction(input.verdict)));
+      // Required: an unresolved thread would reopen the finding on the next import.
+      await this.github.resolveReviewThread(key);
+      return;
+    }
+    if (kind === "review") {
+      // A changes-requested review has no thread to resolve; answer it on the pull request.
+      await this.github.createComment(input.address, reference(input.address, input.id), `${input.message}\n\n(Re: review ${key})`);
+      return;
+    }
+    throw new Error(`unknown review artifact "${input.providerKey}"`);
   }
 
   async listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]> {
