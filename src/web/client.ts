@@ -5,6 +5,7 @@ export const dashboardClient = String.raw`(() => {
   let pendingRefresh = false;
   let conversationRefreshTimer = null;
   let journeyRefreshTimer = null;
+  let summaryRefreshTimer = null;
   let activityRefreshTimer = null;
 
   const selectedTheme = () => {
@@ -507,6 +508,53 @@ export const dashboardClient = String.raw`(() => {
       journeyRefreshTimer = null;
       const panel = document.querySelector('dialog[open] [data-detail-panel="journey"]:not([hidden])');
       if (panel) void loadIssueJourney(panel);
+    }, 250);
+  };
+
+  // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
+  // so its live parts are swapped in place: the status line, the todo checklist and the facts.
+  const SUMMARY_LIVE_PARTS = ['.details-status', '.todos', '.details-facts'];
+  const scheduleSummaryRefresh = () => {
+    if (summaryRefreshTimer !== null) return;
+    summaryRefreshTimer = setTimeout(async () => {
+      summaryRefreshTimer = null;
+      const dialog = document.querySelector('dialog[open][data-issue-id]');
+      const panel = dialog && dialog.querySelector('[data-detail-panel="summary"]');
+      if (!dialog || !panel) return;
+      try {
+        const response = await fetch(location.pathname + location.search, { headers: { accept: 'text/html' }, cache: 'no-store' });
+        if (!response.ok) return;
+        const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const issueId = dialog.getAttribute('data-issue-id');
+        const candidates = [...nextDocument.querySelectorAll('dialog[data-issue-id]')].filter((candidate) => candidate.getAttribute('data-issue-id') === issueId);
+        const next = candidates.find((candidate) => candidate.id === dialog.id) || candidates[0];
+        const nextPanel = next && next.querySelector('[data-detail-panel="summary"]');
+        if (!nextPanel) return;
+        for (const selector of SUMMARY_LIVE_PARTS) {
+          const current = panel.querySelector(selector);
+          const replacement = nextPanel.querySelector(selector);
+          if (current && replacement) current.replaceWith(document.importNode(replacement, true));
+          else if (current) current.remove();
+          else if (replacement) {
+            // A part that appeared (a first todo list): place it where the server renders it.
+            const anchor = panel.querySelector(selector === '.todos' ? '.criteria' : '.relationships, .todos, .criteria');
+            if (anchor) anchor.before(document.importNode(replacement, true));
+            else panel.append(document.importNode(replacement, true));
+          }
+        }
+        localizeTimes(panel);
+        // The card's progress bar behind the dialog follows too.
+        const card = [...document.querySelectorAll('article[data-issue-id]')].find((candidate) => candidate.getAttribute('data-issue-id') === issueId);
+        const nextCard = [...nextDocument.querySelectorAll('article[data-issue-id]')].find((candidate) => candidate.getAttribute('data-issue-id') === issueId);
+        const progress = card && card.querySelector(':scope > .todo-progress');
+        const nextProgress = nextCard && nextCard.querySelector(':scope > .todo-progress');
+        if (progress && nextProgress) progress.replaceWith(document.importNode(nextProgress, true));
+        else if (progress) progress.remove();
+        else if (card && nextProgress) {
+          const anchor = card.querySelector(':scope > .rollup-summary, :scope > dialog');
+          if (anchor) anchor.before(document.importNode(nextProgress, true));
+        }
+      } catch {}
     }, 250);
   };
 
@@ -1130,6 +1178,7 @@ export const dashboardClient = String.raw`(() => {
       const openDialog = document.querySelector('dialog[open]');
       if (openDialog) {
         scheduleJourneyRefresh();
+        scheduleSummaryRefresh();
         pendingRefresh = true;
         return;
       }
