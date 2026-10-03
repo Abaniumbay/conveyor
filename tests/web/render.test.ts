@@ -13,6 +13,7 @@ const parent: IssueCardViewModel = {
   state: "in_progress",
   labels: ["feature", "priority: high"],
   acceptanceCriteria: ["<script>alert(1)</script>", "Keyboard usable"],
+  todos: null,
   activity: "Running verification",
   reason: "Waiting for checks",
   cost: "$0.42",
@@ -44,6 +45,7 @@ const backlogIssue: IssueCardViewModel = {
   state: "active",
   labels: [],
   acceptanceCriteria: [],
+  todos: null,
   activity: null,
   reason: "Awaiting capacity",
   cost: null,
@@ -187,6 +189,31 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-retry-form');
     expect(html).toContain('maxlength="4000"');
     expect(html).toContain('role="status" aria-live="polite" data-retry-status');
+  });
+
+  test("shows todo progress on the card and the escaped checklist in its details; nothing without a list", () => {
+    const working = {
+      ...backlogIssue, id: "working", number: 77, working: true,
+      todos: {
+        done: 1, total: 3, current: "Tenant <b>settings</b> endpoint",
+        items: [
+          { id: "t1", text: "Shared repository", status: "done" as const },
+          { id: "t2", text: "Tenant <b>settings</b> endpoint", status: "in_progress" as const, note: "admin auth first" },
+          { id: "t3", text: "Lobby picker", status: "pending" as const },
+        ],
+      },
+    };
+    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [working] }], backlog: [backlogIssue] });
+    expect(html).toContain('aria-label="Todo progress for #77: 1 of 3 todos done"');
+    expect(html).toContain('<meter min="0" max="3" value="1"');
+    expect(html).toContain('<span class="todo-progress-count">1/3</span>');
+    expect(html).toContain("Tenant &lt;b>settings&lt;/b> endpoint");
+    expect(html).not.toContain("<b>settings</b>");
+    expect(html).toContain('class="todo todo--done"');
+    expect(html).toContain('class="todo todo--in_progress"');
+    expect(html).toContain('<span class="todo-note">admin auth first</span>');
+    expect(html.match(/class="todo-progress"/g)).toHaveLength(1);
+    expect(html.match(/aria-label="Implementation todos"/g)).toHaveLength(1);
   });
 
   test("initializes and controls system, light, and dark themes without a first-paint flash", () => {

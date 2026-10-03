@@ -162,6 +162,14 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `script.run` | act | repository, run | writes script | Runs `bun run <script>` in the workspace (or the repository folder) with the script protocol on stdin. `replay-safe` scripts are applied every time; `reconcile` scripts are applied on the first run and, after a restart, observed first and applied only when not yet applied (an indeterminate observation stops for intervention). A script that completes always passes this task; the bounded result is captured per instance in `script`. |
 | `script.succeeded` | check | script | - | Passes when the named `script.run` instance's captured result passed; otherwise fails with the script's summary and output tail. |
 
+### todo
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `todo.get` | tool | - | - | Read the current item's todo list (kept across runs and returns), with done/total progress. |
+| `todo.set` | tool | - | - | Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). At most 40 items and one in_progress. |
+| `todo.update` | tool | - | - | Change one todo's status (pending, in_progress, done) and/or note by id. Starting one item moves no other: finish or pause the current one first. |
+
 ### workspace
 
 | Task | Kind | Reads | Writes / invalidates | Description |

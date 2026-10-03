@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ItemTodos } from "../../src/engine/todos";
 import { parseManagedSections } from "../../src/source/github/managed-sections";
 
 const temporaryDirectories: string[] = [];
@@ -189,6 +190,39 @@ describe("ConveyorService dashboard", () => {
     await expect(service.retryIssue("blocked", "x".repeat(4_001), "operator")).rejects.toThrow("4000 characters");
     expect(store.listConversationMessages("blocked")).toEqual([]);
     expect(replacements).toEqual([]);
+    store.close();
+  });
+
+  test("a card carries the item's todo list with done/total progress and the current item", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-todos-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    for (const [id, number] of [["with-todos", 1], ["without", 2]] as const) {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`, title: id, body: "", sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage: "implementation", state: "active", warning: null });
+      store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    }
+    const items = [
+      { id: "t1", text: "Repository", status: "done" as const },
+      { id: "t2", text: "Endpoint", status: "pending" as const },
+    ];
+    new ItemTodos(store.sqlite()).set("with-todos", items, "run-1", "2026-10-03T10:00:00Z");
+
+    const service = new ConveyorService(config, store, {} as never);
+    const cards = service.dashboard("csrf").stages.flatMap((stage) => stage.issues);
+    expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ done: 1, total: 2, current: "Endpoint", items });
+    expect(cards.find((card) => card.id === "without")!.todos).toBeNull();
     store.close();
   });
 
