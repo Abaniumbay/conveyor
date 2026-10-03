@@ -28,7 +28,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(13);
+    expect(store.schemaVersion()).toBe(14);
 
     store.close();
   });
@@ -273,15 +273,41 @@ describe("ConveyorStore", () => {
       rate_limit_info: { unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: "2026-10-10T00:00:00Z" } } },
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
+    // Simulate opening a populated database created before the indexed quota projection existed.
+    store.sqlite().exec("DROP TABLE harness_quota_events; DELETE FROM schema_migrations WHERE version = 14;");
     store.close();
 
     store = await ConveyorStore.open(database);
-    expect(store.listHarnessRunEvents()).toHaveLength(1);
-    expect(store.listHarnessRunEvents()[0]).toMatchObject({
-      agentId: "implementer",
+    expect(store.listHarnessRunEvents("implementer")).toHaveLength(1);
+    expect(store.listHarnessRunEvents("implementer")[0]).toMatchObject({
       createdAt: expect.any(String),
       payload: { type: "rate_limit_event" },
     });
+    expect(store.listHarnessRunEvents("other-agent")).toEqual([]);
+    expect(store.sqlite().query("SELECT COUNT(*) AS count FROM run_events").get()).toEqual({ count: 3 });
+    expect(JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT payload_json FROM harness_quota_events WHERE agent_id = ? ORDER BY event_id DESC LIMIT ?")
+      .all("implementer", 256))).toContain("harness_quota_events_agent_idx");
+    store.close();
+  });
+
+  test("limits quota events independently for each Claude agent, even with malformed recent records", async () => {
+    const store = await openStore();
+    store.createRun({
+      id: "run-quota-history", issueId: null, stageId: "implementation", attempt: 1,
+      kind: "producer", status: "running", configHash: "config-hash", startedAt: "2026-10-03T14:00:00.000Z",
+    });
+    store.appendRunEvent("run-quota-history", "execution", { agentId: "agent-a" });
+    store.appendRunEvent("run-quota-history", "harness", { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+      five_hour: { utilization: 0.2, resetsAt: "2026-10-03T18:00:00Z" },
+    } } });
+    for (let index = 0; index < 300; index += 1) {
+      store.appendRunEvent("run-quota-history", "harness", { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+        five_hour: { utilization: 2, resetsAt: "invalid" },
+      } } });
+    }
+
+    expect(store.listHarnessRunEvents("agent-a")).toHaveLength(256);
+    expect(store.listHarnessRunEvents("agent-b")).toEqual([]);
     store.close();
   });
 

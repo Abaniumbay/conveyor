@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,24 @@ afterEach(async () => {
 });
 
 describe("Codex quota telemetry", () => {
+  async function checkEventLoopResponsiveness(refresh: () => void): Promise<void> {
+    const started = performance.now();
+    let delay = 0;
+    const unrelatedRequest = new Promise<void>((resolve) => setTimeout(() => {
+      delay = performance.now() - started;
+      resolve();
+    }, 0));
+    refresh();
+    await unrelatedRequest;
+    expect(delay).toBeLessThan(250);
+  }
+
+  test("returns unavailable windows when session history is absent", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-missing-"));
+    temporaryDirectories.push(home);
+    expect(readCodexQuota(home)).toEqual({});
+  });
+
   test("selects latest valid 5-hour and weekly readings and ignores absent or malformed windows", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-"));
     temporaryDirectories.push(home);
@@ -71,6 +89,53 @@ describe("Codex quota telemetry", () => {
     expect(readCodexQuota(home).weekly?.remaining).toBe(99);
     await writeFile(file, "not json\n");
     expect(readCodexQuota(home).weekly?.remaining).toBe(99);
+  });
+
+  test("searches a bounded newest-first file set and reads only the tail of each log", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-bounded-"));
+    temporaryDirectories.push(home);
+    const sessions = path.join(home, "sessions");
+    await mkdir(sessions);
+    for (let index = 0; index < 100; index += 1) {
+      const file = path.join(sessions, `session-${String(index).padStart(3, "0")}.jsonl`);
+      const quota = JSON.stringify({ timestamp: `2026-10-03T14:${String(index % 60).padStart(2, "0")}:00Z`, payload: { type: "token_count", rate_limits: {
+        primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 },
+        secondary: { used_percent: 20, window_minutes: 300, resets_at: 1791052200 },
+      } } });
+      await writeFile(file, `${quota}\n${"x".repeat(70 * 1024)}`);
+      const time = new Date(Date.parse("2026-10-03T14:00:00Z") + index * 1000);
+      await utimes(file, time, time);
+    }
+    const quota = readCodexQuota(home);
+    // The 64 newest files are considered, and the first 64 KiB of each file is not read.
+    expect(quota.weekly).toBeUndefined();
+    expect(quota.fiveHour).toBeUndefined();
+  });
+
+  test("refreshes after cache expiry and completes a large-history scan within the responsiveness budget", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-refresh-"));
+    temporaryDirectories.push(home);
+    const sessions = path.join(home, "sessions");
+    await mkdir(sessions);
+    const newest = path.join(sessions, "newest.jsonl");
+    const entry = (remaining: number) => JSON.stringify({ timestamp: "2026-10-03T14:04:00Z", payload: { type: "token_count", rate_limits: {
+      primary: { used_percent: 100 - remaining, window_minutes: 10080, resets_at: 1791580260 },
+      secondary: null,
+    } } }) + "\n";
+    for (let index = 0; index < 1_000; index += 1) await writeFile(path.join(sessions, `unrelated-${index}.jsonl`), "{}\n");
+    await writeFile(newest, entry(99));
+
+    let now = Date.now();
+    const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await checkEventLoopResponsiveness(() => expect(readCodexQuota(home).weekly?.remaining).toBe(99));
+      await writeFile(newest, entry(80));
+      expect(readCodexQuota(home).weekly?.remaining).toBe(99);
+      now += 30_001;
+      await checkEventLoopResponsiveness(() => expect(readCodexQuota(home).weekly?.remaining).toBe(80));
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 });
 

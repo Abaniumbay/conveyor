@@ -1727,36 +1727,49 @@ export class ConveyorStore {
           "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM run_events WHERE run_id = ?",
         )
         .get(runId) as { sequence: number };
-      this.#database
+      const inserted = this.#database
         .query(
           `INSERT INTO run_events(run_id, sequence, type, payload_json, created_at)
            VALUES (?, ?, ?, ?, ?)`,
         )
         .run(runId, row.sequence, type, json(payload), now());
+      const eventPayload = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : null;
+      if (type === "execution" && typeof eventPayload?.agentId === "string") {
+        this.#database.query(
+          `INSERT OR IGNORE INTO harness_quota_events(event_id, agent_id, payload_json, created_at)
+           SELECT id, ?, payload_json, created_at FROM run_events
+           WHERE run_id = ? AND type = 'harness'
+             AND json_extract(payload_json, '$.type') = 'rate_limit_event'`,
+        ).run(eventPayload.agentId, runId);
+      }
+      if (type === "harness" && eventPayload?.type === "rate_limit_event") {
+        const execution = this.#database.query(
+          `SELECT json_extract(payload_json, '$.agentId') AS agent_id
+           FROM run_events WHERE run_id = ? AND type = 'execution'
+           ORDER BY id LIMIT 1`,
+        ).get(runId) as { agent_id: unknown } | null;
+        if (typeof execution?.agent_id === "string") {
+          this.#database.query(
+            `INSERT INTO harness_quota_events(event_id, agent_id, payload_json, created_at)
+             VALUES (?, ?, ?, ?)`,
+          ).run(Number(inserted.lastInsertRowid), execution.agent_id, json(payload), now());
+        }
+      }
       return row.sequence;
     })();
   }
 
-  listHarnessRunEvents(): Array<{ agentId: string; payload: unknown; createdAt: string }> {
+  listHarnessRunEvents(agentId: string): Array<{ payload: unknown; createdAt: string }> {
     const rows = this.#database.query(
-      `SELECT h.payload_json, h.created_at, e.payload_json AS execution_json
-       FROM run_events h
-       JOIN run_events e ON e.run_id = h.run_id AND e.type = 'execution'
-       WHERE h.type = 'harness'
-         AND json_extract(h.payload_json, '$.type') = 'rate_limit_event'
-       ORDER BY h.id DESC
-       LIMIT 1000`,
-    ).all() as Array<Record<string, SQLQueryBindings>>;
-    return rows.flatMap((row) => {
-      const execution = parseJson<Record<string, unknown>>(String(row.execution_json));
-      return typeof execution?.agentId === "string"
-        ? [{
-            agentId: execution.agentId,
-            payload: parseJson(String(row.payload_json)),
-            createdAt: String(row.created_at),
-          }]
-        : [];
-    });
+      `SELECT payload_json, created_at FROM harness_quota_events
+       WHERE agent_id = ? ORDER BY event_id DESC LIMIT ?`,
+    ).all(agentId, 256) as Array<{ payload_json: string; created_at: string }>;
+    return rows.map((row) => ({
+      payload: parseJson(String(row.payload_json)),
+      createdAt: String(row.created_at),
+    }));
   }
 
   listRunEvents(runId: string): Array<{

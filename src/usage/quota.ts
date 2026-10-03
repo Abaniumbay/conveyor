@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { openSync, opendirSync, readSync, statSync, closeSync } from "node:fs";
 import path from "node:path";
 
 export type QuotaWindowName = "fiveHour" | "weekly";
@@ -12,6 +12,10 @@ export interface QuotaWindow {
 export type QuotaWindows = Partial<Record<QuotaWindowName, QuotaWindow>>;
 
 const CODEX_QUOTA_CACHE_MS = 30_000;
+const CODEX_MAX_DIRECTORIES = 128;
+const CODEX_MAX_DIRECTORY_ENTRIES = 4_096;
+const CODEX_MAX_SESSION_FILES = 64;
+const CODEX_MAX_TAIL_BYTES = 64 * 1024;
 const codexQuotaCache = new Map<string, { expiresAt: number; value: QuotaWindows }>();
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -40,18 +44,57 @@ function codexWindow(value: unknown, reportedAt: string): [QuotaWindowName, Quot
   return [name, { remaining: 100 - window.used_percent, resetsAt, reportedAt }];
 }
 
-function jsonlFiles(directory: string): string[] {
-  let entries;
-  try {
-    entries = readdirSync(directory, { withFileTypes: true });
-  } catch {
-    return [];
+function newestJsonlFiles(root: string): Array<{ path: string; modifiedAt: number }> {
+  const directories = [root];
+  const files: Array<{ path: string; modifiedAt: number }> = [];
+  let entriesRead = 0;
+  for (let next = 0; next < directories.length && next < CODEX_MAX_DIRECTORIES && entriesRead < CODEX_MAX_DIRECTORY_ENTRIES; next += 1) {
+    let directory;
+    try {
+      directory = opendirSync(directories[next]!);
+    } catch {
+      continue;
+    }
+    try {
+      let entry;
+      while (entriesRead < CODEX_MAX_DIRECTORY_ENTRIES && (entry = directory.readSync()) !== null) {
+        entriesRead += 1;
+        const entryPath = path.join(directories[next]!, entry.name);
+        if (entry.isDirectory()) {
+          if (directories.length < CODEX_MAX_DIRECTORIES) directories.push(entryPath);
+        } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+          try {
+            files.push({ path: entryPath, modifiedAt: statSync(entryPath).mtimeMs });
+          } catch {
+            // Files that disappear during enumeration are ignored.
+          }
+        }
+      }
+    } finally {
+      directory.closeSync();
+    }
   }
-  return entries.flatMap((entry) => {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) return jsonlFiles(entryPath);
-    return entry.isFile() && entry.name.endsWith(".jsonl") ? [entryPath] : [];
-  });
+  return files.sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, CODEX_MAX_SESSION_FILES);
+}
+
+function readTail(file: string): { contents: string; modifiedAt: string; truncated: boolean } | null {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(file, "r");
+    const stat = statSync(file);
+    const length = Math.min(stat.size, CODEX_MAX_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    readSync(descriptor, buffer, 0, length, stat.size - length);
+    return {
+      contents: buffer.toString("utf8"),
+      modifiedAt: stat.mtime.toISOString(),
+      truncated: stat.size > CODEX_MAX_TAIL_BYTES,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 /** Reads the most recent valid Codex quota value per supported window from local session logs. */
@@ -61,16 +104,13 @@ export function readCodexQuota(codexHome: string): QuotaWindows {
   if (cached && cached.expiresAt > now) return cached.value;
   const latest: QuotaWindows = {};
   const latestTimes: Partial<Record<QuotaWindowName, number>> = {};
-  for (const file of jsonlFiles(path.join(codexHome, "sessions"))) {
-    let contents: string;
-    let modifiedAt: string;
-    try {
-      contents = readFileSync(file, "utf8");
-      modifiedAt = statSync(file).mtime.toISOString();
-    } catch {
-      continue;
-    }
-    for (const line of contents.split(/\r?\n/)) {
+  for (const file of newestJsonlFiles(path.join(codexHome, "sessions"))) {
+    const tail = readTail(file.path);
+    if (!tail) continue;
+    const lines = tail.contents.split(/\r?\n/);
+    // The first line may begin mid-record when the tail starts inside a large file.
+    if (tail.truncated) lines.shift();
+    for (const line of lines.reverse()) {
       if (!line) continue;
       let event: Record<string, unknown> | null;
       try {
@@ -82,7 +122,7 @@ export function readCodexQuota(codexHome: string): QuotaWindows {
       if (payload?.type !== "token_count") continue;
       const limits = record(payload.rate_limits);
       if (!limits) continue;
-      const reportedAt = validDate(event?.timestamp) ?? modifiedAt;
+      const reportedAt = validDate(event?.timestamp) ?? tail.modifiedAt;
       for (const key of ["primary", "secondary"] as const) {
         const parsed = codexWindow(limits[key], reportedAt);
         if (!parsed) continue;
@@ -93,6 +133,7 @@ export function readCodexQuota(codexHome: string): QuotaWindows {
         latestTimes[name] = time;
       }
     }
+    if (latest.fiveHour && latest.weekly) break;
   }
   codexQuotaCache.set(codexHome, { expiresAt: now + CODEX_QUOTA_CACHE_MS, value: latest });
   return latest;

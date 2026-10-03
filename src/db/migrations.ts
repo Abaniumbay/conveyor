@@ -569,4 +569,31 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 14,
+    sql: `
+      CREATE TABLE harness_quota_events (
+        event_id INTEGER PRIMARY KEY REFERENCES run_events(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX harness_quota_events_agent_idx
+        ON harness_quota_events(agent_id, event_id DESC);
+      INSERT INTO harness_quota_events(event_id, agent_id, payload_json, created_at)
+      SELECT h.id,
+        (SELECT json_extract(e.payload_json, '$.agentId')
+         FROM run_events e WHERE e.run_id = h.run_id AND e.type = 'execution'
+         ORDER BY e.id LIMIT 1),
+        h.payload_json, h.created_at
+      FROM run_events h
+      WHERE h.type = 'harness'
+        AND json_extract(h.payload_json, '$.type') = 'rate_limit_event'
+        AND EXISTS (
+          SELECT 1 FROM run_events e
+          WHERE e.run_id = h.run_id AND e.type = 'execution'
+            AND json_type(e.payload_json, '$.agentId') = 'text'
+        );
+    `,
+  },
 ];
