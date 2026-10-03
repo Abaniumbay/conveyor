@@ -31,7 +31,7 @@ describe("reference configuration", () => {
   test("has no AI verifier, no checks and no legacy stages", async () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});
-    expect(Object.keys(config.agents).sort()).toEqual(["darya", "kaveh", "omid", "shaghayegh", "shirin"]);
+    expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "shaghayegh", "shirin"]);
     for (const pipeline of Object.values(config.pipelines)) for (const stage of pipeline.stages) expect("run" in stage).toBe(false);
     for (const plan of config.plans) {
       for (const stage of plan.stages) {
@@ -116,7 +116,7 @@ describe("reference configuration", () => {
     }
   });
 
-  test("reviews go to Shaghayegh on Claude Code first, then Shirin on Codex; a writable Claude agent is refused", async () => {
+  test("reviews go to Shaghayegh on Claude Code first, then Shirin on Codex; a writable Claude agent without network is refused", async () => {
     const config = await loadReference();
     expect(config.runners[config.agents.shaghayegh!.runner]!.type).toBe("claude-code");
     expect(config.runners[config.agents.shirin!.runner]!.type).toBe("codex");
@@ -126,7 +126,7 @@ describe("reference configuration", () => {
     const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, { access?: string }> };
     agents.agents.shaghayegh!.access = "workspace-write";
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which supports only access: read-only");
+    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code with access: workspace-write, which needs network: true");
   });
 
   test("Kaveh compacts long sessions, and Kaveh and Darya get a code index limited to lookups", async () => {
@@ -142,14 +142,33 @@ describe("reference configuration", () => {
     }
   });
 
-  test("a Claude Code agent with codexConfig or mcpServers is refused", async () => {
+  test("a Claude Code agent with codexConfig is refused", async () => {
     const { directory, base } = await referenceConfigDirectory();
     bases.push(base);
     const agentsFile = path.join(directory, "agents.yaml");
     const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, Record<string, unknown>> };
-    agents.agents.shaghayegh!.mcpServers = { serena: { command: "serena" } };
+    agents.agents.shaghayegh!.codexConfig = { model_auto_compact_token_limit: 1 };
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which does not support codexConfig or mcpServers yet");
+    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which does not take codexConfig");
+  });
+
+  test("implementation falls back from Kaveh on Codex to Jamshid on Claude Code (Haiku), with the same tools and worktree access", async () => {
+    const config = await loadReference();
+    const jamshid = config.agents.jamshid!;
+    const kaveh = config.agents.kaveh!;
+    expect(config.runners[jamshid.runner]!.type).toBe("claude-code");
+    expect(jamshid).toMatchObject({ name: "Jamshid", model: "claude-haiku-4-5-20251001", workspaceAccess: "workspace-write", network: true });
+    expect(jamshid.instructions).toBe(kaveh.instructions);
+    expect([...jamshid.tasks].sort()).toEqual([...kaveh.tasks].sort());
+    expect(jamshid.writableRoots).toEqual(kaveh.writableRoots);
+    expect(jamshid.mcpServers.serena!.args).toContain("--context=claude-code");
+    for (const pipeline of Object.values(config.pipelines)) {
+      for (const stage of pipeline.stages) {
+        if (stage.id !== "implementation" || !("actions" in stage)) continue;
+        const implement = (stage.actions as Array<{ id: string; with?: { agents?: string[] } }>).find((action) => action.id === "implement");
+        expect(implement?.with?.agents).toEqual(["kaveh", "jamshid"]);
+      }
+    }
   });
 
   test("the instructions mention the tasks each agent is granted to do its new duties", async () => {

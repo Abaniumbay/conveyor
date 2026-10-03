@@ -1,12 +1,15 @@
 // Claude Code as an agent runner: `claude -p --output-format stream-json` with the scoped Conveyor
 // MCP server, structured output validated against the producer result schema, and session resume.
 //
-// Read-only agents only. The process runs inside bubblewrap with the whole filesystem mounted
-// read-only, a private /tmp, writable binds for just its own config directory and the run's
-// sanitized home, and empty mounts over the service's secrets. Claude's own permission layer is
-// a second lock: only read tools, Bash and the Conveyor MCP tools are available.
+// The process runs inside bubblewrap with the whole filesystem mounted read-only, a private /tmp,
+// writable binds for just its own config directory and the run's sanitized home, empty mounts over
+// the service's secrets, and /dev/null over the Docker and session-bus sockets. A workspace-write
+// agent also gets writable binds for its worktree, the worktree's git metadata and its configured
+// roots (package caches). Claude's own permission layer is a second lock: a read-only agent gets
+// read tools, Bash and its MCP tools; a workspace-write agent also gets Edit and Write in
+// acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -53,6 +56,11 @@ const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json")
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|limit reached|too many requests|\b429\b|quota|overloaded/i;
 /** The built-in tools a read-only agent gets; edits and writes are not among them. */
 const READ_ONLY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
+/** File tools for a workspace-write agent. Never pre-allowed: acceptEdits scopes them to the worktree. */
+const EDIT_TOOLS = ["Edit", "Write"];
+const WEB_TOOLS = ["WebFetch", "WebSearch"];
+/** Sockets that would hand a command more than the sandbox grants (Docker is root-equivalent). */
+const HIDDEN_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock", "/run/containerd/containerd.sock", "/run/dbus/system_bus_socket"];
 /** Paths a run must never see, hidden behind empty mounts (relative to the service user's home). */
 const HIDDEN = [".config/conveyor-v2", ".config/gh", ".ssh", ".codex", ".gnupg", ".aws"];
 
@@ -94,15 +102,26 @@ export function claudeSchema(raw: string): string {
 
 /** The `claude` arguments for one run. */
 export function claudeArguments(input: ClaudeCodeRunInput, schema: string): string[] {
+  const writes = input.sandbox === "workspace-write";
+  const web = input.network ? WEB_TOOLS : [];
+  const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+    conveyor: { command: input.mcp.command, args: input.mcp.args },
+  };
+  const serverTools: string[] = [];
+  for (const [name, server] of Object.entries(input.mcpServers ?? {})) {
+    servers[name] = { command: server.command, args: server.args, ...(Object.keys(server.env).length > 0 ? { env: server.env } : {}) };
+    serverTools.push(...(server.enabledTools ? server.enabledTools.map((tool) => `mcp__${name}__${tool}`) : [`mcp__${name}`]));
+  }
   const args = [
     "-p", "--output-format", "stream-json", "--verbose",
     // No user, project or local settings: no personal hooks, plugins or permission rules leak in.
     "--setting-sources", "",
     "--strict-mcp-config",
-    "--mcp-config", JSON.stringify({ mcpServers: { conveyor: { command: input.mcp.command, args: input.mcp.args } } }),
-    "--tools", READ_ONLY_TOOLS.join(","),
-    "--allowedTools", [...READ_ONLY_TOOLS, "mcp__conveyor"].join(","),
-    "--permission-mode", "dontAsk",
+    "--mcp-config", JSON.stringify({ mcpServers: servers }),
+    "--tools", [...READ_ONLY_TOOLS, ...(writes ? EDIT_TOOLS : []), ...web].join(","),
+    "--allowedTools", [...READ_ONLY_TOOLS, ...web, "mcp__conveyor", ...serverTools].join(","),
+    // acceptEdits accepts edits inside the working directory only; anything else would need a prompt, so it is refused.
+    "--permission-mode", writes ? "acceptEdits" : "dontAsk",
     "--json-schema", schema,
   ];
   if (input.model) args.push("--model", input.model);
@@ -113,13 +132,26 @@ export function claudeArguments(input: ClaudeCodeRunInput, schema: string): stri
 }
 
 /** bubblewrap: everything read-only, private /tmp, writable config dir and home, secrets hidden. */
-export function sandboxArguments(options: { workspace: string; configDir: string; home: string; serviceHome: string | undefined }): string[] {
+export function sandboxArguments(options: {
+  workspace: string; configDir: string; home: string; serviceHome: string | undefined;
+  /** Extra writable directories (a workspace-write agent's worktree, git metadata and roots). */
+  writable?: readonly string[];
+  /** The session bus of the service user, hidden too; resolved from the uid when absent. */
+  sessionBus?: string;
+}): string[] {
   const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
   if (options.serviceHome) {
     for (const relative of HIDDEN) {
       const hidden = path.join(options.serviceHome, relative);
       if (existsSync(hidden)) args.push("--tmpfs", hidden);
     }
+  }
+  const bus = options.sessionBus ?? (typeof process.getuid === "function" ? `/run/user/${process.getuid()}/bus` : null);
+  // Resolved first: /var/run is a symlink to /run, and bwrap binds a real path once.
+  const sockets = new Set([...HIDDEN_SOCKETS, ...(bus ? [bus] : [])].filter((socket) => existsSync(socket)).map((socket) => realpathSync(socket)));
+  for (const socket of sockets) args.push("--ro-bind", "/dev/null", socket);
+  for (const directory of options.writable ?? []) {
+    if (existsSync(directory)) args.push("--bind", directory, directory);
   }
   args.push("--bind", options.configDir, options.configDir);
   const legacyConfig = `${options.configDir}.json`;
@@ -129,8 +161,8 @@ export function sandboxArguments(options: { workspace: string; configDir: string
 }
 
 export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvelope> {
-  if (input.sandbox !== "read-only") {
-    throw new ClaudeCodeRunnerError(`Claude Code agents are read-only for now; got sandbox "${input.sandbox}"`, "process", null, "");
+  if (input.sandbox === "danger-full-access") {
+    throw new ClaudeCodeRunnerError("Claude Code agents run read-only or workspace-write, never with full access", "process", null, "");
   }
   if (input.egress) {
     throw new ClaudeCodeRunnerError("Claude Code agents do not support network egress isolation yet", "process", null, "");
@@ -148,7 +180,10 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   await mkdir(configDir, { recursive: true });
   const schema = claudeSchema(await readFile(OUTPUT_SCHEMA, "utf8"));
   const argv = [
-    "bwrap", ...sandboxArguments({ workspace: input.workspace, configDir, home: environment.HOME!, serviceHome }),
+    "bwrap", ...sandboxArguments({
+      workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,
+      ...(input.sandbox === "workspace-write" ? { writable: [input.workspace, ...(input.writableRoots ?? [])] } : {}),
+    }),
     input.command, ...claudeArguments(input, schema),
   ];
   const child = Bun.spawn(argv, { cwd: input.workspace, env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
