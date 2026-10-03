@@ -1,4 +1,4 @@
-import { openSync, opendirSync, readSync, statSync, closeSync } from "node:fs";
+import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 export type QuotaWindowName = "fiveHour" | "weekly";
@@ -49,29 +49,29 @@ function newestJsonlFiles(root: string): Array<{ path: string; modifiedAt: numbe
   const files: Array<{ path: string; modifiedAt: number }> = [];
   let entriesRead = 0;
   for (let next = 0; next < directories.length && next < CODEX_MAX_DIRECTORIES && entriesRead < CODEX_MAX_DIRECTORY_ENTRIES; next += 1) {
-    let directory;
+    let entries;
     try {
-      directory = opendirSync(directories[next]!);
+      // Codex's YYYY/MM/DD layout sorts chronologically by name. Order each
+      // level before applying traversal budgets so old readdir order cannot
+      // consume the bounded search ahead of newer session directories.
+      entries = readdirSync(directories[next]!, { withFileTypes: true })
+        .sort((a, b) => b.name.localeCompare(a.name));
     } catch {
       continue;
     }
-    try {
-      let entry;
-      while (entriesRead < CODEX_MAX_DIRECTORY_ENTRIES && (entry = directory.readSync()) !== null) {
-        entriesRead += 1;
-        const entryPath = path.join(directories[next]!, entry.name);
-        if (entry.isDirectory()) {
-          if (directories.length < CODEX_MAX_DIRECTORIES) directories.push(entryPath);
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-          try {
-            files.push({ path: entryPath, modifiedAt: statSync(entryPath).mtimeMs });
-          } catch {
-            // Files that disappear during enumeration are ignored.
-          }
+    for (const entry of entries) {
+      if (entriesRead >= CODEX_MAX_DIRECTORY_ENTRIES) break;
+      entriesRead += 1;
+      const entryPath = path.join(directories[next]!, entry.name);
+      if (entry.isDirectory()) {
+        if (directories.length < CODEX_MAX_DIRECTORIES) directories.push(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        try {
+          files.push({ path: entryPath, modifiedAt: statSync(entryPath).mtimeMs });
+        } catch {
+          // Files that disappear during enumeration are ignored.
         }
       }
-    } finally {
-      directory.closeSync();
     }
   }
   return files.sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, CODEX_MAX_SESSION_FILES);

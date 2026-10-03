@@ -96,20 +96,72 @@ describe("Codex quota telemetry", () => {
     temporaryDirectories.push(home);
     const sessions = path.join(home, "sessions");
     await mkdir(sessions);
-    for (let index = 0; index < 100; index += 1) {
+    const quotaEvent = (windows: Record<string, unknown>, timestamp = "2026-10-03T14:00:00Z") => JSON.stringify({ timestamp, payload: { type: "token_count", rate_limits: windows } });
+    for (let index = 0; index < 64; index += 1) {
       const file = path.join(sessions, `session-${String(index).padStart(3, "0")}.jsonl`);
-      const quota = JSON.stringify({ timestamp: `2026-10-03T14:${String(index % 60).padStart(2, "0")}:00Z`, payload: { type: "token_count", rate_limits: {
-        primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 },
-        secondary: { used_percent: 20, window_minutes: 300, resets_at: 1791052200 },
-      } } });
-      await writeFile(file, `${quota}\n${"x".repeat(70 * 1024)}`);
+      await writeFile(file, `${"x".repeat(70 * 1024)}\n`);
+      const time = new Date(Date.parse("2026-10-03T14:00:00Z") + index * 1000);
+      await utimes(file, time, time);
+    }
+    // The record fully inside the newest file's tail is readable even though
+    // the file exceeds the byte limit. An incomplete record at the boundary
+    // must be discarded instead of being mistaken for JSON.
+    const newest = path.join(sessions, "session-063.jsonl");
+    const insideTail = quotaEvent({ primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 } }, "2026-10-03T15:00:00Z");
+    await writeFile(newest, `${"x".repeat(64 * 1024 - 12)}${quotaEvent({ primary: { used_percent: 2, window_minutes: 10080, resets_at: 1791580260 } })}\n${insideTail}\n`);
+    await utimes(newest, new Date("2026-10-03T15:00:00Z"), new Date("2026-10-03T15:00:00Z"));
+    const quota = readCodexQuota(home);
+    expect(quota.weekly).toMatchObject({ remaining: 99, reportedAt: "2026-10-03T15:00:00.000Z" });
+    expect(quota.fiveHour).toBeUndefined();
+  });
+
+  test("only considers the newest 64 files and keeps each quota window independent", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-file-cap-"));
+    temporaryDirectories.push(home);
+    const sessions = path.join(home, "sessions");
+    await mkdir(sessions);
+    const event = (timestamp: string, windows: Record<string, unknown>) => JSON.stringify({ timestamp, payload: { type: "token_count", rate_limits: windows } }) + "\n";
+    const fiveHour = { secondary: { used_percent: 20, window_minutes: 300, resets_at: 1791052200 } };
+    const weekly = { primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 } };
+    for (let index = 0; index < 65; index += 1) {
+      const file = path.join(sessions, `session-${String(index).padStart(3, "0")}.jsonl`);
+      const contents = index === 0
+        ? event("2026-10-03T14:00:00Z", weekly)
+        : index === 63
+          ? event("2026-10-03T14:01:00Z", fiveHour)
+          : "{}\n";
+      await writeFile(file, contents);
       const time = new Date(Date.parse("2026-10-03T14:00:00Z") + index * 1000);
       await utimes(file, time, time);
     }
     const quota = readCodexQuota(home);
-    // The 64 newest files are considered, and the first 64 KiB of each file is not read.
+    expect(quota.fiveHour?.remaining).toBe(80);
+    // Weekly exists only in the 65th newest file, so exhausting the file
+    // budget leaves it unavailable instead of falling back to a full scan.
     expect(quota.weekly).toBeUndefined();
-    expect(quota.fiveHour).toBeUndefined();
+  });
+
+  test("finds newest readings across more than the directory budget in date-path order", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "conveyor-codex-quota-date-tree-"));
+    temporaryDirectories.push(home);
+    const sessions = path.join(home, "sessions");
+    const quota = JSON.stringify({ timestamp: "2026-10-30T14:00:00Z", payload: { type: "token_count", rate_limits: {
+      primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791580260 },
+      secondary: { used_percent: 20, window_minutes: 300, resets_at: 1791052200 },
+    } } }) + "\n";
+    for (let offset = 0; offset < 300; offset += 1) {
+      const date = new Date(Date.UTC(2026, 9, 30) - offset * 24 * 60 * 60 * 1000);
+      const dayDirectory = path.join(sessions, String(date.getUTCFullYear()), String(date.getUTCMonth() + 1).padStart(2, "0"), String(date.getUTCDate()).padStart(2, "0"));
+      await mkdir(dayDirectory, { recursive: true });
+      const file = path.join(dayDirectory, "session.jsonl");
+      await writeFile(file, offset === 0 ? quota : "{}\n");
+      const modified = new Date(Date.UTC(2026, 9, 30) - offset * 24 * 60 * 60 * 1000);
+      await utimes(file, modified, modified);
+    }
+    expect(readCodexQuota(home)).toMatchObject({
+      weekly: { remaining: 99, reportedAt: "2026-10-30T14:00:00.000Z" },
+      fiveHour: { remaining: 80, reportedAt: "2026-10-30T14:00:00.000Z" },
+    });
   });
 
   test("refreshes after cache expiry and completes a large-history scan within the responsiveness budget", async () => {
