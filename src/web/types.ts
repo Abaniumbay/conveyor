@@ -175,7 +175,14 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team" | "reports";
+export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "accounts" | "profile";
+
+export interface DashboardAccountViewModel {
+  id: string;
+  username: string;
+  role: "superuser" | "user";
+  avatar: string;
+}
 
 export interface SteeringEventViewModel {
   sequence: number;
@@ -239,8 +246,10 @@ export interface DashboardViewModel {
   /** Read-only agent profiles, loaded only for the team view. */
   team?: readonly AgentProfileViewModel[];
   report?: ReportViewModel;
+  /** Dashboard accounts, loaded only for the superuser Accounts view. */
+  accounts?: readonly DashboardAccountViewModel[];
   csrfToken: string;
-  account?: { id: string; username: string; role: "superuser" | "user"; avatar: string };
+  account?: DashboardAccountViewModel;
 }
 
 export interface HarnessQuotaViewModel {

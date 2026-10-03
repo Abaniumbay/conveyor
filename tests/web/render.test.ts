@@ -586,6 +586,31 @@ describe("renderDashboard", () => {
     expect(html).not.toContain('action="/steering"');
   });
 
+  test("renders Accounts and Profile as shared dashboard views with inline forms", () => {
+    const account = { id: "admin", username: "admin", role: "superuser" as const, avatar: "🦊" };
+    const accountsHtml = renderDashboard({
+      ...dashboard,
+      view: "accounts",
+      account,
+      accounts: [account, { id: "reader", username: "reader <safe>", role: "user", avatar: "🐸" }],
+    });
+    expect(accountsHtml).toContain('data-dashboard-view="accounts"');
+    expect(accountsHtml).toContain('href="/accounts" class="tab tab--active" aria-current="page">Accounts</a>');
+    expect(accountsHtml).toContain('data-account-list="true"');
+    expect(accountsHtml).toContain('data-account-create-form="true"');
+    expect(accountsHtml).toContain('reader &lt;safe>');
+    expect(accountsHtml).not.toContain('reader <safe>');
+    expect(accountsHtml).not.toContain('class="account-page"');
+
+    const profileHtml = renderDashboard({ ...dashboard, view: "profile", account });
+    expect(profileHtml).toContain('data-dashboard-view="profile"');
+    expect(profileHtml).toContain('href="/profile" class="tab tab--active" aria-current="page"');
+    expect(profileHtml).toContain('name="avatar" value="🦊" checked');
+    expect(profileHtml).toContain('data-profile-avatar-form="true"');
+    expect(profileHtml).toContain('<button type="submit">Save</button>');
+    expect(profileHtml).not.toContain('Save avatar');
+  });
+
   test("the team view lists every agent, each opening its read-only profile in a modal", () => {
     const kaveh = {
       id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: "gpt-6-luna", effort: "high",
