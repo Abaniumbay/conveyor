@@ -1536,13 +1536,12 @@ export class ConveyorService {
     },
   ): DashboardViewModel {
     const agentRunner = new Map(Object.entries(this.config.agents ?? {}).map(([agentId, agent]) => [agentId, agent.runner]));
-    const claudeEvents = this.store.listHarnessRunEvents();
     const harnessUsage = Object.entries(this.config.runners ?? {}).flatMap(([runnerId, runner]) => {
       if (runner.type !== "codex" && runner.type !== "claude-code") return [];
       const windows = runner.type === "codex"
         ? readCodexQuota(process.env.CODEX_HOME || path.join(homedir(), ".codex"))
-        : readClaudeQuota(claudeEvents.flatMap((event) =>
-            agentRunner.get(event.agentId) === runnerId ? [event] : [],
+        : readClaudeQuota([...agentRunner.entries()].flatMap(([agentId, configuredRunner]) =>
+            configuredRunner === runnerId ? this.store.listHarnessRunEvents(agentId) : [],
           ));
       return [{
         id: runnerId,
