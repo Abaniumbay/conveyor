@@ -50,6 +50,7 @@ function hostFake(state: {
       if (state.projectFails) throw new Error("GitHub is down");
       return { url: `https://x/finding/${input.findingId}`, projection: input.path ? "inline:11" : "comment:12" };
     },
+    async deleteBranch(input) { calls.push(["deleteBranch", input]); return "deleted"; },
     async resolveFindingProjection(input) {
       calls.push(["resolveFinding", input]);
       if (state.projectFails) throw new Error("GitHub is down");

@@ -76,6 +76,7 @@ describe("WorkspaceManager", () => {
       baseBranch: "main",
     });
     await writeFile(path.join(workspace.path, "README.md"), "changed\n");
+    await command(fixture.checkout, "git", "update-ref", `refs/remotes/origin/${workspace.branch}`, "HEAD");
 
     expect(await readFile(path.join(fixture.checkout, "README.md"), "utf8")).toBe("base\n");
 
@@ -90,6 +91,7 @@ describe("WorkspaceManager", () => {
       workspace.path,
     );
     expect(await command(fixture.checkout, "git", "branch", "--list", workspace.branch)).toBe("");
+    expect(await command(fixture.checkout, "git", "branch", "-r", "--list", `origin/${workspace.branch}`)).toBe("");
     expect(await readFile(path.join(fixture.checkout, "README.md"), "utf8")).toBe("base\n");
   });
 

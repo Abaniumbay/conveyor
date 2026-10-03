@@ -96,15 +96,23 @@ const ensure: TaskDefinition<unknown, unknown, Deps> = {
 const cleanup: TaskDefinition<unknown, unknown, Deps> = {
   name: "workspace.cleanup",
   kind: "act",
-  description: "Removes the worktree and deletes the local branch, then marks the workspace removed. A missing workspace is already done.",
+  description: "Removes the worktree and deletes the local branch and its remote-tracking ref, then marks the workspace removed; also deletes the remote branch when it is still there and no open change uses it (best effort). A missing workspace is already done.",
   reads: ["repository"],
   writes: [],
   invalidates: ["workspace"],
   async run({ deps }: Args) {
+    const branch = deps.store.getActiveWorkspace(deps.issueId)?.branch ?? null;
     await removeWorkspace({
       store: deps.store, manager: deps.workspaces, issueId: deps.issueId, repositoryFolder: deps.repository.folder,
     });
-    return pass();
+    if (!branch || !deps.codeHost) return pass();
+    try {
+      const remote = await deps.codeHost.deleteBranch({ address: deps.repository.address, branch });
+      return pass({ branch, remote });
+    } catch (error) {
+      // The local cleanup is done; a host that cannot delete the branch now leaves it for the owner.
+      return pass({ branch, remote: "failed", reason: error instanceof Error ? error.message : String(error) });
+    }
   },
 };
 
