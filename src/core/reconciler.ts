@@ -90,14 +90,16 @@ export async function reconcileRepository(
         input.expectedPostMergeClosure?.(issueId) ?? false,
     });
     const projectedState = projected.state ?? projected.mode;
-    if (prior && projectedState === "active" && prior.projectedState && STOPPED_STATES.has(prior.projectedState)) {
+    const priorState = prior?.projectedState ?? null;
+    const resumed = projectedState === "active" && priorState !== null && STOPPED_STATES.has(priorState);
+    if (resumed) {
       input.store.recordJourneyEvent({
         issueId,
         stage: projected.stage,
         kind: "resumed",
-        reason: prior.projectedState === "paused"
+        reason: priorState === "paused"
           ? `Resumed: the ${input.labels.enrollment} label was added back.`
-          : `Resumed from ${prior.projectedState}: the ${prior.projectedState} label was removed.`,
+          : `Resumed from ${priorState}: the ${priorState} label was removed.`,
       });
     }
     input.store.setIssueProjection(issueId, {
@@ -115,7 +117,9 @@ export async function reconcileRepository(
         stageState.stageId !== projected.stage;
       // A stage that failed is resumed by its retry backoff; a reconcile (for example the webhook of
       // Conveyor's own status-comment update) must not restart it at once, which bypassed the backoff.
-      const backingOff = stageState?.status === "error" && stageState.stageId === projected.stage;
+      // Once retries are used up the stage stays in error under a stopped label, and nothing else
+      // resumes it: removing that label (Retry, or a person on GitHub) must make it ready again.
+      const backingOff = !resumed && stageState?.status === "error" && stageState.stageId === projected.stage;
       if (!awaitingDifferentStage && !backingOff && stageState?.status !== "running") {
         input.store.setStageState({
           issueId,
