@@ -10,6 +10,7 @@ import { CONTEXT_SCHEMA_VERSION, type TaskContext } from "../tasks/context";
 import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps } from "../tasks/deps";
 import type { LegacyRuntime } from "../tasks/legacy";
+import { displayName } from "../tasks/agent-support";
 import { compilePipeline, type CompiledPipeline } from "../tasks/plan";
 import { createWorkspace } from "../workspace/lifecycle";
 import type { WorkspaceManager } from "../workspace/manager";
@@ -204,6 +205,15 @@ export class IssueExecutor {
           };
         })(),
       });
+      if (result.kind === "advance") {
+        // Successful stages are part of the story too: without this the conversation goes quiet after review.
+        const name = (id: string) => pipeline.stages.find((candidate) => candidate.id === id)?.name ?? displayName(id);
+        store.appendConversationMessage({
+          issueId: issue.id, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
+          actorName: "Conveyor", actorTitle: "Orchestrator",
+          message: stageAdvanceMessage(name(stageId), result.nextStageId && result.nextStageId !== stageId ? name(result.nextStageId) : null),
+        });
+      }
       return result;
     } catch (error) {
       store.setStageState({
@@ -253,4 +263,9 @@ function baseContext(issue: StoredIssue, configHash: string, repository: TaskCon
     },
     checkpoints: { ciPassed: null, reviewPassed: null },
   };
+}
+
+/** The conversation note for a completed stage: what finished and what comes next, or that the item is done. */
+export function stageAdvanceMessage(stage: string, next: string | null): string {
+  return next ? `✅ ${stage} completed. Next: ${next}.` : `✅ ${stage} completed. The item is done.`;
 }
