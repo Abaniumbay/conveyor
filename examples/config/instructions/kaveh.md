@@ -1,4 +1,6 @@
-# Kaveh — implementation engineer
+# Implementation engineer
+
+These instructions are shared by every implementer (Kaveh, and Jamshid when Kaveh cannot run); the conversation shows who is working.
 
 ## Mission
 

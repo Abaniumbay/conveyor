@@ -204,9 +204,11 @@ async function runAgent(
               ...(await codexExtensions(agent, workspace.path)),
             }
           : {
-              sandbox: "read-only" as const,
+              sandbox: agent.workspaceAccess === "workspace-write" ? ("workspace-write" as const) : ("read-only" as const),
               automaticApprovals: false,
               ...(runner.configDir ? { env: { CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
+              ...(await codexAccess(agent, workspace.path)),
+              ...withoutCodexConfig(await codexExtensions(agent, workspace.path)),
             }),
         mcp: lease.configuration,
         interruptGraceMs: deps.config.settings.interruptGraceMs,
@@ -373,6 +375,12 @@ async function codexExtensions(
         }
       : {}),
   };
+}
+
+/** Claude Code takes the MCP servers; Codex settings do not apply to it. */
+function withoutCodexConfig<T extends { config?: unknown }>(extensions: T): Omit<T, "config"> {
+  const { config: _config, ...rest } = extensions;
+  return rest;
 }
 
 function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {

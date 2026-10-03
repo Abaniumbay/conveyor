@@ -23,6 +23,7 @@ describe("agent profiles in the service", () => {
     const web = service.webDependencies({} as never, "operator");
     expect((await web.getAgentProfiles()).map(({ id, name, title }) => ({ id, name, title }))).toEqual([
       { id: "darya", name: "Darya", title: "Product Owner" },
+      { id: "jamshid", name: "Jamshid", title: "Developer" },
       { id: "kaveh", name: "Kaveh", title: "Senior Developer" },
       { id: "omid", name: "Omid", title: "Conveyor Operator" },
       { id: "shaghayegh", name: "Shaghayegh", title: "Senior Reviewer" },

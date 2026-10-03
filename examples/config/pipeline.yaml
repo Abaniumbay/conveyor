@@ -24,7 +24,7 @@ pipelines:
         retries: 3
         actions:
           - { id: workspace, task: workspace.ensure }
-          - { id: implement, task: agent.run, with: { agent: kaveh } }
+          - { id: implement, task: agent.run, with: { agents: [kaveh, jamshid] } }
           - id: ensureChange
             task: change.ensure
             with: { closingReference: true, criteriaChecklist: true }
@@ -97,7 +97,7 @@ pipelines:
         retries: 3
         actions:
           - { id: workspace, task: workspace.ensure }
-          - { id: implement, task: agent.run, with: { agent: kaveh } }
+          - { id: implement, task: agent.run, with: { agents: [kaveh, jamshid] } }
           - { id: localChecks, task: script.run, with: { script: ./checks/implementation-exit-midgame.ts, recovery: replay-safe } }
           - { id: ensureChange, task: change.ensure, with: { closingReference: true, criteriaChecklist: true } }
           - { id: startCi, task: ci.start, when: ci.enabled }

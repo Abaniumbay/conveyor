@@ -250,6 +250,34 @@ describe("agent.run", () => {
     expect(w.calls[0]!.mcpServers).toBeUndefined();
   });
 
+  test("a workspace-write Claude Code agent gets its worktree, roots and MCP servers, but no Codex settings", async () => {
+    const w = await world();
+    const workspace = w.store.getActiveWorkspace("i1")!.path;
+    await mkdir(workspace, { recursive: true });
+    Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
+    Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
+    const cache = path.join(w.root, "cache");
+    await mkdir(cache);
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
+    config.runners.claude = { type: "claude-code", command: "claude" };
+    config.agents.jamshid = {
+      ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "workspace-write", network: true, writableRoots: [cache],
+      codexConfig: { model_auto_compact_token_limit: 1 },
+      mcpServers: { serena: { command: "serena", args: ["--project", "{workspace}"], env: {}, enabledTools: ["find_symbol"], gitExclude: [".serena/"] } },
+    };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = harnesses.codex;
+    expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
+    const git = path.join(workspace, ".git");
+    expect(w.calls[0]).toMatchObject({
+      command: "claude", sandbox: "workspace-write", automaticApprovals: false, network: true,
+      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache],
+      mcpServers: { serena: { command: "serena", args: ["--project", workspace], env: {}, enabledTools: ["find_symbol"] } },
+    });
+    expect(w.calls[0]!.config).toBeUndefined();
+    expect(await Bun.file(path.join(git, "info", "exclude")).text()).toContain(".serena/");
+  });
+
   test("a read-only agent gets network (web search) but no writable roots", async () => {
     const w = await world();
     Object.assign(w.deps.config.agents.shirin!, { network: true, writableRoots: [w.root] });

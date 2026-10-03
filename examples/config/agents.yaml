@@ -45,6 +45,31 @@ agents:
             agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
             todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
             change.listFindings, change.comment, change.resolveFinding]
+  jamshid:                                 # implements when Kaveh cannot run; Claude Code (Haiku)
+    name: Jamshid
+    title: Developer
+    harness: claude-code
+    model: claude-haiku-4-5-20251001
+    instructions: ./instructions/kaveh.md
+    access: workspace-write
+    network: true                          # the Claude CLI needs it for its own API calls anyway
+    writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
+                    ~/.dotnet, ~/.pub-cache, ~/.gradle]
+    mcpServers:
+      serena:
+        command: serena
+        args: [start-mcp-server, --project, "{workspace}", --context=claude-code,
+               --enable-web-dashboard, "false", --open-web-dashboard, "false"]
+        env: { SERENA_HOME: ~/.serena }
+        startupTimeoutSec: 60
+        enabledTools: [find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration,
+                       find_implementations]
+        gitExclude: [.serena/]
+    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+            agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
+            todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
+            change.listFindings, change.comment, change.resolveFinding]
   shaghayegh:                              # reviews first; Claude Code (read-only)
     name: Shaghayegh
     title: Senior Reviewer

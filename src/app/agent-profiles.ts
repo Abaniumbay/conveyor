@@ -18,9 +18,15 @@ function usageOf(config: ConveyorConfig, agentId: string): AgentUsageViewModel[]
   for (const [pipelineId, pipeline] of Object.entries(config.pipelines)) {
     for (const stage of pipeline.stages) {
       if (isNativeStage(stage)) {
-        const runs = [...stage.actions, ...stage.exitGate]
-          .some((entry) => entry.task === "agent.run" && (entry.with as { agent?: unknown } | undefined)?.agent === agentId);
-        if (runs) usage.push({ pipeline: pipelineId, stage: stage.id, role: "runs the stage action" });
+        for (const entry of [...stage.actions, ...stage.exitGate]) {
+          if (entry.task !== "agent.run") continue;
+          const configured = entry.with as { agent?: unknown; agents?: unknown } | undefined;
+          // `agents` is an order of preference: the next runs when one's harness cannot.
+          const listed = Array.isArray(configured?.agents) ? configured.agents as unknown[] : [configured?.agent];
+          const position = listed.indexOf(agentId);
+          if (position === 0) usage.push({ pipeline: pipelineId, stage: stage.id, role: "runs the stage action" });
+          else if (position > 0) usage.push({ pipeline: pipelineId, stage: stage.id, role: `runs the stage action when ${String(listed[position - 1])} cannot` });
+        }
         continue;
       }
       if (stage.run.type === "agent" && stage.run.agent === agentId) {
