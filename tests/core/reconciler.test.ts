@@ -239,6 +239,28 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("removing the error label after retries ran out makes the errored stage ready again", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"],
+      labels: { ...labels, states: { ...labels.states, error: "conveyor:error" } },
+    };
+    const withLabels = (issueLabels: string[]) => ({ ...common, source: { async listIssues() { return [issue(1, issueLabels)]; } } });
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
+    // Retries used up: the stage is stopped as error, in the store and on the source.
+    store.setStageState({ issueId: "github:owner/repo#1", stageId: "implementation", status: "error", feedbackCycle: 0, configHash: "hash-1" });
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation", "conveyor:error"]));
+    expect(store.getIssue("github:owner/repo#1")?.projectedState).toBe("error");
+
+    // Retry (or a person) removes the error label: the item must be schedulable again.
+    await reconcileRepository(withLabels(["conveyor", "conveyor:implementation"]));
+    expect(store.getStageState("github:owner/repo#1")).toMatchObject({ stageId: "implementation", status: "ready" });
+    store.close();
+  });
+
   test("records a journey entry when a stopped item resumes, and none when nothing changed", async () => {
     const store = await openStore();
     const common = {
