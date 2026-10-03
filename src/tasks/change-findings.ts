@@ -23,7 +23,13 @@ const commentInput = z.object({
 }).strict().refine((input) => input.line === undefined || input.path !== undefined, { message: "line needs a path" });
 type CommentInput = z.output<typeof commentInput>;
 
-const resolveInput = z.object({ findingId: z.string().min(1) }).strict();
+const resolveInput = z.object({
+  findingId: z.string().min(1),
+  /** fixed: the problem is fixed at the current head. invalid: the finding is wrong, not applicable or already satisfied. */
+  verdict: z.enum(["fixed", "invalid"]),
+  /** What changed (fixed) or why nothing changed (invalid); posted as the reply on the finding. */
+  comment: z.string().trim().min(1).max(2000),
+}).strict();
 const listInput = z.object({ state: z.enum(["open", "resolved", "dismissed", "withdrawn"]).optional() }).strict();
 const dismissInput = z.object({ findingId: z.string().min(1), reason: z.string().trim().min(1).max(2000) }).strict();
 
@@ -91,7 +97,7 @@ const comment: TaskDefinition<unknown, CommentInput, Deps> = {
 const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Deps> = {
   name: "change.resolveFinding",
   kind: "tool",
-  description: "Mark a finding you created resolved (the problem it names is fixed); human review findings are resolved on the provider or dismissed by an operator. A finding that is already resolved stays so; dismissed and withdrawn findings cannot be resolved.",
+  description: "Close an open review finding, whoever wrote it (a reviewer agent, a person or a review bot): verdict fixed when the problem is fixed and pushed, invalid when the finding is wrong, not applicable or already satisfied. The comment says what changed or why nothing did; it is posted as a reply naming the current head commit and you, with a thumbs up (fixed) or down (invalid), and the thread is resolved. A resolved finding stays so; dismissed and withdrawn findings cannot be resolved.",
   reads: [], writes: [], invalidates: ["change"],
   mutating: true,
   // A state change that is idempotent by itself: replaying a journaled response is never needed.
@@ -102,26 +108,53 @@ const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Dep
     const findings = findingsOf(deps);
     const finding = findings.get(deps.issueId, input!.findingId);
     if (!finding) return fail(`Unknown finding "${input!.findingId}"; read change.listFindings`);
-    if (finding.source === "human") {
-      return fail("Human review findings are resolved on the provider (resolve the thread) or dismissed by an operator");
-    }
     if (finding.state === "resolved") return pass({ findingId: finding.id, state: "resolved" });
     if (finding.state !== "open") return fail(`Finding ${finding.id} is ${finding.state}, not open`);
     const actor = actorOf("change.resolveFinding", args);
-    findings.resolve(deps.issueId, finding.id, actor);
     const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    const host = stored ? codeHostOf(deps) : null;
+    const head = stored ? await host!.getChange({ address: deps.repository.address, id: stored.id }).then((change) => change.headSha, () => null) : null;
+    const message = resolutionMessage(input!.verdict, displayNameOf(actor, deps), head, input!.comment);
+    if (finding.source === "human") {
+      // An imported finding follows its native thread, so the thread must be answered and resolved first.
+      if (!stored || !finding.providerKey) return fail(`Finding ${finding.id} cannot be resolved: it has no change or native review reference`);
+      try {
+        await host!.resolveNativeFinding({
+          address: deps.repository.address, id: stored.id, providerKey: finding.providerKey, verdict: input!.verdict, message,
+        });
+      } catch (error) {
+        return fail(`Could not resolve the review thread of finding ${finding.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      findings.resolve(deps.issueId, finding.id, actor);
+      return pass({ findingId: finding.id, state: "resolved", verdict: input!.verdict });
+    }
+    findings.resolve(deps.issueId, finding.id, actor);
     if (finding.projection && stored) {
       try {
-        await codeHostOf(deps).resolveFindingProjection({
+        await host!.resolveFindingProjection({
           address: deps.repository.address, id: stored.id, findingId: finding.id, projection: String(finding.projection), body: finding.body, actor,
+          verdict: input!.verdict, message,
         });
       } catch {
         // Best effort: the record is the authority and stays resolved.
       }
     }
-    return pass({ findingId: finding.id, state: "resolved" });
+    return pass({ findingId: finding.id, state: "resolved", verdict: input!.verdict });
   },
 };
+
+/** The agent's display name ("Kaveh"), falling back to its id. */
+function displayNameOf(actor: string, deps: Deps): string {
+  return deps.run?.actor?.id === actor && deps.run.actor.name ? deps.run.actor.name : deps.config.agents?.[actor]?.name ?? actor;
+}
+
+/** The reply posted on a closed finding: verdict, commit, agent and explanation. */
+export function resolutionMessage(verdict: "fixed" | "invalid", agent: string, headSha: string | null, comment: string): string {
+  const commit = headSha ? ` in ${headSha.slice(0, 7)}` : "";
+  return verdict === "fixed"
+    ? `👍 Fixed${commit} by ${agent}: ${comment}`
+    : `👎 Not changed by ${agent}${headSha ? ` (checked at ${headSha.slice(0, 7)})` : ""}: ${comment}`;
+}
 
 const listFindings: TaskDefinition<unknown, z.output<typeof listInput>, Deps> = {
   name: "change.listFindings",

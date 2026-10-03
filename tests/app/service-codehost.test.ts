@@ -169,6 +169,7 @@ describe("CodeHost service integration", () => {
       async setChangeChecklist() { throw new Error("not expected"); },
       async createFinding() { throw new Error("not expected"); },
       async resolveFindingProjection() { throw new Error("not expected"); },
+      async resolveNativeFinding() { throw new Error("not expected"); },
       async listReviewArtifacts() { throw new Error("not expected"); },
       async getChangeDelivery() { throw new Error("not expected"); },
     };

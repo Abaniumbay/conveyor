@@ -133,6 +133,11 @@ export class ReviewFindings {
     return changed;
   }
 
+  #resolvedByAgent(id: string): boolean {
+    const resolution = this.events(id).filter((event) => event.kind === "resolved").at(-1);
+    return resolution !== undefined && resolution.actor !== "provider";
+  }
+
   #transition(issueId: string, id: string, state: FindingState, actor: string, at: string, reason: string | null = null): boolean {
     const changes = this.#db.query("UPDATE findings SET state = ? WHERE issue_id = ? AND id = ? AND state = 'open'").run(state, issueId, id).changes;
     if (changes === 0) return false;
@@ -165,7 +170,9 @@ export class ReviewFindings {
         this.#event(existing.id, "edited", artifact.author, at, null, { from: existing.body });
       }
       if (artifact.resolved) this.resolve(issueId, existing.id, "provider", at);
-      else if (existing.state === "resolved" || existing.state === "withdrawn") {
+      else if (existing.state === "resolved" && artifact.providerKey.startsWith("review:") && this.#resolvedByAgent(existing.id)) {
+        // A changes-requested review has nothing to resolve on the provider: the agent's answer stands.
+      } else if (existing.state === "resolved" || existing.state === "withdrawn") {
         // The provider is authoritative for imported findings: an unresolved thread is open again.
         this.#db.query("UPDATE findings SET state = 'open', withdrawal_json = NULL WHERE id = ?").run(existing.id);
         this.#event(existing.id, "reopened", artifact.author, at, null, { from: existing.state });
