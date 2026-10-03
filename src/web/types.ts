@@ -17,6 +17,14 @@ export interface IssueWaitingViewModel {
 }
 
 /** A server-ready issue card with lightweight hierarchy references. */
+export interface IssueTodosViewModel {
+  done: number;
+  total: number;
+  /** The item in progress, or else the next pending one; null when every item is done. */
+  current: string | null;
+  items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done"; note?: string }>;
+}
+
 export interface IssueCardViewModel {
   id: string;
   repository: string;
@@ -28,6 +36,8 @@ export interface IssueCardViewModel {
   state: string;
   labels: readonly string[];
   acceptanceCriteria: readonly string[];
+  /** The implementer's todo list, kept by Conveyor; null until one is written. */
+  todos: IssueTodosViewModel | null;
   activity: string | null;
   reason: string | null;
   cost: string | null;
