@@ -145,6 +145,7 @@ function DetailsDialog({ issue, id, selected = false }: { issue: IssueCardViewMo
           {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
         </dl>
         <Relationships issue={issue} />
+        <TodoChecklist issue={issue} />
         <section class="criteria" aria-label="Acceptance criteria">
           <h3>Acceptance criteria</h3>
           {issue.acceptanceCriteria.length > 0
@@ -220,6 +221,39 @@ function WaitingLine({ issue, className }: { issue: IssueCardViewModel; classNam
   );
 }
 
+function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
+  const todos = issue.todos;
+  if (!todos) return null;
+  const label = `${todos.done} of ${todos.total} todos done`;
+  return (
+    <div class="todo-progress" aria-label={`Todo progress for #${issue.number}: ${label}`}>
+      <meter min={0} max={todos.total} value={todos.done} aria-hidden="true" />
+      <span class="todo-progress-count">{todos.done}/{todos.total}</span>
+      {todos.current && <span class="todo-progress-current" title={todos.current}>{todos.current}</span>}
+    </div>
+  );
+}
+
+function TodoChecklist({ issue }: { issue: IssueCardViewModel }) {
+  const todos = issue.todos;
+  if (!todos) return null;
+  const marks = { done: "Done", in_progress: "In progress", pending: "Pending" } as const;
+  return (
+    <section class="todos" aria-label="Implementation todos">
+      <h3>Todos <span class="todos-count">{todos.done}/{todos.total}</span></h3>
+      <ol class="todo-list">
+        {todos.items.map((item) => (
+          <li class={`todo todo--${item.status}`} key={item.id}>
+            <span class="todo-mark" aria-label={marks[item.status]} />
+            <span class="todo-text">{item.text}</span>
+            {item.note && <span class="todo-note">{item.note}</span>}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function stateWords(issue: IssueCardViewModel): string {
   if (issue.working) return "Working";
   const words: Record<string, string> = {
@@ -273,6 +307,7 @@ function IssueCard({ issue, actors = [] }: { issue: IssueCardViewModel; actors?:
       {issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
+      <TodoProgress issue={issue} />
       {rollup && <p class="rollup-summary">Roll-up · {issue.children.length} {issue.children.length === 1 ? "child" : "children"}, {completedChildren} done</p>}
       <DetailsDialog issue={issue} id={dialogId} />
     </article>

@@ -25,7 +25,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -39,6 +39,7 @@ import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
+import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -1560,6 +1561,7 @@ export class ConveyorService {
       if (state === "closed") return "muted";
       return "active";
     };
+    const todos = new ItemTodos(this.store.sqlite());
     const card = (
       issue: StoredIssue,
       options: { reason?: string | null; state?: string } = {},
@@ -1618,6 +1620,7 @@ export class ConveyorService {
         state: projectedState,
         labels: issue.labels,
         acceptanceCriteria: criteriaFromBody(issue.body),
+        todos: todosView(todos.get(issue.id)?.items ?? []),
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
           : state ? `${state.stageId} · ${state.status}` : null,
@@ -2264,4 +2267,9 @@ export class ConveyorService {
         (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
   }
+}
+
+function todosView(items: readonly TodoItem[]): IssueTodosViewModel | null {
+  const summary = summarizeTodos(items);
+  return summary ? { ...summary, items } : null;
 }

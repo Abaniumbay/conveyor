@@ -6,6 +6,7 @@ import { conversationGroup } from "./conversation";
 import { itemGroup } from "./item";
 import { legacyGroup } from "./legacy";
 import { scriptGroup } from "./script";
+import { todoGroup } from "./todo";
 import { workspaceGroup } from "./workspace";
 
 /** The single place every task group is registered. */
@@ -17,6 +18,7 @@ export function createTaskRegistry(): TaskRegistry {
   registry.register(ciGroup);
   registry.register(agentGroup);
   registry.register(conversationGroup);
+  registry.register(todoGroup);
   registry.register(scriptGroup);
   registry.register(legacyGroup);
   return registry;

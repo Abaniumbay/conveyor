@@ -505,4 +505,16 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX finding_events_finding_idx ON finding_events(finding_id, id);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      -- The implementer's todo list for an item: one ordered list per item, kept across runs and returns.
+      CREATE TABLE item_todos (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        items_json TEXT NOT NULL,
+        run_id TEXT,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
