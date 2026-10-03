@@ -852,6 +852,63 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('submit', async (event) => {
     const form = event.target;
+    if (form instanceof HTMLFormElement && form.matches('[data-profile-avatar-form], [data-account-create-form]')) {
+      event.preventDefault();
+      const isAvatar = form.matches('[data-profile-avatar-form]');
+      const button = form.querySelector('button[type="submit"]');
+      const status = form.querySelector('[data-form-status]');
+      const fields = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) {
+        if (typeof value === 'string') fields.append(name, value);
+      }
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+      if (status instanceof HTMLElement) {
+        status.textContent = '';
+        status.dataset.error = 'false';
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+          body: fields,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'The change could not be saved.');
+        if (isAvatar) {
+          if (!payload || typeof payload.avatar !== 'string') throw new Error('The server returned an invalid profile update.');
+          for (const avatar of document.querySelectorAll('.account-avatar, [data-profile-avatar]')) avatar.textContent = payload.avatar;
+          if (status instanceof HTMLElement) status.textContent = 'Saved.';
+        } else {
+          const account = payload && payload.account;
+          const list = document.querySelector('[data-account-list]');
+          if (!account || typeof account.username !== 'string' || typeof account.avatar !== 'string' || !(list instanceof HTMLTableSectionElement)) {
+            throw new Error('The server returned an invalid account.');
+          }
+          const row = document.createElement('tr');
+          const name = document.createElement('th');
+          const avatar = document.createElement('span');
+          const role = document.createElement('td');
+          name.scope = 'row';
+          avatar.className = 'account-row-avatar';
+          avatar.setAttribute('aria-hidden', 'true');
+          avatar.textContent = account.avatar;
+          name.append(avatar, document.createTextNode(account.username));
+          role.textContent = account.role === 'superuser' ? 'Superuser' : 'User';
+          row.append(name, role);
+          list.append(row);
+          form.reset();
+          if (status instanceof HTMLElement) status.textContent = 'Account ' + account.username + ' created.';
+        }
+      } catch (error) {
+        if (status instanceof HTMLElement) {
+          status.textContent = error instanceof Error ? error.message : 'The change could not be saved.';
+          status.dataset.error = 'true';
+        }
+      } finally {
+        if (button instanceof HTMLButtonElement) button.disabled = false;
+      }
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('[data-retry-form]')) {
       event.preventDefault();
       const url = form.getAttribute('data-retry-url');

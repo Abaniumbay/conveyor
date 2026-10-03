@@ -1,5 +1,6 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
+import { Accounts, Profile } from "./account-pages";
 import { Reports } from "./report-page";
 
 import { Team } from "./agent-pages";
@@ -34,6 +35,8 @@ function viewHref(view: DashboardView): string {
   if (view === "team") return "/team";
   if (view === "agent") return "/operator";
   if (view === "reports") return "/reports";
+  if (view === "accounts") return "/accounts";
+  if (view === "profile") return "/profile";
   return "/board";
 }
 
@@ -451,8 +454,8 @@ function Navigation({ model }: { model: DashboardViewModel }) {
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
-      {canManageDashboard(model) && <a href="/accounts" class="tab">Accounts</a>}
-      <a href="/profile" class="tab">{model.account?.avatar ?? "🐼"} Profile</a>
+      {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "tab tab--active" : "tab"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
+      <a href="/profile" class={model.view === "profile" ? "tab tab--active" : "tab"} aria-current={model.view === "profile" ? "page" : undefined}><span data-profile-avatar>{model.account?.avatar ?? "🐼"}</span> Profile</a>
     </nav>
   );
 }
@@ -696,6 +699,8 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
+  else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
+  else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />
