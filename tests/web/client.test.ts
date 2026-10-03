@@ -39,6 +39,14 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("name === 'journey'");
     expect(dashboardClient).toContain("new DOMParser()");
     expect(dashboardClient).toContain("currentDashboard.replaceWith(nextDashboard)");
+    expect(dashboardClient).toContain("history.pushState({ conveyorPage: true }");
+    expect(dashboardClient).toContain("document.title = nextDocument.title");
+    expect(dashboardClient).toContain("void navigateDashboard(destination)");
+    expect(dashboardClient).toContain("new URL(location.href), 'none'");
+    expect(dashboardClient).toContain("conveyor:dashboard-rendered");
+    expect(dashboardClient).toContain("destination.origin !== location.origin");
+    expect(dashboardClient).toContain("body.classList.add('dashboard-navigating')");
+    expect(dashboardClient).not.toContain("body.classList.add('page-loading')");
     expect(dashboardClient).toContain("time[data-relative-time][datetime]");
     expect(dashboardClient).not.toContain("location.reload()")
     expect(dashboardClient).toContain("dialog.showModal();");

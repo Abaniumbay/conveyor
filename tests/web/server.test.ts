@@ -239,8 +239,11 @@ describe("createWebHandler", () => {
     expect(page.status).toBe(200);
     const notificationsPage = await page.text();
     expect(notificationsPage).toContain("/assets/notifications.js");
-    expect(notificationsPage).toContain('class="account-page"');
-    expect(notificationsPage).toContain('class="header-link" href="/settings/notifications"');
+    expect(notificationsPage).toContain('class="dashboard"');
+    expect(notificationsPage).toContain('data-dashboard-view="notifications"');
+    expect(notificationsPage).toContain('class="header-link header-link--active" href="/settings/notifications" aria-current="page"');
+    expect(notificationsPage).toContain('id="notification-settings" class="settings-form notification-form"');
+    expect(notificationsPage).not.toContain('class="account-page"');
     expect(notificationsPage).toContain('class="theme-control" data-theme-control');
     expect(notificationsPage).toContain('data-theme-choice="dark"');
     expect(notificationsPage).toContain('<script src="/assets/theme.js"></script>');
@@ -388,7 +391,7 @@ describe("createWebHandler", () => {
     const { cookie } = await login(handler);
     const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
 
-    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"]] as const) {
+    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
       expect((await get(path)).status).toBe(200);
       expect(dashboardCalls.at(-1)?.view).toBe(view);
     }
@@ -697,7 +700,7 @@ describe("createWebHandler", () => {
     const cookie = created.cookie.split(";")[0]!;
     const csrf = created.csrfToken;
 
-    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
+    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/settings/notifications", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
       const page = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
       expect(page.status).toBe(200);
     }
