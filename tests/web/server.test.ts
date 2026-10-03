@@ -237,7 +237,16 @@ describe("createWebHandler", () => {
     const authKey = Buffer.alloc(16, 2).toString("base64url");
     const page = await handler(new Request("http://localhost/settings/notifications", { headers: { cookie } }));
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain("/assets/notifications.js");
+    const notificationsPage = await page.text();
+    expect(notificationsPage).toContain("/assets/notifications.js");
+    expect(notificationsPage).toContain('class="account-page"');
+    expect(notificationsPage).toContain('class="header-link" href="/settings/notifications"');
+    expect(notificationsPage).toContain('class="theme-control" data-theme-control');
+    expect(notificationsPage).toContain('data-theme-choice="dark"');
+    expect(notificationsPage).toContain('<script src="/assets/theme.js"></script>');
+    expect(notificationsPage.indexOf('/assets/theme.js')).toBeLessThan(notificationsPage.indexOf('<style>'));
+    expect(notificationsPage).toContain('@media(max-width:760px)');
+    expect(notificationsPage).toContain('href="/board"');
     expect((await handler(new Request("http://localhost/api/notifications/settings", { headers: { cookie } }))).status).toBe(200);
 
     const denied = await handler(new Request("http://localhost/api/notifications/settings", {
@@ -741,7 +750,11 @@ describe("createWebHandler", () => {
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const page = await handler(new Request("http://localhost/accounts", { headers: { cookie } }));
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('action="/api/accounts"');
+    const accountsPage = await page.text();
+    expect(accountsPage).toContain('action="/api/accounts"');
+    expect(accountsPage).toContain('class="account-page-content"');
+    expect(accountsPage).toContain('href="/accounts">Accounts</a>');
+    expect(accountsPage).toContain('action="/logout"');
     expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(200);
     const create = (username: string, password = "long enough password") => handler(new Request("http://localhost/api/accounts", {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -791,7 +804,12 @@ describe("createWebHandler", () => {
     expect((await post("/api/profile/avatar", { avatar: "🦊", accountId: "another-user" })).status).toBe(200);
     expect(account.avatar).toBe("🦊");
     const profile = await handler(new Request("http://localhost/profile", { headers: { cookie } }));
-    expect(await profile.text()).toContain('option value="🦊" selected');
+    const profilePage = await profile.text();
+    expect(profilePage).toContain('option value="🦊" selected');
+    expect(profilePage).toContain('id="change-password">Change password</h2>');
+    expect(profilePage).toContain('href="/profile#change-password">Change password</a>');
+    expect(profilePage).toContain('class="dashboard-header"');
+    expect(profilePage).not.toContain('href="/accounts">Accounts</a>');
 
     expect((await post("/api/profile/password", { currentPassword: "wrong password", newPassword: "replacement password" })).status).toBe(403);
     expect(account.sessionVersion).toBe(1);
