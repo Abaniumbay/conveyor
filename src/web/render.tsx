@@ -1,5 +1,6 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
+import { Reports } from "./report-page";
 
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
@@ -32,6 +33,7 @@ function viewHref(view: DashboardView): string {
   if (view === "attention") return "/attention";
   if (view === "team") return "/team";
   if (view === "agent") return "/operator";
+  if (view === "reports") return "/reports";
   return "/board";
 }
 
@@ -434,6 +436,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
     { view: "board", label: "Board", count: model.counts.board },
     { view: "attention", label: "Needs attention", count: model.counts.attention },
     { view: "team", label: "Team", count: null },
+    { view: "reports", label: "Reports", count: null },
     { view: "agent", label: "Operator", count: null },
   ];
   return (
@@ -642,6 +645,7 @@ function Page({ model }: { model: DashboardViewModel }) {
   if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
+  else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />

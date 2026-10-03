@@ -216,6 +216,45 @@ describe("renderDashboard", () => {
     expect(html.match(/aria-label="Implementation todos"/g)).toHaveLength(1);
   });
 
+  test("renders the Reports view: tab, filters, figures, drill-through links, escaped items and only non-zero bars", () => {
+    const totals = {
+      delivered: 2, inProgress: 1, runs: 5, failedRuns: 1, inputTokens: 4_900_000, outputTokens: 100_000, cachedTokens: 2_450_000, agentMs: 9 * 3_600_000,
+      avgTokensPerItem: 2_500_000, avgRunsPerItem: 2, avgLeadMs: 8 * 3_600_000, avgAgentMs: 2 * 3_600_000, avgChecksWaitMs: 900_000, avgWaitingForYouMs: 3_600_000, avgQueuedMs: 0,
+      avgReturnsPerItem: 0.5, avgStopsPerItem: 0.5, firstPassRate: 0.5,
+    };
+    const html = renderDashboard({
+      ...dashboard,
+      view: "reports",
+      report: {
+        period: "30d", since: "2026-09-03T00:00:00.000Z", repository: "sample", repositories: ["other", "sample"],
+        totals,
+        byRepository: [{ id: "sample", ...totals }],
+        byMonth: [{ month: "2026-10", delivered: 2, runs: 5, tokens: 5_000_000, agentMs: 9 * 3_600_000, avgTokensPerItem: 2_500_000, avgLeadMs: 8 * 3_600_000 }],
+        byStage: [
+          { id: "implementation", name: "Implementation", runs: 4, failedRuns: 1, tokens: 5_000_000, agentMs: 8 * 3_600_000, avgRunMs: 7_200_000 },
+          { id: "deploy", name: "Deploy", runs: 1, failedRuns: 0, tokens: 0, agentMs: 600_000, avgRunMs: 600_000 },
+        ],
+        items: [{ repository: "sample", number: 9, title: "<script>x</script>", state: "needs-input", finishedAt: null, leadMs: null, agentMs: 600_000, checksWaitMs: 0, waitingForYouMs: 0, runs: 1, tokens: 1_200, returns: 0, stops: 1 }],
+        importedWithoutHistory: 4,
+        generatedAt: "2026-10-03T00:00:00.000Z",
+      },
+    });
+    expect(html).toContain('<a href="/reports" class="tab tab--active" aria-current="page">Reports</a>');
+    expect(html).toContain("Reports · sample");
+    expect(html).toContain('href="/reports/sample?period=7d"');
+    expect(html).toContain('href="/reports?period=30d"');
+    expect(html).toContain('<a href="/reports/sample?period=30d" class="report-chip report-chip--active" aria-current="page">30 days</a>');
+    expect(html).toContain("<span class=\"report-tile-value\">5.0M</span>");
+    expect(html).toContain("50% of input cached");
+    expect(html).toContain('href="/issues/sample/9"');
+    expect(html).toContain("&lt;script>x&lt;/script>");
+    expect(html).toContain("Needs input");
+    expect(html).toContain('data-tip="Implementation: 5.0M"');
+    expect(html).not.toContain('data-tip="Deploy: 0"');
+    expect(html).toContain("4 items imported as done without a recorded delivery are left out.");
+    expect(html).not.toContain("By repository");
+  });
+
   test("initializes and controls system, light, and dark themes without a first-paint flash", () => {
     const html = renderDashboard(dashboard);
     // A blocking script in <head>, before the stylesheet; a file, since the CSP forbids inline scripts.

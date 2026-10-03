@@ -2,9 +2,10 @@ import { timingSafeEqual } from "node:crypto";
 import { createWebAuth } from "./auth";
 import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
+import { REPORT_PERIOD_VALUES } from "./report-page";
 import { renderDashboard } from "./render";
 import { themeInitScript } from "./styles";
-import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -52,6 +53,8 @@ export interface WebHandlerDependencies {
   dismissFinding: (issueId: string, findingId: string, reason: string, username: string) => void | Promise<void>;
   /** Read-only profiles of the configured agents. */
   getAgentProfiles: () => readonly AgentProfileViewModel[] | Promise<readonly AgentProfileViewModel[]>;
+  /** The Reports view for a period, across every repository or drilled into one; null for an unknown repository. */
+  getReport?: (input: { period: ReportPeriod; repository: string | null }) => ReportViewModel | null | Promise<ReportViewModel | null>;
   getAgentProfile: (agentId: string) => AgentProfileViewModel | null | Promise<AgentProfileViewModel | null>;
   maxBodyBytes?: number;
 }
@@ -472,6 +475,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     const teamProfilePath = /^\/team\/([^/]{1,200})$/.exec(path);
     const operatorRunPath = /^\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
     const issuePagePath = /^\/issues\/([^/]{1,200})\/([1-9]\d*)(?:\/(conversation|journey|logs))?$/.exec(path);
+    const reportPath = /^\/reports(?:\/([^/]{1,200}))?$/.exec(path);
     const dashboardView = path === "/" || path === "/board"
       ? "board"
       : path === "/attention"
@@ -480,7 +484,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
           ? "team"
           : path === "/operator" || operatorRunPath
             ? "agent"
-            : issuePagePath ? "board" : null;
+            : reportPath && dependencies.getReport
+              ? "reports"
+              : issuePagePath ? "board" : null;
 
     if (legacyDashboardQuery || dashboardView) {
       const methodError = requireMethod(request, "GET");
@@ -538,10 +544,23 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const runId = operatorRunPath?.[1] ?? null;
         if (runId && !await dependencies.getSteeringRun(runId)) return text("Operator run not found", 404);
 
+        let report: ReportViewModel | undefined;
+        if (dashboardView === "reports") {
+          let repository: string | null = null;
+          if (reportPath![1]) {
+            try { repository = decodeURIComponent(reportPath![1]); } catch { return text("Invalid repository id", 400); }
+          }
+          const requestedPeriod = url.searchParams.get("period") ?? "all";
+          if (!(REPORT_PERIOD_VALUES as readonly string[]).includes(requestedPeriod)) return text("Unknown report period", 400);
+          const built = await dependencies.getReport!({ period: requestedPeriod as ReportPeriod, repository });
+          if (!built) return text("Repository not found", 404);
+          report = built;
+        }
+
         const page = dashboardPage(url, dashboardView!, runId, issueId);
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
-        return response(renderDashboard(team ? { ...model, team } : model), 200, "text/html; charset=utf-8");
+        return response(renderDashboard({ ...model, ...(team ? { team } : {}), ...(report ? { report } : {}) }), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
