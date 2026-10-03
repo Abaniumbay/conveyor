@@ -560,6 +560,19 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("?view=backlog");
   });
 
+  test("ordinary users retain navigation and sign-out without operational or account controls", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      account: { id: "reader", username: "reader & friend", role: "user", avatar: "🦊" },
+    });
+    expect(html).toContain("reader &amp; friend");
+    expect(html).toContain("href=\"/profile\"");
+    expect(html).toContain('action="/logout"');
+    expect(html).not.toContain('href="/accounts"');
+    expect(html).not.toContain("Move #43 up");
+    expect(html).not.toContain('action="/steering"');
+  });
+
   test("the team view lists every agent, each opening its read-only profile in a modal", () => {
     const kaveh = {
       id: "kaveh", name: "Kaveh", title: "Senior Developer", harness: "codex", model: "gpt-6-luna", effort: "high",

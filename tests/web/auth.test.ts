@@ -19,6 +19,24 @@ describe("web authentication", () => {
     expect(verifyPassword(password, "scrypt$999999999$8$1$bad$bad")).toBe(false);
   });
 
+  test("authenticates persisted account credentials and invalidates sessions after a password version changes", () => {
+    const account = { id: "account-1", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1 };
+    let current = account;
+    const auth = createWebAuth({
+      passwordHash,
+      sessionSecret,
+      accountByUsername: (username) => username.toLowerCase() === current.username ? { ...current, passwordHash } : null,
+      accountById: () => current,
+    });
+    expect(auth.authenticate("reader", password)).toBe(true);
+    expect(auth.authenticate("missing", password)).toBe(false);
+    expect(auth.authenticate("reader", "wrong password")).toBe(false);
+    const session = auth.createSession(account)!;
+    expect(auth.getSession(session.cookie.split(";")[0])?.account).toEqual(account);
+    current = { ...current, sessionVersion: 2 };
+    expect(auth.getSession(session.cookie.split(";")[0])).toBeNull();
+  });
+
   test("creates a seven-day session with matching cookie expiry and verifies its boundary", () => {
     let now = 1_000_000;
     const auth = createWebAuth({ passwordHash, sessionSecret }, {
@@ -39,6 +57,7 @@ describe("web authentication", () => {
     expect(auth.getSession(session!.cookie.split(";")[0])).toEqual({
       csrfToken: session!.csrfToken,
       expiresAt: session!.expiresAt,
+      account: session!.account,
     });
     now = session!.expiresAt - 1;
     expect(auth.getSession(session!.cookie.split(";")[0])).not.toBeNull();
@@ -77,6 +96,7 @@ describe("web authentication", () => {
     expect(upgradedAuth.getSession(previousDefaultSession.cookie.split(";")[0])).toEqual({
       csrfToken: previousDefaultSession.csrfToken,
       expiresAt: originalExpiry,
+      account: previousDefaultSession.account,
     });
   });
 
