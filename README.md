@@ -304,6 +304,15 @@ agents:
     access: workspace-write
     network: true                     # web search, and network for installs and builds
     writableRoots: [~/.bun/install/cache, ~/.npm]   # package caches; missing ones are skipped
+    codexConfig: { model_auto_compact_token_limit: 80000 }   # extra Codex settings (-c key=value)
+    mcpServers:                       # tools beside Conveyor's own, e.g. a code index
+      serena:
+        command: serena
+        args: [start-mcp-server, --project, "{workspace}", --context=codex]
+        env: { SERENA_HOME: ~/.serena }
+        startupTimeoutSec: 60
+        enabledTools: [find_symbol, find_referencing_symbols, get_symbols_overview]  # it runs outside the sandbox
+        gitExclude: [.serena/]         # files it writes in the worktree; never committed
     tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
             agent.reportProgress, agent.askQuestion, workspace.fetch, workspace.push,
             change.listFindings, change.comment, change.resolveFinding]
@@ -400,6 +409,8 @@ Existing configurations keep loading. A stage with `run: { agent | runner + scri
 ### Canonical role names and pinned imports
 
 An agent's `network: true` turns on live web search. For a `workspace-write` agent it also gives the agent's own commands the network, so it can install dependencies and run the repository's checks before pushing. Codex's `read-only` mode has no network for commands, so a read-only agent gets web search only. A `workspace-write` agent can always write its worktree's git metadata, which a linked worktree keeps under the main repository's `.git`, outside the sandbox. `writableRoots` (absolute or `~/` paths) adds directories outside the worktree, typically package caches; the ones that do not exist on the machine are skipped. Both settings are Codex-only for now.
+
+`codexConfig` passes extra Codex settings as `-c key=value`, for example `model_auto_compact_token_limit` to compact a long session's context before it grows expensive. Keys Conveyor derives from the agent's other fields (`sandbox_mode`, `sandbox_workspace_write.*`, `mcp_servers.*`, `model_reasoning_effort`, `web_search`, `approvals_reviewer`) are refused. `mcpServers` gives the agent MCP servers beside Conveyor's own, such as a code index that answers symbol and reference queries instead of whole-file reads. `{workspace}` in a server's `args` becomes the run's worktree, `~/` in `env` values is expanded, and the servers are optional: one that fails to start does not fail the run. A server runs outside the agent's sandbox, so `enabledTools` should limit it to what the agent's access allows; for a read-only agent, lookups only. `gitExclude` lists files the server writes inside the worktree; Conveyor adds them to the repository's local git exclude before the agent runs, so they are never committed and never make a deploy see uncommitted changes. Both settings are Codex-only for now.
 
 The canonical configuration names the three provider roles and the harnesses: `providers.items` (issue trackers), `providers.code`, `providers.ci`, `harnesses`, agent `harness` and `access`, and repository `items` and `code`. The loader translates them to the older names (`sources`, `codeHosts`, `ci`, `runners`, `runner`, `workspaceAccess`, `source`, `codeHost`), which keep working. `labels` may sit on the item providers (all of them must carry an identical block, which a YAML alias gives you) or at the top level. Using the old and the new name for the same thing is an error, and equivalent documents produce the same configuration hash.
 

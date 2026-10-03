@@ -165,6 +165,38 @@ const runnerSchema = z.discriminatedUnion("type", [
   processRunnerSchema,
 ]);
 
+/** A value home-expanded like a path when it starts with ~/, kept as is otherwise (environment values). */
+const homeExpandedSchema = z
+  .string()
+  .transform((value) => (value === "~" || value.startsWith("~/") ? path.join(homedir(), value.slice(1)) : value));
+
+/** An MCP server an agent may use beside Conveyor's own, such as a code index. */
+const agentMcpServerSchema = z
+  .object({
+    command: z.string().min(1),
+    /** `{workspace}` is replaced with the run's worktree path. */
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), homeExpandedSchema).default({}),
+    startupTimeoutSec: z.number().positive().optional(),
+    /**
+     * The only tools the agent may call on this server. A server runs outside the agent's sandbox, so
+     * limit it to what the agent's access allows (lookups only for a read-only agent). Absent: all.
+     */
+    enabledTools: z.array(z.string().min(1)).min(1).optional(),
+    /**
+     * Patterns for files the server writes inside the worktree (caches, project files). Conveyor adds
+     * them to the repository's local git exclude before the agent runs, so they are never committed
+     * and never count as uncommitted changes.
+     */
+    gitExclude: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
+const CODEX_CONFIG_KEY = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
+/** Codex settings Conveyor derives from the agent's other fields; codexConfig must not override them. */
+const CONVEYOR_CODEX_KEYS = /^(mcp_servers|sandbox_mode|sandbox_workspace_write|approvals_reviewer|model_reasoning_effort|web_search)(\.|$)/;
+const MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+
 const agentSchema = z
   .object({
     name: identifierSchema.optional(),
@@ -178,6 +210,10 @@ const agentSchema = z
     network: z.boolean().default(false),
     /** Extra directories a workspace-write agent's commands may write, such as package caches. Missing ones are skipped. */
     writableRoots: z.array(homePathSchema).default([]),
+    /** Extra Codex settings, passed as `-c key=value` (Codex agents only), e.g. model_auto_compact_token_limit. */
+    codexConfig: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
+    /** MCP servers the agent may use beside Conveyor's own (Codex agents only), keyed by server name. */
+    mcpServers: z.record(z.string(), agentMcpServerSchema).default({}),
     /** The exact grant: canonical camelCase tool task names. Defaults to every grantable tool. */
     tasks: z.array(z.string()).optional(),
     /** Legacy snake_case grant; normalised to `tasks` through the alias table. */
@@ -185,6 +221,20 @@ const agentSchema = z
   })
   .strict()
   .superRefine((agent, context) => {
+    for (const key of Object.keys(agent.codexConfig)) {
+      if (!CODEX_CONFIG_KEY.test(key)) {
+        context.addIssue({ code: "custom", path: ["codexConfig", key], message: "must be a dotted Codex config key" });
+      } else if (CONVEYOR_CODEX_KEYS.test(key)) {
+        context.addIssue({ code: "custom", path: ["codexConfig", key], message: "is set by Conveyor from the agent's other settings" });
+      }
+    }
+    for (const name of Object.keys(agent.mcpServers)) {
+      if (name === "conveyor") {
+        context.addIssue({ code: "custom", path: ["mcpServers", name], message: "conveyor is reserved for Conveyor's own server" });
+      } else if (!MCP_SERVER_NAME.test(name)) {
+        context.addIssue({ code: "custom", path: ["mcpServers", name], message: "must be a plain server name (letters, digits, _ and -)" });
+      }
+    }
     if (agent.tasks && agent.tools) {
       context.addIssue({ code: "custom", path: ["tools"], message: 'use either "tasks" or the legacy "tools", not both' });
       return;

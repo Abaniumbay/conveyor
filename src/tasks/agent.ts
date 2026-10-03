@@ -25,7 +25,7 @@ import {
 import type { AgentContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
-import { worktreeGitPaths } from "../workspace/git";
+import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
 
 type Deps = TaskDeps;
@@ -201,6 +201,7 @@ async function runAgent(
               automaticApprovals: runner.automaticApprovals,
               ...egressFor(deps, runner),
               ...(await codexAccess(agent, workspace.path)),
+              ...(await codexExtensions(agent, workspace.path)),
             }
           : {
               sandbox: "read-only" as const,
@@ -338,6 +339,40 @@ async function codexAccess(
   const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), ...(agent.writableRoots ?? [])];
   const writableRoots = [...new Set(roots)].filter((root) => existsSync(root));
   return { ...(agent.network ? { network: true as const } : {}), ...(writableRoots.length > 0 ? { writableRoots } : {}) };
+}
+
+/**
+ * The agent's extra Codex settings and MCP servers, with `{workspace}` in server arguments replaced by
+ * the run's worktree. Files the servers write inside the worktree are excluded from git first, so they
+ * can never be committed or block a clean-tree check.
+ */
+async function codexExtensions(
+  agent: {
+    codexConfig?: Record<string, string | number | boolean>;
+    mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number | undefined; enabledTools?: string[] | undefined; gitExclude: string[] }>;
+  },
+  workspace: string,
+): Promise<{ config?: Record<string, string | number | boolean>; mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number; enabledTools?: string[] }> }> {
+  const servers = Object.entries(agent.mcpServers ?? {});
+  await ensureGitExcludes(workspace, servers.flatMap(([, server]) => server.gitExclude));
+  const config = agent.codexConfig ?? {};
+  return {
+    ...(Object.keys(config).length > 0 ? { config } : {}),
+    ...(servers.length > 0
+      ? {
+          mcpServers: Object.fromEntries(servers.map(([name, { command, args, env, startupTimeoutSec, enabledTools }]) => [
+            name,
+            {
+              command,
+              args: args.map((arg) => arg.replaceAll("{workspace}", workspace)),
+              env,
+              ...(startupTimeoutSec !== undefined ? { startupTimeoutSec } : {}),
+              ...(enabledTools ? { enabledTools } : {}),
+            },
+          ])),
+        }
+      : {}),
+  };
 }
 
 function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {
