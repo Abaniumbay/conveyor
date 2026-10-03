@@ -175,13 +175,19 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "accounts" | "profile";
+export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "accounts" | "profile" | "notifications";
 
 export interface DashboardAccountViewModel {
   id: string;
   username: string;
   role: "superuser" | "user";
   avatar: string;
+}
+
+export interface NotificationPreferencesViewModel {
+  questions: boolean;
+  stopped: boolean;
+  done: boolean;
 }
 
 export interface SteeringEventViewModel {
@@ -248,6 +254,8 @@ export interface DashboardViewModel {
   report?: ReportViewModel;
   /** Dashboard accounts, loaded only for the superuser Accounts view. */
   accounts?: readonly DashboardAccountViewModel[];
+  /** Browser-push categories, loaded only for the Notifications view. */
+  notifications?: NotificationPreferencesViewModel;
   csrfToken: string;
   account?: DashboardAccountViewModel;
 }

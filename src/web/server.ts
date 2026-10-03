@@ -7,7 +7,7 @@ import { REPORT_PERIOD_VALUES } from "./report-page";
 import { renderDashboard } from "./render";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
-import { dashboardCss, quotaHeaderCss, themeInitScript } from "./styles";
+import { themeInitScript } from "./styles";
 import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
@@ -145,13 +145,6 @@ function loginPage(message = "", returnTo: string | null = null): string {
   const error = message ? `<p role="alert" class="error">${escapeHtml(message)}</p>` : "";
   const returnField = returnTo ? `<input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">` : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login">${returnField}<label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
-}
-
-function accountPage(title: string, current: NonNullable<ReturnType<WebAuthApi["getSession"]>>, content: string): string {
-  const username = escapeHtml(current.account.username);
-  const avatar = escapeHtml(current.account.avatar);
-  const navigation = `<nav class="tabs account-page-tabs" aria-label="Dashboard views"><a class="tab" href="/board">Dashboard</a>${current.account.role === "superuser" ? '<a class="tab" href="/accounts">Accounts</a>' : ""}<a class="tab" href="/profile">Profile</a></nav>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="theme-color" content="#087f72"><link rel="manifest" href="/manifest.webmanifest"><title>${escapeHtml(title)} · Conveyor</title><script src="/assets/theme.js"></script><style>${dashboardCss}${quotaHeaderCss}</style><script src="/assets/dashboard.js" defer></script></head><body><main class="account-page"><header class="dashboard-header"><h1 class="wordmark"><a href="/board">Conveyor</a></h1><a class="header-link" href="/settings/notifications">Notifications</a><details class="theme-control" data-theme-control><summary aria-label="Choose colour theme"><strong data-theme-label>System</strong></summary><div class="header-popover theme-popover"><h2>Theme</h2><div class="theme-options"><button type="button" data-theme-choice="system" aria-pressed="true">System</button><button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button></div></div></details><details class="account-menu"><summary aria-label="Account menu for ${username}"><span class="account-avatar">${avatar}</span><span class="account-username">${username}</span></summary><div class="header-popover account-popover"><a href="/profile">Profile</a><a href="/profile#change-password">Change password</a><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="${escapeHtml(current.csrfToken)}"><input type="hidden" name="pushEndpoint" value=""><button class="logout" type="submit">Sign out</button></form></div></details></header>${navigation}<section class="account-page-content">${content}</section></main></body></html>`;
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<Uint8Array | Response> {
@@ -575,19 +568,6 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
     }
 
-    if (path === "/settings/notifications") {
-      if (request.method !== "GET") return response(null, 405, "text/plain; charset=utf-8", { allow: "GET" });
-      const current = session(request);
-      if (!current) return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
-      const preferences = dependencies.getPushPreferences?.(current.account.id) ?? { questions: false, stopped: false, done: false };
-      const checks = (["questions", "stopped", "done"] as const).map((category) => {
-        const label = category === "questions" ? "New questions requiring an answer" : category === "stopped" ? "Issues entering blocked, error, needs intervention, or rejected" : "Issues reaching done";
-        return `<label><input type="checkbox" name="${category}" ${preferences[category] ? "checked" : ""}> ${label}</label>`;
-      }).join("");
-      const page = accountPage("Notifications", current, `<h1>Browser notifications</h1><p>Push notifications require a supported browser, notification permission, and HTTPS. Permission is requested only when you enable a category.</p><p id="notification-status" role="status" aria-live="polite">Checking browser support…</p><form id="notification-settings" data-csrf="${escapeHtml(current.csrfToken)}">${checks}<button type="submit">Save notification settings</button></form><script src="/assets/notifications.js" defer></script>`);
-      return response(page, 200, "text/html; charset=utf-8");
-    }
-
     if (path === "/api/notifications/settings") {
       const current = session(request);
       if (!current) return json({ error: "unauthorized" }, 401);
@@ -697,7 +677,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
                 ? "accounts"
                 : path === "/profile"
                   ? "profile"
-                  : issuePagePath ? "board" : null;
+                  : path === "/settings/notifications"
+                    ? "notifications"
+                    : issuePagePath ? "board" : null;
 
     if (legacyDashboardQuery || dashboardView) {
       const methodError = requireMethod(request, "GET");
@@ -773,7 +755,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
         const accounts = page.view === "accounts" ? dependencies.listAccounts?.() ?? [] : undefined;
-        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}) }), 200, "text/html; charset=utf-8");
+        const notifications = page.view === "notifications" ? dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } : undefined;
+        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }), 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }

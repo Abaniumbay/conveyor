@@ -1,6 +1,7 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
 import { Accounts, Profile } from "./account-pages";
+import { Notifications } from "./notification-page";
 import { Reports } from "./report-page";
 
 import { Team } from "./agent-pages";
@@ -37,6 +38,7 @@ function viewHref(view: DashboardView): string {
   if (view === "reports") return "/reports";
   if (view === "accounts") return "/accounts";
   if (view === "profile") return "/profile";
+  if (view === "notifications") return "/settings/notifications";
   return "/board";
 }
 
@@ -701,6 +703,7 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
   else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
+  else if (model.view === "notifications" && model.notifications) content = <Notifications preferences={model.notifications} csrfToken={model.csrfToken} />;
   else content = (
     <section class="board" aria-label="Delivery board">
       <BacklogColumn model={model} />
@@ -722,6 +725,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <script src="/assets/theme.js" />
         <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss }} />
         <script src="/assets/dashboard.js" defer />
+        <script src="/assets/notifications.js" defer />
       </head>
       <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
         <main class="dashboard">
@@ -739,7 +743,7 @@ function Page({ model }: { model: DashboardViewModel }) {
             <HarnessUsage model={model} />
             <span class="total-usage">{model.totalUsage}</span>
             <ThemeControl />
-            <a class="header-link" href="/settings/notifications">Notifications</a>
+            <a class={model.view === "notifications" ? "header-link header-link--active" : "header-link"} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
             <details class="account-menu">
               <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
               <div class="header-popover account-popover">

@@ -22,7 +22,10 @@ function harness(options: { publicKey: string | null; permission?: string; reque
     requestPermission: async () => { permissionRequests++; return options.requestResult ?? "granted"; },
   };
   const context = {
-    document: { getElementById: (id: string) => id === "notification-settings" ? form : status },
+    document: {
+      getElementById: (id: string) => id === "notification-settings" ? form : status,
+      addEventListener: () => {},
+    },
     window: { PushManager: class {}, Notification: notificationApi },
     location: { protocol: "https:", hostname: "example.test" },
     Notification: notificationApi,
