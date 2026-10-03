@@ -1608,6 +1608,26 @@ export class ConveyorStore {
     })();
   }
 
+  listHarnessRunEvents(): Array<{ agentId: string; payload: unknown; createdAt: string }> {
+    const rows = this.#database.query(
+      `SELECT h.payload_json, h.created_at, e.payload_json AS execution_json
+       FROM run_events h
+       JOIN run_events e ON e.run_id = h.run_id AND e.type = 'execution'
+       WHERE h.type = 'harness'
+       ORDER BY h.id`,
+    ).all() as Array<Record<string, SQLQueryBindings>>;
+    return rows.flatMap((row) => {
+      const execution = parseJson<Record<string, unknown>>(String(row.execution_json));
+      return typeof execution?.agentId === "string"
+        ? [{
+            agentId: execution.agentId,
+            payload: parseJson(String(row.payload_json)),
+            createdAt: String(row.created_at),
+          }]
+        : [];
+    });
+  }
+
   listRunEvents(runId: string): Array<{
     sequence: number;
     type: string;

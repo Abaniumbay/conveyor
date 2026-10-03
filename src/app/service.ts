@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
-import { freemem, totalmem, uptime } from "node:os";
+import { freemem, homedir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../config/load";
@@ -26,6 +26,7 @@ import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steer
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
 import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
@@ -1533,6 +1534,21 @@ export class ConveyorService {
       issueId: null,
     },
   ): DashboardViewModel {
+    const agentRunner = new Map(Object.entries(this.config.agents ?? {}).map(([agentId, agent]) => [agentId, agent.runner]));
+    const claudeEvents = this.store.listHarnessRunEvents();
+    const harnessUsage = Object.entries(this.config.runners ?? {}).flatMap(([runnerId, runner]) => {
+      if (runner.type !== "codex" && runner.type !== "claude-code") return [];
+      const windows = runner.type === "codex"
+        ? readCodexQuota(process.env.CODEX_HOME || path.join(homedir(), ".codex"))
+        : readClaudeQuota(claudeEvents.flatMap((event) =>
+            agentRunner.get(event.agentId) === runnerId ? [event] : [],
+          ));
+      return [{
+        id: runnerId,
+        name: runnerId === "codex" ? "Codex" : runnerId === "claude-code" ? "Claude Code" : displayName(runnerId),
+        windows,
+      }];
+    });
     const issues = this.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
     const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
       [repositoryId, (index % 8) + 1],
@@ -1820,6 +1836,7 @@ export class ConveyorService {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""}`,
       totalUsage: formatUsage(total) ?? "0 runs",
+      harnessUsage,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       revision: this.store.dashboardRevision(),
       view: pagination.view,

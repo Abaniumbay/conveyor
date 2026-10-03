@@ -216,6 +216,7 @@ export interface DashboardViewModel {
   title: string;
   project: string;
   totalUsage: string;
+  harnessUsage: readonly HarnessQuotaViewModel[];
   updatedAt: string;
   revision: string;
   view: DashboardView;
@@ -238,6 +239,12 @@ export interface DashboardViewModel {
   team?: readonly AgentProfileViewModel[];
   report?: ReportViewModel;
   csrfToken: string;
+}
+
+export interface HarnessQuotaViewModel {
+  id: string;
+  name: string;
+  windows: import("../usage/quota").QuotaWindows;
 }
 
 export interface AgentSummaryViewModel {

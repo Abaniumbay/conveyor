@@ -53,6 +53,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("closest('.dashboard-header details')");
     expect(dashboardClient).toContain("openDetails.querySelector('summary')");
     expect(dashboardClient).toContain("summary.focus()");
+    expect(dashboardClient).toContain("window.setInterval(updateQuotaCountdowns, 60_000)");
+    expect(dashboardClient).toContain("formatQuotaCountdown(resetAt, Date.now())");
+    expect(dashboardClient).toContain("quota-window--stale");
     expect(dashboardClient).toContain("[data-retry-card]");
     expect(dashboardClient).toContain("[data-retry-form]");
     expect(dashboardClient).toContain("Retry accepted. A fresh attempt is queued.");
