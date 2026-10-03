@@ -271,13 +271,18 @@ export const dashboardClient = String.raw`(() => {
     status.textContent = transitions.length === 0
       ? 'No stage changes have been recorded yet.'
       : transitions.length + (transitions.length === 1 ? ' recorded stage change.' : ' recorded stage changes.');
+    // Oldest first, like the stored history; where the item is now comes last.
     const now = journey.now && typeof journey.now === 'object' ? journey.now : null;
+    let nowItem = null;
     if (now) {
       const item = document.createElement('li');
+      nowItem = item;
       item.className = 'journey-entry journey-entry--now';
       const header = document.createElement('header');
       const title = document.createElement('strong');
-      title.textContent = (now.stage ? humanize(now.stage) + ' · ' : '') + humanize(now.state || 'active');
+      title.textContent = now.state === 'done' || now.state === 'completed'
+        ? 'Done'
+        : (now.stage ? humanize(now.stage) + ' · ' : '') + humanize(now.state || 'active');
       const badge = document.createElement('span');
       badge.className = 'journey-kind';
       badge.textContent = 'Now';
@@ -298,7 +303,6 @@ export const dashboardClient = String.raw`(() => {
         reason.textContent = String(now.reason);
         item.append(reason);
       }
-      root.append(item);
     }
     for (const transition of transitions) {
       const item = document.createElement('li');
@@ -349,6 +353,7 @@ export const dashboardClient = String.raw`(() => {
       }
       root.append(item);
     }
+    if (nowItem) root.append(nowItem);
   };
 
   const loadIssueJourney = async (panel) => {

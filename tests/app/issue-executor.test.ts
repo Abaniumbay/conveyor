@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { IssueExecutor } from "../../src/app/issue-executor";
+import { IssueExecutor, stageAdvanceMessage } from "../../src/app/issue-executor";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 
@@ -158,6 +158,9 @@ repositories:
       "check:exit",
     ]);
     expect(labels).toEqual([["conveyor", "conveyor:implementation"]]);
+    expect(store.listConversationMessages("issue").map((message) => [message.actorName, message.stageId, message.message])).toContainEqual(
+      ["Conveyor", "refinement", "✅ Refinement completed. Next: Implementation."],
+    );
     expect(store.getStageState("issue")).toMatchObject({
       stageId: "implementation",
       status: "awaiting-source",
@@ -231,5 +234,9 @@ repositories:
     await expect(interrupted.execute(store.getIssue("issue-abort")!)).rejects.toMatchObject({ name: "AbortError" });
     expect(store.getStageState("issue-abort")?.status).toBe("interrupted");
     store.close();
+  });
+  test("a completed stage names the next one, and the last one says the item is done", () => {
+    expect(stageAdvanceMessage("Merge", "Deploy")).toBe("✅ Merge completed. Next: Deploy.");
+    expect(stageAdvanceMessage("Cleanup", null)).toBe("✅ Cleanup completed. The item is done.");
   });
 });
