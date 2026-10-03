@@ -201,6 +201,35 @@ repositories:
       const config = await load("    network: true\n    writableRoots: [/var/cache/x, ~/.bun/install/cache]");
       expect(config.agents.worker).toMatchObject({ network: true, writableRoots: ["/var/cache/x", path.join(homedir(), ".bun/install/cache")] });
     });
+    test("codexConfig and mcpServers default empty; server env values and ~/ are expanded", async () => {
+      expect((await load("")).agents.worker).toMatchObject({ codexConfig: {}, mcpServers: {} });
+      const config = await load([
+        "    codexConfig: { model_auto_compact_token_limit: 80000, model_verbosity: low }",
+        "    mcpServers:",
+        "      serena:",
+        "        command: serena",
+        "        args: [start-mcp-server, --project-from-cwd]",
+        "        env: { SERENA_HOME: ~/.serena }",
+        "        startupTimeoutSec: 60",
+        "        enabledTools: [find_symbol]",
+        "        gitExclude: [.serena/]",
+      ].join("\n"));
+      expect(config.agents.worker).toMatchObject({
+        codexConfig: { model_auto_compact_token_limit: 80000, model_verbosity: "low" },
+        mcpServers: {
+          serena: {
+            command: "serena", args: ["start-mcp-server", "--project-from-cwd"],
+            env: { SERENA_HOME: path.join(homedir(), ".serena") }, startupTimeoutSec: 60, enabledTools: ["find_symbol"], gitExclude: [".serena/"],
+          },
+        },
+      });
+    });
+    test("codexConfig cannot override what Conveyor sets, and the conveyor MCP server name is reserved", async () => {
+      await expect(load("    codexConfig: { sandbox_mode: danger-full-access }")).rejects.toThrow("set by Conveyor");
+      await expect(load("    codexConfig: { mcp_servers.x.command: evil }")).rejects.toThrow("set by Conveyor");
+      await expect(load("    codexConfig: { \"bad key\": 1 }")).rejects.toThrow("dotted Codex config key");
+      await expect(load("    mcpServers: { conveyor: { command: x } }")).rejects.toThrow("reserved");
+    });
     test("a relative writable root is a config error", async () => {
       await expect(load("    writableRoots: [cache]")).rejects.toThrow("writableRoots");
     });

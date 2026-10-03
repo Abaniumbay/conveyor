@@ -44,6 +44,20 @@ export interface CodexRunInput {
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
   writableRoots?: string[];
+  /** Extra Codex settings, each passed as `-c key=value`. */
+  config?: Record<string, CodexConfigValue>;
+  /** MCP servers beside Conveyor's own. They are optional: one that fails to start does not fail the run. */
+  mcpServers?: Record<string, CodexMcpServer>;
+}
+
+export type CodexConfigValue = string | number | boolean;
+
+export interface CodexMcpServer {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  startupTimeoutSec?: number;
+  enabledTools?: string[];
 }
 
 export { CODEX_CONTROL_PLANE_HOSTS };
@@ -88,6 +102,14 @@ function tomlString(value: string): string {
 
 function tomlArray(values: readonly string[]): string {
   return `[${values.map(tomlString).join(",")}]`;
+}
+
+function tomlValue(value: CodexConfigValue): string {
+  return typeof value === "string" ? tomlString(value) : String(value);
+}
+
+function tomlInlineTable(values: Record<string, string>): string {
+  return `{${Object.entries(values).map(([key, value]) => `${key}=${tomlString(value)}`).join(",")}}`;
 }
 
 async function consumeJsonLines(
@@ -136,8 +158,12 @@ function accessArguments(input: CodexRunInput): string[] {
   return args;
 }
 
+function configArguments(input: CodexRunInput): string[] {
+  return Object.entries(input.config ?? {}).flatMap(([key, value]) => ["-c", `${key}=${tomlValue(value)}`]);
+}
+
 function mcpArguments(input: CodexRunInput): string[] {
-  return [
+  const args = [
     "-c",
     `mcp_servers.conveyor.command=${tomlString(input.mcp.command)}`,
     "-c",
@@ -147,6 +173,15 @@ function mcpArguments(input: CodexRunInput): string[] {
     "-c",
     'mcp_servers.conveyor.default_tools_approval_mode="approve"',
   ];
+  for (const [name, server] of Object.entries(input.mcpServers ?? {})) {
+    const key = `mcp_servers.${name}`;
+    args.push("-c", `${key}.command=${tomlString(server.command)}`, "-c", `${key}.args=${tomlArray(server.args)}`);
+    if (Object.keys(server.env).length > 0) args.push("-c", `${key}.env=${tomlInlineTable(server.env)}`);
+    if (server.startupTimeoutSec !== undefined) args.push("-c", `${key}.startup_timeout_sec=${server.startupTimeoutSec}`);
+    if (server.enabledTools) args.push("-c", `${key}.enabled_tools=${tomlArray(server.enabledTools)}`);
+    args.push("-c", `${key}.default_tools_approval_mode="approve"`);
+  }
+  return args;
 }
 
 // `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
@@ -159,7 +194,7 @@ function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: st
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
-  args.push(...accessArguments(input), ...extra, ...mcpArguments(input), sessionId, "-");
+  args.push(...accessArguments(input), ...configArguments(input), ...extra, ...mcpArguments(input), sessionId, "-");
   return args;
 }
 
@@ -177,7 +212,7 @@ function buildArguments(input: CodexRunInput, outputFile: string, extra: string[
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(...accessArguments(input), ...extra, ...mcpArguments(input), "-");
+  args.push(...accessArguments(input), ...configArguments(input), ...extra, ...mcpArguments(input), "-");
   return args;
 }
 

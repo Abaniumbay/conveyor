@@ -28,6 +28,10 @@ export interface HarnessRunInput {
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
   writableRoots?: string[];
+  /** Extra Codex settings (Codex only). */
+  config?: Record<string, string | number | boolean>;
+  /** MCP servers beside Conveyor's own (Codex only). */
+  mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string>; startupTimeoutSec?: number; enabledTools?: string[] }>;
 }
 
 export interface Harness {

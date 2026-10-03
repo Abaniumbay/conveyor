@@ -215,6 +215,8 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
       errors.push(`agents.${name} runs on Claude Code, which supports only access: read-only for now`);
     } else if (runner.type === "claude-code" && (agent.network || agent.writableRoots.length > 0)) {
       errors.push(`agents.${name} runs on Claude Code, which does not support network or writableRoots yet`);
+    } else if (runner.type === "claude-code" && (Object.keys(agent.codexConfig).length > 0 || Object.keys(agent.mcpServers).length > 0)) {
+      errors.push(`agents.${name} runs on Claude Code, which does not support codexConfig or mcpServers yet`);
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {

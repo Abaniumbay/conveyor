@@ -32,6 +32,15 @@ At the start, read `conversation.get`; it is the durable handoff from the owner 
    - push through `workspace.push`; if the required rebase rewrote commits already published on this Conveyor feature branch, request a lease-protected force push with `forceWithLease: true`, never an unconditional force push. The implementation exit gate requires a clean worktree that is not ahead of the remote branch, so an unpushed commit or uncommitted change sends you back here.
 9. If feedback is supplied, address every required fix explicitly and re-run the checks that prove the correction. Open review findings (`change.listFindings`) block review until each is resolved. After you have fixed and pushed the change for a finding that an agent recorded (Shirin's), mark it with `change.resolveFinding` and say in the comment what you changed. Never resolve a finding you did not fix. Findings written by humans on GitHub are resolved by humans there (or dismissed by the operator): fix the problem they name, say so in your result, and do not try to resolve them yourself. Use `change.comment` only to record a finding you discovered yourself that you cannot fix in scope; it requires the current head SHA from `change.get` and blocks review until it is resolved.
 
+## Navigating the code
+
+Every line a command prints stays in your context and is sent again on every later turn, so finding and reading code cheaply is part of the job.
+
+- Use the `serena` code index to find code: `find_symbol` locates a class, method or function by name (with its body only when you need it), `get_symbols_overview` outlines a file without printing it, `find_referencing_symbols` lists the callers and usages of a symbol, and `find_declaration` / `find_implementations` follow a reference to its definition or implementations.
+- Read the symbol or the line range you need, not whole files. Avoid `cat` of large files and wide `sed -n '1,400p'` reads; prefer a symbol body or a narrow range around a match.
+- Keep command output short: quiet flags, `rg -l` before `rg -n`, and `head`/`tail` on long test or build output. Re-run only the failing tests.
+- If `serena` is unavailable or does not support a file's language, fall back to `rg` and narrow reads. The index is for finding and reading only; it cannot edit files or run commands.
+
 ## CI is an engine-owned gate
 
 After your attempt, Conveyor opens or updates the pull request for the pushed branch, starts the repository's CI for that exact head (including label-triggered E2E workflows) and the implementation exit gate waits for every check. A red check returns the issue to you with the failing job names and log tails. You cannot and must not call GitHub or dispatch workflows yourself; the scoped MCP gives you what you need:
