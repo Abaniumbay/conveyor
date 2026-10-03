@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
+import { ItemTodos } from "../../src/engine/todos";
 
 const temporaryDirectories: string[] = [];
 
@@ -375,6 +376,13 @@ describe("ConveyorStore", () => {
     });
     expect(store.dashboardRevision()).toBe(board);
     expect(store.conversationRevision()).not.toBe(conversation);
+
+    // A todo change shows on the card, so the board must refresh for it.
+    new ItemTodos(store.sqlite()).set("issue-1", [{ id: "t1", text: "A", status: "in_progress" }], "run-1", "2026-01-01T00:00:02.000Z");
+    const withTodo = store.dashboardRevision();
+    expect(withTodo).not.toBe(board);
+    new ItemTodos(store.sqlite()).set("issue-1", [{ id: "t1", text: "A", status: "done" }], "run-1", "2026-01-01T00:00:03.000Z");
+    expect(store.dashboardRevision()).not.toBe(withTodo);
     store.close();
   });
 

@@ -1304,7 +1304,9 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'runs', COUNT(*), COALESCE(MAX(COALESCE(finished_at, started_at)), '') FROM runs
          UNION ALL
-         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions`,
+         SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions
+         UNION ALL
+         SELECT 'todos', COUNT(*), COALESCE(MAX(updated_at), '') FROM item_todos`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows
