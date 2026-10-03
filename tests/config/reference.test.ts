@@ -139,7 +139,7 @@ describe("reference configuration", () => {
         expect(config.agents[agent]!.tasks).toContain(name);
       }
     };
-    await mentions("darya", ["item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild"]);
+    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild"]);
     await mentions("kaveh", ["workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);

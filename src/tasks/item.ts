@@ -27,6 +27,8 @@ export const createChildInput = z.object({
   acceptanceCriteria: z.array(acceptanceCriterionInput).min(1),
   systemLabels: z.array(z.string().min(1)).optional(),
 }).strict();
+// GitHub rejects issue titles longer than 256 characters.
+export const titleInput = z.object({ title: z.string().trim().min(1).max(256) }).strict();
 export const commentInput = z.object({ markdown: z.string().min(1) }).strict();
 export const systemLabelsInput = z.object({ labels: z.array(z.string().min(1)) }).strict();
 export const parentInput = z.object({ parentNumber: z.number().int().positive() }).strict();
@@ -266,6 +268,14 @@ const setCriteria = tool("item.setCriteria", "Replace acceptance criteria on the
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
+const setTitle = tool("item.setTitle",
+  "Replace the current issue's title so it states the refined scope.",
+  titleInput, true,
+  async ({ deps, input }, issue) => {
+    await deps.items.setTitle(deps.repository.address, issue.sourceNumber, input!.title);
+    return { title: input!.title };
+  });
+
 const setSystemLabels = tool("item.setSystemLabels",
   "Replace the issue's configured system-area labels while preserving workflow and unmanaged labels.",
   systemLabelsInput, true,
@@ -335,5 +345,5 @@ const createChild = tool("item.createChild",
 
 export const itemGroup = defineGroup("item", [
   load, criteriaDefined, labelsValid, childrenValid, dependenciesMet,
-  get, guidance, listOpen, comment, setCriteria, setSystemLabels, setParent, setDependencies, createChild,
+  get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies, createChild,
 ]);

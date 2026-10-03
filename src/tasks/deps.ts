@@ -26,6 +26,7 @@ export interface TaskDeps {
     | "setDependencies"
     | "replaceManagedProjectLabels"
     | "createChildIssue"
+    | "setTitle"
   >;
   repository: { id: string; address: string; folder: string; baseBranch: string };
   issueId: string;
