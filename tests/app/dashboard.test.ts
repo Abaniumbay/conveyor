@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
+import { createWebAuth, hashPassword } from "../../src/web/auth";
+import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
@@ -19,6 +21,81 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("serves health and login promptly during cold and expired dashboard quota scans", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-quota-http-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      runners: { codex: { type: "codex" } },
+      sources: { github: { type: "github" } },
+      repositories: {}, agents: {}, pipelines: {},
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
+    } as unknown as ConveyorConfig;
+    const service = new ConveyorService(config, store, {} as never);
+    const auth = createWebAuth({
+      username: "operator",
+      passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      secureCookies: false,
+    });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: createWebHandler(service.webDependencies(auth, "operator")) });
+    const sessions = path.join(root, "codex", "sessions");
+    await mkdir(sessions, { recursive: true });
+    for (let index = 0; index < 1_000; index += 1) {
+      await writeFile(path.join(sessions, `session-${String(index).padStart(4, "0")}.jsonl`), `${"{}\n".repeat(256)}`);
+    }
+    const quotaFile = path.join(sessions, "newest.jsonl");
+    const reportedAt = new Date();
+    await writeFile(quotaFile, JSON.stringify({ timestamp: reportedAt.toISOString(), payload: { type: "token_count", rate_limits: {
+      primary: { used_percent: 1, window_minutes: 10080, resets_at: Math.floor(reportedAt.getTime() / 1000) + 7 * 24 * 60 * 60 },
+      secondary: { used_percent: 20, window_minutes: 300, resets_at: Math.floor(reportedAt.getTime() / 1000) + 5 * 60 * 60 },
+    } } }) + "\n");
+    await utimes(quotaFile, reportedAt, reportedAt);
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = path.join(root, "codex");
+    try {
+      const baseUrl = `http://127.0.0.1:${server.port}`;
+      const loggedIn = await fetch(`${baseUrl}/login`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username: "operator", password: "correct horse" }),
+      });
+      const cookie = loggedIn.headers.get("set-cookie")!.split(";")[0]!;
+      let now = Date.now();
+      const dateNow = spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        const checkHttpResponsiveness = async () => {
+          const dashboard = fetch(`${baseUrl}/board`, { headers: { cookie } });
+          const healthStarted = performance.now();
+          const health = fetch(`${baseUrl}/health/live`);
+          const loginStarted = performance.now();
+          const login = fetch(`${baseUrl}/login`);
+          const [dashboardResponse, healthResponse, loginResponse] = await Promise.all([dashboard, health, login]);
+          expect(dashboardResponse.status).toBe(200);
+          expect(await dashboardResponse.text()).toContain("99% left");
+          expect(healthResponse.status).toBe(200);
+          expect(loginResponse.status).toBe(200);
+          expect(performance.now() - healthStarted).toBeLessThan(250);
+          expect(performance.now() - loginStarted).toBeLessThan(250);
+        };
+        await checkHttpResponsiveness();
+        now += 30_001;
+        await checkHttpResponsiveness();
+      } finally {
+        dateNow.mockRestore();
+      }
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      server.stop(true);
+      store.close();
+    }
+  });
+
   test("retries stopped issues at their current stage, retaining labels and recording only supplied feedback after source success", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-retry-"));
     temporaryDirectories.push(root);
