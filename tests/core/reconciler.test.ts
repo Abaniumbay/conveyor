@@ -261,6 +261,26 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("records an onboarded journey entry once, when an item is first enrolled", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"],
+      labels,
+    };
+    const at = (stage: string) => ({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", `conveyor:${stage}`])]; } } });
+    await reconcileRepository(at("refinement"));
+    await reconcileRepository(at("refinement"));
+    await reconcileRepository(at("implementation"));
+    const onboarded = store.listStageTransitions("github:owner/repo#1").filter((transition) => transition.kind === "onboarded");
+    expect(onboarded).toHaveLength(1);
+    expect(onboarded[0]).toMatchObject({ toStage: "refinement", status: "completed" });
+    expect(onboarded[0]!.reason).toBe("Enrolled: the conveyor label was added at refinement.");
+    store.close();
+  });
+
   test("records a journey entry when a stopped item resumes, and none when nothing changed", async () => {
     const store = await openStore();
     const common = {

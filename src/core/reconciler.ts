@@ -133,6 +133,12 @@ export async function reconcileRepository(
 
     if (!prior && projected.visible) {
       input.store.setQueueRank(issueId, input.store.nextQueueRank());
+      input.store.recordJourneyEvent({
+        issueId,
+        stage: projected.stage,
+        kind: "onboarded",
+        reason: `Enrolled: the ${input.labels.enrollment} label was added${projected.stage ? ` at ${projected.stage}` : ""}.`,
+      });
       enrolled += 1;
     } else if (prior && !projected.visible && prior.projectedState !== "offboarded") {
       offboarded += 1;

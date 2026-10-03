@@ -18,6 +18,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("loadIssueJourney");
     expect(dashboardClient).toContain("journey.now");
     expect(dashboardClient).toContain("journey-entry--now");
+    // The journey reads oldest first, so the current position is appended after the history.
+    expect(dashboardClient.indexOf("if (nowItem) root.append(nowItem);")).toBeGreaterThan(dashboardClient.indexOf("for (const transition of transitions)"));
+    expect(dashboardClient).toContain("now.state === 'done' || now.state === 'completed'");
     expect(dashboardClient).toContain("scheduleJourneyRefresh");
     expect(dashboardClient).not.toContain("/api/dashboard-revision");
     expect(dashboardClient).toContain("issuePath(dialog, name)");
