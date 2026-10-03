@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { dashboardClient } from "../../src/web/client";
+import { updateQuotaWindow } from "../../src/usage/quota-time";
 
 describe("dashboard browser client", () => {
   test("is valid standalone JavaScript", () => {
@@ -53,10 +54,47 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("closest('.dashboard-header details')");
     expect(dashboardClient).toContain("openDetails.querySelector('summary')");
     expect(dashboardClient).toContain("summary.focus()");
+    expect(dashboardClient).toContain("window.setInterval(updateQuotaCountdowns, 60_000)");
+    expect(dashboardClient).toContain("quotaCountdown(resetAt, nowMs)");
+    expect(dashboardClient).toContain("updateQuotaWindow(quotaWindow)");
+    expect(dashboardClient).toContain("quota-window--stale");
     expect(dashboardClient).toContain("[data-retry-card]");
     expect(dashboardClient).toContain("[data-retry-form]");
     expect(dashboardClient).toContain("Retry accepted. A fresh attempt is queued.");
     expect(dashboardClient).toContain("Retry failed: ");
     expect(dashboardClient).toContain("button.disabled = true");
+  });
+
+  test("updates the browser quota element countdown and stale accessibility state", () => {
+    const now = Date.parse("2026-10-03T14:04:00.000Z");
+    const attributes = new Map<string, string>([
+      ["data-reset-at", "2026-10-05T22:00:00.000Z"],
+      ["data-remaining", "4"],
+      ["data-window-name", "weekly"],
+      ["title", "Reset: Oct 5, 2026, 10:00 PM UTC. Last reported: Oct 3, 2026, 2:04 PM UTC."],
+    ]);
+    const countdown = { textContent: "" };
+    const value = { textContent: "" };
+    const classes = new Set<string>();
+    const element = {
+      getAttribute: (name: string) => attributes.get(name) ?? null,
+      querySelector: (selector: string) => selector === "[data-countdown]" ? countdown : value,
+      classList: { toggle: (name: string, enabled: boolean) => enabled ? classes.add(name) : classes.delete(name) },
+      closest: () => ({ querySelector: () => ({ textContent: "Claude Code" }) }),
+      setAttribute: (name: string, content: string) => attributes.set(name, content),
+    } as unknown as HTMLElement;
+
+    updateQuotaWindow(element, now);
+    expect(countdown.textContent).toBe("resets in 2d 7h 56m");
+    expect(value.textContent).toBe("4% left");
+    expect(attributes.get("aria-label")).toContain("Claude Code weekly: 4% remaining.");
+    expect(classes.has("quota-window--stale")).toBe(false);
+
+    attributes.set("data-reset-at", new Date(now).toISOString());
+    updateQuotaWindow(element, now);
+    expect(countdown.textContent).toBe("stale");
+    expect(value.textContent).toBe("Stale · 4% left");
+    expect(attributes.get("aria-label")).toContain("weekly: stale, 4% remaining.");
+    expect(classes.has("quota-window--stale")).toBe(true);
   });
 });

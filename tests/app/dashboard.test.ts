@@ -794,6 +794,7 @@ describe("ConveyorService dashboard", () => {
       hash: "config-hash",
       root,
       settings: { workspaces: path.join(root, "workspaces"), runners: 3 },
+      runners: { codex: { type: "codex" }, claude: { type: "claude-code" } },
       labels: {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
@@ -814,8 +815,8 @@ describe("ConveyorService dashboard", () => {
         },
       },
       agents: {
-        refiner: { name: "Refiner", title: "Product Owner" },
-        implementer: { name: "Implementer", title: "Senior Developer" },
+        refiner: { name: "Refiner", title: "Product Owner", runner: "codex" },
+        implementer: { name: "Implementer", title: "Senior Developer", runner: "claude" },
       },
       repositories: {
         earlier: { source: "github", address: "owner/earlier", folder: root, pipeline: "default" },
@@ -911,6 +912,10 @@ describe("ConveyorService dashboard", () => {
       configHash: config.hash,
       startedAt: "2026-09-29T00:01:00Z",
     });
+    store.appendRunEvent("active-run", "execution", { agentId: "implementer" });
+    store.appendRunEvent("active-run", "harness", { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+      five_hour: { utilization: 0.14, resetsAt: "2026-10-03T18:30:00.000Z" },
+    } } });
     for (let sequence = 1; sequence <= 7; sequence += 1) {
       store.appendRunEvent("active-run", "progress", { message: `Step ${sequence}` });
     }
@@ -1039,6 +1044,8 @@ describe("ConveyorService dashboard", () => {
     }, epoch);
 
     const service = new ConveyorService(config, store, {} as never);
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = path.join(root, "empty-codex-home");
     const dashboard = service.dashboard("csrf", {
       view: "board",
       column: null,
@@ -1047,7 +1054,12 @@ describe("ConveyorService dashboard", () => {
       runId: null,
       issueId: "github:owner/repo#27",
     });
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
     const implementation = dashboard.stages.find((column) => column.id === "stage:implementation");
+    expect(dashboard.harnessUsage.map((harness) => harness.id)).toEqual(["codex", "claude"]);
+    expect(dashboard.harnessUsage[0]?.windows).toEqual({});
+    expect(dashboard.harnessUsage[1]?.windows.fiveHour?.remaining).toBeCloseTo(86);
 
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Build", "CI"]);
     expect(implementation).toMatchObject({

@@ -1,4 +1,8 @@
+import { quotaCountdown, updateQuotaWindow } from "../usage/quota-time";
+
 export const dashboardClient = String.raw`(() => {
+  const quotaCountdown = ${quotaCountdown.toString()};
+  const updateQuotaWindow = ${updateQuotaWindow.toString()};
   const body = document.body;
   let board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
@@ -165,6 +169,12 @@ export const dashboardClient = String.raw`(() => {
     for (const time of root.querySelectorAll('time[data-relative-time][datetime]')) {
       const changedAt = new Date(time.getAttribute('datetime')).getTime();
       if (!Number.isNaN(changedAt)) time.textContent = formatElapsed((Date.now() - changedAt) / 1000);
+    }
+  };
+
+  const updateQuotaCountdowns = () => {
+    for (const quotaWindow of document.querySelectorAll('[data-quota-window]')) {
+      if (quotaWindow instanceof HTMLElement) updateQuotaWindow(quotaWindow);
     }
   };
 
@@ -1081,6 +1091,8 @@ export const dashboardClient = String.raw`(() => {
   if (requestedAgentDialog) showDialog(requestedAgentDialog);
 
   localizeTimes();
+  updateQuotaCountdowns();
+  window.setInterval(updateQuotaCountdowns, 60_000);
 
   let serverStatus = null;
   let connectionState = null;

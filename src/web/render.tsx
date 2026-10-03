@@ -5,7 +5,7 @@ import { Reports } from "./report-page";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
-import { dashboardCss } from "./styles";
+import { dashboardCss, quotaHeaderCss } from "./styles";
 import type {
   DashboardView,
   DashboardViewModel,
@@ -622,6 +622,47 @@ function RunnerStatus({ model }: { model: DashboardViewModel }) {
   );
 }
 
+function HarnessUsage({ model }: { model: DashboardViewModel }) {
+  if (model.harnessUsage.length === 0) return null;
+  const names = { fiveHour: "5-hour", weekly: "weekly" } as const;
+  return (
+    <div class="harness-usage" aria-label="Harness usage remaining">
+      {model.harnessUsage.map((harness) => (
+        <section class="harness-quota" key={harness.id} aria-label={`${harness.name} usage`}>
+          <strong>{harness.name}</strong>
+          {Object.entries(names).map(([key, label]) => {
+            const window = harness.windows[key as keyof typeof names];
+            if (!window) return null;
+            const remaining = Math.floor(window.remaining);
+            const stale = Date.parse(window.resetsAt) <= Date.now();
+            const reset = new Date(window.resetsAt).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+            const reported = new Date(window.reportedAt).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+            return (
+              <span
+                class={`quota-window${remaining < 10 ? " quota-window--low" : ""}${stale ? " quota-window--stale" : ""}`}
+                data-quota-window
+                data-reset-at={window.resetsAt}
+                data-remaining={remaining}
+                data-window-name={label}
+                tabIndex={0}
+                title={`Reset: ${reset}. Last reported: ${reported}.`}
+                aria-label={`${harness.name} ${label}: ${stale ? "stale, " : ""}${remaining}% remaining. Resets ${reset}. Last reported ${reported}.`}
+                key={key}
+              >
+                <span class="quota-value">{stale ? "Stale · " : ""}{remaining}% left</span>
+                {remaining < 10 && <span class="quota-low-label">Low capacity</span>}
+                <span class="quota-countdown" data-countdown>{stale ? "stale" : "resets in —"}</span>
+                <span class="quota-window-details">Reset: {reset}<br />Last reported: {reported}</span>
+              </span>
+            );
+          })}
+          {Object.keys(harness.windows).length === 0 && <span class="quota-unavailable">Usage unavailable</span>}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function ThemeControl() {
   return (
     <details class="theme-control" data-theme-control>
@@ -663,7 +704,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{model.title} · Conveyor</title>
         <script src="/assets/theme.js" />
-        <style dangerouslySetInnerHTML={{ __html: dashboardCss }} />
+        <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss }} />
         <script src="/assets/dashboard.js" defer />
       </head>
       <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
@@ -679,6 +720,7 @@ function Page({ model }: { model: DashboardViewModel }) {
               </div>
             </details>
             <RunnerStatus model={model} />
+            <HarnessUsage model={model} />
             <span class="total-usage">{model.totalUsage}</span>
             <ThemeControl />
             <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><button class="logout" type="submit">Sign out</button></form>
