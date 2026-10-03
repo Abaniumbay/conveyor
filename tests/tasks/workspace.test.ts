@@ -195,6 +195,25 @@ describe("workspace.cleanup", () => {
     expect((await cleanup()).status).toBe("pass");
     expect(w.manager.removed).toHaveLength(1);
   });
+  test("deletes the remote branch through the code host after the local cleanup, best effort", async () => {
+    for (const [answer, expected] of [["deleted", "deleted"], ["kept", "kept"], [new Error("GitHub is down"), "failed"]] as const) {
+      const w = await world();
+      await w.record();
+      const calls: unknown[] = [];
+      w.deps.codeHost = {
+        async deleteBranch(input: unknown) {
+          calls.push(input);
+          if (answer instanceof Error) throw answer;
+          return answer;
+        },
+      } as never;
+      const result = await run("workspace.cleanup", { context: {}, deps: w.deps }) as Pass;
+      expect(result.status).toBe("pass");
+      expect(result.output).toMatchObject({ branch: "conveyor/7-r1-x", remote: expected });
+      expect(calls).toEqual([{ address: "o/r", branch: "conveyor/7-r1-x" }]);
+      expect(w.store.getActiveWorkspace("i1")).toBeNull();
+    }
+  });
   test("a missing workspace is done", async () => {
     const w = await world();
     expect((await run("workspace.cleanup", { context: {}, deps: w.deps })).status).toBe("pass");

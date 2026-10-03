@@ -292,6 +292,11 @@ export class GitHubCodeHost implements CodeHost {
     throw new Error(`unknown review artifact "${input.providerKey}"`);
   }
 
+  async deleteBranch(input: { address: string; branch: string }): Promise<"deleted" | "absent" | "kept"> {
+    if (await this.github.hasOpenPullRequestFor(input.address, input.branch)) return "kept";
+    return (await this.github.deleteBranchRef(input.address, input.branch)) ? "deleted" : "absent";
+  }
+
   async listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]> {
     const number = reference(input.address, input.id);
     const threads = await this.github.listReviewThreads(input.address, number);

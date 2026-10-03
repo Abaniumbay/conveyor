@@ -537,6 +537,28 @@ export class GitHubAdapter {
     return { id: comment.id, url: comment.html_url };
   }
 
+  /** Deletes a branch ref; false when it does not exist. */
+  async deleteBranchRef(address: string, branch: string): Promise<boolean> {
+    try {
+      await this.transport.request<unknown>({ method: "DELETE", path: `repos/${address}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}` });
+      return true;
+    } catch (error) {
+      // GitHub answers 422 "Reference does not exist" (or 404) for a branch that is already gone.
+      if (error instanceof GitHubTransportError && /HTTP 404|HTTP 422/.test(error.stderr)) return false;
+      throw error;
+    }
+  }
+
+  /** Whether an open pull request has this branch of the repository as its head. */
+  async hasOpenPullRequestFor(address: string, branch: string): Promise<boolean> {
+    const [owner] = address.split("/");
+    const open = await this.transport.request<unknown[]>({
+      method: "GET",
+      path: `repos/${address}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
+    });
+    return open.length > 0;
+  }
+
   async replyToReviewComment(address: string, pullRequestNumber: number, commentId: number, markdown: string): Promise<void> {
     await this.transport.request<unknown>({
       method: "POST",

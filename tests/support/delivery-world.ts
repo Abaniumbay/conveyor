@@ -94,6 +94,7 @@ function fakeHost(): FakeHost {
     async createFinding() { return { url: "https://example.test/finding", projection: "comment:1" }; },
     async resolveFindingProjection() {},
     async resolveNativeFinding() {},
+    async deleteBranch() { return "deleted" as const; },
     async listReviewArtifacts() { return []; },
   };
   const change = (): ChangeRequest => ({

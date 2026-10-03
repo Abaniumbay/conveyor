@@ -174,7 +174,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
-| `workspace.cleanup` | act | repository | invalidates workspace | Removes the worktree and deletes the local branch, then marks the workspace removed. A missing workspace is already done. |
+| `workspace.cleanup` | act | repository | invalidates workspace | Removes the worktree and deletes the local branch and its remote-tracking ref, then marks the workspace removed; also deletes the remote branch when it is still there and no open change uses it (best effort). A missing workspace is already done. |
 | `workspace.ensure` | act | repository | invalidates workspace | Creates the issue's workspace (worktree and branch) when none is recorded; re-attaches the recorded path to its existing branch when the directory went missing; otherwise does nothing. |
 | `workspace.fetch` | tool | - | - | Fetch the repository base branch from origin into the workspace. |
 | `workspace.get` | tool | - | - | Read scoped workspace metadata (path and branch). |

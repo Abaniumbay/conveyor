@@ -130,6 +130,11 @@ export interface CodeHost {
     verdict: FindingVerdict;
     message: string;
   }): Promise<void>;
+  /**
+   * Deletes a branch on the host unless an open change still uses it. "absent" when it is already
+   * gone, "kept" when an open change keeps it.
+   */
+  deleteBranch(input: { address: string; branch: string }): Promise<"deleted" | "absent" | "kept">;
   /** Human review artifacts of the change's native review; Conveyor's own comments and bots are excluded. */
   listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]>;
 }

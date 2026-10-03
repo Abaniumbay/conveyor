@@ -196,6 +196,8 @@ export class WorkspaceManager {
           `worktree was removed but local branch ${input.branch} could not be deleted: ${deleted.stderr}`,
         );
       }
+      // The stale remote-tracking ref goes too (absent is fine); the remote branch itself is the code host's.
+      await git(repositoryPath, ["update-ref", "-d", `refs/remotes/origin/${input.branch}`]);
     }
   }
 
