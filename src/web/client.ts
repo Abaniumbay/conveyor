@@ -4,6 +4,21 @@ export const dashboardClient = String.raw`(() => {
   const quotaCountdown = ${quotaCountdown.toString()};
   const updateQuotaWindow = ${updateQuotaWindow.toString()};
   const body = document.body;
+  if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
+  for (const form of document.querySelectorAll('.logout-form')) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      if (button) button.disabled = true;
+      try {
+        const registration = await navigator.serviceWorker?.getRegistration('/');
+        const subscription = await registration?.pushManager.getSubscription();
+        const endpoint = form.querySelector('input[name="pushEndpoint"]');
+        if (endpoint && subscription) endpoint.value = subscription.endpoint;
+      } catch {}
+      form.submit();
+    });
+  }
   let board = document.querySelector('.board');
   const scrollKey = 'conveyor:scroll';
   let pendingRefresh = false;

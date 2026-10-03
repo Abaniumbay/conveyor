@@ -486,7 +486,16 @@ CONVEYOR_USERNAME
 CONVEYOR_PASSWORD_HASH
 CONVEYOR_SESSION_SECRET
 CONVEYOR_GITHUB_WEBHOOK_SECRET   # required only when webhook installation is enabled
+CONVEYOR_VAPID_PUBLIC_KEY       # optional; enables browser push when all three push values are set
+CONVEYOR_VAPID_PRIVATE_KEY
+CONVEYOR_VAPID_SUBJECT           # an https: URL or mailto: contact
 ```
+
+### Browser push notifications
+
+Serve the dashboard over HTTPS (a reverse proxy can provide TLS), then configure the three VAPID values above with a public/private key pair and an `https:` or `mailto:` contact subject. Generate a pair with `bunx web-push generate-vapid-keys`; keep the private key in the service manager or secret store. Restart Conveyor after changing the keys. Without all three values, the dashboard still works and shows push as unavailable.
+
+Signed-in users can opt in separately to new questions, newly stopped issues, and issues reaching done from **Notifications** in the dashboard. Every category starts off. Enabling a category asks the browser for notification permission and registers that browser; users can turn categories off at any time, and turning all of them off or signing out removes that browser's server-side subscription. Push requires HTTPS, service workers, the Push API, and the Notifications API. Browsers that do not implement those APIs, or that restrict push for installed web apps, cannot receive alerts; the settings page reports unsupported or denied permission states.
 
 Then run:
 

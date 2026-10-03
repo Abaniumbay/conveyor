@@ -28,7 +28,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(12);
+    expect(store.schemaVersion()).toBe(13);
 
     store.close();
   });
@@ -897,6 +897,80 @@ describe("ConveyorStore", () => {
       status: "answered",
       answer: { selections: ["compact"] },
     });
+    store.close();
+  });
+
+  test("persists isolated push preferences and snapshots only currently opted-in subscriptions per event", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-push-"));
+    temporaryDirectories.push(directory);
+    const filename = path.join(directory, "conveyor.sqlite");
+    let store = await ConveyorStore.open(filename);
+    const first = store.createDashboardUser("first", "hash");
+    const second = store.createDashboardUser("second", "hash");
+    store.upsertRepository({ id: "repo-1", configName: "sample", source: "github", address: "owner/sample", folder: "/srv/sample", configHash: "config-hash" });
+    store.upsertIssue({ id: "issue-1", repositoryId: "repo-1", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Private issue title", body: "Private details", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    expect(store.getPushPreferences(first.id)).toEqual({ questions: false, stopped: false, done: false });
+    store.putPushSubscription(first.id, "https://push.example/first", { p256dh: "key1", auth: "secret1" });
+    store.putPushSubscription(second.id, "https://push.example/second", { p256dh: "key2", auth: "secret2" });
+    store.setPushPreferences(first.id, { questions: true, stopped: true, done: true });
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "running", warning: null });
+    store.setIssueProjection("issue-1", { stage: "done", state: "done", warning: null });
+    const doneEvent = store.pendingPushEvents().find((event) => event.category === "done");
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent).not.toHaveProperty("title");
+    expect(store.pushEventSubscriptions(doneEvent!.id).map((subscription) => subscription.accountId)).toEqual([first.id]);
+    store.setIssueProjection("issue-1", { stage: "done", state: "done", warning: null });
+    expect(store.pendingPushEvents().filter((event) => event.category === "done")).toHaveLength(1);
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "blocked", warning: null });
+    const stoppedEvent = store.pendingPushEvents().find((event) => event.category === "stopped");
+    expect(stoppedEvent).toBeDefined();
+    expect(store.pushEventSubscriptions(stoppedEvent!.id).map((subscription) => subscription.accountId)).toEqual([first.id]);
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "blocked", warning: null });
+    expect(store.pendingPushEvents().filter((event) => event.category === "stopped")).toHaveLength(1);
+
+    store.setPushPreferences(first.id, { questions: false, stopped: true, done: true });
+    store.recordPushEvent({ id: "old-question", category: "questions", target: "issue-1" });
+    expect(store.pushEventSubscriptions("old-question")).toEqual([]);
+    store.setPushPreferences(first.id, { questions: true, stopped: false, done: false });
+
+    store.recordPushEvent({ id: "new-question", category: "questions", target: "issue-1" });
+    expect(store.pendingPushEvents().some((event) => event.id === "old-question")).toBe(false);
+    expect(store.pendingPushEvents().some((event) => event.id === "new-question")).toBe(true);
+    expect(store.pushEventSubscriptions("new-question").map((subscription) => subscription.accountId)).toEqual([first.id]);
+    const openedQuestion = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Choose an option", reason: "Need a decision", options: [{ id: "one", label: "One" }] });
+    expect(store.pendingPushEvents().filter((event) => event.category === "questions" && event.target === "issue-1")).toHaveLength(2);
+    expect(store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Duplicate question", reason: "Must be ignored", options: [] }).id).toBe(openedQuestion.id);
+    expect(store.pendingPushEvents().filter((event) => event.category === "questions" && event.target === "issue-1")).toHaveLength(2);
+    expect(store.claimPushDelivery("new-question", store.pushEventSubscriptions("new-question")[0]!.id)).toBe(true);
+    expect(store.claimPushDelivery("new-question", store.pushEventSubscriptions("new-question")[0]!.id)).toBe(false);
+    expect(store.pendingPushEvents().some((event) => event.id === "new-question")).toBe(false);
+
+    store.close();
+    store = await ConveyorStore.open(filename);
+    expect(store.getPushPreferences(first.id)).toEqual({ questions: true, stopped: false, done: false });
+    expect(store.getPushPreferences(second.id)).toEqual({ questions: false, stopped: false, done: false });
+    expect(store.listPushSubscriptions(first.id)).toHaveLength(1);
+    expect(store.listPushSubscriptions(second.id)).toHaveLength(1);
+    store.setPushPreferences(first.id, { questions: false, stopped: false, done: false });
+    expect(store.listPushSubscriptions(first.id)).toHaveLength(0);
+    expect(store.listPushSubscriptions(second.id)).toHaveLength(1);
+    store.close();
+  });
+
+  test("moves a browser push endpoint to the account that most recently signed in", async () => {
+    const store = await openStore();
+    const first = store.createDashboardUser("first-endpoint-owner", "hash");
+    const second = store.createDashboardUser("second-endpoint-owner", "hash");
+    const endpoint = "https://push.example/shared-browser";
+    store.setPushPreferences(first.id, { questions: true, stopped: false, done: false });
+    store.setPushPreferences(second.id, { questions: true, stopped: false, done: false });
+    store.putPushSubscription(first.id, endpoint, { p256dh: "first-key", auth: "first-auth" });
+    store.putPushSubscription(second.id, endpoint, { p256dh: "second-key", auth: "second-auth" });
+
+    expect(store.listPushSubscriptions(first.id)).toEqual([]);
+    expect(store.listPushSubscriptions(second.id).map(({ endpoint: savedEndpoint }) => savedEndpoint)).toEqual([endpoint]);
+    store.recordPushEvent({ id: "shared-browser-question", category: "questions", target: "issue-1" });
+    expect(store.pushEventSubscriptions("shared-browser-question").map(({ accountId }) => accountId)).toEqual([second.id]);
     store.close();
   });
 });
