@@ -673,6 +673,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
             ? "agent"
             : reportPath && dependencies.getReport
               ? "reports"
+              : path === "/about"
+                ? "about"
               : path === "/accounts"
                 ? "accounts"
                 : path === "/profile"

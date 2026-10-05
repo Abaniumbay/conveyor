@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import packageMetadata from "../../package.json";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import type { DashboardViewModel } from "../../src/web/types";
@@ -418,6 +419,31 @@ describe("createWebHandler", () => {
     }
   });
 
+  test("serves an authenticated About view with project details", async () => {
+    const { handler } = setup();
+
+    const anonymous = await handler(new Request("http://localhost/about"));
+    expect(anonymous.status).toBe(303);
+    expect(anonymous.headers.get("location")).toBe("/login");
+
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/about", { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('data-dashboard-view="about"');
+    expect(html).toContain('href="/about"');
+    expect(html).toContain('class="tab tab--active"');
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain("<h2 id=\"about-heading\">About</h2>");
+    expect(html).toContain(`Version ${packageMetadata.version}`);
+    expect(html).toContain("pre-1.0");
+    expect(html).toContain('href="https://github.com/Abaniumbay/conveyor"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("Conveyor contributors");
+    expect(html).toContain("MIT license");
+  });
+
   test("requires CSRF for question answers and backlog reorder callbacks", async () => {
     const { handler, auth, calls } = setup();
     const { cookie } = await login(handler);
@@ -700,7 +726,7 @@ describe("createWebHandler", () => {
     const cookie = created.cookie.split(";")[0]!;
     const csrf = created.csrfToken;
 
-    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/settings/notifications", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
+    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/about", "/settings/notifications", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
       const page = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
       expect(page.status).toBe(200);
     }

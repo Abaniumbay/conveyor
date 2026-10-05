@@ -175,7 +175,7 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "accounts" | "profile" | "notifications";
+export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "about" | "accounts" | "profile" | "notifications";
 
 export interface DashboardAccountViewModel {
   id: string;
