@@ -116,6 +116,8 @@ const answer = (w: World, text: string) => {
 describe("agent.run", () => {
   test("runs the next listed agent when the first one's harness cannot run, and says so", async () => {
     const w = await world();
+    w.deps.config.agents.kaveh!.tasks = ["workspace.push"];
+    w.deps.config.agents.shirin!.tasks = ["conversation.get"];
     let calls = 0;
     w.setBehaviour(() => {
       if (++calls === 1) throw Object.assign(new Error("Claude usage limit reached"), { kind: "usage-limit" });
@@ -124,6 +126,10 @@ describe("agent.run", () => {
     const result = await w.run(false, { agents: ["kaveh", "shirin"] });
     expect(result.status).toBe("pass");
     expect(outcome(result)).toMatchObject({ agentId: "shirin", status: "done" });
+    expect(w.calls[0]!.prompt).toContain("workspace.push → tools.mcp__conveyor__workspace_push");
+    expect(w.calls[1]!.prompt).toContain("conversation.get → tools.mcp__conveyor__conversation_get");
+    expect(w.calls[1]!.prompt).not.toContain("tools.mcp__conveyor__workspace_push");
+    expect(w.leases[1]!.allowedTools).toEqual(["conversation.get"]);
     const notes = w.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor").map((message) => message.message);
     expect(notes).toEqual(["Kaveh could not run (Claude usage limit reached); Shirin takes this implementation instead."]);
   });
@@ -202,6 +208,8 @@ describe("agent.run", () => {
     expect(call).toMatchObject({ command: "codex", workspace: path.join(w.store.getActiveWorkspace("i1")!.path), sandbox: "workspace-write", automaticApprovals: true });
     expect(call.prompt).toContain("You are Kaveh.");
     expect(call.prompt).toContain('"stageId": "implementation"');
+    expect(call.prompt).toContain("agent.reportProgress → tools.mcp__conveyor__agent_reportProgress");
+    expect(call.prompt).toContain("Do not invent status names such as blocked-external");
     expect(call.mcp).toEqual({ command: "bun", args: ["mcp"] });
     expect(call.resumeSessionId).toBeUndefined();
     expect(w.leases).toEqual([{ runId: expect.any(String), allowedTools: ["agent.reportProgress"], closed: true }]);
@@ -342,12 +350,16 @@ describe("agent.run", () => {
       w.setBehaviour(asks("Which database?"));
       await w.run(false);
       answer(w, "PostgreSQL");
+      w.deps.config.agents.kaveh!.tasks = ["conversation.get"];
       w.setBehaviour(() => ({ summary: "Used PostgreSQL" }));
       const result = await w.run(true);
       expect(result.status).toBe("pass");
       outcomes.push(stripRun(outcome(result)));
       finalCalls.push(w.calls[1]!);
       expect(w.calls).toHaveLength(2);
+      expect(w.calls[1]!.prompt).toContain("conversation.get → tools.mcp__conveyor__conversation_get");
+      expect(w.calls[1]!.prompt).not.toContain("tools.mcp__conveyor__agent_reportProgress");
+      expect(w.calls[1]!.prompt).toContain("Do not invent status names such as blocked-external");
     }
     expect(outcomes[0]).toEqual(outcomes[1]!);
     expect(outcomes[0]).toEqual({ agentId: "kaveh", status: "done", summary: "Used PostgreSQL", reason: null });
@@ -450,11 +462,11 @@ describe("agent.run", () => {
 
   test("an unknown failure status is an actionable invalid result", async () => {
     const w = await world();
-    w.setBehaviour(() => ({ outcome: "failure", status: "weird", summary: "Hm", reason: "because" }));
+    w.setBehaviour(() => ({ outcome: "failure", status: "blocked-external", summary: "Hm", reason: "because" }));
     const result = await w.run(false) as Extract<TaskResult, { status: "fail" }>;
     expect(result.route).toEqual({ stop: "error" });
     expect(result.message).toContain("Agent returned an invalid result");
-    expect(result.message).toContain("weird");
+    expect(result.message).toContain("blocked-external");
   });
 
   test("needs-input without an open question is an actionable invalid result", async () => {

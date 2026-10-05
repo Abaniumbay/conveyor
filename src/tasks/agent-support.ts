@@ -4,14 +4,19 @@
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore } from "../db/store";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
+import { conveyorToolGuidance } from "../mcp/guidance";
+
+export { conveyorToolGuidance } from "../mcp/guidance";
+export const AGENT_STOP_STATUSES = ["blocked", "rejected"] as const;
 
 export function prompt(
   parts: Record<string, unknown>,
   instructions: string,
-  options: { progressReporting?: boolean } = {},
+  options: { progressReporting?: boolean; grantedTools?: readonly string[] } = {},
 ): string {
   return [
     instructions.trim(),
+    ...(options.grantedTools?.length ? ["", conveyorToolGuidance(options.grantedTools)] : []),
     ...(options.progressReporting
       ? [
           "",
@@ -27,6 +32,12 @@ export function prompt(
     JSON.stringify(parts, null, 2),
     "",
     "Result contract: if you return a failure or blocked status, `reason` must name the concrete blocker, the evidence that established it, and the exact action (and owner, when known) required to continue. Do not merely repeat the status or say that you are blocked.",
+    ...(Array.isArray(parts.allowedFailureStatuses)
+      ? [`Use only the configured failure statuses: ${parts.allowedFailureStatuses.join(", ")}. Do not invent status names.`]
+      : [
+          `For a failed agent.run result, use ${AGENT_STOP_STATUSES.join(" or ")}. Do not invent status names such as blocked-external.`,
+          "Use needs-input only after opening a question with agent.askQuestion; use changes-requested only after recording a review finding with change.comment. If those tools are not granted, return blocked with the concrete reason instead.",
+        ]),
     "",
     "Use the scoped Conveyor MCP for source and workspace operations. Return only the required structured result.",
   ].join("\n");
