@@ -1058,7 +1058,7 @@ export class ConveyorService {
       },
       workspace: { path: workspace, branch: "steering" },
       delivery: { pullRequest: null, checks: [] },
-      sourceGuidance: "This is a system-scoped steering run. Only explicitly granted reporting tools are available.",
+      sourceGuidance: "This is a system-scoped steering run. Only explicitly granted Operator diagnostic and control tools are available. Inspect before any control action.",
       control: { url: `http://127.0.0.1:${port}/internal/mcp`, token },
       allowedTools: [...new Set(allowedTools.map(canonicalToolName))],
     }), { mode: 0o600 });
@@ -1189,9 +1189,19 @@ export class ConveyorService {
     // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
     const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
     const taskDeps = (): TaskDeps => context
-      // A system-scoped (steering) grant has no item: only the run-event tools are allowed there.
+      // A system-scoped (steering) grant has no item: only explicitly allowed steering-safe tools are available.
       ? this.taskDeps(context.issue.id, context.repository)
-      : ({ store: this.store, config: this.config, issueId: "" } as TaskDeps);
+      : ({
+          store: this.store,
+          config: this.config,
+          issueId: "",
+          operator: {
+            board: () => this.operatorBoard(),
+            itemHistory: (input) => this.operatorItemHistory(input),
+            retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
+            moveBacklog: (input) => this.operatorMoveBacklog(input),
+          },
+        } as TaskDeps);
     const result = await dispatchTool({
       name: string(request.tool, "tool"),
       input,
@@ -1220,6 +1230,134 @@ export class ConveyorService {
       await this.updateStatusComment(context.issue.id);
     }
     return result;
+  }
+
+  /** A redacted board view for the scoped Operator MCP tools; it intentionally has no credentials or raw config. */
+  private operatorBoard(): unknown {
+    const activeIssueIds = new Set(this.store.listActiveIssueRuns().map((run) => run.issueId));
+    const reference = (issue: StoredIssue) => ({
+      id: issue.id,
+      repositoryId: issue.repositoryId,
+      number: issue.sourceNumber,
+      url: issue.sourceUrl,
+      title: issue.title,
+    });
+    const visible = (issue: StoredIssue | null): issue is StoredIssue =>
+      Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "offboarded");
+    const items = this.store.listIssues().filter(visible).map((issue) => {
+      const cursor = this.store.executions().getCursor(issue.id);
+      const active = activeIssueIds.has(issue.id);
+      const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
+      const parent = issue.parentId ? this.store.getIssue(issue.parentId) : null;
+      return {
+        ...reference(issue),
+        stage: this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage,
+        state: issue.projectedState ?? issue.sourceState,
+        activity: active ? "active" : cursor?.state === "pending" ? "waiting" : "idle",
+        queue: issue.queueRank === null ? { status: "not-queued" } : { status: "queued", rank: issue.queueRank },
+        waitingOrStopReason: cursor?.state === "pending"
+          ? this.store.executions().pendingMessage(issue.id) ?? issue.warning
+          : stopped ? latestStopReason(this.store, issue.id) ?? issue.warning : null,
+        parent: visible(parent) ? reference(parent) : null,
+        dependencies: this.store.listDependencies(issue.id)
+          .map((id) => this.store.getIssue(id))
+          .filter(visible)
+          .map(reference),
+      };
+    });
+    return {
+      reconciledAt: this.#lastReconciledAt,
+      repositories: Object.entries(this.config.repositories).map(([id, repository]) => ({
+        id,
+        address: repository.address,
+        health: this.#repositoryErrors.has(id) || this.#onboardingErrors.has(id) ? "degraded" : "healthy",
+        lastReconciledAt: this.#lastReconciledAt,
+      })),
+      items,
+    };
+  }
+
+  /** History is deliberately bounded by transition, run, and event limits and rejects non-board references uniformly. */
+  private async operatorItemHistory(input: {
+    itemId: string;
+    beforeRunId?: string;
+    eventRunId?: string;
+    beforeEventSequence?: number;
+    runLimit: number;
+    eventLimit: number;
+  }): Promise<unknown> {
+    const issue = this.store.getIssue(input.itemId);
+    if (!issue || !this.config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") {
+      throw new Error("item is not on this configured board");
+    }
+    const runs = this.store.listIssueRunsPage(issue.id, {
+      ...(input.beforeRunId ? { before: input.beforeRunId } : {}),
+      limit: input.runLimit,
+    });
+    const eventRun = input.eventRunId ? this.store.getRun(input.eventRunId) : null;
+    if (input.eventRunId && (!eventRun || eventRun.issueId !== issue.id)) {
+      throw new Error("event cursor does not belong to this board item");
+    }
+    let delivery: unknown;
+    try {
+      const repository = this.config.repositories[issue.repositoryId]!;
+      delivery = { status: "available", ...await this.loadDeliveryState(issue.id, repository.address) };
+    } catch (error) {
+      delivery = {
+        status: "unavailable",
+        reason: error instanceof Error ? error.message : "delivery diagnostics are unavailable",
+      };
+    }
+    return {
+      item: { id: issue.id, repositoryId: issue.repositoryId, number: issue.sourceNumber, url: issue.sourceUrl, title: issue.title },
+      transitions: this.store.listStageTransitions(issue.id).slice(-50).map((transition) => ({
+        id: transition.id,
+        fromStage: transition.fromStage,
+        toStage: transition.toStage,
+        kind: transition.kind,
+        status: transition.status,
+        resultStatus: transition.resultStatus,
+        reason: transition.error ?? transition.reason,
+        createdAt: transition.createdAt,
+        completedAt: transition.completedAt,
+      })),
+      runs: runs.runs.map((run) => {
+        const page = this.store.listRunEventsPage(run.id, {
+          limit: input.eventLimit,
+          ...(run.id === input.eventRunId && input.beforeEventSequence !== undefined
+            ? { before: input.beforeEventSequence }
+            : {}),
+        });
+        return {
+          id: run.id,
+          stageId: run.stageId,
+          attempt: run.attempt,
+          kind: run.kind,
+          status: run.status,
+          result: run.result,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          events: page.events,
+          nextEventBefore: page.nextBefore,
+        };
+      }),
+      nextRunBefore: runs.nextBefore,
+      delivery,
+    };
+  }
+
+  private operatorMoveBacklog(input: { itemId: string; position: "up" | "down" | "before" | "end"; beforeItemId?: string }): unknown {
+    if (input.position === "up" || input.position === "down") {
+      this.reorderBacklog(input.itemId, input.position);
+    } else {
+      this.moveBacklogIssue(input.itemId, input.position === "before" ? input.beforeItemId! : null);
+    }
+    const issue = this.store.getIssue(input.itemId);
+    return {
+      position: input.position,
+      queueRank: issue?.queueRank ?? null,
+      ...(input.position === "before" ? { beforeIssueId: input.beforeItemId } : {}),
+    };
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
@@ -1435,7 +1573,9 @@ export class ConveyorService {
 
   private requireBacklogIssue(issueId: string): void {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.parentId) throw new Error("only top-level issues can be reordered");
+    if (!issue || issue.parentId || issue.projectedState === "offboarded") {
+      throw new Error("only top-level board issues can be reordered");
+    }
     const repository = this.config.repositories[issue.repositoryId];
     const firstStage = repository
       ? this.config.pipelines[repository.pipeline]?.stages[0]?.id

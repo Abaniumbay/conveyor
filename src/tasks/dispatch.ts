@@ -9,6 +9,7 @@ import { canonicalToolName } from "./aliases";
 import type { AgentActor } from "./agent-support";
 import { runTask, TaskInputError, type TaskRegistry } from "./contract";
 import type { TaskDeps } from "./deps";
+import { OPERATOR_STEERING_TOOLS } from "./operator";
 
 export interface ToolGrant {
   runId: string;
@@ -36,6 +37,7 @@ const ITEM_FREE_TOOLS: ReadonlySet<string> = new Set([
   "agent.reportResult",
   "agent.reportMilestone",
   "agent.recordArtifact",
+  ...OPERATOR_STEERING_TOOLS,
 ]);
 
 export async function dispatchTool(
@@ -53,6 +55,9 @@ export async function dispatchTool(
   const input: unknown = parsed.data;
 
   if (!grant.issueScoped && !ITEM_FREE_TOOLS.has(name)) throw new Error(`${name} requires an issue-scoped MCP grant`);
+  if (grant.issueScoped && OPERATOR_STEERING_TOOLS.has(name)) {
+    throw new Error(`${name} requires an active steering MCP grant`);
+  }
   if (grant.issueScoped && !call.actor) throw new Error(`${name} requires an actor`);
 
   const headSha = (input as { headSha?: unknown }).headSha;
