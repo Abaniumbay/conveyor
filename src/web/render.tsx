@@ -1,5 +1,6 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
+import packageMetadata from "../../package.json";
 import { Accounts, Profile } from "./account-pages";
 import { Notifications } from "./notification-page";
 import { Reports } from "./report-page";
@@ -36,6 +37,7 @@ function viewHref(view: DashboardView): string {
   if (view === "team") return "/team";
   if (view === "agent") return "/operator";
   if (view === "reports") return "/reports";
+  if (view === "about") return "/about";
   if (view === "accounts") return "/accounts";
   if (view === "profile") return "/profile";
   if (view === "notifications") return "/settings/notifications";
@@ -447,6 +449,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
     { view: "attention", label: "Needs attention", count: model.counts.attention },
     { view: "team", label: "Team", count: null },
     { view: "reports", label: "Reports", count: null },
+    { view: "about", label: "About", count: null },
     { view: "agent", label: "Operator", count: null },
   ];
   return (
@@ -504,6 +507,26 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
           </aside>
         )}
       </div>
+    </section>
+  );
+}
+
+function About() {
+  const preOne = packageMetadata.version.startsWith("0.");
+  return (
+    <section class="panel about" aria-labelledby="about-heading">
+      <header class="section-heading">
+        <div>
+          <h2 id="about-heading">About</h2>
+          {preOne && <p>Conveyor {packageMetadata.version} is pre-1.0 software.</p>}
+        </div>
+      </header>
+      <dl class="about-facts">
+        <dt>Version</dt><dd>Version {packageMetadata.version}</dd>
+        <dt>Source</dt><dd><a href="https://github.com/Abaniumbay/conveyor" target="_blank" rel="noopener noreferrer">github.com/Abaniumbay/conveyor</a></dd>
+        <dt>Contributors</dt><dd>Conveyor contributors</dd>
+        <dt>License</dt><dd>MIT license</dd>
+      </dl>
     </section>
   );
 }
@@ -701,6 +724,7 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
+  else if (model.view === "about") content = <About />;
   else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
   else if (model.view === "notifications" && model.notifications) content = <Notifications preferences={model.notifications} csrfToken={model.csrfToken} />;
