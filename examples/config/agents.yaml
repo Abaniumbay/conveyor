@@ -102,7 +102,8 @@ agents:
     harness: codex
     model: gpt-6-luna
     effort: medium
-    instructions: ./instructions/omid.md
+    instructions: ../../skills/conveyor-operator/SKILL.md
     access: workspace-write
-    tasks: [agent.reportProgress, agent.reportRationale, agent.reportBlocker,
+    tasks: [operator.getBoard, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem,
+            agent.reportProgress, agent.reportRationale, agent.reportBlocker,
             agent.reportResult, agent.reportMilestone]

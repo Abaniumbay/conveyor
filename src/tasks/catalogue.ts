@@ -5,6 +5,7 @@ import { ciGroup } from "./ci";
 import { conversationGroup } from "./conversation";
 import { itemGroup } from "./item";
 import { legacyGroup } from "./legacy";
+import { operatorGroup } from "./operator";
 import { scriptGroup } from "./script";
 import { todoGroup } from "./todo";
 import { workspaceGroup } from "./workspace";
@@ -21,5 +22,6 @@ export function createTaskRegistry(): TaskRegistry {
   registry.register(todoGroup);
   registry.register(scriptGroup);
   registry.register(legacyGroup);
+  registry.register(operatorGroup);
   return registry;
 }

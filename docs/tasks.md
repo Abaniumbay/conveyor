@@ -155,6 +155,15 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `legacy.produce` | act | run | writes legacy | Runs the legacy producer (agent, script or source action) and captures its envelope. |
 | `legacy.succeeded` | check | legacy | - | Passes when the captured legacy producer outcome is success. |
 
+### operator
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `operator.getBoard` | tool | - | - | Read the reconciled board, configured repository health, and item state without changing anything. |
+| `operator.getItemHistory` | tool | - | - | Read a bounded, pageable diagnostic history for one configured board item. |
+| `operator.moveBacklogItem` | tool | - | - | Move an eligible top-level backlog item up, down, before another item, or to the end. |
+| `operator.retryItem` | tool | - | - | Retry an eligible stopped board item after the owner explicitly requests it. |
+
 ### script
 
 | Task | Kind | Reads | Writes / invalidates | Description |
