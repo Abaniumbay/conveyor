@@ -57,4 +57,14 @@ export interface TaskDeps {
   delivery?: () => Promise<RuntimeDeliveryState>;
   /** Set for agent tool calls: the run the call belongs to and who is calling. */
   run?: { id: string; actor: AgentActor | null };
+  /**
+   * Narrow system-level operations made available only to an active steering run.  Item-scoped
+   * agents never receive this facade; the dispatcher also rejects these tools for item grants.
+   */
+  operator?: {
+    board: () => unknown;
+    itemHistory: (input: { itemId: string; beforeRunId?: string; runLimit: number; eventLimit: number }) => unknown;
+    retry: (itemId: string, note: string) => Promise<{ status: "started" | "queued"; stageId: string }>;
+    moveBacklog: (input: { itemId: string; position: "up" | "down" | "before" | "end"; beforeItemId?: string }) => unknown;
+  };
 }

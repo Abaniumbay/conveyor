@@ -43,6 +43,17 @@ describe("reference configuration", () => {
     }
   });
 
+  test("Omid receives the allowlisted Operator skill and no broader board controls", async () => {
+    const config = await loadReference();
+    const omid = config.agents.omid!;
+    expect([...omid.tasks].sort()).toEqual([
+      "agent.reportBlocker", "agent.reportMilestone", "agent.reportProgress", "agent.reportRationale", "agent.reportResult",
+      "operator.getBoard", "operator.getItemHistory", "operator.moveBacklogItem", "operator.retryItem",
+    ]);
+    expect(await readFile(path.join(EXAMPLES, "config/agents.yaml"), "utf8")).toContain("instructions: ../../skills/conveyor-operator/SKILL.md");
+    expect(await readFile(path.resolve(EXAMPLES, "../skills/conveyor-operator/SKILL.md"), "utf8")).toContain("Inspect first, before mutation.");
+  });
+
   test("every native stage has a non-empty exit gate", async () => {
     const config = await loadReference();
     for (const plan of config.plans) for (const stage of plan.stages) expect(stage.exitGate.length).toBeGreaterThan(0);

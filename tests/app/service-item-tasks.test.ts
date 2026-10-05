@@ -123,4 +123,23 @@ describe("legacy MCP names delegate to the item tools", () => {
     await lease.close();
     await w.service.close();
   });
+
+  test("Operator board tools are rejected even when an issue-scoped grant names them", async () => {
+    const w = await setup();
+    const issue = w.enroll("operator-item", 4, "");
+    const factory = (w.service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();
+    const lease = await factory.create({
+      runId: "run-operator-item", stageId: "refinement",
+      context: {
+        issue, repository: { id: "repo", address: "owner/repo", folder: w.root, baseBranch: "main" },
+        workspace: null, sourceGuidance: "g",
+      } as never,
+      allowedTools: ["operator.getBoard"], actor: { id: "a", name: "A", title: "T" },
+    });
+    const token = (JSON.parse(await readFile(path.join(w.root, "artifacts/run-operator-item/mcp-context.json"), "utf8")) as { control: { token: string } }).control.token;
+    await expect(w.service.handleMcp({ tool: "operator.getBoard", input: {} }, token))
+      .rejects.toThrow("requires an active steering MCP grant");
+    await lease.close();
+    await w.service.close();
+  });
 });
