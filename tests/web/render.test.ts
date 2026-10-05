@@ -202,13 +202,15 @@ describe("renderDashboard", () => {
       expect(html).toContain('data-remaining="4"');
       expect(html).toContain("4% left");
       expect(html).not.toContain("4.0000000000000036");
-      expect(html).toContain("Stale · 70% left");
+      expect(html).toContain("Stale");
+      expect(html).not.toContain("Stale · 70% left");
+      expect(html).not.toContain("70% left");
       expect(html).toContain("quota-window--stale");
       expect(html).toContain("quota-window--low");
       expect(html).toContain('tabindex="0"');
       expect(html).toContain('data-countdown');
-      expect(html).toContain("Reset:");
-      expect(html).toContain("Last reported:");
+      expect(html).toContain('data-reset-at="2026-10-09T21:11:00.000Z"');
+      expect(html).toContain('data-reported-at="2026-10-03T14:04:00.000Z"');
       expect(html).toContain("Usage unavailable");
       expect(html).not.toContain("Unavailable 0% left");
     }
