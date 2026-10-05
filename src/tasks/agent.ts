@@ -20,7 +20,7 @@ import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
 import type { RunEnvelope } from "../runner/result";
 import {
-  agentActor, agentMessage, conversationForPrompt, conveyorMessage, failedEnvelope, finishRun,
+  AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, failedEnvelope, finishRun,
   producerConversationMessage, prompt, startRun, warnOnTokenUsage } from "./agent-support";
 import type { AgentContext } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
@@ -75,8 +75,6 @@ function executionAgent(deps: Deps, runId: string): string | null {
   return typeof agentId === "string" ? agentId : null;
 }
 
-const FAILURE_STOPS = ["blocked", "rejected"];
-
 function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelope): TaskResult {
   const { status, outcome, summary, reason } = result.stageResult;
   const captured: AgentContext = { agentId, status, summary, reason, sessionId: result.sessionId, runId };
@@ -94,7 +92,7 @@ function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelo
     }
     return pass(captured);
   }
-  if (FAILURE_STOPS.includes(status)) return fail(reason ?? summary, { route: { stop: status } });
+  if ((AGENT_STOP_STATUSES as readonly string[]).includes(status)) return fail(reason ?? summary, { route: { stop: status } });
   if (outcome === "success") return pass(captured);
   return fail(`Agent returned an invalid result: unexpected failure status "${status}" (${reason ?? summary})`, { route: { stop: "error" } });
 }
@@ -218,7 +216,11 @@ async function runAgent(
       if (resume) {
         result = await harness.run({
           ...shared,
-          prompt: `Your question was answered.\n\nQuestion: ${answered!.question}\nAnswer: ${answered!.answer}\n\nContinue the work and return the required structured result.`,
+          prompt: prompt(
+            { answeredQuestion: { question: answered!.question, answer: answered!.answer } },
+            "Your question was answered. Continue the work using this run's refreshed tool grant and return the required structured result.",
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
+          ),
           resumeSessionId: answered!.sessionId!,
           answeredQuestion: { question: answered!.question, answer: answered!.answer },
         });
@@ -237,7 +239,7 @@ async function runAgent(
               conversation: conversationForPrompt(store, issue.id),
             },
             instructions,
-            { progressReporting: agent.tasks.includes("agent.reportProgress") },
+            { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
           ),
         });
       }

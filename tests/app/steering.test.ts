@@ -212,6 +212,8 @@ describe("ConveyorService steering", () => {
       codeHosts: createGitHubCodeHostRegistry(config, github as never),
       steering: async (input) => {
         expect(input.prompt).toContain("Inspect first, before mutation.");
+        expect(input.prompt).toContain("operator.getBoard → tools.mcp__conveyor__operator_getBoard");
+        expect(input.prompt).not.toContain("tools.mcp__conveyor__change_merge");
         expect(input.prompt).toContain("authenticated owner’s explicit steering and maintenance request");
         expect(input.prompt).toContain("must not silently bypass or replace the normal issue pipeline");
         const contextIndex = input.mcp!.args.indexOf("--context") + 1;

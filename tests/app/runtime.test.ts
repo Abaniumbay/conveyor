@@ -214,6 +214,10 @@ repositories:
     expect(checkInputs).toHaveLength(1);
     expect(grants[0]).toEqual(["item.get", "conversation.get", "agent.reportProgress", "workspace.fetch"]);
     expect(grants[1]).toEqual(["item.get", "agent.reportProgress"]);
+    expect((producerInputs[0] as { prompt: string }).prompt).toContain("workspace.fetch → tools.mcp__conveyor__workspace_fetch");
+    expect((checkInputs[0] as { prompt: string }).prompt).toContain("item.get → tools.mcp__conveyor__item_get");
+    expect((checkInputs[0] as { prompt: string }).prompt).not.toContain("tools.mcp__conveyor__item_setCriteria");
+    expect((checkInputs[0] as { prompt: string }).prompt).not.toContain("tools.mcp__conveyor__workspace_fetch");
     expect(deliveryStates[1]).toEqual({
       pullRequest: { number: 18, state: "merged", merged: true },
       checks: [{ name: "Tests", conclusion: "success" }],
