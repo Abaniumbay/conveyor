@@ -21,6 +21,7 @@ import type { CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
+import { conveyorToolGuidance } from "../mcp/guidance";
 import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
@@ -1487,6 +1488,7 @@ export class ConveyorService {
         artifactsDirectory: path.join(this.config.settings.artifacts, runId),
         prompt: [
           instructions.trim(),
+          conveyorToolGuidance(agent.tasks),
           "",
           "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",

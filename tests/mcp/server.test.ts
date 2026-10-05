@@ -78,6 +78,8 @@ describe("Conveyor MCP server", () => {
   test("lists only the granted tools, under canonical camelCase names with registry descriptions and schemas", async () => {
     const client = await connectedClient({ async call() { throw new Error("no call expected"); } });
     const tools = await client.listTools();
+    expect(client.getInstructions()).toContain("conversation.get → tools.mcp__conveyor__conversation_get");
+    expect(client.getInstructions()).not.toContain("tools.mcp__conveyor__change_merge");
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...context.allowedTools].sort());
     const progress = tools.tools.find((tool) => tool.name === "agent.reportProgress")!;
     expect(progress.description).toContain("progress");
