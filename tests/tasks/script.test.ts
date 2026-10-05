@@ -116,8 +116,20 @@ describe("script.run", () => {
       context: { script: { results: { deploy: output(result) } } }, deps: undefined as never, config: { run: "deploy" },
       instance: { id: "ok", stage: "deploy", idempotencyKey: "", resumed: false },
     });
-    expect(check).toMatchObject({ status: "fail", message: "it broke" });
+    expect(check).toMatchObject({ status: "fail", message: "boom" });
     expect((check as { details: string }).details).toContain("boom");
+  });
+
+  test("keeps the concrete failure reason even when it falls outside the output tail", async () => {
+    const w = await world({ apply: { ...failure, metrics: { big: "x".repeat(10_000) } } });
+    const result = output(await w.run("replay-safe", false));
+    expect(result.reason).toBe("boom");
+    expect(result.outputTail).not.toContain("boom");
+    const check = await runTask(registry.require("script.succeeded"), {
+      context: { script: { results: { deploy: result } } }, deps: undefined as never, config: { run: "deploy" },
+      instance: { id: "ok", stage: "deploy", idempotencyKey: "", resumed: false },
+    });
+    expect(check).toMatchObject({ status: "fail", message: "boom" });
   });
 
   test("bounds the output tail to 4 KB", async () => {
@@ -148,6 +160,12 @@ describe("script.succeeded", () => {
   test("fails with the summary and tail when it did not, and when there is no result", async () => {
     expect(await check({ script: { results: { deploy: entry(false) } } })).toEqual({ status: "fail", message: "s", details: "tail" });
     expect((await check({ script: { results: {} } })).status).toBe("fail");
+  });
+  test("falls back to the summary for absent or blank reasons in stored results", async () => {
+    for (const reason of [undefined, null, "   "]) {
+      const result = { ...entry(false), ...(reason === undefined ? {} : { reason }) };
+      expect(await check({ script: { results: { deploy: result } } })).toMatchObject({ status: "fail", message: "s" });
+    }
   });
   test("reads only its named instance", async () => {
     expect((await check({ script: { results: { a: entry(true), b: entry(false) } } }, "b")).status).toBe("fail");

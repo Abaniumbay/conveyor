@@ -169,7 +169,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
 | `script.run` | act | repository, run | writes script | Runs `bun run <script>` in the workspace (or the repository folder) with the script protocol on stdin. `replay-safe` scripts are applied every time; `reconcile` scripts are applied on the first run and, after a restart, observed first and applied only when not yet applied (an indeterminate observation stops for intervention). A script that completes always passes this task; the bounded result is captured per instance in `script`. |
-| `script.succeeded` | check | script | - | Passes when the named `script.run` instance's captured result passed; otherwise fails with the script's summary and output tail. |
+| `script.succeeded` | check | script | - | Passes when the named `script.run` instance's captured result passed; otherwise fails with the script's reason (falling back to its summary) and output tail. |
 
 ### todo
 

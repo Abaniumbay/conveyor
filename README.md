@@ -164,6 +164,10 @@ Every call goes through one dispatcher in the service that re-checks the grant, 
 - Requirement changes do not interrupt an agent run. The exit gate and later review read the latest issue state and send outdated work back.
 - Full run activity is retained independently from the concise shared conversation.
 
+Stopped items can be resumed with **Retry** (superusers only) or a message in **Conversation** after fixing the recorded blocker. Retry also supports closed issues with a correlated merged Conveyor PR, so an automatic GitHub closure does not prevent recovery from a deploy or verification failure. Closed issues without a correlated merge remain ineligible.
+
+Keep development work out of the live service checkout. Self-deployment requires a clean checkout on `main`, including no untracked files, before it fast-forwards to the merged source. Create a separate worktree for fixes, for example `git worktree add -b fix/my-change ../conveyor-my-change HEAD`, and commit and submit changes from there. Preserve any existing local work outside the live checkout before retrying deployment; do not bypass the clean-checkout guard.
+
 ## Security boundary
 
 Conveyor is intended for a trusted single-user server, not hostile multi-tenant execution.

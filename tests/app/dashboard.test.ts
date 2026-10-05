@@ -109,28 +109,31 @@ describe("ConveyorService dashboard", () => {
         states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
         metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
       },
-      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "review", run: { type: "agent", agent: "reviewer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "review", run: { type: "agent", agent: "reviewer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "deploy", run: { type: "agent", agent: "deployer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
       agents: {},
     } as unknown as ConveyorConfig;
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
-    const issues = ["with-note", "without-note", "failed", "stale", "error", "intervention"].map((id, index) => ({
+    const issues = ["with-note", "without-note", "failed", "stale", "error", "intervention", "closed-merged"].map((id, index) => ({
       id, number: index + 1, url: `https://github.com/owner/repo/issues/${index + 1}`, title: id,
-      body: "keep this body", state: "open" as const, stateReason: null,
-      labels: ["conveyor", "conveyor:implementation", `conveyor:${id === "error" ? "error" : id === "intervention" ? "needs-intervention" : "blocked"}`, "conveyor:order:7", "area:web", "priority:high"],
+      body: "keep this body", state: id === "closed-merged" ? "closed" as const : "open" as const, stateReason: null,
+      labels: ["conveyor", id === "closed-merged" ? "conveyor:deploy" : "conveyor:implementation", `conveyor:${id === "error" ? "error" : id === "intervention" ? "needs-intervention" : "blocked"}`, "conveyor:order:7", "area:web", "priority:high"],
       updatedAt: "2026-10-01T00:00:00Z",
     }));
-    const blocker = { id: "blocker", number: 7, url: "https://github.com/owner/repo/issues/7", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
+    const blocker = { id: "blocker", number: 8, url: "https://github.com/owner/repo/issues/8", title: "Blocker", body: "", state: "open" as const, stateReason: null, labels: [], updatedAt: "2026-10-01T00:00:00Z" };
     for (const issue of issues) {
       store.upsertIssue({ id: issue.id, repositoryId: "repo", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: issue.body, sourceState: issue.state, sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
       store.setQueueRank(issue.id, issue.number);
       const stoppedState = issue.id === "error" ? "error" : issue.id === "intervention" ? "needs-intervention" : "blocked";
-      store.setIssueProjection(issue.id, { stage: "implementation", state: stoppedState, warning: null });
-      store.setStageState({ issueId: issue.id, stageId: "implementation", status: stoppedState, feedbackCycle: 2, configHash: config.hash });
+      const stageId = issue.id === "closed-merged" ? "deploy" : "implementation";
+      store.setIssueProjection(issue.id, { stage: stageId, state: stoppedState, warning: null });
+      store.setStageState({ issueId: issue.id, stageId, status: stoppedState, feedbackCycle: 2, configHash: config.hash });
     }
     store.upsertIssue({ id: blocker.id, repositoryId: "repo", sourceNumber: blocker.number, sourceUrl: blocker.url, title: blocker.title, body: blocker.body, sourceState: blocker.state, sourceStateReason: null, labels: blocker.labels, sourceUpdatedAt: blocker.updatedAt });
     store.setIssueProjection(blocker.id, { stage: null, state: "offboarded", warning: null });
     for (const issue of issues) store.replaceRelationships(issue.id, null, ["blocker"]);
+    store.activateEnrollment("closed-merged");
+    store.upsertPullRequest({ issueId: "closed-merged", id: "merged-pr", number: 100, url: "https://github.com/owner/repo/pull/100", state: "merged", mergedAt: "2026-10-01T00:00:00Z" });
     const enrollment = store.activateEnrollment("with-note");
     store.recordWorkspace({ id: "existing-worktree", enrollmentId: enrollment.id, path: path.join(root, "existing-worktree"), branch: "conveyor/1-r1-feature", status: "active" });
     store.createRun({ id: "prior-run", issueId: "with-note", stageId: "implementation", attempt: 1, kind: "producer", status: "completed", configHash: config.hash, startedAt: "2026-09-30T00:00:00Z" });
@@ -146,21 +149,29 @@ describe("ConveyorService dashboard", () => {
         const issue = issues.find((candidate) => candidate.number === number)!;
         issue.labels = [...labels, ...issue.labels.filter((label) => !label.startsWith("conveyor:") && label !== "conveyor")];
       },
-      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 6 ? [blocker] : []; },
+      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 7 ? [blocker] : []; },
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
+    const before = service.dashboard("csrf");
+    const closedCard = [...before.stages.flatMap((stage) => stage.issues), ...before.attention.issues].find((issue) => issue.id === "closed-merged");
+    expect(closedCard?.retryable).toBe(true);
     await expect(service.retryIssue("with-note", "Android run passed", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     await expect(service.retryIssue("without-note", "", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     await expect(service.retryIssue("failed", "do not record this", "operator")).rejects.toThrow("source label update failed");
     await expect(service.retryIssue("stale", "do not record this either", "operator")).rejects.toThrow("inconsistent; refresh before retrying");
     await expect(service.retryIssue("error", "runner recovered", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     await expect(service.retryIssue("intervention", "approval is ready", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
+    await expect(service.retryIssue("closed-merged", "checkout cleaned", "operator")).resolves.toMatchObject({ status: "queued", stageId: "deploy" });
+    expect(store.getIssue("closed-merged")).toMatchObject({ sourceState: "closed", projectedState: "active", projectedStage: "deploy" });
+    expect(store.getCurrentPullRequest("closed-merged")?.id).toBe("merged-pr");
+    expect(store.listConversationMessages("closed-merged").filter((message) => message.actorType === "user").map((message) => message.message)).toEqual(["checkout cleaned"]);
     expect(replacements).toEqual([
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
       ["conveyor", "conveyor:implementation", "conveyor:order:7"],
+      ["conveyor", "conveyor:deploy", "conveyor:order:7"],
     ]);
     expect(issues[0]!.labels).toContain("priority:high");
     expect(issues[0]!.labels).toContain("area:web");
@@ -240,6 +251,9 @@ describe("ConveyorService dashboard", () => {
     store.setIssueProjection(child.id, { stage: "implementation", state: "active", warning: null });
     store.replaceRelationships(child.id, { parentId: "rollup", siblingOrder: null }, []);
     store.createRun({ id: "active-run", issueId: "running", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-01T00:00:00Z" });
+
+    store.activateEnrollment("closed");
+    store.upsertPullRequest({ issueId: "closed", id: "unmerged-pr", number: 101, url: "https://github.com/owner/repo/pull/101", state: "open" });
 
     const replacements: string[][] = [];
     const github = {
