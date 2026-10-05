@@ -91,13 +91,15 @@ describe("dashboard browser client", () => {
     ]);
     const countdown = { textContent: "" };
     const value = { textContent: "" };
+    const lowLabel = { hidden: false };
     const resetDetail = { textContent: "" };
     const reportedDetail = { textContent: "" };
-    const classes = new Set<string>();
+    const classes = new Set<string>(["quota-window--low"]);
     const element = {
       getAttribute: (name: string) => attributes.get(name) ?? null,
       querySelector: (selector: string) => selector === "[data-countdown]" ? countdown
         : selector === ".quota-value" ? value
+          : selector === ".quota-low-label" ? lowLabel
           : selector === "[data-reset-detail]" ? resetDetail
             : selector === "[data-reported-detail]" ? reportedDetail : null,
       classList: { toggle: (name: string, enabled: boolean) => enabled ? classes.add(name) : classes.delete(name) },
@@ -115,6 +117,8 @@ describe("dashboard browser client", () => {
     expect(resetDetail.textContent).toBe(`Reset: ${format("2026-10-05T22:00:00.000Z")}`);
     expect(reportedDetail.textContent).toBe(`Last reported: ${format("2026-10-03T14:04:00.000Z")}`);
     expect(classes.has("quota-window--stale")).toBe(false);
+    expect(classes.has("quota-window--low")).toBe(true);
+    expect(lowLabel.hidden).toBe(false);
 
     attributes.set("data-reset-at", new Date(now).toISOString());
     updateQuotaWindow(element, now);
@@ -123,6 +127,8 @@ describe("dashboard browser client", () => {
     expect(attributes.get("aria-label")).toContain("weekly: stale.");
     expect(attributes.get("aria-label")).not.toContain("remaining");
     expect(classes.has("quota-window--stale")).toBe(true);
+    expect(classes.has("quota-window--low")).toBe(false);
+    expect(lowLabel.hidden).toBe(true);
 
     attributes.set("data-reset-at", "2026-10-05T22:00:00.000Z");
     updateQuotaWindow(element, now);
@@ -130,5 +136,7 @@ describe("dashboard browser client", () => {
     expect(value.textContent).toBe("4% left");
     expect(attributes.get("aria-label")).toContain("weekly: 4% remaining.");
     expect(classes.has("quota-window--stale")).toBe(false);
+    expect(classes.has("quota-window--low")).toBe(true);
+    expect(lowLabel.hidden).toBe(false);
   });
 });

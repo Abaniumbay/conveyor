@@ -16,7 +16,11 @@ export function updateQuotaWindow(element: HTMLElement, nowMs = Date.now()): voi
   const result = quotaCountdown(resetAtMs, nowMs);
   const stale = result.stale;
   const remaining = element.getAttribute("data-remaining") || "0";
+  const lowCapacity = !stale && Number(remaining) < 10;
   element.classList.toggle("quota-window--stale", stale);
+  element.classList.toggle("quota-window--low", lowCapacity);
+  const lowLabel = element.querySelector<HTMLElement>(".quota-low-label");
+  if (lowLabel) lowLabel.hidden = !lowCapacity;
   const value = element.querySelector<HTMLElement>(".quota-value");
   if (value) value.textContent = stale ? "Stale" : remaining + "% left";
   countdown.textContent = result.text;
