@@ -1278,7 +1278,14 @@ export class ConveyorService {
   }
 
   /** History is deliberately bounded by transition, run, and event limits and rejects non-board references uniformly. */
-  private operatorItemHistory(input: { itemId: string; beforeRunId?: string; runLimit: number; eventLimit: number }): unknown {
+  private async operatorItemHistory(input: {
+    itemId: string;
+    beforeRunId?: string;
+    eventRunId?: string;
+    beforeEventSequence?: number;
+    runLimit: number;
+    eventLimit: number;
+  }): Promise<unknown> {
     const issue = this.store.getIssue(input.itemId);
     if (!issue || !this.config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") {
       throw new Error("item is not on this configured board");
@@ -1287,6 +1294,20 @@ export class ConveyorService {
       ...(input.beforeRunId ? { before: input.beforeRunId } : {}),
       limit: input.runLimit,
     });
+    const eventRun = input.eventRunId ? this.store.getRun(input.eventRunId) : null;
+    if (input.eventRunId && (!eventRun || eventRun.issueId !== issue.id)) {
+      throw new Error("event cursor does not belong to this board item");
+    }
+    let delivery: unknown;
+    try {
+      const repository = this.config.repositories[issue.repositoryId]!;
+      delivery = { status: "available", ...await this.loadDeliveryState(issue.id, repository.address) };
+    } catch (error) {
+      delivery = {
+        status: "unavailable",
+        reason: error instanceof Error ? error.message : "delivery diagnostics are unavailable",
+      };
+    }
     return {
       item: { id: issue.id, repositoryId: issue.repositoryId, number: issue.sourceNumber, url: issue.sourceUrl, title: issue.title },
       transitions: this.store.listStageTransitions(issue.id).slice(-50).map((transition) => ({
@@ -1300,18 +1321,28 @@ export class ConveyorService {
         createdAt: transition.createdAt,
         completedAt: transition.completedAt,
       })),
-      runs: runs.runs.map((run) => ({
-        id: run.id,
-        stageId: run.stageId,
-        attempt: run.attempt,
-        kind: run.kind,
-        status: run.status,
-        result: run.result,
-        startedAt: run.startedAt,
-        finishedAt: run.finishedAt,
-        events: this.store.listRunEventsPage(run.id, { limit: input.eventLimit }).events,
-      })),
+      runs: runs.runs.map((run) => {
+        const page = this.store.listRunEventsPage(run.id, {
+          limit: input.eventLimit,
+          ...(run.id === input.eventRunId && input.beforeEventSequence !== undefined
+            ? { before: input.beforeEventSequence }
+            : {}),
+        });
+        return {
+          id: run.id,
+          stageId: run.stageId,
+          attempt: run.attempt,
+          kind: run.kind,
+          status: run.status,
+          result: run.result,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          events: page.events,
+          nextEventBefore: page.nextBefore,
+        };
+      }),
       nextRunBefore: runs.nextBefore,
+      delivery,
     };
   }
 

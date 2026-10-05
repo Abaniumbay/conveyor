@@ -63,7 +63,14 @@ export interface TaskDeps {
    */
   operator?: {
     board: () => unknown;
-    itemHistory: (input: { itemId: string; beforeRunId?: string; runLimit: number; eventLimit: number }) => unknown;
+    itemHistory: (input: {
+      itemId: string;
+      beforeRunId?: string;
+      eventRunId?: string;
+      beforeEventSequence?: number;
+      runLimit: number;
+      eventLimit: number;
+    }) => unknown | Promise<unknown>;
     retry: (itemId: string, note: string) => Promise<{ status: "started" | "queued"; stageId: string }>;
     moveBacklog: (input: { itemId: string; position: "up" | "down" | "before" | "end"; beforeItemId?: string }) => unknown;
   };

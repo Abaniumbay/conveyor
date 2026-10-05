@@ -51,7 +51,10 @@ describe("reference configuration", () => {
       "operator.getBoard", "operator.getItemHistory", "operator.moveBacklogItem", "operator.retryItem",
     ]);
     expect(await readFile(path.join(EXAMPLES, "config/agents.yaml"), "utf8")).toContain("instructions: ../../skills/conveyor-operator/SKILL.md");
-    expect(await readFile(path.resolve(EXAMPLES, "../skills/conveyor-operator/SKILL.md"), "utf8")).toContain("Inspect first, before mutation.");
+    const guidance = await readFile(path.resolve(EXAMPLES, "../skills/conveyor-operator/SKILL.md"), "utf8");
+    expect(guidance).toContain("Inspect first, before mutation.");
+    expect(guidance).toContain("must not silently bypass or replace the normal issue pipeline");
+    expect(guidance).toContain("Never close a source issue.");
   });
 
   test("every native stage has a non-empty exit gate", async () => {

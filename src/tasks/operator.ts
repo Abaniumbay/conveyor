@@ -11,9 +11,15 @@ const emptyInput = z.object({}).strict();
 const historyInput = z.object({
   itemId: z.string().min(1),
   beforeRunId: z.string().min(1).optional(),
+  eventRunId: z.string().min(1).optional(),
+  beforeEventSequence: z.number().int().positive().optional(),
   runLimit: z.number().int().min(1).max(20).default(5),
   eventLimit: z.number().int().min(1).max(100).default(20),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (input.beforeEventSequence !== undefined && !input.eventRunId) {
+    context.addIssue({ code: "custom", path: ["eventRunId"], message: "is required when continuing an event page" });
+  }
+});
 const retryInput = z.object({
   itemId: z.string().min(1),
   note: z.string().max(4_000).default(""),
@@ -67,12 +73,14 @@ const itemHistory: TaskDefinition<unknown, z.infer<typeof historyInput>, Deps> =
   kind: "tool",
   description: "Read a bounded, pageable diagnostic history for one configured board item.",
   reads: [], writes: [], invalidates: [], input: historyInput,
-  run({ deps, input }) {
-    return pass(operator(deps).itemHistory({
+  async run({ deps, input }) {
+    return pass(await operator(deps).itemHistory({
       itemId: input!.itemId,
       runLimit: input!.runLimit,
       eventLimit: input!.eventLimit,
       ...(input!.beforeRunId ? { beforeRunId: input!.beforeRunId } : {}),
+      ...(input!.eventRunId ? { eventRunId: input!.eventRunId } : {}),
+      ...(input!.beforeEventSequence ? { beforeEventSequence: input!.beforeEventSequence } : {}),
     }));
   },
 };
