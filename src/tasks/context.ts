@@ -198,6 +198,7 @@ export interface ScriptContext {
     recovery: "replay-safe" | "reconcile";
     externalOperationId: string | null;
     summary: string;
+    reason?: string | null;
     artifactUrl: string | null;
     outputTail: string;
     finishedAt: string;

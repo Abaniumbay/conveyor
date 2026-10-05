@@ -33,6 +33,7 @@ const applyOutput = z
   .object({
     outcome: z.enum(["success", "failure"]),
     summary: z.string().trim().min(1),
+    reason: z.string().nullable().optional(),
     externalOperationId: z.string().min(1).nullable().optional(),
     artifactUrl: z.string().min(1).nullable().optional(),
   })
@@ -71,6 +72,7 @@ const toResult = (recovery: Recovery, output: ApplyOutput, operationId: string |
   recovery,
   externalOperationId: operationId ?? output.externalOperationId ?? null,
   summary: output.summary,
+  reason: output.reason?.trim() || null,
   artifactUrl: output.artifactUrl ?? null,
   outputTail,
   finishedAt: new Date().toISOString(),
@@ -131,7 +133,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
 const succeeded: TaskDefinition<z.output<typeof succeededConfig>> = {
   name: "script.succeeded",
   kind: "check",
-  description: "Passes when the named `script.run` instance's captured result passed; otherwise fails with the script's summary and output tail.",
+  description: "Passes when the named `script.run` instance's captured result passed; otherwise fails with the script's reason (falling back to its summary) and output tail.",
   reads: ["script"],
   writes: [],
   invalidates: [],
@@ -139,7 +141,7 @@ const succeeded: TaskDefinition<z.output<typeof succeededConfig>> = {
   run({ context, config }) {
     const result = context.script?.results[config.run];
     if (!result) return fail(`script ${config.run} has no result`);
-    return result.passed ? pass() : fail(result.summary, { details: result.outputTail });
+    return result.passed ? pass() : fail(result.reason?.trim() || result.summary, { details: result.outputTail });
   },
 };
 

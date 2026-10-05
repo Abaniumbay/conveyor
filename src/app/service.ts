@@ -1762,7 +1762,8 @@ export class ConveyorService {
           dependencyReason ?? issue.warning ?? options.reason ??
           "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
         : null;
-      const retryable = issue.sourceState === "open" &&
+      const retryable = (issue.sourceState === "open" ||
+        (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
         issue.labels.includes(this.config.labels.enrollment) &&
         ["blocked", "error", "needs-intervention"].includes(projectedState) &&
         !activeIssueIds.has(issue.id) &&
@@ -2294,7 +2295,9 @@ export class ConveyorService {
       const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
       if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
       if (note.length > 4_000) throw new Error("retry note must not exceed 4000 characters");
-      if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) {
+      const expectedPostMergeClosure = this.store.hasMergedPullRequest(issueId);
+      if ((issue.sourceState !== "open" && !(issue.sourceState === "closed" && expectedPostMergeClosure)) ||
+        !issue.labels.includes(this.config.labels.enrollment)) {
         throw new Error("issue is closed or offboarded");
       }
       if (this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId)) {
@@ -2310,10 +2313,11 @@ export class ConveyorService {
         sourceLabels: live.labels,
         labels: this.config.labels,
         stages: pipeline.stages.map((stage) => stage.id),
-        expectedPostMergeClosure: false,
+        expectedPostMergeClosure,
       });
       const stoppedStates = new Set(["blocked", "error", "needs-intervention"]);
-      if (live.number !== issue.sourceNumber || live.state !== "open" || evaluated.mode !== "stopped" ||
+      if (live.number !== issue.sourceNumber ||
+        (live.state !== "open" && !(live.state === "closed" && expectedPostMergeClosure)) || evaluated.mode !== "stopped" ||
         !evaluated.state || !stoppedStates.has(evaluated.state) || !evaluated.stage ||
         evaluated.state !== issue.projectedState || evaluated.stage !== issue.projectedStage) {
         throw new Error("issue state changed or is inconsistent; refresh before retrying");
