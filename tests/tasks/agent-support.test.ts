@@ -24,7 +24,8 @@ test("no grant advertises no callable tools", () => {
 test("native runs explain supported stops while legacy runs keep their configured statuses", () => {
   expect(prompt({}, "Review.")).toContain("use blocked or rejected");
   expect(prompt({}, "Review.")).toContain("Do not invent status names such as blocked-external");
-  expect(prompt({}, "Review.")).toContain("after recording a review finding with change.comment");
+  expect(prompt({}, "Review.")).toContain("existing finding from change.listFindings that you verified still applies");
+  expect(prompt({}, "Review.")).toContain("do not create duplicate findings");
   const legacy = prompt({ allowedFailureStatuses: ["needs-intervention", "error"] }, "Check.");
   expect(legacy).toContain("configured failure statuses: needs-intervention, error");
   expect(legacy).not.toContain("use blocked or rejected");

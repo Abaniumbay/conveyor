@@ -450,14 +450,52 @@ describe("agent.run", () => {
     expect(outcome(result)).toMatchObject({ status: "changes-requested", reason: "see findings" });
   });
 
-  test("changes-requested without a finding created in this run is an error stop", async () => {
+  test.each(["earlier-agent", "imported"] as const)("changes-requested reuses an open %s finding without creating a duplicate", async (source) => {
     const w = await world();
-    // A finding from another run does not count.
-    new ReviewFindings(w.store.sqlite()).create({ issueId: "i1", runId: "earlier", author: "kaveh", headSha: "h1", body: "Old" });
-    w.setBehaviour(() => ({ outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "see findings" }));
+    const findings = new ReviewFindings(w.store.sqlite());
+    if (source === "earlier-agent") {
+      findings.create({ issueId: "i1", runId: "earlier", author: "reviewer", headSha: "older-head", body: "Still needs fixing" });
+    } else {
+      findings.importNative("i1", [{ providerKey: "thread:1", author: "review-bot", body: "Still needs fixing", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
+    }
+    const original = findings.list("i1")[0]!;
+    for (const outcome of ["failure", "success"] as const) {
+      w.setBehaviour(() => ({ outcome, status: "changes-requested", summary: `Needs work: ${original.id}`, reason: outcome === "failure" ? "see existing finding" : null }));
+      expect((await w.run(false)).status).toBe("pass");
+      expect(findings.list("i1").map((finding) => finding.id)).toEqual([original.id]);
+    }
+    expect(w.calls[0]!.prompt).toContain("do not create duplicate findings");
+  });
+
+  test("changes-requested with no finding is an error stop", async () => {
+    const w = await world();
+    w.setBehaviour(() => ({ outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "no evidence" }));
     expect(await w.run(false)).toEqual({
-      status: "fail", message: "Reviewer requested changes without recording a finding", route: { stop: "error" },
+      status: "fail", message: "Reviewer requested changes without an open finding for this item", route: { stop: "error" },
     });
+  });
+
+  test.each(["resolved", "dismissed", "withdrawn"] as const)("changes-requested cannot reuse a %s finding", async (state) => {
+    const w = await world();
+    const findings = new ReviewFindings(w.store.sqlite());
+    findings.importNative("i1", [{ providerKey: "thread:1", author: "reviewer", body: "Old finding", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
+    const finding = findings.list("i1")[0]!;
+    if (state === "resolved") findings.resolve("i1", finding.id, "reviewer");
+    else if (state === "dismissed") findings.dismiss("i1", finding.id, { actor: "owner", reason: "does not apply", at: "2026-01-02T00:00:00Z" });
+    else findings.importNative("i1", [], "current-head", "2026-01-02T00:00:00Z");
+    expect(findings.get("i1", finding.id)?.state).toBe(state);
+    w.setBehaviour(() => ({ outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "old finding" }));
+    expect(await w.run(false)).toMatchObject({ status: "fail", route: { stop: "error" } });
+  });
+
+  test("an open finding for another item does not justify changes-requested even when created by this run", async () => {
+    const w = await world();
+    w.store.upsertIssue({ id: "other", repositoryId: "repo", sourceNumber: 8, sourceUrl: "https://x/8", title: "Other item", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    w.setBehaviour((_call, runId, store) => {
+      new ReviewFindings(store.sqlite()).create({ issueId: "other", runId, author: "reviewer", headSha: "head", body: "Other item defect" });
+      return { outcome: "failure", status: "changes-requested", summary: "Needs work", reason: "unrelated finding" };
+    });
+    expect(await w.run(false)).toMatchObject({ status: "fail", route: { stop: "error" } });
   });
 
   test("an unknown failure status is an actionable invalid result", async () => {

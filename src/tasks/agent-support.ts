@@ -36,7 +36,7 @@ export function prompt(
       ? [`Use only the configured failure statuses: ${parts.allowedFailureStatuses.join(", ")}. Do not invent status names.`]
       : [
           `For a failed agent.run result, use ${AGENT_STOP_STATUSES.join(" or ")}. Do not invent status names such as blocked-external.`,
-          "Use needs-input only after opening a question with agent.askQuestion; use changes-requested only after recording a review finding with change.comment. If those tools are not granted, return blocked with the concrete reason instead.",
+          "Use needs-input only after opening a question with agent.askQuestion. Use changes-requested only when this item has at least one open review finding: either a new finding recorded with change.comment or an existing finding from change.listFindings that you verified still applies. Reuse existing findings from earlier agents, people, or review bots; do not create duplicate findings just to associate them with this run. Include the blocking finding IDs in your summary. If you cannot record or verify a finding because the required tools are unavailable, return blocked with the concrete reason instead.",
         ]),
     "",
     "Use the scoped Conveyor MCP for source and workspace operations. Return only the required structured result.",
