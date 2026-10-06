@@ -11,9 +11,9 @@ import { runCli } from "../../src/cli/main";
 import { ReleaseCoordinator, SwitchRefused } from "../../src/control/releases";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION, NewerSchemaError } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
-import { runningServe } from "../../src/cli/process-lock";
+import { claimPidFile, runningServe } from "../../src/cli/process-lock";
 import { currentVersion, detectPrefix, stageRelease, switchCurrent } from "../../src/release/install";
-import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState, type ReleaseState, type SwitchRecord } from "../../src/release/state";
+import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, writeReleaseState, type ReleaseState, type SwitchRecord } from "../../src/release/state";
 import { BUILD } from "../../src/version";
 
 const directories: string[] = [];
@@ -110,7 +110,7 @@ describe("state backups and schema", () => {
     store.close();
     await writeFile(path.join(home, "state/session-secret"), "secret-after\n");
 
-    await restoreState(backup, database);
+    await restoreAndSwitch(backup, database, async () => {});
     const restored = await ConveyorStore.open(database);
     expect(restored.dashboardAccounts()[0]!.passwordHash).toBe("hash-before");
     restored.close();
@@ -128,7 +128,7 @@ describe("state backups and schema", () => {
     const chown = spyOn(fsPromises, "chown").mockResolvedValue(undefined);
     const getuid = spyOn(process, "getuid").mockReturnValue(0);
     try {
-      await restoreState(backup, database);
+      await restoreAndSwitch(backup, database, async () => {});
       await writeReleaseState(home, { pending: null, history: [] });
       await backupState({ home, database, label: "y" });
       const owner = await stat(home);
@@ -143,9 +143,36 @@ describe("state backups and schema", () => {
     }
     // Not root: nothing is chowned.
     const untouched = spyOn(fsPromises, "chown");
-    await restoreState(backup, database);
+    await restoreAndSwitch(backup, database, async () => {});
     expect(untouched).not.toHaveBeenCalled();
     untouched.mockRestore();
+  });
+
+  test("restore and switch are all or nothing: a failing switch puts the original database and secret back", async () => {
+    const home = await temporary();
+    const database = path.join(home, "state/conveyor.sqlite");
+    const store = await ConveyorStore.open(database);
+    await writeFile(path.join(home, "state/session-secret"), "secret-at-backup\n");
+    const backup = await backupState({ home, database, label: "x", open: store.sqlite() });
+    store.seedDashboardSuperuser("after-backup", "h");
+    store.close();
+    await writeFile(path.join(home, "state/session-secret"), "secret-now\n");
+
+    await expect(restoreAndSwitch(backup, database, async () => { throw new Error("symlink failed"); })).rejects.toThrow("symlink failed");
+    const kept = await ConveyorStore.open(database);
+    expect(kept.dashboardAccounts().map((account) => account.username)).toEqual(["after-backup"]);
+    kept.close();
+    expect(await readFile(path.join(home, "state/session-secret"), "utf8")).toBe("secret-now\n");
+    expect((await readdir(path.join(home, "state"))).filter((name) => /restore|before-rollback/.test(name))).toEqual([]);
+
+    const aside = await restoreAndSwitch(backup, database, async () => {});
+    const restored = await ConveyorStore.open(database);
+    expect(restored.dashboardAccounts()).toEqual([]);
+    restored.close();
+    expect(await readFile(path.join(home, "state/session-secret"), "utf8")).toBe("secret-at-backup\n");
+    // The database it replaced is kept, not deleted.
+    expect(path.basename(aside)).toStartWith("conveyor.sqlite.before-rollback-");
+    expect((await stat(aside)).isFile()).toBe(true);
   });
 
   test("an older Conveyor refuses a database migrated by a newer one", async () => {
@@ -392,6 +419,23 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     expect(await runningServe(path.join(home, "run"))).toBeNull();
     await writeFile(path.join(home, "run/conveyor.pid"), `${process.pid}\n`);
     expect(await runningServe(path.join(home, "run"))).toBeNull();
+  });
+
+  test("only one serve process can claim a home; a claim left by a dead process is taken over", async () => {
+    const run = path.join(await temporary(), "run");
+    const owner = Bun.spawn([process.execPath, "-e", `const { claimPidFile } = await import(${JSON.stringify(path.resolve(import.meta.dir, "../../src/cli/process-lock.ts"))}); await claimPidFile(${JSON.stringify(run)}); console.log("claimed"); await Bun.sleep(30000);`, "serve"], { stdout: "pipe" });
+    try {
+      const reader = owner.stdout.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("claimed");
+      await expect(claimPidFile(run)).rejects.toThrow(`another Conveyor is already running for this home (pid ${owner.pid})`);
+    } finally {
+      owner.kill("SIGKILL");
+      await owner.exited;
+    }
+    // Killed without cleaning up: its file remains, but its process is gone.
+    expect((await readFile(path.join(run, "conveyor.pid"), "utf8")).trim()).toBe(String(owner.pid));
+    await claimPidFile(run);
+    expect((await readFile(path.join(run, "conveyor.pid"), "utf8")).trim()).toBe(String(process.pid));
   });
 
   test("with the service stopped, a switch that cannot be recorded does not move the link", async () => {

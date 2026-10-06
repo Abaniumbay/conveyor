@@ -12,7 +12,7 @@ import { log } from "../log/logger";
 import { executableOf, requireInstalled, switchCurrent } from "../release/install";
 import { compareVersions } from "../release/semver";
 import {
-  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, updateRecord, writeReleaseState,
+  backupState, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, updateRecord, writeReleaseState,
   type PendingSwitch, type SwitchRecord,
 } from "../release/state";
 import { BUILD } from "../version";
@@ -207,8 +207,10 @@ export class ReleaseCoordinator {
       // The backup can only replace the database once it is closed; then the link switches.
       this.hooks.stop(`rollback to ${pending.version}`, this.hooks.restartExitCode, async () => {
         await requireInstalled(pending.prefix, pending.version);
-        await restoreState(restore, database);
-        await switchCurrent(pending.prefix, pending.version);
+        // All or nothing: if the restore or the switch fails, the database is put back, so the
+        // release systemd restarts still runs on its own data.
+        const kept = await restoreAndSwitch(restore, database, () => switchCurrent(pending.prefix, pending.version));
+        log.info("Restored the pre-upgrade backup; the database it replaced is kept", { kept });
       });
       return;
     }

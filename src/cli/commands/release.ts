@@ -11,7 +11,7 @@ import {
   currentVersion, DEFAULT_REPOSITORY, detectPrefix, downloadRelease, releaseTag, ReleaseError, requireInstalled, stageRelease, switchCurrent,
 } from "../../release/install";
 import {
-  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, updateRecord, writeReleaseState, type PendingSwitch, type SwitchRecord,
+  backupState, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, updateRecord, writeReleaseState, type PendingSwitch, type SwitchRecord,
 } from "../../release/state";
 import { compareVersions } from "../../release/semver";
 import { CliError, EXIT, parseDuration } from "../args";
@@ -224,8 +224,8 @@ export const rollback: Command = {
       throw new CliError(`${error instanceof Error ? error.message : String(error)}; nothing was changed`, EXIT.failure);
     });
     await recordThenSwitch(context, { kind: "rollback", from: running, to: plan.target, fromSchema: schemaNow, backup: plan.restoreBackup }, async () => {
-      if (plan.restoreBackup) await restoreState(plan.restoreBackup, database);
-      await switchCurrent(prefix, plan.target);
+      if (plan.restoreBackup) await restoreAndSwitch(plan.restoreBackup, database, () => switchCurrent(prefix, plan.target));
+      else await switchCurrent(prefix, plan.target);
     });
     if (context.json) return printJson(context, { from: running, to: plan.target, restored: plan.restoreBackup });
     context.out(`Switched ${prefix}/current from ${running} to ${plan.target}${plan.restoreBackup ? ` and restored ${plan.restoreBackup}` : ""}. Start the service with conveyor service start.`);

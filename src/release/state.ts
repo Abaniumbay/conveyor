@@ -115,24 +115,67 @@ export async function backupState(options: { home: string; database: string; lab
   return directory;
 }
 
-/** Replaces the database (and session secret) with a backup. The database must not be open. */
-export async function restoreState(backup: string, database: string): Promise<void> {
+async function exists(file: string): Promise<boolean> {
+  return Boolean(await stat(file).catch(() => null));
+}
+
+/**
+ * Restores a backup and switches the release, as one step that either completes or leaves
+ * everything as it was. The database must not be open.
+ *
+ * The restored files are prepared beside the live ones first. The live database (with any WAL
+ * files) and session secret are then moved aside, not deleted, and the restored ones put in place;
+ * then `switchRelease` runs. If any of that fails, the restored files are removed and the originals
+ * moved back, so the release that is still selected keeps its own database. On success the
+ * previous database stays beside it as `<database>.before-rollback-<time>`; its path is returned.
+ */
+export async function restoreAndSwitch(backup: string, database: string, switchRelease: () => Promise<void>): Promise<string> {
   const source = path.join(backup, "conveyor.sqlite");
   if (!(await stat(source).catch(() => null))?.isFile()) throw new Error(`${backup} holds no database backup`);
-  const temporary = `${database}.restore`;
+  const directory = path.dirname(database);
+  const secret = path.join(directory, SESSION_SECRET_FILE);
+  const backupSecret = path.join(backup, SESSION_SECRET_FILE);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const aside = `${database}.before-rollback-${stamp}`;
   // The restored files keep the owner of what they replace (or of the database directory).
-  const reference = (await stat(database).catch(() => null)) ? database : path.dirname(database);
-  await copyFile(source, temporary);
-  await ownLike(temporary, reference);
-  await rm(`${database}-wal`, { force: true });
-  await rm(`${database}-shm`, { force: true });
-  await rename(temporary, database);
-  const secret = path.join(backup, SESSION_SECRET_FILE);
-  if (await stat(secret).catch(() => null)) {
-    const destination = path.join(path.dirname(database), SESSION_SECRET_FILE);
-    await copyFile(secret, destination);
-    await ownLike(destination, reference);
+  const reference = (await exists(database)) ? database : directory;
+
+  const restoredDatabase = `${database}.restore`;
+  const restoredSecret = (await exists(backupSecret)) ? `${secret}.restore` : null;
+  await copyFile(source, restoredDatabase);
+  await ownLike(restoredDatabase, reference);
+  if (restoredSecret) {
+    await copyFile(backupSecret, restoredSecret);
+    await ownLike(restoredSecret, reference);
   }
+
+  const moved: Array<[string, string]> = [];
+  const placed: string[] = [];
+  const moveAside = async (from: string, to: string) => {
+    if (!(await exists(from))) return;
+    await rename(from, to);
+    moved.push([from, to]);
+  };
+  try {
+    await moveAside(database, aside);
+    await moveAside(`${database}-wal`, `${aside}-wal`);
+    await moveAside(`${database}-shm`, `${aside}-shm`);
+    if (restoredSecret) await moveAside(secret, `${secret}.before-rollback-${stamp}`);
+    await rename(restoredDatabase, database);
+    placed.push(database);
+    if (restoredSecret) {
+      await rename(restoredSecret, secret);
+      placed.push(secret);
+    }
+    await switchRelease();
+  } catch (error) {
+    for (const file of placed) await rm(file, { force: true });
+    for (const [from, to] of moved.reverse()) await rename(to, from);
+    await rm(restoredDatabase, { force: true });
+    if (restoredSecret) await rm(restoredSecret, { force: true });
+    throw error;
+  }
+  return aside;
 }
 
 export class RollbackRefused extends Error {
