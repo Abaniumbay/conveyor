@@ -139,7 +139,9 @@ export async function stageRelease(files: ReleaseFiles, prefix: string): Promise
     if (!version) throw new ReleaseError("the release executable did not report its version");
     const { versions } = layout(prefix);
     const destination = path.join(versions, version);
-    if ((await stat(path.join(destination, "conveyor")).catch(() => null))?.isFile()) {
+    const installed = await readFile(path.join(destination, "conveyor")).catch(() => null);
+    // An installed copy is reused only when it is byte-for-byte the verified executable.
+    if (installed && installed.equals(await readFile(executable))) {
       return { version, executable: path.join(destination, "conveyor"), sha256 };
     }
     const partial = `${destination}.partial`;
@@ -151,7 +153,17 @@ export async function stageRelease(files: ReleaseFiles, prefix: string): Promise
       });
     }
     await chmod(path.join(partial, "conveyor"), 0o755);
-    await rename(partial, destination);
+    if (installed) {
+      // Replace a copy that differs (corrupted, tampered or rebuilt): move it aside, then put the
+      // verified files in place. A process running the old file keeps its open inode.
+      const replaced = `${destination}.replaced-${process.pid}`;
+      await rm(replaced, { recursive: true, force: true });
+      await rename(destination, replaced);
+      await rename(partial, destination);
+      await rm(replaced, { recursive: true, force: true });
+    } else {
+      await rename(partial, destination);
+    }
     return { version, executable: path.join(destination, "conveyor"), sha256 };
   } finally {
     await rm(work, { recursive: true, force: true });
