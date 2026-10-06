@@ -12,6 +12,7 @@ import { pushConfiguration } from "../../web/push";
 import { createWebHandler } from "../../web/server";
 import { resolveSessionSecret } from "../../web/session-secret";
 import { CliError, EXIT, type ExitCode } from "../args";
+import { claimPidFile } from "../process-lock";
 
 /** serve exits with this after a requested restart; the service unit restarts it. */
 export const RESTART_EXIT_CODE = 75;
@@ -37,6 +38,8 @@ export const serve: Command = {
   async run(context) {
     // Warnings go through the service log (and its file), not straight to stderr.
     const config = await loadCommandConfig({ ...context, err: () => {} });
+    // Before anything is opened: direct upgrade/rollback must see this process as running.
+    await claimPidFile(context.paths.run);
     const { logging } = config.settings;
     log.configure({
       level: logging.level,

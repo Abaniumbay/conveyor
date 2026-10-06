@@ -11,6 +11,7 @@ import { runCli } from "../../src/cli/main";
 import { ReleaseCoordinator, SwitchRefused } from "../../src/control/releases";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION, NewerSchemaError } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
+import { runningServe } from "../../src/cli/process-lock";
 import { currentVersion, detectPrefix, stageRelease, switchCurrent } from "../../src/release/install";
 import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState, type ReleaseState, type SwitchRecord } from "../../src/release/state";
 import { BUILD } from "../../src/version";
@@ -364,6 +365,50 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     expect(await currentVersion(prefix)).toBe("1.2.0");
     const same = await fakeRelease(path.join(root, "again"), "1.2.0");
     expect((await cli(home, "upgrade", "--prefix", prefix, "--archive", same.archive, "--checksums", same.checksums)).out).toBe("1.2.0 is already current.");
+  });
+
+  test("refuses to act directly while a serve process is running but not answering yet", async () => {
+    const root = await temporary();
+    const prefix = await prefixWith(root, "1.0.0", "1.1.0");
+    const home = path.join(root, "home");
+    await mkdir(path.join(home, "run"), { recursive: true });
+    await mkdir(path.join(home, "config"), { recursive: true });
+    await writeFile(path.join(home, "config/conveyor.yaml"), "providers: !include builtin:providers.yaml\n");
+    // A starting service: its pid file exists, its control socket does not answer yet.
+    const starting = Bun.spawn(["sh", "-c", "sleep 30", "conveyor", "serve"], { stdout: "ignore" });
+    try {
+      await writeFile(path.join(home, "run/conveyor.pid"), `${starting.pid}\n`);
+      expect(await runningServe(path.join(home, "run"))).toBe(starting.pid);
+      const release = await fakeRelease(root, "1.2.0");
+      const refused = await cli(home, "upgrade", "--prefix", prefix, "--archive", release.archive, "--checksums", release.checksums);
+      expect(refused.code).toBe(EXIT.rejected);
+      expect(refused.err).toContain(`Conveyor is running for this home (pid ${starting.pid}) but not answering on its control socket yet`);
+      expect(await currentVersion(prefix)).toBe("1.0.0");
+    } finally {
+      starting.kill();
+      await starting.exited;
+    }
+    // A pid that is gone, or that belongs to another program, does not count.
+    expect(await runningServe(path.join(home, "run"))).toBeNull();
+    await writeFile(path.join(home, "run/conveyor.pid"), `${process.pid}\n`);
+    expect(await runningServe(path.join(home, "run"))).toBeNull();
+  });
+
+  test("with the service stopped, a switch that cannot be recorded does not move the link", async () => {
+    const root = await temporary();
+    const prefix = await prefixWith(root, "1.0.0");
+    const home = path.join(root, "home");
+    await writeFile(path.join(root, "password"), "correct horse battery\n");
+    expect((await cli(home, "init", "--admin-username", "admin", "--admin-password-file", path.join(root, "password"))).code).toBe(0);
+    const release = await fakeRelease(root, "1.1.0");
+    await chmod(path.join(home, "state"), 0o500);
+    try {
+      const failed = await cli(home, "upgrade", "--prefix", prefix, "--archive", release.archive, "--checksums", release.checksums);
+      expect(failed.code).not.toBe(0);
+    } finally {
+      await chmod(path.join(home, "state"), 0o700);
+    }
+    expect(await currentVersion(prefix)).toBe("1.0.0");
   });
 
   test("rollback refuses after a migration without --restore-backup (exit 5) and restores with it", async () => {

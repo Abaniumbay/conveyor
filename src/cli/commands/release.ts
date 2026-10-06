@@ -11,13 +11,14 @@ import {
   currentVersion, DEFAULT_REPOSITORY, detectPrefix, downloadRelease, releaseTag, ReleaseError, requireInstalled, stageRelease, switchCurrent,
 } from "../../release/install";
 import {
-  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState, type PendingSwitch, type SwitchRecord,
+  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, updateRecord, writeReleaseState, type PendingSwitch, type SwitchRecord,
 } from "../../release/state";
 import { compareVersions } from "../../release/semver";
 import { CliError, EXIT, parseDuration } from "../args";
 import { loadCommandConfig, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
-import { withUnitHome } from "./service";
+import { runningServe } from "../process-lock";
+import { installedUnit, systemd, withUnitHome } from "./service";
 
 const SWITCH_OPTIONS = {
   prefix: { type: "string", value: "<dir>", description: "the install prefix (default: the one this conveyor runs from)" },
@@ -44,11 +45,23 @@ async function databasePath(context: CommandContext): Promise<string> {
 
 interface ServiceStatus { version: { version: string }; ready: boolean; startedAt: string }
 
+/**
+ * The running service's status, or null only when no Conveyor process runs for this home. A process
+ * that is starting (or not answering) is not "stopped": acting directly under it would corrupt state.
+ */
 async function serviceStatus(context: CommandContext): Promise<ServiceStatus | null> {
-  return control<ServiceStatus>(context, "GET", "/v1/status").catch((error: unknown) => {
+  const status = await control<ServiceStatus>(context, "GET", "/v1/status").catch((error: unknown) => {
     if (error instanceof ServiceUnavailable) return null;
     throw error;
   });
+  if (status) return status;
+  const pid = await runningServe(context.paths.run);
+  const unit = await installedUnit();
+  const active = unit && unit.home === context.paths.home && (await systemd.systemctl(["is-active", "--quiet", "conveyor.service"])).code === 0;
+  if (pid || active) {
+    throw new CliError(`Conveyor is running for this home${pid ? ` (pid ${pid})` : ""} but not answering on its control socket yet; wait for it to start, or stop it (conveyor service stop), then retry`, EXIT.rejected);
+  }
+  return null;
 }
 
 /** Waits until the switch with `id` is recorded and its release reports ready; throws with the recorded reason otherwise. */
@@ -75,6 +88,28 @@ async function latestTag(): Promise<string> {
   const response = await fetch(`https://api.github.com/repos/${repository}/releases/latest`, { headers: { accept: "application/vnd.github+json" } });
   if (!response.ok) throw new CliError(`cannot find the latest release of ${repository} (HTTP ${response.status}); pass --version`, EXIT.failure);
   return ((await response.json()) as { tag_name: string }).tag_name;
+}
+
+/**
+ * Records the switch, then performs it (the link moves last). If performing it fails, the record is
+ * marked failed, so the history never claims a switch the link does not show, or the reverse.
+ */
+async function recordThenSwitch(
+  context: CommandContext,
+  entry: Pick<SwitchRecord, "kind" | "from" | "to" | "fromSchema" | "backup">,
+  perform: () => Promise<void>,
+): Promise<void> {
+  const id = randomUUID();
+  const state = await readReleaseState(context.paths.home);
+  state.history.push({ id, ...entry, toSchema: null, status: "switched", reason: null, requestedAt: new Date().toISOString(), finishedAt: null });
+  await writeReleaseState(context.paths.home, state);
+  try {
+    await perform();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await updateRecord(context.paths.home, id, { status: "failed", reason, finishedAt: new Date().toISOString() }).catch(() => {});
+    throw new CliError(`the ${entry.kind} to ${entry.to} failed: ${reason}`, EXIT.failure);
+  }
 }
 
 export const upgrade: Command = {
@@ -143,11 +178,7 @@ export const upgrade: Command = {
     const exists = Boolean(await stat(database).catch(() => null));
     const fromSchema = exists ? databaseSchemaVersion(database) : null;
     const backup = exists ? await backupState({ home: context.paths.home, database, label: `${from}-to-${staged.version}` }) : null;
-    await switchCurrent(prefix, staged.version);
-    const state = await readReleaseState(context.paths.home);
-    const now = new Date().toISOString();
-    state.history.push({ id: randomUUID(), kind: "upgrade", from, to: staged.version, fromSchema, toSchema: null, backup, status: "switched", reason: null, requestedAt: now, finishedAt: null });
-    await writeReleaseState(context.paths.home, state);
+    await recordThenSwitch(context, { kind: "upgrade", from, to: staged.version, fromSchema, backup }, () => switchCurrent(prefix, staged.version));
     if (context.json) return printJson(context, { from, to: staged.version, backup, running: false });
     context.out(`Switched ${prefix}/current from ${from} to ${staged.version}${backup ? `; backup: ${backup}` : ""}. The service is not running: start it with conveyor service start.`);
   },
@@ -192,11 +223,10 @@ export const rollback: Command = {
     await requireInstalled(prefix, plan.target).catch((error: unknown) => {
       throw new CliError(`${error instanceof Error ? error.message : String(error)}; nothing was changed`, EXIT.failure);
     });
-    if (plan.restoreBackup) await restoreState(plan.restoreBackup, database);
-    await switchCurrent(prefix, plan.target);
-    const now = new Date().toISOString();
-    state.history.push({ id: randomUUID(), kind: "rollback", from: running, to: plan.target, fromSchema: schemaNow, toSchema: null, backup: plan.restoreBackup, status: "switched", reason: null, requestedAt: now, finishedAt: null });
-    await writeReleaseState(context.paths.home, state);
+    await recordThenSwitch(context, { kind: "rollback", from: running, to: plan.target, fromSchema: schemaNow, backup: plan.restoreBackup }, async () => {
+      if (plan.restoreBackup) await restoreState(plan.restoreBackup, database);
+      await switchCurrent(prefix, plan.target);
+    });
     if (context.json) return printJson(context, { from: running, to: plan.target, restored: plan.restoreBackup });
     context.out(`Switched ${prefix}/current from ${running} to ${plan.target}${plan.restoreBackup ? ` and restored ${plan.restoreBackup}` : ""}. Start the service with conveyor service start.`);
   },
