@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderDashboard } from "../../src/web/render";
 import { BUILD } from "../../src/version";
-import { quotaHeaderCss, themeInitScript } from "../../src/web/styles";
+import { dashboardCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
@@ -192,6 +192,26 @@ describe("renderDashboard", () => {
     expect(quotaHeaderCss).toContain(".dashboard-header{grid-template-columns:auto auto auto auto minmax(8rem,1fr) auto auto auto}");
     expect(quotaHeaderCss).toContain(".dashboard-header>.account-menu{justify-self:end}");
     expect(quotaHeaderCss).toContain(".account-page .dashboard-header>.header-link{justify-self:start}");
+  });
+
+  test("keeps phone header controls readable and overflowing tabs reachable", () => {
+    const totalUsage = "19M in (13M cached) · 1.1M out · 48 runs";
+    const html = renderDashboard({ ...dashboard, totalUsage });
+
+    expect(html).toContain(`<span class="total-usage">${totalUsage}</span>`);
+    expect(html).toContain('<a href="/board">Conveyor</a>');
+    expect(html).toMatch(/data-connection-state(?:="true")?>Connecting/);
+    expect(html).toContain('1 of 4</strong> runners');
+    expect(html).toContain('aria-label="Harness usage remaining"');
+    expect(html).toMatch(/data-theme-label(?:="true")?>System/);
+    expect(html).toContain('href="/settings/notifications"');
+    expect(html).toContain('class="account-menu"');
+    expect(html).toContain('href="/profile"');
+    expect(html).toContain('> Profile</a>');
+
+    expect(dashboardCss).toContain(".total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}");
+    expect(dashboardCss).toContain(".tabs{margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
+    expect(dashboardCss).toContain(".tab{flex:0 0 auto;padding:.55rem .65rem;white-space:nowrap}");
   });
 
   test("renders harness quotas in the shared header with low-capacity and exact reset details", () => {
