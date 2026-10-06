@@ -2,7 +2,7 @@ import { access, constants, stat } from "node:fs/promises";
 import net from "node:net";
 
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
-import { ConveyorStore } from "../../db/store";
+import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
@@ -146,12 +146,8 @@ export function scriptInterpreters(config: ConveyorConfig): string[] {
 
 async function accountCount(database: string): Promise<number> {
   if (!(await stat(database).catch(() => undefined))) return 0;
-  const store = await ConveyorStore.open(database);
-  try {
-    return store.dashboardAccounts().length;
-  } finally {
-    store.close();
-  }
+  // Read-only: a diagnostic must never migrate the database.
+  return dashboardAccountCount(database);
 }
 
 const SYMBOL = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;

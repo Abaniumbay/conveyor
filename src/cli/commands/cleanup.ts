@@ -32,7 +32,7 @@ export const cleanup: Command = {
     if (!report) {
       // The service is stopped: the same operation, on the store directly.
       const config = await loadCommandConfig(context, null);
-      const store = await ConveyorStore.open(config.settings.database);
+      const store = await ConveyorStore.open(config.settings.database, { migrateExisting: false });
       try {
         report = await applyRetention({ store, artifacts: config.settings.artifacts, dryRun, policy: { ...config.settings.retention, ...overrides } });
       } finally {

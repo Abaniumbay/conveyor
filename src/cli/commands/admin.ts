@@ -14,7 +14,7 @@ export function validUsername(username: string): string {
 /** Opens the configured database for one account operation. */
 export async function withStore<T>(context: CommandContext, operation: (store: ConveyorStore) => T | Promise<T>): Promise<T> {
   const config = await loadCommandConfig(context, null);
-  const store = await ConveyorStore.open(config.settings.database);
+  const store = await ConveyorStore.open(config.settings.database, { migrateExisting: false });
   try {
     return await operation(store);
   } finally {

@@ -237,6 +237,17 @@ export class NewerSchemaError extends Error {
   }
 }
 
+/** The number of dashboard accounts, read without migrating the database; 0 when it has none yet. */
+export function dashboardAccountCount(filename: string): number {
+  const database = new Database(filename, { readonly: true });
+  try {
+    const table = database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dashboard_accounts'").get();
+    return table ? (database.query("SELECT COUNT(*) AS count FROM dashboard_accounts").get() as { count: number }).count : 0;
+  } finally {
+    database.close();
+  }
+}
+
 /** The schema version of a database file, read without migrating it; 0 when it has none. */
 export function databaseSchemaVersion(filename: string): number {
   const database = new Database(filename, { readonly: true });
@@ -258,7 +269,12 @@ export class ConveyorStore {
     this.#executions = new ExecutionStore(database);
   }
 
-  static async open(filename: string): Promise<ConveyorStore> {
+  /**
+   * Opens (creating when absent) and migrates the database. With `migrateExisting: false`, as the
+   * CLI's direct operations use, a new database is still initialised but an existing one at another
+   * schema is refused: only the service and an upgrade, which backs up first, migrate it.
+   */
+  static async open(filename: string, options: { migrateExisting?: boolean } = {}): Promise<ConveyorStore> {
     await mkdir(path.dirname(filename), { recursive: true });
     const database = new Database(filename, { create: true, strict: true });
     database.exec("PRAGMA journal_mode = WAL");
@@ -266,6 +282,7 @@ export class ConveyorStore {
     database.exec("PRAGMA busy_timeout = 5000");
     const store = new ConveyorStore(database);
     try {
+      if (options.migrateExisting === false) store.requireCurrentSchema();
       store.migrate();
     } catch (error) {
       database.close();
@@ -391,6 +408,19 @@ export class ConveyorStore {
 
   changeDashboardAvatar(id: string, avatar: string): void {
     this.#database.query("UPDATE dashboard_accounts SET avatar = ? WHERE id = ?").run(avatar, id);
+  }
+
+  /** Throws unless the database is new or already at this build's schema. */
+  private requireCurrentSchema(): void {
+    const table = this.#database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+    if (!table) return;
+    const current = this.schemaVersion();
+    if (current === 0 || current === LATEST_SCHEMA_VERSION) return;
+    if (current > LATEST_SCHEMA_VERSION) throw new NewerSchemaError(current);
+    throw new Error(
+      `the database schema (${current}) is older than this Conveyor's (${LATEST_SCHEMA_VERSION}); this command does not migrate it. ` +
+      "Use the conveyor that the service runs, or upgrade with conveyor upgrade, which backs up the database first.",
+    );
   }
 
   private migrate(): void {

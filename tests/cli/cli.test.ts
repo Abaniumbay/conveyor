@@ -8,7 +8,8 @@ import { parse, stringify } from "yaml";
 import { CliError, EXIT, parseArgs } from "../../src/cli/args";
 import { doctorChecks } from "../../src/cli/commands/doctor";
 import { runCli } from "../../src/cli/main";
-import { ConveyorStore } from "../../src/db/store";
+import { Database } from "bun:sqlite";
+import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION } from "../../src/db/store";
 import { verifyPassword } from "../../src/web/auth";
 import { referenceConfigDirectory } from "../config/reference-fixture";
 
@@ -298,6 +299,27 @@ describe("conveyor serve", () => {
     const result = await cli("serve", "--home", home);
     expect(result.code).toBe(EXIT.failure);
     expect(result.err).toBe(`no dashboard account exists: run conveyor init --home ${home}`);
+  });
+});
+
+describe("commands that open the database directly", () => {
+  test("never migrate an existing database: doctor reads it read-only, admin refuses an older schema", async () => {
+    const home = await initialisedHome();
+    const database = path.join(home, "state/conveyor.sqlite");
+    // Make it look like a database an older release left behind.
+    const raw = new Database(database);
+    raw.query("DELETE FROM schema_migrations WHERE version = ?").run(LATEST_SCHEMA_VERSION);
+    raw.close();
+    const checks = await doctorChecks(home, path.join(home, "config/conveyor.yaml"), async () => false);
+    expect(checks.find((check) => check.name === "dashboard")).toMatchObject({ status: "ok", detail: "1 account(s)" });
+    expect(databaseSchemaVersion(database)).toBe(LATEST_SCHEMA_VERSION - 1);
+
+    const file = path.join(path.dirname(home), "new-password");
+    await writeFile(file, "a much newer password\n");
+    const reset = await cli("admin", "reset-password", "admin", "--home", home, "--password-file", file);
+    expect(reset.code).toBe(EXIT.failure);
+    expect(reset.err).toContain("this command does not migrate it");
+    expect(databaseSchemaVersion(database)).toBe(LATEST_SCHEMA_VERSION - 1);
   });
 });
 
