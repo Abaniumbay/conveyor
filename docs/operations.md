@@ -153,6 +153,9 @@ CLIs are not in `~/.local/bin`, `~/.bun/bin` or the system directories, pass `--
 
 When a drain times out, nothing is stopped and admission resumes; `--force` goes ahead anyway.
 
+`GET /health/live` is public, for process supervision and load balancers. Readiness, operational
+data and the dashboard require a signed-in account.
+
 ## Day to day
 
 ```sh
@@ -239,6 +242,42 @@ upgrade, so the stage completes and the engine records the boundary. The service
 nothing runs, and after the restart the item continues at its next stage (for example `verify`).
 For this, the install prefix must belong to the service account, which `service install` already
 requires.
+
+## Running several instances
+
+Several Conveyors can run on one machine, each completely separate. An instance is its own home:
+configuration, database, logs, worktrees, artifacts, backups and control socket all live under it.
+Give each instance:
+
+| Per instance | How |
+| --- | --- |
+| A home | `--home <dir>` (or `CONVEYOR_HOME`) on every command |
+| A dashboard port, and public URL if any | `web.listen` and `web.publicUrl` in its `conveyor.yaml` |
+| A systemd unit | `service install --unit <name>`, and `--unit <name>` on the other `service` commands |
+| An install prefix, to upgrade it on its own | `install.sh --prefix <dir> --bin-dir <dir>` |
+| Optionally, its own Unix account | separate `gh`, Codex and Claude sign-ins and quotas |
+
+Two rules matter:
+
+- **A repository belongs to exactly one instance.** Two instances managing the same repository act
+  on the same issues, labels and branches.
+- **`upgrade` switches `<prefix>/current` for every instance that shares that prefix.** Give each
+  instance its own prefix, or upgrade all instances of a shared prefix together.
+
+A second instance `b` beside the first, under the same account:
+
+```sh
+sh install.sh --version v0.2.0 --prefix ~/.local/share/conveyor-b --bin-dir ~/.local/bin-b
+alias conveyor-b="$HOME/.local/bin-b/conveyor --home $HOME/.conveyor-b"
+conveyor-b init                       # then set web.listen to another port, e.g. 127.0.0.1:7789
+conveyor-b doctor
+sudo ~/.local/bin-b/conveyor service install --unit conveyor-b --account "$USER" --home ~/.conveyor-b --path "$PATH"
+sudo ~/.local/bin-b/conveyor service start --unit conveyor-b
+conveyor-b status
+```
+
+Commands without `--home` use `~/.conveyor`, and `service` commands without `--unit` act on
+`conveyor.service`, so name the instance every time.
 
 ## Moving an existing installation
 
