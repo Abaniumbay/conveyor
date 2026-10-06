@@ -202,6 +202,12 @@ async function main(): Promise<void> {
     check(text.includes("smoke progress through MCP"), "the agent's MCP tool call reached the service through the packaged MCP server");
     check(text.includes("tools: agent.reportProgress"), "the packaged MCP server lists exactly the granted tools");
 
+    const statusReport = await run("status", "--home", home, "--json");
+    const reported = JSON.parse(statusReport.stdout) as { running: boolean; service: { version: { commit: string } } };
+    check(statusReport.code === 0 && reported.running && reported.service.version.commit === version.commit, "status reaches the running service over its control socket");
+    const serviceLog = await run("logs", "--home", home, "--level", "info");
+    check(serviceLog.code === 0 && serviceLog.stdout.includes("started"), "logs reads the service log file");
+
     server.kill("SIGTERM");
     const code = await server.exited;
     check(code === 0, "serve stops cleanly on SIGTERM");

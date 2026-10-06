@@ -1,13 +1,18 @@
 import { ConveyorService } from "../../app/service";
+import { createControlHandler, serveControlSocket } from "../../control/server";
+import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
 import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
 import { createGitHubCodeHostRegistry } from "../../source/github/codehost-registry";
-import { versionLine } from "../../version";
+import { BUILD, versionLine } from "../../version";
 import { createWebAuth } from "../../web/auth";
 import { pushConfiguration } from "../../web/push";
 import { createWebHandler } from "../../web/server";
 import { resolveSessionSecret } from "../../web/session-secret";
-import { CliError, EXIT } from "../args";
+import { CliError, EXIT, type ExitCode } from "../args";
+
+/** serve exits with this after a requested restart; the service unit restarts it. */
+export const RESTART_EXIT_CODE = 75;
 import { loadCommandConfig, type Command } from "../command";
 
 export function listenAddress(value: string): { hostname: string; port: number } {
@@ -28,7 +33,15 @@ export const serve: Command = {
     "exists (compatibility); `conveyor init` is the supported way.",
   ].join("\n"),
   async run(context) {
-    const config = await loadCommandConfig(context);
+    // Warnings go through the service log (and its file), not straight to stderr.
+    const config = await loadCommandConfig({ ...context, err: () => {} });
+    const { logging } = config.settings;
+    log.configure({
+      level: logging.level,
+      redactor: new Redactor(config.secrets ?? []),
+      sinks: [new ConsoleSink(logging.format), new FileSink(config.settings.logs, logging.maxFileMegabytes * 1024 * 1024, logging.keepFiles)],
+    });
+    for (const warning of config.warnings ?? []) log.warn(warning);
     const github = new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix);
     const service = await ConveyorService.create(config, github, createGitHubCodeHostRegistry(config, github));
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
@@ -57,7 +70,7 @@ export const serve: Command = {
       ...listenAddress(config.web.listen),
       fetch: handler,
       error(error) {
-        console.error(error);
+        log.error("Dashboard request failed", {}, error);
         return new Response("Internal server error", { status: 500 });
       },
     });
@@ -65,26 +78,50 @@ export const serve: Command = {
     const mcpSocket = Object.values(config.repositories).some((repository) => repository.agentEgress?.allowLoopbackMcp)
       ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
       : null;
+    const dashboardUrl = config.web.publicUrl ?? server.url.href;
+    let requestStop: (reason: string, exitCode?: number) => void = () => {};
+    const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, {
+      home: context.paths.home,
+      config: context.paths.config,
+      logs: config.settings.logs,
+      database: config.settings.database,
+      dashboardUrl,
+      startedAt: new Date().toISOString(),
+      supervised: Boolean(process.env.INVOCATION_ID),
+    }, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE) })).catch(async (error: unknown) => {
+      await server.stop(true);
+      await mcpSocket?.stop();
+      await service.close();
+      throw new CliError(error instanceof Error ? error.message : String(error), EXIT.failure);
+    });
     service.start();
-    const dispatchPushEvents = () => Promise.resolve(webDependencies.dispatchPushEvents?.()).catch((error: unknown) => console.error("Push notification delivery failed", error));
+    const dispatchPushEvents = () => Promise.resolve(webDependencies.dispatchPushEvents?.()).catch((error: unknown) => log.error("Push notification delivery failed", {}, error));
     const pushTimer = setInterval(() => void dispatchPushEvents(), 5_000);
     void dispatchPushEvents();
-    console.log(`${versionLine()} with configuration ${config.hash.slice(0, 12)} listening on ${server.url}`);
+    log.info(`${versionLine()} started`, {
+      version: BUILD.version, commit: BUILD.commit, config: config.hash.slice(0, 12), listen: server.url.href, dashboard: dashboardUrl,
+      home: context.paths.home, logs: config.settings.logs,
+    });
 
-    await new Promise<void>((resolve) => {
+    const exitCode = await new Promise<number>((resolve) => {
       let stopping = false;
-      const stop = async (signal: string): Promise<void> => {
+      requestStop = (reason, code = EXIT.ok) => {
         if (stopping) return;
         stopping = true;
-        console.log(`Received ${signal}; stopping Conveyor`);
-        clearInterval(pushTimer);
-        await server.stop(false);
-        await mcpSocket?.stop();
-        await service.close();
-        resolve();
+        log.info("Stopping Conveyor", { reason });
+        void (async () => {
+          clearInterval(pushTimer);
+          await control.stop();
+          await server.stop(false);
+          await mcpSocket?.stop();
+          await service.close();
+          log.info("Conveyor stopped", { reason });
+          resolve(code);
+        })();
       };
-      process.on("SIGINT", () => void stop("SIGINT"));
-      process.on("SIGTERM", () => void stop("SIGTERM"));
+      process.on("SIGINT", () => requestStop("SIGINT"));
+      process.on("SIGTERM", () => requestStop("SIGTERM"));
     });
+    return exitCode as ExitCode;
   },
 };

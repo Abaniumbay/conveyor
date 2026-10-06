@@ -1792,6 +1792,34 @@ export class ConveyorStore {
     }));
   }
 
+  /** An item's run events across all its runs, oldest first, after the event id `afterId`. */
+  listIssueRunEventsAfter(issueId: string, afterId: number, limit: number): Array<{
+    id: number;
+    runId: string;
+    stageId: string;
+    kind: string;
+    type: string;
+    payload: unknown;
+    createdAt: string;
+  }> {
+    const rows = this.#database
+      .query(
+        `SELECT e.id, e.run_id, r.stage_id, r.kind, e.type, e.payload_json, e.created_at
+         FROM run_events e JOIN runs r ON r.id = e.run_id
+         WHERE r.issue_id = ? AND e.id > ? ORDER BY e.id LIMIT ?`,
+      )
+      .all(issueId, afterId, limit) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      runId: String(row.run_id),
+      stageId: String(row.stage_id),
+      kind: String(row.kind),
+      type: String(row.type),
+      payload: parseJson(String(row.payload_json)),
+      createdAt: String(row.created_at),
+    }));
+  }
+
   listRunEventsPage(
     runId: string,
     options: { before?: number | undefined; limit: number },

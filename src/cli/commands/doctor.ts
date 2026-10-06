@@ -6,6 +6,7 @@ import { ConveyorStore } from "../../db/store";
 import { scriptCommand } from "../../self";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
+import { serviceRunning } from "../control-client";
 
 export interface DoctorCheck {
   name: string;
@@ -159,7 +160,7 @@ export const doctor: Command = {
   name: "doctor",
   summary: "check the home, configuration and every external prerequisite, with fixes",
   async run(context) {
-    const checks = await doctorChecks(context.paths.home, context.paths.config, async () => false);
+    const checks = await doctorChecks(context.paths.home, context.paths.config, () => serviceRunning(context));
     const failed = checks.some((check) => check.status === "fail");
     if (context.json) printJson(context, { ok: !failed, checks });
     else {

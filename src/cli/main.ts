@@ -5,6 +5,8 @@ import { adminResetPassword } from "./commands/admin";
 import { configBuiltin, configCheck, configCompare, configMigrate, configShow } from "./commands/config";
 import { doctor } from "./commands/doctor";
 import { init } from "./commands/init";
+import { logs } from "./commands/logs";
+import { board, itemHistory, itemLogs, itemPause, itemResume, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
 import { serve } from "./commands/serve";
 import { homePaths, resolveHome } from "./home";
 
@@ -42,6 +44,17 @@ export const COMMANDS: Command[] = [
   configMigrate,
   configBuiltin,
   serve,
+  status,
+  board,
+  itemShow,
+  itemHistory,
+  itemLogs,
+  itemRetry,
+  itemPause,
+  itemResume,
+  questionsList,
+  questionsAnswer,
+  logs,
   adminResetPassword,
   checkConfigAlias,
 ];

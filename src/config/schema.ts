@@ -88,6 +88,19 @@ const settingsSchema = z
       .object({ contextSummaryBytes: z.number().int().positive().default(65536) })
       .strict()
       .prefault({}),
+    /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
+    logging: z
+      .object({
+        level: z.enum(["debug", "info", "warn", "error"]).default("info"),
+        /** stdout/stderr format; the file is always JSON lines. */
+        format: z.enum(["text", "json"]).default("text"),
+        /** conveyor.log is rotated when it would exceed this size. */
+        maxFileMegabytes: z.number().positive().max(1024).default(10),
+        /** Rotated files kept (conveyor.log.1 ... .N); older ones are deleted. */
+        keepFiles: z.number().int().min(0).max(100).default(5),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict()
   .transform(({ reconcileInterval, interruptGrace, ...settings }) => ({
