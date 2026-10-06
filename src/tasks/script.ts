@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import { RunnerProcessError, runProcess } from "../runner/json-process";
+import { scriptCommand } from "../self";
 import type { ScriptContext, ScriptRecoveryObservation, ScriptRecoveryRequest } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -22,6 +23,8 @@ const runConfig = z
     recovery: z.enum(["replay-safe", "reconcile"], {
       error: 'recovery is required and must be "replay-safe" or "reconcile"',
     }),
+    /** The argv prefix the script path is appended to; default `bun run`. `[]` executes the script itself. */
+    interpreter: z.array(z.string().min(1)).optional(),
   })
   .strict();
 type RunConfig = z.output<typeof runConfig>;
@@ -82,7 +85,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "script.run",
   kind: "act",
   description:
-    "Runs `bun run <script>` in the workspace (or the repository folder) with the script protocol on stdin. `replay-safe` scripts are applied every time; `reconcile` scripts are applied on the first run and, after a restart, observed first and applied only when not yet applied (an indeterminate observation stops for intervention). A script that completes always passes this task; the bounded result is captured per instance in `script`.",
+    "Runs `<interpreter> <script>` (default `bun run <script>`) in the workspace (or the repository folder) with the script protocol on stdin. `replay-safe` scripts are applied every time; `reconcile` scripts are applied on the first run and, after a restart, observed first and applied only when not yet applied (an indeterminate observation stops for intervention). A script that completes always passes this task; the bounded result is captured per instance in `script`.",
   reads: ["repository", "run"],
   writes: ["script"],
   invalidates: [],
@@ -95,7 +98,7 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
       const request: ScriptRecoveryRequest = { phase, idempotencyKey: instance.idempotencyKey, taskInstanceId: instance.id };
       try {
         return await runProcess({
-          command: ["bun", "run", config.script],
+          command: scriptCommand(config.script, config.interpreter),
           cwd: workspace ?? deps.repository.folder,
           // The legacy fields keep stage scripts written for `run: { type: script }` working unchanged.
           input: {

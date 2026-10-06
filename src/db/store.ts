@@ -222,6 +222,44 @@ function trimToLimit(message: string): string {
   return `${message.slice(0, cut).trimEnd()}${note(message.length - cut)}`;
 }
 
+/** The schema this build migrates databases to. */
+export const LATEST_SCHEMA_VERSION = Math.max(...migrations.map((migration) => migration.version));
+
+/** The database was migrated by a newer Conveyor; running an older one against it is unsafe. */
+export class NewerSchemaError extends Error {
+  override readonly name = "NewerSchemaError";
+
+  constructor(readonly schemaVersion: number) {
+    super(
+      `the database schema (${schemaVersion}) is newer than this Conveyor supports (${LATEST_SCHEMA_VERSION}): a newer release migrated it. ` +
+      "Run that release again, or restore the pre-upgrade backup with conveyor rollback --restore-backup.",
+    );
+  }
+}
+
+/** The number of dashboard accounts, read without migrating the database; 0 when it has none yet. */
+export function dashboardAccountCount(filename: string): number {
+  const database = new Database(filename, { readonly: true });
+  try {
+    const table = database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dashboard_accounts'").get();
+    return table ? (database.query("SELECT COUNT(*) AS count FROM dashboard_accounts").get() as { count: number }).count : 0;
+  } finally {
+    database.close();
+  }
+}
+
+/** The schema version of a database file, read without migrating it; 0 when it has none. */
+export function databaseSchemaVersion(filename: string): number {
+  const database = new Database(filename, { readonly: true });
+  try {
+    const table = database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+    if (!table) return 0;
+    return (database.query("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as { version: number }).version;
+  } finally {
+    database.close();
+  }
+}
+
 export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
@@ -231,14 +269,25 @@ export class ConveyorStore {
     this.#executions = new ExecutionStore(database);
   }
 
-  static async open(filename: string): Promise<ConveyorStore> {
+  /**
+   * Opens (creating when absent) and migrates the database. With `migrateExisting: false`, as the
+   * CLI's direct operations use, a new database is still initialised but an existing one at another
+   * schema is refused: only the service and an upgrade, which backs up first, migrate it.
+   */
+  static async open(filename: string, options: { migrateExisting?: boolean } = {}): Promise<ConveyorStore> {
     await mkdir(path.dirname(filename), { recursive: true });
     const database = new Database(filename, { create: true, strict: true });
     database.exec("PRAGMA journal_mode = WAL");
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("PRAGMA busy_timeout = 5000");
     const store = new ConveyorStore(database);
-    store.migrate();
+    try {
+      if (options.migrateExisting === false) store.requireCurrentSchema();
+      store.migrate();
+    } catch (error) {
+      database.close();
+      throw error;
+    }
     return store;
   }
 
@@ -361,6 +410,19 @@ export class ConveyorStore {
     this.#database.query("UPDATE dashboard_accounts SET avatar = ? WHERE id = ?").run(avatar, id);
   }
 
+  /** Throws unless the database is new or already at this build's schema. */
+  private requireCurrentSchema(): void {
+    const table = this.#database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+    if (!table) return;
+    const current = this.schemaVersion();
+    if (current === 0 || current === LATEST_SCHEMA_VERSION) return;
+    if (current > LATEST_SCHEMA_VERSION) throw new NewerSchemaError(current);
+    throw new Error(
+      `the database schema (${current}) is older than this Conveyor's (${LATEST_SCHEMA_VERSION}); this command does not migrate it. ` +
+      "Use the conveyor that the service runs, or upgrade with conveyor upgrade, which backs up the database first.",
+    );
+  }
+
   private migrate(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -375,6 +437,9 @@ export class ConveyorStore {
         .run(version, now());
     });
     const current = this.schemaVersion();
+    if (current > LATEST_SCHEMA_VERSION) {
+      throw new NewerSchemaError(current);
+    }
     for (const migration of migrations) {
       if (migration.version > current) apply(migration.version, migration.sql);
     }
@@ -1786,6 +1851,58 @@ export class ConveyorStore {
       .all(runId) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => ({
       sequence: Number(row.sequence),
+      type: String(row.type),
+      payload: parseJson(String(row.payload_json)),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  /**
+   * Runs that finished before `before` and can no longer be needed to recover work: their item is
+   * closed, done or offboarded, or they had no item (steering). Open items' runs are never listed,
+   * whatever their state, since a parked or stopped item may resume from them.
+   */
+  listRetiredRuns(before: string): Array<{ id: string; events: number }> {
+    const rows = this.#database
+      .query(
+        `SELECT r.id, (SELECT COUNT(*) FROM run_events e WHERE e.run_id = r.id) AS events
+         FROM runs r LEFT JOIN issues i ON i.id = r.issue_id
+         WHERE r.status <> 'running' AND r.finished_at IS NOT NULL AND r.finished_at < ?
+           AND (r.issue_id IS NULL OR i.id IS NULL OR i.source_state = 'closed' OR i.projected_state IN ('done', 'offboarded'))
+         ORDER BY r.finished_at`,
+      )
+      .all(before) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({ id: String(row.id), events: Number(row.events) }));
+  }
+
+  /** Deletes the events (transcripts, tool calls) of the given runs; the runs and their results stay. */
+  deleteRunEvents(runIds: readonly string[]): number {
+    const remove = this.#database.query("DELETE FROM run_events WHERE run_id = ?");
+    return this.#database.transaction(() => runIds.reduce((total, id) => total + remove.run(id).changes, 0))();
+  }
+
+  /** An item's run events across all its runs, oldest first, after the event id `afterId`. */
+  listIssueRunEventsAfter(issueId: string, afterId: number, limit: number): Array<{
+    id: number;
+    runId: string;
+    stageId: string;
+    kind: string;
+    type: string;
+    payload: unknown;
+    createdAt: string;
+  }> {
+    const rows = this.#database
+      .query(
+        `SELECT e.id, e.run_id, r.stage_id, r.kind, e.type, e.payload_json, e.created_at
+         FROM run_events e JOIN runs r ON r.id = e.run_id
+         WHERE r.issue_id = ? AND e.id > ? ORDER BY e.id LIMIT ?`,
+      )
+      .all(issueId, afterId, limit) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      runId: String(row.run_id),
+      stageId: String(row.stage_id),
+      kind: String(row.kind),
       type: String(row.type),
       payload: parseJson(String(row.payload_json)),
       createdAt: String(row.created_at),

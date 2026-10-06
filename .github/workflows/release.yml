@@ -1,0 +1,108 @@
+name: Release
+
+# Pushing a tag vX.Y.Z publishes the GitHub release of that version: the tag must match
+# package.json and have a dated section in CHANGELOG.md. `bun run release start` prepares both in a
+# release pull request and `bun run release tag` pushes the tag once it merged (docs/releasing.md). Every archive is built and smoke-tested on its own architecture before
+# anything is published; linux-arm64 is published only when its tests pass.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the version and run every check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Configure git for workspace tests
+        run: |
+          git config --global user.name "Conveyor CI"
+          git config --global user.email "ci@conveyor.invalid"
+          git config --global init.defaultBranch main
+      - run: bun install --frozen-lockfile
+      - name: Tag, package.json and CHANGELOG.md agree
+        run: bun run scripts/release.ts check "$GITHUB_REF_NAME" --notes release-notes.md
+      - run: bun run check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  build:
+    name: Build and smoke-test ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, runner: ubuntu-latest, optional: false }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, optional: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run scripts/build.ts --target ${{ matrix.target }} --out dist
+      # A second build to upgrade to and roll back from, run like systemd would.
+      - run: bun run scripts/build.ts --target ${{ matrix.target }} --out dist-next --version 99.0.0-next
+      - run: bun run scripts/smoke-test.ts --dist dist --next dist-next --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/conveyor-*-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    # The required x64 build must have passed; a failed optional arm64 build only leaves it out.
+    if: ${{ !cancelled() && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - name: Require the x64 archive
+        run: test -f "release/conveyor-${GITHUB_REF_NAME}-linux-x64.tar.gz"
+      - name: Checksums
+        run: |
+          cp scripts/install.sh release/install.sh
+          cd release
+          sha256sum conveyor-*.tar.gz install.sh > checksums.txt
+          cat checksums.txt
+      # Created as a draft so every asset is attached before it is published (immutable releases
+      # lock a release's assets once it is published).
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft $prerelease \
+            --title "Conveyor ${GITHUB_REF_NAME}" --notes-file release-notes.md \
+            release/conveyor-*.tar.gz release/install.sh release/checksums.txt
+          gh release edit "$GITHUB_REF_NAME" --draft=false

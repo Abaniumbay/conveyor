@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { canonicalToolName } from "../tasks/aliases";
 import { createTaskRegistry } from "../tasks/catalogue";
+import { BUILD } from "../version";
 import { conveyorToolGuidance } from "./guidance";
 
 export interface RunMcpContext {
@@ -62,7 +63,7 @@ const errorResult = (message: string) => ({ isError: true as const, content: [{ 
  */
 export function createConveyorMcpServer(context: RunMcpContext, control: ControlClient): Server {
   const server = new Server(
-    { name: "conveyor", version: "0.1.0" },
+    { name: "conveyor", version: BUILD.version },
     { capabilities: { tools: {} }, instructions: conveyorToolGuidance(context.allowedTools) },
   );
 

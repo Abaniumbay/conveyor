@@ -88,6 +88,31 @@ const settingsSchema = z
       .object({ contextSummaryBytes: z.number().int().positive().default(65536) })
       .strict()
       .prefault({}),
+    /**
+     * How long finished work is kept: run events (agent transcripts, tool calls) and per-run
+     * artifacts of items that are closed, done or offboarded. Open items are never pruned.
+     */
+    retention: z
+      .object({
+        runHistory: waitTimeoutSchema.prefault("unlimited"),
+        artifacts: waitTimeoutSchema.prefault("unlimited"),
+      })
+      .strict()
+      .prefault({})
+      .transform(({ runHistory, artifacts }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts })),
+    /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
+    logging: z
+      .object({
+        level: z.enum(["debug", "info", "warn", "error"]).default("info"),
+        /** stdout/stderr format; the file is always JSON lines. */
+        format: z.enum(["text", "json"]).default("text"),
+        /** conveyor.log is rotated when it would exceed this size. */
+        maxFileMegabytes: z.number().positive().max(1024).default(10),
+        /** Rotated files kept (conveyor.log.1 ... .N); older ones are deleted. */
+        keepFiles: z.number().int().min(0).max(100).default(5),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict()
   .transform(({ reconcileInterval, interruptGrace, ...settings }) => ({
@@ -105,9 +130,20 @@ const steeringSchema = z
 
 const webSchema = z
   .object({
-    listen: z.string().min(3).default("127.0.0.1:4300"),
+    listen: z.string().min(3).default("127.0.0.1:7788"),
     publicUrl: z.url().optional(),
     steering: steeringSchema.optional(),
+    /** Signs dashboard sessions; when unset, Conveyor generates one and keeps it beside the database. */
+    sessionSecret: z.string().min(32, "sessionSecret must be at least 32 characters").optional(),
+    /** VAPID keys for browser push notifications; the CONVEYOR_VAPID_* variables are the fallback. */
+    push: z
+      .object({
+        publicKey: z.string().min(1),
+        privateKey: z.string().min(1),
+        subject: z.string().regex(/^(https:\/\/|mailto:)/, "subject must be an https: or mailto: URL"),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .prefault({});
@@ -118,6 +154,8 @@ const githubSourceSchema = z
     webhookPath: z.string().startsWith("/").default("/hooks/github"),
     autoConfigureWebhook: z.boolean().default(false),
     allowedHumanLogins: z.array(identifierSchema).default([]),
+    /** Verifies webhook deliveries; CONVEYOR_GITHUB_WEBHOOK_SECRET is the fallback. */
+    webhookSecret: z.string().min(1).optional(),
   })
   .strict();
 
@@ -262,9 +300,13 @@ const agentSchema = z
   }));
 
 
+/** The argv prefix a script path is appended to (default `bun run`); `[]` executes the script itself. */
+const interpreterSchema = z.array(z.string().min(1)).optional();
+
 const checkSchema = z
   .object({
     script: absolutePathSchema.optional(),
+    interpreter: interpreterSchema,
     verifier: identifierSchema,
   })
   .strict();
@@ -278,9 +320,11 @@ const scriptRunSchema = z
   .object({
     runner: identifierSchema,
     script: absolutePathSchema,
+    interpreter: interpreterSchema,
   })
   .strict()
-  .transform(({ runner, script }) => ({ type: "script" as const, runner, script }));
+  .transform(({ runner, script, interpreter }): { type: "script"; runner: string; script: string; interpreter?: string[] } =>
+    interpreter ? { type: "script", runner, script, interpreter } : { type: "script", runner, script });
 
 const sourceActionRunSchema = z
   .object({

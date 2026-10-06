@@ -36,6 +36,7 @@ import {
   sentence,
   startRun,
 } from "../tasks/agent-support";
+import { scriptCommand } from "../self";
 import { ExternalWaitError, type SourceActionOutcome } from "./ci-gate";
 
 export interface RuntimeRepository {
@@ -108,10 +109,11 @@ function verifierConversationMessage(
 
 async function evidenceScript(
   script: string,
+  interpreter: readonly string[] | undefined,
   cwd: string,
   input: unknown,
 ): Promise<unknown> {
-  const child = Bun.spawn(["bun", "run", script], {
+  const child = Bun.spawn(scriptCommand(script, interpreter), {
     cwd,
     stdin: "pipe",
     stdout: "pipe",
@@ -242,7 +244,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       if (stage.run.type === "script") {
         this.conveyorMessage(issue.id, stage.id, runId, `${displayName(stage.id)} script started.`);
         result = await this.#jsonProcess({
-          command: ["bun", "run", stage.run.script],
+          command: scriptCommand(stage.run.script, stage.run.interpreter),
           cwd: this.context.workspace?.path ?? this.context.repository.folder,
           input: { ...context, runId, repository: this.context.repository },
           interruptGraceMs: this.config.settings.interruptGraceMs,
@@ -372,7 +374,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
     let evidence: unknown = null;
     if (definition.script) {
       try {
-        evidence = await evidenceScript(definition.script, workspace, {
+        evidence = await evidenceScript(definition.script, definition.interpreter, workspace, {
           phase,
           stageId: context.stageId,
           issue,

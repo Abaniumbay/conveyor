@@ -1,11 +1,11 @@
-// A whole delivery world with fakes at the outside edges only: the shipped reference
-// configuration (examples/config) with one repository, real git (a bare origin, a clone and the real
+// A whole delivery world with fakes at the outside edges only: the packaged default
+// configuration (examples/config, included with `!include builtin:`) with one repository, real git (a bare origin, a clone and the real
 // WorkspaceManager), a fake code host, CI provider, GitHub items adapter and harness, and real
 // `bun run` deploy/verify scripts. `drive` stands in for the reconciler between stages: it applies
 // the labels the engine wrote and makes the next stage ready.
 
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile, cp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "yaml";
@@ -112,7 +112,7 @@ const envelope = (summary: string): RunEnvelope => ({
 export async function deliveryWorld(): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
-  await cp(path.join(EXAMPLES, "config"), directory, { recursive: true });
+  await mkdir(directory, { recursive: true });
 
   // Real git: a bare origin and the repository clone the worktrees are cut from.
   const origin = path.join(root, "origin.git");
@@ -140,14 +140,19 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
       verify: { actions: { verifyScript: { with: { script: path.join(root, "verify.ts"), recovery: "replay-safe" } } } },
     },
   };
-  await writeFile(path.join(directory, "local.yaml"), stringify({
-    settings: {
-      database: path.join(root, "data/conveyor.sqlite"), logs: path.join(root, "data/logs"),
-      workspaces: path.join(root, "data/worktrees"), artifacts: path.join(root, "data/artifacts"),
-    },
-    repositories: { conveyor: repository },
-  }));
-  const config = await loadConfig(directory);
+  const entrypoint = path.join(directory, "conveyor.yaml");
+  await writeFile(entrypoint, [
+    stringify({
+      settings: {
+        database: path.join(root, "data/conveyor.sqlite"), logs: path.join(root, "data/logs"),
+        workspaces: path.join(root, "data/worktrees"), artifacts: path.join(root, "data/artifacts"),
+      },
+      repositories: { conveyor: repository },
+    }),
+    ...["providers", "harnesses", "agents", "pipelines"].map((section) => `${section}: !include builtin:${section}.yaml`),
+    "",
+  ].join("\n"));
+  const config = await loadConfig(entrypoint, undefined, { home: root });
   const store = await ConveyorStore.open(config.settings.database);
   store.upsertRepository({ id: "conveyor", configName: "conveyor", source: "github", address: "owner/conveyor", folder, configHash: config.hash });
 

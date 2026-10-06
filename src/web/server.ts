@@ -1,3 +1,7 @@
+import plexMono400 from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2" with { type: "file" };
+import plexSans400 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2" with { type: "file" };
+import plexSans500 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2" with { type: "file" };
+import plexSans600 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2" with { type: "file" };
 import { timingSafeEqual } from "node:crypto";
 import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
@@ -79,11 +83,12 @@ const DEFAULT_DONE_LIMIT = 20;
 const MAX_DONE_LIMIT = 2000;
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#087f72"/><path d="M15 21h34M15 43h34" stroke="#dff8f0" stroke-width="6" stroke-linecap="round"/><path d="m25 14 10 18-10 18" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const FONT_ASSETS = new Map<string, URL>([
-  ["/assets/fonts/ibm-plex-sans-400.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2", import.meta.url)],
-  ["/assets/fonts/ibm-plex-sans-500.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2", import.meta.url)],
-  ["/assets/fonts/ibm-plex-sans-600.woff2", new URL("../../node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2", import.meta.url)],
-  ["/assets/fonts/ibm-plex-mono-400.woff2", new URL("../../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2", import.meta.url)],
+// Embedded in the executable: each import is a path Bun.file can read, inside the binary too.
+const FONT_ASSETS = new Map<string, string>([
+  ["/assets/fonts/ibm-plex-sans-400.woff2", plexSans400],
+  ["/assets/fonts/ibm-plex-sans-500.woff2", plexSans500],
+  ["/assets/fonts/ibm-plex-sans-600.woff2", plexSans600],
+  ["/assets/fonts/ibm-plex-mono-400.woff2", plexMono400],
 ]);
 
 function response(body: BodyInit | null, status: number, contentType: string, headers?: HeadersInit): Response {

@@ -23,9 +23,9 @@ export interface PasswordHashOptions {
 }
 
 export interface WebAuthConfig {
-  /** Set from CONVEYOR_PASSWORD_HASH. Format: scrypt$N$r$p$salt$hash, base64url salt/hash. */
+  /** The legacy single-operator hash (CONVEYOR_PASSWORD_HASH); unused when accountByUsername is set. Format: scrypt$N$r$p$salt$hash, base64url salt/hash. */
   passwordHash: string | undefined;
-  /** Set from CONVEYOR_SESSION_SECRET; use at least 32 random bytes. */
+  /** At least 32 bytes: web.sessionSecret, CONVEYOR_SESSION_SECRET or the generated secret beside the database. */
   sessionSecret: string | undefined;
   sessionTtlSeconds?: number;
   secureCookies?: boolean;
@@ -207,7 +207,8 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
     : null;
   const ttl = config.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
   const validTtl = Number.isInteger(ttl) && ttl >= 1 && ttl <= 30 * 24 * 60 * 60;
-  const isConfigured = Boolean(hashParts && secret && validTtl);
+  // With database accounts (accountByUsername) no single bootstrap hash is needed.
+  const isConfigured = Boolean((hashParts || config.accountByUsername) && secret && validTtl);
   const now = dependencies.now ?? Date.now;
   const random = dependencies.randomBytes ?? ((size: number) => nodeRandomBytes(size));
   const encryptionKey = secret ? deriveKey(secret, "session-encryption") : null;
