@@ -152,7 +152,7 @@ const dashboard: DashboardViewModel = {
   },
   attention: {
     id: "attention",
-    name: "Needs attention",
+    name: "Label problems",
     actors: [],
     cost: null,
     totalIssues: 1,
@@ -207,7 +207,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="/settings/notifications"');
     expect(html).toContain('class="account-menu"');
     expect(html).toContain('href="/profile"');
-    expect(html).toContain('> Profile</a>');
+    expect(html).toContain('>Profile</a>');
 
     expect(dashboardCss).toContain(".total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}");
     expect(dashboardCss).toContain(".tabs{margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
@@ -412,6 +412,35 @@ describe("renderDashboard", () => {
     expect(html).not.toContain('href="/?issue=');
   });
 
+  test("keeps Board summaries on the Board and gives every view conditional navigation", () => {
+    const secondary = renderDashboard({ ...dashboard, view: "team" });
+    const empty = renderDashboard({ ...dashboard, view: "team", questions: [], needsYou: [], counts: { ...dashboard.counts, attention: 0 } });
+    const attention = renderDashboard({ ...dashboard, view: "attention", counts: { ...dashboard.counts, attention: 0 } });
+    const questionAndStopped = renderDashboard({
+      ...dashboard,
+      view: "team",
+      needsYou: [...dashboard.needsYou, backlogIssue],
+    });
+
+    expect(secondary.indexOf('class="app-header"')).toBeLessThan(secondary.indexOf('class="system-warnings"'));
+    expect(secondary.indexOf('class="system-warnings"')).toBeLessThan(secondary.indexOf('class="tabs"'));
+    expect(secondary.indexOf('class="tabs"')).toBeLessThan(secondary.indexOf('class="team"'));
+    expect(secondary).not.toContain('id="line-heading"');
+    expect(secondary).not.toContain('id="needs-you-heading"');
+    expect(secondary).toContain('href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">2</span>');
+    expect(secondary).toContain('>Label problems<span class="tab-count">1</span>');
+    expect(secondary).not.toContain('href="/profile" class="tab');
+    expect(secondary).not.toContain('href="/accounts" class="tab');
+    expect(secondary).not.toContain('href="/about" class="tab');
+    expect(secondary).not.toContain('href="/accounts" class="account-menu-item"');
+    expect(secondary).toContain('>About Conveyor</a>');
+    expect(questionAndStopped).toContain('href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">2</span>');
+    expect(empty).not.toContain('/board#needs-you-heading');
+    expect(empty).not.toContain('href="/attention"');
+    expect(attention).toContain('href="/attention" class="tab tab--active" aria-current="page">Label problems<span class="tab-count">0</span>');
+    expect(renderDashboard(dashboard).indexOf('class="tabs"')).toBeLessThan(renderDashboard(dashboard).indexOf('id="line-heading"'));
+  });
+
   test("renders one horizontal board column per configured stage with card status styling", () => {
     const html = renderDashboard(dashboard);
 
@@ -455,7 +484,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('border-left:16px solid var(--repo-color,var(--line))');
     expect(html).toContain('.blocked-summary{margin:.75rem 0 0;');
     expect(html).toContain('color:var(--stop)');
-    expect(html).toContain("Needs attention");
+    expect(html).toContain("Label problems");
     expect(html).toContain("Needs you <span>(2)</span>");
     expect(html).toContain("#41 Build &lt;safe> &amp; sound");
     expect(html).toContain('<a class="needs-you-action" href="/issues/sample/41">Open</a>');
@@ -606,7 +635,9 @@ describe("renderDashboard", () => {
     expect(html).toContain('<a class="header-link" href="/settings/notifications">Notifications</a>');
     expect(html).toContain('class="account-menu"');
     expect(html).toContain('aria-label="Account menu for reader &amp; friend"');
-    expect(html).toContain('href="/profile#change-password">Change password</a>');
+    expect(html).not.toContain('href="/accounts" class="account-menu-link"');
+    expect(html).toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
+    expect(html).toContain('href="/about"');
     expect(html).toContain('data-theme-choice="system"');
     expect(html).toContain('data-theme-choice="light"');
     expect(html).toContain('data-theme-choice="dark"');
@@ -624,7 +655,7 @@ describe("renderDashboard", () => {
       accounts: [account, { id: "reader", username: "reader <safe>", role: "user", avatar: "🐸" }],
     });
     expect(accountsHtml).toContain('data-dashboard-view="accounts"');
-    expect(accountsHtml).toContain('href="/accounts" class="tab tab--active" aria-current="page">Accounts</a>');
+    expect(accountsHtml).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
     expect(accountsHtml).toContain('data-account-list="true"');
     expect(accountsHtml).toContain('data-account-create-form="true"');
     expect(accountsHtml).toContain('reader &lt;safe>');
@@ -633,7 +664,7 @@ describe("renderDashboard", () => {
 
     const profileHtml = renderDashboard({ ...dashboard, view: "profile", account });
     expect(profileHtml).toContain('data-dashboard-view="profile"');
-    expect(profileHtml).toContain('href="/profile" class="tab tab--active" aria-current="page"');
+    expect(profileHtml).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
     expect(profileHtml).toContain('name="avatar" value="🦊" checked');
     expect(profileHtml).toContain('data-profile-avatar-form="true"');
     expect(profileHtml).toContain('<button type="submit">Save</button>');
@@ -692,6 +723,7 @@ describe("renderDashboard", () => {
 
   test("renders invalid stage labels on the separate attention tab", () => {
     const html = renderDashboard({ ...dashboard, view: "attention" });
+    expect(html).toContain("Label problems");
     expect(html).toContain("missing, unknown, or conflicting stage label");
     expect(html).toContain("No valid configured stage label is present.");
     expect(html).not.toContain("Delivery board");

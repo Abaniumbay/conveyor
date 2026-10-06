@@ -2079,7 +2079,7 @@ export class ConveyorService {
       },
       attention: column(
         "attention",
-        "Needs attention",
+        "Label problems",
         attentionIssues,
         null,
         (issue) => card(issue, {

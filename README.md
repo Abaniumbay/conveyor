@@ -10,7 +10,7 @@ another implements it in an isolated worktree and opens a pull request, a review
 Conveyor merges, deploys and verifies it. Deterministic gates decide when each stage is done, and
 you watch and steer everything from a dashboard or the command line.
 
-![The delivery board](docs/screenshots/board.png)
+![The delivery Board, with shared navigation above Board-only summaries](docs/screenshots/board.png)
 
 ## Why Conveyor
 
@@ -48,7 +48,7 @@ is the packaged default. Read more in [docs/architecture.md](docs/architecture.m
 | --- | --- |
 | ![An item's story: stages, conversation and runs](docs/screenshots/item.png) | ![Delivery, usage and time per repository](docs/screenshots/reports.png) |
 | **The operator: ask Conveyor to inspect or change the board** | **The team: every agent, its model and its tools** |
-| ![The operator](docs/screenshots/operator.png) | ![Agent profiles](docs/screenshots/team.png) |
+| ![The Operator view under shared navigation](docs/screenshots/operator.png) | ![The Team view under shared navigation](docs/screenshots/team.png) |
 
 ## Quick start
 

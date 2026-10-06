@@ -1222,7 +1222,7 @@ describe("ConveyorService dashboard", () => {
       inconsistent: false,
       children: [{ number: 27 }],
     });
-    expect(dashboard.attention).toMatchObject({ totalIssues: 1 });
+    expect(dashboard.attention).toMatchObject({ name: "Label problems", totalIssues: 1 });
     expect(dashboard.attention.issues[0]).toMatchObject({
       number: 28,
       reason: "No valid configured stage label is present.",
