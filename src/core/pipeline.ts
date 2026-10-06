@@ -13,7 +13,7 @@ export interface PipelineStage {
   id: string;
   run:
     | { type: "agent"; agent: string }
-    | { type: "script"; runner: string; script: string }
+    | { type: "script"; runner: string; script: string; interpreter?: string[] }
     | { type: "source-action"; action: string; input?: Record<string, unknown> | undefined };
   concurrency: number;
   enterCheck?: string | undefined;

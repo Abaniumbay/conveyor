@@ -3,6 +3,7 @@ import net from "node:net";
 
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { ConveyorStore } from "../../db/store";
+import { scriptCommand } from "../../self";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
 
@@ -92,6 +93,12 @@ export async function doctorChecks(home: string, configPath: string, serviceRunn
       const missing = tool(`harness ${name}`, runner.command, `install ${runner.command} and authenticate it as the account Conveyor runs under`);
       checks.push(missing ?? { name: `harness ${name}`, status: "ok", detail: Bun.which(runner.command)! });
     }
+    for (const command of scriptInterpreters(config)) {
+      const missing = tool(`script interpreter ${command}`, command, command === "bun"
+        ? "install Bun (https://bun.sh), or set an interpreter for the scripts that need another one"
+        : `install ${command}, or change the scripts' interpreter`);
+      checks.push(missing ?? { name: `script interpreter ${command}`, status: "ok", detail: Bun.which(command)! });
+    }
     for (const [id, repository] of Object.entries(config.repositories)) {
       const probe = await run(["git", "-C", repository.folder, "rev-parse", "--is-inside-work-tree"]);
       checks.push(probe.code === 0
@@ -110,6 +117,30 @@ export async function doctorChecks(home: string, configPath: string, serviceRunn
     else checks.push({ name: "listen", status: "fail", detail: `${config.web.listen} is in use by another process`, fix: "stop that process or change web.listen" });
   }
   return checks;
+}
+
+/** The commands the configured operator scripts start with (their interpreters, `bun` by default). */
+export function scriptInterpreters(config: ConveyorConfig): string[] {
+  const commands = new Set<string>();
+  const add = (script: unknown, interpreter: unknown) => {
+    if (typeof script !== "string") return;
+    const argv = scriptCommand(script, Array.isArray(interpreter) ? interpreter.map(String) : undefined);
+    if (argv.length > 1) commands.add(argv[0]!);
+  };
+  for (const plan of config.plans) {
+    for (const stage of plan.stages) {
+      for (const task of [...stage.actions, ...stage.exitGate]) {
+        if (task.task === "script.run") add(task.with.script, task.with.interpreter);
+      }
+    }
+  }
+  for (const pipeline of Object.values(config.pipelines)) {
+    for (const stage of pipeline.stages) {
+      if ("run" in stage && stage.run.type === "script") add(stage.run.script, stage.run.interpreter);
+    }
+  }
+  for (const check of Object.values(config.checks)) add(check.script, check.interpreter);
+  return [...commands].sort();
 }
 
 async function accountCount(database: string): Promise<number> {

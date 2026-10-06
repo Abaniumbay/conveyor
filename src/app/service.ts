@@ -4,6 +4,7 @@ import { freemem, homedir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import { redactSecrets } from "../config/compose";
+import { INTERNAL, selfCommand } from "../self";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
@@ -187,6 +188,12 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
     })),
   ];
   return [...new Map(labels.map((label) => [label.name, label])).values()];
+}
+
+/** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
+function mcpServerCommand(contextFile: string): { command: string; args: string[] } {
+  const [command, ...args] = selfCommand(INTERNAL.mcp, "--context", contextFile);
+  return { command: command!, args };
 }
 
 export class ConveyorService {
@@ -1012,10 +1019,7 @@ export class ConveyorService {
         }), { mode: 0o600 });
         await chmod(contextFile, 0o600);
         return {
-          configuration: {
-            command: process.execPath,
-            args: ["run", path.join(import.meta.dir, "../mcp/cli.ts"), "--context", contextFile],
-          },
+          configuration: mcpServerCommand(contextFile),
           close: async () => {
             this.#mcpGrants.delete(token);
             await rm(contextFile, { force: true });
@@ -1067,10 +1071,7 @@ export class ConveyorService {
     }), { mode: 0o600 });
     await chmod(contextFile, 0o600);
     return {
-      configuration: {
-        command: process.execPath,
-        args: ["run", path.join(import.meta.dir, "../mcp/cli.ts"), "--context", contextFile],
-      },
+      configuration: mcpServerCommand(contextFile),
       close: async () => {
         this.#mcpGrants.delete(token);
         await rm(contextFile, { force: true });

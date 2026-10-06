@@ -1,6 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
+import { INTERNAL, selfCommand } from "../self";
+
 export const PROXY_VARIABLES = [
   "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
   "https_proxy", "http_proxy", "all_proxy", "no_proxy",
@@ -29,7 +31,6 @@ export interface SandboxedCommand {
   dataEnv: Record<string, string>;
 }
 
-const BRIDGE = path.join(import.meta.dir, "bridge.ts");
 
 function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
   const noProxy = mcp ? "127.0.0.1" : "";
@@ -90,7 +91,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
   const spec = JSON.stringify({ forwards, command: options.argv });
   return {
-    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(), "--", process.execPath, BRIDGE, spec],
+    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(), "--", ...selfCommand(INTERNAL.bridge, spec)],
     env: { ...options.env, ...commandEnv },
     dataEnv,
   };

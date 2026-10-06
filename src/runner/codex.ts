@@ -10,6 +10,7 @@ import {
   producerResultSchema,
   type RunEnvelope,
 } from "./result";
+import { writeOutputSchema } from "./output-schemas";
 
 export interface CodexMcpConfiguration {
   command: string;
@@ -94,7 +95,6 @@ interface CodexEvent {
   message?: string;
 }
 
-const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -186,8 +186,8 @@ function mcpArguments(input: CodexRunInput): string[] {
 
 // `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
 // takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
-function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, extra: string[]): string[] {
-  const args = ["exec", "resume", "--json", "--output-schema", OUTPUT_SCHEMA, "-o", outputFile];
+function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, schemaFile: string, extra: string[]): string[] {
+  const args = ["exec", "resume", "--json", "--output-schema", schemaFile, "-o", outputFile];
   args.push("-c", `sandbox_mode=${tomlString(input.sandbox)}`);
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("-c", `approvals_reviewer=${tomlString("auto_review")}`);
@@ -198,11 +198,11 @@ function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: st
   return args;
 }
 
-function buildArguments(input: CodexRunInput, outputFile: string, extra: string[] = []): string[] {
-  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile, extra);
+function buildArguments(input: CodexRunInput, outputFile: string, schemaFile: string, extra: string[] = []): string[] {
+  if (input.resumeSessionId) return resumeArguments(input, input.resumeSessionId, outputFile, schemaFile, extra);
   const args = ["exec", "--json", "--color", "never"];
   if (!input.persistSession) args.push("--ephemeral");
-  args.push("-C", input.workspace, "--output-schema", OUTPUT_SCHEMA, "-o", outputFile);
+  args.push("-C", input.workspace, "--output-schema", schemaFile, "-o", outputFile);
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("--approve-for-me");
   } else {
@@ -226,6 +226,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     input.artifactsDirectory,
     `codex-result-${randomUUID()}.json`,
   );
+  const schemaFile = await writeOutputSchema(input.artifactsDirectory, "producer");
   const startedAt = performance.now();
   let network: RunNetwork | null = null;
   let child: ReturnType<typeof spawnPiped>;
@@ -236,7 +237,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       environment,
       artifactsDirectory: input.artifactsDirectory,
       egress: input.egress,
-      buildArguments: (extra) => buildArguments(input, outputFile, extra),
+      buildArguments: (extra) => buildArguments(input, outputFile, schemaFile, extra),
     });
     network = launch.network;
     child = spawnPiped(launch.argv, input.workspace, launch.env);

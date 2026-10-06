@@ -12,6 +12,7 @@ import {
   type CodexErrorKind,
 } from "./codex";
 import { EMPTY_USAGE, type RunEnvelope } from "./result";
+import { writeOutputSchema } from "./output-schemas";
 
 export interface CodexCheckInput {
   command: string;
@@ -92,7 +93,6 @@ type CheckEvent = {
   message?: string;
 };
 
-const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/check-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -136,7 +136,7 @@ async function consumeJsonLines(
   return { raw, invalidLine };
 }
 
-function buildArguments(input: CodexCheckInput, outputFile: string, extra: string[] = []): string[] {
+function buildArguments(input: CodexCheckInput, outputFile: string, schemaFile: string, extra: string[] = []): string[] {
   const args = [
     "exec",
     "--json",
@@ -148,7 +148,7 @@ function buildArguments(input: CodexCheckInput, outputFile: string, extra: strin
     "-C",
     input.workspace,
     "--output-schema",
-    OUTPUT_SCHEMA,
+    schemaFile,
     "-o",
     outputFile,
   ];
@@ -186,6 +186,7 @@ export async function runCodexCheck(
     input.artifactsDirectory,
     `codex-check-${randomUUID()}.json`,
   );
+  const schemaFile = await writeOutputSchema(input.artifactsDirectory, "check");
   const startedAt = performance.now();
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   let network: RunNetwork | null = null;
@@ -195,7 +196,7 @@ export async function runCodexCheck(
       environment: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
       artifactsDirectory: input.artifactsDirectory,
       egress: input.egress,
-      buildArguments: (extra) => buildArguments(input, outputFile, extra),
+      buildArguments: (extra) => buildArguments(input, outputFile, schemaFile, extra),
     });
     network = launch.network;
     child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
