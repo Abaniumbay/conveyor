@@ -30,6 +30,9 @@ const SINGLETON_SECTIONS = ["settings", "web", "labels"] as const;
 
 type ConfigurationDocument = Record<string, unknown>;
 
+/** The v0.1 default listen address, kept for a deprecated configuration directory. */
+export const LEGACY_LISTEN = "127.0.0.1:4300";
+
 /** How the configuration was given: a single entrypoint file, or a deprecated directory of files. */
 export type ConfigMode = "entrypoint" | "directory";
 
@@ -436,12 +439,19 @@ export function homeLayout(home: string): Record<"database" | "logs" | "workspac
   };
 }
 
-export async function loadConfig(
-  target: string,
-  /** Pass null to validate the schema only, without compiling task plans. */
-  registry: TaskRegistry | null = createTaskRegistry(),
-  options: LoadConfigOptions = {},
-): Promise<ConveyorConfig> {
+/** The merged configuration document before validation: every file read, paths resolved, defaults applied. */
+export interface ConfigurationSource {
+  merged: ConfigurationDocument;
+  mode: ConfigMode;
+  root: string;
+  warnings: string[];
+  secrets: string[];
+  locate: Locate | null;
+  resolvedImport?: ResolvedImport;
+}
+
+/** Reads and merges the configuration at `target` without validating it. */
+export async function readConfiguration(target: string, options: LoadConfigOptions = {}): Promise<ConfigurationSource> {
   const resolvedTarget = path.resolve(target);
   const targetStat = await stat(resolvedTarget).catch(() => undefined);
   if (!targetStat) throw new ConfigError(`configuration path does not exist: ${resolvedTarget}`);
@@ -537,6 +547,12 @@ export async function loadConfig(
     mergeDocument(merged, document, origins, filename);
   }
 
+  // A deprecated configuration directory keeps the v0.1 defaults: state under <root>/data and the
+  // dashboard on port 4300.
+  if (mode === "directory") {
+    const web = (merged.web ??= {}) as Record<string, unknown>;
+    if (isObject(web)) web.listen ??= LEGACY_LISTEN;
+  }
   applySettingsDefaults(
     merged,
     mode === "entrypoint" && options.home
@@ -548,7 +564,16 @@ export async function loadConfig(
           artifacts: path.join(root, "data/artifacts"),
         },
   );
+  return { merged, mode, root, warnings, secrets, locate, ...(resolvedImport ? { resolvedImport } : {}) };
+}
 
+export async function loadConfig(
+  target: string,
+  /** Pass null to validate the schema only, without compiling task plans. */
+  registry: TaskRegistry | null = createTaskRegistry(),
+  options: LoadConfigOptions = {},
+): Promise<ConveyorConfig> {
+  const { merged, mode, root, warnings, secrets, locate, resolvedImport } = await readConfiguration(target, options);
   const parsed = configSchema.safeParse(merged);
   if (!parsed.success) {
     throw new ConfigError(formatErrors("configuration is invalid:", zodErrors(parsed.error.issues), locate));

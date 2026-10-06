@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { checkConfig } from "../../src/cli";
+import { checkConfig } from "../../src/cli/commands/config";
 import { loadConfig } from "../../src/config/load";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderPlan } from "../../src/tasks/plan";

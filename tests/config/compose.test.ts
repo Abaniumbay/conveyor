@@ -219,10 +219,11 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
   });
 
   test("a configuration directory still loads, with a deprecation warning", async () => {
-    const paths = await home({ "a.yaml": "web: { listen: 127.0.0.1:7792 }\n", "b.yaml": `settings: { runners: 3 }\nlabels: ${LABELS}\n` });
+    const paths = await home({ "a.yaml": "web: {}\n", "b.yaml": `settings: { runners: 3 }\nlabels: ${LABELS}\n` });
     const config = await loadConfig(paths.config, null);
     expect(config.mode).toBe("directory");
-    expect(config.web.listen).toBe("127.0.0.1:7792");
+    // A directory keeps the v0.1 defaults: port 4300 and state under <root>/data.
+    expect(config.web.listen).toBe("127.0.0.1:4300");
     expect(config.settings.database).toBe(path.join(paths.config, "data/conveyor.sqlite"));
     expect(config.warnings!.join("\n")).toContain("loading a configuration directory is deprecated");
   });

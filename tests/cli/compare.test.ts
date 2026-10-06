@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
-import { compareConfigs } from "../../src/cli";
+import { runCli } from "../../src/cli/main";
 import type { CompiledPipeline, CompiledStage, CompiledTask } from "../../src/tasks/plan";
 import { comparePlans } from "../../src/tasks/compare-plans";
 import { referenceConfigDirectory } from "../config/reference-fixture";
@@ -69,11 +69,14 @@ describe("comparePlans", () => {
   });
 });
 
-describe("check-config --compare", () => {
+describe("config compare", () => {
   test("compares the legacy fixture with the reference configuration, per repository and stage", async () => {
     const { directory, base } = await referenceConfigDirectory({ caravan: "caravan-v2", conveyor: "conveyor-v2" });
     bases.push(base);
-    const out = await compareConfigs(LEGACY, directory);
+    const lines: string[] = [];
+    const code = await runCli(["config", "compare", LEGACY, directory], { out: (text) => lines.push(text), err: () => {} });
+    expect(code).toBe(1);
+    const out = lines.join("\n");
     for (const repository of ["caravan-v2", "conveyor-v2", "meal-planner", "midgame", "quesshi"]) {
       expect(out).toContain(`Repository ${repository}`);
     }
@@ -90,12 +93,13 @@ describe("check-config --compare", () => {
     expect(out).toMatch(/added: stage cleanup|Stage cleanup/);
   });
 
-  test("the command exits 0 and prints both sides", async () => {
+  test("the v0.1 check-config --compare spelling still exits 0 and prints both sides", async () => {
     const { directory, base } = await referenceConfigDirectory();
     bases.push(base);
     const child = Bun.spawn(["bun", CLI, "check-config", "--config", LEGACY, "--compare", directory], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(stderr).toBe("");
+    // Both sides are deprecated configuration directories: one warning each, nothing else.
+    expect(stderr.trim().split("\n").every((line) => line.startsWith("warning: loading a configuration directory is deprecated"))).toBe(true);
     expect(code).toBe(0);
     expect(stdout).toContain("Configuration is valid");
     expect(stdout).toContain("Repository conveyor (only in");
