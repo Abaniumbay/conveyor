@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
+The first release of Conveyor as a standalone package.
+
 ### Added
 
 - Conveyor ships as one self-contained Linux executable per architecture (x64; arm64 when its tests

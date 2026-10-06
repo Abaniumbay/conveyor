@@ -58,12 +58,18 @@ describe("versioning", () => {
     expect(() => checkRelease("v0.2.0", "0.2.0", prepared.replace(" - 2026-10-06", ""))).toThrow("has no release date");
   });
 
-  test("the repository's changelog has unreleased changes ready to prepare", async () => {
+  test("the repository's changelog releases its current version or has changes to prepare", async () => {
     const changelog = await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8");
     const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as { version: string };
-    expect(changelogSection(changelog, "Unreleased")?.body).toContain("### Added");
-    const prepared = prepareChangelog(changelog, "0.2.0", "2026-10-06");
-    expect(checkRelease("v0.2.0", "0.2.0", prepared)).toContain("self-contained Linux executable");
-    expect(isLater("0.2.0", manifest.version)).toBe(true);
+    expect(changelogSection(changelog, "Unreleased")).toBeDefined();
+    if (changelogSection(changelog, manifest.version)) {
+      expect(checkRelease(`v${manifest.version}`, manifest.version, changelog)).not.toBe("");
+    } else {
+      // Before the first release package.json has no section: the next one must be preparable.
+      expect(changelogSection(changelog, "Unreleased")?.body).toContain("### Added");
+      expect(isLater("0.2.0", manifest.version)).toBe(true);
+      const prepared = prepareChangelog(changelog, "0.2.0", "2026-10-06");
+      expect(checkRelease("v0.2.0", "0.2.0", prepared)).not.toBe("");
+    }
   });
 });
