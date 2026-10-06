@@ -4,7 +4,9 @@
 // packaged defaults, the dashboard and its embedded assets, sign-in, the sandbox bridge, and a real
 // agent run whose harness drives the packaged MCP server to report progress back to the service.
 //
-//   bun run scripts/smoke-test.ts --dist dist [--work <dir>] [--target linux-x64]
+//   bun run scripts/smoke-test.ts --dist dist [--next dist-next] [--work <dir>] [--target linux-x64]
+//
+// With --next (a second build with another version), it also upgrades to it and rolls back.
 //
 // The work directory must not be under /tmp: the sandbox mounts a private /tmp.
 
@@ -73,6 +75,32 @@ print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "t
 print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))
 `;
 
+/** Plays systemd's part (Restart=always): starts serve again when it exits to be restarted. */
+class Supervisor {
+  #child: ReturnType<typeof Bun.spawn> | null = null;
+  #stopped = false;
+  readonly exits: number[] = [];
+
+  constructor(private readonly argv: string[], private readonly environment: Record<string, string>, private readonly logFile: string) {}
+
+  start(): void {
+    const output = Bun.file(this.logFile);
+    const child = Bun.spawn(this.argv, { cwd: "/", env: { ...this.environment, INVOCATION_ID: "smoke-test" }, stdout: output, stderr: output });
+    this.#child = child;
+    void child.exited.then((code) => {
+      this.exits.push(code);
+      if (!this.#stopped && code === 75) this.start();
+    });
+  }
+
+  async stop(): Promise<number> {
+    this.#stopped = true;
+    if (!this.#child) return 0;
+    this.#child.kill("SIGTERM");
+    return this.#child.exited;
+  }
+}
+
 async function main(): Promise<void> {
   const dist = path.resolve(argument("dist"));
   const target = argument("target", "linux-x64");
@@ -82,7 +110,7 @@ async function main(): Promise<void> {
   await mkdir(base, { recursive: true });
   const work = await mkdtemp(path.join(base, "conveyor-smoke-"));
   if (work.startsWith("/tmp/")) throw new Error("the work directory must not be under /tmp (the sandbox hides it)");
-  let server: ReturnType<typeof Bun.spawn> | null = null;
+  let server: Supervisor | null = null;
   try {
     const userHome = path.join(work, "user");
     const tools = path.join(work, "tools");
@@ -154,7 +182,8 @@ async function main(): Promise<void> {
       "  smoke: { name: Smoke, title: Tester, harness: fake-codex, instructions: ./smoke.md, access: read-only, tasks: [agent.reportProgress] }",
       "",
     ].join("\n"));
-    server = Bun.spawn([conveyor, "serve", "--home", home], { cwd: "/", env: environment, stdout: "pipe", stderr: "pipe" });
+    server = new Supervisor([path.join(work, "prefix/current/conveyor"), "serve", "--home", home], environment, path.join(work, "serve.log"));
+    server.start();
     const url = `http://127.0.0.1:${port}`;
     let live = false;
     for (let attempt = 0; attempt < 100 && !live; attempt += 1) {
@@ -208,15 +237,30 @@ async function main(): Promise<void> {
     const serviceLog = await run("logs", "--home", home, "--level", "info");
     check(serviceLog.code === 0 && serviceLog.stdout.includes("started"), "logs reads the service log file");
 
-    server.kill("SIGTERM");
-    const code = await server.exited;
+    const nextDist = Bun.argv.includes("--next") ? path.resolve(argument("next")) : null;
+    if (nextDist) {
+      // Upgrade to a second build and roll back, with this script restarting serve like systemd.
+      const nextArchive = (await readdir(nextDist)).find((file) => file.endsWith(`-${target}.tar.gz`));
+      if (!nextArchive) throw new Error(`no ${target} archive in ${nextDist}`);
+      const nextVersion = /^conveyor-v(.+)-linux-/.exec(nextArchive)![1]!;
+      const upgraded = await run("upgrade", "--home", home, "--archive", path.join(nextDist, nextArchive), "--checksums", path.join(nextDist, "checksums.txt"), "--wait-timeout", "2m");
+      check(upgraded.code === 0 && upgraded.stdout.includes(`from ${version.version} to ${nextVersion}`), `upgrade drains, switches, restarts and verifies ${nextVersion}: ${upgraded.stdout.trim()} ${upgraded.stderr.trim()}`);
+      const afterUpgrade = JSON.parse((await run("status", "--home", home, "--json")).stdout) as { service: { version: { version: string } } };
+      check(afterUpgrade.service.version.version === nextVersion && server.exits.includes(75), "the restarted service runs the new release");
+      const rolledBack = await run("rollback", "--home", home, "--wait-timeout", "2m");
+      check(rolledBack.code === 0 && rolledBack.stdout.includes(`from ${nextVersion} to ${version.version}`), `rollback returns to ${version.version}: ${rolledBack.stdout.trim()} ${rolledBack.stderr.trim()}`);
+      const afterRollback = JSON.parse((await run("status", "--home", home, "--json")).stdout) as { service: { version: { version: string } } };
+      check(afterRollback.service.version.version === version.version, "the service runs the previous release again, with its data");
+    }
+
+    const code = await server.stop();
     check(code === 0, "serve stops cleanly on SIGTERM");
     server = null;
     console.log(`Smoke test passed for ${archive}.`);
   } finally {
     if (server) {
-      server.kill("SIGKILL");
-      console.error(await new Response(server.stderr as ReadableStream).text());
+      await server.stop();
+      console.error(await Bun.file(path.join(work, "serve.log")).text().catch(() => ""));
     }
     if (!process.env.KEEP_SMOKE_WORK) await rm(work, { recursive: true, force: true });
     else console.log(`work directory kept: ${work}`);

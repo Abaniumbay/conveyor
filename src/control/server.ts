@@ -9,6 +9,8 @@ import path from "node:path";
 
 import type { ConveyorService } from "../app/service";
 import { log } from "../log/logger";
+import { readReleaseState } from "../release/state";
+import { SwitchRefused, type ReleaseCoordinator } from "./releases";
 import { BUILD } from "../version";
 
 /** What `status` reports about this process beyond the service's own state. */
@@ -27,6 +29,8 @@ export interface ControlInfo {
 export interface ControlHooks {
   /** Exits so the supervisor restarts the process (after draining, which the caller does). */
   restart?: () => void;
+  /** Upgrades and rollbacks of the running service. */
+  releases?: ReleaseCoordinator;
 }
 
 class ControlError extends Error {
@@ -193,9 +197,27 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         setTimeout(() => hooks.restart?.(), 50);
         return json({ restarting: true });
       }
+      if (route === "GET /v1/releases") return json({ running: BUILD, ...(await readReleaseState(info.home)) });
+      if (route === "POST /v1/releases" && hooks.releases) {
+        const input = await body(request);
+        const kind = input.kind === "rollback" ? "rollback" : input.kind === "upgrade" ? "upgrade" : null;
+        if (!kind || typeof input.prefix !== "string" || (kind === "upgrade" && typeof input.version !== "string")) {
+          throw new ControlError("kind (upgrade or rollback), prefix and, for an upgrade, version are required", 400);
+        }
+        const drainTimeoutMs = typeof input.drainTimeoutMs === "number" && input.drainTimeoutMs > 0 ? input.drainTimeoutMs : 30 * 60_000;
+        const pending = await hooks.releases.schedule({
+          kind, prefix: input.prefix, drainTimeoutMs, restoreBackup: input.restoreBackup === true,
+          ...(typeof input.version === "string" ? { version: input.version } : {}),
+        });
+        return json({ pending }, 202);
+      }
+      if (route === "DELETE /v1/releases/pending" && hooks.releases) {
+        return json({ cancelled: await hooks.releases.cancel(`cancelled by ${actor(request)}`) });
+      }
       return json({ error: `no route ${route}` }, 404);
     } catch (error) {
       if (error instanceof ControlError) return json({ error: error.message }, error.status);
+      if (error instanceof SwitchRefused) return json({ error: error.message }, 409);
       if (error instanceof SyntaxError) return json({ error: "the request body is not JSON" }, 400);
       // Service preconditions (already running, state changed, not paused, ...) are refusals, not crashes.
       return json({ error: error instanceof Error ? error.message : String(error) }, 409);

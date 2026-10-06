@@ -222,6 +222,33 @@ function trimToLimit(message: string): string {
   return `${message.slice(0, cut).trimEnd()}${note(message.length - cut)}`;
 }
 
+/** The schema this build migrates databases to. */
+export const LATEST_SCHEMA_VERSION = Math.max(...migrations.map((migration) => migration.version));
+
+/** The database was migrated by a newer Conveyor; running an older one against it is unsafe. */
+export class NewerSchemaError extends Error {
+  override readonly name = "NewerSchemaError";
+
+  constructor(readonly schemaVersion: number) {
+    super(
+      `the database schema (${schemaVersion}) is newer than this Conveyor supports (${LATEST_SCHEMA_VERSION}): a newer release migrated it. ` +
+      "Run that release again, or restore the pre-upgrade backup with conveyor rollback --restore-backup.",
+    );
+  }
+}
+
+/** The schema version of a database file, read without migrating it; 0 when it has none. */
+export function databaseSchemaVersion(filename: string): number {
+  const database = new Database(filename, { readonly: true });
+  try {
+    const table = database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+    if (!table) return 0;
+    return (database.query("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as { version: number }).version;
+  } finally {
+    database.close();
+  }
+}
+
 export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
@@ -238,7 +265,12 @@ export class ConveyorStore {
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("PRAGMA busy_timeout = 5000");
     const store = new ConveyorStore(database);
-    store.migrate();
+    try {
+      store.migrate();
+    } catch (error) {
+      database.close();
+      throw error;
+    }
     return store;
   }
 
@@ -375,6 +407,9 @@ export class ConveyorStore {
         .run(version, now());
     });
     const current = this.schemaVersion();
+    if (current > LATEST_SCHEMA_VERSION) {
+      throw new NewerSchemaError(current);
+    }
     for (const migration of migrations) {
       if (migration.version > current) apply(migration.version, migration.sql);
     }

@@ -7,7 +7,9 @@ import { doctor } from "./commands/doctor";
 import { init } from "./commands/init";
 import { logs } from "./commands/logs";
 import { board, itemHistory, itemLogs, itemPause, itemResume, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
+import { rollback, upgrade } from "./commands/release";
 import { serve } from "./commands/serve";
+import { serviceInstall, serviceRestart, serviceStart, serviceStatus, serviceStop, serviceUninstall } from "./commands/service";
 import { homePaths, resolveHome } from "./home";
 
 const version: Command = {
@@ -44,6 +46,12 @@ export const COMMANDS: Command[] = [
   configMigrate,
   configBuiltin,
   serve,
+  serviceInstall,
+  serviceStart,
+  serviceStop,
+  serviceRestart,
+  serviceStatus,
+  serviceUninstall,
   status,
   board,
   itemShow,
@@ -55,6 +63,8 @@ export const COMMANDS: Command[] = [
   questionsList,
   questionsAnswer,
   logs,
+  upgrade,
+  rollback,
   adminResetPassword,
   checkConfigAlias,
 ];

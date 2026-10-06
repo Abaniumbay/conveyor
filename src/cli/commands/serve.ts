@@ -1,4 +1,5 @@
 import { ConveyorService } from "../../app/service";
+import { ReleaseCoordinator } from "../../control/releases";
 import { createControlHandler, serveControlSocket } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
@@ -79,7 +80,14 @@ export const serve: Command = {
       ? serveMcpSocket({ socket: mcpSocketPath(config.settings.artifacts), handler })
       : null;
     const dashboardUrl = config.web.publicUrl ?? server.url.href;
-    let requestStop: (reason: string, exitCode?: number) => void = () => {};
+    let requestStop: (reason: string, exitCode?: number, afterClose?: () => Promise<void>) => void = () => {};
+    const supervised = Boolean(process.env.INVOCATION_ID);
+    const releases = new ReleaseCoordinator(service, context.paths.home, {
+      supervised,
+      restartExitCode: RESTART_EXIT_CODE,
+      stop: (reason, code, afterClose) => requestStop(reason, code, afterClose),
+    });
+    await releases.onStartup();
     const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, {
       home: context.paths.home,
       config: context.paths.config,
@@ -87,8 +95,8 @@ export const serve: Command = {
       database: config.settings.database,
       dashboardUrl,
       startedAt: new Date().toISOString(),
-      supervised: Boolean(process.env.INVOCATION_ID),
-    }, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE) })).catch(async (error: unknown) => {
+      supervised,
+    }, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE), releases })).catch(async (error: unknown) => {
       await server.stop(true);
       await mcpSocket?.stop();
       await service.close();
@@ -105,7 +113,7 @@ export const serve: Command = {
 
     const exitCode = await new Promise<number>((resolve) => {
       let stopping = false;
-      requestStop = (reason, code = EXIT.ok) => {
+      requestStop = (reason, code = EXIT.ok, afterClose) => {
         if (stopping) return;
         stopping = true;
         log.info("Stopping Conveyor", { reason });
@@ -115,6 +123,7 @@ export const serve: Command = {
           await server.stop(false);
           await mcpSocket?.stop();
           await service.close();
+          await afterClose?.().catch((error: unknown) => log.error("Finishing the stop failed", { reason }, error));
           log.info("Conveyor stopped", { reason });
           resolve(code);
         })();

@@ -3,7 +3,7 @@
 // asset and packaged default embedded), packed with the license, third-party notices and install
 // notes as conveyor-v<version>-linux-<arch>.tar.gz, plus checksums.txt.
 //
-//   bun run scripts/build.ts [--target linux-x64|linux-arm64]... [--out dist]
+//   bun run scripts/build.ts [--target linux-x64|linux-arm64]... [--out dist] [--version <test version>]
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -99,9 +99,10 @@ export interface BuildResult {
   checksums: string;
 }
 
-export async function build(options: { targets: Target[]; out: string; builtAt?: string }): Promise<BuildResult> {
+export async function build(options: { targets: Target[]; out: string; builtAt?: string; version?: string }): Promise<BuildResult> {
   const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as PackageJson;
-  const version = manifest.version;
+  // A different version only for test builds (the smoke test upgrades between two of them).
+  const version = options.version ?? manifest.version;
   const commit = await run(["git", "rev-parse", "HEAD"]);
   const builtAt = options.builtAt ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const out = path.resolve(options.out);
@@ -144,13 +145,15 @@ if (import.meta.main) {
   const args = Bun.argv.slice(2);
   const targets: Target[] = [];
   let out = path.join(ROOT, "dist");
+  let version: string | undefined;
   for (let index = 0; index < args.length; index += 2) {
     const [flag, value] = [args[index], args[index + 1]];
     if (flag === "--target" && value && value in TARGETS) targets.push(value as Target);
     else if (flag === "--out" && value) out = value;
-    else throw new Error(`usage: bun run scripts/build.ts [--target ${Object.keys(TARGETS).join("|")}]... [--out <dir>]`);
+    else if (flag === "--version" && value && /^\d+\.\d+\.\d+(-[\w.]+)?$/.test(value)) version = value;
+    else throw new Error(`usage: bun run scripts/build.ts [--target ${Object.keys(TARGETS).join("|")}]... [--out <dir>] [--version <test version>]`);
   }
-  const result = await build({ targets: targets.length > 0 ? targets : ["linux-x64"], out });
+  const result = await build({ targets: targets.length > 0 ? targets : ["linux-x64"], out, ...(version ? { version } : {}) });
   console.log(`Built Conveyor ${result.version} (${result.commit.slice(0, 12)}) into ${out}:`);
   for (const archive of result.archives) console.log(`  ${archive}`);
   console.log("  install.sh\n  checksums.txt");
