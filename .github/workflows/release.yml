@@ -1,8 +1,8 @@
 name: Release
 
 # Pushing a tag vX.Y.Z publishes the GitHub release of that version: the tag must match
-# package.json and have a dated section in CHANGELOG.md (scripts/release.ts prepare writes both;
-# see docs/releasing.md). Every archive is built and smoke-tested on its own architecture before
+# package.json and have a dated section in CHANGELOG.md. `bun run release start` prepares both in a
+# release pull request and `bun run release tag` pushes the tag once it merged (docs/releasing.md). Every archive is built and smoke-tested on its own architecture before
 # anything is published; linux-arm64 is published only when its tests pass.
 on:
   push:
