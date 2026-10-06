@@ -10,6 +10,7 @@ import { doctorChecks } from "../../src/cli/commands/doctor";
 import { runCli } from "../../src/cli/main";
 import { Database } from "bun:sqlite";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION } from "../../src/db/store";
+import { ConsoleSink, log } from "../../src/log/logger";
 import { verifyPassword } from "../../src/web/auth";
 import { referenceConfigDirectory } from "../config/reference-fixture";
 
@@ -289,6 +290,18 @@ describe("conveyor config migrate", () => {
     expect(parse(await readFile(path.join(result.target, "secrets.yaml"), "utf8"))).toEqual({ backup: "s".repeat(40), hook: "conveyor" });
   });
 
+  test("keeps a numeric secret a number, so the migrated configuration still validates", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "secrets.yaml"), "runner_count: 3\n");
+    await writeFile(path.join(source, "conveyor.yaml"), "settings:\n  runners: !secret runner_count\nproviders: !include builtin:providers.yaml\n");
+    const result = await migrate(path.join(source, "conveyor.yaml"));
+    expect(result.out).toContain("Effective configuration identical: yes");
+    expect(result.code).toBe(0);
+    expect(parse(await readFile(path.join(result.target, "secrets.yaml"), "utf8"))).toEqual({ runner_count: 3 });
+  });
+
   test("refuses a non-empty target", async () => {
     const root = await temporary();
     await writeFile(path.join(root, "keep"), "");
@@ -315,6 +328,33 @@ describe("conveyor admin reset-password", () => {
 });
 
 describe("conveyor serve", () => {
+  test("starts even when the release bookkeeping cannot be read, and logs why", async () => {
+    const home = await initialisedHome();
+    const port = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, "127.0.0.1", () => {
+        const { port: free } = probe.address() as net.AddressInfo;
+        probe.close(() => resolve(free));
+      });
+    });
+    const config = path.join(home, "config/conveyor.yaml");
+    await writeFile(config, (await readFile(config, "utf8")).replace("127.0.0.1:7788", `127.0.0.1:${port}`));
+    await writeFile(path.join(home, "state/releases.json"), "{ not json");
+    const serving = cli("serve", "--home", home);
+    try {
+      let live = false;
+      for (let attempt = 0; attempt < 100 && !live; attempt += 1) {
+        live = await fetch(`http://127.0.0.1:${port}/health/live`).then((response) => response.ok, () => false);
+        if (!live) await Bun.sleep(100);
+      }
+      expect(live).toBe(true);
+      expect(await readFile(path.join(home, "logs/conveyor.log"), "utf8")).toContain("Could not record the outcome of the last release switch");
+    } finally {
+      process.emit("SIGTERM");
+      expect((await serving).code).toBe(EXIT.ok);
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
   test("refuses to start without a dashboard account and points at init", async () => {
     const root = await temporary();
     const home = path.join(root, "home");

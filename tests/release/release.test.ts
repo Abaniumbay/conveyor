@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fsPromises from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -100,6 +101,34 @@ describe("state backups and schema", () => {
 
     for (let index = 0; index < BACKUPS_KEPT + 2; index += 1) await backupState({ home, database, label: `n${index}` });
     expect(await readdir(path.join(home, "backups"))).toHaveLength(BACKUPS_KEPT);
+  });
+
+  test("run as root, restored, backed-up and bookkeeping files get the owner of what they replace or of the home", async () => {
+    const home = await temporary();
+    const database = path.join(home, "state/conveyor.sqlite");
+    (await ConveyorStore.open(database)).close();
+    const backup = await backupState({ home, database, label: "x" });
+    const chown = spyOn(fsPromises, "chown").mockResolvedValue(undefined);
+    const getuid = spyOn(process, "getuid").mockReturnValue(0);
+    try {
+      await restoreState(backup, database);
+      await writeReleaseState(home, { pending: null, history: [] });
+      await backupState({ home, database, label: "y" });
+      const owner = await stat(home);
+      const targets = chown.mock.calls.map(([target, uid, gid]) => ({ target: String(target), uid, gid }));
+      expect(targets.some((call) => call.target === `${database}.restore`)).toBe(true);
+      expect(targets.some((call) => call.target.endsWith(".tmp"))).toBe(true);
+      expect(targets.some((call) => call.target.endsWith("-y"))).toBe(true);
+      expect(targets.every((call) => call.uid === owner.uid && call.gid === owner.gid)).toBe(true);
+    } finally {
+      getuid.mockRestore();
+      chown.mockRestore();
+    }
+    // Not root: nothing is chowned.
+    const untouched = spyOn(fsPromises, "chown");
+    await restoreState(backup, database);
+    expect(untouched).not.toHaveBeenCalled();
+    untouched.mockRestore();
   });
 
   test("an older Conveyor refuses a database migrated by a newer one", async () => {

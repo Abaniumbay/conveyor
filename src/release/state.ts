@@ -4,7 +4,7 @@
 //   <home>/backups/<time>-<from>-to-<to>/conveyor.sqlite (+ session-secret)
 
 import { Database } from "bun:sqlite";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chown, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { SESSION_SECRET_FILE } from "../web/session-secret";
@@ -46,6 +46,16 @@ export interface ReleaseState {
 
 export const BACKUPS_KEPT = 5;
 
+/**
+ * Run as root (sudo conveyor rollback, upgrade), files written into the home would belong to root
+ * and the service account could no longer use them: give `target` the owner of `reference`.
+ */
+export async function ownLike(target: string, reference: string): Promise<void> {
+  if (process.getuid?.() !== 0) return;
+  const owner = await stat(reference).catch(() => null);
+  if (owner) await chown(target, owner.uid, owner.gid);
+}
+
 export function releaseStateFile(home: string): string {
   return path.join(home, "state", "releases.json");
 }
@@ -62,6 +72,7 @@ export async function writeReleaseState(home: string, state: ReleaseState): Prom
   await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await ownLike(temporary, home);
   await rename(temporary, file);
 }
 
@@ -98,6 +109,7 @@ export async function backupState(options: { home: string; database: string; lab
   }
   const secret = path.join(path.dirname(options.database), SESSION_SECRET_FILE);
   if (await stat(secret).catch(() => null)) await copyFile(secret, path.join(directory, SESSION_SECRET_FILE));
+  for (const file of [backups, directory, ...(await readdir(directory)).map((name) => path.join(directory, name))]) await ownLike(file, options.home);
   const entries = (await readdir(backups, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   for (const old of entries.slice(0, Math.max(0, entries.length - BACKUPS_KEPT))) await rm(path.join(backups, old), { recursive: true, force: true });
   return directory;
@@ -108,12 +120,19 @@ export async function restoreState(backup: string, database: string): Promise<vo
   const source = path.join(backup, "conveyor.sqlite");
   if (!(await stat(source).catch(() => null))?.isFile()) throw new Error(`${backup} holds no database backup`);
   const temporary = `${database}.restore`;
+  // The restored files keep the owner of what they replace (or of the database directory).
+  const reference = (await stat(database).catch(() => null)) ? database : path.dirname(database);
   await copyFile(source, temporary);
+  await ownLike(temporary, reference);
   await rm(`${database}-wal`, { force: true });
   await rm(`${database}-shm`, { force: true });
   await rename(temporary, database);
   const secret = path.join(backup, SESSION_SECRET_FILE);
-  if (await stat(secret).catch(() => null)) await copyFile(secret, path.join(path.dirname(database), SESSION_SECRET_FILE));
+  if (await stat(secret).catch(() => null)) {
+    const destination = path.join(path.dirname(database), SESSION_SECRET_FILE);
+    await copyFile(secret, destination);
+    await ownLike(destination, reference);
+  }
 }
 
 export class RollbackRefused extends Error {

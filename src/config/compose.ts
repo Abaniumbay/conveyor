@@ -39,8 +39,8 @@ export interface ComposedConfig {
   origins: ConfigOrigin[];
   /** Values substituted for `!secret`, so displays and exports can redact them. */
   secrets: string[];
-  /** Each `!secret` key used, with its value (for writing the references back, as migration does). */
-  secretKeys: Record<string, string>;
+  /** Each `!secret` key used, with its value as written (a string or a number), for migration. */
+  secretKeys: Record<string, string | number>;
 }
 
 export interface ComposeOptions {
@@ -77,7 +77,7 @@ function keyPath(segments: readonly string[]): string {
 class Composer {
   readonly origins: ConfigOrigin[] = [];
   readonly secrets = new Set<string>();
-  readonly secretKeys = new Map<string, string>();
+  readonly secretKeys = new Map<string, string | number>();
   #secretValues: Record<string, unknown> | null = null;
 
   constructor(readonly entrypoint: string, readonly options: ComposeOptions) {}
@@ -156,7 +156,7 @@ class Composer {
       this.fail(at, segments, `!secret ${key} must be a string or a number in ${this.display(secretsFile)}`);
     }
     if (String(value).length > 0) this.secrets.add(String(value));
-    this.secretKeys.set(key, String(value));
+    this.secretKeys.set(key, value);
     return this.options.secretPlaceholders ? secretPlaceholder(key) : value;
   }
 

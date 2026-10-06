@@ -1,5 +1,6 @@
 import { ConveyorService } from "../../app/service";
 import { ReleaseCoordinator } from "../../control/releases";
+import { releaseStateFile } from "../../release/state";
 import { createControlHandler, serveControlSocket } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
@@ -87,7 +88,9 @@ export const serve: Command = {
       restartExitCode: RESTART_EXIT_CODE,
       stop: (reason, code, afterClose) => requestStop(reason, code, afterClose),
     });
-    await releases.onStartup();
+    // Bookkeeping of past switches must not keep the service from starting; a later upgrade or
+    // rollback reports the same problem when it reads the file.
+    await releases.onStartup().catch((error: unknown) => log.error("Could not record the outcome of the last release switch", { file: releaseStateFile(context.paths.home) }, error));
     const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, {
       home: context.paths.home,
       config: context.paths.config,

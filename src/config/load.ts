@@ -449,7 +449,7 @@ export interface ConfigurationSource {
   warnings: string[];
   secrets: string[];
   /** Each `!secret` key the entrypoint used, with its value. */
-  secretKeys: Record<string, string>;
+  secretKeys: Record<string, string | number>;
   locate: Locate | null;
   resolvedImport?: ResolvedImport;
 }
@@ -466,7 +466,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
   const root = mode === "directory" ? resolvedTarget : path.dirname(resolvedTarget);
   const warnings: string[] = [];
   let secrets: string[] = [];
-  let secretKeys: Record<string, string> = {};
+  let secretKeys: Record<string, string | number> = {};
   let locate: Locate | null = null;
 
   /** Each local document with the directory its relative paths resolve against. */
