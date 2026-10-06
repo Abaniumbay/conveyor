@@ -125,7 +125,9 @@ export async function followLog(directory: string, query: LogQuery, onRecord: (r
       const current = await stat(file).catch(() => null);
       if (!current) continue;
       if (!handle || current.ino !== (await handle.stat()).ino) {
-        // Rotated: the old file was read to its end above; continue with the new one from its start.
+        // Rotated. Read the old file to its end once more: a writer may have appended to it after
+        // the read above and before the rotation. Then continue with the new file from its start.
+        await drain();
         await handle?.close();
         handle = await open(file, "r").catch(() => null);
         position = 0;
