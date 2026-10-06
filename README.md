@@ -67,7 +67,7 @@ flowchart LR
 | Scheduler | Selects eligible issues while enforcing global, repository, and stage concurrency plus parent/dependency constraints. |
 | Workspace manager | Creates issue-specific Git worktrees and branches without changing the primary checkout. |
 | Task registry | One registry of named tasks in the groups `item`, `workspace`, `change`, `ci`, `agent`, `script`, `conversation`, `todo` (and `legacy`). Each task declares its kind (`load`, `check`, `act`, `tool`), what it reads, writes and invalidates, and its schema. The MCP server, the stage executor and the generated [docs/tasks.md](docs/tasks.md) all read it. |
-| Plan compiler | Turns a pipeline, a repository (CI mode, overrides) and the registry into an expanded execution plan, rejecting unknown tasks, duplicate instance ids, invalid dataflow and invalid routes at load time. `check-config` prints the plan. |
+| Plan compiler | Turns a pipeline, a repository (CI mode, overrides) and the registry into an expanded execution plan, rejecting unknown tasks, duplicate instance ids, invalid dataflow and invalid routes at load time. `conveyor config check` prints the plan. |
 | Stage executor | Runs one compiled stage as a durable task chain: implicit loads, journaled acts, the exit gate, waiting, `onFail` routing, retries and the `maxReturns` guard. |
 | Execution journal | Persists the item context and its append-only history, each task execution with its idempotency key, the stage cursor, stage epochs (fencing tokens) and persisted wake-ups. |
 | Legacy compatibility compiler | Compiles the deprecated `run` / `enterCheck` / `exitCheck` stage shape into a task plan (`legacy.*` tasks) so existing configurations keep working. |
@@ -199,42 +199,42 @@ Operator check (real network, not part of `bun test`): `bun scripts/check-agent-
 
 ## Requirements
 
-- Linux or another environment supported by Bun
-- [Bun](https://bun.sh/) 1.4 or newer
-- Git
-- [GitHub CLI](https://cli.github.com/) authenticated for configured repositories
-- Codex CLI for Codex-backed agents
-- Existing local clones of managed repositories; v0.1 does not clone them automatically
+- Linux on x64 or arm64 with glibc
+- Git, and the [GitHub CLI](https://cli.github.com/) authenticated for the managed repositories
+- `bwrap` (bubblewrap) for agent isolation
+- The agent CLIs the configuration uses (Codex, Claude Code), signed in
+- Existing local clones of the managed repositories (Conveyor does not clone them)
+- Bun only for operator scripts written in TypeScript or JavaScript; Conveyor itself does not need it
 
-## Install and verify
+## Install
+
+Conveyor is released as one executable per architecture on
+[GitHub Releases](https://github.com/Abaniumbay/conveyor/releases). It needs no source checkout,
+dependency installation or Bun:
 
 ```sh
-git clone https://github.com/Abaniumbay/conveyor.git
-cd conveyor
-bun install --frozen-lockfile
-bun run check
+curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/download/v0.2.0/install.sh
+sh install.sh --version v0.2.0     # verifies the checksum; installs into ~/.local/share/conveyor
+conveyor init                      # creates ~/.conveyor and the first dashboard administrator
+conveyor doctor                    # lists missing prerequisites, with fixes
+conveyor serve                     # or: sudo conveyor service install && sudo conveyor service start
 ```
 
-Keep configuration and agent instructions outside the source checkout. A common layout is:
+[docs/operations.md](docs/operations.md) walks through installation, a private configuration
+repository, authentication, the first run, the systemd service, daily operation, troubleshooting,
+upgrades and rollback. [docs/cli.md](docs/cli.md) is the command reference. Moving an existing source
+checkout onto a release is described in [docs/migration.md](docs/migration.md).
 
-```text
-/srv/conveyor/
-├── config/
-│   ├── core.yaml
-│   ├── agents.yaml
-│   ├── pipelines.yaml
-│   ├── repositories.yaml
-│   └── instructions/
-└── state/
-    ├── conveyor.sqlite
-    ├── logs/
-    ├── artifacts/
-    └── worktrees/
-```
+## Configuration
 
-Configuration can be one YAML file or a directory of YAML files. Named sections merge by unique key; singleton sections such as `settings`, `web`, and `labels` may be declared only once.
+Configuration lives in the Conveyor home (`--home`, `CONVEYOR_HOME`, default `~/.conveyor`), apart
+from the installed executable and from the managed repositories. It has one entrypoint,
+`config/conveyor.yaml`, which holds everything or includes files with `!include`,
+`!include_dir_named`, `!include_dir_merge_named` and `!secret` (from a git-ignored `secrets.yaml`).
+Packaged defaults come from `!include builtin:<file>`. See
+[docs/configuration.md](docs/configuration.md).
 
-The canonical shape names the three provider roles, the harnesses, and gives every stage `actions` and an `exit-gate`. This is the shape of the reference configuration in [`examples/config`](examples/config) (see [docs/tasks.md](docs/tasks.md) for every task and `docs/migration.md` for adopting it):
+The canonical shape names the three provider roles, the harnesses, and gives every stage `actions` and an `exit-gate`. This is the shape of the packaged defaults in [`examples/config`](examples/config) (see [docs/tasks.md](docs/tasks.md) for every task). Written as one `conveyor.yaml`:
 
 ```yaml
 settings:
@@ -257,7 +257,7 @@ settings:
     wait: { timeout: 30m, poll: 1m }
 
 web:
-  listen: 127.0.0.1:4300
+  listen: 127.0.0.1:7788
 
 providers:
   items:
@@ -417,7 +417,7 @@ Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` se
 
 Existing configurations keep loading. A stage with `run: { agent | runner + script | sourceAction }`, `enterCheck`, `exitCheck`, `feedbackCycles`, `failurePolicies`, `failureState` and `afterSuccess`, together with the `checks:` section (a deterministic script plus an AI verifier agent), `sources`, `codeHosts`, `runners`, `workspaceAccess` and a top-level `labels`, is compiled by the compatibility compiler into a task plan (`legacy.produce`, `legacy.enterCheck`, `legacy.exitCheck`, `legacy.afterSuccess`, `legacy.succeeded`) with the same behaviour as before and runs through the same durable executor. A legacy stage cannot be mixed with `actions` / `exit-gate` in one stage, and a pipeline with legacy stages still needs `successStatuses` and `failureStatuses`. Legacy `process` stage scripts have no recovery mode, so they stay behind the legacy adapter until each is classified `replay-safe` or `reconcile`. The legacy shape and the AI verifier will be removed once every repository is migrated; do not write new configuration in it.
 
-### Canonical role names and pinned imports
+### Canonical role names and agent settings
 
 An agent's `network: true` turns on live web search. For a `workspace-write` agent it also gives the agent's own commands the network, so it can install dependencies and run the repository's checks before pushing. Codex's `read-only` mode has no network for commands, so a read-only agent gets web search only. A `workspace-write` agent can always write its worktree's git metadata, which a linked worktree keeps under the main repository's `.git`, outside the sandbox. `writableRoots` (absolute or `~/` paths) adds directories outside the worktree, typically package caches; the ones that do not exist on the machine are skipped.
 
@@ -427,16 +427,7 @@ A Claude Code agent runs inside bubblewrap with the whole filesystem read-only, 
 
 The canonical configuration names the three provider roles and the harnesses: `providers.items` (issue trackers), `providers.code`, `providers.ci`, `harnesses`, agent `harness` and `access`, and repository `items` and `code`. The loader translates them to the older names (`sources`, `codeHosts`, `ci`, `runners`, `runner`, `workspaceAccess`, `source`, `codeHost`), which keep working. `labels` may sit on the item providers (all of them must carry an identical block, which a YAML alias gives you) or at the top level. Using the old and the new name for the same thing is an error, and equivalent documents produce the same configuration hash.
 
-One local file may import reference configuration from a git repository at a fixed ref:
-
-```yaml
-import:
-  repository: /srv/conveyor-reference   # absolute path to a git checkout
-  ref: v1.4.0                           # tag or commit; resolved to a SHA
-  path: examples/config                 # directory inside the repository
-```
-
-The loader reads that directory at the ref with `git ls-tree` and `git show`, never from the working tree, and merges its YAML files before the local ones. Local files add repositories, settings and secrets but cannot redefine an imported pipeline, agent, provider or harness, and a singleton section (`settings`, `web`, `labels`) may come from one side only. Relative paths in imported files (instructions, scripts) resolve against a copy of the directory written to `<settings.artifacts>/config-imports/<sha>/<path>/`, so `settings.artifacts` must be defined in a local file. The resolved SHA is part of the configuration hash.
+The packaged defaults replace the Git-pinned `import` of earlier versions, which still loads with a deprecation warning; `conveyor config migrate` inlines it.
 
 ### CI providers
 
@@ -475,41 +466,32 @@ Timing is task configuration (`ci.passed` `with: { settleSeconds, logLines }` an
 Validate before starting:
 
 ```sh
-bun run src/cli.ts check-config --config /srv/conveyor/config
-bun run src/cli.ts hash-password --password 'choose-a-strong-password'
+conveyor config check
+conveyor config compare /path/to/other/conveyor.yaml
 ```
 
-`check-config` prints the configuration hash and then, for every repository that compiles, the expanded plan of each stage: the `actions` and `exit-gate` task instances in order with their implicit loads (`(load item)`, `(load change)`...), `with` values, `wait` timeout and poll and the effective `onFail` (marked `(default)` when not configured). Legacy stages appear as their `legacy.*` tasks. An invalid task, instance id, route or dataflow is reported with its path before the service can start.
+`config check` prints the configuration hash and then, for every repository that compiles, the
+expanded plan of each stage: the `actions` and `exit-gate` task instances in order with their
+implicit loads (`(load item)`, `(load change)`...), `with` values, `wait` timeout and poll and the
+effective `onFail` (marked `(default)` when not configured). Legacy stages appear as their
+`legacy.*` tasks. An invalid task, instance id, route or dataflow is reported with its file and path
+before the service can start. `config compare` prints two configurations' compiled plans side by
+side, with a summary of added, removed and changed tasks, routes and waits, and exits 1 when they
+differ.
 
-To compare two configurations (for example the current files with the reference configuration in `examples/config`), print their compiled plans side by side with a summary of added, removed and changed tasks, routes and waits. See [docs/migration.md](docs/migration.md).
-
-```sh
-bun run src/cli.ts check-config --config /srv/conveyor/config --compare /path/to/other/config
-```
-
-Set the runtime environment through your service manager or secret store:
-
-```text
-CONVEYOR_USERNAME
-CONVEYOR_PASSWORD_HASH
-CONVEYOR_SESSION_SECRET
-CONVEYOR_GITHUB_WEBHOOK_SECRET   # required only when webhook installation is enabled
-CONVEYOR_VAPID_PUBLIC_KEY       # optional; enables browser push when all three push values are set
-CONVEYOR_VAPID_PRIVATE_KEY
-CONVEYOR_VAPID_SUBJECT           # an https: URL or mailto: contact
-```
+Credentials belong in `secrets.yaml`, referenced with `!secret`. They are the GitHub provider's
+`webhookSecret` (needed only when webhook installation is enabled), `web.push` (VAPID keys for
+browser push) and, optionally, `web.sessionSecret`; Conveyor generates and keeps a session secret
+otherwise. The environment variables `CONVEYOR_GITHUB_WEBHOOK_SECRET`, `CONVEYOR_SESSION_SECRET` and
+`CONVEYOR_VAPID_PUBLIC_KEY` / `_PRIVATE_KEY` / `_SUBJECT` still work as fallbacks.
 
 ### Browser push notifications
 
-Serve the dashboard over HTTPS (a reverse proxy can provide TLS), then configure the three VAPID values above with a public/private key pair and an `https:` or `mailto:` contact subject. Generate a pair with `bunx web-push generate-vapid-keys`; keep the private key in the service manager or secret store. Restart Conveyor after changing the keys. Without all three values, the dashboard still works and shows push as unavailable.
+Serve the dashboard over HTTPS (a reverse proxy can provide TLS), then configure `web.push` with a VAPID public/private key pair and an `https:` or `mailto:` contact subject. Generate a pair with `bunx web-push generate-vapid-keys`, and keep the private key in `secrets.yaml`. Restart Conveyor after changing the keys. Without all three values, the dashboard still works and shows push as unavailable.
 
 Signed-in users can opt in separately to new questions, newly stopped issues, and issues reaching done from **Notifications** in the dashboard. Every category starts off. Enabling a category asks the browser for notification permission and registers that browser; users can turn categories off at any time, and turning all of them off or signing out removes that browser's server-side subscription. Push requires HTTPS, service workers, the Push API, and the Notifications API. Browsers that do not implement those APIs, or that restrict push for installed web apps, cannot receive alerts; the settings page reports unsupported or denied permission states.
 
-Then run:
-
-```sh
-bun run src/cli.ts serve --config /srv/conveyor/config
-```
+Then run `conveyor serve`, or install the systemd service ([docs/operations.md](docs/operations.md)).
 
 `GET /health/live` is public for process supervision. Readiness, operational data, and the dashboard require authentication.
 
@@ -517,23 +499,27 @@ bun run src/cli.ts serve --config /srv/conveyor/config
 
 ```text
 src/
-├── app/          service orchestration, issue execution, and configured stage runtime
+├── app/          service orchestration, issue execution, configured stage runtime, and retention
+├── cli/          the conveyor command line: commands, home layout, control-socket client
 ├── codehost/     code-host contract and GitHub implementation (changes, review, merge)
-├── config/       YAML loading, role-name normalization, pinned import, hashing, and validation
+├── config/       entrypoint composition (include/secret tags), packaged defaults, migration, validation
+├── control/      the local control socket and in-service upgrades and rollbacks
 ├── core/         issue projection, scheduling, and transitions
 ├── db/           SQLite migrations and durable store
 ├── engine/       stage executor, execution journal, review records, advisory CI watches
 ├── harness/      neutral agent-harness contract and the Codex harness
 ├── isolation/    agent environment, network sandbox, egress proxies
+├── log/          service logging (redaction, rotation) and the log reader
 ├── mcp/          run-scoped MCP context and stdio server
+├── release/      installed-release layout, verified staging, backups and switch history
 ├── runner/       Codex, legacy verifier, steering, and strict JSON-process runners
 ├── source/       source contracts and the GitHub adapter
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
 ├── web/          authentication, HTTP/SSE server, Preact rendering, styles, and client script
 └── workspace/    managed Git worktree lifecycle
-examples/         reference configuration (config/, imported and pinned) and machine-local samples (local/)
-docs/             generated task reference (tasks.md) and the migration guide
-scripts/          operational helpers and the task-docs generator
+examples/         packaged default configuration (config/, embedded as builtin:) and machine-local samples (local/)
+docs/             operations, configuration, generated CLI and task references, releasing, migration
+scripts/          release build, install.sh, smoke test, versioning, doc generators, operational helpers
 tests/            unit and integration coverage for every engine boundary
 SPEC.md           detailed product and engineering contract
 ```
@@ -545,13 +531,16 @@ bun install --frozen-lockfile
 bun test
 bun run typecheck
 bun run check
+bun run src/cli.ts --help        # the CLI from source
+bun run build && bun run smoke   # build the release archive and smoke-test it outside the checkout
+bun run docs:cli && bun run docs:tasks
 ```
 
-Tests use temporary repositories and databases. They do not require real repository addresses or credentials.
+Tests use temporary repositories and databases. They do not require real repository addresses or credentials. Releases are cut from tags; see [docs/releasing.md](docs/releasing.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Current limits
 
-Version 0.1 supports GitHub, Codex, one trusted dashboard user, sequential configured pipelines, and existing local repository clones. It does not provide multi-tenant isolation, built-in rollback, a general DAG engine, automatic issue closure, or configuration hot reload. Agent network isolation needs `bwrap` and is enabled per repository. See [SPEC.md](./SPEC.md) for the complete behavioral contract and explicit product boundary.
+Conveyor supports GitHub, Codex and Claude Code agents, dashboard accounts on one trusted instance, sequential configured pipelines, and existing local repository clones. It does not provide multi-tenant isolation, a general DAG engine, automatic issue closure, or configuration hot reload. Releases are native Linux executables; container images are not provided. Agent network isolation needs `bwrap` and is enabled per repository. See [SPEC.md](./SPEC.md) for the complete behavioral contract and explicit product boundary.
 
 ## License
 
