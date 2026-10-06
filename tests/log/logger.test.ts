@@ -99,6 +99,24 @@ describe("log reader", () => {
     expect((await readLogRecords(directory, { item: "conveyor:90", stage: "review" })).map((entry) => entry.message)).toEqual(["newest"]);
   });
 
+  test("keeps records written just before a rotation the follower had not read yet", async () => {
+    const directory = await temporary();
+    const file = path.join(directory, "conveyor.log");
+    await writeFile(file, "");
+    const seen: string[] = [];
+    const controller = new AbortController();
+    const following = followLog(directory, {}, (entry) => seen.push(entry.message), controller.signal, 50);
+    await Bun.sleep(80);
+    // Between two polls: a record lands in the old file, which is then rotated.
+    await appendFile(file, `${JSON.stringify(record("2026-10-06T10:00:01.000Z", "info", "last before rotation"))}\n`);
+    await rename(file, `${file}.1`);
+    await writeFile(file, `${JSON.stringify(record("2026-10-06T10:00:02.000Z", "info", "first after rotation"))}\n`);
+    await Bun.sleep(150);
+    controller.abort();
+    await following;
+    expect(seen).toEqual(["last before rotation", "first after rotation"]);
+  });
+
   test("follows new records across a rotation", async () => {
     const directory = await temporary();
     const file = path.join(directory, "conveyor.log");
