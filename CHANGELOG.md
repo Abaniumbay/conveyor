@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-06
+
+Fixes the dashboard in the released executable, which stopped at load in 0.2.0.
+
 ### Fixed
 
 - The dashboard works again in the released executable. Its browser script stopped at load with a
