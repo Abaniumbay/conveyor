@@ -226,6 +226,12 @@ async function readAnswer(): Promise<string | null> {
   return next.done ? null : next.value;
 }
 
+/** Releases stdin once the questions are over; an open line reader keeps the process alive. */
+async function closeAnswers(): Promise<void> {
+  await stdinLines?.return?.();
+  stdinLines = null;
+}
+
 /** The terminal and the repository's git and gh. */
 function processIo(root: string): ReleaseIo {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -301,8 +307,10 @@ async function main(args: string[]): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main(Bun.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
+  await main(Bun.argv.slice(2))
+    .catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    })
+    .finally(closeAnswers);
 }
