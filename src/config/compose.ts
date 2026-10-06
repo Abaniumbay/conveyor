@@ -46,6 +46,18 @@ export interface ComposedConfig {
 export interface ComposeOptions {
   /** Resolves `builtin:<path>` to a readable file; required when a builtin include is used. */
   builtin?: (relative: string) => Promise<string>;
+  /** Put secretPlaceholder(key) where each `!secret` was, instead of its value (for migration). */
+  secretPlaceholders?: boolean;
+}
+
+/** Stands for `!secret <key>` in a composed document; no configuration value can contain NUL. */
+export function secretPlaceholder(key: string): string {
+  return `\u0000conveyor-secret:${key}\u0000`;
+}
+
+/** The key a placeholder stands for, or null for any other value. */
+export function placeholderKey(value: unknown): string | null {
+  return typeof value === "string" ? /^\u0000conveyor-secret:(.+)\u0000$/.exec(value)?.[1] ?? null : null;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -145,7 +157,7 @@ class Composer {
     }
     if (String(value).length > 0) this.secrets.add(String(value));
     this.secretKeys.set(key, String(value));
-    return value;
+    return this.options.secretPlaceholders ? secretPlaceholder(key) : value;
   }
 
   async resolve(value: unknown, at: Location, segments: readonly string[], chain: readonly string[]): Promise<unknown> {

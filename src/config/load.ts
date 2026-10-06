@@ -57,6 +57,8 @@ export interface LoadConfigOptions {
    * materialised under `state/builtin`.
    */
   home?: string;
+  /** Leave secretPlaceholder(key) where each `!secret` was (readConfiguration only, for migration). */
+  secretPlaceholders?: boolean;
 }
 
 export { ConfigError };
@@ -484,7 +486,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
     }
   } else {
     const builtin = options.home ? builtinResolver(path.join(options.home, "state/builtin")) : undefined;
-    const composed = await composeConfig(resolvedTarget, builtin ? { builtin } : {});
+    const composed = await composeConfig(resolvedTarget, { ...(builtin ? { builtin } : {}), ...(options.secretPlaceholders ? { secretPlaceholders: true } : {}) });
     secrets = composed.secrets;
     secretKeys = composed.secretKeys;
     const originBase: BaseDirectory = (segments) =>

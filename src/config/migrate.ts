@@ -8,6 +8,7 @@ import { Scalar, stringify } from "yaml";
 
 import type { TaskRegistry } from "../tasks/contract";
 import { ConfigError } from "./errors";
+import { placeholderKey } from "./compose";
 import { loadConfig, readConfiguration, type ConveyorConfig } from "./load";
 
 type Document = Record<string, unknown>;
@@ -73,20 +74,21 @@ async function comparable(config: ConveyorConfig): Promise<Document> {
 const SECTION_FILES = ["providers", "harnesses", "agents", "checks", "pipelines"] as const;
 
 /**
- * Puts `!secret <key>` back wherever a value came from a secret, so no credential is written into
- * the files meant to be committed. Returns the keys it used.
+ * Turns each placeholder left where a `!secret` was back into `!secret <key>`, so no credential is
+ * written into the files meant to be committed. Returns the keys it used.
  */
-function restoreSecretReferences(document: Document, secretKeys: Record<string, string>): Set<string> {
-  const byValue = new Map<string, string>();
-  for (const [key, value] of Object.entries(secretKeys)) if (!byValue.has(value)) byValue.set(value, key);
+function restoreSecretReferences(document: Document): Set<string> {
   const used = new Set<string>();
   const visit = (value: unknown): unknown => {
-    if ((typeof value === "string" || typeof value === "number") && byValue.has(String(value))) {
-      const key = byValue.get(String(value))!;
+    const key = placeholderKey(value);
+    if (key !== null) {
       used.add(key);
       const reference = new Scalar(key);
       reference.tag = "!secret";
       return reference;
+    }
+    if (typeof value === "string" && value.includes("\u0000conveyor-secret:")) {
+      throw new ConfigError("a !secret value was rewritten (it is used as a path); move that value out of secrets.yaml before migrating");
     }
     if (Array.isArray(value)) return value.map(visit);
     if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, visit(entry)]));
@@ -108,7 +110,8 @@ export async function migrateConfiguration(
   }
   const loadOptions = options.home ? { home: options.home } : {};
   const old = await loadConfig(from, options.registry, loadOptions);
-  const source = await readConfiguration(from, loadOptions);
+  // Placeholders mark exactly where each !secret was, so the references are restored by place.
+  const source = await readConfiguration(from, { ...loadOptions, secretPlaceholders: true });
   const document = canonical(source.merged);
   const notes: string[] = [];
 
@@ -133,7 +136,7 @@ export async function migrateConfiguration(
   }
 
   await mkdir(target, { recursive: true });
-  const usedSecrets = restoreSecretReferences(document, source.secretKeys);
+  const usedSecrets = restoreSecretReferences(document);
   const written: string[] = [];
   const write = async (relative: string, content: string) => {
     await mkdir(path.dirname(path.join(target, relative)), { recursive: true });

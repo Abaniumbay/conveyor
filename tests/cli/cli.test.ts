@@ -265,6 +265,30 @@ describe("conveyor config migrate", () => {
     expect(await mode(path.join(result.target, "secrets.yaml"))).toBe(0o600);
   });
 
+  test("restores each !secret by where it was: equal plain values stay plain, keys sharing a value keep their own", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    // hook's value equals the enrollment label, written in plain text; session and backup share one value.
+    await writeFile(path.join(source, "secrets.yaml"), `hook: conveyor\nsession: "${"s".repeat(40)}"\nbackup: "${"s".repeat(40)}"\n`);
+    await writeFile(path.join(source, "conveyor.yaml"), [
+      "web:", "  sessionSecret: !secret backup",
+      "providers:", "  items:",
+      '    github: { type: github, webhookSecret: !secret hook, labels: { enrollment: conveyor, stageTemplate: "conveyor:{stage}", states: { done: conveyor:done }, metadata: { closable: conveyor:closable, orderTemplate: "conveyor:order:{number}" } } }',
+      "",
+    ].join("\n"));
+    const result = await migrate(path.join(source, "conveyor.yaml"));
+    expect(result.out).toContain("Effective configuration identical: yes");
+    const providers = await readFile(path.join(result.target, "providers.yaml"), "utf8");
+    expect(providers).toContain("webhookSecret: !secret hook");
+    const entrypoint = await readFile(path.join(result.target, "conveyor.yaml"), "utf8");
+    // The shared labels block is written at the top level; its value stays plain.
+    expect(entrypoint).toContain("enrollment: conveyor");
+    expect(entrypoint).not.toContain("!secret hook");
+    expect(entrypoint).toContain("sessionSecret: !secret backup");
+    expect(parse(await readFile(path.join(result.target, "secrets.yaml"), "utf8"))).toEqual({ backup: "s".repeat(40), hook: "conveyor" });
+  });
+
   test("refuses a non-empty target", async () => {
     const root = await temporary();
     await writeFile(path.join(root, "keep"), "");
