@@ -39,7 +39,9 @@ export const serve: Command = {
     // Warnings go through the service log (and its file), not straight to stderr.
     const config = await loadCommandConfig({ ...context, err: () => {} });
     // Before anything is opened: direct upgrade/rollback must see this process as running.
-    await claimPidFile(context.paths.run);
+    await claimPidFile(context.paths.run).catch((error: unknown) => {
+      throw new CliError(error instanceof Error ? error.message : String(error), EXIT.failure);
+    });
     const { logging } = config.settings;
     log.configure({
       level: logging.level,
