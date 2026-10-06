@@ -17,6 +17,8 @@ export interface CommandContext {
   options: Record<string, string | boolean | undefined>;
   paths: HomePaths;
   json: boolean;
+  /** Whether the command may prompt (a terminal is attached); otherwise it needs every input as an option. */
+  interactive: boolean;
   out: (text: string) => void;
   err: (text: string) => void;
 }

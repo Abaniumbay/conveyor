@@ -74,7 +74,7 @@ describe("config compare", () => {
     const { directory, base } = await referenceConfigDirectory({ caravan: "caravan-v2", conveyor: "conveyor-v2" });
     bases.push(base);
     const lines: string[] = [];
-    const code = await runCli(["config", "compare", LEGACY, directory], { out: (text) => lines.push(text), err: () => {} });
+    const code = await runCli(["config", "compare", LEGACY, directory], { out: (text) => lines.push(text), err: () => {}, interactive: false });
     expect(code).toBe(1);
     const out = lines.join("\n");
     for (const repository of ["caravan-v2", "conveyor-v2", "meal-planner", "midgame", "quesshi"]) {

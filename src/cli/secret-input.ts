@@ -25,13 +25,14 @@ async function stty(...args: string[]): Promise<void> {
   await Bun.spawn(["stty", ...args], { stdin: "inherit", stdout: "ignore", stderr: "ignore" }).exited;
 }
 
+/** Whether this process runs on a terminal it may prompt on (the CLI's default for CliIo.interactive). */
 export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stderr.isTTY);
 }
 
-/** Prompts on stderr; with `secret`, the typed text is not echoed. */
-export async function prompt(question: string, secret = false): Promise<string> {
-  if (!isInteractive()) throw new CliError(`${question.replace(/:\s*$/, "")} is required; this is not an interactive terminal`, EXIT.usage);
+/** Prompts on stderr when `interactive`; with `secret`, the typed text is not echoed. */
+export async function prompt(question: string, interactive: boolean, secret = false): Promise<string> {
+  if (!interactive) throw new CliError(`${question.replace(/:\s*$/, "")} is required; this is not an interactive terminal`, EXIT.usage);
   process.stderr.write(question);
   if (!secret) return (await readLine()).trim();
   await stty("-echo");
@@ -56,12 +57,12 @@ export async function readSecretFile(file: string): Promise<string> {
 export const MIN_PASSWORD_LENGTH = 12;
 
 /** A new password from a file, or prompted twice on a terminal. */
-export async function newPassword(file: string | undefined): Promise<string> {
-  const password = file ? await readSecretFile(file) : await prompt("New password: ", true);
+export async function newPassword(file: string | undefined, interactive: boolean): Promise<string> {
+  const password = file ? await readSecretFile(file) : await prompt("New password: ", interactive, true);
   if (password.length < MIN_PASSWORD_LENGTH) {
     throw new CliError(`the password must be at least ${MIN_PASSWORD_LENGTH} characters`, EXIT.usage);
   }
-  if (!file && (await prompt("Repeat the password: ", true)) !== password) {
+  if (!file && (await prompt("Repeat the password: ", interactive, true)) !== password) {
     throw new CliError("the passwords do not match", EXIT.usage);
   }
   return password;

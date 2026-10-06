@@ -30,7 +30,7 @@ async function temporary(): Promise<string> {
 async function cli(...argv: string[]): Promise<{ code: number; out: string; err: string }> {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runCli(argv, { out: (text) => out.push(text), err: (text) => err.push(text), environment: {} });
+  const code = await runCli(argv, { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 

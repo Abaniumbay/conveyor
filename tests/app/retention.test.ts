@@ -85,11 +85,11 @@ describe("retention", () => {
       "  retention: { runHistory: 30d }", "providers: !include builtin:providers.yaml", "",
     ].join("\n"));
     const out: string[] = [];
-    const code = await runCli(["cleanup", "--home", home, "--dry-run"], { out: (text) => out.push(text), err: () => {}, environment: {} });
+    const code = await runCli(["cleanup", "--home", home, "--dry-run"], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(0);
     expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).");
     const json: string[] = [];
-    await runCli(["cleanup", "--home", home, "--artifacts", "30d", "--json"], { out: (text) => json.push(text), err: () => {}, environment: {} });
+    await runCli(["cleanup", "--home", home, "--artifacts", "30d", "--json"], { out: (text) => json.push(text), err: () => {}, environment: {}, interactive: false });
     expect(JSON.parse(json.join(""))).toMatchObject({ dryRun: false, runHistory: { events: 6 }, artifacts: { directories: 3 } });
   });
 });
@@ -109,7 +109,7 @@ describe("conveyor diagnostics export", () => {
     await writeFile(path.join(home, "logs/conveyor.log"), `${JSON.stringify({ time: "t", level: "error", message: "push failed with hook-secret-from-file and ghp_abcdefghijklmnopqrstuvwxyz0123456789", item: "app:1" })}\n`);
     const output = path.join(root, "bundle.tar.gz");
     const out: string[] = [];
-    const code = await runCli(["diagnostics", "export", "--home", home, "--output", output], { out: (text) => out.push(text), err: () => {}, environment: {} });
+    const code = await runCli(["diagnostics", "export", "--home", home, "--output", output], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(0);
     expect(out.join("\n")).toContain("Review it before sharing; it may contain:");
     expect(out.join("\n")).toContain("private issue content");

@@ -73,7 +73,7 @@ async function running() {
   const cli = async (...argv: string[]) => {
     const out: string[] = [];
     const err: string[] = [];
-    const code = await runCli([...argv, "--home", home], { out: (text) => out.push(text), err: (text) => err.push(text), environment: {} });
+    const code = await runCli([...argv, "--home", home], { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
   return { home, socket, store, service, issues, cli };
@@ -104,7 +104,7 @@ describe("control socket", () => {
     // A process that bound the socket and died: the file stays, nothing listens.
     Bun.spawnSync(["python3", "-c", "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])", socket]);
     const err: string[] = [];
-    const run = () => runCli(["item", "show", "app:1", "--home", home], { out: () => {}, err: (text) => err.push(text), environment: {} });
+    const run = () => runCli(["item", "show", "app:1", "--home", home], { out: () => {}, err: (text) => err.push(text), environment: {}, interactive: false });
     expect(await run()).toBe(EXIT.unavailable);
     expect(err.at(-1)).toContain("nothing is listening (the service stopped without removing its socket)");
     if (process.getuid?.() !== 0) {
@@ -122,11 +122,11 @@ describe("control socket", () => {
     const home = await mkdtemp(path.join(tmpdir(), "conveyor-control-"));
     directories.push(home);
     const out: string[] = [];
-    const code = await runCli(["status", "--home", home], { out: (text) => out.push(text), err: () => {}, environment: {} });
+    const code = await runCli(["status", "--home", home], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(EXIT.unavailable);
     expect(out.join("\n")).toContain("Service: not running");
     const err: string[] = [];
-    expect(await runCli(["item", "show", "app:1", "--home", home], { out: () => {}, err: (text) => err.push(text), environment: {} })).toBe(EXIT.unavailable);
+    expect(await runCli(["item", "show", "app:1", "--home", home], { out: () => {}, err: (text) => err.push(text), environment: {}, interactive: false })).toBe(EXIT.unavailable);
     expect(err.join("\n")).toContain("Conveyor is not running for this home");
   });
 });

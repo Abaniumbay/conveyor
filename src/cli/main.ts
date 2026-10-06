@@ -13,6 +13,7 @@ import { rollback, upgrade } from "./commands/release";
 import { serve } from "./commands/serve";
 import { serviceInstall, serviceRestart, serviceStart, serviceStatus, serviceStop, serviceUninstall } from "./commands/service";
 import { homePaths, resolveHome } from "./home";
+import { isInteractive } from "./secret-input";
 
 const version: Command = {
   name: "version",
@@ -123,6 +124,8 @@ export interface CliIo {
   out: (text: string) => void;
   err: (text: string) => void;
   environment?: NodeJS.ProcessEnv;
+  /** Whether commands may prompt; defaults to whether stdin and stderr are a terminal. */
+  interactive?: boolean;
 }
 
 const defaultIo: CliIo = {
@@ -155,6 +158,7 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo, com
       options: parsed.options,
       paths: homePaths(home, typeof parsed.options.config === "string" ? parsed.options.config : undefined),
       json: parsed.options.json === true,
+      interactive: io.interactive ?? isInteractive(),
       out: io.out,
       err: io.err,
     };

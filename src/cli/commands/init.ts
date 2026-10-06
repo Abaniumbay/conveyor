@@ -5,7 +5,7 @@ import { hashPassword } from "../../web/auth";
 import { resolveSessionSecret } from "../../web/session-secret";
 import { CliError, EXIT } from "../args";
 import { printJson, stringOption, type Command } from "../command";
-import { isInteractive, newPassword, prompt } from "../secret-input";
+import { newPassword, prompt } from "../secret-input";
 import { validUsername, withStore } from "./admin";
 
 export const CONFIG_TEMPLATE = `# Conveyor configuration: the single entrypoint. Keep this directory in a private Git
@@ -107,11 +107,11 @@ export const init: Command = {
       if (existing.length > 0) return { created: false, username: existing.find((account) => account.role === "superuser")?.username ?? existing[0]!.username };
       const usernameOption = stringOption(context, "admin-username");
       const passwordFile = stringOption(context, "admin-password-file");
-      if (!usernameOption && !isInteractive()) {
+      if (!usernameOption && !context.interactive) {
         throw new CliError("no dashboard account exists yet: pass --admin-username and --admin-password-file", EXIT.usage);
       }
-      const username = validUsername(usernameOption ?? (await prompt("Administrator username: ")));
-      store.seedDashboardSuperuser(username, hashPassword(await newPassword(passwordFile)));
+      const username = validUsername(usernameOption ?? (await prompt("Administrator username: ", context.interactive)));
+      store.seedDashboardSuperuser(username, hashPassword(await newPassword(passwordFile, context.interactive)));
       return { created: true, username };
     });
 

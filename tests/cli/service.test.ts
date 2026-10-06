@@ -50,7 +50,7 @@ async function machine() {
 async function cli(...argv: string[]) {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runCli(argv, { out: (text) => out.push(text), err: (text) => err.push(text), environment: {} });
+  const code = await runCli(argv, { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 

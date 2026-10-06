@@ -32,7 +32,7 @@ export const adminResetPassword: Command = {
   details: "Works whether or not the service is running: it uses the same account store the dashboard does.",
   async run(context) {
     const username = positional(context, 0, "username");
-    const password = await newPassword(stringOption(context, "password-file"));
+    const password = await newPassword(stringOption(context, "password-file"), context.interactive);
     const changed = await withStore(context, (store) => {
       const account = store.dashboardAccountByUsername(username);
       if (!account) return null;
