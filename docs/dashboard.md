@@ -9,13 +9,21 @@ The board shows backlog, configured stages, completed work, active runner capaci
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.
 
+![The board, with items needing you above it](screenshots/board.png)
+
+![An item's conversation](screenshots/item.png)
+
+![The team](screenshots/team.png)
+
 Above the board, every configured agent links to a read-only profile page (`/agents/<id>`; `/agents` lists them all) showing its harness, model, effort, workspace access, the pipeline stages it works in, its granted tools, and its instructions.
 
 **Reports** (`/reports`, drill into one repository with `/reports/<repository>`, filter with `?period=7d|30d|90d|12m`, all time by default) show delivery, usage and time: items delivered and in progress, runs (and how many did not succeed), tokens and their cached share, agent time, and per delivered item the average tokens, runs, lead time (enrolled to done), returns and first-pass rate. It breaks an item's lead time into agents working, waiting on CI and checks, waiting for you (stopped) and queued, and shows tokens and agent time per stage, per repository and per month. A repository's page lists its items with the same figures, each linking to the item. An item counts as delivered when it finishes its last stage; done items imported without that record are left out and counted in a note.
 
+![Reports](screenshots/reports.png)
+
 The optional steering agent is intentionally quieter than the technical log. Only explicit MCP progress and the final report are shown; commands, tool calls, raw output, and private reasoning are not rendered.
 
-![Conveyor user-facing agent progress](screenshots/agent-progress.png)
+![The operator answering a question about a stopped item](screenshots/operator.png)
 
 ## Browser push notifications
 
