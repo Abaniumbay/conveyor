@@ -6,14 +6,18 @@ export function quotaCountdown(resetAtMs: number, nowMs = Date.now()): { stale: 
   return { stale: false, text: `resets in ${days}d ${hours}h ${minutes % 60}m` };
 }
 
-/** Updates one quota window element; the dashboard client embeds this exact function. */
-export function updateQuotaWindow(element: HTMLElement, nowMs = Date.now()): void {
+/**
+ * Updates one quota window element. The dashboard client embeds this exact function by its source,
+ * so it must not name anything outside itself: a minified build renames those names. The countdown
+ * is passed in for that reason.
+ */
+export function updateQuotaWindow(element: HTMLElement, countdownOf: typeof quotaCountdown, nowMs = Date.now()): void {
   const resetAtIso = element.getAttribute("data-reset-at");
   const reportedAtIso = element.getAttribute("data-reported-at");
   const resetAtMs = resetAtIso ? new Date(resetAtIso).getTime() : NaN;
   const countdown = element.querySelector<HTMLElement>("[data-countdown]");
   if (!countdown || Number.isNaN(resetAtMs)) return;
-  const result = quotaCountdown(resetAtMs, nowMs);
+  const result = countdownOf(resetAtMs, nowMs);
   const stale = result.stale;
   const remaining = element.getAttribute("data-remaining") || "0";
   const lowCapacity = !stale && Number(remaining) < 10;

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { dashboardClient } from "../../src/web/client";
-import { updateQuotaWindow } from "../../src/usage/quota-time";
+import { quotaCountdown, updateQuotaWindow } from "../../src/usage/quota-time";
 
 describe("dashboard browser client", () => {
   test("is valid standalone JavaScript", () => {
@@ -66,8 +69,8 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("openDetails.querySelector('summary')");
     expect(dashboardClient).toContain("summary.focus()");
     expect(dashboardClient).toContain("window.setInterval(updateQuotaCountdowns, 60_000)");
-    expect(dashboardClient).toContain("quotaCountdown(resetAtMs, nowMs)");
-    expect(dashboardClient).toContain("updateQuotaWindow(quotaWindow)");
+    expect(dashboardClient).toContain("countdownOf(resetAtMs, nowMs)");
+    expect(dashboardClient).toContain("updateQuotaWindow(quotaWindow, quotaCountdown)");
     expect(dashboardClient).toContain("new Intl.DateTimeFormat(undefined");
     expect(dashboardClient).toContain("quota-window--stale");
     expect(dashboardClient).toContain("[data-retry-card]");
@@ -107,7 +110,7 @@ describe("dashboard browser client", () => {
       setAttribute: (name: string, content: string) => attributes.set(name, content),
     } as unknown as HTMLElement;
 
-    updateQuotaWindow(element, now);
+    updateQuotaWindow(element, quotaCountdown, now);
     expect(countdown.textContent).toBe("resets in 2d 7h 56m");
     expect(value.textContent).toBe("4% left");
     expect(attributes.get("aria-label")).toContain("Claude Code weekly: 4% remaining.");
@@ -121,7 +124,7 @@ describe("dashboard browser client", () => {
     expect(lowLabel.hidden).toBe(false);
 
     attributes.set("data-reset-at", new Date(now).toISOString());
-    updateQuotaWindow(element, now);
+    updateQuotaWindow(element, quotaCountdown, now);
     expect(countdown.textContent).toBe("stale");
     expect(value.textContent).toBe("Stale");
     expect(attributes.get("aria-label")).toContain("weekly: stale.");
@@ -131,12 +134,34 @@ describe("dashboard browser client", () => {
     expect(lowLabel.hidden).toBe(true);
 
     attributes.set("data-reset-at", "2026-10-05T22:00:00.000Z");
-    updateQuotaWindow(element, now);
+    updateQuotaWindow(element, quotaCountdown, now);
     expect(countdown.textContent).toBe("resets in 2d 7h 56m");
     expect(value.textContent).toBe("4% left");
     expect(attributes.get("aria-label")).toContain("weekly: 4% remaining.");
     expect(classes.has("quota-window--stale")).toBe(false);
     expect(classes.has("quota-window--low")).toBe(true);
     expect(lowLabel.hidden).toBe(false);
+  });
+
+  test("the embedded quota code runs on its own after a minified build, as the release serves it", async () => {
+    const out = await mkdtemp(path.join(tmpdir(), "conveyor-client-"));
+    try {
+      const built = await Bun.build({ entrypoints: [path.join(import.meta.dir, "../../src/web/client.ts")], outdir: out, target: "bun", minify: true });
+      expect(built.success).toBe(true);
+      const { quotaClient } = await import(built.outputs[0]!.path) as { quotaClient: string };
+      const [countdown, update] = new Function(`${quotaClient}\nreturn [quotaCountdown, updateQuotaWindow];`)() as [typeof quotaCountdown, typeof updateQuotaWindow];
+      const text = { textContent: "" };
+      const element = {
+        getAttribute: (name: string) => name === "data-reset-at" ? "2026-10-05T22:00:00.000Z" : name === "data-remaining" ? "40" : null,
+        querySelector: (selector: string) => selector === "[data-countdown]" ? text : null,
+        classList: { toggle: () => {} },
+        closest: () => null,
+        setAttribute: () => {},
+      } as unknown as HTMLElement;
+      update(element, countdown, Date.parse("2026-10-03T14:04:00.000Z"));
+      expect(text.textContent).toBe("resets in 2d 7h 56m");
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
   });
 });

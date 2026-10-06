@@ -1,8 +1,11 @@
 import { quotaCountdown, updateQuotaWindow } from "../usage/quota-time";
 
+/** The quota helpers, embedded by their source; each must be self-contained (see updateQuotaWindow). */
+export const quotaClient = `const quotaCountdown = ${quotaCountdown.toString()};
+  const updateQuotaWindow = ${updateQuotaWindow.toString()};`;
+
 export const dashboardClient = String.raw`(() => {
-  const quotaCountdown = ${quotaCountdown.toString()};
-  const updateQuotaWindow = ${updateQuotaWindow.toString()};
+  ${quotaClient}
   const body = document.body;
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
   let board = document.querySelector('.board');
@@ -182,7 +185,7 @@ export const dashboardClient = String.raw`(() => {
 
   const updateQuotaCountdowns = () => {
     for (const quotaWindow of document.querySelectorAll('[data-quota-window]')) {
-      if (quotaWindow instanceof HTMLElement) updateQuotaWindow(quotaWindow);
+      if (quotaWindow instanceof HTMLElement) updateQuotaWindow(quotaWindow, quotaCountdown);
     }
   };
 
