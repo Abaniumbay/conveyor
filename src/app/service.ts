@@ -308,7 +308,7 @@ export class ConveyorService {
           source.autoConfigureWebhook &&
           this.config.web.publicUrl
         ) {
-          const secret = this.webhookSecret();
+          const secret = this.webhookSecretFor(repository.source);
           if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
@@ -1407,26 +1407,32 @@ export class ConveyorService {
     };
   }
 
-  /** The GitHub webhook secret: the first GitHub items provider's `webhookSecret`, else the environment. */
-  private webhookSecret(): string {
-    const configured = Object.values(this.config.sources).find((source) => source.type === "github" && source.webhookSecret);
-    return configured?.webhookSecret ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
+  /** A GitHub items provider's webhook secret: its `webhookSecret`, else CONVEYOR_GITHUB_WEBHOOK_SECRET. */
+  private webhookSecretFor(sourceName: string): string {
+    const source = this.config.sources[sourceName];
+    return (source?.type === "github" ? source.webhookSecret : undefined) ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
   }
 
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
-    const secret = this.webhookSecret();
-    if (!verifyGitHubSignature(rawBody, headers.get("x-hub-signature-256"), secret)) {
+    // Providers may use different secrets on one webhook path: find the one that signed this delivery.
+    const candidates = [...new Set(Object.keys(this.config.sources).map((name) => this.webhookSecretFor(name)).filter(Boolean))];
+    const signature = headers.get("x-hub-signature-256");
+    const secret = candidates.find((candidate) => verifyGitHubSignature(rawBody, signature, candidate));
+    if (!secret) {
       throw new Error("invalid GitHub webhook signature");
     }
     const deliveryId = headers.get("x-github-delivery");
     const eventType = headers.get("x-github-event");
     if (!deliveryId || !eventType) throw new Error("missing GitHub webhook headers");
     const payload = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
-    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     const repositoryAddress = object(object(payload).repository).full_name;
+    const repository = typeof repositoryAddress === "string"
+      ? Object.entries(this.config.repositories).find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase())
+      : undefined;
+    // A delivery counts only for a repository whose own provider's secret signed it.
+    if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid GitHub webhook signature for this repository");
+    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     if (typeof repositoryAddress !== "string") return;
-    const repository = Object.entries(this.config.repositories)
-      .find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase());
     if (repository) await this.reconcileRepository(repository[0]);
     this.schedule();
   }
