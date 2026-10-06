@@ -233,8 +233,16 @@ export const serviceStop: Command = {
   async run(rawContext) {
     const unit = unitName(rawContext);
     const context = await withUnitHome(rawContext, unit);
-    if (context.options.drain) await drained(context);
-    await systemctl("stop", `${unit}.service`);
+    if (!context.options.drain) {
+      await systemctl("stop", `${unit}.service`);
+      return context.out(`Stopped ${unit}.`);
+    }
+    await drained(context);
+    await systemctl("stop", `${unit}.service`).catch(async (error: unknown) => {
+      // The service keeps running: let it admit work again rather than leave it drained.
+      await control(context, "DELETE", "/v1/drain").catch(() => {});
+      throw error;
+    });
     context.out(`Stopped ${unit}.`);
   },
 };

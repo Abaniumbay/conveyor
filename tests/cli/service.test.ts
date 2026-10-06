@@ -141,6 +141,18 @@ describe("service lifecycle", () => {
     expect(calls).toEqual([["stop", "conveyor.service"]]);
   });
 
+  test("a drained stop that systemctl refuses admits work again", async () => {
+    const { home } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    await mkdir(path.join(home, "run"), { recursive: true });
+    const requests = controlServer(home, { active: [], startedAt: "before" });
+    systemd.systemctl = async (args) => (args[0] === "stop" ? { code: 1, stdout: "", stderr: "Access denied" } : { code: 0, stdout: "", stderr: "" });
+    const stopped = await cli("service", "stop", "--drain");
+    expect(stopped.code).toBe(EXIT.failure);
+    expect(stopped.err).toContain("(run it with sudo)");
+    expect(requests).toEqual(["POST /v1/drain", "GET /v1/status", "DELETE /v1/drain"]);
+  });
+
   test("a drain that times out admits work again and stops nothing, unless forced", async () => {
     const { home } = await machine();
     await cli("service", "install", "--account", "conveyor");
