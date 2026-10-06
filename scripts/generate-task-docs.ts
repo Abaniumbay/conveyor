@@ -45,7 +45,7 @@ exit-gate:
 \`\`\`
 
 - **Instance id**: \`id\` defaults to the task name when that name occurs once in the list. A task name used more than once needs an explicit \`id\`. Ids are unique within a stage. Repository overrides, execution records, script results and idempotency keys address the instance id, never an array index.
-- **Implicit loads**: a task receives only the context keys it declares in \`reads\`. Before it runs, the engine runs the load task for every snapshot key it reads that is not loaded yet or was invalidated by an earlier act. The exit gate starts with everything unloaded. \`conveyor check-config\` shows these loads as \`(load <key>)\` lines.
+- **Implicit loads**: a task receives only the context keys it declares in \`reads\`. Before it runs, the engine runs the load task for every snapshot key it reads that is not loaded yet or was invalidated by an earlier act. The exit gate starts with everything unloaded. \`conveyor config check\` shows these loads as \`(load <key>)\` lines.
 - **Dataflow checks**: reading a snapshot key needs a registered load task. Reading \`agent\` or \`script\` needs an earlier act in the same stage's \`actions\` that writes it. \`script.succeeded\` must name a \`script.run\` instance of the same stage in \`with.run\`.
 - **Guards**: \`when\` is one of \`ci.enabled\` (mode is not disabled), \`ci.required\` or \`ci.advisory\`, evaluated from the repository's \`ci.mode\` at compile time. A task whose guard is false is left out of the plan. The exit gate must still be non-empty.
 - **with**: the task's configuration, validated against its schema when the config loads. \`script.run\` requires \`with.recovery\`.

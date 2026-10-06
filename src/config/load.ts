@@ -1,5 +1,6 @@
 import { CryptoHasher } from "bun";
 import { readdir, readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { parse } from "yaml";
 import type { ZodIssue } from "zod";
@@ -8,6 +9,8 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskRegistry } from "../tasks/contract";
 import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
 
+import { builtinResolver } from "./builtin";
+import { composeConfig, originOf, type ConfigOrigin } from "./compose";
 import { ConfigError } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { normalizeRoleDocuments } from "./roles";
@@ -27,6 +30,12 @@ const SINGLETON_SECTIONS = ["settings", "web", "labels"] as const;
 
 type ConfigurationDocument = Record<string, unknown>;
 
+/** The v0.1 default listen address, kept for a deprecated configuration directory. */
+export const LEGACY_LISTEN = "127.0.0.1:4300";
+
+/** How the configuration was given: a single entrypoint file, or a deprecated directory of files. */
+export type ConfigMode = "entrypoint" | "directory";
+
 export interface ConveyorConfig extends ConveyorConfigData {
   hash: string;
   root: string;
@@ -34,6 +43,22 @@ export interface ConveyorConfig extends ConveyorConfigData {
   plans: CompiledPipeline[];
   /** The pinned reference-configuration import, when the local files declare one. */
   import?: Pick<ResolvedImport, "repository" | "ref" | "path" | "sha">;
+  mode?: ConfigMode;
+  /** Values that came from `!secret`; never display or export them. */
+  secrets?: string[];
+  /** Deprecations and other non-fatal findings, for the operator. */
+  warnings?: string[];
+}
+
+export interface LoadConfigOptions {
+  /**
+   * The Conveyor home. With it, an entrypoint's unset settings paths default to the home layout
+   * (`state/conveyor.sqlite`, `logs`, `worktrees`, `artifacts`) and `builtin:` includes are
+   * materialised under `state/builtin`.
+   */
+  home?: string;
+  /** Leave secretPlaceholder(key) where each `!secret` was (readConfiguration only, for migration). */
+  secretPlaceholders?: boolean;
 }
 
 export { ConfigError };
@@ -46,30 +71,29 @@ function resolvePath(value: unknown, baseDirectory: string): unknown {
   if (typeof value !== "string" || value.length === 0 || path.isAbsolute(value)) {
     return value;
   }
+  if (value === "~" || value.startsWith("~/")) return path.join(homedir(), value.slice(1));
   return path.resolve(baseDirectory, value);
 }
 
-function resolveScriptWith(holder: unknown, baseDirectory: string): void {
-  if (isObject(holder) && isObject(holder.with) && "script" in holder.with) {
-    holder.with.script = resolvePath(holder.with.script, baseDirectory);
-  }
-}
+/** The directory relative paths resolve against, for a value at the given key path. */
+type BaseDirectory = (segments: readonly string[]) => string;
 
-function resolveScriptEntry(entry: unknown, baseDirectory: string): void {
-  if (isObject(entry) && entry.task === "script.run") resolveScriptWith(entry, baseDirectory);
+function resolveScriptWith(holder: unknown, base: string): void {
+  if (isObject(holder) && isObject(holder.with) && "script" in holder.with) {
+    holder.with.script = resolvePath(holder.with.script, base);
+  }
 }
 
 function normalizeDocumentPaths(
   input: ConfigurationDocument,
-  filename: string,
+  baseOf: BaseDirectory,
 ): ConfigurationDocument {
   const document = structuredClone(input);
-  const baseDirectory = path.dirname(filename);
 
   if (isObject(document.settings)) {
     for (const key of ["database", "logs", "workspaces", "artifacts"] as const) {
       if (key in document.settings) {
-        document.settings[key] = resolvePath(document.settings[key], baseDirectory);
+        document.settings[key] = resolvePath(document.settings[key], baseOf(["settings", key]));
       }
     }
   }
@@ -78,52 +102,63 @@ function normalizeDocumentPaths(
     if ("workspace" in document.web.steering) {
       document.web.steering.workspace = resolvePath(
         document.web.steering.workspace,
-        baseDirectory,
+        baseOf(["web", "steering", "workspace"]),
       );
     }
   }
 
   if (isObject(document.agents)) {
-    for (const agent of Object.values(document.agents)) {
+    for (const [name, agent] of Object.entries(document.agents)) {
       if (isObject(agent) && "instructions" in agent) {
-        agent.instructions = resolvePath(agent.instructions, baseDirectory);
+        agent.instructions = resolvePath(agent.instructions, baseOf(["agents", name, "instructions"]));
       }
     }
   }
 
   if (isObject(document.checks)) {
-    for (const check of Object.values(document.checks)) {
+    for (const [name, check] of Object.entries(document.checks)) {
       if (isObject(check) && "script" in check) {
-        check.script = resolvePath(check.script, baseDirectory);
+        check.script = resolvePath(check.script, baseOf(["checks", name, "script"]));
       }
     }
   }
 
   if (isObject(document.pipelines)) {
-    for (const pipeline of Object.values(document.pipelines)) {
+    for (const [name, pipeline] of Object.entries(document.pipelines)) {
       if (!isObject(pipeline) || !Array.isArray(pipeline.stages)) continue;
-      for (const stage of pipeline.stages) {
+      for (const [index, stage] of pipeline.stages.entries()) {
         if (!isObject(stage)) continue;
+        const stagePath = ["pipelines", name, "stages", String(index)];
         if (isObject(stage.run) && "script" in stage.run) {
-          stage.run.script = resolvePath(stage.run.script, baseDirectory);
+          stage.run.script = resolvePath(stage.run.script, baseOf([...stagePath, "run", "script"]));
         }
-        for (const list of [stage.actions, stage["exit-gate"]]) {
-          if (Array.isArray(list)) for (const entry of list) resolveScriptEntry(entry, baseDirectory);
+        for (const group of ["actions", "exit-gate"] as const) {
+          const list = stage[group];
+          if (!Array.isArray(list)) continue;
+          for (const [position, entry] of list.entries()) {
+            if (isObject(entry) && entry.task === "script.run") {
+              resolveScriptWith(entry, baseOf([...stagePath, group, String(position), "with", "script"]));
+            }
+          }
         }
       }
     }
   }
 
   if (isObject(document.repositories)) {
-    for (const repository of Object.values(document.repositories)) {
+    for (const [name, repository] of Object.entries(document.repositories)) {
       if (isObject(repository) && "folder" in repository) {
-        repository.folder = resolvePath(repository.folder, baseDirectory);
+        repository.folder = resolvePath(repository.folder, baseOf(["repositories", name, "folder"]));
       }
       if (isObject(repository) && isObject(repository.overrides) && isObject(repository.overrides.stages)) {
-        for (const stage of Object.values(repository.overrides.stages)) {
+        for (const [stageId, stage] of Object.entries(repository.overrides.stages)) {
           if (!isObject(stage)) continue;
-          for (const group of [stage.actions, stage["exit-gate"]]) {
-            if (isObject(group)) for (const override of Object.values(group)) resolveScriptWith(override, baseDirectory);
+          for (const group of ["actions", "exit-gate"] as const) {
+            const overrides = stage[group];
+            if (!isObject(overrides)) continue;
+            for (const [taskId, override] of Object.entries(overrides)) {
+              resolveScriptWith(override, baseOf(["repositories", name, "overrides", "stages", stageId, group, taskId, "with", "script"]));
+            }
           }
         }
       }
@@ -134,13 +169,6 @@ function normalizeDocumentPaths(
 }
 
 async function configurationFiles(target: string): Promise<string[]> {
-  const targetStat = await stat(target).catch(() => undefined);
-  if (!targetStat) throw new ConfigError(`configuration path does not exist: ${target}`);
-  if (targetStat.isFile()) return [target];
-  if (!targetStat.isDirectory()) {
-    throw new ConfigError(`configuration path is not a file or directory: ${target}`);
-  }
-
   const entries = await readdir(target, { recursive: true, withFileTypes: true });
   return entries
     .filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name))
@@ -189,82 +217,96 @@ function mergeDocument(
   }
 }
 
-function issuePath(issue: ZodIssue): string {
-  return issue.path.map(String).join(".") || "configuration";
+/** A validation error at a key path of the merged (internal-name) configuration. */
+interface LocatedError {
+  path: readonly string[];
+  message: string;
 }
 
-function formatIssues(issues: readonly ZodIssue[]): string {
+/** Formats errors; with a locator, each names the file that defined the value and its key path there. */
+type Locate = (segments: readonly string[]) => { file: string; path: readonly string[] } | null;
+
+function formatErrors(heading: string, errors: readonly LocatedError[], locate: Locate | null): string {
   return [
-    "configuration is invalid:",
-    ...issues.map((issue) => `- ${issuePath(issue)}: ${issue.message}`),
+    heading,
+    ...errors.map((error) => {
+      const located = locate?.(error.path);
+      if (!located) return `- ${error.path.map(String).join(".") || "configuration"}${error.message}`;
+      const keys = located.path.length > 0 ? `: ${located.path.join(".")}` : "";
+      return `- ${located.file}${keys}${error.message}`;
+    }),
   ].join("\n");
 }
 
-function crossReferenceErrors(config: ConveyorConfigData): string[] {
-  const errors: string[] = [];
+function zodErrors(issues: readonly ZodIssue[]): LocatedError[] {
+  return issues.map((issue) => ({ path: issue.path.map(String), message: `: ${issue.message}` }));
+}
+
+function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
+  const errors: LocatedError[] = [];
+  const error = (segments: readonly (string | number)[], message: string) =>
+    errors.push({ path: segments.map(String), message: ` ${message}` });
   if (config.web.steering && !config.agents[config.web.steering.agent]) {
-    errors.push(
-      `web.steering.agent references unknown agent "${config.web.steering.agent}"`,
-    );
+    error(["web", "steering", "agent"], `references unknown agent "${config.web.steering.agent}"`);
   }
   for (const [name, agent] of Object.entries(config.agents)) {
     const runner = config.runners[agent.runner];
     if (!runner) {
-      errors.push(`agents.${name}.runner references unknown runner "${agent.runner}"`);
+      error(["agents", name, "runner"], `references unknown runner "${agent.runner}"`);
     } else if (runner.type === "claude-code" && agent.workspaceAccess === "workspace-write" && !agent.network) {
       // The Claude CLI needs the network for its own API calls, so its commands cannot be cut off from it.
-      errors.push(`agents.${name} runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)`);
+      error(["agents", name], "runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");
     } else if (runner.type === "claude-code" && agent.workspaceAccess === "read-only" && agent.writableRoots.length > 0) {
-      errors.push(`agents.${name} is read-only, so writableRoots does not apply`);
+      error(["agents", name], "is read-only, so writableRoots does not apply");
     } else if (runner.type === "claude-code" && Object.keys(agent.codexConfig).length > 0) {
-      errors.push(`agents.${name} runs on Claude Code, which does not take codexConfig`);
+      error(["agents", name], "runs on Claude Code, which does not take codexConfig");
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {
     if (!config.agents[check.verifier]) {
-      errors.push(`checks.${name}.verifier references unknown agent "${check.verifier}"`);
+      error(["checks", name, "verifier"], `references unknown agent "${check.verifier}"`);
     }
   }
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
-      const prefix = `pipelines.${pipelineName}.stages.${index}`;
+      const prefix = ["pipelines", pipelineName, "stages", index];
       if (isNativeStage(stage)) {
         if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
           if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
-            errors.push(`${prefix}.childrenStartAt references unknown stage "${stage.childrenStartAt}"`);
+            error([...prefix, "childrenStartAt"], `references unknown stage "${stage.childrenStartAt}"`);
           }
         }
         continue;
       }
       if (stage.enterCheck && !config.checks[stage.enterCheck]) {
-        errors.push(`${prefix}.enterCheck references unknown check "${stage.enterCheck}"`);
+        error([...prefix, "enterCheck"], `references unknown check "${stage.enterCheck}"`);
       }
       if (stage.exitCheck && !config.checks[stage.exitCheck]) {
-        errors.push(`${prefix}.exitCheck references unknown check "${stage.exitCheck}"`);
+        error([...prefix, "exitCheck"], `references unknown check "${stage.exitCheck}"`);
       }
       if (stage.run.type === "agent" && !config.agents[stage.run.agent]) {
-        errors.push(`${prefix}.run.agent references unknown agent "${stage.run.agent}"`);
+        error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
       }
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
-        errors.push(`${prefix}.run.runner references unknown runner "${stage.run.runner}"`);
+        error([...prefix, "run", "runner"], `references unknown runner "${stage.run.runner}"`);
       }
       if (stage.run.type === "source-action" && stage.run.input?.triggers !== undefined && stage.run.action === "ci.await") {
-        errors.push(`${prefix}.run.with.triggers is only supported by the deprecated pullRequest.awaitChecks action`);
+        error([...prefix, "run", "with", "triggers"], "is only supported by the deprecated pullRequest.awaitChecks action");
       }
       if (stage.run.type === "source-action" && stage.run.input?.triggers !== undefined) {
         const triggers = stage.run.input.triggers;
-        if (!Array.isArray(triggers)) errors.push(`${prefix}.run.with.triggers must be a list`);
+        if (!Array.isArray(triggers)) error([...prefix, "run", "with", "triggers"], "must be a list");
         else triggers.forEach((trigger, triggerIndex) => {
-          const triggerPath = `${prefix}.run.with.triggers.${triggerIndex}`;
+          const triggerPath = [...prefix, "run", "with", "triggers", triggerIndex];
           if (!isObject(trigger)) {
-            errors.push(`${triggerPath} must be an object`);
+            error(triggerPath, "must be an object");
             return;
           }
-          if (typeof trigger.label !== "string" || !trigger.label) errors.push(`${triggerPath}.label must be a non-empty string`);
-          if (typeof trigger.workflow !== "string" || !/^[\w.-]+\.ya?ml$/.test(trigger.workflow)) errors.push(`${triggerPath}.workflow must be a workflow file name`);
-          if (typeof trigger.check !== "string" || !trigger.check) errors.push(`${triggerPath}.check must be a non-empty string`);
+          if (typeof trigger.label !== "string" || !trigger.label) error([...triggerPath, "label"], "must be a non-empty string");
+          if (typeof trigger.workflow !== "string" || !/^[\w.-]+\.ya?ml$/.test(trigger.workflow)) error([...triggerPath, "workflow"], "must be a workflow file name");
+          if (typeof trigger.check !== "string" || !trigger.check) error([...triggerPath, "check"], "must be a non-empty string");
           if (trigger.replaces !== undefined && (!Array.isArray(trigger.replaces) || trigger.replaces.some((name) => typeof name !== "string" || !name))) {
-            errors.push(`${triggerPath}.replaces must be a list of names`);
+            error([...triggerPath, "replaces"], "must be a list of names");
           }
         });
       }
@@ -273,52 +315,42 @@ function crossReferenceErrors(config: ConveyorConfigData): string[] {
         if (!policy.stage) continue;
         const targetIndex = pipeline.stages.findIndex((candidate) => candidate.id === policy.stage);
         if (targetIndex < 0 || targetIndex >= stageIndex) {
-          errors.push(
-            `${prefix}.failurePolicies.${status}.stage must name an earlier stage, not "${policy.stage}"`,
-          );
+          error([...prefix, "failurePolicies", status, "stage"], `must name an earlier stage, not "${policy.stage}"`);
         }
       }
       if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
         if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
-          errors.push(
-            `${prefix}.childrenStartAt references unknown stage "${stage.childrenStartAt}"`,
-          );
+          error([...prefix, "childrenStartAt"], `references unknown stage "${stage.childrenStartAt}"`);
         }
       }
     }
   }
   for (const [name, repository] of Object.entries(config.repositories)) {
     if (!config.sources[repository.source]) {
-      errors.push(
-        `repositories.${name}.source references unknown source "${repository.source}"`,
-      );
+      error(["repositories", name, "source"], `references unknown source "${repository.source}"`);
     }
     if (!config.pipelines[repository.pipeline]) {
-      errors.push(
-        `repositories.${name}.pipeline references unknown pipeline "${repository.pipeline}"`,
-      );
+      error(["repositories", name, "pipeline"], `references unknown pipeline "${repository.pipeline}"`);
     }
     const ciName = repository.ci.provider;
     if (ciName && !config.ci[ciName]) {
-      errors.push(`repositories.${name}.ci references unknown CI provider "${ciName}"`);
+      error(["repositories", name, "ci"], `references unknown CI provider "${ciName}"`);
     }
     if (ciName && config.ci[ciName]?.type !== "github-actions" && config.sources[repository.source]?.type === "github") {
-      errors.push(`repositories.${name}.ci is incompatible with sources.${repository.source}`);
+      error(["repositories", name, "ci"], `is incompatible with sources.${repository.source}`);
     }
     {
       const providerName = ciName;
       const provider = providerName ? config.ci[providerName] : undefined;
       for (const [index, stage] of config.pipelines[repository.pipeline]?.stages.entries() ?? []) {
         if (isNativeStage(stage) || stage.run.type !== "source-action" || stage.run.input?.triggers === undefined) continue;
-        if (provider && provider.triggers.length > 0) errors.push(`pipelines.${repository.pipeline}.stages.${index}.run.with.triggers conflicts with ci.${providerName}.triggers`);
+        if (provider && provider.triggers.length > 0) error(["pipelines", repository.pipeline, "stages", index, "run", "with", "triggers"], `conflicts with ci.${providerName}.triggers`);
       }
     }
     const codeHost = repository.codeHost ?? repository.source;
     if (config.codeHosts[codeHost]) continue;
     if (codeHost === repository.source && config.sources[repository.source]?.type === "github") continue;
-    errors.push(
-      `repositories.${name}.codeHost references unknown or unsupported code host "${codeHost}"`,
-    );
+    error(["repositories", name, "codeHost"], `references unknown or unsupported code host "${codeHost}"`);
   }
   return errors;
 }
@@ -354,32 +386,123 @@ async function readDocument(filename: string): Promise<ConfigurationDocument> {
   return parsed;
 }
 
-export async function loadConfig(
-  target: string,
-  /** Pass null to validate the schema only, without compiling task plans. */
-  registry: TaskRegistry | null = createTaskRegistry(),
-): Promise<ConveyorConfig> {
+/** Internal section and key names, mapped back to the canonical names an entrypoint may use. */
+const CANONICAL_SECTIONS: Record<string, readonly string[]> = {
+  sources: ["providers", "items"],
+  codeHosts: ["providers", "code"],
+  ci: ["providers", "ci"],
+  runners: ["harnesses"],
+};
+const CANONICAL_KEYS: Record<string, Record<string, string>> = {
+  agents: { runner: "harness", workspaceAccess: "access" },
+  repositories: { source: "items", codeHost: "code" },
+};
+
+/** Maps a key path of the merged configuration to the file that defined it and the path inside that file. */
+function entrypointLocator(entrypoint: string, document: ConfigurationDocument, origins: readonly ConfigOrigin[]): Locate {
+  const display = (file: string) => {
+    const relative = path.relative(path.dirname(entrypoint), file);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : file;
+  };
+  return (segments) => {
+    let translated = [...segments];
+    const section = segments[0];
+    if (section && CANONICAL_SECTIONS[section]) {
+      const canonical = CANONICAL_SECTIONS[section]!;
+      const usesCanonical = canonical[0] === "providers" ? isObject(document.providers) : canonical[0]! in document;
+      if (usesCanonical) translated = [...canonical, ...segments.slice(1)];
+    }
+    if (section && CANONICAL_KEYS[section] && segments.length >= 3) {
+      const name = segments[1]!;
+      const key = segments[2]!;
+      const canonical = CANONICAL_KEYS[section]![key];
+      const entry = isObject(document[section]) ? (document[section] as ConfigurationDocument)[name] : undefined;
+      if (canonical && isObject(entry) && canonical in entry) translated[2] = canonical;
+    }
+    const origin = originOf(origins, translated);
+    if (!origin) return null;
+    return { file: display(origin.file), path: translated.slice((origin.root ?? origin.path).length) };
+  };
+}
+
+function applySettingsDefaults(merged: ConfigurationDocument, defaults: Record<"database" | "logs" | "workspaces" | "artifacts", string>): void {
+  const settings = (merged.settings ??= {}) as Record<string, unknown>;
+  if (!isObject(settings)) return;
+  for (const [key, value] of Object.entries(defaults)) settings[key] ??= value;
+}
+
+/** The default state locations inside a Conveyor home. */
+export function homeLayout(home: string): Record<"database" | "logs" | "workspaces" | "artifacts", string> {
+  return {
+    database: path.join(home, "state/conveyor.sqlite"),
+    logs: path.join(home, "logs"),
+    workspaces: path.join(home, "worktrees"),
+    artifacts: path.join(home, "artifacts"),
+  };
+}
+
+/** The merged configuration document before validation: every file read, paths resolved, defaults applied. */
+export interface ConfigurationSource {
+  merged: ConfigurationDocument;
+  mode: ConfigMode;
+  root: string;
+  warnings: string[];
+  secrets: string[];
+  /** Each `!secret` key the entrypoint used, with its value. */
+  secretKeys: Record<string, string | number>;
+  locate: Locate | null;
+  resolvedImport?: ResolvedImport;
+}
+
+/** Reads and merges the configuration at `target` without validating it. */
+export async function readConfiguration(target: string, options: LoadConfigOptions = {}): Promise<ConfigurationSource> {
   const resolvedTarget = path.resolve(target);
   const targetStat = await stat(resolvedTarget).catch(() => undefined);
-  const root = targetStat?.isDirectory()
-    ? resolvedTarget
-    : path.dirname(resolvedTarget);
-  const files = await configurationFiles(resolvedTarget);
-  if (files.length === 0) {
-    throw new ConfigError(`no YAML configuration files found in ${resolvedTarget}`);
+  if (!targetStat) throw new ConfigError(`configuration path does not exist: ${resolvedTarget}`);
+  if (!targetStat.isFile() && !targetStat.isDirectory()) {
+    throw new ConfigError(`configuration path is not a file or directory: ${resolvedTarget}`);
   }
+  const mode: ConfigMode = targetStat.isDirectory() ? "directory" : "entrypoint";
+  const root = mode === "directory" ? resolvedTarget : path.dirname(resolvedTarget);
+  const warnings: string[] = [];
+  let secrets: string[] = [];
+  let secretKeys: Record<string, string | number> = {};
+  let locate: Locate | null = null;
 
-  const rawLocal: { filename: string; document: ConfigurationDocument }[] = [];
-  for (const filename of files) rawLocal.push({ filename, document: await readDocument(filename) });
+  /** Each local document with the directory its relative paths resolve against. */
+  let rawLocal: { filename: string; document: ConfigurationDocument; baseOf: BaseDirectory }[];
+  if (mode === "directory") {
+    warnings.push(
+      `loading a configuration directory is deprecated: use a single conveyor.yaml entrypoint with !include tags (\`conveyor config migrate --from ${resolvedTarget} --to <new-config-directory>\` writes one)`,
+    );
+    const files = await configurationFiles(resolvedTarget);
+    if (files.length === 0) {
+      throw new ConfigError(`no YAML configuration files found in ${resolvedTarget}`);
+    }
+    rawLocal = [];
+    for (const filename of files) {
+      const directory = path.dirname(filename);
+      rawLocal.push({ filename, document: await readDocument(filename), baseOf: () => directory });
+    }
+  } else {
+    const builtin = options.home ? builtinResolver(path.join(options.home, "state/builtin")) : undefined;
+    const composed = await composeConfig(resolvedTarget, { ...(builtin ? { builtin } : {}), ...(options.secretPlaceholders ? { secretPlaceholders: true } : {}) });
+    secrets = composed.secrets;
+    secretKeys = composed.secretKeys;
+    const originBase: BaseDirectory = (segments) =>
+      path.dirname(originOf(composed.origins, segments)?.file ?? resolvedTarget);
+    rawLocal = [{ filename: resolvedTarget, document: composed.document, baseOf: originBase }];
+    if (composed.origins.length > 1) locate = entrypointLocator(resolvedTarget, composed.document, composed.origins);
+  }
 
   // Materialised imports live under <settings.artifacts>/config-imports, which may sit inside the
   // configuration directory; skip exactly those copies. Only files outside any config-imports
   // directory may declare the artifacts path that identifies them.
   const artifactDirectories = rawLocal
     .filter(({ filename }) => !filename.split(path.sep).includes("config-imports"))
-    .map(({ filename, document }) => {
+    .map(({ document, baseOf }) => {
       const resolved = isObject(document.settings)
-        ? resolvePath(document.settings.artifacts, path.dirname(filename))
+        ? resolvePath(document.settings.artifacts, baseOf(["settings", "artifacts"]))
         : undefined;
       return typeof resolved === "string" && path.isAbsolute(resolved) ? resolved : undefined;
     })
@@ -400,8 +523,9 @@ export async function loadConfig(
   }
 
   let resolvedImport: ResolvedImport | undefined;
-  const importedRaw: { filename: string; document: ConfigurationDocument }[] = [];
+  const importedRaw: { filename: string; document: ConfigurationDocument; baseOf: BaseDirectory }[] = [];
   if (importSpec) {
+    warnings.push(`${importOrigin}: import is deprecated: include the packaged defaults with \`!include builtin:<file>\` instead`);
     const artifacts = artifactDirectories[0];
     if (!artifacts) {
       throw new ConfigError(
@@ -412,13 +536,15 @@ export async function loadConfig(
     for (const filename of resolvedImport.yamlFiles) {
       const document = await readDocument(filename);
       if ("import" in document) throw new ConfigError(`${filename}: an imported file cannot declare import`);
-      importedRaw.push({ filename, document });
+      const directory = path.dirname(filename);
+      importedRaw.push({ filename, document, baseOf: () => directory });
     }
   }
 
-  const documents = normalizeRoleDocuments([...importedRaw, ...localDocuments]).map(({ filename, document }) => ({
+  const sources = [...importedRaw, ...localDocuments];
+  const documents = normalizeRoleDocuments(sources).map(({ filename, document }, index) => ({
     filename,
-    document: normalizeDocumentPaths(document, filename),
+    document: normalizeDocumentPaths(document, sources[index]!.baseOf),
   }));
 
   const merged: ConfigurationDocument = {};
@@ -427,24 +553,41 @@ export async function loadConfig(
     mergeDocument(merged, document, origins, filename);
   }
 
-  const settings = (merged.settings ??= {}) as Record<string, unknown>;
-  if (isObject(settings)) {
-    settings.database ??= path.join(root, "data/conveyor.sqlite");
-    settings.logs ??= path.join(root, "data/logs");
-    settings.workspaces ??= path.join(root, "data/worktrees");
-    settings.artifacts ??= path.join(root, "data/artifacts");
+  // A deprecated configuration directory keeps the v0.1 defaults: state under <root>/data and the
+  // dashboard on port 4300.
+  if (mode === "directory") {
+    const web = (merged.web ??= {}) as Record<string, unknown>;
+    if (isObject(web)) web.listen ??= LEGACY_LISTEN;
   }
+  applySettingsDefaults(
+    merged,
+    mode === "entrypoint" && options.home
+      ? homeLayout(options.home)
+      : {
+          database: path.join(root, "data/conveyor.sqlite"),
+          logs: path.join(root, "data/logs"),
+          workspaces: path.join(root, "data/worktrees"),
+          artifacts: path.join(root, "data/artifacts"),
+        },
+  );
+  return { merged, mode, root, warnings, secrets, secretKeys, locate, ...(resolvedImport ? { resolvedImport } : {}) };
+}
 
+export async function loadConfig(
+  target: string,
+  /** Pass null to validate the schema only, without compiling task plans. */
+  registry: TaskRegistry | null = createTaskRegistry(),
+  options: LoadConfigOptions = {},
+): Promise<ConveyorConfig> {
+  const { merged, mode, root, warnings, secrets, locate, resolvedImport } = await readConfiguration(target, options);
   const parsed = configSchema.safeParse(merged);
-  if (!parsed.success) throw new ConfigError(formatIssues(parsed.error.issues));
+  if (!parsed.success) {
+    throw new ConfigError(formatErrors("configuration is invalid:", zodErrors(parsed.error.issues), locate));
+  }
 
   const referenceErrors = crossReferenceErrors(parsed.data);
   if (referenceErrors.length > 0) {
-    throw new ConfigError(
-      ["configuration references are invalid:", ...referenceErrors.map((item) => `- ${item}`)].join(
-        "\n",
-      ),
-    );
+    throw new ConfigError(formatErrors("configuration references are invalid:", referenceErrors, locate));
   }
 
   let plans: CompiledPipeline[] = [];
@@ -462,6 +605,9 @@ export async function loadConfig(
     hash: configurationHash(parsed.data, resolvedImport?.sha),
     root,
     plans,
+    mode,
+    secrets,
+    warnings,
     ...(resolvedImport
       ? { import: { repository: resolvedImport.repository, ref: resolvedImport.ref, path: resolvedImport.path, sha: resolvedImport.sha } }
       : {}),

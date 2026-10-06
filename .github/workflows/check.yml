@@ -31,3 +31,20 @@ jobs:
           git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
       - run: bun run check
+
+  package:
+    name: Package and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      # Builds the release archive, then installs it with install.sh and exercises it outside the
+      # checkout, without Bun on PATH: init, config, dashboard assets, sign-in, bridge, agent + MCP,
+      # status and logs; then upgrades to a second build and rolls back, restarting like systemd.
+      - run: bun run build
+      - run: bun run scripts/build.ts --out dist-next --version 99.0.0-next
+      - run: bun run scripts/smoke-test.ts --dist dist --next dist-next

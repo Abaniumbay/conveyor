@@ -1,6 +1,5 @@
 import { Fragment, type ComponentChildren } from "preact";
 import renderToString from "preact-render-to-string";
-import packageMetadata from "../../package.json";
 import { Accounts, Profile } from "./account-pages";
 import { Notifications } from "./notification-page";
 import { Reports } from "./report-page";
@@ -16,6 +15,7 @@ import type {
   IssueRelationViewModel,
   StageColumnViewModel,
 } from "./types";
+import { BUILD } from "../version";
 
 function safeUrl(value: string | null): string | null {
   if (!value) return null;
@@ -512,17 +512,18 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
 }
 
 function About() {
-  const preOne = packageMetadata.version.startsWith("0.");
+  const preOne = BUILD.version.startsWith("0.");
   return (
     <section class="panel about" aria-labelledby="about-heading">
       <header class="section-heading">
         <div>
           <h2 id="about-heading">About</h2>
-          {preOne && <p>Conveyor {packageMetadata.version} is pre-1.0 software.</p>}
+          {preOne && <p>Conveyor {BUILD.version} is pre-1.0 software.</p>}
         </div>
       </header>
       <dl class="about-facts">
-        <dt>Version</dt><dd>Version {packageMetadata.version}</dd>
+        <dt>Version</dt><dd>Version {BUILD.version}</dd>
+        <dt>Build</dt><dd>{BUILD.commit === "development" ? "Development build" : `Commit ${BUILD.commit.slice(0, 12)}`}{BUILD.builtAt ? `, built ${BUILD.builtAt}` : ""}, Bun {BUILD.runtime}</dd>
         <dt>Source</dt><dd><a href="https://github.com/Abaniumbay/conveyor" target="_blank" rel="noopener noreferrer">github.com/Abaniumbay/conveyor</a></dd>
         <dt>Contributors</dt><dd>Conveyor contributors</dd>
         <dt>License</dt><dd>MIT license</dd>

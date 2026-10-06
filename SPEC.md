@@ -105,7 +105,7 @@ A task is a named unit, `group.camelCase`, in the registry (`src/tasks/<group>.t
 - **act**: reconciles external state toward a desired result (observe first, do only the missing work), declares the snapshots it `invalidates`, and is safe to resume after a crash. Only acts appear in `actions`.
 - **tool**: callable only through an agent's scoped MCP grant (see section 13). Never listed in a stage.
 
-Every task declares `reads`, `writes` (loads and engine-captured outputs only) and `invalidates`. A task sees a deep-frozen copy of only the keys it reads. A provider snapshot has one writer, its load task; acts never patch it, they invalidate it and the engine reloads before the next reader. `agent` and `script` are engine-captured act outputs and `checkpoints` is engine-owned. Tasks never sleep or poll: "not yet" is the `pending` result and the engine waits. The configuration compiler validates task kinds, dataflow on every conditional path, unique instance ids and routes, and emits the expanded plan, including implicit loads, to `check-config`.
+Every task declares `reads`, `writes` (loads and engine-captured outputs only) and `invalidates`. A task sees a deep-frozen copy of only the keys it reads. A provider snapshot has one writer, its load task; acts never patch it, they invalidate it and the engine reloads before the next reader. `agent` and `script` are engine-captured act outputs and `checkpoints` is engine-owned. Tasks never sleep or poll: "not yet" is the `pending` result and the engine waits. The configuration compiler validates task kinds, dataflow on every conditional path, unique instance ids and routes, and emits the expanded plan, including implicit loads, to `conveyor config check`.
 
 ### Stage
 
@@ -113,37 +113,21 @@ A stage is configuration tying together `id`, `concurrency`, `retries` (default 
 
 ## 6. Configuration
 
-Configuration lives outside managed repositories and may be split hierarchically:
+Configuration lives in the Conveyor home (`<home>/config`, often a private Git repository), outside the installed executable and the managed repositories. It has exactly one entrypoint, `conveyor.yaml`, which holds everything or places content in other files with tags written where the content belongs:
 
-The layout below shows the legacy shape (with `checks/`); a native configuration has no `checks/` directory and typically imports the shared reference configuration (below).
-
-```text
-config/
-  conveyor.yml
-  repositories.yml
-  pipelines.yml
-  runners.yml
-  agents/
-    refiner.yml
-    implementer.yml
-    reviewer.yml
-    checker.yml
-  instructions/
-    refiner.md
-    implementer.md
-    reviewer.md
-    checker.md
-  checks/
-    refinement.enter.ts
-    refinement.exit.ts
-    implementation.exit.ts
-  stages/
-    deploy.ts
-    verify.ts
-    cleanup.ts
+```yaml
+settings: { runners: 4 }
+web: { listen: 127.0.0.1:7788, publicUrl: https://conveyor.example.com }
+providers: !include providers.yaml              # the file's content
+harnesses: !include builtin:harnesses.yaml      # a packaged default
+agents: !include_dir_merge_named agents/        # the maps of every file, merged; duplicate keys are an error
+pipelines: !include pipelines.yaml
+repositories: !include_dir_named repositories/  # one file per repository, named by its id
 ```
 
-All files are loaded, merged, and schema-validated at startup. Relative paths resolve from the file that declares them. Top-level maps merge by unique ID; defining the same harness, agent, provider, pipeline, or repository twice is an error rather than a silent override. An invalid configuration prevents the service from starting and reports exact file paths and fields. Restarting the service is required after a configuration change.
+`!secret <key>` takes a value from `secrets.yaml` beside the entrypoint, which is never committed; secret values are redacted from every display, export, log and stored snapshot. Paths in tags, and relative paths inside an included file, resolve from the file that declares them. Includes nest; a cycle, a duplicate key from a directory tag, or a missing secret is an error naming the file and key path. All files are composed and schema-validated at startup. An invalid configuration prevents the service from starting and reports the file and key path of each error. Restarting the service is required after a configuration change. With a home, unset state paths default to `<home>/state/conveyor.sqlite`, `<home>/logs`, `<home>/worktrees` and `<home>/artifacts`, and the dashboard listens on `127.0.0.1:7788`.
+
+A configuration directory of YAML files merged by key (with `settings`, `web` and `labels` declared once) is deprecated: it still loads, with its v0.1 defaults (state under `<directory>/data`, port 4300), and `conveyor config migrate` converts it to an entrypoint whose compiled plans and effective configuration are verified identical.
 
 The validated configuration receives a content hash stored with every run and with every item context. A removed/renamed current stage or incompatible label mapping blocks that issue with a configuration-drift warning instead of guessing a migration. When the hash changed and an item is parked mid-stage under the old plan, the stage restarts from its beginning under a new epoch with one conversation note; it is never resumed against a plan that may not contain its cursor (section 8, Durable execution).
 
@@ -159,18 +143,11 @@ A repository changes a task without copying the pipeline through `overrides.stag
 
 Settings added by task chains: `maxReturns` (default 5, the cross-stage `return` budget), `taskDefaults.wait`, and `history.contextSummaryBytes` (default 65536, the bound on the stored item context).
 
-### Reference configuration, import and pin
+### Packaged defaults (and the deprecated import)
 
-The reference configuration (providers, harnesses, agents with exact task grants, the `delivery` and `midgame-delivery` pipelines and the agent instructions) is versioned in this repository under `examples/config`; machine-local settings, secrets and repositories are samples in `examples/local`. One local file may import it at a pinned git ref:
+The reference configuration (providers, harnesses, agents with exact task grants, the `delivery` and `midgame-delivery` pipelines and the agent instructions) is versioned in this repository under `examples/config`, one section value per file, and embedded in every release executable. An entrypoint selects a file with `!include builtin:<file>`; packaged files are materialised under `<home>/state/builtin/<digest>/` so agents can read instructions by path, and their content is part of the configuration hash. A section either includes a packaged default or is the operator's own; there is no merging of defaults with overrides beyond repository task `overrides`.
 
-```yaml
-import:
-  repository: /srv/conveyor-reference   # absolute path to a git checkout
-  ref: v1.4.0                           # tag or commit, resolved to a SHA
-  path: examples/config                 # directory inside the repository
-```
-
-The loader reads that directory at the ref with `git ls-tree` and `git show`, never from the working tree, and merges its YAML before the local files. Local files may add repositories, settings and secrets but cannot redefine an imported pipeline, agent, provider or harness, and a singleton section (`settings`, `web`, `labels`) may come from one side only. Relative paths in imported files resolve against a copy written to `<settings.artifacts>/config-imports/<sha>/<path>/`, so `settings.artifacts` must be defined locally. The resolved SHA is part of the hash. The live service therefore keeps no copied pipeline; changing the pin changes the hash, and rolling back is restoring the previous pin. `check-config --compare` prints two configurations' compiled plans side by side with a summary of added, removed and changed tasks, routes and waits. See `docs/migration.md`.
+A local file may still import a directory of a Git checkout at a pinned ref (`import: { repository, ref, path }`), read with `git ls-tree` and `git show` and materialised under `<settings.artifacts>/config-imports/<sha>/`. This is deprecated in favour of packaged defaults: it loads with a warning, and `conveyor config migrate` inlines it. `conveyor config compare` prints two configurations' compiled plans side by side with a summary of added, removed and changed tasks, routes and waits.
 
 Illustrative native configuration (the shape of the reference configuration; not a built-in pipeline):
 
@@ -1058,3 +1035,12 @@ V0.1 is complete when a configured GitHub issue can demonstrate this path after 
 - GitHub webhook events: <https://docs.github.com/en/webhooks/webhook-events-and-payloads>
 - Bun SQLite: <https://bun.com/docs/api/sqlite>
 - Model Context Protocol TypeScript SDK: <https://github.com/modelcontextprotocol/typescript-sdk>
+
+## 23. Distribution and operation
+
+- **Release:** one Bun-compiled executable per supported platform (Linux x64; arm64 when its tests pass), embedding the runtime, dashboard and assets, result schemas, packaged defaults, the MCP server and the sandbox bridge (internal subcommands `__mcp` and `__bridge`). Releases are GitHub releases cut from `vX.Y.Z` tags with `checksums.txt` and `install.sh`; external tools (Git, GitHub CLI, bubblewrap, agent CLIs, the repositories' build tools, and an interpreter for each operator script) remain prerequisites that `conveyor doctor` reports.
+- **Locations:** the installed releases (`<prefix>/versions/<version>`, `<prefix>/current`), the Conveyor home (configuration, credentials, state, logs, artifacts, worktrees, backups) and the managed repositories are independent. Upgrades never change configuration or credentials; uninstalling the service keeps the home and the releases.
+- **Control:** the CLI reaches the running service through `<home>/run/control.sock`, usable only by the service account, and calls the same operations as the dashboard; it never edits the database behind the engine.
+- **Accounts:** no default password; `conveyor init` seeds the first administrator only while no account exists; the session secret is generated once beside the database unless configured.
+- **Logging:** service logs (stdout/stderr and `<logs>/conveyor.log`, JSON lines, rotated) carry repository, item, stage and run, and are redacted; run history stays in the database and run artifacts, pruned only by `settings.retention` and only for closed, done or offboarded items.
+- **Drain, upgrade, rollback:** a drain stops admission while running work finishes. An upgrade stages and verifies a release, validates the configuration with it, drains, backs up the state, switches `<prefix>/current` and restarts under systemd, then verifies the new release; an upgrade requested by Conveyor's own stage does not wait, so its stage ends before the switch. A rollback returns to the previous recorded release and requires restoring the pre-upgrade backup when the database was migrated; an older release refuses a newer schema.

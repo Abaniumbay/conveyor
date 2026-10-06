@@ -2,6 +2,7 @@
 node_modules/
 coverage/
 dist/
+dist-*/
 
 # Runtime state — configuration and operational data belong outside the source tree
 data/

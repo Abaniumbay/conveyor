@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { checkConfig } from "../../src/cli";
+import { checkConfig } from "../../src/cli/commands/config";
 import { ConfigError, loadConfig } from "../../src/config/load";
 import { legacyGroup } from "../../src/tasks/legacy";
 import { defineGroup, pass, TaskRegistry, type TaskDefinition } from "../../src/tasks/contract";

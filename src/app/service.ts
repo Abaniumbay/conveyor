@@ -3,6 +3,11 @@ import { chmod, mkdir, readFile, rm, statfs, writeFile } from "node:fs/promises"
 import { freemem, homedir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
+import { redactSecrets } from "../config/compose";
+import { INTERNAL, selfCommand } from "../self";
+import { log, type LogFields } from "../log/logger";
+import { applyRetention, type RetentionPolicy, type RetentionReport } from "./retention";
+import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
@@ -188,6 +193,12 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
   return [...new Map(labels.map((label) => [label.name, label])).values()];
 }
 
+/** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
+function mcpServerCommand(contextFile: string): { command: string; args: string[] } {
+  const [command, ...args] = selfCommand(INTERNAL.mcp, "--context", contextFile);
+  return { command: command!, args };
+}
+
 export class ConveyorService {
   readonly store: ConveyorStore;
   readonly github: GitHubAdapter;
@@ -217,6 +228,9 @@ export class ConveyorService {
   #lastReconciledAt: string | null = null;
   #shuttingDown = false;
   #tickRunning = false;
+  /** While set, no new work is admitted; work already running finishes. */
+  #drain: { since: string; reason: string } | null = null;
+  #retentionTimer: ReturnType<typeof setInterval> | null = null;
   readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 
@@ -244,7 +258,7 @@ export class ConveyorService {
           actorName: "Conveyor", actorTitle: "Orchestrator", message,
         });
       },
-      onError: (watch, error) => console.warn(`Advisory CI watch for ${watch.itemId}@${watch.headSha.slice(0, 7)} failed: ${error instanceof Error ? error.message : String(error)}`),
+      onError: (watch, error) => log.warn("Advisory CI watch failed", { ...this.itemFields(watch.itemId), commit: watch.headSha.slice(0, 7) }, error),
     });
   }
 
@@ -257,17 +271,14 @@ export class ConveyorService {
     const store = await ConveyorStore.open(config.settings.database);
     const recovered = store.recoverInterruptedExecutions(config.hash);
     if (recovered.runs > 0 || recovered.stages > 0) {
-      console.warn(
-        `Recovered ${recovered.runs} interrupted run(s) and ${recovered.stages} running stage(s) after restart`,
-      );
+      log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
     }
     const removedRepositories = store.removeRepositoriesExcept(Object.keys(config.repositories));
     if (removedRepositories.length > 0) {
-      console.info(
-        `Removed unconfigured repositories from the local index: ${removedRepositories.join(", ")}`,
-      );
+      log.info("Removed unconfigured repositories from the local index", { repositories: removedRepositories });
     }
-    store.recordConfigSnapshot(config.hash, config);
+    // The snapshot is history, not a credential store: values that came from !secret are redacted.
+    store.recordConfigSnapshot(config.hash, redactSecrets(config, config.secrets ?? []));
     const service = new ConveyorService(
       config,
       store,
@@ -297,8 +308,8 @@ export class ConveyorService {
           source.autoConfigureWebhook &&
           this.config.web.publicUrl
         ) {
-          const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
-          if (!secret) throw new Error("CONVEYOR_GITHUB_WEBHOOK_SECRET is required for webhooks");
+          const secret = this.webhookSecretFor(repository.source);
+          if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
         }
@@ -306,7 +317,7 @@ export class ConveyorService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.#onboardingErrors.set(id, message);
-        console.error(`Repository ${id} onboarding failed: ${message}`);
+        log.error("Repository onboarding failed", { repository: id }, error);
       }
     }
   }
@@ -336,7 +347,7 @@ export class ConveyorService {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.#repositoryErrors.set(id, message);
-        console.error(`Repository ${id} reconciliation failed: ${message}`);
+        log.error("Repository reconciliation failed", { repository: id }, error);
       }
     }
     this.#lastReconciledAt = new Date().toISOString();
@@ -347,12 +358,34 @@ export class ConveyorService {
     if (this.#timer) return;
     void this.tick();
     this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
+    const { retention } = this.config.settings;
+    if (retention.runHistoryMs !== null || retention.artifactsMs !== null) {
+      const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
+      prune();
+      this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
+    }
+  }
+
+  /** Prunes finished work past the retention policy (the configured one by default). */
+  async applyRetention(options: { dryRun?: boolean; policy?: RetentionPolicy } = {}): Promise<RetentionReport> {
+    const report = await applyRetention({
+      store: this.store,
+      artifacts: this.config.settings.artifacts,
+      policy: options.policy ?? this.config.settings.retention,
+      dryRun: options.dryRun === true,
+    });
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0)) {
+      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, bytes: report.artifacts.bytes });
+    }
+    return report;
   }
 
   async close(): Promise<void> {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = null;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     this.#wakeTimer = null;
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
@@ -376,11 +409,11 @@ export class ConveyorService {
       this.#tickRunning = false;
     }
     // Not awaited: a slow CI provider must not stall reconcile and scheduling.
-    void this.pollAdvisoryCi().catch((error) => console.warn(`Advisory CI poll failed: ${error instanceof Error ? error.message : String(error)}`));
+    void this.pollAdvisoryCi().catch((error) => log.warn("Advisory CI poll failed", {}, error));
   }
 
   private schedule(): void {
-    if (this.#shuttingDown) return;
+    if (this.#shuttingDown || this.#drain) return;
     const issues = this.store.listIssues();
     const candidates: SchedulerCandidate[] = issues.flatMap((issue) => {
       const state = this.store.getStageState(issue.id);
@@ -451,6 +484,7 @@ export class ConveyorService {
         lightweight: candidate.lightweight === true,
       });
       const active = this.#active.get(issue.id)!;
+      log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       void this.execute(issue, active.controller.signal).finally(() => {
         this.#active.delete(issue.id);
       });
@@ -528,6 +562,21 @@ export class ConveyorService {
     };
   }
 
+  /** Log correlation for an item: its repository and <repository>:<number>. */
+  private itemFields(issueId: string): LogFields {
+    const issue = this.store.getIssue(issueId);
+    return issue ? { repository: issue.repositoryId, item: `${issue.repositoryId}:${issue.sourceNumber}` } : { item: issueId };
+  }
+
+  /** One record per stage pass, keeping gate and agent stops apart from infrastructure failures. */
+  private logOutcome(issueId: string, outcome: StageOutcome): void {
+    const fields = { ...this.itemFields(issueId), stage: outcome.stageId };
+    if (outcome.kind === "advance") log.info("Stage passed", { ...fields, next: outcome.nextStageId });
+    else if (outcome.kind === "stopped") log.warn("Stage stopped", { ...fields, state: outcome.state, reason: outcome.reason });
+    else if (outcome.kind === "correction") log.info("Stage returned to an earlier stage", { ...fields, target: outcome.targetStageId, reason: outcome.reason });
+    else log.debug("Stage parked", { ...fields, reason: outcome.reason, wakeAt: outcome.wakeAt });
+  }
+
   private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
@@ -556,6 +605,7 @@ export class ConveyorService {
     try {
       const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
       const outcome = await executor.execute(issue);
+      this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
         // A parked poll changes nothing at the source: no reconcile, just the status line.
         this.restorePendingStatus(issue.repositoryId);
@@ -601,8 +651,9 @@ export class ConveyorService {
         warning: `Execution failed and will retry in ${formatDuration(decision.retryInMs)}: ${message}`,
       });
       await this.updateStatusComment(issue.id).catch((statusError) => {
-        console.error(`Status comment for ${issue.id} failed: ${statusError instanceof Error ? statusError.message : String(statusError)}`);
+        log.error("Status comment update failed", this.itemFields(issue.id), statusError);
       });
+      log.warn("Stage failed outside its tasks; retrying", { ...this.itemFields(issue.id), stage: stageId, attempt: failures, retryInMs: decision.retryInMs }, error);
       this.retryLater(issue.id, decision.retryInMs);
       return;
     }
@@ -610,6 +661,7 @@ export class ConveyorService {
     const repository = this.config.repositories[issue.repositoryId]!;
     const pipeline = this.config.pipelines[repository.pipeline]!;
     const reason = `${displayName(stageId)} stopped after ${failures} failed attempts: ${message}`;
+    log.error("Stage stopped as error after repeated failures", { ...this.itemFields(issue.id), stage: stageId, attempts: failures }, error);
     this.store.appendConversationMessage({
       issueId: issue.id, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
       actorName: "Conveyor", actorTitle: "Orchestrator", message: reason,
@@ -627,7 +679,7 @@ export class ConveyorService {
       result: { kind: "stopped", stageId, state: "error", reason, requiredFixes: [], feedbackCycles: 0, result: null },
       actor: { name: "Conveyor", title: "Orchestrator" },
     }).catch((transitionError) => {
-      console.error(`Stopping ${issue.id} as error failed: ${transitionError instanceof Error ? transitionError.message : String(transitionError)}`);
+      log.error("Stopping the item as error failed", { ...this.itemFields(issue.id), stage: stageId }, transitionError);
     });
     await this.updateStatusComment(issue.id).catch(() => {});
   }
@@ -1010,10 +1062,7 @@ export class ConveyorService {
         }), { mode: 0o600 });
         await chmod(contextFile, 0o600);
         return {
-          configuration: {
-            command: process.execPath,
-            args: ["run", path.join(import.meta.dir, "../mcp/cli.ts"), "--context", contextFile],
-          },
+          configuration: mcpServerCommand(contextFile),
           close: async () => {
             this.#mcpGrants.delete(token);
             await rm(contextFile, { force: true });
@@ -1065,10 +1114,7 @@ export class ConveyorService {
     }), { mode: 0o600 });
     await chmod(contextFile, 0o600);
     return {
-      configuration: {
-        command: process.execPath,
-        args: ["run", path.join(import.meta.dir, "../mcp/cli.ts"), "--context", contextFile],
-      },
+      configuration: mcpServerCommand(contextFile),
       close: async () => {
         this.#mcpGrants.delete(token);
         await rm(contextFile, { force: true });
@@ -1361,20 +1407,32 @@ export class ConveyorService {
     };
   }
 
+  /** A GitHub items provider's webhook secret: its `webhookSecret`, else CONVEYOR_GITHUB_WEBHOOK_SECRET. */
+  private webhookSecretFor(sourceName: string): string {
+    const source = this.config.sources[sourceName];
+    return (source?.type === "github" ? source.webhookSecret : undefined) ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
+  }
+
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
-    const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
-    if (!verifyGitHubSignature(rawBody, headers.get("x-hub-signature-256"), secret)) {
+    // Providers may use different secrets on one webhook path: find the one that signed this delivery.
+    const candidates = [...new Set(Object.keys(this.config.sources).map((name) => this.webhookSecretFor(name)).filter(Boolean))];
+    const signature = headers.get("x-hub-signature-256");
+    const secret = candidates.find((candidate) => verifyGitHubSignature(rawBody, signature, candidate));
+    if (!secret) {
       throw new Error("invalid GitHub webhook signature");
     }
     const deliveryId = headers.get("x-github-delivery");
     const eventType = headers.get("x-github-event");
     if (!deliveryId || !eventType) throw new Error("missing GitHub webhook headers");
     const payload = JSON.parse(new TextDecoder().decode(rawBody)) as unknown;
-    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     const repositoryAddress = object(object(payload).repository).full_name;
+    const repository = typeof repositoryAddress === "string"
+      ? Object.entries(this.config.repositories).find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase())
+      : undefined;
+    // A delivery counts only for a repository whose own provider's secret signed it.
+    if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid GitHub webhook signature for this repository");
+    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     if (typeof repositoryAddress !== "string") return;
-    const repository = Object.entries(this.config.repositories)
-      .find(([, candidate]) => candidate.address.toLowerCase() === repositoryAddress.toLowerCase());
     if (repository) await this.reconcileRepository(repository[0]);
     this.schedule();
   }
@@ -1437,6 +1495,7 @@ export class ConveyorService {
     if (!request || request.length > 12_000) {
       throw new Error("The steering prompt must contain between 1 and 12000 characters");
     }
+    if (this.#drain) throw new Error("Conveyor is draining: no new work is admitted");
     const steering = this.config.web?.steering;
     if (!steering) throw new Error("The steering agent is not configured");
     if (this.#steeringActive.size > 0) {
@@ -2269,7 +2328,7 @@ export class ConveyorService {
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.schedule();
       await this.updateStatusComment(issueId).catch((error) => {
-        console.error(`Status comment for ${issueId} failed after conversation resume: ${error instanceof Error ? error.message : String(error)}`);
+        log.error("Status comment update failed after conversation resume", this.itemFields(issueId), error);
       });
     }
 
@@ -2366,6 +2425,110 @@ export class ConveyorService {
     }
   }
 
+  /** Reconciled at least once, not stopping, and every repository onboarded and reconciling. */
+  isReady(): boolean {
+    return Boolean(this.#lastReconciledAt) && !this.#shuttingDown && this.#repositoryErrors.size === 0 && this.#onboardingErrors.size === 0;
+  }
+
+  /** Stops admitting new work; running work continues. Idempotent: the first reason is kept. */
+  drain(reason: string): { since: string; reason: string } {
+    if (!this.#drain) {
+      this.#drain = { since: new Date().toISOString(), reason };
+      log.info("Admission paused: draining", { reason });
+    }
+    return this.#drain;
+  }
+
+  /** Admits new work again after a drain; false when no drain was in effect. */
+  resumeAdmission(): boolean {
+    if (!this.#drain) return false;
+    this.#drain = null;
+    log.info("Admission resumed");
+    this.schedule();
+    return true;
+  }
+
+  draining(): { since: string; reason: string } | null {
+    return this.#drain;
+  }
+
+  /** Work in flight: items executing a stage, and steering runs. */
+  activeWork(): { items: Array<{ issueId: string; repositoryId: string; stageId: string }>; steering: number } {
+    return {
+      items: [...this.#active.entries()].map(([issueId, active]) => ({ issueId, repositoryId: active.repositoryId, stageId: active.stageId })),
+      steering: this.#steeringActive.size,
+    };
+  }
+
+  /**
+   * Pauses an item the way the source does: removes only its enrollment label, so Conveyor stops
+   * scheduling it and interrupts its running stage; its stage, worktree and history are kept.
+   */
+  async pauseIssue(issueId: string, actor: string): Promise<{ stageId: string | null }> {
+    const { issue, repository, live } = await this.liveEnrolledIssue(issueId);
+    if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is already paused");
+    const labels = this.conveyorLabels(live.labels).filter((label) => label !== this.config.labels.enrollment);
+    await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
+    await this.reconcileRepository(issue.repositoryId);
+    this.interruptIneligibleRuns();
+    this.store.appendConversationMessage({
+      issueId, runId: null, stageId: issue.projectedStage, actorType: "conveyor", actorId: "conveyor",
+      actorName: "Conveyor", actorTitle: "Orchestrator", message: `Paused by ${actor}. Its stage, worktree and history are kept.`,
+    });
+    log.info("Item paused", { ...this.itemFields(issueId), stage: issue.projectedStage ?? undefined, actor });
+    return { stageId: issue.projectedStage };
+  }
+
+  /** Resumes a paused item by restoring its enrollment label; reports whether its stage started or queued. */
+  async resumeIssue(issueId: string, actor: string): Promise<{ status: "started" | "queued"; stageId: string | null }> {
+    const { issue, repository, live } = await this.liveEnrolledIssue(issueId);
+    if (live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is not paused");
+    const labels = [...this.conveyorLabels(live.labels), this.config.labels.enrollment];
+    await this.replaceLabelsRecorded(issue, repository, "issue.labels.resume", labels);
+    await this.reconcileRepository(issue.repositoryId);
+    this.schedule();
+    const refreshed = this.store.getIssue(issueId);
+    const status = this.#active.has(issueId) ? "started" : "queued";
+    this.store.appendConversationMessage({
+      issueId, runId: null, stageId: refreshed?.projectedStage ?? null, actorType: "conveyor", actorId: "conveyor",
+      actorName: "Conveyor", actorTitle: "Orchestrator", message: `Resumed by ${actor}; ${status === "started" ? "its stage started" : "its stage is queued"}.`,
+    });
+    log.info("Item resumed", { ...this.itemFields(issueId), stage: refreshed?.projectedStage ?? undefined, actor, status });
+    return { status, stageId: refreshed?.projectedStage ?? null };
+  }
+
+  /** An open item known to Conveyor (enrolled or paused), with its live source state. */
+  private async liveEnrolledIssue(issueId: string) {
+    const issue = this.store.getIssue(issueId);
+    const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+    if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("item not found");
+    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+    if (live.state !== "open") throw new Error("the item is closed");
+    if (this.conveyorLabels(live.labels).length === 0) throw new Error("the item is offboarded (it has no Conveyor labels)");
+    return { issue, repository, live };
+  }
+
+  private conveyorLabels(labels: readonly string[]): string[] {
+    const prefix = this.config.settings.labelPrefix;
+    return labels.filter((label) => label === prefix || label.startsWith(`${prefix}:`));
+  }
+
+  private async replaceLabelsRecorded(issue: StoredIssue, repository: ConveyorConfig["repositories"][string], operation: string, labels: string[]): Promise<void> {
+    const mutation = this.store.beginSourceMutation({
+      idempotencyKey: `${operation}:${randomUUID()}`,
+      source: repository.source,
+      operation,
+      request: { issueId: issue.id, issueNumber: issue.sourceNumber, labels },
+    });
+    try {
+      await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, labels);
+      this.store.completeSourceMutation(mutation.id, { labels });
+    } catch (error) {
+      this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
+
   /** An operator's dismissal of a review finding: the dispatcher runs `change.dismissFinding` as that human, never an agent. */
   async dismissFinding(issueId: string, findingId: string, reason: string, username: string): Promise<void> {
     const issue = this.store.getIssue(issueId);
@@ -2415,11 +2578,7 @@ export class ConveyorService {
       getConversationRevision: () => this.store.conversationRevision(),
       getActivityRevision: () => this.store.activityRevision(),
       getSystemStatus: () => this.systemStatus(),
-      isReady: () =>
-        Boolean(this.#lastReconciledAt) &&
-        !this.#shuttingDown &&
-        this.#repositoryErrors.size === 0 &&
-        this.#onboardingErrors.size === 0,
+      isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       answerQuestion: (id, answer) => this.answerQuestion(id, answer),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),

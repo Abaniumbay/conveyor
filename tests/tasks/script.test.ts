@@ -73,6 +73,29 @@ describe("script.run", () => {
     expect(Number.isNaN(Date.parse(first.finishedAt))).toBe(false);
   });
 
+  test("an interpreter runs a non-Bun script under the same protocol", async () => {
+    const w = await world({});
+    const script = path.join(w.folder, "deploy.py");
+    await writeFile(script, [
+      "import json, sys",
+      "request = json.load(sys.stdin)",
+      'print(json.dumps({"outcome": "success", "summary": "python " + request["phase"] + " " + request["idempotencyKey"]}))',
+      "",
+    ].join("\n"));
+    const deps = {
+      store: { getIssue: () => ({ id: "i1" }), getActiveWorkspace: () => null },
+      config: { settings: { interruptGraceMs: 100 } },
+      repository: { id: "repo", address: "o/r", folder: w.folder, baseBranch: "main" },
+      issueId: "i1",
+    } as unknown as TaskDeps;
+    const result = await runTask(registry.require("script.run"), {
+      context: {}, deps,
+      config: { script, recovery: "replay-safe", interpreter: ["python3"] },
+      instance: { id: "deploy", stage: "deploy", idempotencyKey: "key-9", resumed: false },
+    });
+    expect(output(result)).toMatchObject({ passed: true, summary: "python apply key-9" });
+  });
+
   test("reconcile applies on the first run without observing", async () => {
     const w = await world({ apply: success() });
     const result = output(await w.run("reconcile", false));

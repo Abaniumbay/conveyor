@@ -9,10 +9,14 @@ export interface PushConfiguration {
 
 export type PushSender = (subscription: webpush.PushSubscription, payload: string) => Promise<unknown>;
 
-export function pushConfiguration(environment: NodeJS.ProcessEnv = process.env): PushConfiguration | null {
-  const publicKey = environment.CONVEYOR_VAPID_PUBLIC_KEY ?? "";
-  const privateKey = environment.CONVEYOR_VAPID_PRIVATE_KEY ?? "";
-  const subject = environment.CONVEYOR_VAPID_SUBJECT ?? "";
+/** The configured VAPID keys (`web.push`), else the CONVEYOR_VAPID_* variables; null when incomplete or invalid. */
+export function pushConfiguration(
+  configured?: PushConfiguration,
+  environment: NodeJS.ProcessEnv = process.env,
+): PushConfiguration | null {
+  const publicKey = configured?.publicKey ?? environment.CONVEYOR_VAPID_PUBLIC_KEY ?? "";
+  const privateKey = configured?.privateKey ?? environment.CONVEYOR_VAPID_PRIVATE_KEY ?? "";
+  const subject = configured?.subject ?? environment.CONVEYOR_VAPID_SUBJECT ?? "";
   if (!publicKey || !privateKey || !subject || !/^https:\/\//.test(subject) && !/^mailto:/.test(subject)) return null;
   try {
     webpush.setVapidDetails(subject, publicKey, privateKey);

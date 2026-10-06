@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ConsoleSink, log } from "../../src/log/logger";
 import { referenceConfigDirectory } from "../config/reference-fixture";
 
 const bases: string[] = [];
@@ -28,8 +29,7 @@ describe("ConveyorService shutdown", () => {
     };
     const service = new ConveyorService(config, store, github as never);
     const logged: string[] = [];
-    const error = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.join(" ")); });
-    const warn = spyOn(console, "warn").mockImplementation((...args: unknown[]) => { logged.push(args.join(" ")); });
+    log.configure({ sinks: [{ write: (record) => logged.push(JSON.stringify(record)) }] });
     try {
       const tick = service.tick();
       while (listed === 0) await Bun.sleep(5);
@@ -43,8 +43,7 @@ describe("ConveyorService shutdown", () => {
       expect(closed).toBe(true);
       expect(logged.filter((line) => /closed database/i.test(line))).toEqual([]);
     } finally {
-      error.mockRestore();
-      warn.mockRestore();
+      log.configure({ sinks: [new ConsoleSink()] });
     }
   });
 });

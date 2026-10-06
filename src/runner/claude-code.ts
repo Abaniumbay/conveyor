@@ -10,12 +10,13 @@
 // acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
 
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { prepareAgentEnvironment } from "../isolation/environment";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type RunEnvelope } from "./result";
 import type { HarnessRunInput } from "../harness/types";
+import { OUTPUT_SCHEMAS } from "./output-schemas";
 
 export interface ClaudeCodeRunInput extends HarnessRunInput {
   /** Continue this session with `--resume` instead of starting a new one. */
@@ -52,7 +53,6 @@ interface ClaudeEvent {
   };
 }
 
-const OUTPUT_SCHEMA = path.join(import.meta.dir, "schemas/producer-result.json");
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|limit reached|too many requests|\b429\b|quota|overloaded/i;
 /** The built-in tools a read-only agent gets; edits and writes are not among them. */
 const READ_ONLY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
@@ -178,7 +178,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   if (!configDir) throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
   environment.CLAUDE_CONFIG_DIR = configDir;
   await mkdir(configDir, { recursive: true });
-  const schema = claudeSchema(await readFile(OUTPUT_SCHEMA, "utf8"));
+  const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
   const argv = [
     "bwrap", ...sandboxArguments({
       workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,

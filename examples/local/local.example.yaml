@@ -1,3 +1,8 @@
+# DEPRECATED LAYOUT: this sample is for a source checkout that imports the reference configuration
+# at a pinned commit from before examples/config was split into section files. A release uses one
+# conveyor.yaml entrypoint with `!include builtin:<file>` instead: see docs/configuration.md and
+# `conveyor init`. `conveyor config migrate` converts a configuration built from this sample.
+#
 # Machine-local settings. Copy next to the operator's other local files (for example
 # ~/.config/conveyor-v2/00-core.yaml) and adjust. Settings cannot be imported: paths and
 # limits are per machine, and a setting may be declared in one file only.

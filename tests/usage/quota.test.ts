@@ -175,13 +175,18 @@ describe("Codex quota telemetry", () => {
       secondary: null,
     } } }) + "\n";
     for (let index = 0; index < 1_000; index += 1) await writeFile(path.join(sessions, `unrelated-${index}.jsonl`), "{}\n");
+    // File times come from a coarse clock, so files written in quick succession can share one;
+    // date the newest file explicitly so ties cannot push it out of the newest-files window.
+    const written = Date.now();
     await writeFile(newest, entry(99));
+    await utimes(newest, new Date(written + 60_000), new Date(written + 60_000));
 
     let now = Date.now();
     const dateNow = spyOn(Date, "now").mockImplementation(() => now);
     try {
       await checkEventLoopResponsiveness(() => expect(readCodexQuota(home).weekly?.remaining).toBe(99));
       await writeFile(newest, entry(80));
+      await utimes(newest, new Date(written + 120_000), new Date(written + 120_000));
       expect(readCodexQuota(home).weekly?.remaining).toBe(99);
       now += 30_001;
       await checkEventLoopResponsiveness(() => expect(readCodexQuota(home).weekly?.remaining).toBe(80));
