@@ -42,10 +42,41 @@ export async function logFiles(directory: string): Promise<string[]> {
   return rotated.map((entry) => path.join(directory, entry.name));
 }
 
-export async function readLogRecords(directory: string, query: LogQuery = {}): Promise<LogRecord[]> {
+/** An open conveyor.log and the offset up to which it has been read: where following continues. */
+export interface LogCursor {
+  handle: FileHandle | null;
+  position: number;
+}
+
+/** Opens conveyor.log at its current end. Read history with it, then follow from it: nothing in between is lost or repeated. */
+export async function openLogCursor(directory: string): Promise<LogCursor> {
+  const handle = await open(path.join(directory, LOG_FILE), "r").catch(() => null);
+  return { handle, position: handle ? (await handle.stat()).size : 0 };
+}
+
+async function readRange(handle: FileHandle, end: number): Promise<string> {
+  const buffer = Buffer.alloc(end);
+  await handle.read(buffer, 0, end, 0);
+  return buffer.toString("utf8");
+}
+
+/**
+ * The records in the log files, oldest first. With a cursor, its file is read only up to the
+ * cursor (wherever rotation moved it), and a conveyor.log created after it is left to the follower.
+ */
+export async function readLogRecords(directory: string, query: LogQuery = {}, cursor?: LogCursor): Promise<LogRecord[]> {
   const records: LogRecord[] = [];
+  const cursorInode = cursor?.handle ? (await cursor.handle.stat()).ino : null;
   for (const file of await logFiles(directory)) {
-    const text = await readFile(file, "utf8").catch(() => "");
+    let text: string;
+    if (cursor && cursorInode !== null) {
+      const inode = (await stat(file).catch(() => null))?.ino;
+      if (inode === cursorInode) text = await readRange(cursor.handle!, cursor.position);
+      else if (path.basename(file) === LOG_FILE) continue;
+      else text = await readFile(file, "utf8").catch(() => "");
+    } else {
+      text = await readFile(file, "utf8").catch(() => "");
+    }
     for (const line of text.split("\n")) {
       const record = line ? parseLogLine(line) : null;
       if (record && matchesQuery(record, query)) records.push(record);
@@ -59,10 +90,11 @@ export async function readLogRecords(directory: string, query: LogQuery = {}): P
  * across rotation until `signal` aborts. The open file is read to its end before switching to a
  * new conveyor.log, so records written just before a rotation are not lost.
  */
-export async function followLog(directory: string, query: LogQuery, onRecord: (record: LogRecord) => void, signal: AbortSignal, pollMs = 500): Promise<void> {
+export async function followLog(directory: string, query: LogQuery, onRecord: (record: LogRecord) => void, signal: AbortSignal, pollMs = 500, cursor?: LogCursor): Promise<void> {
   const file = path.join(directory, LOG_FILE);
-  let handle: FileHandle | null = await open(file, "r").catch(() => null);
-  let position = handle ? (await handle.stat()).size : 0;
+  const start = cursor ?? (await openLogCursor(directory));
+  let handle: FileHandle | null = start.handle;
+  let position = start.position;
   let partial = "";
   const emit = (text: string) => {
     const lines = (partial + text).split("\n");

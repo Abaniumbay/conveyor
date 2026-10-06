@@ -1,5 +1,5 @@
 import { LEVELS, formatRecord, type LogLevel, type LogRecord } from "../../log/logger";
-import { followLog, readLogRecords, type LogQuery } from "../../log/reader";
+import { followLog, openLogCursor, readLogRecords, type LogQuery } from "../../log/reader";
 import { CliError, EXIT, parseDuration } from "../args";
 import { stringOption, type Command } from "../command";
 import { statePaths } from "./operations";
@@ -32,12 +32,14 @@ export const logs: Command = {
     if (!Number.isInteger(lines) || lines < 0) throw new CliError("--lines must be a whole number", EXIT.usage);
     const directory = (await statePaths(context)).logs;
     const print = (record: LogRecord) => context.out(context.json ? JSON.stringify(record) : formatRecord(record));
-    const records = await readLogRecords(directory, query);
+    // Following continues exactly where the history read stopped.
+    const cursor = context.options.follow ? await openLogCursor(directory) : undefined;
+    const records = await readLogRecords(directory, query, cursor);
     for (const record of lines === 0 ? records : records.slice(-lines)) print(record);
-    if (!context.options.follow) return;
+    if (!cursor) return;
     const controller = new AbortController();
     process.once("SIGINT", () => controller.abort());
     process.once("SIGTERM", () => controller.abort());
-    await followLog(directory, query, print, controller.signal);
+    await followLog(directory, query, print, controller.signal, 500, cursor);
   },
 };

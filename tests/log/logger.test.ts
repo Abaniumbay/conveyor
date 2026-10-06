@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { FileSink, formatRecord, Logger, Redactor, type LogRecord } from "../../src/log/logger";
-import { followLog, logFiles, readLogRecords } from "../../src/log/reader";
+import { followLog, logFiles, openLogCursor, readLogRecords } from "../../src/log/reader";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -115,6 +115,27 @@ describe("log reader", () => {
     controller.abort();
     await following;
     expect(seen).toEqual(["last before rotation", "first after rotation"]);
+  });
+
+  test("history then follow: records written in between, even across a rotation, appear exactly once", async () => {
+    const directory = await temporary();
+    const file = path.join(directory, "conveyor.log");
+    const line = (message: string) => `${JSON.stringify(record("2026-10-06T10:00:00.000Z", "info", message))}\n`;
+    await writeFile(file, line("history"));
+    const cursor = await openLogCursor(directory);
+    // Written after the cursor opened, before history is read and following starts.
+    await appendFile(file, line("in between"));
+    await rename(file, `${file}.1`);
+    await writeFile(file, line("new file"));
+    const history = (await readLogRecords(directory, {}, cursor)).map((entry) => entry.message);
+    expect(history).toEqual(["history"]);
+    const followed: string[] = [];
+    const controller = new AbortController();
+    const following = followLog(directory, {}, (entry) => followed.push(entry.message), controller.signal, 20, cursor);
+    await Bun.sleep(100);
+    controller.abort();
+    await following;
+    expect(followed).toEqual(["in between", "new file"]);
   });
 
   test("follows new records across a rotation", async () => {
