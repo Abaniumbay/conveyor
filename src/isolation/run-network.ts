@@ -25,7 +25,7 @@ export interface RunNetwork {
 }
 
 // A Unix socket path must fit sockaddr_un.sun_path (108 bytes including the terminator).
-const MAX_SOCKET_PATH = 100;
+export const MAX_SOCKET_PATH = 100;
 
 /**
  * Per-run network plumbing under `directory`: a data-plane proxy for commands, a token-protected

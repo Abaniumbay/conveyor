@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderDashboard } from "../../src/web/render";
+import { BUILD } from "../../src/version";
 import { quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
@@ -181,6 +182,12 @@ const dashboard: DashboardViewModel = {
 };
 
 describe("renderDashboard", () => {
+  test("the About view shows the running build", () => {
+    const html = renderDashboard({ ...dashboard, view: "about" });
+    expect(html).toContain(`Version ${BUILD.version}`);
+    expect(html).toContain(`Development build, Bun ${BUILD.runtime}`);
+  });
+
   test("keeps all desktop header controls on one row and account-page links compact", () => {
     expect(quotaHeaderCss).toContain(".dashboard-header{grid-template-columns:auto auto auto auto minmax(8rem,1fr) auto auto auto}");
     expect(quotaHeaderCss).toContain(".dashboard-header>.account-menu{justify-self:end}");

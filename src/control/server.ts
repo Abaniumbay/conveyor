@@ -8,6 +8,7 @@ import net from "node:net";
 import path from "node:path";
 
 import type { ConveyorService } from "../app/service";
+import { MAX_SOCKET_PATH } from "../isolation/run-network";
 import { log } from "../log/logger";
 import { readReleaseState } from "../release/state";
 import { SwitchRefused, type ReleaseCoordinator } from "./releases";
@@ -236,6 +237,9 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
 
 /** Serves the control API on `socket`; refuses to start when another live process holds it. */
 export async function serveControlSocket(socket: string, handler: (request: Request) => Promise<Response>): Promise<{ stop(): Promise<void> }> {
+  if (Buffer.byteLength(socket) > MAX_SOCKET_PATH) {
+    throw new Error(`the control socket path ${socket} is longer than ${MAX_SOCKET_PATH} bytes, the limit for Unix sockets: use a shorter --home`);
+  }
   await mkdir(path.dirname(socket), { recursive: true, mode: 0o700 });
   await chmod(path.dirname(socket), 0o700);
   const live = await new Promise<boolean>((resolve) => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -94,6 +94,28 @@ describe("control socket", () => {
     const replaced = await serveControlSocket(stale, async () => new Response("ok"));
     expect(await (await fetch("http://x/", { unix: stale })).text()).toBe("ok");
     await replaced.stop();
+  });
+
+  test("a socket nobody listens on, or one the caller may not open, is explained rather than called stopped", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "conveyor-control-"));
+    directories.push(home);
+    const socket = path.join(home, "run/control.sock");
+    await mkdir(path.dirname(socket), { recursive: true });
+    // A process that bound the socket and died: the file stays, nothing listens.
+    Bun.spawnSync(["python3", "-c", "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])", socket]);
+    const err: string[] = [];
+    const run = () => runCli(["item", "show", "app:1", "--home", home], { out: () => {}, err: (text) => err.push(text), environment: {} });
+    expect(await run()).toBe(EXIT.unavailable);
+    expect(err.at(-1)).toContain("nothing is listening (the service stopped without removing its socket)");
+    if (process.getuid?.() !== 0) {
+      await chmod(path.dirname(socket), 0o000);
+      try {
+        expect(await run()).toBe(EXIT.unavailable);
+        expect(err.at(-1)).toContain("permission denied. Run the command as the account that runs Conveyor");
+      } finally {
+        await chmod(path.dirname(socket), 0o700);
+      }
+    }
   });
 
   test("without a running service, status reports it and exits 4; item commands exit 4", async () => {

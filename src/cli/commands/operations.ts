@@ -67,9 +67,11 @@ export const status: Command = {
   name: "status",
   summary: "show versions, paths, dashboard URL, service health, capacity, stopped items and disk usage",
   async run(context) {
+    let unreachable: string | undefined;
     const service = await control<StatusPayload>(context, "GET", "/v1/status").catch((error: unknown) => {
-      if (error instanceof ServiceUnavailable) return null;
-      throw error;
+      if (!(error instanceof ServiceUnavailable)) throw error;
+      unreachable = error.reason;
+      return null;
     });
     const disk = await diskUsage(await statePaths(context));
     if (context.json) {
@@ -78,7 +80,7 @@ export const status: Command = {
     }
     const lines = [`Installed: ${versionLine()}`];
     if (!service) {
-      lines.push("Service: not running", `Home: ${context.paths.home}`, `Configuration: ${context.paths.config}`);
+      lines.push(unreachable ? `Service: not reachable: ${unreachable}` : "Service: not running", `Home: ${context.paths.home}`, `Configuration: ${context.paths.config}`);
     } else {
       const health = service.draining ? `draining since ${service.draining.since} (${service.draining.reason})` : service.ready ? "ready" : "not ready (see conveyor logs)";
       lines.push(
