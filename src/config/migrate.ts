@@ -2,9 +2,9 @@
 // configuration of a deprecated configuration directory (or a pinned import), then proves it by
 // loading both and comparing their compiled plans and effective configuration.
 
-import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { stringify } from "yaml";
+import { Scalar, stringify } from "yaml";
 
 import type { TaskRegistry } from "../tasks/contract";
 import { ConfigError } from "./errors";
@@ -72,6 +72,30 @@ async function comparable(config: ConveyorConfig): Promise<Document> {
 
 const SECTION_FILES = ["providers", "harnesses", "agents", "checks", "pipelines"] as const;
 
+/**
+ * Puts `!secret <key>` back wherever a value came from a secret, so no credential is written into
+ * the files meant to be committed. Returns the keys it used.
+ */
+function restoreSecretReferences(document: Document, secretKeys: Record<string, string>): Set<string> {
+  const byValue = new Map<string, string>();
+  for (const [key, value] of Object.entries(secretKeys)) if (!byValue.has(value)) byValue.set(value, key);
+  const used = new Set<string>();
+  const visit = (value: unknown): unknown => {
+    if ((typeof value === "string" || typeof value === "number") && byValue.has(String(value))) {
+      const key = byValue.get(String(value))!;
+      used.add(key);
+      const reference = new Scalar(key);
+      reference.tag = "!secret";
+      return reference;
+    }
+    if (Array.isArray(value)) return value.map(visit);
+    if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, visit(entry)]));
+    return value;
+  };
+  for (const [section, value] of Object.entries(document)) document[section] = visit(value);
+  return used;
+}
+
 export async function migrateConfiguration(
   from: string,
   to: string,
@@ -109,6 +133,7 @@ export async function migrateConfiguration(
   }
 
   await mkdir(target, { recursive: true });
+  const usedSecrets = restoreSecretReferences(document, source.secretKeys);
   const written: string[] = [];
   const write = async (relative: string, content: string) => {
     await mkdir(path.dirname(path.join(target, relative)), { recursive: true });
@@ -142,6 +167,12 @@ export async function migrateConfiguration(
   ].join("\n");
   await write("conveyor.yaml", `${header}${yaml(document)}\n${includes.join("\n")}\n`);
   await write(".gitignore", "secrets.yaml\n");
+  if (usedSecrets.size > 0) {
+    const values = Object.fromEntries([...usedSecrets].sort().map((key) => [key, source.secretKeys[key]]));
+    await write("secrets.yaml", `# Secrets referenced with !secret <key>. Never commit this file.\n${yaml(values)}`);
+    await chmod(path.join(target, "secrets.yaml"), 0o600);
+    notes.push(`${usedSecrets.size} secret value(s) stay in secrets.yaml (git-ignored) and are referenced with !secret.`);
+  }
   if (source.resolvedImport) {
     notes.push(`The pinned import (${source.resolvedImport.ref} = ${source.resolvedImport.sha.slice(0, 12)}) is now inlined; switch a section to \`!include builtin:<file>\` to follow the packaged defaults instead.`);
   }

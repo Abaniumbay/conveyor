@@ -238,6 +238,32 @@ describe("conveyor config migrate", () => {
     expect(result.code).toBe(0);
   });
 
+  test("keeps !secret references: no secret value is written into the migrated files, which stay identical", async () => {
+    const root = await temporary();
+    const source = path.join(root, "source");
+    await mkdir(path.join(source, "repositories"), { recursive: true });
+    const labels = '{ enrollment: conveyor, stageTemplate: "conveyor:{stage}", states: { done: conveyor:done }, metadata: { closable: conveyor:closable, orderTemplate: "conveyor:order:{number}" } }';
+    await writeFile(path.join(source, "secrets.yaml"), `hook: hook-secret-value-1\nsession: "${"s".repeat(40)}"\nunused: never-referenced\n`);
+    await writeFile(path.join(source, "conveyor.yaml"), [
+      "web:", "  sessionSecret: !secret session",
+      "providers:", "  items:", `    github: { type: github, webhookSecret: !secret hook, labels: ${labels} }`, "",
+    ].join("\n"));
+    const result = await migrate(path.join(source, "conveyor.yaml"));
+    expect(result.out).toContain("Effective configuration identical: yes");
+    expect(result.out).toContain("2 secret value(s) stay in secrets.yaml");
+    expect(result.code).toBe(0);
+    for (const file of ["conveyor.yaml", "providers.yaml", ".gitignore"]) {
+      const text = await readFile(path.join(result.target, file), "utf8");
+      expect(text).not.toContain("hook-secret-value-1");
+      expect(text).not.toContain("s".repeat(40));
+    }
+    expect(await readFile(path.join(result.target, "providers.yaml"), "utf8")).toContain("webhookSecret: !secret hook");
+    expect(await readFile(path.join(result.target, "conveyor.yaml"), "utf8")).toContain("sessionSecret: !secret session");
+    const secrets = parse(await readFile(path.join(result.target, "secrets.yaml"), "utf8")) as Record<string, string>;
+    expect(secrets).toEqual({ hook: "hook-secret-value-1", session: "s".repeat(40) });
+    expect(await mode(path.join(result.target, "secrets.yaml"))).toBe(0o600);
+  });
+
   test("refuses a non-empty target", async () => {
     const root = await temporary();
     await writeFile(path.join(root, "keep"), "");

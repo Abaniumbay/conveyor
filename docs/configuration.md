@@ -161,7 +161,8 @@ conveyor config migrate --from <old-directory> --to <new-config-directory>
 ```
 
 The command writes a tag-based `conveyor.yaml`: one file per section, and one file per repository
-under `repositories/`. It copies instruction files into the new directory and keeps script, folder
+under `repositories/`. It keeps `!secret` references (the values move to the new git-ignored
+`secrets.yaml`), copies instruction files into the new directory, and keeps script, folder
 and state paths as they are, writing the effective settings and listen address out explicitly. It
 then loads both configurations and reports whether the compiled plans and the effective
 configuration are identical; it exits 1 if they are not. `conveyor config compare <old> <new>` makes

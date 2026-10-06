@@ -39,6 +39,8 @@ export interface ComposedConfig {
   origins: ConfigOrigin[];
   /** Values substituted for `!secret`, so displays and exports can redact them. */
   secrets: string[];
+  /** Each `!secret` key used, with its value (for writing the references back, as migration does). */
+  secretKeys: Record<string, string>;
 }
 
 export interface ComposeOptions {
@@ -63,6 +65,7 @@ function keyPath(segments: readonly string[]): string {
 class Composer {
   readonly origins: ConfigOrigin[] = [];
   readonly secrets = new Set<string>();
+  readonly secretKeys = new Map<string, string>();
   #secretValues: Record<string, unknown> | null = null;
 
   constructor(readonly entrypoint: string, readonly options: ComposeOptions) {}
@@ -141,6 +144,7 @@ class Composer {
       this.fail(at, segments, `!secret ${key} must be a string or a number in ${this.display(secretsFile)}`);
     }
     if (String(value).length > 0) this.secrets.add(String(value));
+    this.secretKeys.set(key, String(value));
     return value;
   }
 
@@ -201,7 +205,7 @@ export async function composeConfig(entrypoint: string, options: ComposeOptions 
   const composer = new Composer(file, options);
   const document = await composer.load(file, [], []);
   if (!isObject(document)) throw new ConfigError(`${composer.display(file)} must contain a YAML map at its root`);
-  return { document, origins: composer.origins, secrets: [...composer.secrets] };
+  return { document, origins: composer.origins, secrets: [...composer.secrets], secretKeys: Object.fromEntries(composer.secretKeys) };
 }
 
 /** True when a YAML file uses one of the composition tags (a quick textual check). */

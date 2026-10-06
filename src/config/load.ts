@@ -446,6 +446,8 @@ export interface ConfigurationSource {
   root: string;
   warnings: string[];
   secrets: string[];
+  /** Each `!secret` key the entrypoint used, with its value. */
+  secretKeys: Record<string, string>;
   locate: Locate | null;
   resolvedImport?: ResolvedImport;
 }
@@ -462,6 +464,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
   const root = mode === "directory" ? resolvedTarget : path.dirname(resolvedTarget);
   const warnings: string[] = [];
   let secrets: string[] = [];
+  let secretKeys: Record<string, string> = {};
   let locate: Locate | null = null;
 
   /** Each local document with the directory its relative paths resolve against. */
@@ -483,6 +486,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
     const builtin = options.home ? builtinResolver(path.join(options.home, "state/builtin")) : undefined;
     const composed = await composeConfig(resolvedTarget, builtin ? { builtin } : {});
     secrets = composed.secrets;
+    secretKeys = composed.secretKeys;
     const originBase: BaseDirectory = (segments) =>
       path.dirname(originOf(composed.origins, segments)?.file ?? resolvedTarget);
     rawLocal = [{ filename: resolvedTarget, document: composed.document, baseOf: originBase }];
@@ -564,7 +568,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
           artifacts: path.join(root, "data/artifacts"),
         },
   );
-  return { merged, mode, root, warnings, secrets, locate, ...(resolvedImport ? { resolvedImport } : {}) };
+  return { merged, mode, root, warnings, secrets, secretKeys, locate, ...(resolvedImport ? { resolvedImport } : {}) };
 }
 
 export async function loadConfig(
