@@ -1,0 +1,4 @@
+# The agent harnesses. Packaged default: `harnesses: !include builtin:harnesses.yaml`.
+codex: { type: codex, command: codex, sandbox: workspace-write, automaticApprovals: true }
+claude-code: { type: claude-code, command: claude }
+process: { type: json-process }

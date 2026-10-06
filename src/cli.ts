@@ -74,7 +74,7 @@ async function serve(configPath: string): Promise<void> {
     throw new Error("CONVEYOR_PASSWORD_HASH and a 32-byte CONVEYOR_SESSION_SECRET are required");
   }
   service.seedDashboardSuperuser(username, passwordHash);
-  const webDependencies = service.webDependencies(auth, username, pushConfiguration());
+  const webDependencies = service.webDependencies(auth, username, pushConfiguration(config.web.push));
   const handler = createWebHandler(webDependencies);
   const server = Bun.serve({
     ...listenAddress(config.web.listen),

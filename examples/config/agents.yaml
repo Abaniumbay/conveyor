@@ -1,109 +1,109 @@
-# Agents and their exact task grants. Instruction paths are relative to this file.
-agents:
-  darya:
-    name: Darya
-    title: Product Owner
-    harness: codex
-    model: gpt-6-sol
-    effort: high
-    instructions: ./instructions/darya.md
-    access: read-only
-    network: true                          # live web search; read-only, so no network for commands
-    mcpServers:
-      serena: &serena                      # code index: symbol lookups instead of whole-file reads
-        command: serena
-        args: [start-mcp-server, --project, "{workspace}", --context=codex,
-               --enable-web-dashboard, "false", --open-web-dashboard, "false"]
-        env: { SERENA_HOME: ~/.serena }    # shared language-server cache; each run has its own HOME
-        startupTimeoutSec: 60
-        # It runs outside the Codex sandbox, so it gets lookups only; edits stay in the sandbox.
-        enabledTools: [find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration,
-                       find_implementations]
-        gitExclude: [.serena/]
-    tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
-            item.setSystemLabels, item.setParent, item.setDependencies, item.createChild]
-  kaveh:
-    name: Kaveh
-    title: Senior Developer
-    harness: codex
-    model: gpt-6-luna
-    effort: high
-    instructions: ./instructions/kaveh.md
-    access: workspace-write
-    network: true                          # web search, plus registries and downloads for installs and builds
-    # Package caches the agent's installs and builds write. Missing ones are skipped. The worktree's
-    # own git metadata is always writable for workspace-write agents.
-    writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
-                    ~/.dotnet, ~/.pub-cache, ~/.gradle]
-    # Long sessions resend their whole context every turn; compact it before it grows expensive.
-    codexConfig: { model_auto_compact_token_limit: 80000 }
-    mcpServers: { serena: *serena }        # the same lookup-only code index as Darya
-    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
-            todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
-            change.listFindings, change.comment, change.resolveFinding]
-  jamshid:                                 # implements when Kaveh cannot run; Claude Code (Haiku)
-    name: Jamshid
-    title: Developer
-    harness: claude-code
-    model: claude-haiku-4-5-20251001
-    instructions: ./instructions/kaveh.md
-    access: workspace-write
-    network: true                          # the Claude CLI needs it for its own API calls anyway
-    writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
-                    ~/.dotnet, ~/.pub-cache, ~/.gradle]
-    mcpServers:
-      serena:
-        command: serena
-        args: [start-mcp-server, --project, "{workspace}", --context=claude-code,
-               --enable-web-dashboard, "false", --open-web-dashboard, "false"]
-        env: { SERENA_HOME: ~/.serena }
-        startupTimeoutSec: 60
-        enabledTools: [find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration,
-                       find_implementations]
-        gitExclude: [.serena/]
-    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
-            todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
-            change.listFindings, change.comment, change.resolveFinding]
-  shaghayegh:                              # reviews first; Claude Code (read-only)
-    name: Shaghayegh
-    title: Senior Reviewer
-    harness: claude-code
-    model: claude-sonnet-5-5
-    effort: high
-    instructions: ./instructions/reviewer.md
-    access: read-only
-    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.recordArtifact,
-            change.listFindings, change.comment, change.resolveFinding,
-            change.checkCriterion, change.uncheckCriterion]
-  shirin:                                  # reviews when Shaghayegh cannot run
-    name: Shirin
-    title: Senior Reviewer
-    harness: codex
-    model: gpt-5.6-terra
-    effort: high
-    instructions: ./instructions/reviewer.md
-    access: read-only
-    tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
-            agent.reportMilestone, agent.recordArtifact,
-            change.listFindings, change.comment, change.resolveFinding,
-            change.checkCriterion, change.uncheckCriterion]
-  omid:                                    # steering operator (web UI)
-    name: Omid
-    title: Conveyor Operator
-    harness: codex
-    model: gpt-6-luna
-    effort: medium
-    instructions: ../../skills/conveyor-operator/SKILL.md
-    access: workspace-write
-    tasks: [operator.getBoard, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem,
-            agent.reportProgress, agent.reportRationale, agent.reportBlocker,
-            agent.reportResult, agent.reportMilestone]
+# Agents and their exact task grants. Instruction paths are relative to this file. Packaged
+# default: `agents: !include builtin:agents.yaml`.
+darya:
+  name: Darya
+  title: Product Owner
+  harness: codex
+  model: gpt-6-sol
+  effort: high
+  instructions: ./instructions/darya.md
+  access: read-only
+  network: true                          # live web search; read-only, so no network for commands
+  mcpServers:
+    serena: &serena                      # code index: symbol lookups instead of whole-file reads
+      command: serena
+      args: [start-mcp-server, --project, "{workspace}", --context=codex,
+             --enable-web-dashboard, "false", --open-web-dashboard, "false"]
+      env: { SERENA_HOME: ~/.serena }    # shared language-server cache; each run has its own HOME
+      startupTimeoutSec: 60
+      # It runs outside the Codex sandbox, so it gets lookups only; edits stay in the sandbox.
+      enabledTools: [find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration,
+                     find_implementations]
+      gitExclude: [.serena/]
+  tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+          agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
+          item.setSystemLabels, item.setParent, item.setDependencies, item.createChild]
+kaveh:
+  name: Kaveh
+  title: Senior Developer
+  harness: codex
+  model: gpt-6-luna
+  effort: high
+  instructions: ./instructions/kaveh.md
+  access: workspace-write
+  network: true                          # web search, plus registries and downloads for installs and builds
+  # Package caches the agent's installs and builds write. Missing ones are skipped. The worktree's
+  # own git metadata is always writable for workspace-write agents.
+  writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
+                  ~/.dotnet, ~/.pub-cache, ~/.gradle]
+  # Long sessions resend their whole context every turn; compact it before it grows expensive.
+  codexConfig: { model_auto_compact_token_limit: 80000 }
+  mcpServers: { serena: *serena }        # the same lookup-only code index as Darya
+  tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+          agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
+          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
+          change.listFindings, change.comment, change.resolveFinding]
+jamshid:                                 # implements when Kaveh cannot run; Claude Code (Haiku)
+  name: Jamshid
+  title: Developer
+  harness: claude-code
+  model: claude-haiku-4-5-20251001
+  instructions: ./instructions/kaveh.md
+  access: workspace-write
+  network: true                          # the Claude CLI needs it for its own API calls anyway
+  writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
+                  ~/.dotnet, ~/.pub-cache, ~/.gradle]
+  mcpServers:
+    serena:
+      command: serena
+      args: [start-mcp-server, --project, "{workspace}", --context=claude-code,
+             --enable-web-dashboard, "false", --open-web-dashboard, "false"]
+      env: { SERENA_HOME: ~/.serena }
+      startupTimeoutSec: 60
+      enabledTools: [find_symbol, get_symbols_overview, find_referencing_symbols, find_declaration,
+                     find_implementations]
+      gitExclude: [.serena/]
+  tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+          agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
+          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
+          change.listFindings, change.comment, change.resolveFinding]
+shaghayegh:                              # reviews first; Claude Code (read-only)
+  name: Shaghayegh
+  title: Senior Reviewer
+  harness: claude-code
+  model: claude-sonnet-5-5
+  effort: high
+  instructions: ./instructions/reviewer.md
+  access: read-only
+  tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+          agent.reportMilestone, agent.recordArtifact,
+          change.listFindings, change.comment, change.resolveFinding,
+          change.checkCriterion, change.uncheckCriterion]
+shirin:                                  # reviews when Shaghayegh cannot run
+  name: Shirin
+  title: Senior Reviewer
+  harness: codex
+  model: gpt-5.6-terra
+  effort: high
+  instructions: ./instructions/reviewer.md
+  access: read-only
+  tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
+          agent.reportMilestone, agent.recordArtifact,
+          change.listFindings, change.comment, change.resolveFinding,
+          change.checkCriterion, change.uncheckCriterion]
+omid:                                    # steering operator (web UI)
+  name: Omid
+  title: Conveyor Operator
+  harness: codex
+  model: gpt-6-luna
+  effort: medium
+  instructions: ../../skills/conveyor-operator/SKILL.md
+  access: workspace-write
+  tasks: [operator.getBoard, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem,
+          agent.reportProgress, agent.reportRationale, agent.reportBlocker,
+          agent.reportResult, agent.reportMilestone]

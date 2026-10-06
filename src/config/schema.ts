@@ -105,9 +105,20 @@ const steeringSchema = z
 
 const webSchema = z
   .object({
-    listen: z.string().min(3).default("127.0.0.1:4300"),
+    listen: z.string().min(3).default("127.0.0.1:7788"),
     publicUrl: z.url().optional(),
     steering: steeringSchema.optional(),
+    /** Signs dashboard sessions; when unset, Conveyor generates one and keeps it beside the database. */
+    sessionSecret: z.string().min(32, "sessionSecret must be at least 32 characters").optional(),
+    /** VAPID keys for browser push notifications; the CONVEYOR_VAPID_* variables are the fallback. */
+    push: z
+      .object({
+        publicKey: z.string().min(1),
+        privateKey: z.string().min(1),
+        subject: z.string().regex(/^(https:\/\/|mailto:)/, "subject must be an https: or mailto: URL"),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .prefault({});
@@ -118,6 +129,8 @@ const githubSourceSchema = z
     webhookPath: z.string().startsWith("/").default("/hooks/github"),
     autoConfigureWebhook: z.boolean().default(false),
     allowedHumanLogins: z.array(identifierSchema).default([]),
+    /** Verifies webhook deliveries; CONVEYOR_GITHUB_WEBHOOK_SECRET is the fallback. */
+    webhookSecret: z.string().min(1).optional(),
   })
   .strict();
 

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rm, statfs, writeFile } from "node:fs/promises"
 import { freemem, homedir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
+import { redactSecrets } from "../config/compose";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
@@ -267,7 +268,8 @@ export class ConveyorService {
         `Removed unconfigured repositories from the local index: ${removedRepositories.join(", ")}`,
       );
     }
-    store.recordConfigSnapshot(config.hash, config);
+    // The snapshot is history, not a credential store: values that came from !secret are redacted.
+    store.recordConfigSnapshot(config.hash, redactSecrets(config, config.secrets ?? []));
     const service = new ConveyorService(
       config,
       store,
@@ -297,8 +299,8 @@ export class ConveyorService {
           source.autoConfigureWebhook &&
           this.config.web.publicUrl
         ) {
-          const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
-          if (!secret) throw new Error("CONVEYOR_GITHUB_WEBHOOK_SECRET is required for webhooks");
+          const secret = this.webhookSecret();
+          if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
         }
@@ -1361,8 +1363,14 @@ export class ConveyorService {
     };
   }
 
+  /** The GitHub webhook secret: the first GitHub items provider's `webhookSecret`, else the environment. */
+  private webhookSecret(): string {
+    const configured = Object.values(this.config.sources).find((source) => source.type === "github" && source.webhookSecret);
+    return configured?.webhookSecret ?? process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
+  }
+
   async handleWebhook(rawBody: Uint8Array, headers: Headers): Promise<void> {
-    const secret = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET ?? "";
+    const secret = this.webhookSecret();
     if (!verifyGitHubSignature(rawBody, headers.get("x-hub-signature-256"), secret)) {
       throw new Error("invalid GitHub webhook signature");
     }

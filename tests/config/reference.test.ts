@@ -4,7 +4,8 @@ import path from "node:path";
 import { parse, stringify } from "yaml";
 
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
-import { referenceConfigDirectory } from "./reference-fixture";
+import { BUILTIN_FILES } from "../../src/config/builtin";
+import { referenceConfigDirectory, referenceConfigEntrypoint, referenceYamlFiles } from "./reference-fixture";
 
 const bases: string[] = [];
 afterEach(async () => {
@@ -12,9 +13,9 @@ afterEach(async () => {
 });
 
 async function loadReference(): Promise<ConveyorConfig> {
-  const { directory, base } = await referenceConfigDirectory();
+  const { entrypoint, base } = await referenceConfigEntrypoint();
   bases.push(base);
-  return loadConfig(directory);
+  return loadConfig(entrypoint);
 }
 
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
@@ -111,13 +112,16 @@ describe("reference configuration", () => {
     }
   });
 
-  test("shared reference files declare no repositories, settings or checks, so they import cleanly", async () => {
-    const dir = path.join(EXAMPLES, "config");
-    const files = (await readdir(dir, { recursive: true })).filter((file) => /\.ya?ml$/i.test(file));
-    expect(files.sort()).toEqual(["agents.yaml", "pipeline.yaml", "providers.yaml"]);
-    for (const file of files) {
-      const document = parse(await readFile(path.join(dir, file), "utf8")) as Record<string, unknown>;
-      for (const key of ["repositories", "settings", "checks", "web", "import"]) expect(document).not.toHaveProperty(key);
+  test("the packaged defaults are section values, and every file is embedded as a builtin", async () => {
+    expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "pipelines.yaml", "providers.yaml"]);
+    const onDisk = [...await referenceYamlFiles(), ...(await readdir(path.join(EXAMPLES, "config/instructions"))).map((file) => `instructions/${file}`)];
+    expect(Object.keys(BUILTIN_FILES).sort()).toEqual(onDisk.sort());
+    for (const file of await referenceYamlFiles()) {
+      const text = await readFile(path.join(EXAMPLES, "config", file), "utf8");
+      expect(BUILTIN_FILES[file]).toBe(text);
+      // A section value, not a document: no top-level section keys.
+      const document = parse(text, { maxAliasCount: -1 }) as Record<string, unknown>;
+      for (const key of ["repositories", "settings", "checks", "web", "import", "agents", "pipelines", "providers", "harnesses"]) expect(document).not.toHaveProperty(key);
     }
   });
 
@@ -134,13 +138,13 @@ describe("reference configuration", () => {
     const config = await loadReference();
     expect(config.runners[config.agents.shaghayegh!.runner]!.type).toBe("claude-code");
     expect(config.runners[config.agents.shirin!.runner]!.type).toBe("codex");
-    const { directory, base } = await referenceConfigDirectory();
+    const { entrypoint, directory, base } = await referenceConfigEntrypoint();
     bases.push(base);
-    const agentsFile = path.join(directory, "agents.yaml");
-    const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, { access?: string }> };
-    agents.agents.shaghayegh!.access = "workspace-write";
+    const agentsFile = path.join(directory, "defaults/agents.yaml");
+    const agents = parse(await readFile(agentsFile, "utf8"), { maxAliasCount: -1 }) as Record<string, { access?: string }>;
+    agents.shaghayegh!.access = "workspace-write";
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code with access: workspace-write, which needs network: true");
+    await expect(loadConfig(entrypoint)).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code with access: workspace-write, which needs network: true");
   });
 
   test("Kaveh compacts long sessions, and Kaveh and Darya get a code index limited to lookups", async () => {
@@ -157,13 +161,13 @@ describe("reference configuration", () => {
   });
 
   test("a Claude Code agent with codexConfig is refused", async () => {
-    const { directory, base } = await referenceConfigDirectory();
+    const { entrypoint, directory, base } = await referenceConfigEntrypoint();
     bases.push(base);
-    const agentsFile = path.join(directory, "agents.yaml");
-    const agents = parse(await readFile(agentsFile, "utf8")) as { agents: Record<string, Record<string, unknown>> };
-    agents.agents.shaghayegh!.codexConfig = { model_auto_compact_token_limit: 1 };
+    const agentsFile = path.join(directory, "defaults/agents.yaml");
+    const agents = parse(await readFile(agentsFile, "utf8"), { maxAliasCount: -1 }) as Record<string, Record<string, unknown>>;
+    agents.shaghayegh!.codexConfig = { model_auto_compact_token_limit: 1 };
     await writeFile(agentsFile, stringify(agents));
-    await expect(loadConfig(directory)).rejects.toThrow("agents.shaghayegh runs on Claude Code, which does not take codexConfig");
+    await expect(loadConfig(entrypoint)).rejects.toThrow("defaults/agents.yaml: shaghayegh runs on Claude Code, which does not take codexConfig");
   });
 
   test("implementation falls back from Kaveh on Codex to Jamshid on Claude Code (Haiku), with the same tools and worktree access", async () => {
@@ -203,7 +207,7 @@ describe("reference configuration", () => {
   });
 });
 
-describe("canary: reference import combined with converted legacy sections", () => {
+describe("canary: reference configuration combined with converted legacy sections (deprecated directory mode)", () => {
   /** The conversion docs/migration.md describes, applied to tests/fixtures/legacy-pipeline. */
   async function legacyConverted(): Promise<string> {
     const dir = path.resolve(import.meta.dir, "../fixtures/legacy-pipeline");
