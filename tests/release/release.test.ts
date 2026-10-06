@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -317,6 +317,24 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     store.close();
     await writeReleaseState(home, { pending: null, history: [{ id: "u", kind: "upgrade", from: "1.0.0", to: "1.1.0", fromSchema: LATEST_SCHEMA_VERSION - 1, toSchema: LATEST_SCHEMA_VERSION, backup, status: "completed", reason: null, requestedAt: "t", finishedAt: "t" }] });
     await mkdir(path.join(home, "config"), { recursive: true });
+    await writeFile(path.join(home, "config/conveyor.yaml"), "providers: !include builtin:providers.yaml\n");
+
+    // A configuration that does not load stops it: the database path is never guessed.
+    await rename(path.join(home, "config/conveyor.yaml"), path.join(home, "config/conveyor.yaml.off"));
+    expect((await cli(home, "rollback", "--prefix", prefix, "--restore-backup")).code).toBe(EXIT.config);
+    await rename(path.join(home, "config/conveyor.yaml.off"), path.join(home, "config/conveyor.yaml"));
+
+    // The target release must be installed before the database is touched.
+    await rename(path.join(prefix, "versions/1.0.0"), path.join(prefix, "versions/1.0.0.moved"));
+    const missing = await cli(home, "rollback", "--prefix", prefix, "--restore-backup");
+    expect(missing.code).toBe(EXIT.failure);
+    expect(missing.err).toContain("version 1.0.0 is not installed");
+    expect(missing.err).toContain("nothing was changed");
+    await rename(path.join(prefix, "versions/1.0.0.moved"), path.join(prefix, "versions/1.0.0"));
+    const untouched = await ConveyorStore.open(database);
+    expect(untouched.dashboardAccounts().map((account) => account.username)).toEqual(["later"]);
+    untouched.close();
+    expect(await currentVersion(prefix)).toBe("1.1.0");
 
     const refused = await cli(home, "rollback", "--prefix", prefix);
     expect(refused.code).toBe(EXIT.rejected);

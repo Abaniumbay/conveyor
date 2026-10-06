@@ -9,7 +9,7 @@ import { stat } from "node:fs/promises";
 
 import type { ConveyorService } from "../app/service";
 import { log } from "../log/logger";
-import { executableOf, switchCurrent } from "../release/install";
+import { executableOf, requireInstalled, switchCurrent } from "../release/install";
 import { compareVersions } from "../release/semver";
 import {
   backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState,
@@ -197,6 +197,7 @@ export class ReleaseCoordinator {
       const restore = pending.restoreBackup;
       // The backup can only replace the database once it is closed; then the link switches.
       this.hooks.stop(`rollback to ${pending.version}`, this.hooks.restartExitCode, async () => {
+        await requireInstalled(pending.prefix, pending.version);
         await restoreState(restore, database);
         await switchCurrent(pending.prefix, pending.version);
       });

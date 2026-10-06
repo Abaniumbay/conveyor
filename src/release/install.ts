@@ -49,10 +49,14 @@ export async function installedVersions(prefix: string): Promise<string[]> {
   return entries.filter((entry) => entry.isDirectory() && !entry.name.endsWith(".partial")).map((entry) => entry.name).sort();
 }
 
+/** Throws unless `version` is installed in `prefix`; check it before anything irreversible. */
+export async function requireInstalled(prefix: string, version: string): Promise<void> {
+  if (!(await stat(executableOf(prefix, version)).catch(() => null))?.isFile()) throw new ReleaseError(`version ${version} is not installed in ${prefix}`);
+}
+
 /** Points <prefix>/current at `version` atomically: a new link is renamed over the old one. */
 export async function switchCurrent(prefix: string, version: string): Promise<void> {
-  const executable = executableOf(prefix, version);
-  if (!(await stat(executable).catch(() => null))?.isFile()) throw new ReleaseError(`version ${version} is not installed in ${prefix}`);
+  await requireInstalled(prefix, version);
   const { current } = layout(prefix);
   const temporary = `${current}.${process.pid}.new`;
   await rm(temporary, { force: true });

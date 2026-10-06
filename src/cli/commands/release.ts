@@ -6,17 +6,16 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 
-import { loadConfig } from "../../config/load";
 import { databaseSchemaVersion } from "../../db/store";
 import {
-  currentVersion, DEFAULT_REPOSITORY, detectPrefix, downloadRelease, releaseTag, ReleaseError, stageRelease, switchCurrent,
+  currentVersion, DEFAULT_REPOSITORY, detectPrefix, downloadRelease, releaseTag, ReleaseError, requireInstalled, stageRelease, switchCurrent,
 } from "../../release/install";
 import {
   backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState, type PendingSwitch, type SwitchRecord,
 } from "../../release/state";
 import { compareVersions } from "../../release/semver";
 import { CliError, EXIT, parseDuration } from "../args";
-import { printJson, stringOption, type Command, type CommandContext } from "../command";
+import { loadCommandConfig, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
 import { withUnitHome } from "./service";
 
@@ -38,9 +37,9 @@ function timeout(context: CommandContext, option: string, fallback: string): num
   return parseDuration(stringOption(context, option) ?? fallback, `--${option}`);
 }
 
+/** The configured database. A configuration that does not load stops the command: guessing a path could back up or restore the wrong file. */
 async function databasePath(context: CommandContext): Promise<string> {
-  const config = await loadConfig(context.paths.config, null, { home: context.paths.home }).catch(() => null);
-  return config?.settings.database ?? `${context.paths.state}/conveyor.sqlite`;
+  return (await loadCommandConfig(context, null)).settings.database;
 }
 
 interface ServiceStatus { version: { version: string }; ready: boolean; startedAt: string }
@@ -189,6 +188,10 @@ export const rollback: Command = {
       if (error instanceof RollbackRefused) throw new CliError(error.message, EXIT.rejected);
       throw error;
     }
+    // Check the target is installed before the irreversible restore.
+    await requireInstalled(prefix, plan.target).catch((error: unknown) => {
+      throw new CliError(`${error instanceof Error ? error.message : String(error)}; nothing was changed`, EXIT.failure);
+    });
     if (plan.restoreBackup) await restoreState(plan.restoreBackup, database);
     await switchCurrent(prefix, plan.target);
     const now = new Date().toISOString();
