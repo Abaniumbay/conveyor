@@ -177,6 +177,22 @@ async function login(handler: (request: Request) => Promise<Response>) {
   return { response, cookie: response.headers.get("set-cookie")!.split(";")[0]! };
 }
 
+type CspResource = "script" | "style" | "font" | "image" | "manifest" | "worker" | "connect";
+
+function cspAllows(policy: string, resource: CspResource, source: URL | "inline", origin: string): boolean {
+  const directives = new Map(policy.split(";").map((directive) => {
+    const [name, ...sources] = directive.trim().split(/\s+/);
+    return [name, sources];
+  }));
+  const directiveNames = { script: "script", style: "style", font: "font", image: "img", manifest: "manifest", connect: "connect" };
+  const sources = resource === "worker"
+    ? directives.get("worker-src") ?? directives.get("child-src") ?? directives.get("script-src") ?? directives.get("default-src")
+    : directives.get(`${directiveNames[resource]}-src`) ?? directives.get("default-src");
+  if (!sources) return false;
+  if (source === "inline") return sources.includes("'unsafe-inline'");
+  return sources.includes("'self'") && source.origin === origin;
+}
+
 describe("createWebHandler", () => {
   test("serves same-origin PWA assets publicly without caching dashboard data", async () => {
     const { handler } = setup();
@@ -202,6 +218,25 @@ describe("createWebHandler", () => {
     for (const path of ["/icons/conveyor-192.svg", "/icons/conveyor-512.svg"]) {
       expect((await handler(new Request(`http://localhost${path}`))).status).toBe(200);
     }
+  });
+
+  test("permits every resource referenced by a rendered dashboard without relaxing the CSP", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const dashboard = await handler(new Request("http://localhost/board", { headers: { cookie } }));
+    const policy = dashboard.headers.get("content-security-policy")!;
+
+    expect(await dashboard.text()).toContain('rel="manifest" href="/manifest.webmanifest"');
+    expect(policy).toBe("default-src 'none'; manifest-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+    expect(cspAllows(policy, "script", new URL("http://localhost/assets/dashboard.js"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "style", "inline", "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "font", new URL("http://localhost/assets/fonts/ibm-plex-sans-400.woff2"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "image", new URL("http://localhost/favicon.svg"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "manifest", new URL("http://localhost/manifest.webmanifest"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "worker", new URL("http://localhost/service-worker.js"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "connect", new URL("http://localhost/api/dashboard-revision"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "connect", new URL("http://localhost/events/dashboard"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "manifest", new URL("https://attacker.example/manifest.webmanifest"), "http://localhost")).toBe(false);
   });
 
   test("returns notification clicks to the protected page after sign-in without allowing external redirects", async () => {
