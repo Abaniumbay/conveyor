@@ -123,6 +123,9 @@ describe("state backups and schema", () => {
     expect(planRollback(state, "1.1.0", 15, true)).toMatchObject({ target: "1.0.0", restoreBackup: "/b/1" });
     expect(() => planRollback(state, "1.2.0", 15, true)).toThrow("no upgrade to 1.2.0 is recorded");
     expect(() => planRollback({ pending: null, history: [{ ...record, backup: null }] }, "1.1.0", 15, true)).toThrow("kept no backup");
+    // After rolling back to 1.0.0, a second rollback does not "return" forward to 1.1.0.
+    const rolledBack: ReleaseState = { pending: null, history: [record, { ...record, id: "r1", kind: "rollback", from: "1.1.0", to: "1.0.0" }] };
+    expect(() => planRollback(rolledBack, "1.0.0", 14, false)).toThrow("no upgrade to 1.0.0 is recorded");
   });
 });
 

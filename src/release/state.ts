@@ -71,9 +71,10 @@ export async function updateRecord(home: string, id: string, update: Partial<Swi
   await writeReleaseState(home, state);
 }
 
-/** The latest switch that brought `version` in, if any. */
-export function latestSwitchTo(state: ReleaseState, version: string): SwitchRecord | null {
-  return [...state.history].reverse().find((record) => record.to === version && (record.status === "completed" || record.status === "switched")) ?? null;
+/** The latest upgrade that brought `version` in, if any. A rollback is never something to roll back from. */
+export function latestUpgradeTo(state: ReleaseState, version: string): SwitchRecord | null {
+  return [...state.history].reverse().find((record) =>
+    record.kind === "upgrade" && record.to === version && (record.status === "completed" || record.status === "switched")) ?? null;
 }
 
 function sqlString(value: string): string {
@@ -130,7 +131,7 @@ export function planRollback(
   schemaNow: number,
   restoreBackup: boolean,
 ): { target: string; restoreBackup: string | null; record: SwitchRecord } {
-  const record = latestSwitchTo(state, running);
+  const record = latestUpgradeTo(state, running);
   if (!record) {
     throw new RollbackRefused(`no upgrade to ${running} is recorded in this home, so there is no known previous version to roll back to; install one with conveyor upgrade --version <version>`);
   }
