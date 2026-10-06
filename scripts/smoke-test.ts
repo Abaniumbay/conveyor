@@ -196,6 +196,27 @@ async function main(): Promise<void> {
     const bytes = new Uint8Array(await font.arrayBuffer());
     check(font.ok && new TextDecoder().decode(bytes.slice(0, 4)) === "wOF2", "the embedded dashboard fonts are served");
 
+    // The browser script embeds the quota helpers by their source; in a minified build they must
+    // still run on their own, or the dashboard stops at load.
+    const client = await (await fetch(`${url}/assets/dashboard.js`)).text();
+    const quota = /^\(\(\) => \{\n([\s\S]*?)\n  const body = document\.body;/.exec(client)?.[1];
+    let countdown = "";
+    try {
+      const [countdownOf, update] = new Function(`${quota}\nreturn [quotaCountdown, updateQuotaWindow];`)();
+      const text = { textContent: "" };
+      update({
+        getAttribute: (name: string) => name === "data-reset-at" ? "2026-10-05T22:00:00.000Z" : null,
+        querySelector: (selector: string) => selector === "[data-countdown]" ? text : null,
+        classList: { toggle: () => {} },
+        closest: () => null,
+        setAttribute: () => {},
+      }, countdownOf, Date.parse("2026-10-03T14:04:00.000Z"));
+      countdown = text.textContent;
+    } catch (error) {
+      console.error(error);
+    }
+    check(countdown === "resets in 2d 7h 56m", "the dashboard script's embedded quota code runs");
+
     const login = await fetch(`${url}/login`, {
       method: "POST",
       redirect: "manual",

@@ -8,6 +8,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard works again in the released executable. Its browser script stopped at load with a
+  `ReferenceError` (for example `rS is not defined`), so the page showed "not connected" and
+  navigation did nothing. The quota countdown code it embeds referred to a helper by a name the
+  minified build renames.
+
 ## [0.2.0] - 2026-10-06
 
 The first release of Conveyor as a standalone package.
