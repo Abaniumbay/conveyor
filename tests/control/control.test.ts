@@ -131,6 +131,22 @@ describe("control socket", () => {
   });
 });
 
+describe("restart route", () => {
+  test("a supervised service refuses to restart over running work unless forced", async () => {
+    let restarts = 0;
+    const service = { activeWork: () => ({ items: [{ issueId: "i", repositoryId: "app", stageId: "implementation" }], steering: 0 }) };
+    const handler = createControlHandler(service as never, { supervised: true } as never, { restart: () => { restarts += 1; } });
+    const restart = (body: unknown) => handler(new Request("http://x/v1/restart", { method: "POST", body: JSON.stringify(body) }));
+    const refused = await restart({});
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "work is still running: drain first, or force the restart" });
+    const forced = await restart({ force: true });
+    expect(await forced.json()).toEqual({ restarting: true });
+    await Bun.sleep(80);
+    expect(restarts).toBe(1);
+  });
+});
+
 describe("operating through the CLI", () => {
   test("status shows capacity, stopped items with their blocker, and paths", async () => {
     const { cli, home } = await running();

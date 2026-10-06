@@ -55,16 +55,20 @@ async function cli(...argv: string[]) {
 }
 
 /** A stand-in for the running service's control socket. */
-function controlServer(home: string, state: { active: Array<{ item: string; stage: string }>; startedAt: string }) {
+/** A stand-in for the running service's control socket; like the real one, it refuses an unforced restart while work runs. */
+function controlServer(home: string, state: { active: Array<{ item: string; stage: string }>; startedAt: string; refuseRestart?: boolean }) {
   const requests: string[] = [];
   const server = Bun.serve({
     unix: path.join(home, "run/control.sock"),
-    fetch(request) {
+    async fetch(request) {
       const route = `${request.method} ${new URL(request.url).pathname}`;
       requests.push(route);
       if (route === "GET /v1/status") return Response.json({ active: state.active, steering: 0, startedAt: state.startedAt, ready: true, version: { version: "1.0.0" } });
       if (route === "POST /v1/restart") {
-        setTimeout(() => { state.startedAt = "after-restart"; }, 20);
+        const force = ((await request.json()) as { force?: boolean }).force === true;
+        if (state.refuseRestart || (state.active.length > 0 && !force)) return Response.json({ error: "work is still running: drain first, or force the restart" }, { status: 409 });
+        setTimeout(() => { state.startedAt = "after-restart"; state.active = []; }, 20);
+        requests.push(`restart force=${force}`);
         return Response.json({ restarting: true });
       }
       return Response.json({});
@@ -165,6 +169,25 @@ describe("service lifecycle", () => {
     expect(restarted.out).toBe("Restarted conveyor after draining: 1.0.0, ready.");
     expect(requests).toContain("POST /v1/restart");
     expect(calls).toEqual([]);
+  });
+
+  test("restart --drain --force interrupts work that outlived the timeout; a refused restart lifts the drain", async () => {
+    const { home } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    systemd.isRoot = () => false;
+    await mkdir(path.join(home, "run"), { recursive: true });
+    const state = { active: [{ item: "app:1", stage: "implementation" }], startedAt: "before", refuseRestart: false };
+    const requests = controlServer(home, state);
+    const forced = await cli("service", "restart", "--drain", "--timeout", "1ms", "--force");
+    expect(forced.err).toContain("Drain timed out; going ahead and interrupting: app:1 (implementation)");
+    expect(forced.code).toBe(0);
+    expect(requests).toContain("restart force=true");
+
+    state.refuseRestart = true;
+    requests.length = 0;
+    const refused = await cli("service", "restart", "--drain");
+    expect(refused.code).toBe(EXIT.rejected);
+    expect(requests.slice(-2)).toEqual(["POST /v1/restart", "DELETE /v1/drain"]);
   });
 
   test("status reports the unit and the running service; uninstall removes only the unit", async () => {

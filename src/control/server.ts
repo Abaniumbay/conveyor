@@ -193,8 +193,10 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
       if (route === "DELETE /v1/drain") return json({ resumed: service.resumeAdmission() });
       if (route === "POST /v1/restart") {
         if (!hooks.restart || !info.supervised) throw new ControlError("this Conveyor is not run by systemd, so it cannot restart itself; stop and start it instead", 409);
+        // force interrupts running work, which resumes after the restart (as with systemctl restart).
+        const force = (await body(request)).force === true;
         const work = service.activeWork();
-        if (work.items.length > 0 || work.steering > 0) throw new ControlError("work is still running: drain first", 409);
+        if (!force && (work.items.length > 0 || work.steering > 0)) throw new ControlError("work is still running: drain first, or force the restart", 409);
         setTimeout(() => hooks.restart?.(), 50);
         return json({ restarting: true });
       }

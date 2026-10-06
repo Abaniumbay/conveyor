@@ -253,7 +253,11 @@ export const serviceRestart: Command = {
     }
     const before = await control<ControlStatus>(context, "GET", "/v1/status");
     await drained(context);
-    await control(context, "POST", "/v1/restart");
+    // --force: drained() went ahead after its timeout, so the restart interrupts what still runs.
+    await control(context, "POST", "/v1/restart", { force: context.options.force === true }).catch(async (error: unknown) => {
+      await control(context, "DELETE", "/v1/drain").catch(() => {});
+      throw error;
+    });
     const status = await started(context, 120_000, before.startedAt);
     context.out(`Restarted ${unit} after draining: ${status.version.version}, ${status.ready ? "ready" : "starting up"}.`);
   },
