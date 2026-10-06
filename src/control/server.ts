@@ -197,6 +197,15 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         setTimeout(() => hooks.restart?.(), 50);
         return json({ restarting: true });
       }
+      if (route === "POST /v1/cleanup") {
+        const input = await body(request);
+        const configured = service.config.settings.retention;
+        const age = (value: unknown, fallback: number | null) => (typeof value === "number" && value > 0 ? value : fallback);
+        return json(await service.applyRetention({
+          dryRun: input.dryRun === true,
+          policy: { runHistoryMs: age(input.runHistoryMs, configured.runHistoryMs), artifactsMs: age(input.artifactsMs, configured.artifactsMs) },
+        }));
+      }
       if (route === "GET /v1/releases") return json({ running: BUILD, ...(await readReleaseState(info.home)) });
       if (route === "POST /v1/releases" && hooks.releases) {
         const input = await body(request);

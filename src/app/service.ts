@@ -6,6 +6,7 @@ import path from "node:path";
 import { redactSecrets } from "../config/compose";
 import { INTERNAL, selfCommand } from "../self";
 import { log, type LogFields } from "../log/logger";
+import { applyRetention, type RetentionPolicy, type RetentionReport } from "./retention";
 import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
@@ -229,6 +230,7 @@ export class ConveyorService {
   #tickRunning = false;
   /** While set, no new work is admitted; work already running finishes. */
   #drain: { since: string; reason: string } | null = null;
+  #retentionTimer: ReturnType<typeof setInterval> | null = null;
   readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
 
@@ -356,12 +358,34 @@ export class ConveyorService {
     if (this.#timer) return;
     void this.tick();
     this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
+    const { retention } = this.config.settings;
+    if (retention.runHistoryMs !== null || retention.artifactsMs !== null) {
+      const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
+      prune();
+      this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
+    }
+  }
+
+  /** Prunes finished work past the retention policy (the configured one by default). */
+  async applyRetention(options: { dryRun?: boolean; policy?: RetentionPolicy } = {}): Promise<RetentionReport> {
+    const report = await applyRetention({
+      store: this.store,
+      artifacts: this.config.settings.artifacts,
+      policy: options.policy ?? this.config.settings.retention,
+      dryRun: options.dryRun === true,
+    });
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0)) {
+      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, bytes: report.artifacts.bytes });
+    }
+    return report;
   }
 
   async close(): Promise<void> {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = null;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     this.#wakeTimer = null;
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);

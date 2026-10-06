@@ -1827,6 +1827,30 @@ export class ConveyorStore {
     }));
   }
 
+  /**
+   * Runs that finished before `before` and can no longer be needed to recover work: their item is
+   * closed, done or offboarded, or they had no item (steering). Open items' runs are never listed,
+   * whatever their state, since a parked or stopped item may resume from them.
+   */
+  listRetiredRuns(before: string): Array<{ id: string; events: number }> {
+    const rows = this.#database
+      .query(
+        `SELECT r.id, (SELECT COUNT(*) FROM run_events e WHERE e.run_id = r.id) AS events
+         FROM runs r LEFT JOIN issues i ON i.id = r.issue_id
+         WHERE r.status <> 'running' AND r.finished_at IS NOT NULL AND r.finished_at < ?
+           AND (r.issue_id IS NULL OR i.id IS NULL OR i.source_state = 'closed' OR i.projected_state IN ('done', 'offboarded'))
+         ORDER BY r.finished_at`,
+      )
+      .all(before) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => ({ id: String(row.id), events: Number(row.events) }));
+  }
+
+  /** Deletes the events (transcripts, tool calls) of the given runs; the runs and their results stay. */
+  deleteRunEvents(runIds: readonly string[]): number {
+    const remove = this.#database.query("DELETE FROM run_events WHERE run_id = ?");
+    return this.#database.transaction(() => runIds.reduce((total, id) => total + remove.run(id).changes, 0))();
+  }
+
   /** An item's run events across all its runs, oldest first, after the event id `afterId`. */
   listIssueRunEventsAfter(issueId: string, afterId: number, limit: number): Array<{
     id: number;

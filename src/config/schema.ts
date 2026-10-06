@@ -88,6 +88,18 @@ const settingsSchema = z
       .object({ contextSummaryBytes: z.number().int().positive().default(65536) })
       .strict()
       .prefault({}),
+    /**
+     * How long finished work is kept: run events (agent transcripts, tool calls) and per-run
+     * artifacts of items that are closed, done or offboarded. Open items are never pruned.
+     */
+    retention: z
+      .object({
+        runHistory: waitTimeoutSchema.prefault("unlimited"),
+        artifacts: waitTimeoutSchema.prefault("unlimited"),
+      })
+      .strict()
+      .prefault({})
+      .transform(({ runHistory, artifacts }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z
       .object({

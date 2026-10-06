@@ -1,5 +1,7 @@
 // Command-line parsing and the stable exit codes every command uses.
 
+import { parseDuration as parseConfigDuration } from "../config/duration";
+
 /** Stable exit codes; documented in docs/cli.md. */
 export const EXIT = {
   ok: 0,
@@ -75,10 +77,11 @@ export function parseArgs(argv: readonly string[], specs: OptionSpecs): ParsedAr
   return { positionals, options };
 }
 
-/** Parses a duration such as 90s, 30m, 6h or 7d into milliseconds. */
+/** Parses a duration such as 90s, 30m, 6h or 7d into milliseconds; a bad value is a usage error. */
 export function parseDuration(value: string, option: string): number {
-  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value.trim());
-  if (!match) throw new CliError(`${option} must be a duration such as 30s, 10m, 6h or 7d`, EXIT.usage);
-  const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "ms" | "s" | "m" | "h" | "d"];
-  return Number(match[1]) * unit;
+  try {
+    return parseConfigDuration(value);
+  } catch {
+    throw new CliError(`${option} must be a duration such as 30s, 10m, 6h or 7d`, EXIT.usage);
+  }
 }
