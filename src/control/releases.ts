@@ -12,7 +12,7 @@ import { log } from "../log/logger";
 import { executableOf, requireInstalled, switchCurrent } from "../release/install";
 import { compareVersions } from "../release/semver";
 import {
-  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState,
+  backupState, planRollback, readReleaseState, restoreState, RollbackRefused, updateRecord, writeReleaseState,
   type PendingSwitch, type SwitchRecord,
 } from "../release/state";
 import { BUILD } from "../version";
@@ -171,23 +171,32 @@ export class ReleaseCoordinator {
     this.stopWatching();
     const store = this.service.store;
     const database = store.sqlite().filename;
+    // Order matters for recovery: record the switch first, then move the link as the last step, so
+    // a failure anywhere leaves the link where the record says it is.
+    let recorded = false;
     try {
       const fromSchema = store.schemaVersion();
       const backup = pending.kind === "upgrade"
         ? await backupState({ home: this.home, database, label: `${pending.from}-to-${pending.version}`, open: store.sqlite() })
         : pending.restoreBackup;
-      if (!pending.restoreBackup) await switchCurrent(pending.prefix, pending.version);
       const state = await readReleaseState(this.home);
       state.pending = null;
       state.history.push(this.record(pending, { status: "switched", reason: null, fromSchema, backup }));
       await writeReleaseState(this.home, state);
+      recorded = true;
       log.info(`Idle: switching to ${pending.version}`, { kind: pending.kind, backup });
+      if (!pending.restoreBackup) await switchCurrent(pending.prefix, pending.version);
     } catch (error) {
-      // Nothing switched: keep running this release and admit work again.
-      const state = await readReleaseState(this.home);
-      state.pending = null;
-      state.history.push(this.record(pending, { status: "failed", reason: error instanceof Error ? error.message : String(error), fromSchema: null, backup: null }));
-      await writeReleaseState(this.home, state);
+      // The link did not move: keep running this release and admit work again.
+      const reason = error instanceof Error ? error.message : String(error);
+      const failed = recorded
+        ? updateRecord(this.home, pending.id, { status: "failed", reason, finishedAt: new Date().toISOString() })
+        : readReleaseState(this.home).then((state) => writeReleaseState(this.home, {
+          pending: null,
+          history: [...state.history, this.record(pending, { status: "failed", reason, fromSchema: null, backup: null })],
+        }));
+      // Even when this bookkeeping fails, the next start marks a stale record correctly (onStartup).
+      await failed.catch((bookkeeping: unknown) => log.error("Could not record the failed release switch", {}, bookkeeping));
       this.#performing = false;
       this.service.resumeAdmission();
       log.error(`The ${pending.kind} to ${pending.version} failed before switching; still running ${BUILD.version}`, {}, error);

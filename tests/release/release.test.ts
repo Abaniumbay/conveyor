@@ -67,6 +67,22 @@ describe("installed releases", () => {
     await expect(stageRelease(release, prefix)).rejects.toThrow("checksums.txt has no entry");
   });
 
+  test("an installed copy is reused only when identical to the verified archive; a differing one is replaced", async () => {
+    const root = await temporary();
+    const prefix = path.join(root, "prefix");
+    const release = await fakeRelease(root, "1.0.0");
+    const installed = path.join(prefix, "versions/1.0.0/conveyor");
+    await stageRelease(release, prefix);
+    const verified = await readFile(installed, "utf8");
+    // Tampered with after installation, still reporting the same version.
+    await writeFile(installed, `${verified}# tampered\n`);
+    await stageRelease(release, prefix);
+    expect(await readFile(installed, "utf8")).toBe(verified);
+    expect((await readdir(path.join(prefix, "versions"))).sort()).toEqual(["1.0.0"]);
+    await stageRelease(release, prefix);
+    expect(await readFile(installed, "utf8")).toBe(verified);
+  });
+
   test("switch points current at an installed version atomically; the prefix is detected from the executable", async () => {
     const root = await temporary();
     const prefix = await prefixWith(root, "1.0.0", "1.1.0");
@@ -229,6 +245,22 @@ describe("switching the running service", () => {
     expect(world.stops).toEqual([]);
     expect(world.calls.at(-1)).toBe("resume");
     expect((await readReleaseState(world.home)).history[0]).toMatchObject({ status: "failed", reason: expect.stringContaining("not installed") });
+    world.close();
+  });
+
+  test("when the switch cannot be recorded, the link does not move and work is admitted again", async () => {
+    const world = await coordinator();
+    await world.releases.schedule({ kind: "upgrade", version: "9.9.9", prefix: world.prefix, drainTimeoutMs: 60_000 });
+    // The bookkeeping cannot be written (a full or read-only disk).
+    await chmod(path.join(world.home, "state"), 0o500);
+    try {
+      await world.releases.tick();
+    } finally {
+      await chmod(path.join(world.home, "state"), 0o700);
+    }
+    expect(await currentVersion(world.prefix)).toBe(BUILD.version);
+    expect(world.stops).toEqual([]);
+    expect(world.calls.at(-1)).toBe("resume");
     world.close();
   });
 
