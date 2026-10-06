@@ -31,6 +31,16 @@ describe("versioning", () => {
     expect(() => isLater("v1", "0.1.0")).toThrow(ReleaseCheckError);
   });
 
+  test("orders pre-releases by SemVer precedence, numeric identifiers as numbers", () => {
+    // The ordering example of the SemVer specification, section 11.
+    const ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"];
+    for (let index = 1; index < ordered.length; index += 1) {
+      expect(isLater(ordered[index]!, ordered[index - 1]!)).toBe(true);
+      expect(isLater(ordered[index - 1]!, ordered[index]!)).toBe(false);
+    }
+    expect(isLater("1.0.0-beta.10", "1.0.0-beta.2")).toBe(true);
+  });
+
   test("prepare moves the Unreleased changes into a dated section and leaves Unreleased empty", () => {
     const prepared = prepareChangelog(CHANGELOG, "0.2.0", "2026-10-06");
     expect(prepared).toContain("## [Unreleased]\n\n## [0.2.0] - 2026-10-06\n\n### Added\n\n- A thing.");
