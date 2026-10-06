@@ -97,7 +97,7 @@ function response(body: BodyInit | null, status: number, contentType: string, he
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
   if (!responseHeaders.has("cache-control")) responseHeaders.set("cache-control", "no-store");
-  responseHeaders.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  responseHeaders.set("content-security-policy", "default-src 'none'; manifest-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
 }
 
