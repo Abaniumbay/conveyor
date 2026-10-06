@@ -46,5 +46,5 @@ jobs:
       # checkout, without Bun on PATH: init, config, dashboard assets, sign-in, bridge, agent + MCP,
       # status and logs; then upgrades to a second build and rolls back, restarting like systemd.
       - run: bun run build
-      - run: bun run scripts/build.ts --out dist-next --version 0.0.0-next
+      - run: bun run scripts/build.ts --out dist-next --version 99.0.0-next
       - run: bun run scripts/smoke-test.ts --dist dist --next dist-next

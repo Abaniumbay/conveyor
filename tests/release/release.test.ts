@@ -204,8 +204,9 @@ describe("switching the running service", () => {
     const unsupervised = await coordinator({ supervised: false });
     await expect(unsupervised.releases.schedule({ kind: "upgrade", version: "9.9.9", prefix: unsupervised.prefix, drainTimeoutMs: 1_000 })).rejects.toThrow("not run by systemd");
     unsupervised.close();
-    const world = await coordinator();
+    const world = await coordinator({ versions: [BUILD.version, "9.9.9", "0.0.1"] });
     await expect(world.releases.schedule({ kind: "upgrade", version: "8.0.0", prefix: world.prefix, drainTimeoutMs: 1_000 })).rejects.toBeInstanceOf(SwitchRefused);
+    await expect(world.releases.schedule({ kind: "upgrade", version: "0.0.1", prefix: world.prefix, drainTimeoutMs: 1_000 })).rejects.toThrow("older than the running");
     await world.releases.schedule({ kind: "upgrade", version: "9.9.9", prefix: world.prefix, drainTimeoutMs: 60_000 });
     await expect(world.releases.schedule({ kind: "upgrade", version: "9.9.9", prefix: world.prefix, drainTimeoutMs: 1_000 })).rejects.toThrow("already pending");
     world.close();
@@ -285,6 +286,20 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     const rolledBack = await cli(home, "rollback", "--prefix", prefix);
     expect(rolledBack.code).toBe(0);
     expect(await currentVersion(prefix)).toBe("1.0.0");
+  });
+
+  test("upgrade refuses a release older than the current one and points at rollback", async () => {
+    const root = await temporary();
+    const prefix = await prefixWith(root, "1.2.0");
+    const home = path.join(root, "home");
+    await mkdir(path.join(home, "config"), { recursive: true });
+    const older = await fakeRelease(root, "1.1.0");
+    const refused = await cli(home, "upgrade", "--prefix", prefix, "--archive", older.archive, "--checksums", older.checksums);
+    expect(refused.code).toBe(EXIT.rejected);
+    expect(refused.err).toContain("1.1.0 is older than 1.2.0: upgrade only moves forward");
+    expect(await currentVersion(prefix)).toBe("1.2.0");
+    const same = await fakeRelease(path.join(root, "again"), "1.2.0");
+    expect((await cli(home, "upgrade", "--prefix", prefix, "--archive", same.archive, "--checksums", same.checksums)).out).toBe("1.2.0 is already current.");
   });
 
   test("rollback refuses after a migration without --restore-backup (exit 5) and restores with it", async () => {

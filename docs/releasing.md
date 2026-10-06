@@ -123,7 +123,7 @@ needs `--yes`. Missing ones are refused rather than guessed.
 ```sh
 bun run build                          # dist/conveyor-v<version>-linux-x64.tar.gz, install.sh, checksums.txt
 bun run scripts/build.ts --target linux-arm64 --out dist-arm64
-bun run scripts/build.ts --out dist-next --version 0.0.0-next
+bun run scripts/build.ts --out dist-next --version 99.0.0-next
 bun run scripts/smoke-test.ts --dist dist --next dist-next   # the work directory must not be under /tmp
 ```
 

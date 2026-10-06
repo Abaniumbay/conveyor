@@ -14,6 +14,7 @@ import {
 import {
   backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState, type PendingSwitch, type SwitchRecord,
 } from "../../release/state";
+import { compareVersions } from "../../release/semver";
 import { CliError, EXIT, parseDuration } from "../args";
 import { printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
@@ -119,11 +120,13 @@ export const upgrade: Command = {
     if (checkCode !== 0) throw new CliError(`the configuration does not validate with ${staged.version}; nothing was switched:\n${checkErrors.trim()}`, EXIT.config);
 
     const service = await serviceStatus(context);
+    const current = service?.version.version ?? (await currentVersion(prefix));
+    if (current && compareVersions(staged.version, current) <= 0) {
+      if (staged.version === current) return context.out(`${staged.version} is already ${service ? "running" : "current"}.`);
+      // An older release may not run on a database the current one migrated: going back is a rollback.
+      throw new CliError(`${staged.version} is older than ${current}: upgrade only moves forward. To return to an earlier release, use conveyor rollback.`, EXIT.rejected);
+    }
     if (service) {
-      if (service.version.version === staged.version) {
-        context.out(`${staged.version} is already running.`);
-        return;
-      }
       const { pending } = await control<{ pending: PendingSwitch }>(context, "POST", "/v1/releases", { kind: "upgrade", version: staged.version, prefix, drainTimeoutMs });
       if (context.options["no-wait"]) {
         if (context.json) return printJson(context, { scheduled: pending });

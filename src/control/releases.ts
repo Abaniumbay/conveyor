@@ -10,6 +10,7 @@ import { stat } from "node:fs/promises";
 import type { ConveyorService } from "../app/service";
 import { log } from "../log/logger";
 import { executableOf, switchCurrent } from "../release/install";
+import { compareVersions } from "../release/semver";
 import {
   backupState, planRollback, readReleaseState, restoreState, RollbackRefused, writeReleaseState,
   type PendingSwitch, type SwitchRecord,
@@ -98,7 +99,9 @@ export class ReleaseCoordinator {
       }
     }
     if (!version) throw new SwitchRefused("no version to switch to");
-    if (version === BUILD.version && request.kind === "upgrade") throw new SwitchRefused(`${version} is already running`);
+    if (request.kind === "upgrade" && compareVersions(version, BUILD.version) <= 0) {
+      throw new SwitchRefused(version === BUILD.version ? `${version} is already running` : `${version} is older than the running ${BUILD.version}: use conveyor rollback to go back`);
+    }
     if (!(await stat(executableOf(request.prefix, version)).catch(() => null))?.isFile()) {
       throw new SwitchRefused(`version ${version} is not installed in ${request.prefix}`);
     }

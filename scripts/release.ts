@@ -16,6 +16,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { compareVersions } from "../src/release/semver";
+
 const ROOT = path.resolve(import.meta.dir, "..");
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
@@ -27,28 +29,11 @@ function parse(version: string): [number, number, number, string | null] {
   return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] ?? null];
 }
 
-/** SemVer precedence of two pre-release suffixes: dot-separated, numeric identifiers compared as numbers. */
-function comparePrerelease(left: string, right: string): number {
-  const [a, b] = [left.split("."), right.split(".")];
-  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
-    const [x, y] = [a[index]!, b[index]!];
-    if (x === y) continue;
-    const [xNumeric, yNumeric] = [/^\d+$/.test(x), /^\d+$/.test(y)];
-    if (xNumeric && yNumeric) return Number(x) - Number(y);
-    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
-    return x < y ? -1 : 1;
-  }
-  return a.length - b.length;
-}
-
 /** True when `next` is a later version than `current`, by SemVer precedence (a pre-release sorts before its release). */
 export function isLater(next: string, current: string): boolean {
-  const [a, b] = [parse(next), parse(current)];
-  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return (a[index] as number) > (b[index] as number);
-  if (a[3] === b[3]) return false;
-  if (a[3] === null) return true;
-  if (b[3] === null) return false;
-  return comparePrerelease(a[3], b[3]) > 0;
+  parse(next);
+  parse(current);
+  return compareVersions(next, current) > 0;
 }
 
 /** The usual next versions after `current`. */
