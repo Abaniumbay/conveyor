@@ -92,3 +92,47 @@ export const cliGit: GitOps = {
     await mustRun(path, ["push", "--set-upstream", ...(forceWithLease ? ["--force-with-lease"] : []), "origin", branch]);
   },
 };
+
+export interface WorktreeInspection {
+  /** Null when HEAD is detached or git could not tell. */
+  branch: string | null;
+  headSha: string | null;
+  clean: boolean | null;
+  /** The git operation left unfinished in the worktree, with the commit it stopped on (null when git cannot name it); undefined when git could not be read. */
+  operation: { kind: "rebase" | "merge" | "cherry-pick"; commit: string | null } | null | undefined;
+  /** HEAD against the locally fetched `origin/<base>`; null when that ref is missing. */
+  aheadBehind: { ahead: number; behind: number } | null;
+}
+
+/** Reads a worktree's state from local git only; every fact git cannot give is null. */
+export async function inspectWorktree(workspace: string, baseBranch: string): Promise<WorktreeInspection> {
+  const optional = async (args: string[]) => {
+    const result = await run(workspace, args).catch(() => null);
+    return result && result.exitCode === 0 && result.stdout ? result.stdout : null;
+  };
+  const gitDir = await optional(["rev-parse", "--absolute-git-dir"]);
+  const status = await run(workspace, ["status", "--porcelain"]).catch(() => null);
+  const counts = await optional(["rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${baseBranch}`]);
+  const [ahead, behind] = counts ? counts.split(/\s+/).map(Number) : [];
+  let operation: WorktreeInspection["operation"] = undefined;
+  if (gitDir) {
+    operation = null;
+    const verify = (ref: string) => optional(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    if (existsSync(path.join(gitDir, "rebase-merge")) || existsSync(path.join(gitDir, "rebase-apply"))) {
+      const stopped = existsSync(path.join(gitDir, "rebase-merge", "stopped-sha"))
+        ? (await readFile(path.join(gitDir, "rebase-merge", "stopped-sha"), "utf8")).trim() : null;
+      operation = { kind: "rebase", commit: (await verify("REBASE_HEAD")) ?? (stopped || null) };
+    } else if (existsSync(path.join(gitDir, "MERGE_HEAD"))) {
+      operation = { kind: "merge", commit: await verify("MERGE_HEAD") };
+    } else if (existsSync(path.join(gitDir, "CHERRY_PICK_HEAD"))) {
+      operation = { kind: "cherry-pick", commit: await verify("CHERRY_PICK_HEAD") };
+    }
+  }
+  return {
+    branch: await optional(["symbolic-ref", "--short", "-q", "HEAD"]),
+    headSha: await optional(["rev-parse", "--verify", "--quiet", "HEAD"]),
+    clean: status && status.exitCode === 0 ? status.stdout === "" : null,
+    operation,
+    aheadBehind: counts && Number.isFinite(ahead) && Number.isFinite(behind) ? { ahead: ahead!, behind: behind! } : null,
+  };
+}
