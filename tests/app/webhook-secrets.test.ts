@@ -56,7 +56,8 @@ async function service() {
   const deliver = (repository: string, secret: string, id = `d${(delivery += 1)}`) => {
     const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: repository } }));
     const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-    return conveyor.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": id, "x-github-event": "issues" }));
+    return conveyor.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": id, "x-github-event": "issues" }))
+      .then(() => conveyor.webhooksSettled());
   };
   return { conveyor, store, listed, deliver };
 }
