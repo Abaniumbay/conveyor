@@ -27,6 +27,16 @@ function gate(provider: FakeProvider, memory = createCiGateMemory(), now = 1_000
 }
 
 describe("provider-neutral CI gate", () => {
+  test("reports every provider read, runs or error, to the observer", async () => {
+    const provider = new FakeProvider(); provider.runs = [run("1", "Tests", "running")];
+    const seen: unknown[] = [];
+    const observe = (observation: unknown) => seen.push(observation);
+    await evaluateCiGate({ change, headSha: provider.sha, issueKey: "issue-1", options, provider, memory: createCiGateMemory(), now: 1, observe }).catch(() => {});
+    provider.list = async () => { throw new Error("down"); };
+    await expect(evaluateCiGate({ change, headSha: provider.sha, issueKey: "issue-1", options, provider, memory: createCiGateMemory(), now: 1, observe })).rejects.toThrow("down");
+    expect(seen).toEqual([{ runs: [run("1", "Tests", "running")] }, { error: new Error("down") }]);
+  });
+
   test("starts configured CI for the current commit and waits for it", async () => {
     const provider = new FakeProvider(); provider.waiting = ["Browser tests"];
     const error = await gate(provider).catch((caught) => caught);

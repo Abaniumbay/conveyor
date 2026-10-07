@@ -4,6 +4,7 @@ import { Accounts, Profile } from "./account-pages";
 import { Notifications } from "./notification-page";
 import { Reports } from "./report-page";
 
+import { IndicatorChips, IndicatorDetails } from "./indicators";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
@@ -158,6 +159,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           {issue.duration && <Fragment><dt>Duration</dt><dd>{issue.duration}</dd></Fragment>}
         </dl>
         <Relationships issue={issue} />
+        <IndicatorDetails issue={issue} />
         <TodoChecklist issue={issue} />
         <section class="criteria" aria-label="Acceptance criteria">
           <h3>Acceptance criteria</h3>
@@ -320,6 +322,7 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       {canManage && issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
+      <IndicatorChips issue={issue} />
       <TodoProgress issue={issue} />
       {rollup && <p class="rollup-summary">Roll-up · {issue.children.length} {issue.children.length === 1 ? "child" : "children"}, {completedChildren} done</p>}
       <DetailsDialog issue={issue} id={dialogId} canManage={canManage} />

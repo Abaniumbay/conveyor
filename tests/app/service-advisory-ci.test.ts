@@ -76,5 +76,7 @@ repositories:
   expect(messages.map((m) => m.message.split("\n")[0])).toEqual(["CI started for abcdef1: https://x/pull/5/checks", "CI passed at abcdef1: https://x/pull/5/checks"]);
   expect(messages.every((m) => m.stageId === "implementation" && m.actorType === "conveyor")).toBe(true);
   expect(JSON.stringify(store.getStageState("issue"))).toBe(before);
+  // Each poll refreshed the stored indicator for the watched head.
+  expect(store.listIndicators("issue")).toMatchObject([{ id: "ci", headSha: "abcdef1234", state: "passing", progress: "1/1" }]);
   await service.close();
 });

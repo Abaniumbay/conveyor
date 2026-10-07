@@ -15,6 +15,7 @@ const parent: IssueCardViewModel = {
   labels: ["feature", "priority: high"],
   acceptanceCriteria: ["<script>alert(1)</script>", "Keyboard usable"],
   todos: null,
+  indicators: [],
   activity: "Running verification",
   reason: "Waiting for checks",
   cost: "$0.42",
@@ -47,6 +48,7 @@ const backlogIssue: IssueCardViewModel = {
   labels: [],
   acceptanceCriteria: [],
   todos: null,
+  indicators: [],
   activity: null,
   reason: "Awaiting capacity",
   cost: null,
@@ -180,6 +182,63 @@ const dashboard: DashboardViewModel = {
   selectedIssue: null,
   csrfToken: "csrf-token",
 };
+
+const ciView = (state: "passing" | "running" | "failed" | "unknown", progress: string, symbol: string, word: string) => ({
+  id: "ci", label: "CI", state, symbol, stateWord: word, progress, detail: `detail for ${state}`, url: "https://github.com/o/r/pull/5/checks",
+  observedAt: "2026-09-29T11:59:00Z", reference: { label: "abcdef1", url: "https://github.com/o/r/pull/5" },
+  entries: [
+    { name: "Tests", state: "passed", url: "https://github.com/o/r/actions/runs/1", startedAt: "2026-09-29T11:50:00Z", durationMs: 125_000, live: false },
+    { name: "Android", state: "queued", url: null, startedAt: null, durationMs: null, live: false },
+    { name: "Web", state: "running", url: "javascript:alert(1)", startedAt: "2026-09-29T11:58:00Z", durationMs: 60_000, live: true },
+  ],
+});
+
+describe("indicators", () => {
+  const withIndicators = (indicators: IssueCardViewModel["indicators"]) =>
+    renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, indicators }] }] });
+
+  test.each([
+    ["passing", "2/2", "✓", "passing"],
+    ["running", "1 running", "●", "running"],
+    ["failed", "1 failed", "✕", "failed"],
+    ["unknown", "no runs", "?", "unknown"],
+  ] as const)("the card chip and details section render the %s state with text, not only color", (state, progress, symbol, word) => {
+    const html = withIndicators([ciView(state, progress, symbol, word)]);
+    expect(html).toContain(`indicator-chip indicator-chip--${state}`);
+    expect(html).toContain(`CI ${symbol} ${progress}`);
+    expect(html).toContain(`CI ${word}, ${progress}`);
+    expect(html).toContain(`indicator-state--${state}`);
+    expect(html).toContain(`detail for ${state}`);
+  });
+
+  test("the details list each run with state, start time, duration and link, the short head and the observation time", () => {
+    const html = withIndicators([ciView("running", "1 running", "●", "running")]);
+    expect(html).toContain('<a href="https://github.com/o/r/actions/runs/1" target="_blank" rel="noopener noreferrer">Tests</a>');
+    expect(html).toContain("2 minutes 5 seconds");
+    expect(html).toContain("running for 1 minute");
+    expect(html).toMatch(/<time datetime="2026-09-29T11:50:00Z" data-local-time[^>]*>/);
+    expect(html).toContain("start unavailable");
+    expect(html).toContain("duration unavailable");
+    expect(html).toContain('<a href="https://github.com/o/r/pull/5" target="_blank" rel="noopener noreferrer"><code>abcdef1</code></a>');
+    expect(html).toContain("observed");
+    // An unsafe run link is not rendered as a link.
+    expect(html).not.toContain("javascript:alert(1)");
+    expect(html).toContain('<span class="indicator-entry-name">Web</span>');
+  });
+
+  test("another indicator needs no new markup", () => {
+    const html = withIndicators([ciView("passing", "2/2", "✓", "passing"), { ...ciView("failed", "1 failed", "✕", "failed"), id: "deploy", label: "Deploy", entries: [] }]);
+    expect(html).toContain('data-indicator="deploy"');
+    expect(html).toContain("Deploy ✕ 1 failed");
+  });
+
+  test("no chip or section without an indicator", () => {
+    const html = withIndicators([]);
+    expect(html).not.toContain('class="indicator-chips"');
+    expect(html).not.toContain('data-indicator=');
+    expect(html).not.toContain('class="indicators"');
+  });
+});
 
 describe("renderDashboard", () => {
   test("the About view shows the running build", () => {

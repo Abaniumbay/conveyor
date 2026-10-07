@@ -534,7 +534,7 @@ export const dashboardClient = String.raw`(() => {
 
   // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
   // so its live parts are swapped in place: the status line, the todo checklist and the facts.
-  const SUMMARY_LIVE_PARTS = ['.details-status', '.todos', '.details-facts'];
+  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts'];
   const scheduleSummaryRefresh = () => {
     if (summaryRefreshTimer !== null) return;
     summaryRefreshTimer = setTimeout(async () => {
@@ -574,6 +574,14 @@ export const dashboardClient = String.raw`(() => {
         else if (card && nextProgress) {
           const anchor = card.querySelector(':scope > .rollup-summary, :scope > dialog');
           if (anchor) anchor.before(document.importNode(nextProgress, true));
+        }
+        const chips = card && card.querySelector(':scope > .indicator-chips');
+        const nextChips = nextCard && nextCard.querySelector(':scope > .indicator-chips');
+        if (chips && nextChips) chips.replaceWith(document.importNode(nextChips, true));
+        else if (chips) chips.remove();
+        else if (card && nextChips) {
+          const anchor = card.querySelector(':scope > .todo-progress, :scope > .rollup-summary, :scope > dialog');
+          if (anchor) anchor.before(document.importNode(nextChips, true));
         }
       } catch {}
     }, 250);

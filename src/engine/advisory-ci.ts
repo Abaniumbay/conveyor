@@ -6,7 +6,7 @@
 import type { Database } from "bun:sqlite";
 
 import { ciAnnouncement, classifyRuns, describeCiFailure, readRunLog, type FailedRun } from "../app/ci-gate";
-import type { CiChange, CiProvider } from "../app/ci-provider";
+import type { CiChange, CiProvider, CiRun } from "../app/ci-provider";
 import type { AdvisoryCiWatch } from "../tasks/context";
 import type { ExecutionStore } from "./journal";
 
@@ -30,6 +30,8 @@ export interface AdvisoryCiOptions {
   pollMs?: number;
   /** Called with a provider error; the watch is simply polled again later. */
   onError?: (watch: AdvisoryCiWatch, error: unknown) => void;
+  /** Told every provider read of a watch: the head's runs (before `ignoreChecks`), or the error. */
+  observe?: (watch: AdvisoryCiWatch, observation: { runs: CiRun[] } | { error: unknown }) => void;
 }
 
 export interface EnsureWatchInput {
@@ -122,6 +124,7 @@ export class AdvisoryCiWatches {
         try { await this.#poll(watch, now); }
         catch (error) {
           this.#options.onError?.(watch, error);
+          this.#options.observe?.(watch, { error });
           // An unreadable provider must not keep a watch alive past its deadline.
           if (now >= Date.parse(watch.deadlineAt)) {
             const sha = short(watch.headSha);
@@ -149,7 +152,9 @@ export class AdvisoryCiWatches {
     const target = this.#options.resolve(watch.repositoryId);
     const change: CiChange = { repository: target.address, changeId: watch.changeId, url: watch.changeUrl };
     const ignored = new Set(target.ignoreChecks);
-    const listed = (await target.provider.list(change, watch.headSha)).filter((run) => !ignored.has(run.name));
+    const all = await target.provider.list(change, watch.headSha);
+    this.#options.observe?.(watch, { runs: all });
+    const listed = all.filter((run) => !ignored.has(run.name));
     const rerunIds = new Set(this.#marks.ciMarks(watch.itemId, watch.headSha, "rerun-id"));
     const reran = new Set(this.#marks.ciMarks(watch.itemId, watch.headSha, "rerun"));
     const runs = listed.map((run) => ({ ...run, state: run.state === "cancelled" && rerunIds.has(run.id) ? ("running" as const) : run.state }));

@@ -137,6 +137,8 @@ export class GitHubActionsCiProvider implements CiProvider {
         state: neutralState(raw.status, raw.conclusion),
         canRerun: raw.app?.slug === "github-actions" && canRerun(raw.status, raw.conclusion),
         hasLog: raw.app?.slug === "github-actions",
+        startedAt: raw.started_at ?? null,
+        completedAt: raw.completed_at ?? null,
       };
       const order = raw.id;
       const current = latest.get(run.name);

@@ -596,4 +596,24 @@ export const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 15,
+    sql: `
+      -- Latest status indicator per (item, indicator id); see src/app/indicators.ts.
+      CREATE TABLE item_indicators (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        indicator_id TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        label TEXT NOT NULL,
+        state TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        progress TEXT NOT NULL,
+        url TEXT,
+        observed_at TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, indicator_id)
+      );
+    `,
+  },
 ];
