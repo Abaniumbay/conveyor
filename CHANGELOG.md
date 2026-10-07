@@ -11,8 +11,20 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 ### Added
 - Refinement can record the GitHub issue type, organization issue fields (for example Effort) and a managed Refinement section on the issue (`item.setType`, `item.setFields`, `item.setRefinement`, and the same values in `item.createChild`). A per-repository `refinement` setting lists the writable fields and what the new `item.refinementComplete` gate requires.
 - The dashboard's item details show the issue type and configured field values; `conveyor doctor` checks the credentials' access to them.
+- Board cards and item details show each item's CI status for the change's current head: a compact chip on the card and, in the details, each run with its state, start time and duration. Status is stored per item, survives restarts and updates live from `workflow_run` and `check_suite` webhooks (#117).
+- Items that are due but cannot start show as Queued, naming the full runner, stage or repository limit and the items holding its slots. A parked `ci.passed` gate shows the latest known CI state instead of its last evaluation message (#119).
+- The issue status comment and the item details show which acceptance criteria the reviewer approved at the change's current head (#122).
+- Every `agent.run` prompt includes the item's current handover: todos, open review findings, the change and its CI state, and the worktree (#116).
+- `bun run docs:screenshots` regenerates the documentation screenshots from an isolated demo instance (#107).
+
+### Changed
+- The board summaries (The line, Needs you) appear only on Board, so other dashboard pages start at the top, and the dashboard navigation is simplified (#105).
 
 ### Fixed
+- Codex result schemas are valid for strict structured output; Codex runs no longer fail before starting with `Invalid schema for response_format 'codex_output_schema'` (#110).
+- `todo.set` keeps completed todos when an agent rewrites the list, so recorded progress is no longer lost (#112).
+- The dashboard header and tabs stay usable at phone width (#104).
+- The dashboard's Content Security Policy allows its web app manifest (#103).
 - The managed acceptance-criteria section now has an "Acceptance Criteria" heading, and replaces a hand-written checklist instead of appearing beside it.
 
 ## [0.2.1] - 2026-10-06
