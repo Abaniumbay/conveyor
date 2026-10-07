@@ -133,4 +133,61 @@ describe("runJsonProcess", () => {
       }),
     ).rejects.toThrow(/timed out/i);
   });
+
+  test("accepts result with omitted metrics field", async () => {
+    const filename = await script(`
+      console.log(JSON.stringify({
+        version: 1,
+        outcome: "success",
+        status: "done",
+        summary: "handled without metrics",
+        reason: null,
+        artifacts: []
+      }));
+    `);
+
+    const result = await runJsonProcess({
+      command: [process.execPath, filename],
+      cwd: path.dirname(filename),
+      input: {},
+    });
+
+    expect(result.stageResult).toEqual({
+      outcome: "success",
+      status: "done",
+      summary: "handled without metrics",
+      reason: null,
+      metrics: {},
+    });
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("accepts result with empty metrics object", async () => {
+    const filename = await script(`
+      console.log(JSON.stringify({
+        version: 1,
+        outcome: "success",
+        status: "done",
+        summary: "handled with empty metrics",
+        reason: null,
+        metrics: {},
+        artifacts: []
+      }));
+    `);
+
+    const result = await runJsonProcess({
+      command: [process.execPath, filename],
+      cwd: path.dirname(filename),
+      input: {},
+    });
+
+    expect(result.stageResult).toEqual({
+      outcome: "success",
+      status: "done",
+      summary: "handled with empty metrics",
+      reason: null,
+      metrics: {},
+    });
+    expect(result.exitCode).toBe(0);
+  });
 });
