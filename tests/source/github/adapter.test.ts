@@ -569,3 +569,107 @@ test("ensureWebhook adds missing events to an existing active hook", async () =>
   expect(transport.requests[1]).toMatchObject({ method: "PATCH", path: "repos/owner/repo/hooks/7" });
   expect((transport.requests[1] as { body: { events: string[] } }).body.events).toContain("check_suite");
 });
+
+describe("GitHubAdapter issue types and fields", () => {
+  const forbidden = new GitHubTransportError("GitHub API GET x failed: Forbidden (HTTP 403)", 1, "gh: Forbidden (HTTP 403)");
+  const notFound = new GitHubTransportError("GitHub API GET x failed: Not Found (HTTP 404)", 1, "gh: Not Found (HTTP 404)");
+
+  class Scripted implements GitHubTransport {
+    readonly requests: GitHubTransportRequest[] = [];
+    constructor(private readonly handler: (request: GitHubTransportRequest) => unknown) {}
+    async request<T>(request: GitHubTransportRequest): Promise<T> {
+      this.requests.push(request);
+      const result = this.handler(request);
+      if (result instanceof Error) throw result;
+      return result as T;
+    }
+  }
+
+  test("lists the owner's types and fields, and reports an owner without them as null", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-types")
+      ? [{ name: "Task" }, { name: "Bug" }]
+      : [{ id: 1, name: "Effort", data_type: "single_select", options: [{ name: "High" }] }, { id: 2, name: "Start date", data_type: "date", options: null }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    expect(await adapter.listIssueTypes("acme")).toEqual(["Task", "Bug"]);
+    expect(await adapter.listIssueFields("acme")).toEqual([
+      { id: 1, name: "Effort", dataType: "single_select", options: ["High"] },
+      { id: 2, name: "Start date", dataType: "date", options: [] },
+    ]);
+    const none = new GitHubAdapter(new Scripted(() => notFound), "conveyor");
+    expect(await none.listIssueTypes("me")).toBeNull();
+    expect(await none.listIssueFields("me")).toBeNull();
+    const broken = new GitHubAdapter(new Scripted(() => new GitHubTransportError("boom", 1, "gh: server error (HTTP 500)")), "conveyor");
+    await expect(broken.listIssueTypes("acme")).rejects.toThrow("boom");
+  });
+
+  test("sets the type, adds only the given field values, and creates a child with both", async () => {
+    const transport = new Scripted((request) => request.path.includes("sub_issues") ? [] : request.method === "GET" ? { id: 7, number: 3 }
+      : { id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [], updated_at: "x", type: { name: "Bug" } });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    await adapter.setIssueType("o/r", 3, "Bug");
+    await adapter.setIssueFieldValues("o/r", 3, [{ fieldId: 11, name: "Effort", value: "Low" }]);
+    await adapter.setIssueFieldValues("o/r", 3, []);
+    const child = await adapter.createChildIssue({
+      address: "o/r", parentNumber: 3, title: "t", body: "b", labels: ["conveyor"], type: "Bug", fields: [{ fieldId: 11, name: "Effort", value: "Low" }],
+    });
+    expect(transport.requests.filter((r) => r.method !== "GET").map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      { method: "PATCH", path: "repos/o/r/issues/3", body: { type: "Bug" } },
+      { method: "POST", path: "repos/o/r/issues/3/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
+      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: "b", labels: ["conveyor"], parent_issue_id: 7, type: "Bug" } },
+      { method: "POST", path: "repos/o/r/issues/9/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
+    ]);
+    expect(child.type).toBe("Bug");
+  });
+
+  test("reuses a child after its field write fails, so a retry cannot duplicate it", async () => {
+    const marker = "<!-- conveyor:child-create:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+    const child = { id: 8, number: 9, html_url: "u", title: "t", body: `b\n${marker}`, state: "open" as const, labels: [], updated_at: "x" };
+    let created = false;
+    let fieldWrites = 0;
+    const transport = new Scripted((request) => {
+      if (request.path.includes("sub_issues")) return created ? [child] : [];
+      if (request.method === "GET") return { id: 7, number: 3 };
+      if (request.path.endsWith("/issue-field-values")) {
+        fieldWrites += 1;
+        return fieldWrites === 1 ? new Error("temporary field failure") : {};
+      }
+      created = true;
+      return child;
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    const input = { address: "o/r", parentNumber: 3, title: "t", body: child.body, labels: [], fields: [{ fieldId: 11, name: "Effort", value: "Low" }] };
+    await expect(adapter.createChildIssue(input)).rejects.toThrow("temporary field failure");
+    await expect(adapter.createChildIssue(input)).resolves.toMatchObject({ number: 9 });
+    expect(transport.requests.filter((request) => request.method === "POST" && request.path === "repos/o/r/issues")).toHaveLength(1);
+    expect(fieldWrites).toBe(2);
+  });
+
+  test("reads current field values by name, and the type reported on listed issues", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-field-values")
+      ? [{ issue_field_name: "Effort", value: "Low" }, { issue_field_name: "Target date", value: null }]
+      : [{ id: 1, number: 1, html_url: "u", title: "t", body: null, state: "open", labels: [], updated_at: "x", type: null }]);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    expect(await adapter.getIssueFieldValues("o/r", 1)).toEqual({ Effort: "Low" });
+    expect((await adapter.listIssues("o/r"))[0]!.type).toBeNull();
+  });
+
+  test("probes access read-only: readable, none, denied, and write permission", async () => {
+    const run = async (types: unknown, fields: unknown, push: boolean | undefined) => {
+      const transport = new Scripted((request) => request.path.includes("issue-types") ? types : request.path.includes("issue-fields") ? fields
+        : { permissions: push === undefined ? undefined : { push } });
+      const result = await new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r");
+      expect(transport.requests.every((r) => r.method === "GET")).toBe(true);
+      return result;
+    };
+    expect(await run([{ name: "Bug" }], [{ id: 1 }], true)).toEqual({ types: "ok", fields: "ok", canWrite: true });
+    expect(await run(notFound, [], false)).toEqual({ types: "none", fields: "none", canWrite: false });
+    expect(await run(forbidden, forbidden, undefined)).toEqual({ types: "denied", fields: "denied", canWrite: null });
+  });
+
+  test("recognizes issue-management access without code push access", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-types") ? [{ name: "Bug" }] : request.path.includes("issue-fields") ? [{ id: 1 }]
+      : { permissions: { push: false, triage: true } });
+    await expect(new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r"))
+      .resolves.toEqual({ types: "ok", fields: "ok", canWrite: true });
+  });
+});

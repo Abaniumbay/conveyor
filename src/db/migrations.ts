@@ -616,4 +616,11 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 16,
+    sql: `
+      -- GitHub issue type and organization issue-field values; see IssueMetadata in store.ts.
+      ALTER TABLE issues ADD COLUMN metadata_json TEXT;
+    `,
+  },
 ];

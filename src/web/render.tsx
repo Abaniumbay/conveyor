@@ -173,6 +173,15 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             ))}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}
         </section>
+        {(issue.issueType || issue.issueFields.length > 0) && (
+          <section class="source-labels issue-metadata" aria-label="Issue type and fields">
+            <h3>Issue type and fields</h3>
+            <div>
+              {issue.issueType && <span class="source-label" data-issue-type>Type: {issue.issueType}</span>}
+              {issue.issueFields.map((field) => <span class="source-label" key={field.name}>{field.name}: {field.value}</span>)}
+            </div>
+          </section>
+        )}
         {issue.labels.length > 0 && (
           <section class="source-labels" aria-label="Source labels">
             <h3>Source labels</h3>

@@ -36,6 +36,9 @@ repositories:
     pipeline: delivery
     concurrency: 2
     systemLabels: [backend, web, infrastructure, testing]
+    refinement:                            # what refinement writes on the issue page (org issue types and fields)
+      fields: [Effort, Priority]           # writable by item.setFields; Priority only when the issue states one
+      require: { type: true, fields: [Effort], section: true }   # the refinement exit gate fails without these
     agentEgress:
       allowLoopbackMcp: true
       httpsHosts: [registry.npmjs.org]

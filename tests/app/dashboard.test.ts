@@ -746,7 +746,7 @@ describe("ConveyorService dashboard", () => {
       "mobile",
     ]);
     expect(parseManagedSections(createInput!.body).sections["acceptance-criteria"]).toBe(
-      "- [ ] Runs in GitHub Actions. <!-- conveyor:criterion:AC-1 -->\n" +
+      "## Acceptance Criteria\n\n- [ ] Runs in GitHub Actions. <!-- conveyor:criterion:AC-1 -->\n" +
       "- [x] Uploads diagnostics. <!-- conveyor:criterion:AC-2 -->",
     );
     expect(child.body).toBe(createInput!.body);

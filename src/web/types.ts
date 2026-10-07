@@ -46,6 +46,10 @@ export interface IssueCardViewModel {
   url: string | null;
   state: string;
   labels: readonly string[];
+  /** The GitHub issue type, when the owner defines types and one is set. */
+  issueType: string | null;
+  /** The repository-configured organization issue-field values that are set, in configuration order. */
+  issueFields: ReadonlyArray<{ name: string; value: string }>;
   acceptanceCriteria: readonly IssueCriterionViewModel[];
   /** The implementer's todo list, kept by Conveyor; null until one is written. */
   todos: IssueTodosViewModel | null;

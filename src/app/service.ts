@@ -360,6 +360,7 @@ export class ConveyorService {
           expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
         });
         await this.reconcileRelationships(id, repository.address);
+        await this.syncIssueFields(id, repository);
         this.restorePendingStatus(id);
         this.#repositoryErrors.delete(id);
       } catch (error) {
@@ -370,6 +371,32 @@ export class ConveyorService {
     }
     this.#lastReconciledAt = new Date().toISOString();
     this.interruptIneligibleRuns();
+  }
+
+  private issueFieldValues(issue: StoredIssue): Array<{ name: string; value: string }> {
+    const configured = this.config.repositories[issue.repositoryId]?.refinement?.fields ?? [];
+    return configured.flatMap((name) => {
+      const entry = Object.entries(issue.metadata.fields).find(([field]) => field.toLocaleLowerCase() === name.toLocaleLowerCase());
+      return entry ? [{ name: entry[0], value: entry[1] }] : [];
+    });
+  }
+
+  /** Read the configured issue-field values of enrolled issues that changed since they were last read. */
+  private async syncIssueFields(repositoryId: string, repository: ConveyorConfig["repositories"][string]): Promise<void> {
+    if ((repository.refinement?.fields.length ?? 0) === 0) return;
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) continue;
+      if (issue.metadata.fieldsSyncedAt === issue.sourceUpdatedAt) continue;
+      try {
+        const values = await this.github.getIssueFieldValues(repository.address, issue.sourceNumber);
+        const configured = Object.fromEntries(Object.entries(values).filter(([name]) =>
+          repository.refinement.fields.some((field) => field.toLocaleLowerCase() === name.toLocaleLowerCase())));
+        this.store.setIssueMetadata(issue.id, { fields: configured, fieldsSyncedAt: issue.sourceUpdatedAt });
+      } catch (error) {
+        log.warn("Issue field sync failed", this.itemFields(issue.id), error);
+        continue;
+      }
+    }
   }
 
   start(): void {
@@ -1008,6 +1035,7 @@ export class ConveyorService {
           sourceStateReason: dependency.stateReason ?? null,
           labels: dependency.labels,
           sourceUpdatedAt: dependency.updatedAt,
+          ...(dependency.type !== undefined ? { issueType: dependency.type } : {}),
         });
         this.store.setIssueProjection(dependency.id, {
           stage: null,
@@ -2121,6 +2149,8 @@ export class ConveyorService {
         url: issue.sourceUrl,
         state: projectedState,
         labels: issue.labels,
+        issueType: issue.metadata.type,
+        issueFields: this.issueFieldValues(issue),
         acceptanceCriteria: this.criterionApprovalStates(issue),
         todos: todosView(todos.get(issue.id)?.items ?? []),
         indicators: indicators.get(issue.id) ?? [],

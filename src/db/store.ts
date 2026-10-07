@@ -16,6 +16,14 @@ export interface RepositoryRecord {
   configHash: string;
 }
 
+/** The GitHub issue type and the organization issue-field values Conveyor shows beside labels. */
+export interface IssueMetadata {
+  type: string | null;
+  fields: Record<string, string>;
+  /** The source `updatedAt` at which the field values were last read from GitHub. */
+  fieldsSyncedAt?: string;
+}
+
 export interface IssueProjection {
   id: string;
   repositoryId: string;
@@ -28,9 +36,12 @@ export interface IssueProjection {
   labels: string[];
   sourceUpdatedAt: string;
   parentId?: string | null;
+  /** The issue type the source reports; undefined leaves the stored type as it is. */
+  issueType?: string | null;
 }
 
 export interface StoredIssue extends IssueProjection {
+  metadata: IssueMetadata;
   queueRank: number | null;
   projectedStage: string | null;
   projectedState: string | null;
@@ -208,6 +219,15 @@ function json(value: unknown): string {
 
 function parseJson<T>(value: string | null): T | null {
   return value === null ? null : (JSON.parse(value) as T);
+}
+
+function parseMetadata(value: string | null): IssueMetadata {
+  const parsed = parseJson<Partial<IssueMetadata>>(value);
+  return {
+    type: parsed?.type ?? null,
+    fields: parsed?.fields ?? {},
+    ...(parsed?.fieldsSyncedAt !== undefined ? { fieldsSyncedAt: parsed.fieldsSyncedAt } : {}),
+  };
 }
 
 /** Status changes the stage executor makes to itself; they never fence the item. */
@@ -552,6 +572,24 @@ export class ConveyorStore {
         timestamp,
         timestamp,
       );
+    if (issue.issueType !== undefined) this.setIssueMetadata(issue.id, { type: issue.issueType });
+  }
+
+  /** Merge a type and/or field values into the stored metadata; fields not named are kept. */
+  setIssueMetadata(issueId: string, update: { type?: string | null; fields?: Record<string, string>; fieldsSyncedAt?: string }): void {
+    const row = this.#database.query("SELECT metadata_json FROM issues WHERE id = ?").get(issueId) as
+      { metadata_json: string | null } | null;
+    if (!row) return;
+    const current = parseMetadata(row.metadata_json);
+    const next: IssueMetadata = {
+      type: update.type !== undefined ? update.type : current.type,
+      // A read from GitHub (marked by fieldsSyncedAt) replaces the stored values; a write merges.
+      fields: update.fieldsSyncedAt !== undefined ? { ...(update.fields ?? {}) } : { ...current.fields, ...(update.fields ?? {}) },
+    };
+    const syncedAt = update.fieldsSyncedAt ?? current.fieldsSyncedAt;
+    if (syncedAt !== undefined) next.fieldsSyncedAt = syncedAt;
+    if (json(next) === json(current)) return;
+    this.#database.query("UPDATE issues SET metadata_json = ? WHERE id = ?").run(json(next), issueId);
   }
 
   setQueueRank(issueId: string, rank: number): void {
@@ -1115,6 +1153,7 @@ export class ConveyorStore {
       sourceStateReason:
         row.source_state_reason === null ? null : String(row.source_state_reason),
       labels: parseJson<string[]>(String(row.labels_json)) ?? [],
+      metadata: parseMetadata(row.metadata_json === null ? null : String(row.metadata_json)),
       sourceUpdatedAt: String(row.source_updated_at),
       parentId: row.parent_id === null ? null : String(row.parent_id),
       queueRank: row.queue_rank === null ? null : Number(row.queue_rank),

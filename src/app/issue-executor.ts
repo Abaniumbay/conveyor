@@ -165,7 +165,7 @@ export class IssueExecutor {
         issueId: issue.id,
         pipeline: plan,
         stageId,
-        baseContext: baseContext(issue, config.hash, { ...runtimeRepository, ciMode: repository.ci.mode, systemLabels: repository.systemLabels }),
+        baseContext: baseContext(issue, config.hash, { ...runtimeRepository, ciMode: repository.ci.mode, systemLabels: repository.systemLabels, refinement: repository.refinement }),
         deps,
         ...(signal ? { signal } : {}),
       });

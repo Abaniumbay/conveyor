@@ -88,7 +88,7 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 
 Tools are the registry's `tool` tasks, named in camelCase:
 
-- `item.*`: `get`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`, `guidance`
+- `item.*`: `get`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setType`, `setFields`, `setRefinement`, `setParent`, `setDependencies`, `createChild`, `guidance`
 - `workspace.*`: `get`, `fetch`, `push`
 - `change.*`: `get`, `setMetadata`, `checkCriterion`, `uncheckCriterion`, `comment`, `resolveFinding`, `listFindings`
 - `ci.getLogs`, `conversation.get`

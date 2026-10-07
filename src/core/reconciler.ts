@@ -79,6 +79,7 @@ export async function reconcileRepository(
       sourceStateReason: sourceIssue.stateReason ?? null,
       labels: sourceIssue.labels,
       sourceUpdatedAt: sourceIssue.updatedAt,
+      ...(sourceIssue.type !== undefined ? { issueType: sourceIssue.type } : {}),
     });
 
     const projected = evaluateIssueState({
