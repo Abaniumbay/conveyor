@@ -462,6 +462,11 @@ async function stabilize(page: Page): Promise<void> {
     });
   });
   await page.evaluate(() => document.fonts.ready);
+  // The header shows "Connecting" until the live stream opens; capture only the settled state.
+  await page
+    .locator("[data-connection-state]")
+    .filter({ hasText: "Connected" })
+    .waitFor({ state: "attached", timeout: 10_000 });
   await page.evaluate(() => window.scrollTo(0, 0));
 }
 
