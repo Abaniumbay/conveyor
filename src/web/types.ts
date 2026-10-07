@@ -27,6 +27,12 @@ export interface IssueTodosViewModel {
   items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done"; note?: string }>;
 }
 
+export interface IssueCriterionViewModel {
+  id: string;
+  text: string;
+  approved: boolean;
+}
+
 export type { IndicatorViewModel } from "../app/indicators";
 import type { IndicatorViewModel } from "../app/indicators";
 
@@ -40,7 +46,7 @@ export interface IssueCardViewModel {
   url: string | null;
   state: string;
   labels: readonly string[];
-  acceptanceCriteria: readonly string[];
+  acceptanceCriteria: readonly IssueCriterionViewModel[];
   /** The implementer's todo list, kept by Conveyor; null until one is written. */
   todos: IssueTodosViewModel | null;
   /** Stored status indicators (CI first); rendered by one shared component on the card and in the details. */
