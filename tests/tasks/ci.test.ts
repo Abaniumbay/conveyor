@@ -499,3 +499,43 @@ describe("a cancelled run through the stage executor", () => {
     expect(journal.getContext("i1")!.context.checkpoints.ciPassed).toMatchObject({ sha: "head1", taskInstanceId: "ci.passed" });
   });
 });
+
+describe("CI indicator updates from the ci tasks", () => {
+  const stored = (w: Awaited<ReturnType<typeof world>>) => w.store.listIndicators("i1").find((entry) => entry.id === "ci");
+
+  test("ci.load stores the current head's indicator, counting runs like ci.passed (ignoreChecks)", async () => {
+    const w = await world({ ignoreChecks: ["Lint"] });
+    w.provider.runs = [ciRun("Tests", "passed"), ciRun("Lint", "failed")];
+    await run("ci.load", { context: { change: change() }, deps: w.deps });
+    expect(stored(w)).toMatchObject({ headSha: "head1", state: "passing", progress: "1/1", url: `${PR_URL}/checks` });
+    expect(stored(w)!.entries.map((entry) => entry.name)).toEqual(["Tests"]);
+  });
+
+  test("ci.load on a new head replaces the old head's runs; the first load without runs says CI is starting", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "failed")];
+    await run("ci.load", { context: { change: change() }, deps: w.deps });
+    expect(stored(w)?.state).toBe("failed");
+    w.provider.runs = [];
+    w.clock.now += 10_000;
+    await run("ci.load", { context: { change: change({ headSha: "head2" }) }, deps: w.deps });
+    expect(stored(w)).toMatchObject({ headSha: "head2", state: "running", detail: "CI is starting", entries: [] });
+  });
+
+  test("ci.load records an unreadable provider as unknown and still fails", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "passed")];
+    await run("ci.load", { context: { change: change() }, deps: w.deps });
+    w.provider.list = async () => { throw new Error("rate limited"); };
+    await expect(run("ci.load", { context: { change: change() }, deps: w.deps })).rejects.toThrow("rate limited");
+    expect(stored(w)).toMatchObject({ state: "unknown", detail: "CI could not be read: rate limited" });
+  });
+
+  test("ci.start refreshes the indicator with the runs it started", async () => {
+    const w = await world();
+    w.provider.waiting = ["Web"];
+    w.provider.runs = [ciRun("Tests", "passed")];
+    await run("ci.start", { context: gateCtx(ci({ runs: [] })), deps: w.deps });
+    expect(stored(w)).toMatchObject({ state: "running", detail: "1 running · 1/2 passed" });
+  });
+});

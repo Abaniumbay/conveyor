@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 
+import { observeCi, observeCiError } from "../app/indicators";
 import { boundLog, boundSnapshotLogs, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
@@ -65,7 +66,13 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     const marks = deps.store.executions();
     const firstSeenAt = marks.markCi(deps.issueId, head, "first-seen", "", observedAt).at;
     const ignored = new Set(deps.config.repositories[deps.repository.id]?.ci.ignoreChecks ?? []);
-    const listed = (await provider.list(target, head)).filter((run) => !ignored.has(run.name));
+    const ignoreChecks = [...ignored];
+    const indicator = { issueId: deps.issueId, headSha: head, changeUrl: change.url, ignoreChecks, now: now(deps), authoritative: true };
+    let all: Awaited<ReturnType<CiProvider["list"]>>;
+    try { all = await provider.list(target, head); }
+    catch (error) { observeCiError(deps.store, { ...indicator, error }); throw error; }
+    observeCi(deps.store, { ...indicator, runs: all });
+    const listed = all.filter((run) => !ignored.has(run.name));
     const definition = await provider.definitions(target, head);
     const reruns = marks.ciMarks(deps.issueId, head, "rerun");
     const started = marks.ciMarks(deps.issueId, head, "started");
@@ -126,6 +133,11 @@ const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
     if (announced && marks.markCi(deps.issueId, head, "announced", "", at.toISOString()).fresh) {
       await deps.notify?.(ciAnnouncement(change.url, short(head), snapshot.runs, waiting), instance.stage);
     }
+    // The runs a start created are visible now; the board need not wait for the next load.
+    try {
+      const ignoreChecks = deps.config.repositories[deps.repository.id]?.ci.ignoreChecks ?? [];
+      observeCi(deps.store, { issueId: deps.issueId, headSha: head, changeUrl: change.url, ignoreChecks, now: now(deps), authoritative: true, runs: await provider.list(target, head) });
+    } catch { /* the next load records the error */ }
     if (context.repository?.ciMode === "advisory") {
       await deps.ci?.watchAdvisory?.({ itemId: deps.issueId, headSha: head, stage: instance.stage, changeId: target.changeId, changeUrl: target.url });
     }

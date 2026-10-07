@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
 import { migrations } from "./migrations";
 
@@ -885,6 +886,30 @@ export class ConveyorStore {
     };
   }
 
+  /** The items of a repository whose current pull request is `number`. */
+  findIssueIdsByPullRequest(repositoryId: string, number: number): string[] {
+    const rows = this.#database
+      .query(
+        `SELECT DISTINCT i.id FROM pull_requests p
+         JOIN enrollments e ON e.id = p.enrollment_id AND e.status = 'active'
+         JOIN issues i ON i.id = e.issue_id
+         WHERE i.repository_id = ? AND p.source_number = ?`,
+      )
+      .all(repositoryId, number) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
+  /** The items of a repository whose stored indicator `indicatorId` is for `headSha`. */
+  findIssueIdsByIndicatorHead(repositoryId: string, indicatorId: string, headSha: string): string[] {
+    const rows = this.#database
+      .query(
+        `SELECT n.issue_id AS id FROM item_indicators n JOIN issues i ON i.id = n.issue_id
+         WHERE i.repository_id = ? AND n.indicator_id = ? AND n.head_sha = ?`,
+      )
+      .all(repositoryId, indicatorId, headSha) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   hasMergedPullRequest(issueId: string): boolean {
     const row = this.#database
       .query(
@@ -1498,6 +1523,55 @@ export class ConveyorStore {
     }));
   }
 
+  /**
+   * Stores an indicator for an item. A record for another head than the stored one replaces it only
+   * when `replaceHead` says the head is the change's current one; otherwise it is stale and ignored.
+   * `changed_at` (and with it the dashboard revision) moves only when what is shown changes, not
+   * on every repeated observation.
+   */
+  saveIndicator(issueId: string, headSha: string, indicator: Indicator, replaceHead: boolean): boolean {
+    const body = JSON.stringify({ entries: indicator.entries, reference: indicator.reference });
+    return this.#database.transaction(() => {
+      const existing = this.#database
+        .query("SELECT head_sha, state, detail, progress, url, body_json, changed_at FROM item_indicators WHERE issue_id = ? AND indicator_id = ?")
+        .get(issueId, indicator.id) as Record<string, string | null> | null;
+      if (existing && existing.head_sha !== headSha && !replaceHead) return false;
+      const same = existing !== null && existing.head_sha === headSha && existing.state === indicator.state &&
+        existing.detail === indicator.detail && existing.progress === indicator.progress &&
+        existing.url === indicator.url && existing.body_json === body;
+      const changedAt = same ? String(existing.changed_at) : now();
+      this.#database
+        .query(
+          `INSERT INTO item_indicators(issue_id, indicator_id, head_sha, label, state, detail, progress, url, observed_at, body_json, changed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(issue_id, indicator_id) DO UPDATE SET head_sha = excluded.head_sha, label = excluded.label,
+             state = excluded.state, detail = excluded.detail, progress = excluded.progress, url = excluded.url,
+             observed_at = excluded.observed_at, body_json = excluded.body_json, changed_at = excluded.changed_at`,
+        )
+        .run(issueId, indicator.id, headSha, indicator.label, indicator.state, indicator.detail, indicator.progress, indicator.url, indicator.observedAt, body, changedAt);
+      return true;
+    })();
+  }
+
+  listIndicators(issueId?: string): Array<StoredIndicator & { issueId: string }> {
+    const rows = this.#database
+      .query(`SELECT * FROM item_indicators ${issueId ? "WHERE issue_id = ?" : ""} ORDER BY issue_id, indicator_id`)
+      .all(...(issueId ? [issueId] : [])) as Array<Record<string, string | null>>;
+    return rows.map((row) => {
+      const body = JSON.parse(String(row.body_json)) as Pick<Indicator, "entries" | "reference">;
+      return {
+        issueId: String(row.issue_id), id: String(row.indicator_id), headSha: String(row.head_sha), label: String(row.label),
+        state: String(row.state) as Indicator["state"], detail: String(row.detail), progress: String(row.progress),
+        url: row.url === null ? null : String(row.url), observedAt: String(row.observed_at), changedAt: String(row.changed_at),
+        entries: body.entries, reference: body.reference,
+      };
+    });
+  }
+
+  clearIndicator(issueId: string, indicatorId: string): void {
+    this.#database.query("DELETE FROM item_indicators WHERE issue_id = ? AND indicator_id = ?").run(issueId, indicatorId);
+  }
+
   dashboardRevision(): string {
     const rows = this.#database
       .query(
@@ -1509,7 +1583,9 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'questions', COUNT(*), COALESCE(MAX(COALESCE(answered_at, created_at)), '') FROM questions
          UNION ALL
-         SELECT 'todos', COUNT(*), COALESCE(MAX(updated_at), '') FROM item_todos`,
+         SELECT 'todos', COUNT(*), COALESCE(MAX(updated_at), '') FROM item_todos
+         UNION ALL
+         SELECT 'indicators', COUNT(*), COALESCE(MAX(changed_at), '') FROM item_indicators`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows

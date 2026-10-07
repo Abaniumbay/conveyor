@@ -168,10 +168,10 @@ describe("service delivery tools", () => {
 
       expect(result.pullRequest).toMatchObject({ number: 9, url: "https://github.com/owner/repo/pull/9", headSha: "abc123" });
       expect(result.checks).toContainEqual({
-        id: "10", name: "External", url: "https://checks/external", state: "failed", canRerun: false, hasLog: false,
+        id: "10", name: "External", url: "https://checks/external", state: "failed", canRerun: false, hasLog: false, startedAt: null, completedAt: null,
       });
       expect(result.checks).toContainEqual({
-        id: "11", name: "Actions failed", url: "https://checks/failed", state: "failed", canRerun: true, hasLog: true,
+        id: "11", name: "Actions failed", url: "https://checks/failed", state: "failed", canRerun: true, hasLog: true, startedAt: null, completedAt: null,
       });
     } finally {
       await fixture.close();
@@ -186,7 +186,7 @@ describe("service delivery tools", () => {
       }, fixture.token) as { pullRequest: { number: number; url: string; headSha: string }; checks: Array<Record<string, unknown>> };
       expect(named.pullRequest).toEqual({ number: 9, url: "https://github.com/owner/repo/pull/9", headSha: "abc123" });
       expect(named.checks).toEqual([{
-        id: "10", name: "External", url: "https://checks/external", state: "failed", canRerun: false, hasLog: false, log: null,
+        id: "10", name: "External", url: "https://checks/external", state: "failed", canRerun: false, hasLog: false, startedAt: null, completedAt: null, log: null,
       }]);
       expect(fixture.logCalls).toEqual([]);
 
