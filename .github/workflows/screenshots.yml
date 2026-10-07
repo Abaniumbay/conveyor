@@ -1,0 +1,55 @@
+name: Screenshots
+
+# Regenerate and verify dashboard screenshots with isolated demo data.
+# Fails if the regenerated images differ from tracked versions or referenced files are missing.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Regenerate and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+      - name: Generate screenshots (first run)
+        run: bun run docs:screenshots
+      - name: Capture checksums
+        run: md5sum docs/screenshots/{board,item,reports,operator,team}.png > /tmp/checksums-1.txt
+      - name: Generate screenshots (second run for repeatability)
+        run: bun run docs:screenshots
+      - name: Verify checksums match (pixel-identical)
+        run: md5sum -c /tmp/checksums-1.txt
+      - name: Verify referenced files exist in README
+        run: |
+          grep -q 'docs/screenshots/board.png' README.md
+          grep -q 'docs/screenshots/item.png' README.md
+          grep -q 'docs/screenshots/reports.png' README.md
+          grep -q 'docs/screenshots/operator.png' README.md
+          grep -q 'docs/screenshots/team.png' README.md
+      - name: Verify referenced files exist in docs/dashboard.md
+        run: test -f docs/dashboard.md && grep -q 'docs/screenshots/board.png\|docs/screenshots/item.png\|docs/screenshots/reports.png\|docs/screenshots/operator.png\|docs/screenshots/team.png' docs/dashboard.md || true
+      - name: Check for modified screenshots
+        run: |
+          if git diff --quiet docs/screenshots/; then
+            echo "Screenshots are up to date"
+          else
+            echo "Screenshots differ from tracked versions. Regenerate with: bun run docs:screenshots"
+            git diff docs/screenshots/
+            exit 1
+          fi

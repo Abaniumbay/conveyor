@@ -130,10 +130,16 @@ bun install --frozen-lockfile
 bun run check                     # every test and the typecheck
 bun run src/cli.ts --help         # the CLI from source
 bun run build && bun run smoke    # build the release archive and test it outside the checkout
+bun run docs:screenshots          # regenerate dashboard screenshots when layout changes
 ```
 
 Tests use temporary repositories and databases and need no credentials. Changes are recorded in
 [CHANGELOG.md](CHANGELOG.md); releases are cut from tags ([docs/releasing.md](docs/releasing.md)).
+
+When you change the dashboard layout, regenerate the screenshots with `bun run docs:screenshots`
+in the same pull request. The script starts Conveyor with isolated demo data, captures each view
+at a fixed viewport, and verifies two consecutive runs produce pixel-identical output. Commit the
+regenerated images (in `docs/screenshots/`) alongside your layout changes.
 
 ## Status and limits
 
