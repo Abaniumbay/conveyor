@@ -57,11 +57,17 @@ repositories:
   const open = async () => {
     const store = await ConveyorStore.open(config.settings.database);
     const executed: string[] = [];
-    const service = new ConveyorService(config, store, { upsertStatusComment: async () => 1 } as unknown as GitHubAdapter);
+    const statusComments: string[] = [];
+    const service = new ConveyorService(config, store, {
+      async upsertStatusComment(_address: string, _number: number, markdown: string) {
+        statusComments.push(markdown);
+        return statusComments.length;
+      },
+    } as unknown as GitHubAdapter);
     (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => {
       executed.push(issue.id);
     };
-    return { store, service, executed };
+    return { store, service, executed, statusComments };
   };
   const first = await open();
   first.store.upsertRepository({
@@ -145,6 +151,7 @@ describe("persisted wake-ups", () => {
 
     const internals = first.service as unknown as {
       currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+      updateStatusComment(issueId: string): Promise<void>;
     };
     const queuedCard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(queuedCard).toMatchObject({ waiting: { kind: "queued" }, reason: null });
@@ -155,12 +162,20 @@ describe("persisted wake-ups", () => {
       nextCheckAt: null,
       deadline: null,
     });
+    await internals.updateStatusComment("issue");
+    expect(first.statusComments.at(-1)).toContain(
+      "- Status: Queued · global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; repo slots 1/1 busy: #2",
+    );
 
     schedule(first.service);
     expect(first.executed).toEqual([]);
     first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
     schedule(first.service);
     expect(first.executed).toEqual(["issue"]);
+    await Bun.sleep(0);
+    await internals.updateStatusComment("issue");
+    expect(first.statusComments.at(-1)).not.toContain("Queued");
+    expect(first.statusComments.at(-1)).not.toContain("global runner slots 1/1 busy: #2");
     await first.service.close();
   });
 
@@ -188,6 +203,55 @@ describe("persisted wake-ups", () => {
     });
     expect(status?.reason).not.toContain("Waiting for CI");
     expect(status?.since).not.toBe(wakeAt);
+    await first.service.close();
+  });
+
+  test("a queued capacity status keeps its queue clock and holder detail across a restart", async () => {
+    const { config, first, open } = await setup();
+    config.settings.runners = 1;
+    const wakeAt = new Date(Date.now() - 1_000).toISOString();
+    park(first.store, config, wakeAt);
+    addRunningHolder(first.store, config);
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: MESSAGE });
+    const status = (first.service as unknown as {
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+    }).currentIssueStatus(first.store.getIssue("issue")!);
+    expect(status).toMatchObject({ kind: "queued", since: wakeAt, reason: expect.stringContaining("#2") });
+    await first.service.close();
+
+    const second = await open();
+    const restarted = (second.service as unknown as {
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+    }).currentIssueStatus(second.store.getIssue("issue")!);
+    expect(restarted).toEqual(status);
+    await second.service.close();
+  });
+
+  test("a retry re-queues with a fresh capacity status instead of its failure wait", async () => {
+    const { config, first } = await setup();
+    config.settings.runners = 1;
+    addRunningHolder(first.store, config);
+    const internals = first.service as unknown as {
+      handleInfrastructureFailure(issue: StoredIssue, error: unknown): Promise<void>;
+      retryLater(issueId: string, delayMs: number): void;
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+    };
+    const retry = internals.retryLater.bind(first.service);
+    internals.retryLater = (issueId, _delayMs) => retry(issueId, 0);
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "error", feedbackCycle: 0, configHash: config.hash });
+    await internals.handleInfrastructureFailure(first.store.getIssue("issue")!, new Error("runner unavailable"));
+    expect(first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting)
+      .toMatchObject({ kind: "waiting", reason: "Execution failed: runner unavailable" });
+
+    const deadline = Date.now() + 1_000;
+    let status = internals.currentIssueStatus(first.store.getIssue("issue")!);
+    while (status === null && Date.now() < deadline) {
+      await Bun.sleep(10);
+      status = internals.currentIssueStatus(first.store.getIssue("issue")!);
+    }
+    expect(status).not.toBeNull();
+    expect(status).toMatchObject({ kind: "queued", reason: expect.stringContaining("global runner slots 1/1 busy: #2") });
+    expect(String(status?.reason)).not.toContain("Execution failed");
     await first.service.close();
   });
 

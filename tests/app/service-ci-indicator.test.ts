@@ -103,7 +103,19 @@ repositories:
   };
   const indicator = () => store.listIndicators("issue").find((entry) => entry.id === "ci");
   const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
-  return { service, store, state, internals, deliver, indicator, card, statusComments };
+  const reopen = async () => {
+    const reopenedStore = await ConveyorStore.open(config.settings.database);
+    const reopenedService = new ConveyorService(config, reopenedStore, github as never);
+    reopenedService.drain("tests: nothing executes");
+    const reopenedInternals = reopenedService as unknown as {
+      ciProvider: () => CiProvider;
+      codeHostFor: () => CodeHost;
+    };
+    reopenedInternals.ciProvider = () => provider;
+    reopenedInternals.codeHostFor = () => ({ async getChange() { return { headSha: state.head }; } }) as unknown as CodeHost;
+    return { service: reopenedService, store: reopenedStore };
+  };
+  return { service, store, state, internals, deliver, indicator, card, statusComments, reopen };
 }
 
 const workflowRun = (head: string, extra: Record<string, unknown> = {}) =>
@@ -160,6 +172,22 @@ test("a workflow_run webhook for the current head updates the stored indicator a
   await w.internals.updateStatusComment("issue");
   expect(w.statusComments.at(-1)).toContain(`- Status: Waiting · ${w.card()?.waiting?.reason}`);
   await w.service.close();
+});
+
+test("a CI settle status preserves its head and end time across a restart", async () => {
+  const w = await setup();
+  await w.internals.backfillCiIndicators("repo");
+  parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
+  w.state.runs = [run("build", "passed", { completedAt: "2026-01-01T00:01:00Z" })];
+  await w.deliver("workflow_run", workflowRun("head1"));
+  const before = w.card()?.waiting?.reason;
+  expect(before).toMatch(/^CI passed at head1; settling until /);
+  await w.service.close();
+
+  const restarted = await w.reopen();
+  const after = restarted.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason;
+  expect(after).toBe(before);
+  await restarted.service.close();
 });
 
 test("concurrent status refreshes for an issue share one source-comment write", async () => {
