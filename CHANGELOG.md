@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-07
+
+This patch fixes a webhook feedback loop that could use up the GitHub API rate limit within minutes. Each status-comment write sent a webhook back to Conveyor, and that webhook rewrote every item's status comment. Webhooks are now acknowledged at once and handled in the background, and Conveyor makes far fewer GitHub calls. When GitHub does refuse requests for a rate limit, Conveyor pauses them until the limit resets.
+
 ### Fixed
 - Conveyor no longer exhausts the GitHub API rate limit with a webhook loop. Each status-comment write came back as an `issue_comment` webhook. That webhook triggered a full reconcile and rewrote the status comment of every item, which sent more webhooks. Deliveries for Conveyor's own status comments are now ignored. The status comment no longer shows the issue's `Updated` time, which changes whenever the comment is edited.
 - Webhook deliveries are acknowledged at once and processed in the background, so a slow reconcile no longer fails the delivery (GitHub never retries failed deliveries). Deliveries that arrive while a pass is queued join it, and only the status comments of the issues a delivery names are refreshed.
