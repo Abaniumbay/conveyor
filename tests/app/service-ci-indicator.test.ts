@@ -162,6 +162,29 @@ test("a workflow_run webhook for the current head updates the stored indicator a
   await w.service.close();
 });
 
+test("concurrent status refreshes for an issue share one source-comment write", async () => {
+  const w = await setup();
+  let active = 0;
+  let maximum = 0;
+  const upsert = w.service.github.upsertStatusComment.bind(w.service.github);
+  w.service.github.upsertStatusComment = async (...args) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await Bun.sleep(5);
+    active -= 1;
+    return upsert(...args);
+  };
+
+  await Promise.all([
+    w.internals.updateStatusComment("issue"),
+    w.internals.updateStatusComment("issue"),
+  ]);
+
+  expect(maximum).toBe(1);
+  expect(w.statusComments).toHaveLength(1);
+  await w.service.close();
+});
+
 test("a check_suite webhook without pull requests finds the item by its stored head", async () => {
   const w = await setup();
   await w.internals.backfillCiIndicators("repo");
@@ -216,6 +239,19 @@ test("an unreadable provider on a webhook records unknown instead of a stale sta
   expect(w.indicator()).toMatchObject({ state: "unknown", detail: "CI could not be read: provider down" });
   expect(w.card()?.waiting).toMatchObject({ kind: "waiting", reason: "Waiting for CI at head1: CI could not be read: provider down." });
   expect(w.card()?.waiting?.reason).not.toContain("passed");
+  await w.service.close();
+});
+
+test("an expired CI settle window waits for the next gate evaluation instead", async () => {
+  const w = await setup();
+  parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
+  w.store.executions().markCi("issue", "head1", "first-seen", "", "2000-01-01T00:00:00.000Z");
+  w.store.saveIndicator("issue", "head1", {
+    id: "ci", label: "CI", state: "passing", detail: "1/1 passed", progress: "1/1", url: null,
+    observedAt: "2000-01-01T00:00:00.000Z", entries: [], reference: null,
+  }, true);
+
+  expect(w.card()?.waiting?.reason).toBe("CI passed at head1; ready for the next gate evaluation.");
   await w.service.close();
 });
 

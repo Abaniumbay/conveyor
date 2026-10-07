@@ -209,6 +209,7 @@ export class ConveyorService {
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
   readonly #statusCommentUpdates = new Set<Promise<void>>();
+  readonly #statusCommentUpdatesByIssue = new Map<string, Promise<void>>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -533,11 +534,9 @@ export class ConveyorService {
 
   private refreshStatusComments(issueIds: readonly string[]): void {
     for (const issueId of new Set(issueIds)) {
-      let update: Promise<void>;
-      update = this.updateStatusComment(issueId)
+      void this.updateStatusComment(issueId)
         .catch((error) => log.warn("Status comment refresh failed", this.itemFields(issueId), error))
-        .finally(() => this.#statusCommentUpdates.delete(update));
-      this.#statusCommentUpdates.add(update);
+        .catch(() => {});
     }
   }
 
@@ -607,7 +606,8 @@ export class ConveyorService {
     if (task?.task !== "ci.passed") return null;
     const seconds = typeof task.with.settleSeconds === "number" ? task.with.settleSeconds : 120;
     const firstSeen = this.store.executions().ciMarkAt(issue.id, indicator.headSha, "first-seen") ?? indicator.observedAt;
-    return new Date(Date.parse(firstSeen) + seconds * 1_000).toISOString();
+    const settleEnd = new Date(Date.parse(firstSeen) + seconds * 1_000).toISOString();
+    return Date.parse(settleEnd) > Date.now() ? settleEnd : null;
   }
 
   /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
@@ -1858,7 +1858,28 @@ export class ConveyorService {
     }
   }
 
-  private async updateStatusComment(issueId: string): Promise<void> {
+  /**
+   * Queue comment writes for an issue so concurrent scheduling and webhook work cannot create
+   * duplicate source comments or allow an older snapshot to win the race.
+   */
+  private updateStatusComment(issueId: string): Promise<void> {
+    const previous = this.#statusCommentUpdatesByIssue.get(issueId) ?? Promise.resolve();
+    const update = previous
+      .catch(() => {})
+      .then(() => this.writeStatusComment(issueId));
+    this.#statusCommentUpdatesByIssue.set(issueId, update);
+    this.#statusCommentUpdates.add(update);
+    const complete = () => {
+      this.#statusCommentUpdates.delete(update);
+      if (this.#statusCommentUpdatesByIssue.get(issueId) === update) {
+        this.#statusCommentUpdatesByIssue.delete(issueId);
+      }
+    };
+    void update.then(complete, complete);
+    return update;
+  }
+
+  private async writeStatusComment(issueId: string): Promise<void> {
     const issue = this.store.getIssue(issueId);
     if (!issue) return;
     const relevant = issue.labels.some(
