@@ -48,3 +48,40 @@ jobs:
       - run: bun run build
       - run: bun run scripts/build.ts --out dist-next --version 99.0.0-next
       - run: bun run scripts/smoke-test.ts --dist dist --next dist-next
+
+  screenshots:
+    name: Check dashboard screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Prepare an untouched outside home
+        run: |
+          mkdir -p "$RUNNER_TEMP/conveyor-existing-home"
+          printf 'must remain unchanged' > "$RUNNER_TEMP/conveyor-existing-home/sentinel"
+      - name: Generate populated isolated screenshots
+        env:
+          CONVEYOR_HOME: ${{ runner.temp }}/conveyor-existing-home
+          GH_TOKEN: deliberately-unusable
+        run: bun run docs:screenshots
+      - name: Verify isolation, documented references, and generated PNGs
+        run: |
+          test "$(cat "$RUNNER_TEMP/conveyor-existing-home/sentinel")" = 'must remain unchanged'
+          test ! -e "$RUNNER_TEMP/conveyor-existing-home/state/conveyor.sqlite"
+          for image in board item reports operator team; do
+            test -s "docs/screenshots/$image.png"
+            grep -Fq "docs/screenshots/$image.png" README.md
+            grep -Fq "screenshots/$image.png" docs/dashboard.md
+          done
+      - name: Capture checksums
+        run: sha256sum docs/screenshots/{board,item,reports,operator,team}.png > "$RUNNER_TEMP/screenshot-checksums"
+      - name: Regenerate for repeatability
+        run: bun run docs:screenshots
+      - name: Verify pixel-identical repeatability
+        run: sha256sum -c "$RUNNER_TEMP/screenshot-checksums"

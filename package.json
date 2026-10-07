@@ -16,6 +16,7 @@
     "check": "bun test && tsc --noEmit",
     "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "docs:cli": "bun run scripts/generate-cli-docs.ts",
+    "docs:screenshots": "bun run scripts/regenerate-screenshots.ts",
     "build": "bun run scripts/build.ts",
     "release": "bun run scripts/release.ts",
     "smoke": "bun run scripts/smoke-test.ts --dist dist",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "@types/web-push": "^3.6.4",
+    "playwright": "^1.48.0",
     "typescript": "^7.0.2"
   }
 }

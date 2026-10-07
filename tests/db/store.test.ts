@@ -791,6 +791,7 @@ describe("ConveyorStore", () => {
       exitCode: 0,
       result: { decision: "pass" },
       sessionId: "thread-1",
+      finishedAt: "2026-01-01T00:00:01Z",
       usage: {
         inputTokens: 100,
         outputTokens: 20,
@@ -805,6 +806,7 @@ describe("ConveyorStore", () => {
     expect(store.getRun("run-1")).toMatchObject({
       status: "succeeded",
       sessionId: "thread-1",
+      finishedAt: "2026-01-01T00:00:01Z",
       result: { decision: "pass" },
     });
     expect(store.costSummary()).toEqual({
