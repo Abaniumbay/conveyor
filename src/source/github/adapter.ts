@@ -33,10 +33,25 @@ export class GitHubTransportError extends Error {
   }
 }
 
+/** How long requests pause after a rate-limit refusal when GitHub does not say when the limit resets. */
+const RATE_LIMIT_PAUSE_MS = 60_000;
+/** The longest pause: GitHub's primary limit resets hourly. */
+const RATE_LIMIT_MAX_PAUSE_MS = 60 * 60_000;
+
 export class GhCliTransport implements GitHubTransport {
+  /** While set, GitHub has refused requests for a rate limit: further requests fail at once until then. */
+  #pausedUntil = 0;
+
   constructor(private readonly command = "gh") {}
 
   async request<T>(request: GitHubTransportRequest): Promise<T> {
+    if (Date.now() < this.#pausedUntil) {
+      throw new GitHubTransportError(
+        `GitHub API ${request.method} ${request.path} skipped: GitHub rate limit, paused until ${new Date(this.#pausedUntil).toISOString()}`,
+        1,
+        "",
+      );
+    }
     const args = [this.command, "api", request.path, "--method", request.method];
     if (request.paginate) args.push("--paginate", "--slurp");
     // CI job logs carry ANSI colour codes, which gh refuses to print otherwise.
@@ -59,6 +74,7 @@ export class GhCliTransport implements GitHubTransport {
       child.exited,
     ]);
     if (exitCode !== 0) {
+      if (/rate limit/i.test(stderr)) await this.pauseForRateLimit();
       throw new GitHubTransportError(
         `GitHub API ${request.method} ${request.path} failed: ${stderr.trim() || `exit ${exitCode}`}`,
         exitCode,
@@ -72,6 +88,30 @@ export class GhCliTransport implements GitHubTransport {
       return decoded.flat() as T;
     }
     return decoded as T;
+  }
+
+  /**
+   * Pauses requests until the exhausted limit resets, read from `rate_limit` (which does not count
+   * against it); a secondary limit, or an unreadable reset, pauses for a minute.
+   */
+  private async pauseForRateLimit(): Promise<void> {
+    let until = Date.now() + RATE_LIMIT_PAUSE_MS;
+    try {
+      const child = Bun.spawn([this.command, "api", "rate_limit"], {
+        stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+      });
+      const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      if (exitCode === 0) {
+        const resources = (JSON.parse(stdout) as { resources?: Record<string, { remaining?: number; reset?: number }> }).resources ?? {};
+        const resets = Object.values(resources)
+          .filter((resource) => resource.remaining === 0 && typeof resource.reset === "number")
+          .map((resource) => resource.reset! * 1_000);
+        if (resets.length > 0) until = Math.max(until, ...resets);
+      }
+    } catch {
+      // The one-minute pause stands.
+    }
+    this.#pausedUntil = Math.min(until, Date.now() + RATE_LIMIT_MAX_PAUSE_MS);
   }
 }
 
@@ -225,6 +265,11 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
 
 const STATUS_MARKER = "<!-- conveyor:status -->";
 
+/** Whether a comment body is Conveyor's status comment. */
+export function isStatusComment(body: unknown): boolean {
+  return typeof body === "string" && body.includes(STATUS_MARKER);
+}
+
 function labelName(label: GitHubLabel | string): string {
   return typeof label === "string" ? label : label.name;
 }
@@ -241,10 +286,11 @@ export class GitHubAdapter {
     );
   }
 
-  async listIssues(address: string): Promise<SourceIssue[]> {
+  async listIssues(address: string, options: { since?: string } = {}): Promise<SourceIssue[]> {
+    const since = options.since !== undefined ? `&since=${encodeURIComponent(options.since)}` : "";
     const issues = await this.transport.request<GitHubIssue[]>({
       method: "GET",
-      path: `repos/${address}/issues?state=all&per_page=100&sort=created&direction=asc`,
+      path: `repos/${address}/issues?state=all&per_page=100&sort=created&direction=asc${since}`,
       paginate: true,
     });
     return issues
@@ -588,11 +634,28 @@ export class GitHubAdapter {
     });
   }
 
+  /**
+   * Writes the issue's status comment and returns its id. With the id of the comment written last
+   * time it is updated directly; the comments are listed only when that id is unknown or gone.
+   */
   async upsertStatusComment(
     address: string,
     issueNumber: number,
     markdown: string,
+    knownCommentId?: number,
   ): Promise<number> {
+    if (knownCommentId !== undefined) {
+      try {
+        const updated = await this.transport.request<GitHubComment>({
+          method: "PATCH",
+          path: `repos/${address}/issues/comments/${knownCommentId}`,
+          body: { body: `${STATUS_MARKER}\n${markdown.trim()}` },
+        });
+        return updated.id;
+      } catch (error) {
+        if (!(error instanceof GitHubTransportError && /\(HTTP 404\)/.test(error.message))) throw error;
+      }
+    }
     const comments = await this.transport.request<GitHubComment[]>({
       method: "GET",
       path: `repos/${address}/issues/${issueNumber}/comments?per_page=100`,

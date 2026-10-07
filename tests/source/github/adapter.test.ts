@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
+  GhCliTransport,
   GitHubAdapter,
   GitHubTransportError,
+  isStatusComment,
   verifyGitHubSignature,
   type GitHubTransport,
   type GitHubTransportRequest,
@@ -671,5 +676,68 @@ describe("GitHubAdapter issue types and fields", () => {
       : { permissions: { push: false, triage: true } });
     await expect(new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r"))
       .resolves.toEqual({ types: "ok", fields: "ok", canWrite: true });
+  });
+});
+
+describe("GitHub calls Conveyor avoids", () => {
+  test("a status comment whose id is known is updated directly, without listing the comments", async () => {
+    const transport = new FakeTransport({ id: 7 });
+    await expect(new GitHubAdapter(transport, "conveyor").upsertStatusComment("o/r", 5, "status", 7)).resolves.toBe(7);
+    expect(transport.requests.map((request) => `${request.method} ${request.path}`)).toEqual(["PATCH repos/o/r/issues/comments/7"]);
+    expect(isStatusComment((transport.requests[0]!.body as { body: string }).body)).toBe(true);
+  });
+
+  test("a known status comment that was deleted is found or created again by listing the comments", async () => {
+    const requests: string[] = [];
+    const transport: GitHubTransport = {
+      async request<T>(request: GitHubTransportRequest): Promise<T> {
+        requests.push(`${request.method} ${request.path}`);
+        if (request.path.endsWith("/comments/7")) throw new GitHubTransportError("GitHub API PATCH failed: gh: Not Found (HTTP 404)", 1, "");
+        if (request.method === "GET") return [{ id: 1, body: "a person's comment" }] as T;
+        return { id: 9 } as T;
+      },
+    };
+    await expect(new GitHubAdapter(transport, "conveyor").upsertStatusComment("o/r", 5, "status", 7)).resolves.toBe(9);
+    expect(requests).toEqual([
+      "PATCH repos/o/r/issues/comments/7",
+      "GET repos/o/r/issues/5/comments?per_page=100",
+      "POST repos/o/r/issues/5/comments",
+    ]);
+  });
+
+  test("an issue list can be limited to issues updated since a time", async () => {
+    const transport = new FakeTransport([]);
+    await new GitHubAdapter(transport, "conveyor").listIssues("o/r", { since: "2026-10-07T20:00:00.000Z" });
+    expect(transport.requests[0]!.path).toBe("repos/o/r/issues?state=all&per_page=100&sort=created&direction=asc&since=2026-10-07T20%3A00%3A00.000Z");
+  });
+
+  test("only Conveyor's status comment counts as one", () => {
+    expect(isStatusComment("<!-- conveyor:status -->\n## Conveyor status")).toBe(true);
+    expect(isStatusComment("Looks good to me")).toBe(false);
+    expect(isStatusComment(undefined)).toBe(false);
+  });
+
+  test("after a rate-limit refusal, requests fail at once until the limit resets", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-gh-"));
+    try {
+      const calls = path.join(directory, "calls");
+      const reset = Math.floor(Date.now() / 1_000) + 600;
+      const gh = path.join(directory, "gh");
+      await writeFile(gh, [
+        "#!/bin/sh",
+        `echo "$2" >> "${calls}"`,
+        `if [ "$2" = "rate_limit" ]; then echo '{"resources":{"core":{"remaining":0,"reset":${reset}},"graphql":{"remaining":10,"reset":1}}}'; exit 0; fi`,
+        "echo 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' >&2",
+        "exit 1",
+      ].join("\n"));
+      await chmod(gh, 0o755);
+      const transport = new GhCliTransport(gh);
+      await expect(transport.request({ method: "GET", path: "repos/o/r/issues/1" })).rejects.toThrow("API rate limit exceeded");
+      await expect(transport.request({ method: "GET", path: "repos/o/r/issues/2" }))
+        .rejects.toThrow(`skipped: GitHub rate limit, paused until ${new Date(reset * 1_000).toISOString()}`);
+      expect((await readFile(calls, "utf8")).trim().split("\n")).toEqual(["repos/o/r/issues/1", "rate_limit"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

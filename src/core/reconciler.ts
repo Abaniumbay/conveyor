@@ -11,6 +11,8 @@ export interface ReconcileRepositoryInput {
   labels: LabelConfiguration;
   source: Pick<IssueSourceAdapter, "listIssues">;
   expectedPostMergeClosure?: (issueId: string) => boolean;
+  /** Read only issues updated since this time; issues not returned are left as they are rather than marked missing. */
+  since?: string;
 }
 
 export interface ReconcileRepositoryResult {
@@ -30,7 +32,8 @@ function isConveyorIssue(labels: readonly string[], enrollment: string): boolean
 }
 
 /**
- * Refresh the local read model from one complete source snapshot.
+ * Refresh the local read model from one complete source snapshot, or from the issues changed
+ * `since` a time (which cannot tell a deleted issue from an unchanged one).
  *
  * This function only reads the source and updates SQLite. It deliberately performs no
  * source mutations, making polling safe even when an issue was just offboarded.
@@ -43,7 +46,7 @@ export async function reconcileRepository(
     configHash: input.configHash,
   });
 
-  const sourceIssues = await input.source.listIssues(input.repository.address);
+  const sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
   const storedIssues = input.store.listIssues(input.repository.id);
   const existing = new Map(storedIssues.map((issue) => [issue.id, issue]));
   const existingByNumber = new Map(
@@ -148,7 +151,7 @@ export async function reconcileRepository(
 
   let missing = 0;
   for (const issue of existing.values()) {
-    if (seen.has(issue.id)) continue;
+    if (input.since !== undefined || seen.has(issue.id)) continue;
     input.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "missing",

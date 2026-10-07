@@ -8,6 +8,16 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Fixed
+- Conveyor no longer exhausts the GitHub API rate limit with a webhook loop. Each status-comment write came back as an `issue_comment` webhook. That webhook triggered a full reconcile and rewrote the status comment of every item, which sent more webhooks. Deliveries for Conveyor's own status comments are now ignored. The status comment no longer shows the issue's `Updated` time, which changes whenever the comment is edited.
+- Webhook deliveries are acknowledged at once and processed in the background, so a slow reconcile no longer fails the delivery (GitHub never retries failed deliveries). Deliveries that arrive while a pass is queued join it, and only the status comments of the issues a delivery names are refreshed.
+- Conveyor makes fewer GitHub calls:
+  - Webhook reconciles read only the issues changed since the last read. The whole issue list is still read by polling and at least hourly.
+  - Sub-issues and blockers are read again only when an issue changes, a relationship webhook arrives, or an hour has passed.
+  - Status comments are updated by their known id instead of listing the issue's comments first.
+  - The live pull-request head is read once per reconcile rather than on every status write.
+- After a rate-limit refusal, GitHub requests pause until the limit resets instead of failing one by one against GitHub.
+
 ## [0.3.0] - 2026-10-07
 
 Conveyor now shows what an item is waiting for: live CI status on board cards and item details, queued items with the limit and the items holding their slots, and which acceptance criteria the reviewer approved. Agent runs get the item's current handover in their prompt, and refinement can record the issue type, fields and a Refinement section on GitHub. It also fixes Codex runs that failed on strict result schemas and keeps completed todos when an agent rewrites its list.
