@@ -20,7 +20,7 @@ async function git(cwd: string, ...args: string[]) {
   return { out: out.trim(), code };
 }
 
-async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string } = {}) {
+async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string; ignoreChecks?: string[] } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-handover-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -32,12 +32,14 @@ async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: stri
   await mkdir(workspace);
   const listed: Array<{ name: string; state: string }> = [];
   const requestedHeads: string[] = [];
+  const artifacts: Array<Record<string, unknown>> = [];
   const deps = {
     store, git: {} as never,
-    config: { agents: { kaveh: { name: "Kaveh", title: "Implementer" }, jamshid: { name: "Jamshid", title: "Implementer" } } },
+    config: { repositories: { repo: { ci: { ignoreChecks: options.ignoreChecks ?? [] } } }, agents: { kaveh: { name: "Kaveh", title: "Implementer" }, jamshid: { name: "Jamshid", title: "Implementer" } } },
     repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" },
     issueId: "i1",
     codeHost: options.changeHead === undefined ? null : {
+      listReviewArtifacts: async () => artifacts,
       getChangeDelivery: async () => ({ change: { number: 5, url: "https://x/pull/5", headSha: options.changeHead, mergeable: true }, checks: [] }),
     },
     ci: options.ci === "none" ? undefined : {
@@ -52,7 +54,7 @@ async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: stri
   } as unknown as TaskDeps;
   const build = (agentId = "kaveh", runId = "current") =>
     buildHandover(deps, { runId, stageId: "implementation", agentId, kind: "producer", workspace: { path: workspace, branch: "conveyor/7" } });
-  return { store, deps, workspace, listed, requestedHeads, build, root };
+  return { store, deps, workspace, listed, artifacts, requestedHeads, build, root };
 }
 
 function priorRun(store: ConveyorStore, id: string, agentId: string, result: Record<string, unknown>, status = "succeeded") {
@@ -90,6 +92,17 @@ describe("handover", () => {
       available: true, headSha: "head-2", checks: [{ name: "Check", state: "passed" }, { name: "E2E", state: "running" }], truncated: null,
     });
     expect(w.requestedHeads).toEqual(["head-2"]);
+  });
+
+  test("refreshes native review findings before listing, and leaves out ignored checks", async () => {
+    const w = await setup({ changeHead: "head-2", ignoreChecks: ["Flaky"] });
+    w.artifacts.push({ providerKey: "thread:1", author: "bot", body: "Fresh native", url: "u", path: "a.ts", line: 2, resolved: false });
+    w.listed.push({ name: "Check", state: "passed" }, { name: "Flaky", state: "failed" });
+    const h = await w.build();
+    expect(h.openFindings).toMatchObject({ count: 1, items: [{ author: "bot", text: "Fresh native" }] });
+    expect((h.change as { ci: { checks: unknown } }).ci.checks).toEqual([{ name: "Check", state: "passed" }]);
+    w.artifacts[0]!.resolved = true;
+    expect((await w.build()).openFindings).toMatchObject({ count: 0 });
   });
 
   test("reports CI that cannot be read or has no results without inventing one", async () => {

@@ -6,6 +6,7 @@ import type { CiChange, CiRun } from "../app/ci-provider";
 import { ReviewFindings } from "../engine/review-findings";
 import { ItemTodos, summarizeTodos } from "../engine/todos";
 import { inspectWorktree } from "../workspace/git";
+import { importNativeReview } from "./change-findings";
 import { agentActor, concise } from "./agent-support";
 import type { TaskDeps } from "./deps";
 
@@ -37,7 +38,15 @@ function todosPart(deps: TaskDeps) {
   };
 }
 
-function findingsPart(deps: TaskDeps) {
+async function findingsPart(deps: TaskDeps) {
+  // Same refresh as change.listFindings: threads resolved or added on the host since the last load.
+  const stored = deps.store.getCurrentPullRequest(deps.issueId);
+  if (stored && deps.codeHost) {
+    try {
+      const { change } = await deps.codeHost.getChangeDelivery({ address: deps.repository.address, id: stored.id });
+      await importNativeReview(deps, stored.id, change.headSha);
+    } catch { /* the stored findings are shown; change.listFindings refreshes them */ }
+  }
   const open = new ReviewFindings(deps.store.sqlite()).list(deps.issueId).filter((finding) => finding.state === "open");
   if (open.length === 0) return { count: 0, note: "There are no open review findings.", items: [], truncated: null };
   const { shown, truncated } = bounded(open, HANDOVER_LIMITS.findings, "open findings", "change.listFindings");
@@ -74,7 +83,8 @@ async function ciPart(deps: TaskDeps, target: CiChange, headSha: string) {
   try {
     // The provider lists runs of exactly this head; a later run of a check replaces an earlier one.
     const latest = new Map<string, CiRun>();
-    for (const run of await deps.ci.provider().list(target, headSha)) latest.set(run.name, run);
+    const ignored = new Set(deps.config.repositories[deps.repository.id]?.ci.ignoreChecks ?? []);
+    for (const run of await deps.ci.provider().list(target, headSha)) if (!ignored.has(run.name)) latest.set(run.name, run);
     if (latest.size === 0) return { available: true, headSha, checks: [], note: "No CI results are known for this head yet.", truncated: null };
     const { shown, truncated } = bounded([...latest.values()], HANDOVER_LIMITS.checks, "checks", "change.get");
     return { available: true, headSha, checks: shown.map((run) => ({ name: run.name, state: run.state, ...(run.url ? { url: run.url } : {}) })), truncated };
@@ -131,7 +141,7 @@ export async function buildHandover(
   return {
     note: "Current state of this item, assembled by Conveyor when this run started. Refresh it during the run with todo.get, change.listFindings, change.get and workspace.get; a part marked truncated names the tool that returns the rest.",
     todos: todosPart(deps),
-    openFindings: findingsPart(deps),
+    openFindings: await findingsPart(deps),
     change: await changePart(deps),
     worktree: await worktreePart(deps, input.workspace),
     previousRun: previousRunPart(deps, input.stageId, input.runId, input.agentId, input.kind),

@@ -153,6 +153,11 @@ describe("agent.run", () => {
     expect(w.calls[1]!.prompt).toContain('"fullState": "todo.get"');
     expect(w.calls[1]!.prompt).toContain('"title": "Fix it"');
     expect(handovers.every(Boolean)).toBe(true);
+    // fresh (Kaveh) and fallback (Shirin) differ only in the previous-run part
+    const withoutPrevious = (text: string) => text.replace(/"previousRun": \{[\s\S]*$/, "");
+    expect(withoutPrevious(handovers[0]!)).toBe(withoutPrevious(handovers[1]!));
+    expect(handovers[1]).toContain("Kaveh");
+    expect(w.calls[2]!.prompt).toContain('"handover"');
     expect(w.calls.at(-1)!.prompt).toContain("Which?");
   });
 
@@ -306,6 +311,20 @@ describe("agent.run", () => {
     });
     expect(w.calls[0]!.config).toBeUndefined();
     expect(await Bun.file(path.join(git, "info", "exclude")).text()).toContain(".serena/");
+  });
+
+  test("a Claude Code agent gets the same handover as a Codex agent", async () => {
+    const w = await world();
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
+    config.runners.claude = { type: "claude-code", command: "claude" };
+    config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "workspace-write" };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = harnesses.codex;
+    await w.run(false, { agent: "kaveh" });
+    await w.run(false, { agent: "jamshid" });
+    const section = (prompt: string) => /"handover": \{[\s\S]*?"worktree"/.exec(prompt)?.[0];
+    expect(section(w.calls[0]!.prompt)).toBeDefined();
+    expect(section(w.calls[1]!.prompt)).toBe(section(w.calls[0]!.prompt));
   });
 
   test("a read-only agent gets network (web search) but no writable roots", async () => {
