@@ -448,11 +448,19 @@ async function stabilize(page: Page): Promise<void> {
     content:
       "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}",
   });
-  await page.locator("[data-relative-time], time").evaluateAll((nodes) =>
-    nodes.forEach((node) => {
-      node.textContent = "demo time";
-    }),
-  );
+  // Live refreshes re-render elapsed times; keep them pinned for the capture.
+  await page.evaluate(() => {
+    const pin = () =>
+      document.querySelectorAll("[data-relative-time], time").forEach((node) => {
+        if (node.textContent !== "demo time") node.textContent = "demo time";
+      });
+    pin();
+    new MutationObserver(pin).observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
 }
