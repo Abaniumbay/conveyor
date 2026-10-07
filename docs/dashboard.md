@@ -2,7 +2,7 @@
 
 The dashboard is where you watch and steer delivery: the board, each item's story, the agents, reports and the operator. It is served by `conveyor serve` (default `http://127.0.0.1:7788`) and needs a signed-in account (`conveyor init` creates the first).
 
-The shared header is followed by the view navigation: **Board**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Change password, Sign out, and Accounts for administrators; Notifications remains in the header.
+The shared header is followed by the view navigation: **Board**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
 
 ## Screenshots
 
