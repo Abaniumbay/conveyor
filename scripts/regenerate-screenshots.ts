@@ -1,225 +1,553 @@
 #!/usr/bin/env bun
-// Regenerate dashboard screenshots with isolated demo data.
-// Usage: bun run scripts/regenerate-screenshots.ts
-// Output: docs/screenshots/{board,item,reports,operator,team}.png
+// Regenerate dashboard screenshots from a disposable, self-contained Conveyor instance.
+// Usage: bun run docs:screenshots
 
-import { mkdir, rm, writeFile, readFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chromium } from "playwright";
-import { ConveyorStore } from "../src/db/store";
+import { chromium, type Page } from "playwright";
+import { ConveyorStore, type IssueProjection } from "../src/db/store";
 
-const DEMO_HOME = path.join(tmpdir(), `conveyor-screenshots-${Date.now()}`);
-const DEMO_LISTEN = "127.0.0.1:9876";
 const DEMO_USERNAME = "demo";
 const DEMO_PASSWORD = "demo-password-12chars";
 const DEMO_TIMEOUT = 30_000;
+const DEMO_TIME = "2026-09-15T12:00:00.000Z";
+const DEMO_FINISHED_TIME = "2026-09-15T12:01:32.000Z";
+const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
+const DEMO_SOURCE_ISSUES = [
+  {
+    id: 10_001,
+    number: 1,
+    html_url: "https://github.invalid/demo/dashboard-demo/issues/1",
+    title: "Ship a reliable dashboard overview",
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    state: "open",
+    state_reason: null,
+    labels: ["conveyor", "conveyor:implementation"],
+    updated_at: DEMO_TIME,
+  },
+  {
+    id: 10_002,
+    number: 2,
+    html_url: "https://github.invalid/demo/dashboard-demo/issues/2",
+    title: "Review accessible status indicators",
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    state: "open",
+    state_reason: null,
+    labels: ["conveyor", "conveyor:review"],
+    updated_at: DEMO_TIME,
+  },
+  {
+    id: 10_003,
+    number: 3,
+    html_url: "https://github.invalid/demo/dashboard-demo/issues/3",
+    title: "Plan release communications",
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    state: "open",
+    state_reason: null,
+    labels: ["conveyor", "conveyor:refinement"],
+    updated_at: DEMO_TIME,
+  },
+  {
+    id: 10_004,
+    number: 4,
+    html_url: "https://github.invalid/demo/dashboard-demo/issues/4",
+    title: "Choose the migration strategy",
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    state: "open",
+    state_reason: null,
+    labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
+    updated_at: DEMO_TIME,
+  },
+  {
+    id: 10_005,
+    number: 5,
+    html_url: "https://github.invalid/demo/dashboard-demo/issues/5",
+    title: "Investigate the rollout alert",
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    state: "open",
+    state_reason: null,
+    labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
+    updated_at: DEMO_TIME,
+  },
+] as const;
 
+let demoHome: string | null = null;
 let serverProcess: ReturnType<typeof Bun.spawn> | null = null;
-let browserProcess: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
-async function cleanup() {
+async function reserveListenAddress(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  if (!address || typeof address === "string")
+    throw new Error("Could not reserve an isolated demo port");
+  return `127.0.0.1:${address.port}`;
+}
+
+async function waitForServer(url: string): Promise<void> {
+  const deadline = Date.now() + DEMO_TIMEOUT;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { redirect: "manual" });
+      if (response.status === 200 || response.status === 302) return;
+    } catch {
+      // The server is still starting.
+    }
+    await Bun.sleep(100);
+  }
+  throw new Error(
+    `Demo server did not become ready within ${DEMO_TIMEOUT / 1000}s`,
+  );
+}
+
+async function cleanup(): Promise<void> {
+  if (browser) {
+    await browser.close().catch(() => {});
+    browser = null;
+  }
   if (serverProcess) {
     serverProcess.kill("SIGTERM");
     await serverProcess.exited.catch(() => {});
+    serverProcess = null;
   }
-  if (browserProcess) await browserProcess.close();
-  try {
-    await rm(DEMO_HOME, { recursive: true, force: true });
-  } catch {}
-}
-
-function exit(message: string, code = 1) {
-  console.error(`Error: ${message}`);
-  void cleanup();
-  process.exit(code);
-}
-
-async function waitForServer(url: string, timeout: number) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    try {
-      const resp = await fetch(url, { redirect: "manual" });
-      if (resp.status === 200 || resp.status === 302) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
+  if (demoHome) {
+    await rm(demoHome, { recursive: true, force: true }).catch(() => {});
+    demoHome = null;
   }
-  throw new Error(`Server did not respond within ${timeout}ms`);
 }
 
-async function main() {
-  try {
-    console.log("Setting up demo environment...");
-    await mkdir(DEMO_HOME, { recursive: true });
+async function runCli(
+  args: string[],
+  environment: Record<string, string>,
+): Promise<void> {
+  const child = Bun.spawn([process.execPath, "run", "src/cli.ts", ...args], {
+    cwd: process.cwd(),
+    env: environment,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await child.exited;
+  if (exitCode !== 0)
+    throw new Error(`conveyor ${args[0]} failed with exit code ${exitCode}`);
+}
 
-    // Initialize with the init command
-    console.log("Initializing Conveyor home...");
-    await writeFile("/tmp/demo-password.txt", DEMO_PASSWORD);
-    const initProcess = Bun.spawn(
+async function configureDemo(
+  home: string,
+  listen: string,
+): Promise<Record<string, string>> {
+  const binDirectory = path.join(home, "bin");
+  const workspace = path.join(home, "workspace");
+  const passwordFile = path.join(home, "admin-password");
+  const githubLog = path.join(home, "github-requests.log");
+  await Promise.all([
+    mkdir(binDirectory, { recursive: true }),
+    mkdir(workspace, { recursive: true }),
+  ]);
+
+  // The only `gh` available to the demo server is this local stub. It has no credentials and
+  // serves a fixed local source snapshot, so startup cannot contact or import a real account.
+  const githubStub = path.join(binDirectory, "gh");
+  const sourceSnapshot = JSON.stringify(DEMO_SOURCE_ISSUES);
+  await writeFile(
+    githubStub,
+    [
+      "#!/bin/sh",
+      "cat >/dev/null",
+      'printf \'%s\\n\' "$*" >> "$CONVEYOR_DEMO_GH_LOG"',
+      'case "$*" in',
+      `  *\"/issues?state=all\"*) printf '%s\\n' '${sourceSnapshot}' ;;`,
+      "  *\"--method POST\"*) printf '%s\\n' '{}' ;;",
+      "  *) printf '%s\\n' '[]' ;;",
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  await chmod(githubStub, 0o700);
+
+  const environment = {
+    HOME: home,
+    PATH: `${binDirectory}:/usr/local/bin:/usr/bin:/bin`,
+    GH_CONFIG_DIR: path.join(home, "github-config"),
+    CONVEYOR_HOME: home,
+    CONVEYOR_DEMO_GH_LOG: githubLog,
+  };
+  await writeFile(passwordFile, DEMO_PASSWORD, { mode: 0o600 });
+  try {
+    await runCli(
       [
-        "bun",
-        "run",
-        "src/cli.ts",
         "init",
         "--home",
-        DEMO_HOME,
+        home,
         "--admin-username",
         DEMO_USERNAME,
         "--admin-password-file",
-        "/tmp/demo-password.txt",
+        passwordFile,
       ],
-      {
-        cwd: process.cwd(),
-        stdout: "inherit",
-        stderr: "inherit",
-      }
+      environment,
     );
+  } finally {
+    await rm(passwordFile, { force: true });
+  }
 
-    const exitCode = await initProcess.exited;
-    if (exitCode !== 0) throw new Error(`Init failed with exit code ${exitCode}`);
-    await rm("/tmp/demo-password.txt", { force: true });
+  const configPath = path.join(home, "config", "conveyor.yaml");
+  const repositoryPath = path.join(home, "config", "repositories", "demo.yaml");
+  let config = await readFile(configPath, "utf8");
+  config = config.replace(
+    "listen: 127.0.0.1:7788",
+    `listen: ${listen}\n  steering:\n    agent: omid\n    workspace: ${workspace}`,
+  );
+  await writeFile(configPath, config);
+  await mkdir(path.dirname(repositoryPath), { recursive: true });
+  await writeFile(
+    repositoryPath,
+    [
+      "source: github",
+      "codeHost: github",
+      "address: demo/dashboard-demo",
+      `folder: ${workspace}`,
+      "baseBranch: main",
+      "pipeline: delivery",
+      "ci:",
+      "  mode: disabled",
+      "agentEgress:",
+      "  allowLoopbackMcp: true",
+      "  httpsHosts: []",
+      "",
+    ].join("\n"),
+  );
+  return environment;
+}
 
-    // Modify the configuration to set the listen address
-    const configPath = path.join(DEMO_HOME, "config", "conveyor.yaml");
-    let config = await readFile(configPath, "utf8");
-    config = config.replace("listen: 127.0.0.1:7788", `listen: ${DEMO_LISTEN}`);
-    await writeFile(configPath, config);
+function issue(number: number, title: string, stage: string): IssueProjection {
+  return {
+    id: `demo#${number}`,
+    repositoryId: "demo",
+    sourceNumber: number,
+    sourceUrl: `https://github.invalid/demo/dashboard-demo/issues/${number}`,
+    title,
+    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    sourceState: "open",
+    sourceStateReason: null,
+    labels: ["conveyor", `conveyor:${stage}`],
+    sourceUpdatedAt: DEMO_TIME,
+  };
+}
 
-    // Seed database with demo data
-    console.log("Seeding demo data...");
-    const dbPath = path.join(DEMO_HOME, "data", "conveyor.sqlite");
-    const now = "2026-09-15T12:00:00.000Z";
-    const store = await ConveyorStore.open(dbPath);
+function usage(amount: number) {
+  return {
+    inputTokens: 12_400,
+    outputTokens: 3_800,
+    cachedTokens: 1_600,
+    amount,
+    currency: "USD",
+    source: "demo",
+    durationMs: 92_000,
+  };
+}
 
-    // Create demo repository
+async function seedDemo(home: string): Promise<void> {
+  const store = await ConveyorStore.open(
+    path.join(home, "state", "conveyor.sqlite"),
+  );
+  try {
     store.upsertRepository({
       id: "demo",
       configName: "demo",
       source: "github",
-      address: "demo/demo-repo",
-      folder: "/tmp/demo-repo",
-      configHash: "demo-config-hash",
+      address: "demo/dashboard-demo",
+      folder: path.join(home, "workspace"),
+      configHash: "demo-config",
     });
-
-    // Create demo issues in different stages
-    const demoIssues = [
+    const issues = [
+      issue(1, "Ship a reliable dashboard overview", "implementation"),
+      issue(2, "Review accessible status indicators", "review"),
+      issue(3, "Plan release communications", "refinement"),
       {
-        id: "demo#1",
-        repositoryId: "demo",
-        sourceNumber: 1,
-        sourceUrl: "https://github.com/demo/demo-repo/issues/1",
-        title: "Setup authentication system",
-        body: "Implement user authentication for the dashboard",
-        sourceState: "open",
-        sourceStateReason: null,
-        labels: ["conveyor", "backend"],
-        sourceUpdatedAt: now,
+        ...issue(4, "Choose the migration strategy", "implementation"),
+        labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
       },
       {
-        id: "demo#2",
-        repositoryId: "demo",
-        sourceNumber: 2,
-        sourceUrl: "https://github.com/demo/demo-repo/issues/2",
-        title: "Add dashboard notifications",
-        body: "Enable real-time notifications for dashboard events",
-        sourceState: "open",
-        sourceStateReason: null,
-        labels: ["conveyor", "web"],
-        sourceUpdatedAt: now,
+        ...issue(5, "Investigate the rollout alert", "implementation"),
+        labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
       },
     ];
+    for (const entry of issues) store.upsertIssue(entry);
+    store.setIssueProjection("demo#1", {
+      stage: "implementation",
+      state: "active",
+      warning: null,
+    });
+    store.setIssueProjection("demo#2", {
+      stage: "review",
+      state: "active",
+      warning: null,
+    });
+    store.setIssueProjection("demo#3", {
+      stage: "refinement",
+      state: "active",
+      warning: null,
+    });
+    store.setIssueProjection("demo#4", {
+      stage: "implementation",
+      state: "blocked",
+      warning: "Awaiting a product decision",
+    });
+    store.setIssueProjection("demo#5", {
+      stage: "implementation",
+      state: "blocked",
+      warning: "Investigating the rollout alert",
+    });
+    for (const [id, stage, status] of [
+      ["demo#1", "implementation", "completed"],
+      ["demo#2", "review", "completed"],
+      ["demo#3", "refinement", "completed"],
+      ["demo#4", "implementation", "stopped"],
+      ["demo#5", "implementation", "stopped"],
+    ] as const)
+      store.setStageState({
+        issueId: id,
+        stageId: stage,
+        status,
+        feedbackCycle: 0,
+        configHash: "demo-config",
+      });
 
-    for (const issue of demoIssues) {
-      store.upsertIssue(issue as any);
-    }
+    store.createRun({
+      id: "demo-implementation-run",
+      issueId: "demo#1",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "stage",
+      status: "running",
+      configHash: "demo-config",
+      startedAt: DEMO_TIME,
+    });
+    store.appendRunEvent("demo-implementation-run", "report", {
+      text: "Implemented the dashboard layout and verified the focused checks.",
+    });
+    store.appendRunEvent("demo-implementation-run", "report", {
+      text: "Prepared the change for review with deterministic evidence.",
+    });
+    store.finishRun("demo-implementation-run", {
+      status: "succeeded",
+      exitCode: 0,
+      result: { summary: "Demo implementation completed" },
+      sessionId: "demo-session",
+      finishedAt: DEMO_FINISHED_TIME,
+      usage: usage(0.1842),
+    });
+    store.createRun({
+      id: "demo-steering-run",
+      issueId: null,
+      stageId: "steering",
+      attempt: 1,
+      kind: "steering",
+      status: "running",
+      configHash: "demo-config",
+      startedAt: DEMO_TIME,
+    });
+    store.appendRunEvent("demo-steering-run", "user", {
+      text: "Show the latest delivery activity.",
+    });
+    store.appendRunEvent("demo-steering-run", "report", {
+      text: "The implementation is ready for review and one item needs your decision.",
+    });
+    store.finishRun("demo-steering-run", {
+      status: "succeeded",
+      exitCode: 0,
+      result: { summary: "Demo operator response" },
+      sessionId: "demo-steering-session",
+      finishedAt: DEMO_FINISHED_TIME,
+      usage: usage(0.0315),
+    });
 
-    store.close();
-
-    // Start demo server
-    console.log("Starting demo server...");
-    serverProcess = Bun.spawn(
-      [
-        "bun",
-        "run",
-        "src/cli.ts",
-        "serve",
-        "--home",
-        DEMO_HOME,
+    store.appendConversationMessage({
+      issueId: "demo#1",
+      runId: "demo-implementation-run",
+      stageId: "implementation",
+      actorType: "agent",
+      actorId: "jamshid",
+      actorName: "Jamshid",
+      actorTitle: "Developer",
+      message:
+        "The dashboard overview is implemented with a populated demo fixture.",
+    });
+    store.appendConversationMessage({
+      issueId: "demo#1",
+      runId: "demo-implementation-run",
+      stageId: "implementation",
+      actorType: "conveyor",
+      actorId: "conveyor",
+      actorName: "Conveyor",
+      actorTitle: "Orchestrator",
+      message: "Focused checks passed; the item is ready for review.",
+    });
+    store.openQuestion({
+      issueId: "demo#4",
+      runId: null,
+      prompt: "Which migration path should the team use?",
+      reason: "The implementation cannot continue without this choice.",
+      options: [
+        { id: "incremental", label: "Incremental migration" },
+        { id: "cutover", label: "Single cutover" },
       ],
+    });
+    store.beginStageTransition({
+      id: "demo-transition-1",
+      issueId: "demo#1",
+      fromStage: "refinement",
+      toStage: "implementation",
+      kind: "advance",
+      sourceMutationId: null,
+      detail: {
+        reason: "The plan was approved for implementation.",
+        requiredFixes: [],
+        resultStatus: "succeeded",
+        actor: { name: "Conveyor", title: "Orchestrator" },
+      },
+    });
+    store.completeStageTransition("demo-transition-1");
+  } finally {
+    store.close();
+  }
+}
+
+async function stabilize(page: Page): Promise<void> {
+  await page.addStyleTag({
+    content:
+      "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}",
+  });
+  await page.locator("[data-relative-time], time").evaluateAll((nodes) =>
+    nodes.forEach((node) => {
+      node.textContent = "demo time";
+    }),
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+}
+
+async function expectText(page: Page, text: string): Promise<void> {
+  await page
+    .getByText(text, { exact: false })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function capture(
+  page: Page,
+  baseUrl: string,
+  name: string,
+  route: string,
+  expected: string[],
+): Promise<void> {
+  await page.goto(`${baseUrl}${route}`, { waitUntil: "domcontentloaded" });
+  await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
+  for (const text of expected) await expectText(page, text);
+  await stabilize(page);
+  await page.screenshot({ path: path.join(OUTPUT_DIRECTORY, `${name}.png`) });
+}
+
+async function verifyGithubStub(home: string): Promise<void> {
+  const requestLog = await readFile(
+    path.join(home, "github-requests.log"),
+    "utf8",
+  ).catch(() => "");
+  if (!requestLog.includes("api"))
+    throw new Error(
+      "The isolated GitHub stub was not used during demo startup",
+    );
+}
+
+async function main(): Promise<void> {
+  demoHome = await mkdtemp(path.join(tmpdir(), "conveyor-screenshots-"));
+  try {
+    const listen = await reserveListenAddress();
+    const environment = await configureDemo(demoHome, listen);
+    await seedDemo(demoHome);
+    serverProcess = Bun.spawn(
+      [process.execPath, "run", "src/cli.ts", "serve", "--home", demoHome],
       {
         cwd: process.cwd(),
-        env: process.env,
+        env: environment,
         stdout: "inherit",
         stderr: "inherit",
-      }
+      },
     );
+    const baseUrl = `http://${listen}`;
+    await waitForServer(`${baseUrl}/health/live`);
+    await verifyGithubStub(demoHome);
 
-    // Wait for server to be ready
-    console.log("Waiting for server...");
-    await waitForServer(`http://${DEMO_LISTEN}/health/live`, DEMO_TIMEOUT);
-
-    // Launch browser
-    console.log("Launching browser...");
-    browserProcess = await chromium.launch({ headless: true });
-    const ctx = await browserProcess.newContext({
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
       viewport: { width: 1440, height: 900 },
       deviceScaleFactor: 1,
       colorScheme: "light",
+      reducedMotion: "reduce",
     });
-
-    const page = await ctx.newPage();
-
-    // Sign in
-    console.log("Signing in...");
-    await page.goto(`http://${DEMO_LISTEN}/login`);
-    await page.waitForLoadState("networkidle");
-
-    // Fill login form
+    const page = await context.newPage();
+    await page.addInitScript(() =>
+      localStorage.setItem("conveyor-theme", "light"),
+    );
+    await page.goto(`${baseUrl}/login`, { waitUntil: "domcontentloaded" });
     await page.fill("input[name=username]", DEMO_USERNAME);
     await page.fill("input[name=password]", DEMO_PASSWORD);
-
-    // Submit and wait for redirect to board
     await Promise.all([
-      page.waitForNavigation({ url: /\/(board|attention|\/)?$/, timeout: 10_000 }),
+      page.waitForURL(/\/(board|attention)?$/),
       page.click("button[type=submit]"),
     ]);
 
-    // Capture board screenshot
-    console.log("Capturing board...");
-    await page.goto(`http://${DEMO_LISTEN}/board`);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({ path: "docs/screenshots/board.png" });
-
-    // Capture team screenshot
-    console.log("Capturing team...");
-    await page.goto(`http://${DEMO_LISTEN}/team`);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({ path: "docs/screenshots/team.png" });
-
-    // Capture operator screenshot
-    console.log("Capturing operator...");
-    await page.goto(`http://${DEMO_LISTEN}/operator`);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({ path: "docs/screenshots/operator.png" });
-
-    // Capture reports screenshot
-    console.log("Capturing reports...");
-    await page.goto(`http://${DEMO_LISTEN}/reports`);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({ path: "docs/screenshots/reports.png" });
-
-    // Capture item screenshot
-    console.log("Capturing item...");
-    await page.goto(`http://${DEMO_LISTEN}/issues/demo/1`);
-    await page.waitForLoadState("networkidle");
-    await page.screenshot({ path: "docs/screenshots/item.png" });
-
-    console.log("Screenshots generated successfully");
-  } catch (error) {
-    exit(error instanceof Error ? error.message : String(error), 1);
+    await capture(page, baseUrl, "board", "/board", [
+      "Needs you",
+      "Which migration path should the team use?",
+      "Investigate the rollout alert",
+      "Ship a reliable dashboard overview",
+    ]);
+    await capture(page, baseUrl, "team", "/team", ["Team", "Jamshid", "Omid"]);
+    await capture(page, baseUrl, "operator", "/operator", [
+      "Operator",
+      "Show the latest delivery activity.",
+    ]);
+    await capture(page, baseUrl, "reports", "/reports", [
+      "Reports",
+      "16.2K",
+      "Runs",
+    ]);
+    await capture(page, baseUrl, "item", "/issues/demo/1/conversation", [
+      "Ship a reliable dashboard overview",
+      "The dashboard overview is implemented",
+    ]);
+    await page.goto(`${baseUrl}/issues/demo/1/journey`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expectText(page, "The plan was approved for implementation.");
+    await page.goto(`${baseUrl}/issues/demo/1/logs`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expectText(page, "Prepared the change for review");
+    await context.close();
   } finally {
     await cleanup();
   }
 }
 
-main();
+void main().catch((error) => {
+  console.error(
+    `Screenshot generation failed: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exitCode = 1;
+});
