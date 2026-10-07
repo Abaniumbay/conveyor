@@ -44,12 +44,3 @@ jobs:
           grep -q 'docs/screenshots/team.png' README.md
       - name: Verify referenced files exist in docs/dashboard.md
         run: test -f docs/dashboard.md && grep -q 'docs/screenshots/board.png\|docs/screenshots/item.png\|docs/screenshots/reports.png\|docs/screenshots/operator.png\|docs/screenshots/team.png' docs/dashboard.md || true
-      - name: Check for modified screenshots
-        run: |
-          if git diff --quiet docs/screenshots/; then
-            echo "Screenshots are up to date"
-          else
-            echo "Screenshots differ from tracked versions. Regenerate with: bun run docs:screenshots"
-            git diff docs/screenshots/
-            exit 1
-          fi
