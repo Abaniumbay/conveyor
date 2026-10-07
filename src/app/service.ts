@@ -20,7 +20,7 @@ import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
 import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
-import type { CiChange, CiProvider } from "./ci-provider";
+import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange } from "../codehost/actions";
@@ -31,7 +31,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -49,6 +49,7 @@ import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
+import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -257,6 +258,14 @@ export class ConveyorService {
           issueId: itemId, runId: null, stageId: stage, actorType: "conveyor", actorId: "conveyor",
           actorName: "Conveyor", actorTitle: "Orchestrator", message,
         });
+      },
+      observe: (watch, observation) => {
+        const base = {
+          issueId: watch.itemId, headSha: watch.headSha, changeUrl: watch.changeUrl,
+          ignoreChecks: this.config.repositories[watch.repositoryId]?.ci?.ignoreChecks ?? [], now: new Date(), authoritative: false,
+        };
+        if ("runs" in observation) observeCi(this.store, { ...base, runs: observation.runs });
+        else observeCiError(this.store, { ...base, error: observation.error });
       },
       onError: (watch, error) => log.warn("Advisory CI watch failed", { ...this.itemFields(watch.itemId), commit: watch.headSha.slice(0, 7) }, error),
     });
@@ -821,6 +830,7 @@ export class ConveyorService {
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
     });
     await this.reconcileRelationships(repositoryId, repository.address);
+    await this.backfillCiIndicators(repositoryId);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
   }
@@ -1198,14 +1208,23 @@ export class ConveyorService {
     });
     if (!ensured.pushed) return { outcome: "failure", status: ensured.status, reason: ensured.reason, summary: ensured.reason };
     const pullRequest = ensured.change;
+    const headSha = (await codeHost.getChange({ address: context.repository.address, id: pullRequest.id })).headSha;
     const outcome = await evaluateCiGate({
       change: { repository: context.repository.address, changeId: String(pullRequest.number), url: pullRequest.url },
       issueKey: context.issue.id,
       options,
       provider: this.ciProvider(context.issue.repositoryId, input),
-      headSha: (await codeHost.getChange({ address: context.repository.address, id: pullRequest.id })).headSha,
+      headSha,
       memory: this.#ciMemory,
       now: Date.now(),
+      observe: (observation) => {
+        const base = {
+          issueId: context.issue.id, headSha, changeUrl: pullRequest.url, ignoreChecks: options.ignoreChecks,
+          now: new Date(), authoritative: true,
+        };
+        if ("runs" in observation) observeCi(this.store, { ...base, runs: observation.runs });
+        else observeCiError(this.store, { ...base, error: observation.error });
+      },
     });
     if (outcome.outcome === "failure" && outcome.status === "changes-requested") {
       // Stop an implementation<->CI loop that is not converging.
@@ -1433,8 +1452,90 @@ export class ConveyorService {
     if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid GitHub webhook signature for this repository");
     if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     if (typeof repositoryAddress !== "string") return;
-    if (repository) await this.reconcileRepository(repository[0]);
+    // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
+    if (repository) {
+      await this.applyCiWebhook(repository[0], eventType, payload)
+        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repository[0], event: eventType }, error));
+      await this.reconcileRepository(repository[0]);
+    }
     this.schedule();
+  }
+
+  /**
+   * Updates the stored CI indicator from a `workflow_run`, `check_suite` or `pull_request` delivery.
+   * Only the change's current head counts: an event for another head is dropped unless the code
+   * host confirms it is the head now (then it replaces the old head's indicator).
+   */
+  private async applyCiWebhook(repositoryId: string, eventType: string, payload: unknown): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository || repository.ci?.mode === "disabled") return;
+    const body = object(payload);
+    let head: unknown;
+    let pullRequests: unknown[] = [];
+    if (eventType === "workflow_run" || eventType === "check_suite") {
+      const run = object(body[eventType]);
+      head = run.head_sha;
+      pullRequests = Array.isArray(run.pull_requests) ? run.pull_requests : [];
+    } else if (eventType === "pull_request" && ["opened", "reopened", "synchronize"].includes(String(body.action))) {
+      const pullRequest = object(body.pull_request);
+      head = object(pullRequest.head).sha;
+      pullRequests = [pullRequest];
+    } else return;
+    if (typeof head !== "string" || !head) return;
+    const numbers = pullRequests.map((entry) => object(entry).number).filter((value): value is number => typeof value === "number");
+    const issueIds = new Set([
+      ...numbers.flatMap((number) => this.store.findIssueIdsByPullRequest(repositoryId, number)),
+      ...this.store.findIssueIdsByIndicatorHead(repositoryId, CI_INDICATOR_ID, head),
+    ]);
+    for (const issueId of issueIds) {
+      const stored = this.store.getCurrentPullRequest(issueId);
+      if (!stored || stored.state === "merged" || stored.mergedAt) continue;
+      const indicator = this.store.listIndicators(issueId).find((entry) => entry.id === CI_INDICATOR_ID);
+      const known = indicator?.headSha === head;
+      if (eventType === "pull_request" && known) continue;
+      if (!known && (await this.currentChangeHead(repositoryId, stored.id)) !== head) continue;
+      const change = { repository: repository.address, changeId: String(stored.number), url: stored.url };
+      const input = { issueId, headSha: head, changeUrl: stored.url, ignoreChecks: repository.ci?.ignoreChecks ?? [], now: new Date(), authoritative: !known };
+      if (eventType === "pull_request") { startCiForHead(this.store, input); continue; }
+      let runs: CiRun[];
+      try { runs = await this.ciProvider(repositoryId).list(change, head); }
+      catch (error) { observeCiError(this.store, { ...input, error }); continue; }
+      observeCi(this.store, { ...input, runs });
+    }
+  }
+
+  private async currentChangeHead(repositoryId: string, changeId: string): Promise<string | null> {
+    const codeHost = this.codeHostFor(repositoryId);
+    const address = this.config.repositories[repositoryId]?.address;
+    if (!codeHost || !address) return null;
+    try { return (await codeHost.getChange({ address, id: changeId })).headSha; }
+    catch { return null; }
+  }
+
+  /** Existing open changes acquire a current-head CI indicator after a reconcile or restart. */
+  private async backfillCiIndicators(repositoryId: string): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository || repository.ci?.mode === "disabled") return;
+    const stored = new Map(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => [entry.issueId, entry]));
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (issue.sourceState !== "open") continue;
+      const pullRequest = this.store.getCurrentPullRequest(issue.id);
+      if (!pullRequest || pullRequest.state !== "open" || pullRequest.mergedAt) continue;
+      try {
+        const head = await this.currentChangeHead(repositoryId, pullRequest.id);
+        if (!head) continue;
+        const current = stored.get(issue.id);
+        // A stored indicator is kept only while it is for the current head and no longer "starting".
+        if (current?.headSha === head && current.progress !== "starting") continue;
+        const change = { repository: repository.address, changeId: String(pullRequest.number), url: pullRequest.url };
+        observeCi(this.store, {
+          issueId: issue.id, headSha: head, changeUrl: pullRequest.url, ignoreChecks: repository.ci?.ignoreChecks ?? [],
+          now: new Date(), authoritative: true, runs: await this.ciProvider(repositoryId).list(change, head),
+        });
+      } catch (error) {
+        log.warn("CI indicator backfill failed", this.itemFields(issue.id), error);
+      }
+    }
   }
 
   /**
@@ -1780,6 +1881,14 @@ export class ConveyorService {
       return "active";
     };
     const todos = new ItemTodos(this.store.sqlite());
+    const renderedAt = Date.now();
+    const indicators = new Map<string, IndicatorViewModel[]>();
+    for (const stored of this.store.listIndicators()) {
+      // CI that is disabled for the repository shows nothing, even if a record was stored earlier.
+      const repositoryId = byId.get(stored.issueId)?.repositoryId;
+      if (stored.id === CI_INDICATOR_ID && (!repositoryId || this.config.repositories[repositoryId]?.ci?.mode === "disabled")) continue;
+      indicators.set(stored.issueId, [...(indicators.get(stored.issueId) ?? []), indicatorView(stored, renderedAt)]);
+    }
     const card = (
       issue: StoredIssue,
       options: { reason?: string | null; state?: string } = {},
@@ -1840,6 +1949,7 @@ export class ConveyorService {
         labels: issue.labels,
         acceptanceCriteria: criteriaFromBody(issue.body),
         todos: todosView(todos.get(issue.id)?.items ?? []),
+        indicators: indicators.get(issue.id) ?? [],
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
           : state ? `${state.stageId} · ${state.status}` : null,

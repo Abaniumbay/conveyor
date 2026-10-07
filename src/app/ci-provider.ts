@@ -8,6 +8,9 @@ export interface CiRun {
   state: CiRunState;
   canRerun: boolean;
   hasLog: boolean;
+  /** When the provider started / finished the run; absent or null when it did not say. */
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface CiChange {

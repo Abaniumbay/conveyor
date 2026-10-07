@@ -536,6 +536,7 @@ describe("GitHubAdapter", () => {
           "issue_comment",
           "pull_request",
           "workflow_run",
+          "check_suite",
           "deployment_status",
           "sub_issues",
           "issue_dependencies",
@@ -560,4 +561,11 @@ describe("verifyGitHubSignature", () => {
     expect(verifyGitHubSignature(body, "sha256=deadbeef", "secret")).toBe(false);
     expect(verifyGitHubSignature(body, null, "secret")).toBe(false);
   });
+});
+
+test("ensureWebhook adds missing events to an existing active hook", async () => {
+  const transport = new FakeTransport([{ id: 7, active: true, events: ["issues"], config: { url: "https://example.test/hooks/github" } }], {});
+  await new GitHubAdapter(transport, "conveyor").ensureWebhook({ address: "owner/repo", url: "https://example.test/hooks/github", secret: "s" });
+  expect(transport.requests[1]).toMatchObject({ method: "PATCH", path: "repos/owner/repo/hooks/7" });
+  expect((transport.requests[1] as { body: { events: string[] } }).body.events).toContain("check_suite");
 });

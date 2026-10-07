@@ -168,6 +168,8 @@ export interface CiGateInput {
   provider: CiProvider;
   memory: CiGateMemory;
   now: number;
+  /** Told every provider read (the runs, or the error that made them unreadable). */
+  observe?: (observation: { runs: CiRun[] } | { error: unknown }) => void;
 }
 
 export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOutcome> {
@@ -181,7 +183,10 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
 
   const awaitingStart = await provider.start(change, sha, options.retriggerAfterMs, now);
   const ignored = new Set(options.ignoreChecks);
-  const allRuns = await provider.list(change, sha);
+  let allRuns: CiRun[];
+  try { allRuns = await provider.list(change, sha); }
+  catch (error) { input.observe?.({ error }); throw error; }
+  input.observe?.({ runs: allRuns });
   const checks = allRuns.filter((run) => !ignored.has(run.name) && !awaitingStart.includes(run.name));
   const { running, failed, rerun } = classifyRuns(checks, (run) => run.canRerun && !memory.reruns.has(`${key}:${run.name}`));
   for (const run of rerun) {
