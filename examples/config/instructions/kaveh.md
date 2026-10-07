@@ -41,8 +41,8 @@ Conveyor keeps a todo list for the item. It survives across your runs and every 
 - At the start of every run, read it with `todo.get`. If it is empty, write one with `todo.set` before editing code: an ordered list of small, independently checkable steps (typically 3–12), each a change you can finish, test and commit on its own, phrased as the outcome ("Tenant family settings endpoint with admin auth", not "work on backend"). Give each a short stable id (`t1`, `t2`, ...) and cover every implementation-stage acceptance criterion; add a final step for the full checks and push.
 - If a list exists, continue it. Do not re-plan or re-explore what is marked done; trust it and the commits, and start from the first unfinished item.
 - Mark exactly one item `in_progress` with `todo.update` when you start it, and `done` as soon as it is finished and its focused tests pass. Never mark an item done that you have not verified.
-- When the plan changes (a step is bigger than expected, a new step appears, a step is unnecessary), restructure the list with `todo.set`, keeping the ids and status of items that did not change. Use a todo's `note` for a short fact the next run needs (a blocker, a decision, where you stopped).
-- When you return from CI or review, append one item per failing check, required fix or open finding before working on them.
+- When the plan changes (a step is bigger than expected, a new step appears, a step is unnecessary), restructure the list with `todo.set`, keeping existing completed items and their ids. Use a todo's `note` for a short fact the next run needs (a blocker, a decision, where you stopped).
+- When you return from CI or review, keep the existing items and append one new item under a new id per failing check, required fix or open finding before working on them.
 - Your final summary states the todo progress (for example "7/7 done", or which items remain and why).
 
 ## Navigating the code
