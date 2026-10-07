@@ -7,6 +7,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { ReviewFindings } from "../../src/engine/review-findings";
+import { ItemTodos } from "../../src/engine/todos";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { HarnessResumeInput, TaskContext } from "../../src/tasks/context";
@@ -132,6 +133,27 @@ describe("agent.run", () => {
     expect(w.leases[1]!.allowedTools).toEqual(["conversation.get"]);
     const notes = w.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor").map((message) => message.message);
     expect(notes).toEqual(["Kaveh could not run (Claude usage limit reached); Shirin takes this implementation instead."]);
+  });
+
+  test("puts the same handover in every prompt: fresh, fallback and resumed, keeping the issue when todos are huge", async () => {
+    const w = await world();
+    new ItemTodos(w.store.sqlite()).set("i1", Array.from({ length: 80 }, (_, i) => ({ id: `t${i}`, text: "x".repeat(200), status: "pending" as const })), null, "2026-01-01T00:00:00Z");
+    let calls = 0;
+    w.setBehaviour((_call, runId, store) => {
+      if (++calls === 1) throw Object.assign(new Error("usage limit"), { kind: "usage-limit" });
+      if (calls === 2) return asks("Which?")(_call, runId, store);
+      return {};
+    });
+    await w.run(false, { agents: ["kaveh", "shirin"] });
+    answer(w, "this");
+    await w.run(true, { agents: ["kaveh", "shirin"] });
+    const handovers = w.calls.map((call) => /"handover": \{[\s\S]*?\n  \}/.exec(call.prompt)?.[0]);
+    for (const call of w.calls) expect(call.prompt).toContain('"handover"');
+    expect(w.calls[1]!.prompt).toContain("The previous run on this stage was by Kaveh, not by you (Shirin)");
+    expect(w.calls[1]!.prompt).toContain('"fullState": "todo.get"');
+    expect(w.calls[1]!.prompt).toContain('"title": "Fix it"');
+    expect(handovers.every(Boolean)).toBe(true);
+    expect(w.calls.at(-1)!.prompt).toContain("Which?");
   });
 
   test("does not fall back when the run was interrupted, or when the last agent fails", async () => {
