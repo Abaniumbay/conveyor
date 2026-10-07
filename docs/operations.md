@@ -116,7 +116,7 @@ conveyor config check
 
 `doctor` checks the home and the configuration. It also checks Git, the GitHub CLI's
 authentication, bubblewrap namespaces, every harness and script interpreter the configuration uses,
-each repository checkout, the dashboard account and the listen port. Each failure comes with the
+each repository checkout, the dashboard account and the listen port. For repositories that configure `refinement`, it also reads (never writes) whether the GitHub credentials can read the organization's issue types and issue fields and write them on the repository. Each failure comes with the
 fix. Agent sign-ins are separate from the dashboard administrator.
 
 ## 5. First run

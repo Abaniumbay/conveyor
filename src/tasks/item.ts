@@ -8,9 +8,16 @@ import type { ItemContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 import {
-  formatAcceptanceCriteria,
+  resolveFieldValues,
+  resolveIssueType,
+  type IssueFieldDefinition,
+  type ResolvedFieldValue,
+} from "../source/github/issue-metadata";
+import {
   formatDependencies,
   parseManagedSections,
+  renderAcceptanceCriteriaSection,
+  renderRefinementSection,
   upsertManagedSection,
 } from "../source/github/managed-sections";
 
@@ -21,11 +28,28 @@ export const acceptanceCriterionInput = z.object({
 }).strict();
 
 export const setCriteriaInput = z.object({ criteria: z.array(acceptanceCriterionInput) }).strict();
+const shortList = z.array(z.string().min(1)).default([]);
+export const refinementInput = z.object({
+  summary: z.string().trim().min(1),
+  inScope: shortList,
+  outOfScope: shortList,
+  areas: shortList,
+  coupling: shortList,
+  parallelChildren: shortList,
+  risks: shortList,
+  verification: shortList,
+}).strict();
+export const issueTypeInput = z.object({ type: z.string().trim().min(1) }).strict();
+const fieldValueInput = z.object({ name: z.string().trim().min(1), value: z.string().trim().min(1) }).strict();
+export const issueFieldsInput = z.object({ fields: z.array(fieldValueInput).min(1) }).strict();
 export const createChildInput = z.object({
   title: z.string().min(1),
   body: z.string().min(1),
   acceptanceCriteria: z.array(acceptanceCriterionInput).min(1),
   systemLabels: z.array(z.string().min(1)).optional(),
+  type: issueTypeInput.shape.type.optional(),
+  fields: z.array(fieldValueInput).optional(),
+  refinement: refinementInput.optional(),
 }).strict();
 // GitHub rejects issue titles longer than 256 characters.
 export const titleInput = z.object({ title: z.string().trim().min(1).max(256) }).strict();
@@ -91,14 +115,47 @@ function issueOf(deps: Deps) {
   return issue;
 }
 
+const ownerOf = (address: string) => address.split("/")[0]!;
+const sameName = (left: string, right: string) => left.toLocaleLowerCase() === right.toLocaleLowerCase();
+
+/** An organization that does not offer a feature, or a credential that cannot read it, requires nothing. */
+async function loadRefinement(deps: Deps, issue: ReturnType<typeof issueOf>): Promise<NonNullable<ItemContext["refinement"]>> {
+  const outputs = deps.config.repositories[deps.repository.id]?.refinement;
+  const owner = ownerOf(deps.repository.address);
+  let typesAvailable = false;
+  let definedFields: string[] = [];
+  if (outputs?.require.type) {
+    typesAvailable = ((await deps.items.listIssueTypes(owner)) ?? []).length > 0;
+  }
+  if (outputs && outputs.require.fields.length > 0) {
+    const defined = (await deps.items.listIssueFields(owner)) ?? [];
+    definedFields = outputs.require.fields.flatMap((name) => defined.find((field) => sameName(field.name, name))?.name ?? []);
+    if (definedFields.length > 0) {
+      try {
+        deps.store.setIssueMetadata(issue.id, { fields: await deps.items.getIssueFieldValues(deps.repository.address, issue.sourceNumber) });
+      } catch {
+        // The stored values (written by item.setFields) stand in when the live read fails.
+      }
+    }
+  }
+  const stored = deps.store.getIssue(issue.id)!.metadata;
+  let section = false;
+  try {
+    section = (parseManagedSections(issue.body).sections.refinement ?? "").trim().length > 0;
+  } catch {
+    section = false;
+  }
+  return { type: stored.type, typesAvailable, fields: stored.fields, definedFields, section };
+}
+
 const load: TaskDefinition<unknown, unknown, Deps> = {
   name: "item.load",
   kind: "load",
-  description: "Loads the stored issue with its acceptance criteria, children, dependencies and system labels.",
+  description: "Loads the stored issue with its acceptance criteria, children, dependencies, system labels and refinement outputs (type, fields, section).",
   reads: [],
   writes: ["item"],
   invalidates: [],
-  run({ deps }: Args) {
+  async run({ deps }: Args) {
     const { store, config, repository } = deps;
     const issue = issueOf(deps);
     const systemLabels = config.repositories[repository.id]?.systemLabels ?? [];
@@ -131,6 +188,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       children,
       dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
       systemLabels: issue.labels.filter((label) => systemLabels.includes(label)),
+      refinement: await loadRefinement(deps, issue),
     };
     return pass(item);
   },
@@ -178,6 +236,25 @@ const childrenValid = check(
       return [];
     });
     return problems.length === 0 ? pass() : fail(`Children are not ready: ${problems.join("; ")}`);
+  },
+);
+
+const refinementComplete = check(
+  "item.refinementComplete",
+  "Passes when every output the repository requires of refinement (issue type, named issue fields, the Refinement section) is filled, ignoring what the owner's organization does not offer; the message names what is missing.",
+  ({ context }) => {
+    const required = context.repository!.refinement?.require;
+    const refinement = context.item!.refinement;
+    if (!required || !refinement) return pass();
+    const has = (name: string) => Object.entries(refinement.fields).some(([field, value]) => sameName(field, name) && value.trim().length > 0);
+    const missing = [
+      ...(required.type && refinement.typesAvailable && !refinement.type ? ["issue type (set it with item.setType)"] : []),
+      ...required.fields
+        .filter((name) => refinement.definedFields.some((defined) => sameName(defined, name)) && !has(name))
+        .map((name) => `issue field ${name} (set it with item.setFields)`),
+      ...(required.section && !refinement.section ? ["Refinement section (write it with item.setRefinement)"] : []),
+    ];
+    return missing.length === 0 ? pass() : fail(`Refinement outputs are missing: ${missing.join("; ")}`);
   },
 );
 
@@ -262,7 +339,7 @@ const setCriteria = tool("item.setCriteria", "Replace acceptance criteria on the
       address,
       issueNumber: issue.sourceNumber,
       section: "acceptance-criteria",
-      markdown: formatAcceptanceCriteria(input!.criteria.map(normalise)),
+      markdown: renderAcceptanceCriteriaSection(input!.criteria.map(normalise)),
       expectedRevision: deps.items.managedRevision(current.body),
     });
     return { revision: deps.items.managedRevision(updated.body) };
@@ -315,22 +392,93 @@ const setDependencies = tool("item.setDependencies", "Replace dependencies of th
     return ACCEPTED;
   });
 
+interface MetadataPlan {
+  type?: string;
+  fields: ResolvedFieldValue[];
+  /** What the organization does not offer, so the write was skipped rather than failed. */
+  unavailable: string[];
+}
+
+/** Validate a type and field values against what the owner defines, before anything is written. */
+async function planMetadata(deps: Deps, input: { type?: string | undefined; fields?: Array<{ name: string; value: string }> | undefined }): Promise<MetadataPlan> {
+  const plan: MetadataPlan = { fields: [], unavailable: [] };
+  const owner = ownerOf(deps.repository.address);
+  if (input.type !== undefined) {
+    const types = await deps.items.listIssueTypes(owner);
+    if (types === null || types.length === 0) plan.unavailable.push(`issue types are not available for ${owner}`);
+    else plan.type = resolveIssueType(types, input.type);
+  }
+  if (input.fields && input.fields.length > 0) {
+    const configured = deps.config.repositories[deps.repository.id]!.refinement.fields;
+    const defined: IssueFieldDefinition[] | null = await deps.items.listIssueFields(owner);
+    if (configured.length > 0 && (defined === null || defined.length === 0)) {
+      // Still reject a field this repository does not allow, even when the owner offers none.
+      resolveFieldValues([], configured, input.fields.filter((field) => !configured.some((name) => sameName(name, field.name))));
+      plan.unavailable.push(`issue fields are not available for ${owner}`);
+    } else plan.fields = resolveFieldValues(defined ?? [], configured, input.fields);
+  }
+  return plan;
+}
+
+const setType = tool("item.setType",
+  "Set the current issue's type (Bug for wrong existing behaviour, Feature for a new capability, Task otherwise). The value must be a type the repository owner's organization defines; an owner without types reports it as unavailable.",
+  issueTypeInput, true,
+  async ({ deps, input }, issue) => {
+    const plan = await planMetadata(deps, { type: input!.type });
+    if (plan.type === undefined) return { unavailable: true, reason: plan.unavailable.join("; ") };
+    await deps.items.setIssueType(deps.repository.address, issue.sourceNumber, plan.type);
+    deps.store.setIssueMetadata(issue.id, { type: plan.type });
+    return { type: plan.type };
+  });
+
+const setFields = tool("item.setFields",
+  "Set organization issue-field values (Effort reflects the refined scope; Priority only when the issue states one) on the current issue. Only fields named in the repository configuration can be written; single-select values must be one of the field's options and dates use YYYY-MM-DD.",
+  issueFieldsInput, true,
+  async ({ deps, input }, issue) => {
+    const plan = await planMetadata(deps, { fields: input!.fields });
+    if (plan.fields.length === 0) return { unavailable: true, reason: plan.unavailable.join("; ") };
+    await deps.items.setIssueFieldValues(deps.repository.address, issue.sourceNumber, plan.fields);
+    const fields = Object.fromEntries(plan.fields.map(({ name, value }) => [name, value]));
+    deps.store.setIssueMetadata(issue.id, { fields });
+    return { fields };
+  });
+
+const setRefinement = tool("item.setRefinement",
+  "Write the managed Refinement section of the issue body: summary, scope, areas and files, coupling and how it was resolved, parallel children (roll-up parents), risks, and verification. Replaces only that section.",
+  refinementInput, true,
+  async ({ deps, input }, issue) => {
+    const address = deps.repository.address;
+    const current = await deps.items.getIssue(address, issue.sourceNumber);
+    const updated = await deps.items.updateManagedSection({
+      address,
+      issueNumber: issue.sourceNumber,
+      section: "refinement",
+      markdown: renderRefinementSection(input!),
+      expectedRevision: deps.items.managedRevision(current.body),
+    });
+    return { revision: deps.items.managedRevision(updated.body) };
+  });
+
 const createChild = tool("item.createChild",
-  "Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels.",
+  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. Everything is validated before the child is created.",
   createChildInput, true,
-  ({ deps, input, instance }, issue) => {
+  async ({ deps, input, instance }, issue) => {
     const repository = deps.config.repositories[deps.repository.id]!;
     const stages = deps.config.pipelines[repository.pipeline]!.stages;
     const currentIndex = stages.findIndex((stage) => stage.id === instance.stage);
     const nextStage = stages[currentIndex + 1]?.id ?? stages[currentIndex]?.id;
     const systemLabels = (input!.systemLabels ?? []).filter((label) => repository.systemLabels.includes(label));
-    const body = upsertManagedSection(
+    const plan = await planMetadata(deps, { type: input!.type, fields: input!.fields });
+    let body = upsertManagedSection(
       input!.body,
       "acceptance-criteria",
-      formatAcceptanceCriteria(input!.acceptanceCriteria.map(normalise)),
+      renderAcceptanceCriteriaSection(input!.acceptanceCriteria.map(normalise)),
       parseManagedSections(input!.body).revision,
     );
-    return deps.items.createChildIssue({
+    if (input!.refinement) {
+      body = upsertManagedSection(body, "refinement", renderRefinementSection(input!.refinement), parseManagedSections(body).revision);
+    }
+    const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
       title: input!.title,
@@ -340,10 +488,19 @@ const createChild = tool("item.createChild",
         ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
         ...systemLabels,
       ],
+      ...(plan.type ? { type: plan.type } : {}),
+      ...(plan.fields.length > 0 ? { fields: plan.fields } : {}),
     });
+    return {
+      ...child,
+      ...(plan.type ? { type: plan.type } : {}),
+      ...(plan.fields.length > 0 ? { fields: Object.fromEntries(plan.fields.map(({ name, value }) => [name, value])) } : {}),
+      ...(plan.unavailable.length > 0 ? { unavailable: plan.unavailable } : {}),
+    };
   });
 
 export const itemGroup = defineGroup("item", [
-  load, criteriaDefined, labelsValid, childrenValid, dependenciesMet,
-  get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies, createChild,
+  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet,
+  get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies,
+  setType, setFields, setRefinement, createChild,
 ]);

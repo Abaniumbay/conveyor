@@ -81,6 +81,30 @@ describe("item.childrenValid", () => {
   });
 });
 
+describe("item.refinementComplete", () => {
+  const required = { fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } };
+  const full = { type: "Task", typesAvailable: true, fields: { Effort: "Low" }, definedFields: ["Effort"], section: true };
+  const gate = (refinement: Partial<NonNullable<ItemContext["refinement"]>> | undefined, repository: Record<string, unknown> = { refinement: required }) =>
+    run("item.refinementComplete", { context: ctx(refinement ? { refinement: { ...full, ...refinement } } : {}, repository) });
+
+  test("passes when nothing is required, or everything required is filled", async () => {
+    expect((await gate(undefined, {})).status).toBe("pass");
+    expect((await gate({})).status).toBe("pass");
+  });
+  test("names every missing output", async () => {
+    expect(await gate({ type: null, fields: {}, section: false })).toEqual({
+      status: "fail",
+      message: "Refinement outputs are missing: issue type (set it with item.setType); issue field Effort (set it with item.setFields); Refinement section (write it with item.setRefinement)",
+    });
+    expect(await gate({ section: false })).toEqual({ status: "fail", message: "Refinement outputs are missing: Refinement section (write it with item.setRefinement)" });
+    expect((await gate({ fields: { effort: "  " } })).status).toBe("fail");
+  });
+  test("does not require a type or field the organization does not offer", async () => {
+    expect((await gate({ type: null, typesAvailable: false, fields: {}, definedFields: [] })).status).toBe("pass");
+    expect((await gate({ type: null, typesAvailable: false, fields: {}, definedFields: [], section: false })).status).toBe("fail");
+  });
+});
+
 describe("item.dependenciesMet", () => {
   test("is pending while a dependency is unsatisfied and lists it", async () => {
     const result = await run("item.dependenciesMet", {
@@ -115,7 +139,12 @@ describe("criteriaFromBody", () => {
   });
 });
 
-async function world() {
+const REFINEMENT = { fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } };
+const EFFORT = { id: 11, name: "Effort", dataType: "single_select", options: ["High", "Medium", "Low"] };
+const TARGET = { id: 12, name: "Target date", dataType: "date", options: [] };
+const PRIORITY = { id: 13, name: "Priority", dataType: "single_select", options: ["Urgent", "High", "Medium", "Low"] };
+
+async function world(options: { refinement?: typeof REFINEMENT; types?: string[] | null; fields?: unknown[] | null } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -129,7 +158,7 @@ async function world() {
   };
   const config = {
     labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" } },
-    repositories: { repo: { pipeline: "default", systemLabels: ["area:api", "area:ui"], address: "o/r" } },
+    repositories: { repo: { pipeline: "default", systemLabels: ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
     pipelines: { default: { stages: [{ id: "refinement" }, { id: "implementation" }] } },
   } as unknown as ConveyorConfig;
   const calls: Array<[string, unknown]> = [];
@@ -143,6 +172,11 @@ async function world() {
     replaceManagedProjectLabels: async (...a: unknown[]) => { calls.push(["replaceManagedProjectLabels", a]); },
     createChildIssue: async (i: unknown) => { calls.push(["createChildIssue", i]); return { id: "c", number: 99 }; },
     setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
+    listIssueTypes: async () => (options.types === undefined ? ["Task", "Bug", "Feature"] : options.types),
+    listIssueFields: async () => (options.fields === undefined ? [EFFORT, TARGET, PRIORITY] : options.fields),
+    getIssueFieldValues: async () => ({}),
+    setIssueType: async (...a: unknown[]) => { calls.push(["setIssueType", a]); },
+    setIssueFieldValues: async (...a: unknown[]) => { calls.push(["setIssueFieldValues", a]); },
   } as unknown as TaskDeps["items"];
   const deps = (issueId = "i1"): TaskDeps => ({
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
@@ -186,7 +220,22 @@ describe("item.load", () => {
         { id: "dep-open", number: 4, satisfied: false },
       ],
       systemLabels: ["area:api"],
+      refinement: { type: null, typesAvailable: false, fields: {}, definedFields: [], section: false },
     });
+  });
+});
+
+describe("item.load refinement outputs", () => {
+  test("reads the stored type, live field values and the Refinement section, limited to what the organization offers", async () => {
+    const w = await world({ refinement: REFINEMENT, types: ["Bug"], fields: [EFFORT, PRIORITY] });
+    w.add("i1", 1, { body: "Intro\n\n<!-- conveyor:refinement:start -->\n## Refinement\n\nSummary\n<!-- conveyor:refinement:end -->\n" });
+    w.store.setIssueMetadata("i1", { type: "Bug" });
+    const result = await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>;
+    expect((result.output as ItemContext).refinement).toEqual({ type: "Bug", typesAvailable: true, fields: {}, definedFields: ["Effort"], section: true });
+    const bare = await world({ refinement: REFINEMENT, types: null, fields: null });
+    bare.add("i1", 1);
+    const none = await run("item.load", { context: {}, deps: bare.deps() }) as Extract<TaskResult, { status: "pass" }>;
+    expect((none.output as ItemContext).refinement).toEqual({ type: null, typesAvailable: false, fields: {}, definedFields: [], section: false });
   });
 });
 
@@ -195,7 +244,7 @@ describe("item tools", () => {
     run(name, { context: {}, deps, input, actor: "agent", instance: { id: name, stage, idempotencyKey: "k", resumed: false } }) as Promise<Extract<TaskResult, { status: "pass" }>>;
 
   test("are declared as mutating or not, invalidating item", () => {
-    for (const name of ["item.setCriteria", "item.setTitle", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
+    for (const name of ["item.setCriteria", "item.setType", "item.setFields", "item.setRefinement", "item.setTitle", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
       expect(registry.require(name)).toMatchObject({ kind: "tool", mutating: true, invalidates: ["item"] });
     }
     for (const name of ["item.get", "item.guidance", "item.listOpen"]) {
@@ -245,7 +294,7 @@ describe("item tools", () => {
     expect(out.output).toEqual({ revision: "rev:updated" });
     expect(w.calls[1]).toEqual(["updateManagedSection", {
       address: "o/r", issueNumber: 5, section: "acceptance-criteria",
-      markdown: "- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: "rev:B",
+      markdown: "## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: "rev:B",
     }]);
   });
 
@@ -281,6 +330,112 @@ describe("item tools", () => {
       labels: ["conveyor", "conveyor:implementation", "area:api"],
     });
     expect((w.calls[0]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
+  });
+
+  test("setType writes a type the organization defines, in its own spelling, and keeps it for the dashboard", async () => {
+    const w = await world({ refinement: REFINEMENT }); w.add("i1", 5);
+    expect((await tool("item.setType", w.deps(), { type: "bug" })).output).toEqual({ type: "Bug" });
+    expect(w.calls).toEqual([["setIssueType", ["o/r", 5, "Bug"]]]);
+    expect(w.store.getIssue("i1")!.metadata.type).toBe("Bug");
+  });
+
+  test("setType rejects an unknown type with the valid ones and writes nothing", async () => {
+    const w = await world({ refinement: REFINEMENT }); w.add("i1", 5);
+    await expect(tool("item.setType", w.deps(), { type: "Epic" })).rejects.toThrow('Unknown issue type "Epic". Valid issue types: Task, Bug, Feature');
+    expect(w.calls).toEqual([]);
+    expect(w.store.getIssue("i1")!.metadata.type).toBeNull();
+  });
+
+  test("setType reports types as unavailable, without failing, for an owner that has none", async () => {
+    for (const types of [null, []]) {
+      const w = await world({ refinement: REFINEMENT, types }); w.add("i1", 5);
+      const out = await tool("item.setType", w.deps(), { type: "Bug" });
+      expect(out.output).toEqual({ unavailable: true, reason: "issue types are not available for o" });
+      expect(w.calls).toEqual([]);
+    }
+  });
+
+  test("setFields writes configured single-select and date-checked fields in the organization's spelling", async () => {
+    const w = await world({ refinement: { ...REFINEMENT, fields: ["Effort", "Priority", "Target date"] } }); w.add("i1", 5);
+    const out = await tool("item.setFields", w.deps(), { fields: [{ name: "effort", value: "low" }] });
+    expect(out.output).toEqual({ fields: { Effort: "Low" } });
+    expect(w.calls).toEqual([["setIssueFieldValues", ["o/r", 5, [{ fieldId: 11, name: "Effort", value: "Low" }]]]]);
+    expect(w.store.getIssue("i1")!.metadata.fields).toEqual({ Effort: "Low" });
+    await tool("item.setFields", w.deps(), { fields: [{ name: "Target date", value: "2026-10-31" }] });
+    expect(w.store.getIssue("i1")!.metadata.fields).toEqual({ Effort: "Low", "Target date": "2026-10-31" });
+  });
+
+  test("setFields rejects unconfigured, undefined, unknown-option and malformed-date writes and leaves values unchanged", async () => {
+    const w = await world({ refinement: { ...REFINEMENT, fields: ["Effort", "Target date", "Missing"] } }); w.add("i1", 5);
+    w.store.setIssueMetadata("i1", { fields: { Effort: "High" } });
+    const write = (name: string, value: string) => tool("item.setFields", w.deps(), { fields: [{ name, value }] });
+    await expect(write("Priority", "High")).rejects.toThrow('Field "Priority" is not writable by refinement in this repository. Writable fields: Effort, Target date, Missing');
+    await expect(write("Missing", "x")).rejects.toThrow('The organization does not define a field named "Missing". Defined fields: Effort, Target date, Priority');
+    await expect(write("Effort", "Huge")).rejects.toThrow('"Huge" is not an option of Effort. Valid options: High, Medium, Low');
+    await expect(write("Target date", "31/10/2026")).rejects.toThrow("not a valid date for Target date. Use YYYY-MM-DD");
+    await expect(write("Target date", "2026-02-30")).rejects.toThrow("not a valid date");
+    await expect(tool("item.setFields", w.deps(), { fields: [{ name: "Effort", value: "Low" }, { name: "Effort", value: "High" }] })).rejects.toThrow("more than once");
+    expect(w.calls).toEqual([]);
+    expect(w.store.getIssue("i1")!.metadata.fields).toEqual({ Effort: "High" });
+  });
+
+  test("setFields refuses everything when the repository configures no writable fields, and is nonfatal when the owner defines none", async () => {
+    const none = await world({ refinement: { fields: [], require: { type: false, fields: [], section: false } } }); none.add("i1", 5);
+    await expect(tool("item.setFields", none.deps(), { fields: [{ name: "Effort", value: "Low" }] })).rejects.toThrow("not writable");
+    const noFields = await world({ refinement: REFINEMENT, fields: null }); noFields.add("i1", 5);
+    expect((await tool("item.setFields", noFields.deps(), { fields: [{ name: "Effort", value: "Low" }] })).output)
+      .toEqual({ unavailable: true, reason: "issue fields are not available for o" });
+    await expect(tool("item.setFields", noFields.deps(), { fields: [{ name: "Start date", value: "2026-01-01" }] })).rejects.toThrow("not writable");
+    expect(noFields.calls).toEqual([]);
+  });
+
+  test("setRefinement writes only the managed refinement section, with a heading and every part", async () => {
+    const w = await world(); w.add("i1", 5);
+    const out = await tool("item.setRefinement", w.deps(), {
+      summary: "One release.", inScope: ["Tools"], outOfScope: ["Dates"], areas: ["src/tasks/item.ts"],
+      coupling: ["#111 edits the renderer; ordered after it"], parallelChildren: ["#2 and #3"], risks: ["Org lacks types"], verification: ["Unit tests"],
+    });
+    expect(out.output).toEqual({ revision: "rev:updated" });
+    const written = w.calls[1]![1] as { section: string; markdown: string };
+    expect(written.section).toBe("refinement");
+    expect(written.markdown).toBe([
+      "## Refinement", "", "One release.", "", "**In scope**", "- Tools", "", "**Out of scope**", "- Dates", "",
+      "**Areas and files expected to change**", "- src/tasks/item.ts", "", "**Coupling with other open issues**",
+      "- #111 edits the renderer; ordered after it", "", "**Children that can run in parallel**", "- #2 and #3", "",
+      "**Main risks**", "- Org lacks types", "", "**Verification**", "- Unit tests",
+    ].join("\n"));
+    await expect(tool("item.setRefinement", w.deps(), { summary: "  " })).rejects.toThrow();
+    await expect(tool("item.setRefinement", w.deps(), { summary: "x <!-- conveyor:refinement:end -->" })).rejects.toThrow("markers");
+  });
+
+  test("createChild accepts type, fields and a Refinement section in one call", async () => {
+    const w = await world({ refinement: REFINEMENT }); w.add("i1", 5);
+    const out = await tool("item.createChild", w.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], type: "feature",
+      fields: [{ name: "Effort", value: "Medium" }], refinement: { summary: "Small slice." },
+    });
+    expect(out.output).toEqual({ id: "c", number: 99, type: "Feature", fields: { Effort: "Medium" } });
+    const created = w.calls[0]![1] as { body: string; type: string; fields: unknown[] };
+    expect(created.type).toBe("Feature");
+    expect(created.fields).toEqual([{ fieldId: 11, name: "Effort", value: "Medium" }]);
+    expect(created.body).toContain("## Acceptance Criteria");
+    expect(created.body).toContain("<!-- conveyor:refinement:start -->\n## Refinement\n\nSmall slice.\n<!-- conveyor:refinement:end -->");
+  });
+
+  test("createChild with an invalid type or field value creates no child", async () => {
+    const w = await world({ refinement: REFINEMENT }); w.add("i1", 5);
+    const child = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }] };
+    await expect(tool("item.createChild", w.deps(), { ...child, type: "Epic" })).rejects.toThrow("Unknown issue type");
+    await expect(tool("item.createChild", w.deps(), { ...child, fields: [{ name: "Effort", value: "Huge" }] })).rejects.toThrow("not an option");
+    await expect(tool("item.createChild", w.deps(), { ...child, fields: [{ name: "Target date", value: "2026-01-01" }] })).rejects.toThrow("not writable");
+    expect(w.calls).toEqual([]);
+  });
+
+  test("createChild skips a type the owner does not offer and says so", async () => {
+    const w = await world({ refinement: REFINEMENT, types: null }); w.add("i1", 5);
+    const out = await tool("item.createChild", w.deps(), { title: "Kid", body: "B", acceptanceCriteria: [{ id: "a", text: "Do" }], type: "Task" });
+    expect(out.output).toEqual({ id: "c", number: 99, unavailable: ["issue types are not available for o"] });
+    expect(w.calls[0]![1]).not.toHaveProperty("type");
   });
 
   test("tool input is validated", async () => {

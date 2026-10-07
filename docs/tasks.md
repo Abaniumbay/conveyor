@@ -131,19 +131,23 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | --- | --- | --- | --- | --- |
 | `item.childrenValid` | check | item, repository | - | Passes when every child is enrolled, open or done, and has acceptance criteria or children of its own (and when there are no children). |
 | `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
-| `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, and optional configured system labels. |
+| `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. Everything is validated before the child is created. |
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
 | `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. |
 | `item.get` | tool | - | - | Read the latest source state of the current issue. |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |
 | `item.labelsValid` | check | item, repository | - | Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones). |
 | `item.listOpen` | tool | - | - | List the repository's other open Conveyor items (number, title, stage, state, parent, dependencies, work branch when one exists, and the start of the body), to find work that will change the same files as the current issue. A branch can be compared with the base in the workspace. |
-| `item.load` | load | - | writes item | Loads the stored issue with its acceptance criteria, children, dependencies and system labels. |
+| `item.load` | load | - | writes item | Loads the stored issue with its acceptance criteria, children, dependencies, system labels and refinement outputs (type, fields, section). |
+| `item.refinementComplete` | check | item, repository | - | Passes when every output the repository requires of refinement (issue type, named issue fields, the Refinement section) is filled, ignoring what the owner's organization does not offer; the message names what is missing. |
 | `item.setCriteria` | tool | - | invalidates item | Replace acceptance criteria on the current issue. |
 | `item.setDependencies` | tool | - | invalidates item | Replace dependencies of the current issue. |
+| `item.setFields` | tool | - | invalidates item | Set organization issue-field values (Effort reflects the refined scope; Priority only when the issue states one) on the current issue. Only fields named in the repository configuration can be written; single-select values must be one of the field's options and dates use YYYY-MM-DD. |
 | `item.setParent` | tool | - | invalidates item | Set the parent of the current issue. |
+| `item.setRefinement` | tool | - | invalidates item | Write the managed Refinement section of the issue body: summary, scope, areas and files, coupling and how it was resolved, parallel children (roll-up parents), risks, and verification. Replaces only that section. |
 | `item.setSystemLabels` | tool | - | invalidates item | Replace the issue's configured system-area labels while preserving workflow and unmanaged labels. |
 | `item.setTitle` | tool | - | invalidates item | Replace the current issue's title so it states the refined scope. |
+| `item.setType` | tool | - | invalidates item | Set the current issue's type (Bug for wrong existing behaviour, Feature for a new capability, Task otherwise). The value must be a type the repository owner's organization defines; an owner without types reports it as unavailable. |
 
 ### legacy
 

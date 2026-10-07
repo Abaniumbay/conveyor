@@ -4,6 +4,7 @@ import net from "node:net";
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
+import { GhCliTransport, GitHubAdapter, type GitHubTransport } from "../../source/github/adapter";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
 import { serviceRunning } from "../control-client";
@@ -39,7 +40,12 @@ async function portAvailable(hostname: string, port: number): Promise<boolean> {
 }
 
 /** Every check; `serviceRunning` tells whether the listen port may legitimately be taken. */
-export async function doctorChecks(home: string, configPath: string, serviceRunning: () => Promise<boolean>): Promise<DoctorCheck[]> {
+export async function doctorChecks(
+  home: string,
+  configPath: string,
+  serviceRunning: () => Promise<boolean>,
+  github?: GitHubTransport,
+): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const homeInfo = await stat(home).catch(() => undefined);
   if (!homeInfo?.isDirectory()) {
@@ -77,6 +83,8 @@ export async function doctorChecks(home: string, configPath: string, serviceRunn
       : { name: "github cli", status: "fail", detail: "gh is not authenticated", fix: "gh auth login (as the account Conveyor runs under)" });
   }
 
+  const githubReady = !gh && checks[checks.length - 1]?.status === "ok";
+  const transport = github ?? (githubReady ? new GhCliTransport() : null);
   const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)");
   if (bwrap) checks.push(bwrap);
   else {
@@ -106,6 +114,7 @@ export async function doctorChecks(home: string, configPath: string, serviceRunn
         ? { name: `repository ${id}`, status: "ok", detail: repository.folder }
         : { name: `repository ${id}`, status: "fail", detail: `${repository.folder} is not a Git checkout`, fix: `git clone the repository into ${repository.folder}` });
     }
+    if (transport) checks.push(...await issueMetadataChecks(config, new GitHubAdapter(transport, config.settings.labelPrefix)));
     const accounts = await accountCount(config.settings.database);
     checks.push(accounts > 0
       ? { name: "dashboard", status: "ok", detail: `${accounts} account(s)` }
@@ -116,6 +125,47 @@ export async function doctorChecks(home: string, configPath: string, serviceRunn
     if (await portAvailable(hostname, port)) checks.push({ name: "listen", status: "ok", detail: `${config.web.listen} is free` });
     else if (await serviceRunning()) checks.push({ name: "listen", status: "ok", detail: `${config.web.listen} is served by the running Conveyor` });
     else checks.push({ name: "listen", status: "fail", detail: `${config.web.listen} is in use by another process`, fix: "stop that process or change web.listen" });
+  }
+  return checks;
+}
+
+/**
+ * For each repository that configures refinement outputs: can the credentials read and write the
+ * organization's issue types and issue fields? Read-only; no issue is changed.
+ */
+export async function issueMetadataChecks(config: ConveyorConfig, adapter: GitHubAdapter): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  for (const [id, repository] of Object.entries(config.repositories)) {
+    const outputs = repository.refinement;
+    const wantsType = outputs.require.type;
+    const wantsFields = outputs.fields.length > 0;
+    if (!wantsType && !wantsFields) continue;
+    const owner = repository.address.split("/")[0]!;
+    const access = await adapter.probeIssueMetadata(repository.address);
+    const fixRead = `give the GitHub credentials read access to ${owner}'s organization issue types and fields (gh auth refresh -s read:org, or a token with organization "Issue types/fields: read")`;
+    const capability = (name: string, state: typeof access.types, wanted: boolean, noun: string) => {
+      if (!wanted) return;
+      if (state === "ok") checks.push({ name: `${name} ${id}`, status: "ok", detail: `${noun} readable for ${owner}` });
+      else if (state === "none") checks.push({ name: `${name} ${id}`, status: "ok", detail: `${owner} defines no ${noun}; refinement will not require them` });
+      else checks.push({
+        name: `${name} ${id}`,
+        status: "fail",
+        detail: state === "denied" ? `the GitHub credentials cannot read ${noun} for ${owner} (repository ${repository.address})` : `${noun} for ${owner} could not be read`,
+        fix: state === "denied" ? fixRead : "retry; if it persists check gh auth status and network access",
+      });
+    };
+    capability("issue types", access.types, wantsType, "issue types");
+    capability("issue fields", access.fields, wantsFields, "issue fields");
+    if (access.canWrite === false) {
+      checks.push({
+        name: `issue metadata write ${id}`,
+        status: "fail",
+        detail: `the GitHub credentials cannot write issue types or issue-field values on ${repository.address}`,
+        fix: `grant the account or token write (push) access to ${repository.address}; for a fine-grained token also "Issues: read and write"`,
+      });
+    } else if (access.canWrite === true) {
+      checks.push({ name: `issue metadata write ${id}`, status: "ok", detail: `can write issue types and issue fields on ${repository.address}` });
+    }
   }
   return checks;
 }

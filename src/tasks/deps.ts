@@ -27,6 +27,11 @@ export interface TaskDeps {
     | "replaceManagedProjectLabels"
     | "createChildIssue"
     | "setTitle"
+    | "listIssueTypes"
+    | "listIssueFields"
+    | "getIssueFieldValues"
+    | "setIssueType"
+    | "setIssueFieldValues"
   >;
   repository: { id: string; address: string; folder: string; baseBranch: string };
   issueId: string;

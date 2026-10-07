@@ -23,7 +23,8 @@ darya:
   tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
-          item.setSystemLabels, item.setParent, item.setDependencies, item.createChild]
+          item.setSystemLabels, item.setType, item.setFields, item.setRefinement, item.setParent,
+          item.setDependencies, item.createChild]
 kaveh:
   name: Kaveh
   title: Senior Developer

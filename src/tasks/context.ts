@@ -20,6 +20,11 @@ export interface RepositoryContext {
   ciMode: "required" | "advisory" | "disabled";
   /** The repository's configured system labels (may be empty). */
   systemLabels: string[];
+  /** Organization issue fields refinement may write, and what it must fill before the stage ends. */
+  refinement?: {
+    fields: string[];
+    require: { type: boolean; fields: string[]; section: boolean };
+  };
 }
 
 /** The body is not kept: it can be tens of kilobytes, and tasks and scripts read it from the stored issue. */
@@ -34,6 +39,16 @@ export interface ItemContext {
   children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean; hasChildren: boolean }>;
   dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
   systemLabels: string[];
+  /** The issue type, field values and Refinement section as stored, and what the organization offers. */
+  refinement?: {
+    type: string | null;
+    /** True when the owner defines issue types (only looked up when the repository requires one). */
+    typesAvailable: boolean;
+    fields: Record<string, string>;
+    /** Required fields the organization defines. */
+    definedFields: string[];
+    section: boolean;
+  };
 }
 
 export interface WorkspaceContext {
