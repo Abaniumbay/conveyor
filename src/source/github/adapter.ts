@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import type { PullRequestReference, SourceIssue } from "../types";
+import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "./issue-metadata";
 import {
   parseManagedSections,
   upsertManagedSection,
@@ -74,6 +75,8 @@ export class GhCliTransport implements GitHubTransport {
   }
 }
 
+export type IssueMetadataAccess = "ok" | "none" | "denied" | "error";
+
 interface GitHubLabel {
   name: string;
 }
@@ -88,6 +91,7 @@ interface GitHubIssue {
   state_reason?: string | null;
   labels: Array<GitHubLabel | string>;
   updated_at: string;
+  type?: { name: string } | null;
   pull_request?: unknown;
 }
 
@@ -102,6 +106,7 @@ function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
     stateReason: issue.state_reason ?? null,
     labels: issue.labels.map(labelName).sort((left, right) => left.localeCompare(right)),
     updatedAt: issue.updated_at,
+    ...(issue.type !== undefined ? { type: issue.type?.name ?? null } : {}),
   };
 }
 
@@ -244,18 +249,7 @@ export class GitHubAdapter {
     });
     return issues
       .filter((issue) => issue.pull_request === undefined)
-      .map((issue) => ({ issue, labels: issue.labels.map(labelName) }))
-      .map(({ issue, labels }) => ({
-        id: `github:${address}#${issue.number}`,
-        number: issue.number,
-        url: issue.html_url,
-        title: issue.title,
-        body: issue.body ?? "",
-        state: issue.state,
-        stateReason: issue.state_reason ?? null,
-        labels: [...labels].sort((left, right) => left.localeCompare(right)),
-        updatedAt: issue.updated_at,
-      }));
+      .map((issue) => sourceIssue(address, issue));
   }
 
   async ensureLabels(
@@ -331,11 +325,27 @@ export class GitHubAdapter {
     title: string;
     body: string;
     labels: readonly string[];
+    /** Issue type to create the child with (already validated). */
+    type?: string;
+    /** Field values to set on the child (already validated). */
+    fields?: readonly ResolvedFieldValue[];
   }): Promise<SourceIssue> {
     const parent = await this.transport.request<GitHubIssue>({
       method: "GET",
       path: `repos/${input.address}/issues/${input.parentNumber}`,
     });
+    // The field endpoint is a second write. Reuse a child from a previous
+    // attempt so a retry after that write fails does not create a duplicate.
+    const marker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
+    const existing = marker
+      ? (await this.listSubIssues(input.address, input.parentNumber)).find((issue) => issue.body.includes(marker))
+      : undefined;
+    if (existing) {
+      if (input.fields && input.fields.length > 0) {
+        await this.setIssueFieldValues(input.address, existing.number, input.fields);
+      }
+      return existing;
+    }
     const child = await this.transport.request<GitHubIssue>({
       method: "POST",
       path: `repos/${input.address}/issues`,
@@ -344,9 +354,110 @@ export class GitHubAdapter {
         body: input.body,
         labels: [...new Set(input.labels)],
         parent_issue_id: parent.id,
+        ...(input.type ? { type: input.type } : {}),
       },
     });
+    if (input.fields && input.fields.length > 0) {
+      await this.setIssueFieldValues(input.address, child.number, input.fields);
+    }
     return sourceIssue(input.address, child);
+  }
+
+  /** Issue types the owner defines; null when the owner has none (a personal account) or hides them. */
+  async listIssueTypes(owner: string): Promise<string[] | null> {
+    const types = await this.optional(() => this.transport.request<Array<{ name: string }>>({
+      method: "GET",
+      path: `orgs/${owner}/issue-types`,
+      paginate: true,
+    }));
+    return types === null ? null : types.map((type) => type.name);
+  }
+
+  /** Issue fields the owner defines; null when the owner has none or hides them. */
+  async listIssueFields(owner: string): Promise<IssueFieldDefinition[] | null> {
+    const fields = await this.optional(() => this.transport.request<Array<{
+      id: number;
+      name: string;
+      data_type: IssueFieldDataType;
+      options?: Array<{ name: string }> | null;
+    }>>({ method: "GET", path: `orgs/${owner}/issue-fields?per_page=100`, paginate: true }));
+    return fields === null ? null : fields.map((field) => ({
+      id: field.id,
+      name: field.name,
+      dataType: field.data_type,
+      options: (field.options ?? []).map((option) => option.name),
+    }));
+  }
+
+  /** The values currently set on an issue, by field name. */
+  async getIssueFieldValues(address: string, issueNumber: number): Promise<Record<string, string>> {
+    const values = await this.transport.request<Array<{ issue_field_name: string; value: string | number | null }>>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/issue-field-values?per_page=100`,
+      paginate: true,
+    });
+    return Object.fromEntries(values.flatMap((entry) => entry.value === null || entry.value === undefined
+      ? [] : [[entry.issue_field_name, String(entry.value)] as const]));
+  }
+
+  async setIssueType(address: string, issueNumber: number, type: string): Promise<void> {
+    await this.transport.request<unknown>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { type },
+    });
+  }
+
+  /** Adds or updates the given fields; other fields (dates, lifecycle values) are left alone. */
+  async setIssueFieldValues(address: string, issueNumber: number, values: readonly ResolvedFieldValue[]): Promise<void> {
+    if (values.length === 0) return;
+    await this.transport.request<unknown>({
+      method: "POST",
+      path: `repos/${address}/issues/${issueNumber}/issue-field-values`,
+      body: { issue_field_values: values.map(({ fieldId, value }) => ({ field_id: fieldId, value })) },
+    });
+  }
+
+  /**
+   * What the credentials can do with issue types and issue fields for a repository, read-only:
+   * "ok" (readable), "none" (the owner defines none), "denied" (no permission) or "error".
+   */
+  async probeIssueMetadata(address: string): Promise<{
+    types: IssueMetadataAccess;
+    fields: IssueMetadataAccess;
+    canWrite: boolean | null;
+  }> {
+    const owner = address.split("/")[0]!;
+    const probe = async (path: string): Promise<IssueMetadataAccess> => {
+      try {
+        const found = await this.transport.request<unknown[]>({ method: "GET", path, paginate: true });
+        return Array.isArray(found) && found.length === 0 ? "none" : "ok";
+      } catch (error) {
+        if (!(error instanceof GitHubTransportError)) return "error";
+        const text = `${error.stderr} ${error.message}`;
+        if (/HTTP 404/.test(text)) return "none";
+        return /HTTP 40[13]/.test(text) ? "denied" : "error";
+      }
+    };
+    const [types, fields] = [await probe(`orgs/${owner}/issue-types`), await probe(`orgs/${owner}/issue-fields?per_page=100`)];
+    let canWrite: boolean | null = null;
+    try {
+      const repository = await this.transport.request<{ permissions?: { push?: boolean; triage?: boolean; maintain?: boolean; admin?: boolean } }>({ method: "GET", path: `repos/${address}` });
+      const permissions = repository.permissions;
+      canWrite = permissions === undefined ? null : Boolean(permissions.push || permissions.triage || permissions.maintain || permissions.admin);
+    } catch {
+      canWrite = null;
+    }
+    return { types, fields, canWrite };
+  }
+
+  private async optional<T>(read: () => Promise<T>): Promise<T | null> {
+    try {
+      return await read();
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /HTTP (?:404|403|410)/.test(`${error.stderr} ${error.message}`)) return null;
+      throw error;
+    }
   }
 
   async setTitle(address: string, issueNumber: number, title: string): Promise<void> {

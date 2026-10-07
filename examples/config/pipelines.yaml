@@ -13,6 +13,7 @@ delivery:
       exit-gate:
         - { id: criteria, task: item.criteriaDefined }
         - { id: labels, task: item.labelsValid }
+        - { id: outputs, task: item.refinementComplete }   # type, fields and Refinement section the repository requires
         - { id: children, task: item.childrenValid }
         - id: dependencies
           task: item.dependenciesMet

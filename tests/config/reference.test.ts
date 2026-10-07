@@ -199,11 +199,43 @@ describe("reference configuration", () => {
         expect(config.agents[agent]!.tasks).toContain(name);
       }
     };
-    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild"]);
+    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild", "item.setType", "item.setFields", "item.setRefinement"]);
+    const darya = await read("darya");
+    expect(darya).toMatch(/`Bug` when the issue reports wrong existing behavior, `Feature` for a new capability, `Task` otherwise/);
+    expect(darya).toMatch(/`Effort`[^\n]*refined scope/);
+    expect(darya).toMatch(/`Priority` only when the issue text states one/);
+    expect(darya).toMatch(/roll-up parent also gets its own type, Effort and Refinement section/);
     await mentions("kaveh", ["todo.get", "todo.set", "todo.update", "workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
     }
+  });
+});
+
+describe("reference refinement outputs", () => {
+  test("the conveyor repository may write Effort and Priority and requires the type, Effort and the Refinement section", async () => {
+    const config = await loadReference();
+    expect(config.repositories.conveyor!.refinement).toEqual({ fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } });
+    expect(config.repositories.caravan!.refinement).toEqual({ fields: [], require: { type: false, fields: [], section: false } });
+  });
+
+  test("every refinement stage ends with the outputs gate", async () => {
+    const config = await loadReference();
+    for (const plan of config.plans) {
+      const refinement = plan.stages.find((stage) => stage.id === "refinement")!;
+      expect(refinement.exitGate.map((task) => task.task)).toContain("item.refinementComplete");
+    }
+  });
+
+  test("a required field must also be writable", async () => {
+    const { entrypoint, base } = await referenceConfigEntrypoint();
+    bases.push(base);
+    const file = path.join(path.dirname(entrypoint), "repositories/conveyor.yaml");
+    const text = await readFile(file, "utf8");
+    const broken = text.replace("    fields:\n      - Effort\n    section", "    fields:\n      - Size\n    section");
+    expect(broken).not.toBe(text);
+    await writeFile(file, broken);
+    await expect(loadConfig(entrypoint)).rejects.toThrow("required field Size must also be listed in fields");
   });
 });
 

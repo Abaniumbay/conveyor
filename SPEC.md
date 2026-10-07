@@ -215,7 +215,7 @@ agents:
     instructions: ./instructions/refiner.md
     access: read-only
     tasks: [item.get, item.guidance, workspace.get, conversation.get, agent.reportProgress,
-            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels,
+            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels, item.setType, item.setFields, item.setRefinement,
             item.setParent, item.setDependencies, item.createChild]
   implementer:
     name: Implementer
@@ -507,6 +507,9 @@ repositories:
     pipeline: default
     concurrency: 1
     systemLabels: [backend, web, mobile, infrastructure]
+    refinement:                    # optional: GitHub issue type and organization issue fields
+      fields: [Effort, Priority]   # writable by refinement (item.setFields)
+      require: { type: true, fields: [Effort], section: true }   # enforced by item.refinementComplete
 ```
 
 ## 7. Issue enrollment and label semantics
@@ -827,7 +830,7 @@ An explicit **Steer** action is different from an ordinary issue edit: it mirror
 
 Every agent receives a scoped MCP server for exactly one repository, issue, stage, and run, plus its worktree when that stage has one. Cleanup and source-only stages may intentionally have no worktree. The tools are the registry's `tool` tasks, exposed by task name; the registry owns each tool's schema, implementation and description, and there is no parallel MCP layer. Names are camelCase:
 
-- `item.*`: `get`, `guidance`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setParent`, `setDependencies`, `createChild`: read the issue and manage its title, allowed labels, comments, acceptance criteria, hierarchy and dependencies.
+- `item.*`: `get`, `guidance`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setType`, `setFields`, `setRefinement`, `setParent`, `setDependencies`, `createChild`: read the issue and manage its title, allowed labels, comments, acceptance criteria, GitHub issue type, organization issue-field values (only fields the repository configures), the managed Refinement section, hierarchy and dependencies. The `item.refinementComplete` gate requires the outputs a repository lists under `refinement.require`, ignoring a type or field the owner does not define.
 - `agent.*`: `reportProgress`, `reportRationale`, `reportBlocker`, `reportResult`, `reportMilestone`, `recordArtifact`, `askQuestion`.
 - `workspace.*`: `get`, `fetch`, `push`: workspace/base/branch metadata and scoped fetch and push.
 - `change.*`: `get`, `setMetadata`, `comment`, `resolveFinding`, `listFindings`, `checkCriterion`, `uncheckCriterion` (and `dismissFinding`, which is never grantable).

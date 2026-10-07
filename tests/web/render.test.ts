@@ -13,6 +13,8 @@ const parent: IssueCardViewModel = {
   url: "https://github.com/sample/repo/issues/41?x=1&y=2",
   state: "in_progress",
   labels: ["feature", "priority: high"],
+  issueType: "Feature",
+  issueFields: [{ name: "Effort", value: "Medium" }],
   acceptanceCriteria: [
     { id: "AC-1", text: "<script>alert(1)</script>", approved: false },
     { id: "AC-2", text: "Keyboard usable", approved: true },
@@ -49,6 +51,8 @@ const backlogIssue: IssueCardViewModel = {
   url: "javascript:alert(1)",
   state: "active",
   labels: [],
+  issueType: null,
+  issueFields: [],
   acceptanceCriteria: [],
   todos: null,
   indicators: [],
@@ -254,6 +258,24 @@ describe("indicators", () => {
     expect(html).not.toContain('class="indicator-chips"');
     expect(html).not.toContain('data-indicator=');
     expect(html).not.toContain('class="indicators"');
+  });
+});
+
+describe("issue type and fields", () => {
+  const html = (issueType: string | null, issueFields: IssueCardViewModel["issueFields"]) =>
+    renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, issueType, issueFields }] }] });
+
+  test("the details show the type and the configured field values beside the source labels", () => {
+    const page = html("Bug", [{ name: "Effort", value: "Low" }, { name: "Priority", value: "<High>" }]);
+    expect(page).toContain("Type: Bug");
+    expect(page).toContain("Effort: Low");
+    expect(page).toContain("Priority: &lt;High");
+    expect(page).not.toContain("<High>");
+    expect(page.indexOf("Issue type and fields")).toBeLessThan(page.indexOf("Source labels"));
+  });
+
+  test("nothing is rendered when the issue has no type or field values", () => {
+    expect(html(null, [])).not.toContain("Issue type and fields");
   });
 });
 

@@ -7,6 +7,8 @@ export interface SourceIssue {
   state: "open" | "closed";
   stateReason?: string | null;
   labels: string[];
+  /** The issue type GitHub reports, when the owner defines types; null when none is set. */
+  type?: string | null;
   updatedAt: string;
 }
 

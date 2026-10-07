@@ -517,6 +517,31 @@ const repositoryCiSchema = z
     return { provider: (value.provider ?? null) as string | null, mode: value.mode, ignoreChecks: value.ignoreChecks };
   });
 
+/** What refinement may write on the issue page and what it must fill before leaving the stage. */
+const refinementOutputsSchema = z
+  .object({
+    /** Organization issue fields refinement may write (for example Effort, Priority). */
+    fields: z.array(identifierSchema).default([]),
+    require: z
+      .object({
+        type: z.boolean().default(false),
+        /** Organization issue fields that must have a value (a subset of `fields`). */
+        fields: z.array(identifierSchema).default([]),
+        section: z.boolean().default(false),
+      })
+      .strict()
+      .default({ type: false, fields: [], section: false }),
+  })
+  .strict()
+  .superRefine((outputs, context) => {
+    const allowed = new Set(outputs.fields.map((name) => name.toLocaleLowerCase()));
+    for (const name of outputs.require.fields) {
+      if (!allowed.has(name.toLocaleLowerCase())) {
+        context.addIssue({ code: "custom", path: ["require", "fields"], message: `required field ${name} must also be listed in fields` });
+      }
+    }
+  });
+
 const repositorySchema = z
   .object({
     source: identifierSchema,
@@ -549,6 +574,7 @@ const repositorySchema = z
     agentEgress: agentEgressSchema.optional(),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
+    refinement: refinementOutputsSchema.default({ fields: [], require: { type: false, fields: [], section: false } }),
   })
   .strict();
 

@@ -170,6 +170,11 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
   const github = {
     replaceConveyorLabels: async (_address: string, _number: number, labels: string[]) => { labelWrites.push([...labels]); },
     addComment: async () => 1,
+    // The organization defines issue types and the Effort field; mirror the metadata
+    // written by the simulated refinement tool as GitHub's current field snapshot.
+    listIssueTypes: async () => ["Task", "Bug", "Feature"],
+    listIssueFields: async () => [{ id: 1, name: "Effort", dataType: "single_select", options: ["High", "Medium", "Low"] }],
+    getIssueFieldValues: async () => store.getIssue("issue")?.metadata.fields ?? {},
   };
 
   const harness: Harness = {
@@ -179,9 +184,12 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
       const stage = /"stageId": "(\w+)"/.exec(input.prompt)?.[1] ?? "unknown";
       agentRuns.push(stage);
       if (stage === "refinement") {
-        // darya: criteria and a system label, as item.setCriteria / item.setSystemLabels would write them.
+        // darya: criteria, a system label, the type, Effort and the Refinement section, as the item.set* tools would write them.
         const issue = store.getIssue("issue")!;
-        store.upsertIssue({ ...issue, body: CRITERIA_BODY, labels: [...issue.labels, "backend"], sourceUpdatedAt: new Date().toISOString() });
+        const body = `${CRITERIA_BODY}\n<!-- conveyor:refinement:start -->\n## Refinement\n\nA small feature.\n<!-- conveyor:refinement:end -->\n`;
+        store.upsertIssue({ ...issue, body, labels: [...issue.labels, "backend"], sourceUpdatedAt: new Date().toISOString() });
+        // item.setType / item.setFields keep the type and Effort in the store as well as on GitHub.
+        store.setIssueMetadata(issue.id, { type: "Feature", fields: { Effort: "Low" } });
       } else if (stage === "implementation") {
         // kaveh: commits and pushes the branch.
         await writeFile(path.join(input.workspace, "feature.txt"), "feature\n");

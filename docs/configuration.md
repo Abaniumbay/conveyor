@@ -150,6 +150,26 @@ The script protocol (JSON request on stdin, JSON result on stdout, and `observe`
 scripts) is the same for every interpreter; see [tasks.md](tasks.md#script-protocol).
 `conveyor doctor` checks that every interpreter the configuration uses is installed.
 
+## Refinement outputs (issue type, fields, Refinement section)
+
+A repository may let refinement fill the GitHub issue page beyond the criteria:
+
+```yaml
+repositories:
+  conveyor:
+    refinement:
+      fields: [Effort, Priority]                                  # organization issue fields item.setFields may write
+      require: { type: true, fields: [Effort], section: true }   # enforced by the refinement gate item.refinementComplete
+```
+
+`item.setType` accepts only a type the repository owner's organization defines, and `item.setFields`
+only the fields listed in `fields` (single-select values must be one of the field's options, dates
+use `YYYY-MM-DD`). `item.setRefinement` writes the managed `## Refinement` section of the body. The
+gate names every required output that is missing and returns the item to refinement; it does not
+require a type or field the owner does not define, nor one the credentials cannot read. Dates, the
+work branch and the pull request are Conveyor's lifecycle facts and are not written by refinement.
+`conveyor doctor` checks the credentials.
+
 ## Configuration directories (deprecated)
 
 `--config <directory>`, which merged every YAML file found recursively, still loads with a deprecation
@@ -256,7 +276,7 @@ agents:
     instructions: ./instructions/refiner.md
     access: read-only
     tasks: [item.get, item.guidance, workspace.get, conversation.get, agent.reportProgress,
-            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels,
+            agent.askQuestion, item.comment, item.setCriteria, item.setTitle, item.setSystemLabels, item.setType, item.setFields, item.setRefinement,
             item.setParent, item.setDependencies, item.createChild]
   implementer:
     name: Implementer

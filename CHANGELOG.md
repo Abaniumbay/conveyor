@@ -8,6 +8,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Added
+- Refinement can record the GitHub issue type, organization issue fields (for example Effort) and a managed Refinement section on the issue (`item.setType`, `item.setFields`, `item.setRefinement`, and the same values in `item.createChild`). A per-repository `refinement` setting lists the writable fields and what the new `item.refinementComplete` gate requires.
+- The dashboard's item details show the issue type and configured field values; `conveyor doctor` checks the credentials' access to them.
+
+### Fixed
+- The managed acceptance-criteria section now has an "Acceptance Criteria" heading, and replaces a hand-written checklist instead of appearing beside it.
+
 ## [0.2.1] - 2026-10-06
 
 Fixes the dashboard in the released executable, which stopped at load in 0.2.0.
