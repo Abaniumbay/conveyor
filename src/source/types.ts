@@ -19,6 +19,7 @@ export interface PullRequestReference {
 }
 
 export interface IssueSourceAdapter {
-  listIssues(address: string): Promise<SourceIssue[]>;
+  /** Every issue of the repository, or with `since` only those updated at or after that time. */
+  listIssues(address: string, options?: { since?: string }): Promise<SourceIssue[]>;
   getIssue(address: string, issueNumber: number): Promise<SourceIssue>;
 }

@@ -100,7 +100,8 @@ repositories:
   const deliver = (event: string, payload: Record<string, unknown>, id = `d${(delivery += 1)}`) => {
     const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: "owner/repo" }, ...payload }));
     const signature = `sha256=${createHmac("sha256", "hook-secret").update(body).digest("hex")}`;
-    return service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": id, "x-github-event": event }));
+    return service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": id, "x-github-event": event }))
+      .then(() => service.webhooksSettled());
   };
   const indicator = () => store.listIndicators("issue").find((entry) => entry.id === "ci");
   const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;

@@ -18,7 +18,8 @@ import { ConveyorStore, type StoredIssue } from "../db/store";
 import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
-import { GitHubAdapter, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubAdapter, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
+import type { SourceIssue } from "../source/types";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
@@ -83,6 +84,12 @@ const DASHBOARD_PAGE_SIZE = 20;
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
 const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
+/** How long an unchanged issue's sub-issues and blockers are reused before they are read again. */
+const RELATIONSHIP_REUSE_MS = 60 * 60_000;
+/** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
+const FULL_ISSUE_LISTING_MS = 60 * 60_000;
+/** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
+const ISSUE_LISTING_OVERLAP_MS = 2 * 60_000;
 
 function resultReason(value: unknown): string | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -108,6 +115,11 @@ function object(value: unknown): Record<string, unknown> {
     throw new Error("expected an object");
   }
   return value as Record<string, unknown>;
+}
+
+/** Like `object`, but an absent or malformed value reads as an empty object. */
+function fields(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function string(value: unknown, name: string): string {
@@ -213,8 +225,19 @@ export class ConveyorService {
   readonly #statusCommentUpdatesByIssue = new Map<string, Promise<void>>();
   /** The status-comment digest last written by this process, so a revert to older content is still written. */
   readonly #statusCommentDigests = new Map<string, string>();
+  /** The status comment of each issue, as last written, so an update goes straight to it without listing comments. */
+  readonly #statusCommentIds = new Map<string, number>();
   /** The live head of an open change, as last read from the code host; newer than the persisted context. */
   readonly #liveChangeHeads = new Map<string, string>();
+  /** Sub-issues and blockers last read per issue, reused while the issue is unchanged (see `relationshipsOf`). */
+  readonly #relationships = new Map<string, { updatedAt: string; readAt: number; children: SourceIssue[]; dependencies: SourceIssue[] }>();
+  /** Per repository: when its issue list was last read in full, and the time a later partial read may start from. */
+  readonly #issueListings = new Map<string, { fullAt: number; since: string }>();
+  /** Webhook reconciles per repository: the one running or queued last, and one not yet started that later deliveries join. */
+  readonly #webhookReconciles = new Map<string, Promise<void>>();
+  readonly #queuedWebhookReconciles = new Map<string, { issueNumbers: Set<number> | null; done: Promise<void> }>();
+  /** Webhook deliveries accepted but not yet processed. */
+  readonly #webhookWork = new Set<Promise<void>>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -344,6 +367,7 @@ export class ConveyorService {
     for (const [id, repository] of Object.entries(this.config.repositories)) {
       const pipeline = this.config.pipelines[repository.pipeline]!;
       try {
+        const listing = this.issueListing(id, false);
         await reconcileRepository({
           store: this.store,
           configHash: this.config.hash,
@@ -359,6 +383,7 @@ export class ConveyorService {
           source: this.github,
           expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
         });
+        listing.finish();
         await this.reconcileRelationships(id, repository.address);
         await this.syncIssueFields(id, repository);
         this.restorePendingStatus(id);
@@ -438,7 +463,7 @@ export class ConveyorService {
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#tickRunning || this.#advisoryPolling) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#tickRunning || this.#advisoryPolling) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -952,10 +977,29 @@ export class ConveyorService {
     }
   }
 
-  private async reconcileRepository(repositoryId: string): Promise<void> {
+  /**
+   * A webhook reconcile (`partial`) reads only the issues changed since the previous read, unless the
+   * last full read is over an hour old; every other reconcile reads the whole list. `finish` records a
+   * successful read.
+   */
+  private issueListing(repositoryId: string, partial: boolean): { since?: string; finish(): void } {
+    const startedAt = Date.now();
+    const previous = this.#issueListings.get(repositoryId);
+    const since = partial && previous && startedAt - previous.fullAt < FULL_ISSUE_LISTING_MS ? previous.since : undefined;
+    return {
+      ...(since !== undefined ? { since } : {}),
+      finish: () => this.#issueListings.set(repositoryId, {
+        fullAt: since === undefined ? startedAt : previous!.fullAt,
+        since: new Date(startedAt - ISSUE_LISTING_OVERLAP_MS).toISOString(),
+      }),
+    };
+  }
+
+  private async reconcileRepository(repositoryId: string, options: { partial?: boolean } = {}): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
+    const listing = this.issueListing(repositoryId, options.partial === true);
     await reconcileRepository({
       store: this.store,
       configHash: this.config.hash,
@@ -970,11 +1014,27 @@ export class ConveyorService {
       labels: this.config.labels,
       source: this.github,
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      ...(listing.since !== undefined ? { since: listing.since } : {}),
     });
+    listing.finish();
     await this.reconcileRelationships(repositoryId, repository.address);
     await this.backfillCiIndicators(repositoryId);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
+  }
+
+  /**
+   * The sub-issues and blockers of an issue. Every reconcile needs them, so an issue unchanged since
+   * its last read reuses that read for up to an hour; sub-issue and dependency webhooks drop it sooner.
+   */
+  private async relationshipsOf(address: string, issue: StoredIssue): Promise<{ children: SourceIssue[]; dependencies: SourceIssue[] }> {
+    const cached = this.#relationships.get(issue.id);
+    if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < RELATIONSHIP_REUSE_MS) return cached;
+    const children = await this.github.listSubIssues(address, issue.sourceNumber);
+    const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
+    const read = { updatedAt: issue.sourceUpdatedAt, readAt: Date.now(), children, dependencies };
+    this.#relationships.set(issue.id, read);
+    return read;
   }
 
   private async reconcileRelationships(
@@ -998,7 +1058,7 @@ export class ConveyorService {
     );
     const parents = new Map<string, { parentId: string; siblingOrder: number }>();
     for (const parent of issues) {
-      const children = await this.github.listSubIssues(address, parent.sourceNumber);
+      const { children } = await this.relationshipsOf(address, parent);
       for (const [index, child] of children.entries()) {
         const storedChild = issueByNumber.get(child.number);
         if (storedChild) {
@@ -1016,7 +1076,7 @@ export class ConveyorService {
       );
     }
     for (const issue of issues) {
-      const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
+      const { dependencies } = await this.relationshipsOf(address, issue);
       const blockerIds: string[] = [];
       for (const dependency of dependencies) {
         const storedDependency = issueByNumber.get(dependency.number);
@@ -1593,16 +1653,102 @@ export class ConveyorService {
       : undefined;
     // A delivery counts only for a repository whose own provider's secret signed it.
     if (repository && this.webhookSecretFor(repository[1].source) !== secret) throw new Error("invalid GitHub webhook signature for this repository");
+    // Conveyor's own status-comment writes come back as deliveries; they carry nothing to read, and
+    // reconciling on them made every write trigger more writes.
+    if (eventType === "issue_comment" && isStatusComment(fields(fields(payload).comment).body)) return;
     if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
     if (typeof repositoryAddress !== "string") return;
-    // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
-    if (repository) {
-      await this.applyCiWebhook(repository[0], eventType, payload)
-        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repository[0], event: eventType }, error));
-      await this.reconcileRepository(repository[0]);
+    if (!repository) {
+      this.schedule();
+      return;
     }
-    this.schedule();
-    if (repository) this.refreshStatusComments(this.store.listIssues(repository[0]).map((issue) => issue.id));
+    // Processed after the response: GitHub counts a delivery as failed after 10 seconds and never retries it.
+    const repositoryId = repository[0];
+    const work = (async () => {
+      // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
+      await this.applyCiWebhook(repositoryId, eventType, payload)
+        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: eventType }, error));
+      if (eventType === "sub_issues" || eventType === "issue_dependencies") this.#relationships.clear();
+      await this.queueWebhookReconcile(repositoryId, this.webhookIssueNumbers(repositoryId, eventType, payload));
+    })();
+    this.#webhookWork.add(work);
+    void work.finally(() => this.#webhookWork.delete(work));
+  }
+
+  /** Resolves once every accepted webhook delivery has been processed. */
+  async webhooksSettled(): Promise<void> {
+    while (this.#webhookWork.size > 0) await Promise.all([...this.#webhookWork]);
+  }
+
+  /**
+   * The issue numbers whose status a delivery may change, or null when it may concern any item.
+   * A pull request or CI event names the item through the pull request Conveyor opened for it.
+   */
+  private webhookIssueNumbers(repositoryId: string, eventType: string, payload: unknown): number[] | null {
+    const body = fields(payload);
+    const number = (value: unknown) => typeof fields(value).number === "number" ? [fields(value).number as number] : [];
+    const forPullRequests = (numbers: number[]) => {
+      const wanted = new Set(numbers);
+      return this.store.listIssues(repositoryId).flatMap((issue) => {
+        const pullRequest = this.store.getCurrentPullRequest(issue.id);
+        return pullRequest && wanted.has(pullRequest.number) ? [issue.sourceNumber] : [];
+      });
+    };
+    switch (eventType) {
+      case "issues":
+      case "issue_comment":
+        // A comment on a pull request arrives as an issue_comment whose issue is the pull request.
+        return fields(body.issue).pull_request !== undefined ? forPullRequests(number(body.issue)) : number(body.issue);
+      case "sub_issues":
+        return [...number(body.parent_issue), ...number(body.sub_issue)];
+      case "issue_dependencies":
+        return [...number(body.blocked_issue), ...number(body.blocking_issue)];
+      case "pull_request":
+        return forPullRequests(number(body.pull_request));
+      case "workflow_run":
+      case "check_suite": {
+        const pullRequests = fields(body[eventType]).pull_requests;
+        return forPullRequests(Array.isArray(pullRequests) ? pullRequests.flatMap(number) : []);
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Reconciles a repository for webhook deliveries, one pass at a time. Deliveries arriving while a
+   * pass waits to start join it, so a burst of deliveries costs one or two passes rather than one each.
+   * Only the status comments of the issues the deliveries name are refreshed.
+   */
+  private queueWebhookReconcile(repositoryId: string, issueNumbers: number[] | null): Promise<void> {
+    const queued = this.#queuedWebhookReconciles.get(repositoryId);
+    if (queued) {
+      if (issueNumbers === null) queued.issueNumbers = null;
+      else for (const issueNumber of issueNumbers) queued.issueNumbers?.add(issueNumber);
+      return queued.done;
+    }
+    const entry: { issueNumbers: Set<number> | null; done: Promise<void> } = {
+      issueNumbers: issueNumbers === null ? null : new Set(issueNumbers),
+      done: Promise.resolve(),
+    };
+    this.#queuedWebhookReconciles.set(repositoryId, entry);
+    const previous = this.#webhookReconciles.get(repositoryId) ?? Promise.resolve();
+    entry.done = previous.then(async () => {
+      // Deliveries from here on queue the next pass: this one may already have read past them.
+      this.#queuedWebhookReconciles.delete(repositoryId);
+      if (this.#shuttingDown) return;
+      await this.reconcileRepository(repositoryId, { partial: true });
+      this.schedule();
+      const issues = this.store.listIssues(repositoryId);
+      this.refreshStatusComments((entry.issueNumbers === null
+        ? issues
+        : issues.filter((issue) => entry.issueNumbers!.has(issue.sourceNumber))).map((issue) => issue.id));
+    }).catch((error) => log.error("Repository reconciliation failed", { repository: repositoryId }, error));
+    this.#webhookReconciles.set(repositoryId, entry.done);
+    void entry.done.then(() => {
+      if (this.#webhookReconciles.get(repositoryId) === entry.done) this.#webhookReconciles.delete(repositoryId);
+    });
+    return entry.done;
   }
 
   /**
@@ -1670,6 +1816,7 @@ export class ConveyorService {
       try {
         const head = await this.currentChangeHead(repositoryId, pullRequest.id);
         if (!head) continue;
+        this.#liveChangeHeads.set(issue.id, head);
         const current = stored.get(issue.id);
         // A stored indicator is kept only while it is for the current head and no longer "starting".
         if (current?.headSha === head && current.progress !== "starting") continue;
@@ -1969,8 +2116,11 @@ export class ConveyorService {
     });
     const openPullRequest = this.store.getCurrentPullRequest(issue.id);
     if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
-      const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
-      if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
+      // Every reconcile refreshes the live head (see backfillCiIndicators); read it here only when unknown.
+      if (!this.#liveChangeHeads.has(issue.id)) {
+        const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
+        if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
+      }
     } else {
       this.#liveChangeHeads.delete(issue.id);
     }
@@ -2002,7 +2152,6 @@ export class ConveyorService {
         : {}),
       questions,
       warnings: !status && issue.warning ? [issue.warning] : [],
-      timestamps: { updatedAt: issue.sourceUpdatedAt },
     });
     const digest = createHash("sha256").update(markdown).digest("hex");
     const mutation = this.store.beginSourceMutation({
@@ -2019,9 +2168,11 @@ export class ConveyorService {
         repository.address,
         issue.sourceNumber,
         markdown,
+        this.#statusCommentIds.get(issue.id),
       );
       this.store.completeSourceMutation(mutation.id, { commentId });
       this.#statusCommentDigests.set(issue.id, digest);
+      this.#statusCommentIds.set(issue.id, commentId);
     } catch (error) {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
