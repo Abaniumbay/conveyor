@@ -89,6 +89,7 @@ repositories:
   const internals = service as unknown as {
     ciProvider: () => CiProvider;
     codeHostFor: () => CodeHost;
+    applyCiWebhook(repositoryId: string, eventType: string, payload: unknown): Promise<void>;
     backfillCiIndicators(id: string): Promise<void>;
     updateStatusComment(id: string): Promise<void>;
   };
@@ -238,6 +239,23 @@ test("duplicate deliveries and events for other or old heads do not regress the 
   await w.deliver("workflow_run", { action: "completed", workflow_run: { head_sha: "other", pull_requests: [{ number: 99 }] } });
   expect(w.indicator()).toMatchObject({ headSha: "head1", state: "passing" });
   expect(w.card()?.waiting?.reason).toContain("CI passed at head1; settling until");
+  await w.service.close();
+});
+
+test("a late completion for a cached head is ignored after the change advances", async () => {
+  const w = await setup();
+  await w.internals.backfillCiIndicators("repo");
+  parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
+  w.state.head = "head2";
+  w.state.runs = [run("build", "passed")];
+  const before = w.indicator();
+  w.state.listed.length = 0;
+
+  await w.internals.applyCiWebhook("repo", "workflow_run", workflowRun("head1"));
+
+  expect(w.indicator()).toEqual(before);
+  expect(w.card()?.waiting?.reason).toBe("Waiting for CI at head1: 1 running · 0/1 passed.");
+  expect(w.state.listed).not.toContain("head1");
   await w.service.close();
 });
 

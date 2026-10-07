@@ -1604,7 +1604,9 @@ export class ConveyorService {
       const indicator = this.store.listIndicators(issueId).find((entry) => entry.id === CI_INDICATOR_ID);
       const known = indicator?.headSha === head;
       if (eventType === "pull_request" && known) continue;
-      if (!known && (await this.currentChangeHead(repositoryId, stored.id)) !== head) continue;
+      // A completion can arrive after the change advanced but before its synchronize
+      // delivery. Do not let a cached indicator make that old head look current.
+      if ((await this.currentChangeHead(repositoryId, stored.id)) !== head) continue;
       const change = { repository: repository.address, changeId: String(stored.number), url: stored.url };
       const input = { issueId, headSha: head, changeUrl: stored.url, ignoreChecks: repository.ci?.ignoreChecks ?? [], now: new Date(), authoritative: !known };
       if (eventType === "pull_request") { startCiForHead(this.store, input); continue; }
