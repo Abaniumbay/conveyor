@@ -135,7 +135,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
       <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
         <div class="details-status">
           <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
-          <strong>{issue.waiting ? "Waiting" : stateWords(issue)}</strong>
+          <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
           {issue.children.length > 0 && <span>· Roll-up</span>}
           {issue.closable && <span>· Closable</span>}
         </div>
@@ -236,6 +236,10 @@ function WaitingLine({ issue, className }: { issue: IssueCardViewModel; classNam
   );
 }
 
+function waitingStateWord(kind: "waiting" | "queued"): string {
+  return kind === "queued" ? "Queued" : "Waiting";
+}
+
 function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
   const todos = issue.todos;
   if (!todos) return null;
@@ -315,7 +319,7 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       <h3 class="issue-title">{issue.title}</h3>
       <p class="issue-status">
         <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
-        <strong>{issue.waiting ? "Waiting" : stateWords(issue)}</strong>
+        <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
         {statusContext && <> · <span class="issue-status-context" title={statusContext}>{statusContext}</span></>}
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
       </p>

@@ -10,6 +10,8 @@ export interface IssueRelationViewModel {
 }
 
 export interface IssueWaitingViewModel {
+  /** Waiting is a future gate poll; queued is runnable work held by capacity. */
+  kind: "waiting" | "queued";
   reason: string;
   since: string;
   nextCheckAt: string | null;

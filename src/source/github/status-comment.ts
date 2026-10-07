@@ -50,6 +50,7 @@ export interface StatusCommentInput {
   issue: StatusIssue;
   stage: string;
   state: string;
+  status?: string;
   activity?: string;
   rationale?: string;
   blocker?: string;
@@ -143,6 +144,7 @@ export function renderStatusComment(input: StatusCommentInput): string {
     `## Conveyor status: ${issueNumber(input.issue.number)} — ${text(input.issue.title)}`,
     "",
     `- Issue: ${text(input.issue.state)} · Stage: ${text(input.stage)} · State: ${text(input.state)}`,
+    optionalLine("Status", input.status),
     optionalLine("Activity", input.activity),
     optionalLine("Rationale", input.rationale),
     optionalLine("Blocker", input.blocker),

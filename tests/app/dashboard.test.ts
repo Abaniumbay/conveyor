@@ -1117,8 +1117,8 @@ describe("ConveyorService dashboard", () => {
       taskInstanceId: "ciGate",
     }).record;
     journal.markPending(pending.id, {
-      wakeAt: "2026-09-29T03:12:00Z",
-      deadlineAt: "2026-09-29T12:00:00Z",
+      wakeAt: "2099-09-29T03:12:00Z",
+      deadlineAt: "2099-09-29T12:00:00Z",
       message: "Waiting for CI for 7c0ea55",
     }, epoch);
     journal.saveCursor({
@@ -1132,8 +1132,8 @@ describe("ConveyorService dashboard", () => {
       state: "pending",
       feedback: null,
       pendingSince: "2026-09-29T03:02:00Z",
-      wakeAt: "2026-09-29T03:12:00Z",
-      deadlineAt: "2026-09-29T12:00:00Z",
+      wakeAt: "2099-09-29T03:12:00Z",
+      deadlineAt: "2099-09-29T12:00:00Z",
     }, epoch);
 
     const service = new ConveyorService(config, store, {} as never);
@@ -1176,8 +1176,8 @@ describe("ConveyorService dashboard", () => {
       waiting: {
         reason: "Waiting for CI for 7c0ea55",
         since: "2026-09-29T03:02:00Z",
-        nextCheckAt: "2026-09-29T03:12:00Z",
-        deadline: "2026-09-29T12:00:00Z",
+        nextCheckAt: "2099-09-29T03:12:00Z",
+        deadline: "2099-09-29T12:00:00Z",
       },
     });
     expect(service.issueJourney("github:owner/repo#31")).toMatchObject({

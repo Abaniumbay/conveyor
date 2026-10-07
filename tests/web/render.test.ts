@@ -86,10 +86,24 @@ const waitingIssue = {
   activity: "implementation › ciGate",
   reason: null,
   waiting: {
+    kind: "waiting",
     reason: "Waiting for CI for 7c0ea55",
     since: "2026-09-29T11:40:00Z",
     nextCheckAt: "2026-09-29T12:10:00Z",
     deadline: "2026-09-29T22:48:00Z",
+  },
+} as IssueCardViewModel;
+
+const queuedIssue = {
+  ...waitingIssue,
+  id: "queued",
+  number: 46,
+  waiting: {
+    kind: "queued" as const,
+    reason: "repo slots 1/1 busy: #41",
+    since: "2026-09-29T11:40:00Z",
+    nextCheckAt: null,
+    deadline: null,
   },
 } as IssueCardViewModel;
 
@@ -241,6 +255,14 @@ describe("indicators", () => {
 });
 
 describe("renderDashboard", () => {
+  test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
+    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
+
+    expect(html.match(/>Queued<\/strong>/g)).toHaveLength(4);
+    expect(html).toContain("repo slots 1/1 busy: #41");
+    expect(html).not.toContain("next check");
+  });
+
   test("the About view shows the running build", () => {
     const html = renderDashboard({ ...dashboard, view: "about" });
     expect(html).toContain(`Version ${BUILD.version}`);
