@@ -543,7 +543,19 @@ async function main(): Promise<void> {
     await waitForServer(`${baseUrl}/health/live`);
     await verifyGithubStub(demoHome);
 
-    browser = await chromium.launch({ headless: true });
+    // Multi-threaded and GPU rasterization anti-alias edges slightly differently between runs;
+    // single-threaded software raster keeps repeated captures pixel-identical.
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-gpu",
+        "--disable-gpu-rasterization",
+        "--disable-partial-raster",
+        "--disable-skia-runtime-opts",
+        "--num-raster-threads=1",
+        "--font-render-hinting=none",
+      ],
+    });
     const context = await browser.newContext({
       viewport: { width: 1440, height: 1024 },
       deviceScaleFactor: 1,
