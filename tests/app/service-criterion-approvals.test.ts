@@ -99,14 +99,30 @@ test("projects current-head approvals into status comments and dashboard details
     { id: "AC-2", text: "Other criterion", approved: false },
   ]);
 
+  const unticked = async (label: string) => {
+    await w.internals.updateStatusComment("issue");
+    expect(w.statusComments.at(-1), label).toContain("- [ ] Current criterion");
+    expect(w.card().acceptanceCriteria[0], label).toMatchObject({ id: "AC-1", approved: false });
+  };
+  const ticked = async (label: string) => {
+    await w.internals.updateStatusComment("issue");
+    expect(w.statusComments.at(-1), label).toContain("- [x] Current criterion");
+    expect(w.card().acceptanceCriteria[0], label).toMatchObject({ id: "AC-1", approved: true });
+  };
+
+  // A new head unticks a criterion approved at the old head.
   w.persist("open", "head-2", null);
-  await w.internals.updateStatusComment("issue");
-  expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion");
+  await unticked("new head");
+
+  // Text-hash mismatch at the current head stays unticked.
   approvals.approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-2", checkedAt: "t", textHash: criterionTextHash("Edited criterion") });
-  await w.internals.updateStatusComment("issue");
-  expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion");
+  await unticked("hash mismatch");
+
+  // Matching approval ticks; withdrawing it unticks again (same content as before, so it must be rewritten).
+  approvals.approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-2", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
+  await ticked("approved at head-2");
   approvals.withdraw("issue", "AC-1");
-  await w.internals.updateStatusComment("issue");
+  await unticked("withdrawn");
   expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion");
   await w.service.close();
 });

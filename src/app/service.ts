@@ -211,6 +211,10 @@ export class ConveyorService {
   readonly #active = new Map<string, ActiveRun>();
   readonly #statusCommentUpdates = new Set<Promise<void>>();
   readonly #statusCommentUpdatesByIssue = new Map<string, Promise<void>>();
+  /** The status-comment digest last written by this process, so a revert to older content is still written. */
+  readonly #statusCommentDigests = new Map<string, string>();
+  /** The live head of an open change, as last read from the code host; newer than the persisted context. */
+  readonly #liveChangeHeads = new Map<string, string>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -1891,7 +1895,8 @@ export class ConveyorService {
     if (pullRequest.state === "merged" || pullRequest.mergedAt !== null || change.state === "merged") {
       return change.state === "merged" ? change.headSha : context.checkpoints.reviewPassed?.sha ?? null;
     }
-    return pullRequest.state === "open" && change.state === "open" ? change.headSha : null;
+    if (pullRequest.state !== "open" || change.state !== "open") return null;
+    return this.#liveChangeHeads.get(issue.id) ?? change.headSha;
   }
 
   /** Source-authoritative criteria annotated from durable review approvals. */
@@ -1934,6 +1939,13 @@ export class ConveyorService {
         ? [{ number: blocker.sourceNumber, title: blocker.title, state: blocker.projectedState ?? blocker.sourceState }]
         : [];
     });
+    const openPullRequest = this.store.getCurrentPullRequest(issue.id);
+    if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
+      const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
+      if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
+    } else {
+      this.#liveChangeHeads.delete(issue.id);
+    }
     const acceptanceCriteria = this.criterionApprovalStates(issue).map(({ text, approved }) => ({ text, passed: approved }));
     const status = this.currentIssueStatus(issue);
     const markdown = renderStatusComment({
@@ -1971,7 +1983,9 @@ export class ConveyorService {
       operation: "comment.status.upsert",
       request: { issueId: issue.id, digest },
     });
-    if (mutation.status === "succeeded") return;
+    // A succeeded mutation only proves this content was written once; the remote comment may
+    // have moved on since (checked, then unchecked), so skip only when it is the last write.
+    if (mutation.status === "succeeded" && this.#statusCommentDigests.get(issue.id) === digest) return;
     try {
       const commentId = await this.github.upsertStatusComment(
         repository.address,
@@ -1979,6 +1993,7 @@ export class ConveyorService {
         markdown,
       );
       this.store.completeSourceMutation(mutation.id, { commentId });
+      this.#statusCommentDigests.set(issue.id, digest);
     } catch (error) {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
