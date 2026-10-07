@@ -276,7 +276,7 @@ function stateWords(issue: IssueCardViewModel): string {
     completed: "Done",
     done: "Done",
     error: "Stopped",
-    inconsistent: "Needs attention",
+    inconsistent: "Label problems",
     "in-progress": "Working",
     in_progress: "Working",
     "needs-input": "Needs input",
@@ -395,9 +395,7 @@ function StageColumn({ column, canManage = false }: { column: StageColumnViewMod
 
 function NeedsYou({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
-  const questionIssueIds = new Set(model.questions.map((question) => question.issueId));
-  const stopped = model.needsYou.filter((issue) => !questionIssueIds.has(issue.id));
-  const total = model.questions.length + stopped.length;
+  const { stopped, total } = needsYouItems(model);
   if (total === 0) return null;
   return (
     <section class="needs-you" aria-labelledby="needs-you-heading">
@@ -443,15 +441,21 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
   );
 }
 
+function needsYouItems(model: DashboardViewModel) {
+  const questionIssueIds = new Set(model.questions.map((question) => question.issueId));
+  const stopped = model.needsYou.filter((issue) => !questionIssueIds.has(issue.id));
+  return { stopped, total: model.questions.length + stopped.length };
+}
+
 function Navigation({ model }: { model: DashboardViewModel }) {
   const tabs: Array<{ view: DashboardView; label: string; count: number | null }> = [
     { view: "board", label: "Board", count: model.counts.board },
-    { view: "attention", label: "Needs attention", count: model.counts.attention },
     { view: "team", label: "Team", count: null },
     { view: "reports", label: "Reports", count: null },
-    { view: "about", label: "About", count: null },
     { view: "agent", label: "Operator", count: null },
   ];
+  if (model.counts.attention > 0 || model.view === "attention") tabs.splice(1, 0, { view: "attention", label: "Label problems", count: model.counts.attention });
+  const needsYou = needsYouItems(model);
   return (
     <nav class="tabs" aria-label="Dashboard views">
       {tabs.map((tab) => (
@@ -459,8 +463,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
-      {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "tab tab--active" : "tab"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
-      <a href="/profile" class={model.view === "profile" ? "tab tab--active" : "tab"} aria-current={model.view === "profile" ? "page" : undefined}><span data-profile-avatar>{model.account?.avatar ?? "🐼"}</span> Profile</a>
+      {needsYou.total > 0 && <a href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">{needsYou.total}</span></a>}
     </nav>
   );
 }
@@ -588,7 +591,7 @@ function Attention({ model }: { model: DashboardViewModel }) {
   const column = model.attention;
   return (
     <section class="panel" aria-labelledby="attention-heading">
-      <header class="section-heading"><div><h2 id="attention-heading">Needs attention</h2><p>These enrolled issues have a missing, unknown, or conflicting stage label.</p></div><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
+      <header class="section-heading"><div><h2 id="attention-heading">Label problems</h2><p>These enrolled issues have a missing, unknown, or conflicting stage label.</p></div><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
       {column.issues.length > 0
         ? <ol class="attention-grid">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} canManage={canManageDashboard(model)} /></li>)}</ol>
         : <p class="empty">No label inconsistencies</p>}
@@ -770,16 +773,17 @@ function Page({ model }: { model: DashboardViewModel }) {
             <details class="account-menu">
               <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
               <div class="header-popover account-popover">
-                <a href="/profile">Profile</a>
-                <a href="/profile#change-password">Change password</a>
+                <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
+                {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
+                <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
+                <a href="/profile#change-password" class="account-menu-link">Change password</a>
                 <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
               </div>
             </details>
           </header>
-          <Line model={model} />
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
-          <NeedsYou model={model} />
           <Navigation model={model} />
+          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /></>}
           {content}
           {model.selectedIssue && (
             <DetailsDialog

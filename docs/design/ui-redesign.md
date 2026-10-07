@@ -136,7 +136,7 @@ Conveyor *is* a production line, so the dashboard reads like the control board o
   - per-column pagination;
   - roll-up parent grouping;
   - working-now highlight.
-- **Views:** the "Needs attention" view for invalid labels; the steering Operator view (compose, live event stream, recent runs, `?view=agent&run=`).
+- **Views:** the "Label problems" view for invalid labels; the steering Operator view (compose, live event stream, recent runs, `?view=agent&run=`).
 - **Live state:** questions with their answer forms, the active-work and runner capacity display, and the live server status (SSE `status` events). Live refresh keeps its revisions: dashboard, conversation, activity.
 - **Issue inspector:**
   - Summary covers relationships, criteria, labels, usage and duration.

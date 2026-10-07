@@ -29,7 +29,7 @@ const model: DashboardViewModel = {
   },
   attention: {
     id: "attention",
-    name: "Needs attention",
+    name: "Label problems",
     actors: [],
     cost: null,
     totalIssues: 0,
@@ -467,7 +467,7 @@ describe("createWebHandler", () => {
     const html = await response.text();
     expect(html).toContain('data-dashboard-view="about"');
     expect(html).toContain('href="/about"');
-    expect(html).toContain('class="tab tab--active"');
+    expect(html).toContain('class="account-menu-link account-menu-link--active"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain("<h2 id=\"about-heading\">About</h2>");
     expect(html).toContain(`Version ${packageMetadata.version}`);
@@ -819,7 +819,7 @@ describe("createWebHandler", () => {
     expect(accountsPage).toContain('action="/api/accounts"');
     expect(accountsPage).toContain('class="dashboard"');
     expect(accountsPage).toContain('data-dashboard-view="accounts"');
-    expect(accountsPage).toContain('href="/accounts" class="tab tab--active" aria-current="page">Accounts</a>');
+    expect(accountsPage).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
     expect(accountsPage).toContain('data-account-create-form="true"');
     expect(accountsPage).toContain('data-account-list="true"');
     expect(accountsPage).toContain('action="/logout"');
@@ -879,8 +879,8 @@ describe("createWebHandler", () => {
     expect(profilePage).toContain('data-profile-avatar-form="true"');
     expect(profilePage).toContain('<button type="submit">Save</button>');
     expect(profilePage).not.toContain('Save avatar');
-    expect(profilePage).toContain('href="/profile" class="tab tab--active" aria-current="page"');
-    expect(profilePage).toContain('href="/profile#change-password">Change password</a>');
+    expect(profilePage).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
+    expect(profilePage).toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
     expect(profilePage).toContain('class="dashboard-header"');
     expect(profilePage).not.toContain('href="/accounts">Accounts</a>');
 

@@ -53,6 +53,7 @@ body:has(dialog[open]){overflow:hidden}
 .account-table thead th:first-child{display:table-cell}.notification-form{display:block}.notification-options{display:grid;gap:.55rem;margin:0 0 .8rem;padding:0;border:0}.notification-options legend{margin-bottom:.5rem;color:var(--steel);font-size:var(--text-sm);font-weight:500}.notification-options label{display:flex;align-items:flex-start;gap:.55rem;color:var(--ink);font-size:var(--text-sm);font-weight:400}.notification-options input{margin-top:.2rem;accent-color:var(--signal)}.notification-form .settings-actions{display:flex}.settings-status{margin:.75rem 0 0;color:var(--steel);font-size:var(--text-sm)}.header-link.header-link--active{border-color:var(--signal);color:var(--signal)}.dashboard-navigating main.dashboard{cursor:progress}
 @media(max-width:760px){.settings-section--form{grid-template-columns:1fr}.settings-form{grid-template-columns:1fr}.settings-actions{grid-column:1}.account-table th:last-child,.account-table td:last-child{width:auto}}
 @media(max-width:760px){.total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}.tabs{margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}.tab{flex:0 0 auto;padding:.55rem .65rem;white-space:nowrap}}
+.account-popover>a[aria-current="page"]{background:var(--concrete);font-weight:600}
 `;
 
 export const quotaHeaderCss = `
