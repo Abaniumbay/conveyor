@@ -491,7 +491,7 @@ async function capture(
   route: string,
   expected: string[],
 ): Promise<void> {
-  await page.goto(`${baseUrl}${route}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
   await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
   await stabilize(page);
   for (const text of expected) await expectText(page, text);
@@ -547,6 +547,7 @@ async function main(): Promise<void> {
       page.waitForURL(/\/(board|attention)?$/),
       page.click("button[type=submit]"),
     ]);
+    await page.waitForLoadState("networkidle");
 
     await capture(page, baseUrl, "board", "/board", [
       "Needs you",
@@ -569,11 +570,11 @@ async function main(): Promise<void> {
       "The dashboard overview is implemented",
     ]);
     await page.goto(`${baseUrl}/issues/demo/1/journey`, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
     });
     await expectText(page, "The plan was approved for implementation.");
     await page.goto(`${baseUrl}/issues/demo/1/logs`, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
     });
     await expectText(page, "Prepared the change for review");
     await context.close();
