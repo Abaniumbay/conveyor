@@ -88,7 +88,7 @@ async function main() {
     // Seed database with demo data
     console.log("Seeding demo data...");
     const dbPath = path.join(DEMO_HOME, "data", "conveyor.sqlite");
-    const now = new Date().toISOString();
+    const now = "2026-09-15T12:00:00.000Z";
     const store = await ConveyorStore.open(dbPath);
 
     // Create demo repository
