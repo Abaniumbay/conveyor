@@ -798,7 +798,6 @@ function Page({ model }: { model: DashboardViewModel }) {
                 <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
                 {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
                 <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
-                <a href="/profile#change-password" class="account-menu-link">Change password</a>
                 <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
               </div>
             </details>

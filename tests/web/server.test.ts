@@ -820,6 +820,7 @@ describe("createWebHandler", () => {
     expect(accountsPage).toContain('class="dashboard"');
     expect(accountsPage).toContain('data-dashboard-view="accounts"');
     expect(accountsPage).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
+    expect(accountsPage).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
     expect(accountsPage).toContain('data-account-create-form="true"');
     expect(accountsPage).toContain('data-account-list="true"');
     expect(accountsPage).toContain('action="/logout"');
@@ -876,11 +877,13 @@ describe("createWebHandler", () => {
     expect(profilePage).toContain('data-dashboard-view="profile"');
     expect(profilePage).toContain('name="avatar" value="🦊" checked');
     expect(profilePage).toContain('id="change-password" aria-labelledby="password-heading"');
+    expect(profilePage).toContain('action="/api/profile/password"');
+    expect(profilePage).toContain('name="currentPassword"');
     expect(profilePage).toContain('data-profile-avatar-form="true"');
     expect(profilePage).toContain('<button type="submit">Save</button>');
     expect(profilePage).not.toContain('Save avatar');
     expect(profilePage).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
-    expect(profilePage).toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
+    expect(profilePage).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
     expect(profilePage).toContain('class="dashboard-header"');
     expect(profilePage).not.toContain('href="/accounts">Accounts</a>');
 
