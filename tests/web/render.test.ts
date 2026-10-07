@@ -13,7 +13,10 @@ const parent: IssueCardViewModel = {
   url: "https://github.com/sample/repo/issues/41?x=1&y=2",
   state: "in_progress",
   labels: ["feature", "priority: high"],
-  acceptanceCriteria: ["<script>alert(1)</script>", "Keyboard usable"],
+  acceptanceCriteria: [
+    { id: "AC-1", text: "<script>alert(1)</script>", approved: false },
+    { id: "AC-2", text: "Keyboard usable", approved: true },
+  ],
   todos: null,
   indicators: [],
   activity: "Running verification",
@@ -255,6 +258,14 @@ describe("indicators", () => {
 });
 
 describe("renderDashboard", () => {
+  test("renders visible approved and unapproved criterion states", () => {
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
+
+    expect(html).toContain("☐ Not approved");
+    expect(html).toContain("☑ Approved");
+    expect(html).toContain("Keyboard usable");
+  });
+
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
     const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
 
