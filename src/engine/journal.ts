@@ -310,6 +310,14 @@ export class ExecutionStore {
     return rows.map((row) => row.name);
   }
 
+  /** The durable timestamp of a CI fact, used to keep a settle window stable across restarts. */
+  ciMarkAt(issueId: string, headSha: string, kind: CiMarkKind, name = ""): string | null {
+    const row = this.#db
+      .query("SELECT created_at FROM ci_marks WHERE issue_id = ? AND head_sha = ? AND kind = ? AND name = ?")
+      .get(issueId, headSha, kind, name) as { created_at: string } | null;
+    return row?.created_at ?? null;
+  }
+
   getExecution(id: string): TaskExecutionRecord | null {
     const row = this.#db.query("SELECT * FROM task_executions WHERE id = ?").get(id) as ExecutionRow | null;
     return row ? toRecord(row) : null;

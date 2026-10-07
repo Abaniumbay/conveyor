@@ -57,7 +57,7 @@ repositories:
   const open = async () => {
     const store = await ConveyorStore.open(config.settings.database);
     const executed: string[] = [];
-    const service = new ConveyorService(config, store, {} as GitHubAdapter);
+    const service = new ConveyorService(config, store, { upsertStatusComment: async () => 1 } as unknown as GitHubAdapter);
     (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => {
       executed.push(issue.id);
     };
@@ -92,6 +92,16 @@ function park(store: ConveyorStore, config: ConveyorConfig, wakeAt: string) {
   void config;
 }
 
+function addRunningHolder(store: ConveyorStore, config: ConveyorConfig) {
+  store.upsertIssue({
+    id: "holder", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Holder", body: "",
+    sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+  });
+  store.setIssueProjection("holder", { stage: "implementation", state: "active", warning: null });
+  store.setQueueRank("holder", store.nextQueueRank());
+  store.setStageState({ issueId: "holder", stageId: "implementation", status: "running", feedbackCycle: 0, configHash: config.hash });
+}
+
 const schedule = (service: ConveyorService) => (service as unknown as { schedule(): void }).schedule();
 
 describe("persisted wake-ups", () => {
@@ -120,6 +130,64 @@ describe("persisted wake-ups", () => {
     park(first.store, config, new Date(Date.now() - 1_000).toISOString());
     schedule(first.service);
     expect(first.executed).toEqual(["issue"]);
+    await first.service.close();
+  });
+
+  test("a due item reports all full capacity slots, then starts when its holder releases", async () => {
+    const { config, first } = await setup();
+    config.settings.runners = 1;
+    config.repositories.repo!.concurrency = 1;
+    config.pipelines.default!.stages[0]!.concurrency = 1;
+    const wakeAt = new Date(Date.now() - 1_000).toISOString();
+    park(first.store, config, wakeAt);
+    addRunningHolder(first.store, config);
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: MESSAGE });
+
+    const internals = first.service as unknown as {
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+    };
+    const queuedCard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(queuedCard).toMatchObject({ waiting: { kind: "queued" }, reason: null });
+    expect(internals.currentIssueStatus(first.store.getIssue("issue")!)).toEqual({
+      kind: "queued",
+      reason: "global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; repo slots 1/1 busy: #2",
+      since: wakeAt,
+      nextCheckAt: null,
+      deadline: null,
+    });
+
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    await first.service.close();
+  });
+
+  test("a returned item starts a new queued period instead of retaining its parked gate message", async () => {
+    const { config, first } = await setup();
+    config.settings.runners = 1;
+    const wakeAt = new Date(Date.now() - 1_000).toISOString();
+    park(first.store, config, wakeAt);
+    addRunningHolder(first.store, config);
+
+    // A return/retry fences the parked task and puts the stage back in ready state.
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "blocked", feedbackCycle: 0, configHash: config.hash });
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    const requeuedAt = first.store.getStageState("issue")!.updatedAt;
+    const status = (first.service as unknown as {
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string; since: string; nextCheckAt: string | null; deadline: string | null } | null;
+    }).currentIssueStatus(first.store.getIssue("issue")!);
+
+    expect(status).toEqual({
+      kind: "queued",
+      reason: "global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; repo slots 1/1 busy: #2",
+      since: requeuedAt,
+      nextCheckAt: null,
+      deadline: null,
+    });
+    expect(status?.reason).not.toContain("Waiting for CI");
+    expect(status?.since).not.toBe(wakeAt);
     await first.service.close();
   });
 

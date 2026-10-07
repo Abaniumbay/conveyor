@@ -12,7 +12,7 @@ import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
-import { selectRunnableIssues, type SchedulerCandidate } from "../core/scheduler";
+import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue } from "../db/store";
 import { claudeCodeHarness } from "../harness/claude-code";
@@ -49,7 +49,7 @@ import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
-import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead } from "./indicators";
+import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 
 interface ActiveRun {
@@ -59,6 +59,8 @@ interface ActiveRun {
   /** Runs no runner process; excluded from global and repository permits. */
   lightweight: boolean;
 }
+
+type LiveIssueStatus = IssueWaitingViewModel & { kind: "waiting" | "queued" };
 
 interface McpGrant {
   runId: string;
@@ -206,6 +208,7 @@ export class ConveyorService {
   readonly #codeHosts: CodeHostRegistry;
   readonly workspaceManager: WorkspaceManager;
   readonly #active = new Map<string, ActiveRun>();
+  readonly #statusCommentUpdates = new Set<Promise<void>>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -402,7 +405,7 @@ export class ConveyorService {
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#tickRunning || this.#advisoryPolling) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#tickRunning || this.#advisoryPolling) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -423,48 +426,13 @@ export class ConveyorService {
 
   private schedule(): void {
     if (this.#shuttingDown || this.#drain) return;
-    const issues = this.store.listIssues();
-    const candidates: SchedulerCandidate[] = issues.flatMap((issue) => {
-      const state = this.store.getStageState(issue.id);
-      if (!state?.stageId || issue.queueRank === null) return [];
-      const blockers = this.store.listDependencies(issue.id);
-      const dependenciesSatisfied = blockers.every((id) => {
-        const blocker = this.store.getIssue(id);
-        return Boolean(
-          blocker &&
-          (blocker.sourceState === "closed" || blocker.projectedState === "done"),
-        );
-      });
-      return [{
-        id: issue.id,
-        repositoryId: issue.repositoryId,
-        stageId: state.stageId,
-        queueRank: issue.queueRank,
-        siblingOrder: null,
-        eligible:
-          issue.projectedState === "active" &&
-          state.status === "ready" &&
-          !this.#active.has(issue.id) &&
-          this.wakeupReached(issue.id) &&
-          !this.#repositoryErrors.has(issue.repositoryId),
-        dependenciesSatisfied,
-        rollupOnly: this.store.listChildren(issue.id).length > 0,
-        lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
-      }];
-    });
-    const stageLimits: Record<string, number> = {};
-    for (const pipeline of Object.values(this.config.pipelines)) {
-      for (const stage of pipeline.stages) {
-        stageLimits[stage.id] = Math.min(stageLimits[stage.id] ?? Infinity, stage.concurrency);
-      }
-    }
-    const repositoryLimits = Object.fromEntries(
-      Object.entries(this.config.repositories).map(([id, repository]) => [id, repository.concurrency]),
-    );
+    const candidates = this.schedulerCandidates();
+    const limits = this.concurrencyLimits();
+    const occupants = this.schedulerOccupants();
     const stageUsage: Record<string, number> = {};
     const repositoryUsage: Record<string, number> = {};
     let processUsage = 0;
-    for (const active of this.#active.values()) {
+    for (const active of occupants) {
       stageUsage[active.stageId] = (stageUsage[active.stageId] ?? 0) + 1;
       if (active.lightweight) continue;
       processUsage += 1;
@@ -472,11 +440,7 @@ export class ConveyorService {
     }
     const selected = selectRunnableIssues(
       candidates,
-      {
-        global: this.config.settings.runners,
-        stages: stageLimits,
-        repositories: repositoryLimits,
-      },
+      limits,
       {
         global: processUsage,
         stages: stageUsage,
@@ -498,7 +462,152 @@ export class ConveyorService {
         this.#active.delete(issue.id);
       });
     }
+    const selectedIds = new Set(selected.map((candidate) => candidate.id));
+    this.refreshStatusComments([
+      ...selectedIds,
+      ...candidates
+        .filter((candidate) => candidate.eligible && candidate.dependenciesSatisfied && !candidate.rollupOnly && !selectedIds.has(candidate.id))
+        .map((candidate) => candidate.id),
+    ]);
     this.armWakeTimer();
+  }
+
+  private schedulerCandidates(): SchedulerCandidate[] {
+    return this.store.listIssues().flatMap((issue) => {
+      const state = this.store.getStageState(issue.id);
+      if (!state?.stageId || issue.queueRank === null) return [];
+      const dependenciesSatisfied = this.store.listDependencies(issue.id).every((id) => {
+        const blocker = this.store.getIssue(id);
+        return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
+      });
+      return [{
+        id: issue.id,
+        repositoryId: issue.repositoryId,
+        stageId: state.stageId,
+        queueRank: issue.queueRank,
+        siblingOrder: null,
+        eligible:
+          issue.projectedState === "active" &&
+          state.status === "ready" &&
+          !this.#active.has(issue.id) &&
+          this.wakeupReached(issue.id) &&
+          !this.#repositoryErrors.has(issue.repositoryId),
+        dependenciesSatisfied,
+        rollupOnly: this.store.listChildren(issue.id).length > 0,
+        lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
+      }];
+    });
+  }
+
+  private concurrencyLimits(): ConcurrencyLimits {
+    const stages: Record<string, number> = {};
+    for (const pipeline of Object.values(this.config.pipelines)) {
+      for (const stage of pipeline.stages) {
+        stages[stage.id] = Math.min(stages[stage.id] ?? Infinity, stage.concurrency);
+      }
+    }
+    return {
+      global: this.config.settings.runners,
+      stages,
+      repositories: Object.fromEntries(
+        Object.entries(this.config.repositories).map(([id, repository]) => [id, repository.concurrency]),
+      ),
+    };
+  }
+
+  private schedulerOccupants(): SchedulerOccupant[] {
+    const occupants = new Map<string, SchedulerOccupant>();
+    for (const run of this.store.listActiveIssueRuns()) {
+      occupants.set(run.issueId, {
+        id: run.issueId,
+        repositoryId: run.repository,
+        stageId: run.stageId,
+        lightweight: this.isLightweightStage(run.repository, run.stageId),
+      });
+    }
+    for (const [id, active] of this.#active) {
+      occupants.set(id, { id, repositoryId: active.repositoryId, stageId: active.stageId, lightweight: active.lightweight });
+    }
+    return [...occupants.values()];
+  }
+
+  private refreshStatusComments(issueIds: readonly string[]): void {
+    for (const issueId of new Set(issueIds)) {
+      let update: Promise<void>;
+      update = this.updateStatusComment(issueId)
+        .catch((error) => log.warn("Status comment refresh failed", this.itemFields(issueId), error))
+        .finally(() => this.#statusCommentUpdates.delete(update));
+      this.#statusCommentUpdates.add(update);
+    }
+  }
+
+  /** The current presentation status, derived from durable gate state and live scheduler facts. */
+  private currentIssueStatus(issue: StoredIssue): LiveIssueStatus | null {
+    const cursor = this.store.executions().getCursor(issue.id);
+    const pending = cursor?.state === "pending" ? this.store.executions().pendingMessage(issue.id) : null;
+    const wakeAt = cursor?.state === "pending" ? cursor.wakeAt : null;
+    const wakeInFuture = wakeAt !== null && Date.parse(wakeAt) > Date.now();
+    if (cursor?.state === "pending" && wakeInFuture) {
+      return {
+        kind: "waiting",
+        reason: (cursor.taskInstanceId ? this.currentCiWaitingReason(issue, cursor.taskInstanceId, pending) : null) ?? pending ?? issue.warning ?? "Waiting for the next check",
+        since: cursor.pendingSince ?? this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
+        nextCheckAt: wakeAt,
+        deadline: cursor.deadlineAt,
+      };
+    }
+
+    const candidate = this.schedulerCandidates().find((item) => item.id === issue.id);
+    if (!candidate || !candidate.eligible || !candidate.dependenciesSatisfied || candidate.rollupOnly) return null;
+    const blockers = capacityBlockers(candidate, this.concurrencyLimits(), this.schedulerOccupants());
+    if (blockers.length === 0) return null;
+    const reason = blockers.map((blocker) => {
+      const holderNumbers = blocker.occupants
+        .map((id) => this.store.getIssue(id)?.sourceNumber)
+        .filter((number): number is number => number !== undefined)
+        .map((number) => `#${number}`)
+        .join(", ");
+      const name = blocker.scope === "global"
+        ? "global runner slots"
+        : blocker.scope === "stage"
+          ? `${candidate.stageId} slots`
+          : `${candidate.repositoryId} slots`;
+      return `${name} ${blocker.used}/${blocker.limit} busy: ${holderNumbers || "unknown item"}`;
+    }).join("; ");
+    return {
+      kind: "queued",
+      reason,
+      since: wakeAt ?? this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
+      nextCheckAt: null,
+      deadline: null,
+    };
+  }
+
+  private currentCiWaitingReason(issue: StoredIssue, taskInstanceId: string, pending: string | null): string | null {
+    if (!pending?.startsWith("Waiting for CI")) return null;
+    const indicator = this.store.listIndicators(issue.id).find((item) => item.id === CI_INDICATOR_ID);
+    if (!indicator) return null;
+    const head = indicator.headSha.slice(0, 7);
+    if (indicator.state === "running" || indicator.state === "unknown") {
+      return `Waiting for CI at ${head}: ${indicator.detail}.`;
+    }
+    if (indicator.state === "failed") return `CI failed at ${head}: ${indicator.detail}.`;
+    const settleEnd = this.ciSettleEnd(issue, taskInstanceId, indicator);
+    return settleEnd !== null
+      ? `CI passed at ${head}; settling until ${settleEnd}.`
+      : `CI passed at ${head}; ready for the next gate evaluation.`;
+  }
+
+  private ciSettleEnd(issue: StoredIssue, taskInstanceId: string, indicator: StoredIndicator): string | null {
+    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
+      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
+    const task = plan.stages
+      .find((stage) => stage.id === this.store.getStageState(issue.id)?.stageId)
+      ?.exitGate.find((candidate) => candidate.id === taskInstanceId);
+    if (task?.task !== "ci.passed") return null;
+    const seconds = typeof task.with.settleSeconds === "number" ? task.with.settleSeconds : 120;
+    const firstSeen = this.store.executions().ciMarkAt(issue.id, indicator.headSha, "first-seen") ?? indicator.observedAt;
+    return new Date(Date.parse(firstSeen) + seconds * 1_000).toISOString();
   }
 
   /** Polls due advisory CI watches (no permits, no stage state) and re-arms the timer for the next one. */
@@ -646,6 +755,7 @@ export class ConveyorService {
     if ("retryInMs" in decision) {
       const now = new Date();
       const waiting: IssueWaitingViewModel = {
+        kind: "waiting",
         reason: `Execution failed: ${message}`,
         since: previous?.stageId === stageId && previous.waiting
           ? previous.waiting.since
@@ -1459,6 +1569,7 @@ export class ConveyorService {
       await this.reconcileRepository(repository[0]);
     }
     this.schedule();
+    if (repository) this.refreshStatusComments(this.store.listIssues(repository[0]).map((issue) => issue.id));
   }
 
   /**
@@ -1778,10 +1889,12 @@ export class ConveyorService {
       text,
       passed: false,
     }));
+    const status = this.currentIssueStatus(issue);
     const markdown = renderStatusComment({
       issue: { number: issue.sourceNumber, title: issue.title, state: issue.sourceState },
       stage: issue.projectedStage ?? "unassigned",
       state: issue.projectedState ?? "unknown",
+      ...(status ? { status: this.statusCommentText(status) } : {}),
       ...(stageState
         ? { activity: `${stageState.stageId} · ${stageState.status}` }
         : {}),
@@ -1802,7 +1915,7 @@ export class ConveyorService {
           } }
         : {}),
       questions,
-      warnings: issue.warning ? [issue.warning] : [],
+      warnings: !status && issue.warning ? [issue.warning] : [],
       timestamps: { updatedAt: issue.sourceUpdatedAt },
     });
     const digest = createHash("sha256").update(markdown).digest("hex");
@@ -1824,6 +1937,13 @@ export class ConveyorService {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
     }
+  }
+
+  private statusCommentText(status: LiveIssueStatus): string {
+    const state = status.kind === "queued" ? "Queued" : "Waiting";
+    const nextCheck = status.nextCheckAt ? ` · next check ${status.nextCheckAt}` : "";
+    const since = status.kind === "queued" ? ` · queued since ${status.since}` : "";
+    return `${state} · ${status.reason}${nextCheck}${since}`;
   }
 
   dashboard(
@@ -1908,14 +2028,7 @@ export class ConveyorService {
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       const cursor = this.store.executions().getCursor(issue.id);
-      const parked = cursor?.state === "pending" && !questionIssueIds.has(issue.id)
-        ? {
-            reason: this.store.executions().pendingMessage(issue.id) ?? issue.warning ?? "Waiting for the next check",
-            since: cursor.pendingSince ?? state?.updatedAt ?? issue.sourceUpdatedAt,
-            nextCheckAt: cursor.wakeAt,
-            deadline: cursor.deadlineAt,
-          }
-        : null;
+      const parked = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue) : null;
       const retry = !activeIssueIds.has(issue.id)
         ? this.#infrastructureFailures.get(issue.id)?.waiting ?? null
         : null;
@@ -1953,7 +2066,9 @@ export class ConveyorService {
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
           : state ? `${state.stageId} · ${state.status}` : null,
-        reason: stopReason ?? issue.warning ?? options.reason ?? null,
+        // Live waiting/queued text supersedes the persisted warning, which can describe the
+        // gate state from before the item became runnable.
+        reason: stopReason ?? (waiting ? null : issue.warning ?? options.reason ?? null),
         cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
         stateChangedAt: state?.updatedAt ?? issue.sourceUpdatedAt,

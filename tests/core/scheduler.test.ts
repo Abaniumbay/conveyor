@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { selectRunnableIssues } from "../../src/core/scheduler";
+import { capacityBlockers, selectRunnableIssues } from "../../src/core/scheduler";
 
 describe("selectRunnableIssues", () => {
   test("scans global hierarchy order and skips dependencies without blocking later work", () => {
@@ -138,5 +138,25 @@ describe("lightweight stages", () => {
       { global: 2, stages: { implementation: 2 }, repositories: { repo: 2 } },
     );
     expect(selected.map((candidate) => candidate.id)).toEqual(["ci-1"]);
+  });
+});
+
+describe("capacityBlockers", () => {
+  test("reports every full limit and the exact holders, excluding lightweight work from runner and repository usage", () => {
+    const blocks = capacityBlockers(
+      { repositoryId: "repo-a", stageId: "implementation", lightweight: false },
+      { global: 2, stages: { implementation: 2 }, repositories: { "repo-a": 1 } },
+      [
+        { id: "#106", repositoryId: "repo-a", stageId: "implementation", lightweight: false },
+        { id: "#109", repositoryId: "repo-b", stageId: "implementation", lightweight: false },
+        { id: "#ci", repositoryId: "repo-a", stageId: "implementation", lightweight: true },
+      ],
+    );
+
+    expect(blocks).toEqual([
+      { scope: "global", used: 2, limit: 2, occupants: ["#106", "#109"] },
+      { scope: "stage", used: 3, limit: 2, occupants: ["#106", "#109", "#ci"] },
+      { scope: "repository", used: 1, limit: 1, occupants: ["#106"] },
+    ]);
   });
 });
