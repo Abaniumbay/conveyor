@@ -68,6 +68,64 @@ describe("todo tools", () => {
     expect(new ItemTodos(w.store.sqlite()).get("i1")).toMatchObject({ runId: "run-1", updatedAt: "2026-10-03T10:00:00.000Z" });
   });
 
+  test("keeps every completed item when replacing a list and leaves state unchanged on rejection", async () => {
+    const w = await world();
+    const initial = [
+      { id: "t1", text: "Completed one", status: "done" },
+      { id: "t2", text: "Completed two", status: "done" },
+      { id: "t3", text: "Pending work", status: "pending" },
+    ];
+    await w.call("todo.set", { items: initial });
+
+    expect(await w.call("todo.set", { items: [{ id: "t3", text: "Pending work" }] })).toEqual({
+      status: "fail",
+      message: 'completed todo ids must be kept: "t1", "t2"; keep completed items and add new work under new ids',
+    });
+    expect(output(await w.call("todo.get", {})).items).toEqual(initial);
+  });
+
+  test("keeps text and done status for stored ids when replacing a list", async () => {
+    const w = await world();
+    const initial = [
+      { id: "done", text: "Completed", status: "done" },
+      { id: "open", text: "Open work", status: "in_progress", note: "first" },
+    ];
+    await w.call("todo.set", { items: initial });
+
+    expect(await w.call("todo.set", { items: [
+      { id: "done", text: "Completed", status: "done" },
+      { id: "open", text: "Renamed", status: "pending" },
+    ] })).toEqual({ status: "fail", message: 'todo id "open" must keep its original text' });
+    expect(output(await w.call("todo.get", {})).items).toEqual(initial);
+
+    expect(await w.call("todo.set", { items: [
+      { id: "done", text: "Completed", status: "pending" },
+      { id: "open", text: "Open work", status: "pending" },
+    ] })).toEqual({ status: "fail", message: 'completed todo id "done" must remain done' });
+    expect(output(await w.call("todo.get", {})).items).toEqual(initial);
+  });
+
+  test("allows unfinished status and note changes, reordering, removal, and new ids", async () => {
+    const w = await world();
+    await w.call("todo.set", { items: [
+      { id: "done", text: "Completed", status: "done" },
+      { id: "old", text: "Remove me" },
+      { id: "open", text: "Open work", note: "old" },
+    ] });
+
+    const result = await w.call("todo.set", { items: [
+      { id: "open", text: "Open work", status: "in_progress", note: "new" },
+      { id: "done", text: "Completed", status: "done" },
+      { id: "new", text: "New work" },
+    ] });
+    expect(result.status).toBe("pass");
+    expect(output(await w.call("todo.get", {})).items).toEqual([
+      { id: "open", text: "Open work", status: "in_progress", note: "new" },
+      { id: "done", text: "Completed", status: "done" },
+      { id: "new", text: "New work", status: "pending" },
+    ]);
+  });
+
   test("update changes one item's status or note, and the same update can be applied again", async () => {
     const w = await world();
     await w.call("todo.set", { items: [{ id: "t1", text: "A" }, { id: "t2", text: "B", note: "old" }] });
@@ -95,9 +153,21 @@ describe("todo tools", () => {
 
   test("input is validated", async () => {
     const w = await world();
-    await expect(w.call("todo.set", { items: Array.from({ length: 41 }, (_, i) => ({ id: `t${i}`, text: "x" })) })).rejects.toThrow();
     await expect(w.call("todo.set", { items: [{ id: "t1", text: "" }] })).rejects.toThrow();
     await expect(w.call("todo.update", { id: "t1" })).rejects.toThrow();
+  });
+
+  test("allows completed history beyond the limit but rejects more than 40 unfinished items", async () => {
+    const w = await world();
+    const completed = Array.from({ length: 41 }, (_, i) => ({ id: `done-${i}`, text: `Done ${i}`, status: "done" }));
+    const unfinished = Array.from({ length: 40 }, (_, i) => ({ id: `open-${i}`, text: `Open ${i}` }));
+
+    expect((await w.call("todo.set", { items: [...completed, ...unfinished] })).status).toBe("pass");
+    expect(await w.call("todo.set", { items: [...completed, ...unfinished, { id: "too-many", text: "Too many" }] })).toEqual({
+      status: "fail",
+      message: "at most 40 pending or in_progress todos are allowed",
+    });
+    expect(output(await w.call("todo.get", {})).items).toHaveLength(81);
   });
 });
 
