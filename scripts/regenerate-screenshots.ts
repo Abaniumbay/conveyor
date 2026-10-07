@@ -423,6 +423,21 @@ async function seedDemo(home: string): Promise<void> {
       },
     });
     store.completeStageTransition("demo-transition-1");
+    store.beginStageTransition({
+      id: "demo-transition-5",
+      issueId: "demo#5",
+      fromStage: "implementation",
+      toStage: "implementation",
+      kind: "stopped",
+      sourceMutationId: null,
+      detail: {
+        reason: "A rollout owner must confirm the alert is resolved before implementation can resume.",
+        requiredFixes: [],
+        resultStatus: "blocked",
+        actor: { name: "Conveyor", title: "Orchestrator" },
+      },
+    });
+    store.completeStageTransition("demo-transition-5");
   } finally {
     store.close();
   }
@@ -442,10 +457,31 @@ async function stabilize(page: Page): Promise<void> {
 }
 
 async function expectText(page: Page, text: string): Promise<void> {
-  await page
+  const element = page
     .getByText(text, { exact: false })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
+    .first();
+  await element.waitFor({ state: "visible", timeout: 10_000 });
+  const bounds = await element.evaluate((node) => {
+    const { bottom, top } = node.getBoundingClientRect();
+    return { bottom, top, viewportHeight: window.innerHeight };
+  });
+  if (bounds.top < 0 || bounds.bottom > bounds.viewportHeight) {
+    throw new Error(`Primary content is clipped: ${text}`);
+  }
+}
+
+async function expectCardsToFitViewport(page: Page): Promise<void> {
+  const clipped = await page.locator("article[data-issue-id]").evaluateAll((cards) =>
+    cards.flatMap((card) => {
+      const { bottom, top } = card.getBoundingClientRect();
+      return top < 0 || bottom > window.innerHeight
+        ? [card.getAttribute("data-issue-id") ?? "unknown item"]
+        : [];
+    }),
+  );
+  if (clipped.length > 0) {
+    throw new Error(`Board cards extend beyond the capture viewport: ${clipped.join(", ")}`);
+  }
 }
 
 async function capture(
@@ -457,8 +493,9 @@ async function capture(
 ): Promise<void> {
   await page.goto(`${baseUrl}${route}`, { waitUntil: "domcontentloaded" });
   await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
-  for (const text of expected) await expectText(page, text);
   await stabilize(page);
+  for (const text of expected) await expectText(page, text);
+  if (name === "board") await expectCardsToFitViewport(page);
   await page.screenshot({ path: path.join(OUTPUT_DIRECTORY, `${name}.png`) });
 }
 
@@ -494,7 +531,7 @@ async function main(): Promise<void> {
 
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
-      viewport: { width: 1440, height: 900 },
+      viewport: { width: 1440, height: 1024 },
       deviceScaleFactor: 1,
       colorScheme: "light",
       reducedMotion: "reduce",
