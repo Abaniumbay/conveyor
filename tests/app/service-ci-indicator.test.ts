@@ -60,12 +60,12 @@ repositories:
   store.activateEnrollment("issue");
   store.upsertPullRequest({ issueId: "issue", id: "pr-5", number: 5, url: "https://x/pull/5", state: "open" });
 
-  const state = { head: "head1", runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false };
+  const state = { head: "head1", runsHead: null as string | null, runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false };
   const provider = {
     async list(_change: unknown, commit: string) {
       state.listed.push(commit);
       if (state.fail) throw new Error("provider down");
-      return state.runs;
+      return state.runsHead && state.runsHead !== commit ? [] : state.runs;
     },
   } as unknown as CiProvider;
   const github = { async listIssues() { return []; }, async listSubIssues() { return []; }, async listDependencies() { return []; } };
@@ -97,6 +97,16 @@ test("existing changes acquire a current-head indicator on reconcile, shown on t
   const listed = w.state.listed.length;
   expect(w.card()?.indicators).toMatchObject([{ id: "ci", state: "running", symbol: "●", progress: "1 running" }]);
   expect(w.state.listed.length).toBe(listed);
+  await w.service.close();
+});
+
+test("reconcile revalidates a stored indicator against the current head", async () => {
+  const w = await setup();
+  await w.internals.backfillCiIndicators("repo");
+  w.state.head = "head2";
+  w.state.runs = [run("build", "passed")];
+  await w.internals.backfillCiIndicators("repo");
+  expect(w.indicator()).toMatchObject({ headSha: "head2", state: "passing" });
   await w.service.close();
 });
 
@@ -143,11 +153,14 @@ test("a new head replaces the indicator with a starting one; old-head results af
   const w = await setup();
   await w.internals.backfillCiIndicators("repo");
   w.state.head = "head2";
+  w.state.runs = [];
   await w.deliver("pull_request", { action: "synchronize", pull_request: { number: 5, head: { sha: "head2" } } });
   expect(w.indicator()).toMatchObject({ headSha: "head2", state: "running", detail: "CI is starting", entries: [] });
   w.state.runs = [run("build", "passed")];
+  w.state.runsHead = "head1";
   await w.deliver("workflow_run", workflowRun("head1"));
   expect(w.indicator()).toMatchObject({ headSha: "head2", detail: "CI is starting" });
+  w.state.runsHead = "head2";
   await w.deliver("workflow_run", workflowRun("head2"));
   expect(w.indicator()).toMatchObject({ headSha: "head2", state: "passing" });
   await w.service.close();

@@ -1516,14 +1516,17 @@ export class ConveyorService {
   private async backfillCiIndicators(repositoryId: string): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository || repository.ci?.mode === "disabled") return;
-    const stored = new Set(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => entry.issueId));
+    const stored = new Map(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => [entry.issueId, entry]));
     for (const issue of this.store.listIssues(repositoryId)) {
-      if (issue.sourceState !== "open" || stored.has(issue.id)) continue;
+      if (issue.sourceState !== "open") continue;
       const pullRequest = this.store.getCurrentPullRequest(issue.id);
       if (!pullRequest || pullRequest.state !== "open" || pullRequest.mergedAt) continue;
       try {
         const head = await this.currentChangeHead(repositoryId, pullRequest.id);
         if (!head) continue;
+        const current = stored.get(issue.id);
+        // A stored indicator is kept only while it is for the current head and no longer "starting".
+        if (current?.headSha === head && current.progress !== "starting") continue;
         const change = { repository: repository.address, changeId: String(pullRequest.number), url: pullRequest.url };
         observeCi(this.store, {
           issueId: issue.id, headSha: head, changeUrl: pullRequest.url, ignoreChecks: repository.ci?.ignoreChecks ?? [],

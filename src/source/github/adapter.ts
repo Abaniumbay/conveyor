@@ -161,8 +161,20 @@ export interface GitHubDeliveryState {
 interface GitHubHook {
   id: number;
   active: boolean;
+  events?: string[];
   config: { url?: string };
 }
+
+const WEBHOOK_EVENTS = [
+  "issues",
+  "issue_comment",
+  "pull_request",
+  "workflow_run",
+  "check_suite",
+  "deployment_status",
+  "sub_issues",
+  "issue_dependencies",
+];
 
 export interface GitHubReviewThread {
   id: string;
@@ -278,12 +290,13 @@ export class GitHubAdapter {
       paginate: true,
     });
     const existing = hooks.find((hook) => hook.config.url === input.url);
-    if (existing?.active) return;
+    const missingEvents = existing ? WEBHOOK_EVENTS.filter((event) => !(existing.events ?? []).includes(event)) : [];
+    if (existing?.active && missingEvents.length === 0) return;
     if (existing) {
       await this.transport.request<GitHubHook>({
         method: "PATCH",
         path: `repos/${input.address}/hooks/${existing.id}`,
-        body: { active: true },
+        body: { active: true, events: [...new Set([...(existing.events ?? []), ...WEBHOOK_EVENTS])] },
       });
       return;
     }
@@ -293,16 +306,7 @@ export class GitHubAdapter {
       body: {
         name: "web",
         active: true,
-        events: [
-          "issues",
-          "issue_comment",
-          "pull_request",
-          "workflow_run",
-          "check_suite",
-          "deployment_status",
-          "sub_issues",
-          "issue_dependencies",
-        ],
+        events: WEBHOOK_EVENTS,
         config: {
           url: input.url,
           content_type: "json",
