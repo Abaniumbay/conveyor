@@ -603,7 +603,7 @@ describe("GitHubAdapter issue types and fields", () => {
   });
 
   test("sets the type, adds only the given field values, and creates a child with both", async () => {
-    const transport = new Scripted((request) => request.method === "GET" ? { id: 7, number: 3 }
+    const transport = new Scripted((request) => request.path.includes("sub_issues") ? [] : request.method === "GET" ? { id: 7, number: 3 }
       : { id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [], updated_at: "x", type: { name: "Bug" } });
     const adapter = new GitHubAdapter(transport, "conveyor");
     await adapter.setIssueType("o/r", 3, "Bug");
@@ -619,6 +619,29 @@ describe("GitHubAdapter issue types and fields", () => {
       { method: "POST", path: "repos/o/r/issues/9/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
     ]);
     expect(child.type).toBe("Bug");
+  });
+
+  test("reuses a child after its field write fails, so a retry cannot duplicate it", async () => {
+    const marker = "<!-- conveyor:child-create:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+    const child = { id: 8, number: 9, html_url: "u", title: "t", body: `b\n${marker}`, state: "open" as const, labels: [], updated_at: "x" };
+    let created = false;
+    let fieldWrites = 0;
+    const transport = new Scripted((request) => {
+      if (request.path.includes("sub_issues")) return created ? [child] : [];
+      if (request.method === "GET") return { id: 7, number: 3 };
+      if (request.path.endsWith("/issue-field-values")) {
+        fieldWrites += 1;
+        return fieldWrites === 1 ? new Error("temporary field failure") : {};
+      }
+      created = true;
+      return child;
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    const input = { address: "o/r", parentNumber: 3, title: "t", body: child.body, labels: [], fields: [{ fieldId: 11, name: "Effort", value: "Low" }] };
+    await expect(adapter.createChildIssue(input)).rejects.toThrow("temporary field failure");
+    await expect(adapter.createChildIssue(input)).resolves.toMatchObject({ number: 9 });
+    expect(transport.requests.filter((request) => request.method === "POST" && request.path === "repos/o/r/issues")).toHaveLength(1);
+    expect(fieldWrites).toBe(2);
   });
 
   test("reads current field values by name, and the type reported on listed issues", async () => {
@@ -641,5 +664,12 @@ describe("GitHubAdapter issue types and fields", () => {
     expect(await run([{ name: "Bug" }], [{ id: 1 }], true)).toEqual({ types: "ok", fields: "ok", canWrite: true });
     expect(await run(notFound, [], false)).toEqual({ types: "none", fields: "none", canWrite: false });
     expect(await run(forbidden, forbidden, undefined)).toEqual({ types: "denied", fields: "denied", canWrite: null });
+  });
+
+  test("recognizes issue-management access without code push access", async () => {
+    const transport = new Scripted((request) => request.path.includes("issue-types") ? [{ name: "Bug" }] : request.path.includes("issue-fields") ? [{ id: 1 }]
+      : { permissions: { push: false, triage: true } });
+    await expect(new GitHubAdapter(transport, "conveyor").probeIssueMetadata("acme/r"))
+      .resolves.toEqual({ types: "ok", fields: "ok", canWrite: true });
   });
 });

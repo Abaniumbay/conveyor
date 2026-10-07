@@ -41,14 +41,20 @@ describe("doctor issue metadata checks", () => {
     expect(checks[1]).toMatchObject({ name: "issue fields app", status: "fail" });
   });
 
-  test("reports missing write access", async () => {
+test("reports missing write access", async () => {
     const { adapter: github } = adapter({ types: [{ name: "Bug" }], fields: [{ id: 1 }], repository: { permissions: { push: false } } });
     const checks = await issueMetadataChecks(config({ app: { address: "o/app", refinement } }), github);
     const write = checks.find((check) => check.name === "issue metadata write app")!;
     expect(write).toMatchObject({ status: "fail" });
     expect(write.detail).toContain("cannot write issue types or issue-field values on o/app");
-    expect(write.fix).toContain("write (push) access to o/app");
-  });
+  expect(write.fix).toContain("issue-management access to o/app");
+});
+
+test("allows issue management without code push access", async () => {
+  const { adapter: github } = adapter({ types: [{ name: "Bug" }], fields: [{ id: 1 }], repository: { permissions: { push: false, triage: true } } });
+  const checks = await issueMetadataChecks(config({ app: { address: "o/app", refinement } }), github);
+  expect(checks.find((check) => check.name === "issue metadata write app")).toMatchObject({ status: "ok" });
+});
 
   test("an owner without types or fields is fine, and repositories that configure nothing are skipped", async () => {
     const { adapter: github, requests } = adapter({ types: failure(404), fields: failure(404), repository: { permissions: { push: true } } });

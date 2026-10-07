@@ -334,6 +334,18 @@ export class GitHubAdapter {
       method: "GET",
       path: `repos/${input.address}/issues/${input.parentNumber}`,
     });
+    // The field endpoint is a second write. Reuse a child from a previous
+    // attempt so a retry after that write fails does not create a duplicate.
+    const marker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
+    const existing = marker
+      ? (await this.listSubIssues(input.address, input.parentNumber)).find((issue) => issue.body.includes(marker))
+      : undefined;
+    if (existing) {
+      if (input.fields && input.fields.length > 0) {
+        await this.setIssueFieldValues(input.address, existing.number, input.fields);
+      }
+      return existing;
+    }
     const child = await this.transport.request<GitHubIssue>({
       method: "POST",
       path: `repos/${input.address}/issues`,
@@ -430,8 +442,9 @@ export class GitHubAdapter {
     const [types, fields] = [await probe(`orgs/${owner}/issue-types`), await probe(`orgs/${owner}/issue-fields?per_page=100`)];
     let canWrite: boolean | null = null;
     try {
-      const repository = await this.transport.request<{ permissions?: { push?: boolean } }>({ method: "GET", path: `repos/${address}` });
-      canWrite = repository.permissions?.push ?? null;
+      const repository = await this.transport.request<{ permissions?: { push?: boolean; triage?: boolean; maintain?: boolean; admin?: boolean } }>({ method: "GET", path: `repos/${address}` });
+      const permissions = repository.permissions;
+      canWrite = permissions === undefined ? null : Boolean(permissions.push || permissions.triage || permissions.maintain || permissions.admin);
     } catch {
       canWrite = null;
     }

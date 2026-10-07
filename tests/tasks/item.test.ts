@@ -144,7 +144,7 @@ const EFFORT = { id: 11, name: "Effort", dataType: "single_select", options: ["H
 const TARGET = { id: 12, name: "Target date", dataType: "date", options: [] };
 const PRIORITY = { id: 13, name: "Priority", dataType: "single_select", options: ["Urgent", "High", "Medium", "Low"] };
 
-async function world(options: { refinement?: typeof REFINEMENT; types?: string[] | null; fields?: unknown[] | null } = {}) {
+async function world(options: { refinement?: typeof REFINEMENT; types?: string[] | null; fields?: unknown[] | null; values?: Record<string, string> } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -174,7 +174,7 @@ async function world(options: { refinement?: typeof REFINEMENT; types?: string[]
     setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
     listIssueTypes: async () => (options.types === undefined ? ["Task", "Bug", "Feature"] : options.types),
     listIssueFields: async () => (options.fields === undefined ? [EFFORT, TARGET, PRIORITY] : options.fields),
-    getIssueFieldValues: async () => ({}),
+    getIssueFieldValues: async () => (options.values ?? {}),
     setIssueType: async (...a: unknown[]) => { calls.push(["setIssueType", a]); },
     setIssueFieldValues: async (...a: unknown[]) => { calls.push(["setIssueFieldValues", a]); },
   } as unknown as TaskDeps["items"];
@@ -236,6 +236,14 @@ describe("item.load refinement outputs", () => {
     bare.add("i1", 1);
     const none = await run("item.load", { context: {}, deps: bare.deps() }) as Extract<TaskResult, { status: "pass" }>;
     expect((none.output as ItemContext).refinement).toEqual({ type: null, typesAvailable: false, fields: {}, definedFields: [], section: false });
+  });
+
+  test("replaces stale stored fields with the live gate snapshot", async () => {
+    const w = await world({ refinement: REFINEMENT, types: ["Bug"], fields: [EFFORT], values: {} });
+    w.add("i1", 1);
+    w.store.setIssueMetadata("i1", { fields: { Effort: "High" } });
+    const result = await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>;
+    expect((result.output as ItemContext).refinement?.fields).toEqual({});
   });
 });
 

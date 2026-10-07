@@ -170,10 +170,11 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
   const github = {
     replaceConveyorLabels: async (_address: string, _number: number, labels: string[]) => { labelWrites.push([...labels]); },
     addComment: async () => 1,
-    // The organization defines issue types and the Effort field; no values are set on GitHub itself.
+    // The organization defines issue types and the Effort field; mirror the metadata
+    // written by the simulated refinement tool as GitHub's current field snapshot.
     listIssueTypes: async () => ["Task", "Bug", "Feature"],
     listIssueFields: async () => [{ id: 1, name: "Effort", dataType: "single_select", options: ["High", "Medium", "Low"] }],
-    getIssueFieldValues: async () => ({}),
+    getIssueFieldValues: async () => store.getIssue("issue")?.metadata.fields ?? {},
   };
 
   const harness: Harness = {

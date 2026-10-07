@@ -50,17 +50,31 @@ repositories:
   const store = await ConveyorStore.open(config.settings.database);
   store.recordConfigSnapshot(config.hash, config);
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder, configHash: config.hash });
-  const source = { type: "Bug" as string | null | undefined, fields: { Effort: "Low", "Target date": "2026-11-01" } as Record<string, string>, fieldReads: 0, fail: false, updatedAt: "2026-01-01T00:00:00Z" };
+  const source = {
+    type: "Bug" as string | null | undefined,
+    fields: { Effort: "Low", "Target date": "2026-11-01" } as Record<string, string>,
+    second: null as null | { fields: Record<string, string>; updatedAt: string },
+    fieldReads: 0, fail: false, failedNumbers: new Set<number>(), updatedAt: "2026-01-01T00:00:00Z",
+  };
   const github = {
     async listIssues() {
-      return [{
+      const issues = [{
         id: "github:owner/repo#1", number: 1, url: "u", title: "F", body: "", state: "open", labels: ["conveyor", "conveyor:implementation"],
         updatedAt: source.updatedAt, ...(source.type === undefined ? {} : { type: source.type }),
       }];
+      if (source.second) issues.push({
+        id: "github:owner/repo#2", number: 2, url: "u2", title: "Second", body: "", state: "open", labels: ["conveyor", "conveyor:implementation"],
+        updatedAt: source.second.updatedAt, type: "Task",
+      });
+      return issues;
     },
     async listSubIssues() { return []; },
     async listDependencies() { return []; },
-    async getIssueFieldValues() { source.fieldReads += 1; if (source.fail) throw new Error("no access"); return source.fields; },
+    async getIssueFieldValues(_address: string, number: number) {
+      source.fieldReads += 1;
+      if (source.fail || source.failedNumbers.has(number)) throw new Error("no access");
+      return number === 2 ? source.second?.fields ?? {} : source.fields;
+    },
     async upsertStatusComment() { return 1; },
     async replaceConveyorLabels() {},
   };
@@ -102,6 +116,17 @@ test("field values are read again only when the issue changed, and a changed val
   await service.reconcileAll();
   expect(source.fieldReads).toBe(2);
   expect(card()?.issueFields).toEqual([{ name: "Effort", value: "High" }]);
+  store.close();
+});
+
+test("a failed field read does not stop later enrolled issues from syncing", async () => {
+  const { service, store, source } = await setup();
+  source.second = { fields: { Effort: "High" }, updatedAt: "2026-01-02T00:00:00Z" };
+  source.failedNumbers.add(1);
+  await service.reconcileAll();
+  const second = service.dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 2);
+  expect(second?.issueFields).toEqual([{ name: "Effort", value: "High" }]);
+  expect(source.fieldReads).toBe(2);
   store.close();
 });
 

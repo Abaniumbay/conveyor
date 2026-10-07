@@ -394,7 +394,7 @@ export class ConveyorService {
         this.store.setIssueMetadata(issue.id, { fields: configured, fieldsSyncedAt: issue.sourceUpdatedAt });
       } catch (error) {
         log.warn("Issue field sync failed", this.itemFields(issue.id), error);
-        return;
+        continue;
       }
     }
   }

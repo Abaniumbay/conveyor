@@ -161,7 +161,7 @@ export async function issueMetadataChecks(config: ConveyorConfig, adapter: GitHu
         name: `issue metadata write ${id}`,
         status: "fail",
         detail: `the GitHub credentials cannot write issue types or issue-field values on ${repository.address}`,
-        fix: `grant the account or token write (push) access to ${repository.address}; for a fine-grained token also "Issues: read and write"`,
+        fix: `grant the account or token issue-management access to ${repository.address}; for a fine-grained token use "Issues: read and write"`,
       });
     } else if (access.canWrite === true) {
       checks.push({ name: `issue metadata write ${id}`, status: "ok", detail: `can write issue types and issue fields on ${repository.address}` });

@@ -2,6 +2,7 @@
 // tools an agent uses to change the item. Tool behaviour is what `handleMcp` did for the
 // legacy `source.*` tools.
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { ItemContext } from "./context";
@@ -132,7 +133,10 @@ async function loadRefinement(deps: Deps, issue: ReturnType<typeof issueOf>): Pr
     definedFields = outputs.require.fields.flatMap((name) => defined.find((field) => sameName(field.name, name))?.name ?? []);
     if (definedFields.length > 0) {
       try {
-        deps.store.setIssueMetadata(issue.id, { fields: await deps.items.getIssueFieldValues(deps.repository.address, issue.sourceNumber) });
+        deps.store.setIssueMetadata(issue.id, {
+          fields: await deps.items.getIssueFieldValues(deps.repository.address, issue.sourceNumber),
+          fieldsSyncedAt: issue.sourceUpdatedAt,
+        });
       } catch {
         // The stored values (written by item.setFields) stand in when the live read fails.
       }
@@ -478,6 +482,10 @@ const createChild = tool("item.createChild",
     if (input!.refinement) {
       body = upsertManagedSection(body, "refinement", renderRefinementSection(input!.refinement), parseManagedSections(body).revision);
     }
+    const marker = createHash("sha256").update(JSON.stringify({
+      title: input!.title, body, labels: systemLabels, type: plan.type ?? null, fields: plan.fields,
+    })).digest("hex");
+    body = `${body.trimEnd()}\n\n<!-- conveyor:child-create:${marker} -->\n`;
     const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
