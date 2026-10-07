@@ -7,7 +7,7 @@ import { defineGroup, fail, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 
-const MAX_ITEMS = 40;
+const MAX_UNFINISHED_ITEMS = 40;
 
 const statusSchema = z.enum(["pending", "in_progress", "done"]);
 const itemSchema = z.object({
@@ -17,7 +17,7 @@ const itemSchema = z.object({
   note: z.string().trim().max(500).optional(),
 }).strict();
 
-export const todoSetInput = z.object({ items: z.array(itemSchema).max(MAX_ITEMS) }).strict();
+export const todoSetInput = z.object({ items: z.array(itemSchema) }).strict();
 export const todoUpdateInput = z.object({
   id: z.string().trim().min(1),
   status: statusSchema.optional(),
@@ -44,6 +44,30 @@ function problems(items: readonly TodoItem[]): string | null {
   return null;
 }
 
+function unfinishedItemLimitProblem(items: readonly TodoItem[]): string | null {
+  if (items.filter((item) => item.status !== "done").length > MAX_UNFINISHED_ITEMS) {
+    return `at most ${MAX_UNFINISHED_ITEMS} pending or in_progress todos are allowed`;
+  }
+  return null;
+}
+
+function replacementProblem(current: readonly TodoItem[], next: readonly TodoItem[]): string | null {
+  const nextById = new Map(next.map((item) => [item.id, item]));
+  const missingCompletedIds = current
+    .filter((item) => item.status === "done" && !nextById.has(item.id))
+    .map((item) => `"${item.id}"`);
+  if (missingCompletedIds.length > 0) {
+    return `completed todo ids must be kept: ${missingCompletedIds.join(", ")}; keep completed items and add new work under new ids`;
+  }
+
+  for (const item of current) {
+    const replacement = nextById.get(item.id);
+    if (replacement && replacement.text !== item.text) return `todo id "${item.id}" must keep its original text`;
+    if (item.status === "done" && replacement?.status !== "done") return `completed todo id "${item.id}" must remain done`;
+  }
+  return null;
+}
+
 const get: TaskDefinition<unknown, unknown, Deps> = {
   name: "todo.get",
   kind: "tool",
@@ -60,7 +84,7 @@ const get: TaskDefinition<unknown, unknown, Deps> = {
 const set: TaskDefinition<unknown, z.output<typeof todoSetInput>, Deps> = {
   name: "todo.set",
   kind: "tool",
-  description: `Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). At most ${MAX_ITEMS} items and one in_progress.`,
+  description: `Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). Retain existing completed items and their ids; after feedback add new ids for each required fix, failing CI check, or open finding. At most ${MAX_UNFINISHED_ITEMS} pending or in_progress items and one in_progress.`,
   reads: [],
   writes: [],
   invalidates: [],
@@ -69,9 +93,13 @@ const set: TaskDefinition<unknown, z.output<typeof todoSetInput>, Deps> = {
   journal: false,
   run({ deps, input }) {
     const items = input!.items.map(({ note, ...item }) => (note ? { ...item, note } : item));
-    const problem = problems(items);
+    const problem = problems(items) ?? unfinishedItemLimitProblem(items);
     if (problem) return fail(problem);
-    todosOf(deps).set(deps.issueId, items, deps.run?.id ?? null, now(deps));
+    const todos = todosOf(deps);
+    const current = todos.get(deps.issueId)?.items ?? [];
+    const replacementError = replacementProblem(current, items);
+    if (replacementError) return fail(replacementError);
+    todos.set(deps.issueId, items, deps.run?.id ?? null, now(deps));
     return pass(view(items));
   },
 };

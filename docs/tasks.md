@@ -176,7 +176,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
 | `todo.get` | tool | - | - | Read the current item's todo list (kept across runs and returns), with done/total progress. |
-| `todo.set` | tool | - | - | Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). At most 40 items and one in_progress. |
+| `todo.set` | tool | - | - | Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). Retain existing completed items and their ids; after feedback add new ids for each required fix, failing CI check, or open finding. At most 40 pending or in_progress items and one in_progress. |
 | `todo.update` | tool | - | - | Change one todo's status (pending, in_progress, done) and/or note by id. Starting one item moves no other: finish or pause the current one first. |
 
 ### workspace
