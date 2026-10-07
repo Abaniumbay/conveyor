@@ -750,7 +750,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="account-menu"');
     expect(html).toContain('aria-label="Account menu for reader &amp; friend"');
     expect(html).not.toContain('href="/accounts" class="account-menu-link"');
-    expect(html).toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
+    expect(html).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
     expect(html).toContain('href="/about"');
     expect(html).toContain('data-theme-choice="system"');
     expect(html).toContain('data-theme-choice="light"');
