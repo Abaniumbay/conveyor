@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
+Conveyor now shows what an item is waiting for: live CI status on board cards and item details, queued items with the limit and the items holding their slots, and which acceptance criteria the reviewer approved. Agent runs get the item's current handover in their prompt, and refinement can record the issue type, fields and a Refinement section on GitHub. It also fixes Codex runs that failed on strict result schemas and keeps completed todos when an agent rewrites its list.
+
 ### Added
 - Refinement can record the GitHub issue type, organization issue fields (for example Effort) and a managed Refinement section on the issue (`item.setType`, `item.setFields`, `item.setRefinement`, and the same values in `item.createChild`). A per-repository `refinement` setting lists the writable fields and what the new `item.refinementComplete` gate requires.
 - The dashboard's item details show the issue type and configured field values; `conveyor doctor` checks the credentials' access to them.
