@@ -448,11 +448,25 @@ async function stabilize(page: Page): Promise<void> {
     content:
       "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}",
   });
-  await page.locator("[data-relative-time], time").evaluateAll((nodes) =>
-    nodes.forEach((node) => {
-      node.textContent = "demo time";
-    }),
-  );
+  // Live refreshes re-render elapsed times; keep them pinned for the capture.
+  await page.evaluate(() => {
+    const pin = () =>
+      document.querySelectorAll("[data-relative-time], time").forEach((node) => {
+        if (node.textContent !== "demo time") node.textContent = "demo time";
+      });
+    pin();
+    new MutationObserver(pin).observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
+  await page.evaluate(() => document.fonts.ready);
+  // The header shows "Connecting" until the live stream opens; capture only the settled state.
+  await page
+    .locator("[data-connection-state]")
+    .filter({ hasText: "Connected" })
+    .waitFor({ state: "attached", timeout: 10_000 });
   await page.evaluate(() => window.scrollTo(0, 0));
 }
 
@@ -529,7 +543,19 @@ async function main(): Promise<void> {
     await waitForServer(`${baseUrl}/health/live`);
     await verifyGithubStub(demoHome);
 
-    browser = await chromium.launch({ headless: true });
+    // Multi-threaded and GPU rasterization anti-alias edges slightly differently between runs;
+    // single-threaded software raster keeps repeated captures pixel-identical.
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-gpu",
+        "--disable-gpu-rasterization",
+        "--disable-partial-raster",
+        "--disable-skia-runtime-opts",
+        "--num-raster-threads=1",
+        "--font-render-hinting=none",
+      ],
+    });
     const context = await browser.newContext({
       viewport: { width: 1440, height: 1024 },
       deviceScaleFactor: 1,
