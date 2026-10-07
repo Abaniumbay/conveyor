@@ -1276,6 +1276,8 @@ export class ConveyorStore {
       exitCode: number | null;
       result: unknown;
       sessionId: string | null;
+      /** Allows deterministic imports to preserve their original completion time. */
+      finishedAt?: string;
       usage: {
         inputTokens: number;
         outputTokens: number;
@@ -1288,7 +1290,7 @@ export class ConveyorStore {
     },
   ): void {
     this.#database.transaction(() => {
-      const timestamp = now();
+      const timestamp = finish.finishedAt ?? now();
       const updated = this.#database
         .query(
           `UPDATE runs SET status = ?, session_id = ?, finished_at = ?,
