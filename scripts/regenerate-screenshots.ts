@@ -453,6 +453,7 @@ async function stabilize(page: Page): Promise<void> {
       node.textContent = "demo time";
     }),
   );
+  await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
 }
 
