@@ -5,7 +5,7 @@
 import { z } from "zod";
 
 import type { CodeHost } from "../codehost/types";
-import { CriterionApprovals, criterionTextHash } from "../engine/review-records";
+import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../engine/review-records";
 import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
@@ -30,7 +30,7 @@ export function criteriaView(deps: Deps, body: string, headSha: string): ChangeC
     return {
       id,
       projectedChecked: projected.get(id) ?? false,
-      approval: approval && approval.headSha === headSha && approval.textHash === criterionTextHash(text)
+      approval: approval && isCriterionApprovedAt(approvals, { id, text }, headSha)
         ? { reviewer: approval.reviewer, headSha: approval.headSha, checkedAt: approval.checkedAt }
         : null,
     };
@@ -63,8 +63,7 @@ function render(deps: Deps, headSha: string | null): { markdown: string } | { er
   try {
     return {
       markdown: formatAcceptanceCriteria(criteria.map(({ id, text }) => {
-        const approval = approvals.get(id);
-        return { id, text, completed: headSha !== null && approval?.headSha === headSha && approval.textHash === criterionTextHash(text) };
+        return { id, text, completed: isCriterionApprovedAt(approvals, { id, text }, headSha) };
       })),
     };
   } catch (error) {

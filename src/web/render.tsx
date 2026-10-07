@@ -164,7 +164,13 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         <section class="criteria" aria-label="Acceptance criteria">
           <h3>Acceptance criteria</h3>
           {issue.acceptanceCriteria.length > 0
-            ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => (
+              <li key={criterion.id}>
+                <span aria-label={criterion.approved ? "Approved" : "Not approved"}>
+                  {criterion.approved ? "☑ Approved" : "☐ Not approved"}
+                </span>{" "}{criterion.text}
+              </li>
+            ))}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}
         </section>
         {issue.labels.length > 0 && (

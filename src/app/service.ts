@@ -42,7 +42,8 @@ import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
-import { criteriaFromBody } from "../tasks/item";
+import { criteriaOf } from "../tasks/item";
+import { CriterionApprovals, isCriterionApprovedAt } from "../engine/review-records";
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
@@ -210,6 +211,10 @@ export class ConveyorService {
   readonly #active = new Map<string, ActiveRun>();
   readonly #statusCommentUpdates = new Set<Promise<void>>();
   readonly #statusCommentUpdatesByIssue = new Map<string, Promise<void>>();
+  /** The status-comment digest last written by this process, so a revert to older content is still written. */
+  readonly #statusCommentDigests = new Map<string, string>();
+  /** The live head of an open change, as last read from the code host; newer than the persisted context. */
+  readonly #liveChangeHeads = new Map<string, string>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #mcpGrants = new Map<string, McpGrant>();
@@ -1881,6 +1886,32 @@ export class ConveyorService {
     return update;
   }
 
+  /** The approval fence for an item. A merged item uses the durable review fence, not a later PR projection. */
+  private criterionApprovalHead(issue: StoredIssue): string | null {
+    const pullRequest = this.store.getCurrentPullRequest(issue.id);
+    const context = this.store.executions().getContext(issue.id)?.context;
+    const change = context?.change;
+    if (!pullRequest || !change) return null;
+    if (pullRequest.state === "merged" || pullRequest.mergedAt !== null || change.state === "merged") {
+      return change.state === "merged" ? change.headSha : context.checkpoints.reviewPassed?.sha ?? null;
+    }
+    if (pullRequest.state !== "open" || change.state !== "open") return null;
+    return this.#liveChangeHeads.get(issue.id) ?? change.headSha;
+  }
+
+  /** Source-authoritative criteria annotated from durable review approvals. */
+  private criterionApprovalStates(issue: StoredIssue) {
+    const approvals = new Map(
+      new CriterionApprovals(this.store.sqlite()).list(issue.id).map((approval) => [approval.criterionId, approval]),
+    );
+    const headSha = this.criterionApprovalHead(issue);
+    return criteriaOf(issue.body).map(({ id, text }) => ({
+      id,
+      text,
+      approved: isCriterionApprovedAt(approvals, { id, text }, headSha),
+    }));
+  }
+
   private async writeStatusComment(issueId: string): Promise<void> {
     const issue = this.store.getIssue(issueId);
     if (!issue) return;
@@ -1908,10 +1939,14 @@ export class ConveyorService {
         ? [{ number: blocker.sourceNumber, title: blocker.title, state: blocker.projectedState ?? blocker.sourceState }]
         : [];
     });
-    const acceptanceCriteria = criteriaFromBody(issue.body).map((text) => ({
-      text,
-      passed: false,
-    }));
+    const openPullRequest = this.store.getCurrentPullRequest(issue.id);
+    if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
+      const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
+      if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
+    } else {
+      this.#liveChangeHeads.delete(issue.id);
+    }
+    const acceptanceCriteria = this.criterionApprovalStates(issue).map(({ text, approved }) => ({ text, passed: approved }));
     const status = this.currentIssueStatus(issue);
     const markdown = renderStatusComment({
       issue: { number: issue.sourceNumber, title: issue.title, state: issue.sourceState },
@@ -1948,7 +1983,9 @@ export class ConveyorService {
       operation: "comment.status.upsert",
       request: { issueId: issue.id, digest },
     });
-    if (mutation.status === "succeeded") return;
+    // A succeeded mutation only proves this content was written once; the remote comment may
+    // have moved on since (checked, then unchecked), so skip only when it is the last write.
+    if (mutation.status === "succeeded" && this.#statusCommentDigests.get(issue.id) === digest) return;
     try {
       const commentId = await this.github.upsertStatusComment(
         repository.address,
@@ -1956,6 +1993,7 @@ export class ConveyorService {
         markdown,
       );
       this.store.completeSourceMutation(mutation.id, { commentId });
+      this.#statusCommentDigests.set(issue.id, digest);
     } catch (error) {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
@@ -2083,7 +2121,7 @@ export class ConveyorService {
         url: issue.sourceUrl,
         state: projectedState,
         labels: issue.labels,
-        acceptanceCriteria: criteriaFromBody(issue.body),
+        acceptanceCriteria: this.criterionApprovalStates(issue),
         todos: todosView(todos.get(issue.id)?.items ?? []),
         indicators: indicators.get(issue.id) ?? [],
         activity: cursor?.state === "pending"

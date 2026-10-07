@@ -13,7 +13,23 @@ export interface CriterionApproval {
   textHash: string;
 }
 
+export interface ApprovalCriterion {
+  id: string;
+  text: string;
+}
+
 export const criterionTextHash = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+
+/** Whether an approval applies to this exact criterion at the displayed change head. */
+export function isCriterionApprovedAt(
+  approvals: ReadonlyMap<string, CriterionApproval>,
+  criterion: ApprovalCriterion,
+  headSha: string | null,
+): boolean {
+  const approval = approvals.get(criterion.id);
+  return headSha !== null && approval !== undefined &&
+    approval.headSha === headSha && approval.textHash === criterionTextHash(criterion.text);
+}
 
 interface Row { criterion_id: string; reviewer: string; head_sha: string; checked_at: string; text_hash: string }
 
