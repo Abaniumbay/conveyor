@@ -23,6 +23,7 @@ import {
   AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, failedEnvelope, finishRun,
   producerConversationMessage, prompt, startRun, warnOnTokenUsage } from "./agent-support";
 import type { AgentContext } from "./context";
+import { buildHandover } from "./handover";
 import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition, type TaskResult } from "./contract";
 import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
@@ -187,6 +188,7 @@ async function runAgent(
     });
     let result: RunEnvelope;
     try {
+      const handover = await buildHandover(deps, { runId, stageId, agentId, kind: KIND, workspace: { path: workspace.path, branch: workspace.branch } });
       const resume = answered !== null && harness.capabilities.sessionResume && answered.sessionId !== null;
       const shared = {
         command: runner.command,
@@ -218,7 +220,7 @@ async function runAgent(
         result = await harness.run({
           ...shared,
           prompt: prompt(
-            { answeredQuestion: { question: answered!.question, answer: answered!.answer } },
+            { handover, answeredQuestion: { question: answered!.question, answer: answered!.answer } },
             "Your question was answered. Continue the work using this run's refreshed tool grant and return the required structured result.",
             { progressReporting: agent.tasks.includes("agent.reportProgress"), grantedTools: agent.tasks },
           ),
@@ -236,6 +238,7 @@ async function runAgent(
               stageId,
               attempt: context.run?.attempt,
               feedback: context.run?.feedback ?? null,
+              handover,
               ...(answered ? { answeredQuestion: { question: answered.question, answer: answered.answer } } : {}),
               conversation: conversationForPrompt(store, issue.id),
             },

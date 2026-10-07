@@ -1348,6 +1348,14 @@ export class ConveyorStore {
     };
   }
 
+  /** Runs of a kind in a stage, newest first. */
+  listRunsForStage(issueId: string, stageId: string, kind: string): StoredRun[] {
+    const rows = this.#database
+      .query("SELECT id FROM runs WHERE issue_id = ? AND stage_id = ? AND kind = ? ORDER BY started_at DESC, rowid DESC")
+      .all(issueId, stageId, kind) as Array<{ id: string }>;
+    return rows.map((row) => this.getRun(row.id)!);
+  }
+
   /** Runs of a kind that logged an `execution` event with this key, newest first. */
   listRunsForExecution(issueId: string, stageId: string, kind: string, executionKey: string): StoredRun[] {
     const rows = this.#database
