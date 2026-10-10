@@ -153,7 +153,6 @@ const githubSourceSchema = z
     type: z.literal("github"),
     webhookPath: z.string().startsWith("/").default("/hooks/github"),
     autoConfigureWebhook: z.boolean().default(false),
-    allowedHumanLogins: z.array(identifierSchema).default([]),
     /** Verifies webhook deliveries; CONVEYOR_GITHUB_WEBHOOK_SECRET is the fallback. */
     webhookSecret: z.string().min(1).optional(),
   })

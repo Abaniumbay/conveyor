@@ -103,7 +103,6 @@ sources:
   github:
     type: github
     webhookPath: /hooks/github
-    allowedHumanLogins: [owner]
 `,
     );
 
@@ -135,6 +134,16 @@ sources:
       path.resolve(directory, "../sample"),
     );
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("rejects the removed allowedHumanLogins provider setting", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      path.join(directory, "conveyor.yaml"),
+      "sources:\n  github:\n    type: github\n    allowedHumanLogins: [owner]\n",
+    );
+
+    await expect(loadConfig(directory)).rejects.toThrow(/Unrecognized key: "allowedHumanLogins"/);
   });
 
   test("rejects an agent granting source.set_labels because workflow labels are engine-owned", async () => {

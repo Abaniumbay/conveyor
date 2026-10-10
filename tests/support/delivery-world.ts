@@ -133,7 +133,7 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
   await writeFile(path.join(root, "verify.ts"), script("verify"));
 
   const example = parse(await readFile(path.join(EXAMPLES, "local/repositories.example.yaml"), "utf8")) as { repositories: Record<string, any> };
-  const repository = { ...example.repositories.conveyor, address: "owner/conveyor", folder };
+  const repository = { ...example.repositories.service, address: "owner/conveyor", folder };
   repository.overrides = {
     stages: {
       deploy: { actions: { deployScript: { with: { script: path.join(root, "deploy.ts"), recovery: "replay-safe" } } } },
