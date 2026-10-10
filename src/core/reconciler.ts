@@ -9,10 +9,12 @@ export interface ReconcileRepositoryInput {
   repository: Omit<RepositoryRecord, "configHash">;
   stages: readonly string[];
   labels: LabelConfiguration;
-  source: Pick<IssueSourceAdapter, "listIssues">;
+  source: Pick<IssueSourceAdapter, "listIssues"> & Partial<Pick<IssueSourceAdapter, "getIssue">>;
   expectedPostMergeClosure?: (issueId: string) => boolean;
   /** Read only issues updated since this time; issues not returned are left as they are rather than marked missing. */
   since?: string;
+  /** Issue numbers named by a webhook, whose current source state must be read even if a recent listing omits them. */
+  includeIssueNumbers?: readonly number[];
 }
 
 export interface ReconcileRepositoryResult {
@@ -46,7 +48,17 @@ export async function reconcileRepository(
     configHash: input.configHash,
   });
 
-  const sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
+  let sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
+  if (input.includeIssueNumbers && input.includeIssueNumbers.length > 0) {
+    if (!input.source.getIssue) throw new Error("source adapter cannot refresh webhook-named issues");
+    const refreshed = await Promise.all(
+      [...new Set(input.includeIssueNumbers)].map((number) => input.source.getIssue!(input.repository.address, number)),
+    );
+    const refreshedByNumber = new Map(refreshed.map((issue) => [issue.number, issue]));
+    sourceIssues = sourceIssues.map((issue) => refreshedByNumber.get(issue.number) ?? issue);
+    const listedNumbers = new Set(sourceIssues.map((issue) => issue.number));
+    sourceIssues.push(...refreshed.filter((issue) => !listedNumbers.has(issue.number)));
+  }
   const storedIssues = input.store.listIssues(input.repository.id);
   const existing = new Map(storedIssues.map((issue) => [issue.id, issue]));
   const existingByNumber = new Map(
@@ -142,7 +154,9 @@ export async function reconcileRepository(
       }
     }
 
-    if (!prior && projected.visible) {
+    // Dependencies are stored before their own repository snapshot is read. A visible item
+    // without a rank has therefore never completed onboarding, even when it already has a row.
+    if (projected.visible && (prior === undefined || prior.queueRank === null)) {
       input.store.setQueueRank(issueId, input.store.nextQueueRank());
       input.store.recordJourneyEvent({
         issueId,

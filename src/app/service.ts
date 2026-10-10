@@ -1028,7 +1028,7 @@ export class ConveyorService {
     };
   }
 
-  private async reconcileRepository(repositoryId: string, options: { partial?: boolean } = {}): Promise<void> {
+  private async reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[] } = {}): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -1048,6 +1048,7 @@ export class ConveyorService {
       source: this.github,
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       ...(listing.since !== undefined ? { since: listing.since } : {}),
+      ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
     listing.finish();
     await this.reconcileRelationships(repositoryId, repository.address);
@@ -1802,7 +1803,10 @@ export class ConveyorService {
       // Deliveries from here on queue the next pass: this one may already have read past them.
       this.#queuedWebhookReconciles.delete(repositoryId);
       if (this.#shuttingDown) return;
-      await this.reconcileRepository(repositoryId, { partial: true });
+      await this.reconcileRepository(repositoryId, {
+        partial: true,
+        ...(entry.issueNumbers === null ? {} : { includeIssueNumbers: [...entry.issueNumbers] }),
+      });
       this.schedule();
       const issues = this.store.listIssues(repositoryId);
       this.refreshStatusComments((entry.issueNumbers === null

@@ -43,14 +43,16 @@ async function service() {
     id: "github:owner/repo#1", number: 1, url: "https://github.com/owner/repo/issues/1", title: "One", body: "",
     state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:work"], updatedAt: "2026-10-07T20:00:00Z",
   };
-  const calls = { listed: [] as Array<string | undefined>, subIssues: 0, dependencies: 0, statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
+  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], subIssues: 0, dependencies: 0, statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
   let listingGate: Promise<void> | null = null;
+  let omitFromPartialListing = false;
   const github = {
     async listIssues(_address: string, options: { since?: string } = {}) {
       calls.listed.push(options.since);
       if (listingGate) await listingGate;
-      return [issue];
+      return omitFromPartialListing && options.since !== undefined ? [] : [issue];
     },
+    async getIssue(_address: string, issueNumber: number) { calls.fetched.push(issueNumber); return issue; },
     async listSubIssues() { calls.subIssues += 1; return []; },
     async listDependencies() { calls.dependencies += 1; return []; },
     async upsertStatusComment(_address: string, issueNumber: number, _markdown: string, known?: number) {
@@ -72,7 +74,7 @@ async function service() {
     listingGate = new Promise<void>((resolve) => { release = resolve; });
     return () => { listingGate = null; release(); };
   };
-  return { conveyor, store, calls, deliver, holdListing, issue };
+  return { conveyor, store, calls, deliver, holdListing, issue, omitFromPartialListing: () => { omitFromPartialListing = true; } };
 }
 
 describe("GitHub calls made for webhook deliveries", () => {
@@ -101,6 +103,22 @@ describe("GitHub calls made for webhook deliveries", () => {
     // The first webhook pass has no earlier read to start from; the next reads changes since it.
     expect(calls.listed[0]).toBeUndefined();
     expect(calls.listed[1]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    store.close();
+  });
+
+  test("a labeled delivery refreshes its named issue when the recent listing omits it", async () => {
+    const { conveyor, store, calls, deliver, issue, omitFromPartialListing } = await service();
+    await conveyor.reconcileAll();
+    issue.labels = ["bug"];
+    omitFromPartialListing();
+
+    await deliver("issues", { action: "labeled", issue: { number: 1 } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.listed).toHaveLength(2);
+    expect(calls.listed[1]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(calls.fetched).toEqual([1]);
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: ["bug"], projectedState: "offboarded" });
     store.close();
   });
 

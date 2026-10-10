@@ -156,6 +156,117 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("onboards an enrolled issue first stored as an offboarded dependency", async () => {
+    const store = await openStore();
+    const repository = { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" };
+    const dependency = issue(2, []);
+    store.upsertRepository({ ...repository, configHash: "hash-1" });
+    store.upsertIssue({
+      id: dependency.id,
+      repositoryId: "repo",
+      sourceNumber: dependency.number,
+      sourceUrl: dependency.url,
+      title: dependency.title,
+      body: dependency.body,
+      sourceState: dependency.state,
+      sourceStateReason: null,
+      labels: dependency.labels,
+      sourceUpdatedAt: dependency.updatedAt,
+    });
+    store.setIssueProjection(dependency.id, { stage: null, state: "offboarded", warning: null });
+
+    const result = await reconcileRepository({
+      store,
+      configHash: "hash-1",
+      repository,
+      stages: ["refinement"],
+      labels,
+      source: { async listIssues() { return [issue(2, ["conveyor", "conveyor:refinement"])]; } },
+    });
+
+    expect(result).toEqual({ seen: 1, enrolled: 1, offboarded: 0, missing: 0 });
+    expect(store.getIssue(dependency.id)).toMatchObject({
+      queueRank: 10,
+      projectedStage: "refinement",
+      projectedState: "active",
+    });
+    expect(store.getStageState(dependency.id)).toMatchObject({ stageId: "refinement", status: "ready" });
+    expect(store.listStageTransitions(dependency.id).filter((transition) => transition.kind === "onboarded")).toHaveLength(1);
+    store.close();
+  });
+
+  test("leaves an unenrolled issue first stored as a dependency offboarded", async () => {
+    const store = await openStore();
+    const repository = { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" };
+    const dependency = issue(2, []);
+    store.upsertRepository({ ...repository, configHash: "hash-1" });
+    store.upsertIssue({
+      id: dependency.id,
+      repositoryId: "repo",
+      sourceNumber: dependency.number,
+      sourceUrl: dependency.url,
+      title: dependency.title,
+      body: dependency.body,
+      sourceState: dependency.state,
+      sourceStateReason: null,
+      labels: dependency.labels,
+      sourceUpdatedAt: dependency.updatedAt,
+    });
+    store.setIssueProjection(dependency.id, { stage: null, state: "offboarded", warning: null });
+
+    const result = await reconcileRepository({
+      store,
+      configHash: "hash-1",
+      repository,
+      stages: ["refinement"],
+      labels,
+      source: { async listIssues() { return [dependency]; } },
+    });
+
+    expect(result).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
+    expect(store.getIssue(dependency.id)).toMatchObject({ queueRank: null, projectedStage: null, projectedState: "offboarded" });
+    expect(store.getStageState(dependency.id)).toBeNull();
+    expect(store.listStageTransitions(dependency.id).filter((transition) => transition.kind === "onboarded")).toHaveLength(0);
+    store.close();
+  });
+
+  test("repairs a missing queue rank once without duplicating onboarding", async () => {
+    const store = await openStore();
+    const repository = { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" };
+    const enrolled = issue(2, ["conveyor", "conveyor:refinement"]);
+    store.upsertRepository({ ...repository, configHash: "hash-1" });
+    store.upsertIssue({
+      id: enrolled.id,
+      repositoryId: "repo",
+      sourceNumber: enrolled.number,
+      sourceUrl: enrolled.url,
+      title: enrolled.title,
+      body: enrolled.body,
+      sourceState: enrolled.state,
+      sourceStateReason: null,
+      labels: enrolled.labels,
+      sourceUpdatedAt: enrolled.updatedAt,
+    });
+    store.setIssueProjection(enrolled.id, { stage: "refinement", state: "active", warning: null });
+    store.setStageState({ issueId: enrolled.id, stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "hash-1" });
+    const input = {
+      store,
+      configHash: "hash-1",
+      repository,
+      stages: ["refinement"],
+      labels,
+      source: { async listIssues() { return [enrolled]; } },
+    };
+
+    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 1, offboarded: 0, missing: 0 });
+    const queueRank = store.getIssue(enrolled.id)?.queueRank;
+    expect(queueRank).toBe(10);
+    expect(await reconcileRepository(input)).toEqual({ seen: 1, enrolled: 0, offboarded: 0, missing: 0 });
+    expect(store.getIssue(enrolled.id)?.queueRank).toBe(queueRank);
+    expect(store.listStageTransitions(enrolled.id).filter((transition) => transition.kind === "onboarded")).toHaveLength(1);
+    store.close();
+  });
+
   test("makes a known issue invisible as soon as its final Conveyor label disappears", async () => {
     const store = await openStore();
     const common = {
