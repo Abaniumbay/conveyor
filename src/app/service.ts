@@ -606,7 +606,11 @@ export class ConveyorService {
     // An item may be enrolled directly at a later pipeline stage. In that
     // case it never owned a refinement decision, so retain ordinary roll-up
     // behavior rather than waiting for an advance it cannot produce.
-    if (!transitions.some((transition) => transition.toStage === "refinement")) return true;
+    const currentStage = this.store.getStageState(issue.id)?.stageId;
+    // A parent currently running refinement owns a refinement decision even
+    // before that visit has produced its first completed transition. Do not
+    // mistake the absence of a transition for direct later-stage enrollment.
+    if (currentStage !== "refinement" && !transitions.some((transition) => transition.toStage === "refinement")) return true;
     let refinementVisit = 0;
     for (const [index, transition] of transitions.entries()) {
       const startsRefinementVisit =
