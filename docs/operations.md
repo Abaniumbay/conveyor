@@ -34,10 +34,11 @@ Upgrades replace only the first. Uninstalling keeps the second and third.
 - Linux on x64 or arm64 with glibc (Alpine and other musl systems are not supported).
 - Git, and the [GitHub CLI](https://cli.github.com/) authenticated for the managed repositories.
 - `bwrap` (bubblewrap), with unprivileged user namespaces allowed, for agent isolation.
-- For the packaged default configuration, both Codex and Claude Code, installed and signed in,
-  for `conveyor doctor` to pass. Codex performs refinement; Claude Code is the first reviewer and
-  the implementation fallback when Codex cannot run. A custom agent configuration instead requires
-  every CLI its configured harnesses use.
+- For the packaged default configuration, both Codex and Claude Code installed for `conveyor
+  doctor` to pass. Sign in to both before running packaged agents. Codex performs refinement;
+  Claude Code is the first reviewer and the implementation fallback when Codex cannot run. A
+  custom agent configuration instead requires every CLI its configured harnesses use, signed in
+  before its agents run.
 - Whatever the managed repositories need to build and test.
 - Bun only if your operator scripts are TypeScript or JavaScript run without an `interpreter`.
   Conveyor itself does not need it.
@@ -113,14 +114,15 @@ As the same account:
 ```sh
 gh auth login
 codex login          # required by the packaged default for refinement
-claude login         # required by the packaged default for review and fallback implementation
+claude auth login    # required by the packaged default for review and fallback implementation
 conveyor doctor
 conveyor config check
 ```
 
 `doctor` checks the home and the configuration. It also checks Git, the GitHub CLI's
 authentication, bubblewrap namespaces, every harness and script interpreter the loaded configuration
-uses (so a custom agent configuration changes which harnesses it checks),
+uses (so a custom agent configuration changes which harness executables it checks; it does not
+validate Codex or Claude Code sign-in),
 each repository checkout, the dashboard account and the listen port. For repositories that configure `refinement`, it also reads (never writes) whether the GitHub credentials can read the organization's issue types and issue fields and write them on the repository. Each failure comes with the
 fix. Agent sign-ins are separate from the dashboard administrator.
 
