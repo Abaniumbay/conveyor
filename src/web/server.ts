@@ -272,6 +272,7 @@ function requireMethod(request: Request, method: string): Response | null {
 function dashboardPage(
   url: URL,
   view: DashboardPageSelection["view"],
+  repositoryId: string | null = null,
   runId: string | null = null,
   issueId: string | null = null,
 ): DashboardPageSelection {
@@ -286,17 +287,17 @@ function dashboardPage(
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
   if (columns.length !== 1 || pages.length !== 1) {
-    return { view, column: null, page: 1, doneLimit, runId, issueId };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
   }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, column: null, page: 1, doneLimit, runId, issueId };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, column, page: parsedPage, doneLimit, runId, issueId }
-    : { view, column: null, page: 1, doneLimit, runId, issueId };
+    ? { view, repositoryId, column, page: parsedPage, doneLimit, runId, issueId }
+    : { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
 }
 
 function paginationSuffix(url: URL): string {
@@ -669,6 +670,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     const operatorRunPath = /^\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
     const issuePagePath = /^\/issues\/([^/]{1,200})\/([1-9]\d*)(?:\/(conversation|journey|logs))?$/.exec(path);
     const reportPath = /^\/reports(?:\/([^/]{1,200}))?$/.exec(path);
+    const repositoryPath = /^\/repositories\/([^/]{1,200})$/.exec(path);
     const dashboardView = path === "/" || path === "/board"
       ? "board"
       : path === "/attention"
@@ -679,6 +681,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
             ? "agent"
             : reportPath && dependencies.getReport
               ? "reports"
+              : path === "/repositories"
+                ? "repositories"
+                : repositoryPath
+                  ? "repository"
               : path === "/about"
                 ? "about"
               : path === "/accounts"
@@ -693,7 +699,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
-      if (!currentSession) return redirect(issuePagePath ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
+      if (!currentSession) return redirect(issuePagePath || repositoryPath ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
       if (dashboardView === "accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       try {
         if (legacyDashboardQuery) {
@@ -727,6 +733,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         }
 
         let issueId: string | null = null;
+        let repositoryId: string | null = null;
+        let repositoryNotFound = false;
+        if (repositoryPath) {
+          try { repositoryId = decodeURIComponent(repositoryPath[1]!); } catch { repositoryNotFound = true; }
+        }
         if (issuePagePath) {
           let repository: string;
           try { repository = decodeURIComponent(issuePagePath[1]!); } catch { return text("Invalid repository id", 400); }
@@ -759,12 +770,13 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
           report = built;
         }
 
-        const page = dashboardPage(url, dashboardView!, runId, issueId);
+        const page = dashboardPage(url, dashboardView!, repositoryId, runId, issueId);
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
+        if (repositoryPath && (!repositoryId || !model.repositories.some((repository) => repository.id === repositoryId))) repositoryNotFound = true;
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
         const accounts = page.view === "accounts" ? dependencies.listAccounts?.() ?? [] : undefined;
         const notifications = page.view === "notifications" ? dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } : undefined;
-        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }), 200, "text/html; charset=utf-8");
+        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }), repositoryNotFound ? 404 : 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }

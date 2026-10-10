@@ -13,6 +13,7 @@ const model: DashboardViewModel = {
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
+  repositoryId: null,
   counts: { board: 0, attention: 0 },
   activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
   selectedIssue: null,
@@ -41,6 +42,8 @@ const model: DashboardViewModel = {
   questions: [],
   needsYou: [],
   systemWarnings: [],
+  repositories: [],
+  restrictedRepositories: [],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
   csrfToken: "filled-by-handler",
 };
@@ -391,6 +394,7 @@ describe("createWebHandler", () => {
       doneLimit: 40,
       runId: null,
       issueId: "github:owner/repo#1",
+      repositoryId: null,
     }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
@@ -452,6 +456,40 @@ describe("createWebHandler", () => {
 
     for (const path of ["/issues/unknown/1", "/issues/midgame/999", "/team/nobody", "/operator/runs/missing"]) {
       expect((await get(path)).status).toBe(404);
+    }
+  });
+
+  test("serves repository pages with encoded ids and keeps unknown or malformed ids in the dashboard shell", async () => {
+    const repository = {
+      id: "space/name", address: "owner/space-name", color: 1, health: "healthy" as const,
+      error: null, errorSummary: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [],
+      capacity: { busy: 0, slots: 1 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+    };
+    const pages: Array<{ view: string; repositoryId?: string | null }> = [];
+    const { handler } = setup({
+      getDashboard: (_csrf: string, page: { view: string; repositoryId?: string | null }) => {
+        pages.push(page);
+        return { ...model, view: page.view, repositoryId: page.repositoryId ?? null, repositories: [repository] };
+      },
+    });
+    expect((await handler(new Request("http://localhost/repositories"))).headers.get("location")).toBe("/login");
+    const { cookie } = await login(handler);
+    const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+
+    const list = await get("/repositories");
+    expect(list.status).toBe(200);
+    expect(await list.text()).toContain('data-dashboard-view="repositories"');
+    const detail = await get("/repositories/space%2Fname");
+    expect(detail.status).toBe(200);
+    expect(await detail.text()).toContain('data-dashboard-view="repository"');
+    expect(pages.at(-1)).toMatchObject({ view: "repository", repositoryId: "space/name" });
+
+    for (const path of ["/repositories/missing", "/repositories/%E0%A4%A"]) {
+      const response = await get(path);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toContain('class="dashboard"');
     }
   });
 

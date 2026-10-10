@@ -51,6 +51,8 @@ import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
+import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
+import { isLightweightRepositoryStage } from "./stage-capacity";
 import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
@@ -1007,16 +1009,7 @@ export class ConveyorService {
 
   /** A stage that only runs an in-process source action: no producer or verifier process. */
   private isLightweightStage(repositoryId: string, stageId: string): boolean {
-    const repository = this.config.repositories[repositoryId];
-    const stage = repository
-      ? this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId)
-      : undefined;
-    if (!stage) return false;
-    // A native stage is lightweight when it launches no agent or script process.
-    if (isNativeStage(stage)) {
-      return ![...stage.actions, ...(stage.exitGate ?? [])].some((entry) => /^(agent|script)\.run$/.test(entry.task));
-    }
-    return stage.run.type === "source-action" && !stage.enterCheck && !stage.exitCheck;
+    return isLightweightRepositoryStage(this.config, repositoryId, stageId);
   }
 
   private interruptIneligibleRuns(): void {
@@ -2374,10 +2367,28 @@ export class ConveyorService {
     return `${state} · ${status.reason}${nextCheck}${since}`;
   }
 
+  private repositorySummaries(): RepositorySummaries {
+    return buildRepositorySummaries({
+      store: this.store,
+      config: this.config,
+      onboardingErrors: this.#onboardingErrors,
+      reconciliationErrors: this.#repositoryErrors,
+      lastReconciledAt: this.#lastReconciledAt,
+    });
+  }
+
+  /** Matches the event stream revision to dashboard facts without volatile report timestamps. */
+  private dashboardRevision(repositorySummaries = this.repositorySummaries()): string {
+    const repositoryFacts = repositorySummaries.repositories.map(({ id, health, error }) => ({ id, health, error }));
+    const repositoryDigest = createHash("sha256").update(JSON.stringify(repositoryFacts)).digest("hex");
+    return `${this.store.dashboardRevision()}|repositories:${repositoryDigest}`;
+  }
+
   dashboard(
     csrfToken: string,
     pagination: DashboardPageSelection = {
       view: "board",
+      repositoryId: null,
       column: null,
       page: 1,
       doneLimit: 20,
@@ -2683,18 +2694,21 @@ export class ConveyorService {
           }),
         }
       : null;
-    const degradedRepositories = new Set([
-      ...this.#repositoryErrors.keys(),
-      ...this.#onboardingErrors.keys(),
-    ]).size;
+    const repositorySummaries = this.repositorySummaries();
+    const degradedRepositories = repositorySummaries.repositories.filter((repository) => repository.health === "degraded").length;
+    const unassociatedWarnings = [
+      ...this.#onboardingErrors.entries(),
+      ...this.#repositoryErrors.entries(),
+    ].filter(([repository]) => !this.config.repositories[repository]).map(([repository, message]) => `${repository}: ${message}`);
     return {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""}`,
       totalUsage: formatUsage(total) ?? "0 runs",
       harnessUsage,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
-      revision: this.store.dashboardRevision(),
+      revision: this.dashboardRevision(repositorySummaries),
       view: pagination.view,
+      repositoryId: pagination.repositoryId ?? null,
       counts: {
         board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,
@@ -2746,10 +2760,9 @@ export class ConveyorService {
         .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? ""))
         .filter(awaitsOwner)
         .map((issue) => card(issue)),
-      systemWarnings: [
-        ...this.#onboardingErrors.entries(),
-        ...this.#repositoryErrors.entries(),
-      ].map(([repository, message]) => `${repository}: ${message}`),
+      systemWarnings: unassociatedWarnings,
+      repositories: repositorySummaries.repositories,
+      restrictedRepositories: repositorySummaries.restrictedRepositories,
       steering: {
         enabled: Boolean(this.config.web?.steering),
         agent: this.config.web?.steering?.agent ?? null,
@@ -3234,7 +3247,7 @@ export class ConveyorService {
       changePassword: (id, passwordHash) => this.store.changeDashboardPassword(id, passwordHash),
       changeAvatar: (id, avatar) => this.store.changeDashboardAvatar(id, avatar),
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
-      getDashboardRevision: () => this.store.dashboardRevision(),
+      getDashboardRevision: () => this.dashboardRevision(),
       getConversationRevision: () => this.store.conversationRevision(),
       getActivityRevision: () => this.store.activityRevision(),
       getSystemStatus: () => this.systemStatus(),

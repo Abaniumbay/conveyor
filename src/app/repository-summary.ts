@@ -2,6 +2,7 @@
 // It deliberately has no source/provider dependency so callers can render it without a request.
 
 import { buildReport } from "./reports";
+import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { concise, displayName } from "../tasks/agent-support";
@@ -144,8 +145,12 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
     const error = errorsFor(id, onboarding, reconciliation);
-    const source = config.sources[repository.source];
-    const ciProvider = repository.ci.provider ? config.ci[repository.ci.provider]?.type ?? null : null;
+    // Dashboard fixtures and older in-process callers can carry partially-normalised
+    // repository records. Keep this derived, read-only view safe while configuration
+    // loading remains responsible for enforcing the complete production schema.
+    const source = config.sources?.[repository.source];
+    const ci = repository.ci ?? { mode: "disabled" as const };
+    const ciProvider = ci.provider ? config.ci?.[ci.provider]?.type ?? null : null;
     const report = reportByRepository.get(id)!;
 
     return {
@@ -174,7 +179,9 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         .slice(0, 10)
         .map((delivery) => ({ number: delivery.source_number, title: delivery.title, deliveredAt: delivery.delivered_at })),
       capacity: {
-        busy: new Set(activeRuns.filter((run) => run.repository === id).map((run) => run.issueId)).size,
+        busy: new Set(activeRuns
+          .filter((run) => run.repository === id && !isLightweightRepositoryStage(config, run.repository, run.stageId))
+          .map((run) => run.issueId)).size,
         slots: repository.concurrency,
       },
       setup: {
@@ -183,8 +190,8 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         itemProvider: source?.type ?? repository.source,
         itemSync: source?.type === "github" && config.web.publicUrl ? "webhook" : "polling",
         ciProvider,
-        ciMode: repository.ci.mode,
-        systemLabels: [...repository.systemLabels],
+        ciMode: ci.mode,
+        systemLabels: [...(repository.systemLabels ?? [])],
       },
       report30d: {
         delivered: report.delivered,

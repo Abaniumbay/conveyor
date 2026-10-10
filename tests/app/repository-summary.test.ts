@@ -5,8 +5,10 @@ import path from "node:path";
 
 import { buildRepositorySummaries } from "../../src/app/repository-summary";
 import { buildReport } from "../../src/app/reports";
+import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { renderDashboard } from "../../src/web/render";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -126,6 +128,21 @@ describe("buildRepositorySummaries", () => {
     expect(summaries.repositories[1]).toMatchObject({ health: "healthy", backlog: 0, done: 0, items: [], deliveries: [], color: 2 });
   });
 
+  test("counts only active runs that consume a repository slot", async () => {
+    const store = await world();
+    const summary = (task: string) => buildRepositorySummaries({
+      store,
+      config: {
+        ...config,
+        pipelines: { delivery: { stages: [{ id: "implementation", actions: [{ task }] }] } },
+      } as unknown as ConveyorConfig,
+      now: NOW,
+    }).repositories.find((repository) => repository.id === "alpha");
+
+    expect(summary("ci.await")?.capacity).toEqual({ busy: 0, slots: 2 });
+    expect(summary("agent.run")?.capacity).toEqual({ busy: 1, slots: 2 });
+  });
+
   test("keeps restricted setup facts and secrets out of the ordinary summary without provider calls or store changes", async () => {
     const store = await world();
     const revision = store.dashboardRevision();
@@ -158,6 +175,77 @@ describe("buildRepositorySummaries", () => {
       { id: "alpha", folder: "/work/alpha", agentEgressHosts: ["api.example.test"] },
       { id: "empty", folder: "/work/empty", agentEgressHosts: [] },
     ]);
+  });
+
+  test("renders every repository dashboard view from stored summaries without source access", async () => {
+    const store = await world();
+    const serviceConfig = {
+      ...config,
+      hash: "test-config",
+      root: tmpdir(),
+      settings: { workspaces: tmpdir(), runners: 1 },
+      runners: {},
+      agents: {},
+      sources: { github: { ...config.sources.github, webhookSecret: "sentinel-webhook-secret" } },
+      pipelines: {
+        delivery: {
+          stages: [
+            { id: "implementation", run: { type: "agent", agent: "worker" } },
+            { id: "review", name: "Code review", run: { type: "agent", agent: "worker" } },
+          ],
+        },
+      },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: {},
+        metadata: { closable: "conveyor:closable" },
+      },
+    } as unknown as ConveyorConfig;
+    const provider = new Proxy({}, { get: () => { throw new Error("provider access is forbidden"); } }) as never;
+    const service = new ConveyorService(serviceConfig, store, provider);
+
+    const board = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const list = service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    const detail = service.dashboard("csrf", { view: "repository", repositoryId: "alpha", column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+
+    const reader = { id: "reader", username: "reader", role: "user" as const, avatar: "🦊" };
+    const superuser = { id: "admin", username: "admin", role: "superuser" as const, avatar: "🦊" };
+    const boardHtml = renderDashboard({ ...board, account: reader });
+    const readerList = renderDashboard({ ...list, account: reader });
+    const superuserList = renderDashboard({ ...list, account: superuser });
+    const readerDetail = renderDashboard({ ...detail, account: reader });
+    const superuserDetail = renderDashboard({ ...detail, account: superuser });
+
+    expect(boardHtml).toContain('href="/repositories"');
+    expect(readerList).toContain("owner/alpha");
+    expect(superuserList).toContain("owner/alpha");
+    expect(readerDetail).toContain("Recently delivered");
+    expect(superuserDetail).toContain("/work/alpha");
+    expect(readerDetail).not.toContain("/work/alpha");
+    for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
+      expect(html).not.toContain("sentinel-webhook-secret");
+    }
+    const dependencies = service.webDependencies({} as never, "operator");
+    expect(boardHtml).toContain(`data-dashboard-revision="${board.revision}"`);
+    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
+    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
+
+    store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
+    const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    expect(updated.revision).not.toBe(board.revision);
+
+    const storedRevision = store.dashboardRevision();
+    await service.reconcileAll();
+    const degraded = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    expect(store.dashboardRevision()).toBe(storedRevision);
+    expect(degraded.revision).not.toBe(updated.revision);
+    expect(await dependencies.getDashboardRevision()).toBe(degraded.revision);
+    expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
+    expect(degraded.systemWarnings).toEqual([]);
+    const degradedHtml = renderDashboard(degraded);
+    expect(degradedHtml).toContain("provider access is forbidden");
+    expect(degradedHtml).not.toContain("System attention");
   });
 
   test("reports webhook sync whenever the public webhook endpoint is configured", async () => {
