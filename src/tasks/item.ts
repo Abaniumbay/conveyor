@@ -489,14 +489,18 @@ function invalidDependency(number: number, reason: string): ToolRequestError {
 }
 
 /** Validate blockers that can be identified before creating the child. */
-function childDependencies(deps: Deps, parentNumber: number, dependsOn: readonly number[] | undefined): number[] {
+async function childDependencies(
+  deps: Deps,
+  parent: ReturnType<typeof issueOf>,
+  dependsOn: readonly number[] | undefined,
+): Promise<number[]> {
   const requested = [...new Set(dependsOn ?? [])];
   const issues = new Map(deps.store.listIssues(deps.repository.id).map((issue) => [issue.sourceNumber, issue]));
   for (const number of requested) {
     if (!Number.isSafeInteger(number) || number <= 0) {
       throw invalidDependency(number, "it must be a positive integer.");
     }
-    if (number === parentNumber) {
+    if (number === parent.sourceNumber) {
       throw invalidDependency(number, "it must not identify the current parent.");
     }
     const blocker = issues.get(number);
@@ -512,6 +516,19 @@ function childDependencies(deps: Deps, parentNumber: number, dependsOn: readonly
     if (!blocker.labels.includes(deps.config.labels.enrollment)) {
       throw invalidDependency(number, `issue #${number} is not enrolled in Conveyor; ${dependencyRule}.`);
     }
+    if (dependencyPathExists(deps, blocker.id, parent.id)) {
+      throw invalidDependency(number, "it would form a dependency cycle.");
+    }
+  }
+  const liveBlockers = await Promise.all(requested.map((number) => deps.items.getIssue(deps.repository.address, number)));
+  for (const [index, live] of liveBlockers.entries()) {
+    const number = requested[index]!;
+    if (live.state !== "open") {
+      throw invalidDependency(number, `issue #${number} is closed; ${dependencyRule}.`);
+    }
+    if (!live.labels.includes(deps.config.labels.enrollment)) {
+      throw invalidDependency(number, `issue #${number} is not enrolled in Conveyor; ${dependencyRule}.`);
+    }
   }
   return requested;
 }
@@ -524,7 +541,10 @@ function dependencyPathExists(deps: Deps, fromIssueId: string, toIssueId: string
     if (current === toIssueId) return true;
     if (visited.has(current)) continue;
     visited.add(current);
-    pending.push(...deps.store.listDependencies(current));
+    pending.push(
+      ...deps.store.listDependencies(current),
+      ...deps.store.listChildren(current).map(({ issueId }) => issueId),
+    );
   }
   return false;
 }
@@ -594,7 +614,7 @@ const createChild = tool("item.createChild",
     const nextStage = stages[currentIndex + 1]?.id ?? stages[currentIndex]?.id;
     const systemLabels = (input!.systemLabels ?? []).filter((label) => repository.systemLabels.includes(label));
     const plan = await planMetadata(deps, { type: input!.type, fields: input!.fields });
-    const dependsOn = childDependencies(deps, issue.sourceNumber, input!.dependsOn);
+    const dependsOn = await childDependencies(deps, issue, input!.dependsOn);
     let body = upsertManagedSection(
       input!.body,
       "acceptance-criteria",

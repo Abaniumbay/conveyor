@@ -178,6 +178,9 @@ async function world(options: {
     });
     if (extra.projected) store.setIssueProjection(id, { stage: null, state: extra.projected, warning: null });
   };
+  const updateLiveSource = (number: number, extra: Partial<ReturnType<typeof source>>) => {
+    sources.set(number, { ...source(number), ...extra });
+  };
   const config = {
     labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" } },
     repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
@@ -247,7 +250,7 @@ async function world(options: {
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
     git: {} as TaskDeps["git"], workspaces: {} as TaskDeps["workspaces"],
   });
-  return { store, add, deps, calls };
+  return { store, add, updateLiveSource, deps, calls };
 }
 
 describe("item.load", () => {
@@ -479,11 +482,11 @@ describe("item tools", () => {
     });
 
     expect(out.output).toMatchObject({ id: "c", number: 99, dependsOn: [7, 8] });
-    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
-    expect(w.calls[0]![1]).toMatchObject({ labels: [] });
-    expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
-    expect(w.calls[3]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
-    expect(w.calls[4]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"]]);
+    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
+    expect(w.calls[2]![1]).toMatchObject({ labels: [] });
+    expect(w.calls[3]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
+    expect(w.calls[5]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls[6]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"]]);
 
     expect(w.store.getIssue("c")).toMatchObject({
       labels: ["conveyor", "conveyor:implementation"],
@@ -533,6 +536,37 @@ describe("item tools", () => {
     }
   });
 
+  test("createChild revalidates stored blockers against their live source state before creating a child", async () => {
+    for (const [liveState, message] of [
+      [{ state: "closed" }, "issue #7 is closed"],
+      [{ labels: [] as string[] }, "issue #7 is not enrolled in Conveyor"],
+    ] as const) {
+      const w = await world(); w.add("i1", 5); w.add("blocker", 7);
+      w.updateLiveSource(7, liveState);
+
+      await expect(tool("item.createChild", w.deps(), {
+        title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+      })).rejects.toThrow(`Invalid dependsOn value 7: ${message}`);
+      expect(w.calls.map(([name]) => name)).toEqual(["getIssue"]);
+    }
+  });
+
+  test("createChild rejects blockers that would form parent roll-up cycles before creating a child", async () => {
+    const dependencyCycle = await world(); dependencyCycle.add("i1", 5); dependencyCycle.add("blocker", 7);
+    dependencyCycle.store.replaceRelationships("blocker", null, ["i1"]);
+    await expect(tool("item.createChild", dependencyCycle.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+    })).rejects.toThrow("Invalid dependsOn value 7: it would form a dependency cycle");
+    expect(dependencyCycle.calls).toEqual([]);
+
+    const ancestorCycle = await world(); ancestorCycle.add("i1", 5); ancestorCycle.add("ancestor", 7);
+    ancestorCycle.store.replaceRelationships("i1", { parentId: "ancestor", siblingOrder: null }, []);
+    await expect(tool("item.createChild", ancestorCycle.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+    })).rejects.toThrow("Invalid dependsOn value 7: it would form a dependency cycle");
+    expect(ancestorCycle.calls).toEqual([]);
+  });
+
   test("createChild rejects the returned child and dependency cycles without writing a link", async () => {
     const self = await world(); self.add("i1", 5); self.add("existing-child", 99);
     await expect(tool("item.createChild", self.deps(), {
@@ -552,8 +586,8 @@ describe("item tools", () => {
     const w = await world({ failDependencyWriteOnce: true }); w.add("i1", 5); w.add("blocker", 7);
     const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
     await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency failure");
-    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies"]);
-    expect(w.calls[0]![1]).toMatchObject({ labels: [] });
+    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "createChildIssue", "setDependencies"]);
+    expect(w.calls[1]![1]).toMatchObject({ labels: [] });
     await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });
     const creates = w.calls.filter(([name]) => name === "createChildIssue");
     expect(creates).toHaveLength(2);
