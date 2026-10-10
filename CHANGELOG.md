@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-10
+
+Refinement can now order the children it creates, and three pipeline defects that stalled items are fixed: writes made during refinement are visible to its own gates on polled repositories, enrolled issues first seen as dependencies are queued, and unconfigured refinement outputs report a clear error instead of a bare failure.
+
 ### Added
 
 - `item.createChild` can record dependencies on already-created sibling children with `dependsOn`,
