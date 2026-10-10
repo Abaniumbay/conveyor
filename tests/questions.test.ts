@@ -11,6 +11,23 @@ describe("structured questions", () => {
     expect(validatedQuestionAnswer({ options: ["small", "large"], allowFreeText: false }, "large")).toBe("large");
   });
 
+  test("keeps options written as a label and description answerable by their label", () => {
+    const question = {
+      options: [
+        { label: "Discuss first", description: "Open an issue before starting a pull request." },
+        { label: "Defer pull requests", description: "Outside pull requests are not accepted yet." },
+      ],
+      allowFreeText: false,
+    };
+    expect(questionOptions(question.options)).toEqual([
+      { id: "Discuss first", label: "Discuss first" },
+      { id: "Defer pull requests", label: "Defer pull requests" },
+    ]);
+    expect(questionConfigurationError(question.options, false)).toBeNull();
+    expect(validatedQuestionAnswer(question, "Defer pull requests")).toBe("Defer pull requests");
+    expect(conversationQuestionAnswer(question, "discuss first")).toBe("Discuss first");
+  });
+
   test("rejects invalid configurations and answers that do not select a choice", () => {
     expect(questionConfigurationError([{ id: "missing-label" }], false)).toBe("A question needs at least one valid choice or free-text input.");
     expect(() => validatedQuestionAnswer({ options: ["small"], allowFreeText: false }, "large")).toThrow("Choose one of the available answers.");

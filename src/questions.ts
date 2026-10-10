@@ -3,16 +3,18 @@ export interface QuestionOption {
   label: string;
 }
 
-/** Supports the string options written by older agents while rejecting unusable data. */
+/**
+ * Supports the string options written by older agents and the `{ label, description }` options
+ * agents write without an id (the label then identifies the choice), while rejecting unusable data.
+ */
 export function questionOptions(options: readonly unknown[]): QuestionOption[] {
   const seen = new Set<string>();
   return options.flatMap((option) => {
+    const given = option && typeof option === "object" ? option as { id?: unknown; label?: unknown } : null;
     const value = typeof option === "string"
       ? { id: option, label: option }
-      : option && typeof option === "object" &&
-          typeof (option as { id?: unknown }).id === "string" &&
-          typeof (option as { label?: unknown }).label === "string"
-        ? { id: (option as { id: string }).id, label: (option as { label: string }).label }
+      : given && typeof given.label === "string" && (typeof given.id === "string" || given.id == null)
+        ? { id: typeof given.id === "string" ? given.id : given.label, label: given.label }
         : null;
     const id = value?.id.trim();
     const label = value?.label.trim();

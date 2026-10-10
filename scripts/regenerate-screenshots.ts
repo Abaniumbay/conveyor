@@ -230,7 +230,8 @@ async function configureDemo(
         "baseBranch: main",
         "pipeline: delivery",
         "ci:",
-        "  mode: disabled",
+        // The phone-overflow item shows a stored CI chip; the demo repository shows none.
+        ...(index === 0 ? ["  mode: disabled"] : ["  provider: actions", "  mode: advisory"]),
         "agentEgress:",
         "  allowLoopbackMcp: true",
         "  httpsHosts: []",
@@ -309,6 +310,24 @@ async function seedDemo(home: string): Promise<void> {
     };
     issues.push(phoneOverflowIssue);
     for (const entry of issues) store.upsertIssue(entry);
+    // A CI chip carries visually hidden text. In a stage scrolled out of view at phone widths it
+    // must not widen the document, which verifyPhoneLayouts checks.
+    store.saveIndicator(
+      phoneOverflowIssue.id,
+      "demo-head",
+      {
+        id: "ci",
+        label: "CI",
+        state: "passing",
+        detail: "3/3 passed",
+        progress: "3/3",
+        url: null,
+        observedAt: DEMO_TIME,
+        entries: [],
+        reference: null,
+      },
+      true,
+    );
     store.setIssueProjection("demo#1", {
       stage: "implementation",
       state: "active",

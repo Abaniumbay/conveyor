@@ -944,6 +944,20 @@ describe("ConveyorService dashboard", () => {
     expect(service.dashboard("csrf").needsYou).toEqual([expect.objectContaining({
       id: "parent", state: "needs-input", reason: expect.stringContaining("Which scope?"),
     })]);
+    expect(service.dashboard("csrf").questions.map((question) => question.prompt)).toEqual(["Which scope?"]);
+
+    // A paused (unenrolled) or closed item keeps its question, but no longer asks the owner.
+    const parent = {
+      id: "parent", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://github.com/owner/repo/issues/1",
+      title: "Parent", body: "", sourceUpdatedAt: "2026-09-29T00:00:00Z",
+    };
+    store.upsertIssue({ ...parent, sourceState: "open", labels: [] });
+    expect(service.dashboard("csrf").questions).toEqual([]);
+    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    store.upsertIssue({ ...parent, sourceState: "closed", labels: ["conveyor", "conveyor:refinement", "conveyor:needs-input"] });
+    expect(service.dashboard("csrf").questions).toEqual([]);
+    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    expect(store.listOpenQuestions()).toHaveLength(1);
     store.close();
   });
 

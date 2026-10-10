@@ -2586,9 +2586,13 @@ export class ConveyorService {
         issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map(issueCard),
       };
     };
+    // Needs you lists only what the owner can act on now: a closed or paused (unenrolled) item's
+    // question or stop is kept, and shows again when the item is reopened or resumed.
+    const awaitsOwner = (issue: StoredIssue): boolean =>
+      issue.sourceState !== "closed" && issue.labels.includes(this.config.labels.enrollment);
     const questions: QuestionViewModel[] = openQuestions.flatMap((question) => {
       const issue = byId.get(question.issueId);
-      if (!issue) return [];
+      if (!issue || !awaitsOwner(issue)) return [];
       const options = questionOptions(question.options);
       return [{
         id: question.id,
@@ -2683,6 +2687,7 @@ export class ConveyorService {
       questions,
       needsYou: workflowIssues
         .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? ""))
+        .filter(awaitsOwner)
         .map((issue) => card(issue)),
       systemWarnings: [
         ...this.#onboardingErrors.entries(),

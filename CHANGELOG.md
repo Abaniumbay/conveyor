@@ -12,6 +12,14 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Supervised release restarts now force a failed exit if shutdown cleanup stalls, rather than
   waiting for the service unit stop timeout.
+- Questions whose choices were stored as a label and description, which is what agents write, show
+  their answer choices in Needs you again. Since 0.4.0 they showed an error and could not be
+  answered from the dashboard.
+- Needs you no longer lists questions and stops of closed or paused (unenrolled) items. They are
+  kept and show again when the item is reopened or resumed.
+- The dashboard no longer becomes wider than a phone screen when a card outside the visible stage
+  shows a CI chip, which let the page be dragged sideways into empty space. The Operator view,
+  item conversations and journeys also wrap long content at phone widths instead of cutting it off.
 
 ## [0.4.1] - 2026-10-10
 

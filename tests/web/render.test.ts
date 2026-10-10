@@ -645,7 +645,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Conversation");
     expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
     expect(html).toContain("grid-auto-rows:max-content");
-    expect(html).toContain(".agent-events{display:grid;flex:1;");
+    expect(html).toContain(".agent-events{display:grid;grid-template-columns:minmax(0,1fr);flex:1;");
     expect(html).toContain("align-content:start;grid-auto-rows:max-content");
     expect(html).toContain('data-detail-tab="journey"');
     expect(html).toContain('data-journey-url="/api/issues/parent/journey"');
