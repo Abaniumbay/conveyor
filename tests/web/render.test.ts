@@ -125,6 +125,7 @@ const dashboard: DashboardViewModel = {
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
+  repositoryId: null,
   counts: { board: 43, attention: 1 },
   activeWork: {
     runnerCount: 1,
@@ -200,6 +201,8 @@ const dashboard: DashboardViewModel = {
   ],
   needsYou: [parent],
   systemWarnings: ["meal-planner webhook is unavailable"],
+  repositories: [],
+  restrictedRepositories: [],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
   selectedIssue: null,
   csrfToken: "csrf-token",
@@ -466,8 +469,8 @@ describe("renderDashboard", () => {
     const html = renderDashboard(dashboard);
 
     expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention issue--rollup repo-color-1"');
-    expect(html).toContain('class="repository-badge"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></span>:#41');
-    expect(html).toContain('class="details-kicker repo-color-1"><span class="repository-badge"');
+    expect(html).toContain('class="repository-badge" href="/repositories/sample"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></a>:#41');
+    expect(html).toContain('class="details-kicker repo-color-1"><a class="repository-badge" href="/repositories/sample">');
     expect(html).toContain('class="needs-you-item repo-color-1"');
     expect(html).toContain('class="needs-you-item needs-you-item--question repo-color-1"');
     expect(html).toContain('--repo-1:#2563EB');
@@ -481,6 +484,64 @@ describe("renderDashboard", () => {
     expect(html).toContain('--repo-3:#63D5C5');
     expect(html).toContain('--repo-4:#C5D66D');
     expect(html).toContain('--repo-5:#66C7F0');
+  });
+
+  test("renders the ordered Board strip and repository list without a horizontal phone layout", () => {
+    const summary = (id: string, health: "healthy" | "degraded", items: DashboardViewModel["repositories"][number]["items"], errorSummary: string | null = null) => ({
+      id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
+      backlog: 1, stages: [{ id: "implementation", name: "Implementation", count: 1 }], done: 2, items,
+      deliveries: [], capacity: { busy: 1, slots: 2 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      report30d: { delivered: 2, inputTokens: 20, outputTokens: 10, agentMs: 60_000 },
+    });
+    const repositories = [
+      summary("z-idle", "healthy", []),
+      summary("active", "healthy", [{ number: 2, title: "Working", stage: "implementation", state: "Running" }]),
+      summary("owner", "healthy", [{ number: 3, title: "Question", stage: "review", state: "Needs you" }]),
+      summary("broken", "degraded", [], "Webhook is unavailable"),
+      summary("alpha-idle", "healthy", []),
+      summary("extra", "healthy", []),
+      summary("space/name", "healthy", []),
+    ];
+    const board = renderDashboard({ ...dashboard, repositories });
+
+    expect(board).toContain('<h2 id="repositories-heading"><a href="/repositories">Repositories</a></h2>');
+    expect(board).toContain('href="/repositories/space%2Fname"');
+    expect(board).toContain('Webhook is unavailable');
+    expect(board).toContain('1 in progress · 1 needs you');
+    expect(board).toContain('Show all 7');
+    expect(board.indexOf('href="/repositories/broken"')).toBeLessThan(board.indexOf('href="/repositories/owner"'));
+    expect(board.indexOf('href="/repositories/owner"')).toBeLessThan(board.indexOf('href="/repositories/active"'));
+    expect(dashboardCss).toContain('.repository-grid{grid-template-columns:minmax(0,1fr)}');
+
+    const list = renderDashboard({ ...dashboard, view: "repositories", repositories });
+    expect(list).toContain('class="tab tab--active" aria-current="page">Repositories</a>');
+    expect(list).toContain('owner/space/name');
+    expect(list).not.toContain('Show all 7');
+    expect(renderDashboard({ ...dashboard, repositories: [] })).toContain("No repositories are configured.");
+  });
+
+  test("renders repository detail sections and redacts restricted setup for non-superusers", () => {
+    const repository = {
+      id: "space/name", address: "owner/space-name", color: 2, health: "degraded" as const,
+      error: "The full reconciliation error", errorSummary: "Reconciliation failed", backlog: 4,
+      stages: [{ id: "implementation", name: "Implementation", count: 2 }], done: 8,
+      items: [{ number: 7, title: "Current item", stage: "implementation", state: "Running" as const }],
+      deliveries: [{ number: 6, title: "Delivered item", deliveredAt: "2026-10-01T00:00:00.000Z" }],
+      capacity: { busy: 1, slots: 2 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      report30d: { delivered: 8, inputTokens: 120, outputTokens: 30, agentMs: 180_000 },
+    };
+    const base = { ...dashboard, view: "repository" as const, repositoryId: repository.id, repositories: [repository], restrictedRepositories: [{ id: repository.id, folder: "/sentinel/local-folder", agentEgressHosts: ["sentinel.egress.example"] }] };
+    const reader = renderDashboard({ ...base, account: { id: "reader", username: "reader", role: "user", avatar: "🦊" } });
+    expect(reader).toContain("The full reconciliation error");
+    expect(reader).toContain('href="/issues/space%2Fname/7"');
+    for (const heading of ["Line", "Now", "Recently delivered", "Setup", "Last 30 days"]) expect(reader).toContain(`<h3>${heading}</h3>`);
+    expect(reader).not.toContain("/sentinel/local-folder");
+    expect(reader).not.toContain("sentinel.egress.example");
+    const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
+    expect(superuser).toContain("/sentinel/local-folder");
+    expect(superuser).toContain("sentinel.egress.example");
   });
 
   test("renders legacy string choices and an actionable error instead of an empty answer form", () => {
@@ -636,7 +697,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("<h2>Active work</h2>");
     expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain('href="/issues/sample/41"');
-    expect(html).toContain('<span class="repository-name">sample</span></span>:#41');
+    expect(html).toContain('<span class="repository-name">sample</span></a>:#41');
     expect(html).toContain('href="/issues/sample/42"');
     expect(html).toContain('href="/issues/foundation/40"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');

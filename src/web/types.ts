@@ -185,6 +185,8 @@ export interface StageColumnViewModel {
 
 export interface DashboardPageSelection {
   view: DashboardView;
+  /** Configured repository selected by the repository detail page, if any. */
+  repositoryId?: string | null;
   column: string | null;
   page: number;
   doneLimit: number;
@@ -192,7 +194,45 @@ export interface DashboardPageSelection {
   issueId: string | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "about" | "accounts" | "profile" | "notifications";
+export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
+
+export interface RepositoryDashboardItem {
+  number: number;
+  title: string;
+  stage: string | null;
+  state: "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";
+}
+
+export interface RepositoryDashboardSummary {
+  id: string;
+  address: string;
+  color: number;
+  health: "healthy" | "degraded";
+  error: string | null;
+  errorSummary: string | null;
+  backlog: number;
+  stages: readonly { id: string; name: string; count: number }[];
+  done: number;
+  items: readonly RepositoryDashboardItem[];
+  deliveries: readonly { number: number; title: string; deliveredAt: string }[];
+  capacity: { busy: number; slots: number };
+  setup: {
+    pipeline: string;
+    baseBranch: string;
+    itemProvider: string;
+    itemSync: "webhook" | "polling";
+    ciProvider: string | null;
+    ciMode: "required" | "advisory" | "disabled";
+    systemLabels: readonly string[];
+  };
+  report30d: { delivered: number; inputTokens: number; outputTokens: number; agentMs: number };
+}
+
+export interface RestrictedRepositoryDashboardSummary {
+  id: string;
+  folder: string;
+  agentEgressHosts: readonly string[];
+}
 
 export interface DashboardAccountViewModel {
   id: string;
@@ -252,6 +292,7 @@ export interface DashboardViewModel {
   updatedAt: string;
   revision: string;
   view: DashboardView;
+  repositoryId: string | null;
   counts: { board: number; attention: number };
   activeWork: {
     runnerCount: number;
@@ -265,6 +306,10 @@ export interface DashboardViewModel {
   questions: readonly QuestionViewModel[];
   needsYou: readonly IssueCardViewModel[];
   systemWarnings: readonly string[];
+  /** Durable, provider-free repository summaries used by Board and repository views. */
+  repositories: readonly RepositoryDashboardSummary[];
+  /** Rendered only for a superuser on repository details. */
+  restrictedRepositories: readonly RestrictedRepositoryDashboardSummary[];
   steering: SteeringViewModel;
   selectedIssue: IssueCardViewModel | null;
   /** Read-only agent profiles, loaded only for the team view. */

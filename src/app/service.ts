@@ -51,6 +51,7 @@ import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
+import { buildRepositorySummaries } from "./repository-summary";
 import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
@@ -2378,6 +2379,7 @@ export class ConveyorService {
     csrfToken: string,
     pagination: DashboardPageSelection = {
       view: "board",
+      repositoryId: null,
       column: null,
       page: 1,
       doneLimit: 20,
@@ -2683,18 +2685,29 @@ export class ConveyorService {
           }),
         }
       : null;
-    const degradedRepositories = new Set([
-      ...this.#repositoryErrors.keys(),
-      ...this.#onboardingErrors.keys(),
-    ]).size;
+    const repositorySummaries = buildRepositorySummaries({
+      store: this.store,
+      config: this.config,
+      onboardingErrors: this.#onboardingErrors,
+      reconciliationErrors: this.#repositoryErrors,
+      lastReconciledAt: this.#lastReconciledAt,
+    });
+    const degradedRepositories = repositorySummaries.repositories.filter((repository) => repository.health === "degraded").length;
+    const unassociatedWarnings = [
+      ...this.#onboardingErrors.entries(),
+      ...this.#repositoryErrors.entries(),
+    ].filter(([repository]) => !this.config.repositories[repository]).map(([repository, message]) => `${repository}: ${message}`);
     return {
       title: "Conveyor",
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""}`,
       totalUsage: formatUsage(total) ?? "0 runs",
       harnessUsage,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
-      revision: this.store.dashboardRevision(),
+      // Stored repository facts already affect the store revision. Include process-local
+      // reconciliation facts too, so repository cards refresh when their health changes.
+      revision: `${this.store.dashboardRevision()}|repositories:${JSON.stringify(repositorySummaries.repositories)}`,
       view: pagination.view,
+      repositoryId: pagination.repositoryId ?? null,
       counts: {
         board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,
@@ -2746,10 +2759,9 @@ export class ConveyorService {
         .filter((issue) => ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(issue.projectedState ?? ""))
         .filter(awaitsOwner)
         .map((issue) => card(issue)),
-      systemWarnings: [
-        ...this.#onboardingErrors.entries(),
-        ...this.#repositoryErrors.entries(),
-      ].map(([repository, message]) => `${repository}: ${message}`),
+      systemWarnings: unassociatedWarnings,
+      repositories: repositorySummaries.repositories,
+      restrictedRepositories: repositorySummaries.restrictedRepositories,
       steering: {
         enabled: Boolean(this.config.web?.steering),
         agent: this.config.web?.steering?.agent ?? null,

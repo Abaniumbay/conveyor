@@ -13,6 +13,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - `item.createChild` now accepts open, Conveyor-enrolled same-repository blockers outside its
   roll-up and returns actionable validation errors for invalid dependency targets.
 
+### Added
+
+- The dashboard now shows configured repositories, including their health and current work, and
+  provides read-only repository list and detail pages.
+
 ## [0.4.3] - 2026-10-10
 
 Refinement can now order the children it creates, and three pipeline defects that stalled items are fixed: writes made during refinement are visible to its own gates on polled repositories, enrolled issues first seen as dependencies are queued, and unconfigured refinement outputs report a clear error instead of a bare failure.

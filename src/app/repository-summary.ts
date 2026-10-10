@@ -144,8 +144,12 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
     const error = errorsFor(id, onboarding, reconciliation);
-    const source = config.sources[repository.source];
-    const ciProvider = repository.ci.provider ? config.ci[repository.ci.provider]?.type ?? null : null;
+    // Dashboard fixtures and older in-process callers can carry partially-normalised
+    // repository records. Keep this derived, read-only view safe while configuration
+    // loading remains responsible for enforcing the complete production schema.
+    const source = config.sources?.[repository.source];
+    const ci = repository.ci ?? { mode: "disabled" as const };
+    const ciProvider = ci.provider ? config.ci?.[ci.provider]?.type ?? null : null;
     const report = reportByRepository.get(id)!;
 
     return {
@@ -183,8 +187,8 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         itemProvider: source?.type ?? repository.source,
         itemSync: source?.type === "github" && config.web.publicUrl ? "webhook" : "polling",
         ciProvider,
-        ciMode: repository.ci.mode,
-        systemLabels: [...repository.systemLabels],
+        ciMode: ci.mode,
+        systemLabels: [...(repository.systemLabels ?? [])],
       },
       report30d: {
         delivered: report.delivered,

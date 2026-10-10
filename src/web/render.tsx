@@ -14,6 +14,7 @@ import type {
   DashboardViewModel,
   IssueCardViewModel,
   IssueRelationViewModel,
+  RepositoryDashboardSummary,
   StageColumnViewModel,
 } from "./types";
 import { BUILD } from "../version";
@@ -38,6 +39,7 @@ function viewHref(view: DashboardView): string {
   if (view === "team") return "/team";
   if (view === "agent") return "/operator";
   if (view === "reports") return "/reports";
+  if (view === "repositories") return "/repositories";
   if (view === "about") return "/about";
   if (view === "accounts") return "/accounts";
   if (view === "profile") return "/profile";
@@ -62,7 +64,7 @@ function Markdown({ text }: { text: string }) {
 }
 
 function RepositoryBadge({ repository }: { repository: string }) {
-  return <span class="repository-badge"><i class="repository-dot" aria-hidden="true" /><span class="repository-name">{repository}</span></span>;
+  return <a class="repository-badge" href={`/repositories/${encodeURIComponent(repository)}`}><i class="repository-dot" aria-hidden="true" /><span class="repository-name">{repository}</span></a>;
 }
 
 function canManageDashboard(model: DashboardViewModel): boolean {
@@ -474,6 +476,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
     { view: "board", label: "Board", count: model.counts.board },
     { view: "team", label: "Team", count: null },
     { view: "reports", label: "Reports", count: null },
+    { view: "repositories", label: "Repositories", count: null },
     { view: "agent", label: "Operator", count: null },
   ];
   if (model.counts.attention > 0 || model.view === "attention") tabs.splice(1, 0, { view: "attention", label: "Label problems", count: model.counts.attention });
@@ -487,6 +490,83 @@ function Navigation({ model }: { model: DashboardViewModel }) {
       ))}
       {needsYou.total > 0 && <a href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">{needsYou.total}</span></a>}
     </nav>
+  );
+}
+
+function repositoryHref(id: string): string {
+  return `/repositories/${encodeURIComponent(id)}`;
+}
+
+function repositoryOrder(left: RepositoryDashboardSummary, right: RepositoryDashboardSummary): number {
+  const score = (repository: RepositoryDashboardSummary) => repository.health === "degraded"
+    ? 0
+    : repository.items.some((item) => item.state === "Needs you") ? 1
+      : repository.items.length > 0 ? 2 : 3;
+  return score(left) - score(right) || left.id.localeCompare(right.id);
+}
+
+function repositoryStatus(repository: RepositoryDashboardSummary): string {
+  if (repository.errorSummary) return repository.errorSummary;
+  if (repository.items.length === 0) return "Idle";
+  const needsYou = repository.items.filter((item) => item.state === "Needs you").length;
+  const running = repository.items.filter((item) => item.state === "Running").length;
+  return [
+    `${repository.items.length} in progress`,
+    needsYou > 0 ? `${needsYou} need${needsYou === 1 ? "s" : ""} you` : null,
+    running > 0 ? `${running} running` : null,
+  ].filter((value): value is string => Boolean(value)).join(" · ");
+}
+
+function RepositoryCard({ repository }: { repository: RepositoryDashboardSummary }) {
+  const health = repository.health === "healthy" ? "Healthy" : "Degraded";
+  return (
+    <a class={`repository-card repo-color-${repository.color} repository-card--${repository.health}`} href={repositoryHref(repository.id)}>
+      <span class="repository-card-heading"><i class="repository-dot" aria-hidden="true" /><strong>{repository.id}</strong><span class="repository-health" role="img" aria-label={health}>{repository.health === "healthy" ? "✓" : "!"}</span></span>
+      <span class="repository-address">{repository.address}</span>
+      <span class="repository-status">{repositoryStatus(repository)}</span>
+    </a>
+  );
+}
+
+function RepositoryEmpty() {
+  return <p class="repository-empty">No repositories are configured.</p>;
+}
+
+function Repositories({ model, limited = false }: { model: DashboardViewModel; limited?: boolean }) {
+  const repositories = [...model.repositories].sort(repositoryOrder);
+  const visible = limited ? repositories.slice(0, 6) : repositories;
+  return (
+    <section class={limited ? "repositories repositories--strip" : "repositories"} aria-labelledby="repositories-heading">
+      <header class="section-heading repositories-heading">
+        <div><h2 id="repositories-heading">{limited ? <a href="/repositories">Repositories</a> : "Repositories"}</h2><p>{limited ? "Configured delivery sources" : "Every configured delivery source"}</p></div>
+      </header>
+      {visible.length === 0 ? <RepositoryEmpty /> : <ol class="repository-grid">{visible.map((repository) => <li key={repository.id}><RepositoryCard repository={repository} /></li>)}</ol>}
+      {limited && repositories.length > visible.length && <a class="repositories-show-all" href="/repositories">Show all {repositories.length}</a>}
+    </section>
+  );
+}
+
+function RepositoryDetail({ model }: { model: DashboardViewModel }) {
+  const repository = model.repositories.find((candidate) => candidate.id === model.repositoryId);
+  if (!repository) return <section class="repository-detail"><h2>Repository not found</h2><p>The requested repository is not configured.</p></section>;
+  const restricted = model.account?.role === "superuser"
+    ? model.restrictedRepositories.find((candidate) => candidate.id === repository.id)
+    : undefined;
+  const line = [`${repository.backlog} backlog`, ...repository.stages.map((stage) => `${stage.count} ${stage.name}`), `${repository.done} done`];
+  return (
+    <article class="repository-detail">
+      <header class={`repository-detail-header repo-color-${repository.color}`}>
+        <p><i class="repository-dot" aria-hidden="true" /> Repository</p>
+        <h2>{repository.id}</h2>
+        <p>{repository.address} · <span role="img" aria-label={repository.health === "healthy" ? "Healthy" : "Degraded"}>{repository.health === "healthy" ? "✓ Healthy" : "! Degraded"}</span></p>
+        {repository.error && <p class="repository-error">{repository.error}</p>}
+      </header>
+      <section><h3>Line</h3><p>{line.join(" · ")}</p></section>
+      <section><h3>Now</h3>{repository.items.length > 0 ? <><p>{repository.capacity.busy} of {repository.capacity.slots} run slots busy</p><ol class="repository-items">{repository.items.map((item) => <li key={item.number}><a href={issueHref(repository.id, item.number)}>#{item.number} {item.title}</a><span>{item.stage ?? "Backlog"} · {item.state}</span></li>)}</ol></> : <p class="repository-empty">No work is in progress.</p>}</section>
+      <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
+      <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
+      <section><h3>Last 30 days</h3><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
+    </article>
   );
 }
 
@@ -748,6 +828,8 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
+  else if (model.view === "repositories") content = <Repositories model={model} />;
+  else if (model.view === "repository") content = <RepositoryDetail model={model} />;
   else if (model.view === "about") content = <About />;
   else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
@@ -804,7 +886,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           </header>
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Navigation model={model} />
-          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /></>}
+          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /><Repositories model={model} limited /></>}
           {content}
           {model.selectedIssue && (
             <DetailsDialog
