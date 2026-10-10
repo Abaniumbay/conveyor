@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
+This release removes installation-specific configuration from Conveyor and fixes three dashboard and refinement problems. **Breaking:** the built-in `midgame-actions` CI provider and `midgame-delivery` pipeline are gone, and the `allowedHumanLogins` provider setting is no longer accepted, so a configuration that still contains it fails validation. Before upgrading, copy any of those definitions you still use into your own configuration and delete `allowedHumanLogins`. Questions asked on a parent item during refinement now stay answerable after child issues exist, the dashboard fits a phone viewport, and an installed PWA reconnects its live updates after standby.
+
 ### Changed
 - Removed the installation-specific `midgame-actions` built-in CI provider and
   `midgame-delivery` pipeline. Copy any definition still used by an installation into private
