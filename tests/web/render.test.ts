@@ -323,8 +323,11 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="/profile"');
     expect(html).toContain('>Profile</a>');
 
+    expect(dashboardCss).toContain(".dashboard{min-width:0;max-width:100%;overflow-x:hidden;padding:.45rem .5rem 1rem}");
+    expect(dashboardCss).toContain(".repository-badge{min-width:0;max-width:100%}.repository-name{min-width:0;overflow-wrap:anywhere}");
+    expect(dashboardCss).toContain(".dashboard-header{min-width:0;max-width:100%;grid-template-columns:auto minmax(0,1fr) auto");
     expect(dashboardCss).toContain(".total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}");
-    expect(dashboardCss).toContain(".tabs{margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
+    expect(dashboardCss).toContain(".tabs{min-width:0;margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
     expect(dashboardCss).toContain(".tab{flex:0 0 auto;padding:.55rem .65rem;white-space:nowrap}");
   });
 
@@ -462,7 +465,7 @@ describe("renderDashboard", () => {
     const html = renderDashboard(dashboard);
 
     expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention issue--rollup repo-color-1"');
-    expect(html).toContain('class="repository-badge"><i class="repository-dot" aria-hidden="true"></i>sample</span>:#41');
+    expect(html).toContain('class="repository-badge"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></span>:#41');
     expect(html).toContain('class="details-kicker repo-color-1"><span class="repository-badge"');
     expect(html).toContain('class="needs-you-item repo-color-1"');
     expect(html).toContain('class="needs-you-item needs-you-item--question repo-color-1"');
@@ -616,7 +619,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("<h2>Active work</h2>");
     expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain('href="/issues/sample/41"');
-    expect(html).toContain(">sample</span>:#41");
+    expect(html).toContain('<span class="repository-name">sample</span></span>:#41');
     expect(html).toContain('href="/issues/sample/42"');
     expect(html).toContain('href="/issues/foundation/40"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
