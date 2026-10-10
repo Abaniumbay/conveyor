@@ -43,13 +43,20 @@ async function service() {
     id: "github:owner/repo#1", number: 1, url: "https://github.com/owner/repo/issues/1", title: "One", body: "",
     state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:work"], updatedAt: "2026-10-07T20:00:00Z",
   };
-  const calls = { listed: [] as Array<string | undefined>, subIssues: 0, dependencies: 0, statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
+  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], subIssues: 0, dependencies: 0, statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
   let listingGate: Promise<void> | null = null;
+  let omitFromPartialListing = false;
+  const rejectedFetches = new Set<number>();
   const github = {
     async listIssues(_address: string, options: { since?: string } = {}) {
       calls.listed.push(options.since);
       if (listingGate) await listingGate;
-      return [issue];
+      return omitFromPartialListing && options.since !== undefined ? [] : [issue];
+    },
+    async getIssue(_address: string, issueNumber: number) {
+      calls.fetched.push(issueNumber);
+      if (rejectedFetches.has(issueNumber)) throw new Error("not found");
+      return issue;
     },
     async listSubIssues() { calls.subIssues += 1; return []; },
     async listDependencies() { calls.dependencies += 1; return []; },
@@ -72,7 +79,11 @@ async function service() {
     listingGate = new Promise<void>((resolve) => { release = resolve; });
     return () => { listingGate = null; release(); };
   };
-  return { conveyor, store, calls, deliver, holdListing, issue };
+  return {
+    conveyor, store, calls, deliver, holdListing, issue,
+    omitFromPartialListing: () => { omitFromPartialListing = true; },
+    rejectFetchFor: (issueNumber: number) => { rejectedFetches.add(issueNumber); },
+  };
 }
 
 describe("GitHub calls made for webhook deliveries", () => {
@@ -102,6 +113,70 @@ describe("GitHub calls made for webhook deliveries", () => {
     expect(calls.listed[0]).toBeUndefined();
     expect(calls.listed[1]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     store.close();
+  });
+
+  test("a labeled delivery refreshes its named issue when the recent listing omits it", async () => {
+    const { conveyor, store, calls, deliver, issue, omitFromPartialListing } = await service();
+    await conveyor.reconcileAll();
+    issue.labels = ["bug"];
+    omitFromPartialListing();
+
+    await deliver("issues", { action: "labeled", issue: { number: 1 } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.listed).toHaveLength(2);
+    expect(calls.listed[1]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(calls.fetched).toEqual([1]);
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: ["bug"], projectedState: "offboarded" });
+    store.close();
+  });
+
+  test("an issue dependency webhook does not refresh a blocking issue in another repository", async () => {
+    const { conveyor, calls, deliver } = await service();
+
+    await deliver("issue_dependencies", {
+      action: "blocked",
+      blocked_issue: { number: 1 },
+      blocking_issue: { number: 7 },
+      blocking_issue_repo: { full_name: "other/repository" },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([1]);
+  });
+
+  test("a failed named issue refresh does not prevent another named issue from reconciling", async () => {
+    const { conveyor, store, calls, deliver, issue, omitFromPartialListing, rejectFetchFor } = await service();
+    await conveyor.reconcileAll();
+    issue.labels = ["bug"];
+    omitFromPartialListing();
+    rejectFetchFor(2);
+
+    await deliver("issue_dependencies", {
+      action: "blocked",
+      blocked_issue: { number: 1 },
+      blocking_issue: { number: 2 },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([1, 2]);
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: ["bug"], projectedState: "offboarded" });
+    store.close();
+  });
+
+  test("a sub-issue webhook does not refresh a cross-repository sub-issue", async () => {
+    const { conveyor, calls, deliver } = await service();
+
+    await deliver("sub_issues", {
+      action: "sub_issue_added",
+      parent_issue: { number: 1 },
+      parent_issue_repo: { full_name: "owner/repo" },
+      sub_issue: { number: 7 },
+      sub_issue_repo: { full_name: "other/repository" },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([1]);
   });
 
   test("only the status comment of the issue a delivery names is refreshed, straight to its known comment", async () => {

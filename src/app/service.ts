@@ -252,6 +252,8 @@ export class ConveyorService {
   }>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
+  /** Delayed infrastructure retries that must not outlive the service store. */
+  readonly #retryTimers = new Set<ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
@@ -463,6 +465,8 @@ export class ConveyorService {
     this.#wakeTimer = null;
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
+    for (const timer of this.#retryTimers) clearTimeout(timer);
+    this.#retryTimers.clear();
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
@@ -894,7 +898,9 @@ export class ConveyorService {
   }
 
   private retryLater(issueId: string, delayMs: number): void {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.#retryTimers.delete(timer);
+      if (this.#shuttingDown) return;
       const failure = this.#infrastructureFailures.get(issueId);
       if (failure) this.#infrastructureFailures.set(issueId, {
         stageId: failure.stageId,
@@ -912,6 +918,7 @@ export class ConveyorService {
         this.schedule();
       }
     }, delayMs);
+    this.#retryTimers.add(timer);
   }
 
   /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
@@ -1028,7 +1035,7 @@ export class ConveyorService {
     };
   }
 
-  private async reconcileRepository(repositoryId: string, options: { partial?: boolean } = {}): Promise<void> {
+  private async reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[] } = {}): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -1048,6 +1055,7 @@ export class ConveyorService {
       source: this.github,
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       ...(listing.since !== undefined ? { since: listing.since } : {}),
+      ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
     listing.finish();
     await this.reconcileRelationships(repositoryId, repository.address);
@@ -1752,6 +1760,11 @@ export class ConveyorService {
   private webhookIssueNumbers(repositoryId: string, eventType: string, payload: unknown): number[] | null {
     const body = fields(payload);
     const number = (value: unknown) => typeof fields(value).number === "number" ? [fields(value).number as number] : [];
+    const belongsToRepository = (value: unknown) => {
+      const address = fields(value).full_name;
+      const repositoryAddress = this.config.repositories[repositoryId]?.address;
+      return typeof address !== "string" || address.toLowerCase() === repositoryAddress?.toLowerCase();
+    };
     const forPullRequests = (numbers: number[]) => {
       const wanted = new Set(numbers);
       return this.store.listIssues(repositoryId).flatMap((issue) => {
@@ -1765,9 +1778,15 @@ export class ConveyorService {
         // A comment on a pull request arrives as an issue_comment whose issue is the pull request.
         return fields(body.issue).pull_request !== undefined ? forPullRequests(number(body.issue)) : number(body.issue);
       case "sub_issues":
-        return [...number(body.parent_issue), ...number(body.sub_issue)];
+        return [
+          ...(belongsToRepository(body.parent_issue_repo) ? number(body.parent_issue) : []),
+          ...(belongsToRepository(body.sub_issue_repo) ? number(body.sub_issue) : []),
+        ];
       case "issue_dependencies":
-        return [...number(body.blocked_issue), ...number(body.blocking_issue)];
+        return [
+          ...number(body.blocked_issue),
+          ...(belongsToRepository(body.blocking_issue_repo) ? number(body.blocking_issue) : []),
+        ];
       case "pull_request":
         return forPullRequests(number(body.pull_request));
       case "workflow_run":
@@ -1802,7 +1821,10 @@ export class ConveyorService {
       // Deliveries from here on queue the next pass: this one may already have read past them.
       this.#queuedWebhookReconciles.delete(repositoryId);
       if (this.#shuttingDown) return;
-      await this.reconcileRepository(repositoryId, { partial: true });
+      await this.reconcileRepository(repositoryId, {
+        partial: true,
+        ...(entry.issueNumbers === null ? {} : { includeIssueNumbers: [...entry.issueNumbers] }),
+      });
       this.schedule();
       const issues = this.store.listIssues(repositoryId);
       this.refreshStatusComments((entry.issueNumbers === null

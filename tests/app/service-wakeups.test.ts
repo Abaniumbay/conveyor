@@ -284,6 +284,14 @@ describe("persisted wake-ups", () => {
     await first.service.close();
   });
 
+  test("closing the service cancels delayed infrastructure retries", async () => {
+    const { first } = await setup();
+    const internals = first.service as unknown as { retryLater(issueId: string, delayMs: number): void };
+    internals.retryLater("issue", 10);
+    await first.service.close();
+    await Bun.sleep(25);
+  });
+
   test("reconciliation resetting the warning does not lose a parked item's status line", async () => {
     const { config, first } = await setup();
     park(first.store, config, new Date(Date.now() + 60_000).toISOString());
