@@ -195,7 +195,9 @@ describe("reference configuration", () => {
     expect(darya).toMatch(/`Bug` when the issue reports wrong existing behavior, `Feature` for a new capability, `Task` otherwise/);
     expect(darya).toMatch(/`Effort`[^\n]*refined scope/);
     expect(darya).toMatch(/`Priority` only when the issue text states one/);
-    expect(darya).toMatch(/roll-up parent also gets its own type, Effort and Refinement section/);
+    expect(darya).toMatch(/roll-up parent likewise gets only its configured type, fields and Refinement section/);
+    expect(darya).toMatch(/When no system labels are configured, skip the tool entirely/);
+    expect(darya).toMatch(/When there is no `refinement` configuration, skip `item\.setType` and `item\.setFields`; do not assume that an Effort field is required/);
     await mentions("kaveh", ["todo.get", "todo.set", "todo.update", "workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);

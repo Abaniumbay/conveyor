@@ -573,7 +573,7 @@ const repositorySchema = z
     agentEgress: agentEgressSchema.optional(),
     concurrency: z.number().int().positive().default(1),
     systemLabels: z.array(identifierSchema).default([]),
-    refinement: refinementOutputsSchema.default({ fields: [], require: { type: false, fields: [], section: false } }),
+    refinement: refinementOutputsSchema.optional(),
   })
   .strict();
 

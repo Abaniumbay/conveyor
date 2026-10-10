@@ -137,6 +137,7 @@ export async function issueMetadataChecks(config: ConveyorConfig, adapter: GitHu
   const checks: DoctorCheck[] = [];
   for (const [id, repository] of Object.entries(config.repositories)) {
     const outputs = repository.refinement;
+    if (!outputs) continue;
     const wantsType = outputs.require.type;
     const wantsFields = outputs.fields.length > 0;
     if (!wantsType && !wantsFields) continue;

@@ -3,6 +3,7 @@ import plexSans400 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400
 import plexSans500 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2" with { type: "file" };
 import plexSans600 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2" with { type: "file" };
 import { timingSafeEqual } from "node:crypto";
+import { ToolRequestError } from "../tasks/errors";
 import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
 import { dashboardClient } from "./client";
@@ -1044,7 +1045,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
       try {
         return json(await dependencies.handleMcp(parsed, token));
-      } catch {
+      } catch (error) {
+        if (error instanceof ToolRequestError) return json({ error: error.message }, 422);
         return json({ error: "MCP request failed" }, 500);
       }
     }

@@ -1,6 +1,8 @@
 // Organization issue types and issue fields: what the owner defines, and validation of what
 // refinement writes against it. Pure; the adapter does the GitHub calls.
 
+import { ToolRequestError } from "../../tasks/errors";
+
 export type IssueFieldDataType = "text" | "number" | "date" | "single_select" | "multi_select";
 
 export interface IssueFieldDefinition {
@@ -23,7 +25,7 @@ export interface ResolvedFieldValue {
 }
 
 /** Why a requested type, field or value cannot be written; the message lists the valid choices. */
-export class IssueMetadataError extends Error {
+export class IssueMetadataError extends ToolRequestError {
   override readonly name = "IssueMetadataError";
 }
 

@@ -411,14 +411,15 @@ export class ConveyorService {
 
   /** Read the configured issue-field values of enrolled issues that changed since they were last read. */
   private async syncIssueFields(repositoryId: string, repository: ConveyorConfig["repositories"][string]): Promise<void> {
-    if ((repository.refinement?.fields.length ?? 0) === 0) return;
+    const refinement = repository.refinement;
+    if (!refinement || refinement.fields.length === 0) return;
     for (const issue of this.store.listIssues(repositoryId)) {
       if (issue.sourceState !== "open" || !issue.labels.includes(this.config.labels.enrollment)) continue;
       if (issue.metadata.fieldsSyncedAt === issue.sourceUpdatedAt) continue;
       try {
         const values = await this.github.getIssueFieldValues(repository.address, issue.sourceNumber);
         const configured = Object.fromEntries(Object.entries(values).filter(([name]) =>
-          repository.refinement.fields.some((field) => field.toLocaleLowerCase() === name.toLocaleLowerCase())));
+          refinement.fields.some((field) => field.toLocaleLowerCase() === name.toLocaleLowerCase())));
         this.store.setIssueMetadata(issue.id, { fields: configured, fieldsSyncedAt: issue.sourceUpdatedAt });
       } catch (error) {
         log.warn("Issue field sync failed", this.itemFields(issue.id), error);
@@ -1518,52 +1519,59 @@ export class ConveyorService {
   async handleMcp(payload: unknown, token: string): Promise<unknown> {
     const grant = this.#mcpGrants.get(token);
     if (!grant) throw new Error("expired MCP grant");
-    const request = object(payload);
     const context = grant.context;
-    // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
-    const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
-    const taskDeps = (): TaskDeps => context
-      // A system-scoped (steering) grant has no item: only explicitly allowed steering-safe tools are available.
-      ? this.taskDeps(context.issue.id, context.repository)
-      : ({
-          store: this.store,
-          config: this.config,
-          issueId: "",
-          operator: {
-            board: () => this.operatorBoard(),
-            itemHistory: (input) => this.operatorItemHistory(input),
-            retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
-            moveBacklog: (input) => this.operatorMoveBacklog(input),
-          },
-        } as TaskDeps);
-    const result = await dispatchTool({
-      name: string(request.tool, "tool"),
-      input,
-      actor: grant.actor,
-      grant: {
-        runId: grant.runId,
-        stageId: grant.stageId,
-        issueScoped: context !== null,
+    let tool = "unknown";
+    try {
+      const request = object(payload);
+      tool = string(request.tool, "tool");
+      // The MCP server adds its run scope to every input; the grant is authoritative, so drop it.
+      const { runId: _run, stageId: _stage, repositoryId: _repository, issueId: _issue, ...input } = object(request.input ?? {});
+      const taskDeps = (): TaskDeps => context
+        // A system-scoped (steering) grant has no item: only explicitly allowed steering-safe tools are available.
+        ? this.taskDeps(context.issue.id, context.repository)
+        : ({
+            store: this.store,
+            config: this.config,
+            issueId: "",
+            operator: {
+              board: () => this.operatorBoard(),
+              itemHistory: (input) => this.operatorItemHistory(input),
+              retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
+              moveBacklog: (input) => this.operatorMoveBacklog(input),
+            },
+          } as TaskDeps);
+      const result = await dispatchTool({
+        name: tool,
+        input,
         actor: grant.actor,
-        tasks: grant.allowedTools,
-      },
-    }, {
-      registry: createTaskRegistry(),
-      deps: taskDeps,
-      liveHeadSha: async () => {
-        if (!context) return null;
-        const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
-          change?: { headSha?: string } | null;
-          pullRequest?: { headSha?: string } | null;
-        };
-        return state.change?.headSha ?? state.pullRequest?.headSha ?? null;
-      },
-      store: this.store,
-    });
-    if (context && canonicalToolName(string(request.tool, "tool")) === "agent.askQuestion") {
-      await this.updateStatusComment(context.issue.id);
+        grant: {
+          runId: grant.runId,
+          stageId: grant.stageId,
+          issueScoped: context !== null,
+          actor: grant.actor,
+          tasks: grant.allowedTools,
+        },
+      }, {
+        registry: createTaskRegistry(),
+        deps: taskDeps,
+        liveHeadSha: async () => {
+          if (!context) return null;
+          const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
+            change?: { headSha?: string } | null;
+            pullRequest?: { headSha?: string } | null;
+          };
+          return state.change?.headSha ?? state.pullRequest?.headSha ?? null;
+        },
+        store: this.store,
+      });
+      if (context && canonicalToolName(tool) === "agent.askQuestion") {
+        await this.updateStatusComment(context.issue.id);
+      }
+      return result;
+    } catch (error) {
+      if (context) log.warn("Issue MCP tool failed", { ...this.itemFields(context.issue.id), tool: canonicalToolName(tool) }, error);
+      throw error;
     }
-    return result;
   }
 
   /** A redacted board view for the scoped Operator MCP tools; it intentionally has no credentials or raw config. */
