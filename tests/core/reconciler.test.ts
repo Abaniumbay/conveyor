@@ -48,6 +48,23 @@ function issue(number: number, issueLabels: string[], state: "open" | "closed" =
 }
 
 describe("reconcileRepository", () => {
+  test("keeps a parked question in needs-input when a source refresh lacks its state label", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"], labels,
+    };
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    store.openQuestion({ issueId: "github:owner/repo#1", runId: null, prompt: "Which scope?", reason: "Need a decision", options: ["small"] });
+
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
+    expect(store.getStageState("github:owner/repo#1")?.status).toBe("ready");
+    store.close();
+  });
+
   test("preserves issue identity and history when a repository address changes", async () => {
     const store = await openStore();
     const repository = {

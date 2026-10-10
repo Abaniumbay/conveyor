@@ -1235,7 +1235,7 @@ export class ConveyorStore {
     return row ? this.mapSourceMutation(row) : null;
   }
 
-  private getSourceMutationByKey(key: string): SourceMutation | null {
+  getSourceMutationByKey(key: string): SourceMutation | null {
     const row = this.#database
       .query("SELECT * FROM source_mutations WHERE idempotency_key = ?")
       .get(key) as Record<string, SQLQueryBindings> | null;
@@ -1858,6 +1858,25 @@ export class ConveyorStore {
     })();
   }
 
+  /** Record the answer before its source mirror succeeds, keeping the question retryable. */
+  recordQuestionAnswer(questionId: string, source: string, answer: unknown): void {
+    this.#database.transaction(() => {
+      const question = this.getQuestion(questionId);
+      if (!question) throw new Error(`unknown question: ${questionId}`);
+      if (question.status !== "open") throw new Error("question is no longer open");
+      if (question.answer !== null) return;
+      this.#database
+        .query(`INSERT INTO answers(id, question_id, source, answer_json, created_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(randomUUID(), questionId, source, json(answer), now());
+    })();
+  }
+
+  completeQuestionAnswer(questionId: string): void {
+    this.#database
+      .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ? AND status = 'open'")
+      .run(now(), questionId);
+  }
+
   getQuestion(questionId: string): StoredQuestion | null {
     const row = this.#database
       .query(
@@ -1884,11 +1903,17 @@ export class ConveyorStore {
   listOpenQuestions(): StoredQuestion[] {
     const rows = this.#database
       .query(
-        `SELECT q.*, NULL AS answer_json FROM questions q
+        `SELECT q.*, a.answer_json FROM questions q LEFT JOIN answers a ON a.question_id = q.id
          WHERE q.status = 'open' ORDER BY q.created_at, q.id`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapQuestion(row));
+  }
+
+  hasQuestionForIssue(issueId: string): boolean {
+    return this.#database
+      .query("SELECT 1 FROM questions WHERE issue_id = ? LIMIT 1")
+      .get(issueId) !== null;
   }
 
   private mapQuestion(row: Record<string, SQLQueryBindings>): StoredQuestion {

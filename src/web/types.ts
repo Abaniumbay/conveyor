@@ -241,6 +241,7 @@ export interface QuestionViewModel {
   reason: string;
   options: readonly { id: string; label: string }[];
   allowFreeText: boolean;
+  answerError?: string | null;
 }
 
 export interface DashboardViewModel {

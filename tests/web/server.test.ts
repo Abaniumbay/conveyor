@@ -512,6 +512,25 @@ describe("createWebHandler", () => {
     expect(await scripted.json()).toEqual({ ok: true });
   });
 
+  test("returns actionable validation errors for blank or rejected question answers", async () => {
+    const { handler, auth, calls } = setup({ answerQuestion: async () => { throw new Error("Choose one of the available answers."); } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const post = (answer: string) => handler(new Request("http://localhost/questions/q-1/answer", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ answer, csrf }),
+    }));
+
+    const blank = await post("   ");
+    expect(blank.status).toBe(400);
+    expect(await blank.text()).toBe("An answer is required");
+    expect(calls.answers).toEqual([]);
+
+    const rejected = await post("not-an-option");
+    expect(rejected.status).toBe(409);
+    expect(await rejected.text()).toBe("Choose one of the available answers.");
+  });
+
   test("moves a backlog issue in place for drag and drop, with CSRF", async () => {
     const { handler, auth, calls } = setup();
     const { cookie } = await login(handler);
