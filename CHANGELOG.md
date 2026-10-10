@@ -8,6 +8,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Changed
+- Removed the installation-specific `midgame-actions` built-in CI provider and
+  `midgame-delivery` pipeline. Copy any definition still used by an installation into private
+  configuration before upgrading.
+- Removed the `allowedHumanLogins` provider setting. Existing configurations that contain it now
+  fail validation; dashboard authentication remains the authorization boundary.
+
 ## [0.3.1] - 2026-10-07
 
 This patch fixes a webhook feedback loop that could use up the GitHub API rate limit within minutes. Each status-comment write sent a webhook back to Conveyor, and that webhook rewrote every item's status comment. Webhooks are now acknowledged at once and handled in the background, and Conveyor makes far fewer GitHub calls. When GitHub does refuse requests for a rate limit, Conveyor pauses them until the limit resets.

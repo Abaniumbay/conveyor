@@ -21,11 +21,10 @@ async function loadReference(): Promise<ConveyorConfig> {
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
 
 describe("reference configuration", () => {
-  test("loads and compiles a plan for all five repositories", async () => {
+  test("loads and compiles the generic delivery plan", async () => {
     const config = await loadReference();
-    expect(config.plans.map((plan) => plan.repositoryId).sort()).toEqual(["caravan", "conveyor", "meal-planner", "midgame", "quesshi"]);
-    expect(config.plans.find((plan) => plan.repositoryId === "midgame")!.id).toBe("midgame-delivery");
-    expect(config.plans.find((plan) => plan.repositoryId === "caravan")!.id).toBe("delivery");
+    expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["service"]);
+    expect(config.plans[0]!.id).toBe("delivery");
     for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
   });
 
@@ -63,21 +62,20 @@ describe("reference configuration", () => {
     for (const plan of config.plans) for (const stage of plan.stages) expect(stage.exitGate.length).toBeGreaterThan(0);
   });
 
-  test("every script.run declares its recovery mode, and conveyor's deploy is replay-safe", async () => {
+  test("every script.run declares its recovery mode", async () => {
     const config = await loadReference();
     const scripts = config.plans.flatMap((plan) =>
       plan.stages.flatMap((stage) => stage.actions.filter((task) => task.task === "script.run").map((task) => ({ plan, stage, task }))),
     );
-    expect(scripts.length).toBeGreaterThanOrEqual(11);
+    expect(scripts).toHaveLength(2);
     for (const { task } of scripts) expect(["replay-safe", "reconcile"]).toContain(task.with.recovery as string);
     const deploy = (repository: string) =>
       scripts.find(({ plan, stage }) => plan.repositoryId === repository && stage.id === "deploy")!.task;
-    expect(deploy("conveyor").with.recovery).toBe("replay-safe");
-    expect(String(deploy("conveyor").with.script)).toContain("skip-conveyor-self-deploy");
-    for (const repository of ["caravan", "meal-planner", "midgame", "quesshi"]) expect(deploy(repository).with.recovery).toBe("reconcile");
+    expect(deploy("service").with.recovery).toBe("reconcile");
+    expect(String(deploy("service").with.script)).toContain("deploy-service");
   });
 
-  test("CI follows each repository's mode: disabled for caravan and meal-planner, required elsewhere", async () => {
+  test("the generic GitHub Actions provider supplies required CI", async () => {
     const config = await loadReference();
     const gates = (repository: string) => {
       const plan = config.plans.find((candidate) => candidate.repositoryId === repository)!;
@@ -88,20 +86,12 @@ describe("reference configuration", () => {
         review: plan.stages.find((stage) => stage.id === "review")!.exitGate.map((task) => task.id),
       };
     };
-    for (const repository of ["caravan", "meal-planner"]) {
-      expect(config.repositories[repository]!.ci.mode).toBe("disabled");
-      const { actions, gate, review } = gates(repository);
-      expect(actions).not.toContain("startCi");
-      expect(gate).not.toContain("ciGate");
-      expect(review).not.toContain("ciHead");
-    }
-    for (const repository of ["conveyor", "midgame", "quesshi"]) {
-      expect(config.repositories[repository]!.ci.mode).toBe("required");
-      const { actions, gate, review } = gates(repository);
-      expect(actions).toContain("startCi");
-      expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
-      expect(review).toContain("ciHead");
-    }
+    expect(config.repositories.service!.ci.mode).toBe("required");
+    expect(config.repositories.service!.ci.provider).toBe("actions");
+    const { actions, gate, review } = gates("service");
+    expect(actions).toContain("startCi");
+    expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
+    expect(review).toContain("ciHead");
   });
 
   test("every repository restricts agent egress", async () => {
@@ -123,6 +113,7 @@ describe("reference configuration", () => {
       const document = parse(text, { maxAliasCount: -1 }) as Record<string, unknown>;
       for (const key of ["repositories", "settings", "checks", "web", "import", "agents", "pipelines", "providers", "harnesses"]) expect(document).not.toHaveProperty(key);
     }
+    for (const content of Object.values(BUILTIN_FILES)) expect(content).not.toMatch(/AmirRaptoR|midgame-actions|midgame-delivery|allowedHumanLogins/);
   });
 
   test("the agent instructions name no verifier and use only canonical task names", async () => {
@@ -213,10 +204,9 @@ describe("reference configuration", () => {
 });
 
 describe("reference refinement outputs", () => {
-  test("the conveyor repository may write Effort and Priority and requires the type, Effort and the Refinement section", async () => {
+  test("the generic repository may write Effort and Priority and requires the type, Effort and the Refinement section", async () => {
     const config = await loadReference();
-    expect(config.repositories.conveyor!.refinement).toEqual({ fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } });
-    expect(config.repositories.caravan!.refinement).toEqual({ fields: [], require: { type: false, fields: [], section: false } });
+    expect(config.repositories.service!.refinement).toEqual({ fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } });
   });
 
   test("every refinement stage ends with the outputs gate", async () => {
@@ -230,7 +220,7 @@ describe("reference refinement outputs", () => {
   test("a required field must also be writable", async () => {
     const { entrypoint, base } = await referenceConfigEntrypoint();
     bases.push(base);
-    const file = path.join(path.dirname(entrypoint), "repositories/conveyor.yaml");
+    const file = path.join(path.dirname(entrypoint), "repositories/service.yaml");
     const text = await readFile(file, "utf8");
     const broken = text.replace("    fields:\n      - Effort\n    section", "    fields:\n      - Size\n    section");
     expect(broken).not.toBe(text);
@@ -257,28 +247,22 @@ describe("canary: reference configuration combined with converted legacy section
         if (stage.run?.agent && renamed.has(stage.run.agent)) stage.run.agent = renamed.get(stage.run.agent);
       }
     }
-    // 3. The legacy pipeline named like a reference pipeline (midgame-delivery) is renamed, and its repository follows.
-    pipelineDoc.pipelines["midgame-delivery-legacy"] = pipelineDoc.pipelines["midgame-delivery"];
-    delete pipelineDoc.pipelines["midgame-delivery"];
-    repositoriesDoc.repositories.midgame.pipeline = "midgame-delivery-legacy";
-    // 4. The migrated repository (conveyor) comes from the reference; the rest stay legacy.
-    delete repositoriesDoc.repositories["conveyor-v2"];
+    // The generic reference pipeline does not collide with this legacy pipeline.
     // sources, runners, labels and settings are dropped: the import provides the same names and labels.
     return stringify({ agents, checks: agentsDoc.checks, ...pipelineDoc, ...repositoriesDoc });
   }
 
   test("loads and compiles every repository", async () => {
-    const { directory, base } = await referenceConfigDirectory();
+    const { directory, base } = await referenceConfigDirectory({ service: "service-native" });
     bases.push(base);
     const local = parse(await readFile(path.join(directory, "local.yaml"), "utf8")) as { repositories: Record<string, unknown> };
-    for (const id of Object.keys(local.repositories)) if (id !== "conveyor") delete local.repositories[id];
     await writeFile(path.join(directory, "local.yaml"), stringify(local));
     await writeFile(path.join(directory, "legacy.yaml"), await legacyConverted());
     const config = await loadConfig(directory);
-    expect(config.plans.map((plan) => plan.repositoryId).sort()).toEqual(["caravan-v2", "conveyor", "meal-planner", "midgame", "quesshi"]);
+    expect(config.plans.map((plan) => plan.repositoryId).sort()).toEqual(["service", "service-native"]);
     const byId = (id: string) => config.plans.find((plan) => plan.repositoryId === id)!;
-    expect(byId("conveyor").stages.every((stage) => !stage.legacy)).toBe(true);
-    expect(byId("quesshi").stages.some((stage) => stage.legacy)).toBe(true);
+    expect(byId("service-native").stages.every((stage) => !stage.legacy)).toBe(true);
+    expect(byId("service").stages.some((stage) => stage.legacy)).toBe(true);
     expect(config.agents["kaveh-legacy"]).toBeDefined();
     expect(config.agents.kaveh!.instructions).toContain("instructions/kaveh.md");
   });

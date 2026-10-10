@@ -35,6 +35,3 @@ checks:
   implementation-exit:
     script: /srv/conveyor/checks/implementation-exit.ts
     verifier: mitra
-  implementation-exit-midgame:
-    script: /srv/conveyor/checks/implementation-exit-midgame.ts
-    verifier: mitra

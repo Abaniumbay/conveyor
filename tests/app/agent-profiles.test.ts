@@ -32,7 +32,6 @@ describe("buildAgentProfiles", () => {
       access: "workspace-write",
     });
     expect(kaveh.usage).toContainEqual({ pipeline: "delivery", stage: "implementation", role: "runs the stage action" });
-    expect(kaveh.usage).toContainEqual({ pipeline: "midgame-delivery", stage: "implementation", role: "runs the stage action" });
     const jamshid = profiles.find((profile) => profile.id === "jamshid")!;
     expect(jamshid.usage).toContainEqual({ pipeline: "delivery", stage: "implementation", role: "runs the stage action when kaveh cannot" });
     const shirin = profiles.find((profile) => profile.id === "shirin")!;
@@ -54,9 +53,9 @@ describe("buildAgentProfiles", () => {
     const config = await loadConfig(path.resolve(import.meta.dir, "../fixtures/legacy-pipeline"));
     const profiles = await buildAgentProfiles(config, async () => "instructions");
     const darya = profiles.find((profile) => profile.id === "darya")!;
-    expect(darya.usage).toContainEqual({ pipeline: "caravan-delivery", stage: "refinement", role: "runs the stage action" });
+    expect(darya.usage).toContainEqual({ pipeline: "service-delivery", stage: "refinement", role: "runs the stage action" });
     const mitra = profiles.find((profile) => profile.id === "mitra")!;
-    expect(mitra.usage).toContainEqual({ pipeline: "caravan-delivery", stage: "review", role: "verifies entry and exit (legacy)" });
+    expect(mitra.usage).toContainEqual({ pipeline: "service-delivery", stage: "review", role: "verifies entry and exit (legacy)" });
   });
 
   test("an unreadable instructions file does not hide the profile", async () => {

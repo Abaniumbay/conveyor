@@ -63,9 +63,7 @@ describe("translateLegacyStage", () => {
 describe("golden plan", () => {
   test("the legacy fixture renders to the recorded plan", async () => {
     const config = await loadConfig(FIXTURE, createTaskRegistry());
-    expect(config.plans.map((plan) => plan.repositoryId)).toEqual([
-      "caravan-v2", "conveyor-v2", "meal-planner", "midgame", "quesshi",
-    ]);
+    expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["service"]);
     const rendered = `${config.plans.map(renderPlan).join("\n\n")}\n`;
     if (process.env.UPDATE_GOLDEN === "1") await writeFile(GOLDEN, rendered);
     expect(rendered).toBe(await readFile(GOLDEN, "utf8"));
@@ -74,9 +72,7 @@ describe("golden plan", () => {
   test("check-config prints the plan of every legacy repository", async () => {
     const output = await checkConfig(FIXTURE);
     expect(output).toMatch(/^Configuration is valid \([0-9a-f]{64}\)\n/);
-    for (const repository of ["caravan-v2", "conveyor-v2", "meal-planner", "midgame", "quesshi"]) {
-      expect(output).toContain(`Repository ${repository} (pipeline `);
-    }
+    expect(output).toContain("Repository service (pipeline service-delivery)");
     expect(output).toContain("legacy.produce (agent kaveh)");
   });
 });

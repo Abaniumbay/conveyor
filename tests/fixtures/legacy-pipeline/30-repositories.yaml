@@ -1,41 +1,9 @@
 repositories:
-  caravan-v2:
+  service:
     source: github
-    address: example/caravan
-    folder: /srv/repos/caravan-v2
-    baseBranch: master
-    pipeline: caravan-delivery
+    address: example/service
+    folder: /srv/conveyor/repos/service
+    baseBranch: main
+    pipeline: service-delivery
     concurrency: 1
-    systemLabels: [backend, web, testing]
-  conveyor-v2:
-    source: github
-    address: example/conveyor
-    folder: /srv/repos/conveyor-v2
-    baseBranch: main
-    pipeline: conveyor-delivery
-    concurrency: 2
-    systemLabels: [backend, web, infrastructure, testing]
-  meal-planner:
-    source: github-poll
-    address: example/meal-planner
-    folder: /srv/repos/meal-planner
-    baseBranch: main
-    pipeline: meal-planner-delivery
-    concurrency: 1
-    systemLabels: [backend, web, testing]
-  midgame:
-    source: github
-    address: example/midgame
-    folder: /srv/repos/midgame
-    baseBranch: main
-    pipeline: midgame-delivery
-    concurrency: 2
-    systemLabels: [backend, web, infrastructure, testing]
-  quesshi:
-    source: github
-    address: example/quesshi
-    folder: /srv/repos/quesshi
-    baseBranch: main
-    pipeline: quesshi-delivery
-    concurrency: 2
-    systemLabels: [backend, web, mobile, infrastructure, testing]
+    systemLabels: [backend, testing]
