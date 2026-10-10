@@ -252,6 +252,8 @@ export class ConveyorService {
   }>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
+  /** Delayed infrastructure retries that must not outlive the service store. */
+  readonly #retryTimers = new Set<ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
@@ -463,6 +465,8 @@ export class ConveyorService {
     this.#wakeTimer = null;
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
+    for (const timer of this.#retryTimers) clearTimeout(timer);
+    this.#retryTimers.clear();
     for (const active of this.#active.values()) active.controller.abort();
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
@@ -894,7 +898,9 @@ export class ConveyorService {
   }
 
   private retryLater(issueId: string, delayMs: number): void {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.#retryTimers.delete(timer);
+      if (this.#shuttingDown) return;
       const failure = this.#infrastructureFailures.get(issueId);
       if (failure) this.#infrastructureFailures.set(issueId, {
         stageId: failure.stageId,
@@ -912,6 +918,7 @@ export class ConveyorService {
         this.schedule();
       }
     }, delayMs);
+    this.#retryTimers.add(timer);
   }
 
   /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
