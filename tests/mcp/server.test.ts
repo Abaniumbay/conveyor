@@ -182,6 +182,30 @@ describe("HTTP control client", () => {
     expect(new Set(callIds).size).toBe(2);
   });
 
+  test("stops after bounded transient retries and propagates the final transport error", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () => {
+      attempts += 1;
+      throw new Error("socket hang up");
+    }, async (delay) => { delays.push(delay); });
+
+    await expect(client.call("item.get", {})).rejects.toThrow("socket hang up");
+    expect(attempts).toBe(4);
+    expect(delays).toEqual([50, 100, 200]);
+  });
+
+  test("does not retry non-transport fetch failures", async () => {
+    let attempts = 0;
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () => {
+      attempts += 1;
+      throw new TypeError("invalid URL");
+    });
+
+    await expect(client.call("item.get", {})).rejects.toThrow("invalid URL");
+    expect(attempts).toBe(1);
+  });
+
   test.each([["authorization", 401], ["validation", 422]])("does not retry %s responses", async (_kind, status) => {
     let attempts = 0;
     const client = new HttpControlClient("http://127.0.0.1:4311", "expired", async () => {
