@@ -148,6 +148,7 @@ async function world(options: {
   refinement?: typeof REFINEMENT;
   types?: string[] | null;
   fields?: unknown[] | null;
+  systemLabels?: string[];
   values?: Record<string, string>;
   children?: number[];
   failDependencyWriteOnce?: boolean;
@@ -166,7 +167,7 @@ async function world(options: {
   };
   const config = {
     labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" } },
-    repositories: { repo: { pipeline: "default", systemLabels: ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
+    repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
     pipelines: { default: { stages: [{ id: "refinement" }, { id: "implementation" }] } },
   } as unknown as ConveyorConfig;
   const calls: Array<[string, unknown]> = [];
@@ -335,10 +336,18 @@ describe("item tools", () => {
     expect(w.calls).toEqual([["setTitle", ["o/r", 5, "Players pick categories per family"]]]);
   });
 
-  test("setSystemLabels keeps only configured labels", async () => {
+  test("setSystemLabels rejects unconfigured labels before changing labels", async () => {
     const w = await world(); w.add("i1", 5);
-    await tool("item.setSystemLabels", w.deps(), { labels: ["area:ui", "bogus"] });
-    expect(w.calls).toEqual([["replaceManagedProjectLabels", ["o/r", 5, ["area:api", "area:ui"], ["area:ui"]]]]);
+    await expect(tool("item.setSystemLabels", w.deps(), { labels: ["area:ui", "bogus"] })).rejects
+      .toThrow("Allowed system labels: area:api, area:ui");
+    expect(w.calls).toEqual([]);
+  });
+
+  test("setSystemLabels names an empty configured list and changes no labels", async () => {
+    const w = await world({ systemLabels: [] }); w.add("i1", 5);
+    await expect(tool("item.setSystemLabels", w.deps(), { labels: ["area:ui"] })).rejects
+      .toThrow("Allowed system labels: none");
+    expect(w.calls).toEqual([]);
   });
 
   test("setParent and setDependencies", async () => {
@@ -435,6 +444,14 @@ describe("item tools", () => {
     await expect(tool("item.setType", w.deps(), { type: "Epic" })).rejects.toThrow('Unknown issue type "Epic". Valid issue types: Task, Bug, Feature');
     expect(w.calls).toEqual([]);
     expect(w.store.getIssue("i1")!.metadata.type).toBeNull();
+  });
+
+  test("setType and setFields reject repositories without refinement configuration before metadata writes", async () => {
+    const w = await world({ types: ["Task"], fields: [EFFORT] }); w.add("i1", 5);
+    await expect(tool("item.setType", w.deps(), { type: "Task" })).rejects.toThrow("no refinement configuration");
+    await expect(tool("item.setFields", w.deps(), { fields: [{ name: "Effort", value: "Low" }] })).rejects.toThrow("no refinement configuration");
+    expect(w.calls).toEqual([]);
+    expect(w.store.getIssue("i1")!.metadata).toEqual({ type: null, fields: {} });
   });
 
   test("setType reports types as unavailable, without failing, for an owner that has none", async () => {

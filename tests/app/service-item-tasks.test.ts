@@ -7,16 +7,18 @@ import type { ScopedMcpFactory } from "../../src/app/runtime";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
+import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 
 const directories: string[] = [];
 afterEach(async () => {
+  log.configure({ sinks: [new ConsoleSink()] });
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!-- conveyor:criterion:a -->\n<!-- conveyor:acceptance-criteria:end -->\n";
 
-async function setup() {
+async function setup(options: { refinement?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -41,7 +43,7 @@ pipelines:
         concurrency: 1
         retries: 0
         actions: []
-        exit-gate: [{ task: item.criteriaDefined }]
+        exit-gate: [{ task: item.criteriaDefined }, { task: item.refinementComplete }]
       - id: implementation
         concurrency: 1
         actions: []
@@ -51,7 +53,7 @@ repositories:
     source: github
     address: owner/repo
     folder: ${repositoryPath}
-    pipeline: default
+    pipeline: default${options.refinement ? "\n    refinement:\n      fields: [Effort]" : ""}
 `);
   const config = await loadConfig(path.join(root, "config.yml"), createTaskRegistry());
   const store = await ConveyorStore.open(config.settings.database);
@@ -76,11 +78,16 @@ repositories:
 }
 
 describe("native stages with item tasks through the service", () => {
-  test("an exit gate with item.criteriaDefined loads the item with real deps and advances the stage", async () => {
+  test("an exit gate with no configured refinement outputs advances without metadata writes", async () => {
     const w = await setup();
+    const metadataWrites: unknown[][] = [];
+    w.github.setIssueType = async (...args: unknown[]) => { metadataWrites.push(args); };
+    w.github.setIssueFieldValues = async (...args: unknown[]) => { metadataWrites.push(args); };
+    w.github.replaceManagedProjectLabels = async (...args: unknown[]) => { metadataWrites.push(args); };
     await w.execute(w.enroll("ok", 1, CRITERIA));
     expect(w.labelWrites.at(-1)).toContain("conveyor:implementation");
     expect(w.store.getStageState("ok")?.status).not.toBe("error");
+    expect(metadataWrites).toEqual([]);
     await w.service.close();
   });
 
@@ -141,5 +148,45 @@ describe("legacy MCP names delegate to the item tools", () => {
       .rejects.toThrow("requires an active steering MCP grant");
     await lease.close();
     await w.service.close();
+  });
+
+  test("logs rejected and unexpected item-tool failures without their request payload", async () => {
+    const records: LogRecord[] = [];
+    log.configure({ sinks: [{ write: (record) => records.push(record) }] });
+    const w = await setup();
+    const issue = w.enroll("rejected", 3, "");
+    const factory = (w.service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();
+    const rejectedLease = await factory.create({
+      runId: "run-rejected", stageId: "refinement",
+      context: { issue, repository: { id: "repo", address: "owner/repo", folder: w.root, baseBranch: "main" }, workspace: null, sourceGuidance: "g" } as never,
+      allowedTools: ["item.setFields"], actor: { id: "a", name: "A", title: "T" },
+    });
+    const rejectedToken = (JSON.parse(await readFile(path.join(w.root, "artifacts/run-rejected/mcp-context.json"), "utf8")) as { control: { token: string } }).control.token;
+    await expect(w.service.handleMcp({ tool: "item.setFields", input: { fields: [{ name: "Effort", value: "do-not-log-request-payload" }] } }, rejectedToken))
+      .rejects.toThrow("no refinement configuration");
+    await rejectedLease.close();
+    await w.service.close();
+
+    const unexpected = await setup({ refinement: true });
+    const unexpectedIssue = unexpected.enroll("unexpected", 4, "");
+    unexpected.github.listIssueFields = async () => [{ id: 11, name: "Effort", dataType: "single_select", options: ["do-not-log-request-payload"] }];
+    unexpected.github.setIssueFieldValues = async () => { throw new Error("provider unavailable"); };
+    const unexpectedFactory = (unexpected.service as unknown as { mcpFactory(): ScopedMcpFactory }).mcpFactory();
+    const unexpectedLease = await unexpectedFactory.create({
+      runId: "run-unexpected", stageId: "refinement",
+      context: { issue: unexpectedIssue, repository: { id: "repo", address: "owner/repo", folder: unexpected.root, baseBranch: "main" }, workspace: null, sourceGuidance: "g" } as never,
+      allowedTools: ["item.setFields"], actor: { id: "a", name: "A", title: "T" },
+    });
+    const unexpectedToken = (JSON.parse(await readFile(path.join(unexpected.root, "artifacts/run-unexpected/mcp-context.json"), "utf8")) as { control: { token: string } }).control.token;
+    await expect(unexpected.service.handleMcp({ tool: "item.setFields", input: { fields: [{ name: "Effort", value: "do-not-log-request-payload" }] } }, unexpectedToken))
+      .rejects.toThrow("provider unavailable");
+    await unexpectedLease.close();
+    await unexpected.service.close();
+
+    expect(records.filter((record) => record.message === "Issue MCP tool failed")).toEqual([
+      expect.objectContaining({ level: "warn", tool: "item.setFields", repository: "repo", item: "repo:3", error: "This repository has no refinement configuration, so issue types and fields cannot be written." }),
+      expect.objectContaining({ level: "warn", tool: "item.setFields", repository: "repo", item: "repo:4", error: "provider unavailable" }),
+    ]);
+    expect(JSON.stringify(records)).not.toContain("do-not-log-request-payload");
   });
 });

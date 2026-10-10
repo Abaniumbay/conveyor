@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import { ToolRequestError } from "./errors";
 import {
   CAPTURED_KEYS,
   SNAPSHOT_KEYS,
@@ -51,7 +52,7 @@ export class TaskConfigError extends Error {
   }
 }
 
-export class TaskInputError extends Error {
+export class TaskInputError extends ToolRequestError {
   constructor(readonly task: string, message: string) {
     super(`Invalid input for task ${task}: ${message}`);
     this.name = "TaskInputError";

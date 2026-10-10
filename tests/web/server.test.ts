@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import packageMetadata from "../../package.json";
+import { ToolRequestError } from "../../src/tasks/errors";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import type { DashboardViewModel } from "../../src/web/types";
@@ -1005,6 +1006,17 @@ describe("createWebHandler", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(await response.json()).toEqual({ ok: true });
     expect(calls.mcp).toEqual([[{ tool: "run.report_progress" }, "internal-secret"]]);
+  });
+
+  test("returns actionable item-tool request errors to the MCP client", async () => {
+    const { handler } = setup({ handleMcp: async () => { throw new ToolRequestError("This repository has no refinement configuration"); } });
+    const response = await handler(new Request("http://localhost/internal/mcp", {
+      method: "POST",
+      headers: { authorization: "Bearer internal-secret", "content-type": "application/json" },
+      body: JSON.stringify({ tool: "item.setFields", input: { fields: [{ name: "Effort", value: "Low" }] } }),
+    }));
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "This repository has no refinement configuration" });
   });
 
   test("enforces body limits and rejects malformed or unsupported forms", async () => {

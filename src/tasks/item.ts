@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { ItemContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
+import { ToolRequestError } from "./errors";
 import {
   resolveFieldValues,
   resolveIssueType,
@@ -363,11 +364,15 @@ const setSystemLabels = tool("item.setSystemLabels",
   systemLabelsInput, true,
   async ({ deps, input }, issue) => {
     const configured = deps.config.repositories[deps.repository.id]!.systemLabels;
+    const invalid = input!.labels.filter((label) => !configured.includes(label));
+    if (invalid.length > 0) {
+      throw new ToolRequestError(`One or more requested system labels are not configured for this repository. Allowed system labels: ${configured.length > 0 ? configured.join(", ") : "none"}`);
+    }
     await deps.items.replaceManagedProjectLabels(
       deps.repository.address,
       issue.sourceNumber,
       configured,
-      input!.labels.filter((label) => configured.includes(label)),
+      input!.labels,
     );
     return ACCEPTED;
   });
@@ -408,13 +413,17 @@ interface MetadataPlan {
 async function planMetadata(deps: Deps, input: { type?: string | undefined; fields?: Array<{ name: string; value: string }> | undefined }): Promise<MetadataPlan> {
   const plan: MetadataPlan = { fields: [], unavailable: [] };
   const owner = ownerOf(deps.repository.address);
+  const refinement = deps.config.repositories[deps.repository.id]!.refinement;
+  if ((input.type !== undefined || (input.fields?.length ?? 0) > 0) && !refinement) {
+    throw new ToolRequestError("This repository has no refinement configuration, so issue types and fields cannot be written.");
+  }
   if (input.type !== undefined) {
     const types = await deps.items.listIssueTypes(owner);
     if (types === null || types.length === 0) plan.unavailable.push(`issue types are not available for ${owner}`);
     else plan.type = resolveIssueType(types, input.type);
   }
   if (input.fields && input.fields.length > 0) {
-    const configured = deps.config.repositories[deps.repository.id]!.refinement.fields;
+    const configured = refinement!.fields;
     const defined: IssueFieldDefinition[] | null = await deps.items.listIssueFields(owner);
     if (configured.length > 0 && (defined === null || defined.length === 0)) {
       // Still reject a field this repository does not allow, even when the owner offers none.
