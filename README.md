@@ -49,6 +49,8 @@ is the packaged default. Read more in [docs/architecture.md](docs/architecture.m
 | ![An item's story: stages, conversation and runs](docs/screenshots/item.png) | ![Delivery, usage and time per repository](docs/screenshots/reports.png) |
 | **The operator: ask Conveyor to inspect or change the board** | **The team: every agent, its model and its tools** |
 | ![The Operator view under shared navigation](docs/screenshots/operator.png) | ![The Team view under shared navigation](docs/screenshots/team.png) |
+| **Configured repositories** | **A repository's delivery detail** |
+| ![Read-only configured repository list](docs/screenshots/repositories.png) | ![Read-only repository detail](docs/screenshots/repository.png) |
 
 ## Quick start
 

@@ -13,7 +13,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, type Locator, type Page } from "playwright";
 import { ConveyorStore, type IssueProjection } from "../src/db/store";
 
 const DEMO_USERNAME = "demo";
@@ -23,6 +23,9 @@ const DEMO_TIME = "2026-09-15T12:00:00.000Z";
 const DEMO_FINISHED_TIME = "2026-09-15T12:01:32.000Z";
 const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
 const PHONE_OVERFLOW_REPOSITORY = "MobileViewportRegressionContentMustWrapWithoutCreatingADocumentWideHorizontalScrollRange";
+const PHONE_OVERFLOW_ADDRESS = "demo/PhoneWidthAddressMustWrapWithoutCreatingDocumentWideHorizontalOverflow";
+const DEGRADED_STATUS = "simulated provider outage for screenshot coverage";
+const SCREENSHOT_WORKSPACE = path.join(tmpdir(), "conveyor-screenshot-workspace");
 const DEMO_SOURCE_ISSUES = [
   {
     id: 10_001,
@@ -152,7 +155,9 @@ async function configureDemo(
   listen: string,
 ): Promise<Record<string, string>> {
   const binDirectory = path.join(home, "bin");
-  const workspace = path.join(home, "workspace");
+  // This is displayed on the repository detail page, so it must not contain the
+  // randomized demo-home suffix when screenshot regeneration is compared.
+  const workspace = SCREENSHOT_WORKSPACE;
   const passwordFile = path.join(home, "admin-password");
   const githubLog = path.join(home, "github-requests.log");
   await Promise.all([
@@ -172,6 +177,8 @@ async function configureDemo(
       'printf \'%s\\n\' "$*" >> "$CONVEYOR_DEMO_GH_LOG"',
       'case "$*" in',
       `  *\"/repos/demo/dashboard-demo/issues?state=all\"*) printf '%s\\n' '${sourceSnapshot}' ;;`,
+      // Keep one configured repository visibly degraded without talking to a real provider.
+      `  *repos/${PHONE_OVERFLOW_ADDRESS}*) printf '%s\\n' '${DEGRADED_STATUS}' >&2; exit 1 ;;`,
       "  *\"--method POST\"*) printf '%s\\n' '{}' ;;",
       "  *) printf '%s\\n' '[]' ;;",
       "esac",
@@ -208,9 +215,13 @@ async function configureDemo(
 
   const configPath = path.join(home, "config", "conveyor.yaml");
   const repositoriesDirectory = path.join(home, "config", "repositories");
-  const repositoryPaths = [
-    path.join(repositoriesDirectory, "demo.yaml"),
-    path.join(repositoriesDirectory, `${PHONE_OVERFLOW_REPOSITORY}.yaml`),
+  const repositories = [
+    { id: "demo", address: "demo/dashboard-demo", ci: ["  mode: disabled"] },
+    {
+      id: PHONE_OVERFLOW_REPOSITORY,
+      address: PHONE_OVERFLOW_ADDRESS,
+      ci: ["  provider: actions", "  mode: advisory"],
+    },
   ];
   let config = await readFile(configPath, "utf8");
   config = config.replace(
@@ -219,19 +230,19 @@ async function configureDemo(
   );
   await writeFile(configPath, config);
   await mkdir(repositoriesDirectory, { recursive: true });
-  await Promise.all(repositoryPaths.map((repositoryPath, index) =>
+  await Promise.all(repositories.map((repository) =>
     writeFile(
-      repositoryPath,
+      path.join(repositoriesDirectory, `${repository.id}.yaml`),
       [
         "source: github",
         "codeHost: github",
-        `address: ${index === 0 ? "demo/dashboard-demo" : "demo/phone-overflow"}`,
+        `address: ${repository.address}`,
         `folder: ${workspace}`,
         "baseBranch: main",
         "pipeline: delivery",
         "ci:",
-        // The phone-overflow item shows a stored CI chip; the demo repository shows none.
-        ...(index === 0 ? ["  mode: disabled"] : ["  provider: actions", "  mode: advisory"]),
+        // The long repository shows a stored CI chip; the demo repository shows none.
+        ...repository.ci,
         "agentEgress:",
         "  allowLoopbackMcp: true",
         "  httpsHosts: []",
@@ -286,7 +297,7 @@ async function seedDemo(home: string): Promise<void> {
       id: PHONE_OVERFLOW_REPOSITORY,
       configName: PHONE_OVERFLOW_REPOSITORY,
       source: "github",
-      address: "demo/phone-overflow",
+      address: PHONE_OVERFLOW_ADDRESS,
       folder: path.join(home, "workspace"),
       configHash: "demo-config",
     });
@@ -530,18 +541,27 @@ async function expectText(page: Page, text: string): Promise<void> {
   }
 }
 
-async function expectCardsToFitViewport(page: Page): Promise<void> {
-  const clipped = await page.locator("article[data-issue-id]").evaluateAll((cards) =>
-    cards.flatMap((card) => {
-      const { bottom, top } = card.getBoundingClientRect();
-      return top < 0 || bottom > window.innerHeight
-        ? [card.getAttribute("data-issue-id") ?? "unknown item"]
-        : [];
-    }),
-  );
-  if (clipped.length > 0) {
-    throw new Error(`Board cards extend beyond the capture viewport: ${clipped.join(", ")}`);
+async function expectReachableElement(
+  element: Locator,
+  description: string,
+): Promise<void> {
+  await element.waitFor({ state: "visible", timeout: 10_000 });
+  await element.scrollIntoViewIfNeeded();
+  const bounds = await element.evaluate((node) => {
+    const { bottom, left, right, top } = node.getBoundingClientRect();
+    return { bottom, left, right, top, viewportHeight: window.innerHeight, viewportWidth: window.innerWidth };
+  });
+  if (bounds.top < 0 || bounds.bottom > bounds.viewportHeight || bounds.left < 0 || bounds.right > bounds.viewportWidth) {
+    throw new Error(`Reachable content is clipped: ${description}`);
   }
+}
+
+async function expectReachableText(page: Page, text: string): Promise<void> {
+  await expectReachableElement(page.getByText(text, { exact: false }).first(), text);
+}
+
+async function expectReachableHealth(page: Page, health: "Healthy" | "Degraded"): Promise<void> {
+  await expectReachableElement(page.getByRole("img", { name: health }).first(), health);
 }
 
 async function expectDocumentToFitPhoneViewport(
@@ -640,6 +660,8 @@ async function expectLastChildReachable(
 async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
   const pages = [
     ["board", "/board"],
+    ["repositories", "/repositories"],
+    ["repository detail", `/repositories/${encodeURIComponent(PHONE_OVERFLOW_REPOSITORY)}`],
     ["team", "/team"],
     ["operator", "/operator"],
     ["reports", "/reports"],
@@ -656,6 +678,16 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await page.locator(".issue-inspector[open]").waitFor({ state: "visible" });
       await expectDocumentToFitPhoneViewport(page, name, width);
       await expectNonScrollerContentToFitPhoneViewport(page, name, width);
+      if (name === "board" || name === "repositories" || name === "repository detail") {
+        await expectReachableElement(
+          page.locator('.tabs a[href="/repositories"]'),
+          "Repositories navigation",
+        );
+        await expectReachableText(page, PHONE_OVERFLOW_REPOSITORY);
+        await expectReachableText(page, PHONE_OVERFLOW_ADDRESS);
+        await expectReachableText(page, DEGRADED_STATUS);
+        await expectReachableHealth(page, "Degraded");
+      }
       if (name === "board") {
         await expectLastChildReachable(
           page,
@@ -687,12 +719,14 @@ async function capture(
   name: string,
   route: string,
   expected: string[],
+  expectedHealth: Array<"Healthy" | "Degraded"> = [],
 ): Promise<void> {
   await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
   await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
   await stabilize(page);
   for (const text of expected) await expectText(page, text);
-  if (name === "board") await expectCardsToFitViewport(page);
+  for (const health of expectedHealth)
+    await page.getByRole("img", { name: health }).first().waitFor({ state: "visible", timeout: 10_000 });
   await page.screenshot({ path: path.join(OUTPUT_DIRECTORY, `${name}.png`) });
 }
 
@@ -761,9 +795,24 @@ async function main(): Promise<void> {
     await capture(page, baseUrl, "board", "/board", [
       "Needs you",
       "Which migration path should the team use?",
-      "Investigate the rollout alert",
       "Ship a reliable dashboard overview",
-    ]);
+      "Repositories",
+      PHONE_OVERFLOW_REPOSITORY,
+      PHONE_OVERFLOW_ADDRESS,
+      DEGRADED_STATUS,
+    ], ["Healthy", "Degraded"]);
+    await capture(page, baseUrl, "repositories", "/repositories", [
+      "Repositories",
+      PHONE_OVERFLOW_REPOSITORY,
+      PHONE_OVERFLOW_ADDRESS,
+      DEGRADED_STATUS,
+    ], ["Healthy", "Degraded"]);
+    await capture(page, baseUrl, "repository", `/repositories/${encodeURIComponent(PHONE_OVERFLOW_REPOSITORY)}`, [
+      PHONE_OVERFLOW_REPOSITORY,
+      PHONE_OVERFLOW_ADDRESS,
+      DEGRADED_STATUS,
+      "Setup",
+    ], ["Degraded"]);
     await capture(page, baseUrl, "team", "/team", ["Team", "Jamshid", "Omid"]);
     await capture(page, baseUrl, "operator", "/operator", [
       "Operator",
