@@ -482,6 +482,21 @@ describe("item tools", () => {
     expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
     expect(w.calls[3]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
     expect(w.calls[4]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"]]);
+
+    expect(w.store.getIssue("c")).toMatchObject({
+      labels: ["conveyor", "conveyor:implementation"],
+      body: expect.stringContaining("Do <!-- conveyor:criterion:a -->"),
+    });
+    expect(w.store.listChildren("i1").map((child) => child.issueId)).toEqual(["c"]);
+    expect(w.store.listDependencies("c")).toEqual(["github:o/r#7", "github:o/r#8"]);
+
+    const parent = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(parent.children).toMatchObject([{ id: "c", number: 99, enrolled: true, hasCriteria: true }]);
+    expect((await run("item.childrenValid", { context: ctx(parent) })).status).toBe("pass");
+
+    const child = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(child).toMatchObject({ criteria: [{ id: "a", text: "Do" }], dependencies: [{ number: 7, satisfied: false }, { number: 8, satisfied: false }] });
+    expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pending", message: "Waiting for dependencies: #7, #8" });
   });
 
   test("createChild rejects invalid or non-sibling dependencies before creating a child", async () => {
