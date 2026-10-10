@@ -1,6 +1,7 @@
 import type { LabelConfiguration } from "./issue-state";
 import { evaluateIssueState } from "./issue-state";
 import type { ConveyorStore, RepositoryRecord } from "../db/store";
+import { log } from "../log/logger";
 import type { IssueSourceAdapter } from "../source/types";
 
 export interface ReconcileRepositoryInput {
@@ -51,9 +52,16 @@ export async function reconcileRepository(
   let sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
   if (input.includeIssueNumbers && input.includeIssueNumbers.length > 0) {
     if (!input.source.getIssue) throw new Error("source adapter cannot refresh webhook-named issues");
-    const refreshed = await Promise.all(
-      [...new Set(input.includeIssueNumbers)].map((number) => input.source.getIssue!(input.repository.address, number)),
-    );
+    const refreshed = (await Promise.all(
+      [...new Set(input.includeIssueNumbers)].map(async (number) => {
+        try {
+          return await input.source.getIssue!(input.repository.address, number);
+        } catch (error) {
+          log.warn("Webhook-named issue refresh failed", { repository: input.repository.id, issue: `${input.repository.address}:${number}` }, error);
+          return null;
+        }
+      }),
+    )).filter((issue) => issue !== null);
     const refreshedByNumber = new Map(refreshed.map((issue) => [issue.number, issue]));
     sourceIssues = sourceIssues.map((issue) => refreshedByNumber.get(issue.number) ?? issue);
     const listedNumbers = new Set(sourceIssues.map((issue) => issue.number));

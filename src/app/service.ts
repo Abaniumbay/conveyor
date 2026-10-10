@@ -1778,7 +1778,10 @@ export class ConveyorService {
         // A comment on a pull request arrives as an issue_comment whose issue is the pull request.
         return fields(body.issue).pull_request !== undefined ? forPullRequests(number(body.issue)) : number(body.issue);
       case "sub_issues":
-        return [...number(body.parent_issue), ...number(body.sub_issue)];
+        return [
+          ...(belongsToRepository(body.parent_issue_repo) ? number(body.parent_issue) : []),
+          ...(belongsToRepository(body.sub_issue_repo) ? number(body.sub_issue) : []),
+        ];
       case "issue_dependencies":
         return [
           ...number(body.blocked_issue),
