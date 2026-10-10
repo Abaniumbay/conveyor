@@ -3,7 +3,7 @@
 // never depends on a shell's directory or environment. Installing and removing the unit, and
 // starting or stopping it, are administrative (root) steps; a drained restart is not.
 
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { detectPrefix } from "../../release/install";
@@ -200,6 +200,7 @@ export const serviceInstall: Command = {
       ?? [path.join(account.home, ".local/bin"), path.join(account.home, ".bun/bin"), "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"].join(":");
     const file = unitFile(unit);
     await writeFile(file, renderUnit({ account, home, config, executable: path.join(prefix, "current/conveyor"), path: servicePath }), { mode: 0o644 });
+    await chmod(file, 0o644);
     await systemctl("daemon-reload");
     await systemctl("enable", `${unit}.service`);
     if (context.json) return printJson(context, { unit, file, account: name, home, config, path: servicePath });

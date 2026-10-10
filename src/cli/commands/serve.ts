@@ -16,7 +16,33 @@ import { claimPidFile } from "../process-lock";
 
 /** serve exits with this after a requested restart; the service unit restarts it. */
 export const RESTART_EXIT_CODE = 75;
+/** Leave the supervisor time to record a failed stop before its 90 second stop timeout. */
+export const SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS = 25_000;
 import { loadCommandConfig, type Command } from "../command";
+
+/**
+ * Gives a supervised restart a bounded chance to finish cleanup. The caller must force the
+ * process out when this reports a timeout because the abandoned work can still keep Bun alive.
+ */
+export async function waitForSupervisedRestartShutdown(
+  cleanup: Promise<void>,
+  options: {
+    timeoutMs?: number;
+    scheduleTimeout?: (callback: () => void, milliseconds: number) => ReturnType<typeof setTimeout> | number;
+  } = {},
+): Promise<{ exitCode: number; timedOut: boolean }> {
+  const timeoutMs = options.timeoutMs ?? SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS;
+  let timeout!: ReturnType<typeof setTimeout> | number;
+  const deadline = new Promise<true>((resolve) => {
+    timeout = (options.scheduleTimeout ?? setTimeout)(() => resolve(true), timeoutMs);
+  });
+  try {
+    const timedOut = await Promise.race([cleanup.then(() => false), deadline]);
+    return timedOut ? { exitCode: EXIT.failure, timedOut: true } : { exitCode: RESTART_EXIT_CODE, timedOut: false };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export function listenAddress(value: string): { hostname: string; port: number } {
   const separator = value.lastIndexOf(":");
@@ -126,14 +152,35 @@ export const serve: Command = {
         stopping = true;
         log.info("Stopping Conveyor", { reason });
         void (async () => {
-          clearInterval(pushTimer);
-          await control.stop();
-          await server.stop(false);
-          await mcpSocket?.stop();
-          await service.close();
-          await afterClose?.().catch((error: unknown) => log.error("Finishing the stop failed", { reason }, error));
-          log.info("Conveyor stopped", { reason });
-          resolve(code);
+          const cleanup = (async () => {
+            clearInterval(pushTimer);
+            await control.stop();
+            await server.stop(false);
+            await mcpSocket?.stop();
+            await service.close();
+          })();
+          try {
+            const result = supervised && code === RESTART_EXIT_CODE
+              ? await waitForSupervisedRestartShutdown(cleanup)
+              : (await cleanup, { exitCode: code, timedOut: false });
+            if (result.timedOut) {
+              log.error("Conveyor shutdown timed out; forcing exit", { reason, timeoutMs: SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS });
+              process.exit(EXIT.failure);
+              return resolve(EXIT.failure);
+            }
+            // Rollback restoration mutates several files and is recoverable on failure. It must
+            // finish after the bounded service shutdown rather than being cut off mid-restore.
+            await afterClose?.().catch((error: unknown) => log.error("Finishing the stop failed", { reason }, error));
+            log.info("Conveyor stopped", { reason });
+            resolve(result.exitCode);
+          } catch (error) {
+            log.error("Conveyor shutdown failed", { reason }, error);
+            if (supervised && code === RESTART_EXIT_CODE) {
+              process.exit(EXIT.failure);
+              return resolve(EXIT.failure);
+            }
+            resolve(EXIT.failure);
+          }
         })();
       };
       process.on("SIGINT", () => requestStop("SIGINT"));
