@@ -1,6 +1,6 @@
 # Conveyor deployment fallback
 
-This Cloudflare Worker sits on `reports.number34.nl/*` ahead of the existing
+This Cloudflare Worker sits on `conveyor.example.com/*` ahead of the existing
 Cloudflare Tunnel. Healthy requests go to the current origin unchanged. Browser
 GET/HEAD requests receiving an unavailable-origin response get a standalone
 recovery page instead of a gateway error. The page checks `/health/live` and
@@ -15,7 +15,7 @@ already-open board is not automatically replaced when its event stream drops.
 ## Deploy
 
 Authenticate with a Cloudflare account that can deploy Workers and manage Worker
-routes for `number34.nl`, then deploy from the development checkout:
+routes for `example.com`, then deploy from the development checkout:
 
 ```sh
 bunx wrangler login
@@ -32,6 +32,9 @@ Use a **Worker route**, not a Worker Custom Domain. Keep the existing proxied DN
 and tunnel configuration. `fetch(request)` on a route continues to that origin.
 Check existing overlapping routes before deploying; a more specific route can
 bypass this Worker, and replacing an existing route can displace its Worker.
+Before deployment, replace the example route `conveyor.example.com/*` and zone
+`example.com` in `wrangler.jsonc` with the route and zone that serve your
+Conveyor instance.
 
 ## Check behavior
 
@@ -46,5 +49,6 @@ scheduled Conveyor restart, opening `/board` should return this page with HTTP
 should reload automatically. The Worker does not retry mutations, replace API,
 asset or SSE error responses with HTML, or cache authenticated responses.
 
-To remove the fallback, detach only the `reports.number34.nl/*` route from the
+To remove the fallback, detach only your configured Worker route (for example,
+`conveyor.example.com/*`) from the
 `conveyor-deployment-page` Worker. Leave the tunnel and DNS record intact.
