@@ -480,6 +480,19 @@ describe("agent.run", () => {
     );
   });
 
+  test("treats a shutdown-only control socket blocker as interrupted, but preserves a substantive blocker", async () => {
+    const w = await world();
+    w.controller.abort();
+    w.setBehaviour(() => ({ outcome: "failure", status: "blocked", summary: "Conveyor calls failed: socket connection was closed unexpectedly", reason: "The socket connection was closed unexpectedly" }));
+    expect(await w.run(false)).toEqual({ status: "fail", message: "Agent control connection was interrupted by service shutdown", route: { stop: "interrupted" } });
+    expect(w.store.listRunsForExecution("i1", "implementation", "producer", "key-1")[0]).toMatchObject({ status: "interrupted" });
+
+    const substantive = await world();
+    substantive.controller.abort();
+    substantive.setBehaviour(() => ({ outcome: "failure", status: "blocked", summary: "Socket connection was closed unexpectedly", reason: "Permission denied while publishing after the socket connection was closed unexpectedly" }));
+    expect(await substantive.run(false)).toEqual({ status: "fail", message: "Permission denied while publishing after the socket connection was closed unexpectedly", route: { stop: "blocked" } });
+  });
+
   test("changes-requested with a finding recorded in the run passes so the gates decide", async () => {
     const w = await world();
     w.setBehaviour((_call, runId, store) => {

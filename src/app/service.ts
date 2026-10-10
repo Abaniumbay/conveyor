@@ -61,6 +61,7 @@ interface ActiveRun {
   controller: AbortController;
   /** Runs no runner process; excluded from global and repository permits. */
   lightweight: boolean;
+  interrupted: boolean;
 }
 
 type LiveIssueStatus = IssueWaitingViewModel & { kind: "waiting" | "queued" };
@@ -71,6 +72,8 @@ interface McpGrant {
   context: RuntimeIssueContext | null;
   allowedTools: Set<string>;
   actor: { id: string; name: string; title: string } | null;
+  /** Responses, including in-flight ones, keyed by the client's transport-retry token. */
+  calls: Map<string, Promise<unknown>>;
 }
 
 interface ServiceImplementations {
@@ -315,10 +318,6 @@ export class ConveyorService {
   ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
-    const recovered = store.recoverInterruptedExecutions(config.hash);
-    if (recovered.runs > 0 || recovered.stages > 0) {
-      log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
-    }
     const removedRepositories = store.removeRepositoriesExcept(Object.keys(config.repositories));
     if (removedRepositories.length > 0) {
       log.info("Removed unconfigured repositories from the local index", { repositories: removedRepositories });
@@ -331,6 +330,13 @@ export class ConveyorService {
       github,
       { codeHosts },
     );
+    const recovered = store.recoverInterruptedExecutions(config.hash);
+    if (recovered.runs > 0 || recovered.stages > 0) {
+      log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
+      for (const stage of recovered.recoveredStages) {
+        log.info("Stage queued after restart", { ...service.itemFields(stage.issueId), stage: stage.stageId });
+      }
+    }
     await service.onboardRepositories();
     await service.reconcileAll();
     return service;
@@ -468,7 +474,11 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
-    for (const active of this.#active.values()) active.controller.abort();
+    for (const [issueId, active] of this.#active) {
+      active.interrupted = true;
+      log.warn("Stage interrupted during shutdown", { ...this.itemFields(issueId), stage: active.stageId });
+      active.controller.abort();
+    }
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
     while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#tickRunning || this.#advisoryPolling) {
@@ -521,11 +531,15 @@ export class ConveyorService {
         stageId: candidate.stageId,
         controller: new AbortController(),
         lightweight: candidate.lightweight === true,
+        interrupted: false,
       });
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       void this.execute(issue, active.controller.signal).finally(() => {
         this.#active.delete(issue.id);
+        if (this.#drain && !active.interrupted) {
+          log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
+        }
       });
     }
     const selectedIds = new Set(selected.map((candidate) => candidate.id));
@@ -1319,6 +1333,7 @@ export class ConveyorService {
           context,
           allowedTools: new Set(allowedTools.map(canonicalToolName)),
           actor,
+          calls: new Map(),
         });
         const directory = path.join(this.config.settings.artifacts, runId);
         await mkdir(directory, { recursive: true });
@@ -1371,6 +1386,7 @@ export class ConveyorService {
       context: null,
       allowedTools: new Set(allowedTools.map(canonicalToolName)),
       actor: null,
+      calls: new Map(),
     });
     const directory = path.join(this.config.settings.artifacts, runId);
     await mkdir(directory, { recursive: true });
@@ -1524,9 +1540,20 @@ export class ConveyorService {
   }
 
   /** An MCP tool call: a thin wrapper over the task dispatcher, which enforces the grant and journals mutations. */
-  async handleMcp(payload: unknown, token: string): Promise<unknown> {
+  async handleMcp(payload: unknown, token: string, callId?: string): Promise<unknown> {
     const grant = this.#mcpGrants.get(token);
     if (!grant) throw new Error("expired MCP grant");
+    if (callId) {
+      const prior = grant.calls.get(callId);
+      if (prior) return prior;
+      const call = this.handleMcpRequest(payload, grant);
+      grant.calls.set(callId, call);
+      return call;
+    }
+    return this.handleMcpRequest(payload, grant);
+  }
+
+  private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
     const context = grant.context;
     let tool = "unknown";
     try {
@@ -3065,6 +3092,9 @@ export class ConveyorService {
     if (!this.#drain) {
       this.#drain = { since: new Date().toISOString(), reason };
       log.info("Admission paused: draining", { reason });
+      for (const [issueId, active] of this.#active) {
+        log.info("Stage waiting during drain", { ...this.itemFields(issueId), stage: active.stageId });
+      }
     }
     return this.#drain;
   }
@@ -3214,7 +3244,7 @@ export class ConveyorService {
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
       moveBacklogIssue: (id, beforeId) => this.moveBacklogIssue(id, beforeId),
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
-      handleMcp: (body, token) => this.handleMcp(body, token),
+      handleMcp: (body, token, callId) => this.handleMcp(body, token, callId),
       startSteering: (prompt) => this.startSteering(prompt),
       getSteeringRun: (runId) => this.getSteeringRun(runId),
       getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),

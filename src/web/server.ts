@@ -48,7 +48,7 @@ export interface WebHandlerDependencies {
   reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
   moveBacklogIssue: (issueId: string, beforeIssueId: string | null) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
-  handleMcp: (body: unknown, bearerToken: string) => unknown | Promise<unknown>;
+  handleMcp: (body: unknown, bearerToken: string, callId?: string) => unknown | Promise<unknown>;
   startSteering: (prompt: string) => string | Promise<string>;
   getSteeringRun: (runId: string) => { id: string; status: string } | null | Promise<{ id: string; status: string } | null>;
   getSteeringEvents: (runId: string, after: number) => Array<{
@@ -1044,7 +1044,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json({ error: "malformed JSON" }, 400);
       }
       try {
-        return json(await dependencies.handleMcp(parsed, token));
+        return json(await dependencies.handleMcp(parsed, token, request.headers.get("x-conveyor-call-id") ?? undefined));
       } catch (error) {
         if (error instanceof ToolRequestError) return json({ error: error.message }, 422);
         return json({ error: "MCP request failed" }, 500);

@@ -9,6 +9,7 @@ import { loadConfig } from "../../src/config/load";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
+import { ConsoleSink, log } from "../../src/log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import type { HarnessResumeInput } from "../../src/tasks/context";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -22,7 +23,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; completeAfterRelease?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -79,19 +80,33 @@ repositories:
 
   const calls: Call[] = [];
   let sessionResume = true;
+  let started: (() => void) | null = null;
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  let release: (() => void) | null = null;
+  const released = new Promise<void>((resolve) => { release = resolve; });
   const harness: Harness = {
     id: "fake",
     get capabilities() { return { sessionResume }; },
     async run(input): Promise<RunEnvelope> {
       calls.push(input);
+      if (options.waitForRelease) {
+        started!();
+        await released;
+      }
+      if (options.waitForAbort) {
+        started!();
+        await new Promise<never>((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason ?? new Error("interrupted")), { once: true });
+        });
+      }
       const runId = path.basename(input.artifactsDirectory);
       const first = calls.length === 1;
-      if (first) store.openQuestion({
+      if (first && !options.completeAfterRelease) store.openQuestion({
         issueId: "issue", runId, prompt: "Which database?", reason: "need it",
         options: options.questionOptions ?? [], allowFreeText: options.allowFreeText ?? true,
       });
       return {
-        stageResult: first
+        stageResult: first && !options.completeAfterRelease
           ? { outcome: "failure", status: "needs-input", summary: "Asked", reason: "Which database?", metrics: {} }
           : { outcome: "success", status: "done", summary: "Done", reason: null, metrics: {} },
         sessionId: "sess-1", usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
@@ -125,10 +140,75 @@ repositories:
 
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
-  return { store, service, execute, calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
+  const schedule = () => (Object.getPrototypeOf(service) as { schedule(this: unknown): void }).schedule.call(service);
+  return { config, store, service, execute, schedule, running, release: () => release!(), calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
+  test("interrupts a running agent stage for restart and queues the same workspace again", async () => {
+    const first = await setup({ waitForAbort: true });
+    const logs: string[] = [];
+    const onboard = ConveyorService.prototype.onboardRepositories;
+    const reconcile = ConveyorService.prototype.reconcileAll;
+    const resumed: string[] = [];
+    log.configure({ sinks: [{ write: (record) => logs.push(JSON.stringify(record)) }] });
+    ConveyorService.prototype.onboardRepositories = async () => {};
+    ConveyorService.prototype.reconcileAll = async () => {};
+    try {
+      first.schedule();
+      await first.running;
+      first.service.drain("restart test");
+      await first.service.close();
+
+      const interrupted = await ConveyorStore.open(path.join(first.root, "db.sqlite"));
+      expect(interrupted.getStageState("issue")).toMatchObject({ status: "interrupted" });
+      expect(interrupted.listIssueRuns("issue")[0]).toMatchObject({ status: "interrupted" });
+      expect(interrupted.getIssue("issue")).toMatchObject({ projectedState: "active" });
+      expect(interrupted.getActiveWorkspace("issue")).toMatchObject({ path: first.workspace });
+      interrupted.close();
+
+      const service = await ConveyorService.create(first.config, {} as never, {} as never);
+      (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => { resumed.push(issue.id); };
+      service.start();
+      while (resumed.length === 0) await Bun.sleep(5);
+
+      expect(resumed).toEqual(["issue"]);
+      expect(service.store.getStageState("issue")).toMatchObject({ status: "ready", stageId: "refinement" });
+      expect(service.store.getActiveWorkspace("issue")).toMatchObject({ path: first.workspace });
+      expect(service.store.listIssueRuns("issue")).toHaveLength(1);
+      expect(service.store.listIssueRuns("issue")[0]).toMatchObject({ status: "interrupted" });
+      expect(logs).toContainEqual(expect.stringContaining('"message":"Stage waiting during drain"'));
+      expect(logs).toContainEqual(expect.stringContaining('"message":"Stage interrupted during shutdown"'));
+      expect(logs).toContainEqual(expect.stringContaining('"message":"Stage queued after restart"'));
+      expect(logs).toContainEqual(expect.stringContaining('"item":"repo:1"'));
+      await service.close();
+    } finally {
+      ConveyorService.prototype.onboardRepositories = onboard;
+      ConveyorService.prototype.reconcileAll = reconcile;
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
+  test("keeps control available for a stage that finishes during a graceful drain", async () => {
+    const w = await setup({ waitForRelease: true, completeAfterRelease: true });
+    const logs: string[] = [];
+    log.configure({ sinks: [{ write: (record) => logs.push(JSON.stringify(record)) }] });
+    try {
+      w.schedule();
+      await w.running;
+      w.service.drain("release test");
+      w.release();
+      while (w.service.activeWork().items.length > 0) await Bun.sleep(5);
+
+      expect(w.store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "awaiting-source" });
+      expect(w.store.listIssueRuns("issue")[0]).toMatchObject({ status: "succeeded" });
+      expect(logs).toContainEqual(expect.stringContaining('"message":"Stage finished during drain"'));
+    } finally {
+      await w.service.close();
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
   test("a native stage whose first action is agent.run gets a workspace on an item that has none", async () => {
     const w = await setup({ noWorkspace: true });
     expect(w.store.getActiveWorkspace("issue")).toBeNull();
@@ -338,6 +418,10 @@ describe("legacy MCP names delegate to the agent tools", () => {
     expect(await call("run.report_rationale", { why: "x" })).toEqual({ accepted: true });
     expect(await call("conversation.get", { limit: 5 })).toMatchObject({ issueId: "issue", messages: [{ actorName: "Worker", message: "Halfway" }] });
     expect(w.store.listRunEvents("run-1").map((e) => e.type)).toEqual(["report_progress", "question", "record_artifact", "record_artifact", "report_rationale"]);
+
+    await w.service.handleMcp({ tool: "agent.reportProgress", input: { message: "Exactly once" } }, token, "lost-response");
+    await w.service.handleMcp({ tool: "agent.reportProgress", input: { message: "Exactly once" } }, token, "lost-response");
+    expect(w.store.listConversationMessages("issue").filter((message) => message.message === "Exactly once")).toHaveLength(1);
     await lease.close();
     await w.service.close();
   });

@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   createConveyorMcpServer,
+  HttpControlClient,
   type ControlClient,
   type RunMcpContext,
 } from "../../src/mcp/server";
@@ -144,5 +145,75 @@ describe("Conveyor MCP server", () => {
     const control: ControlClient = { async call() {} };
     expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.typo"] }, control)).toThrow("unsupported MCP tool");
     expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.get_issue"] }, control)).toThrow("duplicate MCP tool");
+  });
+});
+
+describe("HTTP control client", () => {
+  test("retries transient closed-socket failures with the same request", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const callIds: string[] = [];
+    const client = new HttpControlClient(
+      "http://127.0.0.1:4311",
+      "grant",
+      async (_url, init) => {
+        attempts += 1;
+        callIds.push(new Headers(init?.headers).get("x-conveyor-call-id")!);
+        if (attempts < 3) throw new Error("The socket connection was closed unexpectedly");
+        return Response.json({ accepted: true });
+      },
+      async (delay) => { delays.push(delay); },
+    );
+
+    await expect(client.call("agent.reportProgress", { message: "still working" })).resolves.toEqual({ accepted: true });
+    expect(attempts).toBe(3);
+    expect(delays).toEqual([50, 100]);
+    expect(new Set(callIds).size).toBe(1);
+  });
+
+  test("gives each independent call a different retry token", async () => {
+    const callIds: string[] = [];
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async (_url, init) => {
+      callIds.push(new Headers(init?.headers).get("x-conveyor-call-id")!);
+      return Response.json({ accepted: true });
+    });
+    await client.call("agent.reportProgress", { message: "one" });
+    await client.call("agent.reportProgress", { message: "two" });
+    expect(new Set(callIds).size).toBe(2);
+  });
+
+  test("stops after bounded transient retries and propagates the final transport error", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () => {
+      attempts += 1;
+      throw new Error("socket hang up");
+    }, async (delay) => { delays.push(delay); });
+
+    await expect(client.call("item.get", {})).rejects.toThrow("socket hang up");
+    expect(attempts).toBe(4);
+    expect(delays).toEqual([50, 100, 200]);
+  });
+
+  test("does not retry non-transport fetch failures", async () => {
+    let attempts = 0;
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () => {
+      attempts += 1;
+      throw new TypeError("invalid URL");
+    });
+
+    await expect(client.call("item.get", {})).rejects.toThrow("invalid URL");
+    expect(attempts).toBe(1);
+  });
+
+  test.each([["authorization", 401], ["validation", 422]])("does not retry %s responses", async (_kind, status) => {
+    let attempts = 0;
+    const client = new HttpControlClient("http://127.0.0.1:4311", "expired", async () => {
+      attempts += 1;
+      return new Response("control request rejected", { status });
+    });
+
+    await expect(client.call("item.get", {})).rejects.toThrow(`control request failed (${status})`);
+    expect(attempts).toBe(1);
   });
 });

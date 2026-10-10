@@ -100,6 +100,17 @@ function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelo
   return fail(`Agent returned an invalid result: unexpected failure status "${status}" (${reason ?? summary})`, { route: { stop: "error" } });
 }
 
+/** A shutdown abort is authoritative evidence that the control channel was deliberately torn down.
+ * Do not turn a result containing only that transient failure into an owner-facing blocker. */
+function restartOnlyControlFailure(deps: Deps, result: RunEnvelope): boolean {
+  if (!deps.signal?.aborted || result.stageResult.status !== "blocked") return false;
+  const detail = [result.stageResult.summary, result.stageResult.reason].filter((value): value is string => typeof value === "string").join("\n");
+  if (!/socket connection was closed|socket hang up|fetch failed|network error|connection (?:reset|refused)|econnreset|econnrefused|epipe/i.test(detail)) return false;
+  // A real blocker is allowed to mention transport trouble as supporting evidence. These terms
+  // indicate that the agent supplied a substantive reason that must retain the normal path.
+  return !/\b(?:permission|unauthori[sz]ed|validation|invalid input|merge conflict|test failure|build failure|product decision|owner input|human input)\b/i.test(detail);
+}
+
 const run: TaskDefinition<RunConfig, unknown, Deps> = {
   name: "agent.run",
   kind: "act",
@@ -251,12 +262,26 @@ async function runAgent(
     } finally {
       await lease.close();
     }
-    finishRun(store, runId, "succeeded", result);
+    const interrupted = restartOnlyControlFailure(deps, result);
+    if (interrupted) {
+      result = {
+        ...result,
+        stageResult: { ...result.stageResult, status: "interrupted", outcome: "failure", summary: "Agent control connection was interrupted by service shutdown" },
+      };
+    }
+    finishRun(store, runId, interrupted ? "interrupted" : "succeeded", result);
     warnOnTokenUsage(store, deps.config, issue.id, stageId, runId, agentId, result.usage.inputTokens);
     agentMessage(store, deps.config, issue.id, stageId, runId, agentId, producerConversationMessage(stageId, result));
-    return outcomeOf(deps, runId, agentId, result);
+    return interrupted
+      ? fail(result.stageResult.summary, { route: { stop: "interrupted" } })
+      : outcomeOf(deps, runId, agentId, result);
   } catch (error) {
-    finishRun(store, runId, "failed", failedEnvelope(error, Math.max(0, Math.round(performance.now() - started))));
+    finishRun(
+      store,
+      runId,
+      deps.signal?.aborted ? "interrupted" : "failed",
+      failedEnvelope(error, Math.max(0, Math.round(performance.now() - started))),
+    );
     throw error;
   }
 }

@@ -54,6 +54,17 @@ export function listenAddress(value: string): { hostname: string; port: number }
   return { hostname, port };
 }
 
+/** Keep every agent-control transport alive until active stages have settled. */
+export async function stopAgentTransportsAfterService(
+  service: Pick<ConveyorService, "close">,
+  server: { stop(closeActiveConnections?: boolean): void | Promise<void> },
+  mcpSocket: { stop(): void | Promise<void> } | null,
+): Promise<void> {
+  await service.close();
+  await server.stop(false);
+  await mcpSocket?.stop();
+}
+
 export const serve: Command = {
   name: "serve",
   summary: "run Conveyor in the foreground (the service unit runs this)",
@@ -155,9 +166,8 @@ export const serve: Command = {
           const cleanup = (async () => {
             clearInterval(pushTimer);
             await control.stop();
-            await server.stop(false);
-            await mcpSocket?.stop();
-            await service.close();
+            // Keep both transports available until active stages have completed or been interrupted.
+            await stopAgentTransportsAfterService(service, server, mcpSocket);
           })();
           try {
             const result = supervised && code === RESTART_EXIT_CODE

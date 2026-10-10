@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { canonicalToolName } from "../tasks/aliases";
@@ -31,27 +32,50 @@ export interface ControlClient {
   call(tool: string, input: unknown): Promise<unknown>;
 }
 
+type FetchImplementation = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>;
+
 export class HttpControlClient implements ControlClient {
   constructor(
     private readonly url: string,
     private readonly token: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: FetchImplementation = fetch,
+    private readonly sleep: (milliseconds: number) => Promise<void> = async (milliseconds) => { await Bun.sleep(milliseconds); },
   ) {}
 
   async call(tool: string, input: unknown): Promise<unknown> {
-    const response = await this.fetchImpl(this.url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ tool, input }),
-    });
-    if (!response.ok) {
-      throw new Error(`control request failed (${response.status}): ${await response.text()}`);
+    const retries = [50, 100, 200];
+    // A response can be lost after the service has accepted the request. Keep this identifier
+    // stable across transport retries so the service can return the original result instead of
+    // applying a tool mutation twice.
+    const callId = randomUUID();
+    for (let attempt = 0; ; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(this.url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            "content-type": "application/json",
+            "x-conveyor-call-id": callId,
+          },
+          body: JSON.stringify({ tool, input }),
+        });
+      } catch (error) {
+        if (!isTransientControlTransportError(error) || attempt === retries.length) throw error;
+        await this.sleep(retries[attempt]!);
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error(`control request failed (${response.status}): ${await response.text()}`);
+      }
+      return response.json();
     }
-    return response.json();
   }
+}
+
+function isTransientControlTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /socket connection was closed|socket hang up|fetch failed|network error|connection (?:reset|refused)|econnreset|econnrefused|epipe/i.test(message);
 }
 
 const errorResult = (message: string) => ({ isError: true as const, content: [{ type: "text" as const, text: message }] });

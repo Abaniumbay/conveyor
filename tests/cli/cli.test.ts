@@ -7,7 +7,7 @@ import { parse, stringify } from "yaml";
 
 import { CliError, EXIT, parseArgs } from "../../src/cli/args";
 import { doctorChecks } from "../../src/cli/commands/doctor";
-import { RESTART_EXIT_CODE, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS } from "../../src/cli/commands/serve";
+import { RESTART_EXIT_CODE, stopAgentTransportsAfterService, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS } from "../../src/cli/commands/serve";
 import { runCli } from "../../src/cli/main";
 import { ConveyorService } from "../../src/app/service";
 import { Database } from "bun:sqlite";
@@ -356,6 +356,16 @@ describe("conveyor admin reset-password", () => {
 });
 
 describe("conveyor serve", () => {
+  test("keeps TCP and Unix agent control transports open through service shutdown", async () => {
+    const calls: string[] = [];
+    await stopAgentTransportsAfterService(
+      { close: async () => { calls.push("service"); } },
+      { stop: async (force) => { calls.push(`web:${force}`); } },
+      { stop: async () => { calls.push("mcp"); } },
+    );
+    expect(calls).toEqual(["service", "web:false", "mcp"]);
+  });
+
   test("starts even when the release bookkeeping cannot be read, and logs why", async () => {
     const home = await initialisedHome();
     const port = await new Promise<number>((resolve) => {
