@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-10
+
+This patch makes questions answerable from the dashboard again and fixes the dashboard on phones. Since 0.4.0, questions whose choices agents stored as a label and description showed an error in Needs you instead of their choices. On phones, a CI chip on a card outside the visible stage widened the page so it could be dragged sideways into empty space, and long content was cut off in the Operator view and in item conversations. An upgrade also no longer hangs when the old process stalls while shutting down.
+
 ### Fixed
 
 - Supervised release restarts now force a failed exit if shutdown cleanup stalls, rather than
