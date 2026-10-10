@@ -131,7 +131,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | --- | --- | --- | --- | --- |
 | `item.childrenValid` | check | item, repository | - | Passes when every child is enrolled, open or done, and has acceptance criteria or children of its own (and when there are no children). |
 | `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
-| `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. Everything is validated before the child is created. |
+| `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. dependsOn may name only already-created children of the current parent; create blockers first, then later children with their sibling issue numbers. Everything is validated before the child is created. |
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
 | `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. |
 | `item.get` | tool | - | - | Read the latest source state of the current issue. |

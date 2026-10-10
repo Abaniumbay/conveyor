@@ -51,6 +51,7 @@ export const createChildInput = z.object({
   type: issueTypeInput.shape.type.optional(),
   fields: z.array(fieldValueInput).optional(),
   refinement: refinementInput.optional(),
+  dependsOn: z.array(z.number()).optional(),
 }).strict();
 // GitHub rejects issue titles longer than 256 characters.
 export const titleInput = z.object({ title: z.string().trim().min(1).max(256) }).strict();
@@ -424,6 +425,25 @@ async function planMetadata(deps: Deps, input: { type?: string | undefined; fiel
   return plan;
 }
 
+/** A child can only depend on an already-created sibling of the same roll-up parent. */
+async function childDependencies(deps: Deps, parentNumber: number, dependsOn: readonly number[] | undefined): Promise<number[]> {
+  const requested = dependsOn ?? [];
+  for (const number of requested) {
+    if (!Number.isSafeInteger(number) || number <= 0 || number === parentNumber) {
+      throw new Error(`Invalid dependsOn value ${String(number)}: it must identify an existing sibling child of the current parent.`);
+    }
+  }
+  if (requested.length === 0) return [];
+
+  const siblings = new Set((await deps.items.listSubIssues(deps.repository.address, parentNumber)).map((child) => child.number));
+  for (const number of requested) {
+    if (!siblings.has(number)) {
+      throw new Error(`Invalid dependsOn value ${String(number)}: it must identify an existing sibling child of the current parent.`);
+    }
+  }
+  return [...new Set(requested)];
+}
+
 const setType = tool("item.setType",
   "Set the current issue's type (Bug for wrong existing behaviour, Feature for a new capability, Task otherwise). The value must be a type the repository owner's organization defines; an owner without types reports it as unavailable.",
   issueTypeInput, true,
@@ -464,7 +484,7 @@ const setRefinement = tool("item.setRefinement",
   });
 
 const createChild = tool("item.createChild",
-  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. Everything is validated before the child is created.",
+  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. dependsOn may name only already-created children of the current parent; create blockers first, then later children with their sibling issue numbers. Everything is validated before the child is created.",
   createChildInput, true,
   async ({ deps, input, instance }, issue) => {
     const repository = deps.config.repositories[deps.repository.id]!;
@@ -473,6 +493,7 @@ const createChild = tool("item.createChild",
     const nextStage = stages[currentIndex + 1]?.id ?? stages[currentIndex]?.id;
     const systemLabels = (input!.systemLabels ?? []).filter((label) => repository.systemLabels.includes(label));
     const plan = await planMetadata(deps, { type: input!.type, fields: input!.fields });
+    const dependsOn = await childDependencies(deps, issue.sourceNumber, input!.dependsOn);
     let body = upsertManagedSection(
       input!.body,
       "acceptance-criteria",
@@ -483,24 +504,44 @@ const createChild = tool("item.createChild",
       body = upsertManagedSection(body, "refinement", renderRefinementSection(input!.refinement), parseManagedSections(body).revision);
     }
     const marker = createHash("sha256").update(JSON.stringify({
-      title: input!.title, body, labels: systemLabels, type: plan.type ?? null, fields: plan.fields,
+      title: input!.title, body, labels: systemLabels, type: plan.type ?? null, fields: plan.fields, dependsOn,
     })).digest("hex");
     body = `${body.trimEnd()}\n\n<!-- conveyor:child-create:${marker} -->\n`;
+    const enrollmentLabels = [
+      deps.config.labels.enrollment,
+      ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
+    ];
     const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
       title: input!.title,
       body,
       labels: [
-        deps.config.labels.enrollment,
-        ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
+        ...(dependsOn.length > 0 ? [] : enrollmentLabels),
         ...systemLabels,
       ],
       ...(plan.type ? { type: plan.type } : {}),
       ...(plan.fields.length > 0 ? { fields: plan.fields } : {}),
     });
+    if (dependsOn.length > 0) {
+      await deps.items.setDependencies({
+        address: deps.repository.address,
+        issueNumber: child.number,
+        blockerNumbers: dependsOn,
+      });
+      const current = await deps.items.getIssue(deps.repository.address, child.number);
+      await deps.items.updateManagedSection({
+        address: deps.repository.address,
+        issueNumber: child.number,
+        section: "dependencies",
+        markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
+        expectedRevision: deps.items.managedRevision(current.body),
+      });
+      await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+    }
     return {
       ...child,
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(plan.type ? { type: plan.type } : {}),
       ...(plan.fields.length > 0 ? { fields: Object.fromEntries(plan.fields.map(({ name, value }) => [name, value])) } : {}),
       ...(plan.unavailable.length > 0 ? { unavailable: plan.unavailable } : {}),
