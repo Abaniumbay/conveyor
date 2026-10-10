@@ -122,6 +122,20 @@ describe("GitHub calls made for webhook deliveries", () => {
     store.close();
   });
 
+  test("an issue dependency webhook does not refresh a blocking issue in another repository", async () => {
+    const { conveyor, calls, deliver } = await service();
+
+    await deliver("issue_dependencies", {
+      action: "blocked",
+      blocked_issue: { number: 1 },
+      blocking_issue: { number: 7 },
+      blocking_issue_repo: { full_name: "other/repository" },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([1]);
+  });
+
   test("only the status comment of the issue a delivery names is refreshed, straight to its known comment", async () => {
     const { conveyor, store, calls, deliver } = await service();
     await deliver("issues", { action: "labeled", issue: { number: 1 } });

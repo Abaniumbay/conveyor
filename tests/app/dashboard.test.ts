@@ -471,7 +471,17 @@ describe("ConveyorService dashboard", () => {
     const config = {
       hash: "config-hash",
       root,
-      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1 },
+      settings: {
+        artifacts: path.join(root, "artifacts"),
+        workspaces: path.join(root, "workspaces"),
+        runners: 1,
+        retries: {
+          infrastructureAttempts: 5,
+          usageLimitAttempts: "unlimited",
+          minBackoff: 30_000,
+          maxBackoff: 1_800_000,
+        },
+      },
       web: { listen: "127.0.0.1:4300" },
       sources: { github: { type: "github" } },
       labels: {

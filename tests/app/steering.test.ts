@@ -112,7 +112,10 @@ describe("ConveyorService steering", () => {
     const config = {
       hash: "config-hash",
       root,
-      settings: { workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, labelPrefix: "conveyor" },
+      settings: {
+        workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, labelPrefix: "conveyor",
+        retries: { infrastructureAttempts: 5, usageLimitAttempts: "unlimited", minBackoff: 30_000, maxBackoff: 1_800_000 },
+      },
       web: { listen: "127.0.0.1:4300", steering: { agent: "operator", workspace: root } },
       runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
       labels: {
@@ -125,7 +128,7 @@ describe("ConveyorService steering", () => {
           tasks: ["operator.getBoard", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"],
         },
       },
-      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "backlog" }] } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "backlog" }, { id: "implementation" }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
       sources: { github: { type: "github" } }, checks: {}, ci: {},
     } as unknown as ConveyorConfig;
@@ -140,7 +143,13 @@ describe("ConveyorService steering", () => {
     for (const [id, number, stage] of [["item-2", 88, "backlog"], ["item-3", 89, "backlog"], ["child", 90, "backlog"], ["not-backlog", 91, "implementation"], ["offboarded", 92, null]] as const) {
       store.upsertIssue({
         id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id,
-        body: "", sourceState: "open", labels: ["conveyor", "conveyor:backlog"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+        body: "", sourceState: "open",
+        labels: id === "offboarded"
+          ? []
+          : id === "not-backlog"
+            ? ["conveyor", "conveyor:implementation"]
+            : ["conveyor", "conveyor:backlog"],
+        sourceUpdatedAt: "2026-01-01T00:00:00Z",
       });
       store.setIssueProjection(id, { stage, state: id === "offboarded" ? "offboarded" : "active", warning: null });
       if (stage) store.setStageState({ issueId: id, stageId: stage, status: "ready", feedbackCycle: 0, configHash: config.hash });

@@ -1753,6 +1753,11 @@ export class ConveyorService {
   private webhookIssueNumbers(repositoryId: string, eventType: string, payload: unknown): number[] | null {
     const body = fields(payload);
     const number = (value: unknown) => typeof fields(value).number === "number" ? [fields(value).number as number] : [];
+    const belongsToRepository = (value: unknown) => {
+      const address = fields(value).full_name;
+      const repositoryAddress = this.config.repositories[repositoryId]?.address;
+      return typeof address !== "string" || address.toLowerCase() === repositoryAddress?.toLowerCase();
+    };
     const forPullRequests = (numbers: number[]) => {
       const wanted = new Set(numbers);
       return this.store.listIssues(repositoryId).flatMap((issue) => {
@@ -1768,7 +1773,10 @@ export class ConveyorService {
       case "sub_issues":
         return [...number(body.parent_issue), ...number(body.sub_issue)];
       case "issue_dependencies":
-        return [...number(body.blocked_issue), ...number(body.blocking_issue)];
+        return [
+          ...number(body.blocked_issue),
+          ...(belongsToRepository(body.blocking_issue_repo) ? number(body.blocking_issue) : []),
+        ];
       case "pull_request":
         return forPullRequests(number(body.pull_request));
       case "workflow_run":
