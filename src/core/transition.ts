@@ -204,10 +204,9 @@ export async function applyStageTransition(
 export async function applyRollupTransition(
   input: ApplyRollupTransitionInput,
 ): Promise<boolean> {
-  const stopLabels = [
-    input.labels.states.blocked,
-    input.labels.states["needs-input"],
-  ].filter((label): label is string => Boolean(label));
+  // Any configured state label is a stopped state according to
+  // evaluateIssueState(), so a roll-up must never overwrite one.
+  const stopLabels = Object.values(input.labels.states);
   if (input.issue.labels.some((label) => stopLabels.includes(label))) return false;
   const orderLabels = input.issue.labels.filter((label) =>
     matchesTemplate(label, input.labels.metadata.orderTemplate, "number")

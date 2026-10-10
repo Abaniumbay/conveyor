@@ -592,9 +592,28 @@ export class ConveyorService {
 
   private refinementComplete(issue: StoredIssue): boolean {
     if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
+    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
+    // Pipelines without a refinement stage have no refinement decision to
+    // wait for. Their parents retain the ordinary roll-up behaviour.
+    if (!pipeline?.stages.some((stage) => stage.id === "refinement")) return true;
     // A projected child stage is not evidence that the parent completed its
-    // own refinement. Only its durable advance transition can release it.
-    return this.store.listStageTransitions(issue.id).some((transition) =>
+    // own refinement. Only an advance from the current refinement visit can
+    // release it. A correction or a fresh enrollment back to refinement
+    // starts a new visit; a roll-up to refinement only follows children and
+    // deliberately does not invalidate the parent's earlier passage.
+    const transitions = this.store.listStageTransitions(issue.id)
+      .filter((transition) => transition.status === "completed");
+    let refinementVisit = 0;
+    for (const [index, transition] of transitions.entries()) {
+      const startsRefinementVisit =
+        transition.toStage === "refinement" &&
+        transition.kind !== "rollup" &&
+        (transition.kind === "onboarded" || transition.fromStage !== "refinement");
+      if (startsRefinementVisit) {
+        refinementVisit = index + 1;
+      }
+    }
+    return transitions.slice(refinementVisit).some((transition) =>
       transition.status === "completed" &&
       transition.kind === "advance" &&
       transition.fromStage === "refinement",
@@ -602,10 +621,9 @@ export class ConveyorService {
   }
 
   private hasRollupStopLabel(issue: StoredIssue): boolean {
-    const stopLabels = [
-      this.config.labels.states.blocked,
-      this.config.labels.states["needs-input"],
-    ].filter((label): label is string => Boolean(label));
+    // Every configured state label puts an item in the evaluator's stopped
+    // mode. Do not let a roll-up silently replace any of them.
+    const stopLabels = Object.values(this.config.labels.states);
     return issue.labels.some((label) => stopLabels.includes(label));
   }
 
