@@ -12,6 +12,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - `CONTRIBUTING.md` describes how to report problems, the development setup and what a pull request
   needs.
 
+### Changed
+- Releases 0.2.0 to 0.4.0 were withdrawn and their tags removed when installation-specific
+  details were taken out of the repository's history. Their notes stay below. Install or upgrade to
+  this release instead; it contains everything 0.4.0 did.
+
 ## [0.4.0] - 2026-10-10
 
 This release removes installation-specific configuration from Conveyor and fixes three dashboard and refinement problems. **Breaking:** the built-in `midgame-actions` CI provider and `midgame-delivery` pipeline are gone, and the `allowedHumanLogins` provider setting is no longer accepted, so a configuration that still contains it fails validation. Before upgrading, copy any of those definitions you still use into your own configuration and delete `allowedHumanLogins`. Questions asked on a parent item during refinement now stay answerable after child issues exist, the dashboard fits a phone viewport, and an installed PWA reconnects its live updates after standby.
