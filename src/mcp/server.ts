@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { canonicalToolName } from "../tasks/aliases";
@@ -43,6 +44,10 @@ export class HttpControlClient implements ControlClient {
 
   async call(tool: string, input: unknown): Promise<unknown> {
     const retries = [50, 100, 200];
+    // A response can be lost after the service has accepted the request. Keep this identifier
+    // stable across transport retries so the service can return the original result instead of
+    // applying a tool mutation twice.
+    const callId = randomUUID();
     for (let attempt = 0; ; attempt += 1) {
       let response: Response;
       try {
@@ -51,6 +56,7 @@ export class HttpControlClient implements ControlClient {
           headers: {
             authorization: `Bearer ${this.token}`,
             "content-type": "application/json",
+            "x-conveyor-call-id": callId,
           },
           body: JSON.stringify({ tool, input }),
         });

@@ -155,9 +155,9 @@ export const serve: Command = {
           const cleanup = (async () => {
             clearInterval(pushTimer);
             await control.stop();
-            await server.stop(false);
             await service.close();
-            // Keep agent control available until active stages have completed or been interrupted.
+            // Keep both transports available until active stages have completed or been interrupted.
+            await server.stop(false);
             await mcpSocket?.stop();
           })();
           try {

@@ -1005,7 +1005,14 @@ describe("createWebHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(await response.json()).toEqual({ ok: true });
-    expect(calls.mcp).toEqual([[{ tool: "run.report_progress" }, "internal-secret"]]);
+    expect(calls.mcp).toEqual([[{ tool: "run.report_progress" }, "internal-secret", undefined]]);
+
+    await handler(new Request("http://localhost/internal/mcp", {
+      method: "POST",
+      headers: { authorization: "Bearer internal-secret", "content-type": "application/json", "x-conveyor-call-id": "retry-1" },
+      body: JSON.stringify({ tool: "run.report_progress" }),
+    }));
+    expect(calls.mcp.at(-1)).toEqual([{ tool: "run.report_progress" }, "internal-secret", "retry-1"]);
   });
 
   test("returns actionable item-tool request errors to the MCP client", async () => {

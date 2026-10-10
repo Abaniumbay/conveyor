@@ -152,11 +152,13 @@ describe("HTTP control client", () => {
   test("retries transient closed-socket failures with the same request", async () => {
     let attempts = 0;
     const delays: number[] = [];
+    const callIds: string[] = [];
     const client = new HttpControlClient(
       "http://127.0.0.1:4311",
       "grant",
-      async () => {
+      async (_url, init) => {
         attempts += 1;
+        callIds.push(new Headers(init?.headers).get("x-conveyor-call-id")!);
         if (attempts < 3) throw new Error("The socket connection was closed unexpectedly");
         return Response.json({ accepted: true });
       },
@@ -166,6 +168,18 @@ describe("HTTP control client", () => {
     await expect(client.call("agent.reportProgress", { message: "still working" })).resolves.toEqual({ accepted: true });
     expect(attempts).toBe(3);
     expect(delays).toEqual([50, 100]);
+    expect(new Set(callIds).size).toBe(1);
+  });
+
+  test("gives each independent call a different retry token", async () => {
+    const callIds: string[] = [];
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async (_url, init) => {
+      callIds.push(new Headers(init?.headers).get("x-conveyor-call-id")!);
+      return Response.json({ accepted: true });
+    });
+    await client.call("agent.reportProgress", { message: "one" });
+    await client.call("agent.reportProgress", { message: "two" });
+    expect(new Set(callIds).size).toBe(2);
   });
 
   test.each([["authorization", 401], ["validation", 422]])("does not retry %s responses", async (_kind, status) => {
