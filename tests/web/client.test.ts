@@ -105,6 +105,13 @@ describe("dashboard browser client", () => {
     runNextTimer();
     expect(sources).toHaveLength(3);
     expect(sources.filter((source) => !source.closed)).toHaveLength(1);
+    sources[2]!.readyState = 1;
+    sources[2]!.onopen!();
+    sources[2]!.listeners.get("revision")!({ data: "revision-3" });
+    expect(states.at(-1)).toBe(true);
+    expect(reconnects).toEqual([5_000, 75_000]);
+    expect(events).toEqual(["revision", "revision"]);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
     sources[2]!.onerror!();
     expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
     runNextTimer();
@@ -128,7 +135,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("createDashboardEventConnection");
     expect(dashboardClient).toContain("document.addEventListener('visibilitychange', dashboardEvents.check)");
     expect(dashboardClient).toContain("window.addEventListener('online', dashboardEvents.check)");
-    expect(dashboardClient).toContain("onReconnect: () => void refreshDashboard()");
+    expect(dashboardClient).toContain("const refreshDashboardWhenSafe = () => {");
+    expect(dashboardClient).toContain("onReconnect: refreshDashboardWhenSafe");
+    expect(dashboardClient).toContain("scheduleJourneyRefresh();\n      scheduleSummaryRefresh();\n      pendingRefresh = true;");
     expect(dashboardClient).toContain("scheduleActivityRefresh");
     expect(dashboardClient).toContain("loadIssueJourney");
     expect(dashboardClient).toContain("journey.now");

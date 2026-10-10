@@ -1412,11 +1412,26 @@ export const dashboardClient = String.raw`(() => {
     });
     return dashboardRefresh;
   };
+  const refreshDashboardWhenSafe = () => {
+    if (body.dataset.dashboardView === 'agent') return;
+    if (backlogBusy) {
+      pendingRefresh = true;
+      return;
+    }
+    const openDialog = document.querySelector('dialog[open]');
+    if (openDialog) {
+      scheduleJourneyRefresh();
+      scheduleSummaryRefresh();
+      pendingRefresh = true;
+      return;
+    }
+    void refreshDashboard();
+  };
   bindServerStatus();
   syncThemeControls();
   const dashboardEvents = createDashboardEventConnection({
     onConnectionChange: setConnection,
-    onReconnect: () => void refreshDashboard(),
+    onReconnect: refreshDashboardWhenSafe,
     onEvent: (type, message) => {
       if (type === 'status') {
         try {
@@ -1434,19 +1449,7 @@ export const dashboardClient = String.raw`(() => {
         if (typeof next.revision !== 'string' || next.revision === revision) return;
         revision = next.revision;
         body.dataset.dashboardRevision = revision;
-        if (body.dataset.dashboardView === 'agent') return;
-        if (backlogBusy) {
-          pendingRefresh = true;
-          return;
-        }
-        const openDialog = document.querySelector('dialog[open]');
-        if (openDialog) {
-          scheduleJourneyRefresh();
-          scheduleSummaryRefresh();
-          pendingRefresh = true;
-          return;
-        }
-        void refreshDashboard();
+        refreshDashboardWhenSafe();
       } catch {}
     },
   });
