@@ -25,7 +25,9 @@ const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
 const PHONE_OVERFLOW_REPOSITORY = "MobileViewportRegressionContentMustWrapWithoutCreatingADocumentWideHorizontalScrollRange";
 const PHONE_OVERFLOW_ADDRESS = "demo/PhoneWidthAddressMustWrapWithoutCreatingDocumentWideHorizontalOverflow";
 const DEGRADED_STATUS = "simulated provider outage for screenshot coverage";
-const SCREENSHOT_WORKSPACE = path.join(tmpdir(), "conveyor-screenshot-workspace");
+// This folder is rendered in the superuser Setup section. Keep its display value
+// independent of the host's temporary-directory configuration.
+const SCREENSHOT_WORKSPACE = "/tmp/conveyor-screenshot-workspace";
 const DEMO_SOURCE_ISSUES = [
   {
     id: 10_001,
