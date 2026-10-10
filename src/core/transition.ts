@@ -203,7 +203,12 @@ export async function applyStageTransition(
 /** Move a non-runnable roll-up parent with the earliest unfinished child frontier. */
 export async function applyRollupTransition(
   input: ApplyRollupTransitionInput,
-): Promise<void> {
+): Promise<boolean> {
+  const stopLabels = [
+    input.labels.states.blocked,
+    input.labels.states["needs-input"],
+  ].filter((label): label is string => Boolean(label));
+  if (input.issue.labels.some((label) => stopLabels.includes(label))) return false;
   const orderLabels = input.issue.labels.filter((label) =>
     matchesTemplate(label, input.labels.metadata.orderTemplate, "number")
   );
@@ -261,4 +266,5 @@ export async function applyRollupTransition(
     feedbackCycle: 0,
     configHash: input.configHash,
   });
+  return true;
 }

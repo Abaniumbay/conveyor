@@ -94,7 +94,7 @@ describe("applyStageTransition", () => {
     store.close();
   });
 
-  test("moves a roll-up parent while clearing stale state labels", async () => {
+  test("does not roll up a parent with an active stop label", async () => {
     const store = await setup();
     store.upsertIssue({
       id: "issue",
@@ -136,19 +136,9 @@ describe("applyStageTransition", () => {
       reason: "Following the earliest unfinished child stage: review",
     });
 
-    expect(calls).toEqual([["conveyor", "conveyor:order:2", "conveyor:review"]]);
-    expect(store.getStageState("issue")).toMatchObject({
-      stageId: "review",
-      status: "awaiting-source",
-    });
-    expect(store.listStageTransitions("issue")).toMatchObject([{
-      id: "rollup-1",
-      fromStage: "implementation",
-      toStage: "review",
-      kind: "rollup",
-      status: "completed",
-      reason: "Following the earliest unfinished child stage: review",
-    }]);
+    expect(calls).toEqual([]);
+    expect(store.getStageState("issue")).toBeNull();
+    expect(store.listStageTransitions("issue")).toEqual([]);
     store.close();
   });
 

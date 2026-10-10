@@ -10,6 +10,9 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- Parent items now remain stopped in refinement until their own refinement run passes, even when a
+  partial split has already created children. Retrying such a parent resumes refinement with its
+  existing children instead of treating it as a completed roll-up.
 - `item.createChild` now accepts open, Conveyor-enrolled same-repository blockers outside its
   roll-up and returns actionable validation errors for invalid dependency targets.
 
