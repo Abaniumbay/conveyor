@@ -111,6 +111,35 @@ function addRunningHolder(store: ConveyorStore, config: ConveyorConfig) {
 const schedule = (service: ConveyorService) => (service as unknown as { schedule(): void }).schedule();
 
 describe("persisted wake-ups", () => {
+  test("keeps a dependent child ineligible after restart until its blocker is closed", async () => {
+    const { first, open } = await setup();
+    first.store.upsertIssue({
+      id: "parent", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Parent", body: "",
+      sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.upsertIssue({
+      id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
+    first.store.replaceRelationships("issue", { parentId: "parent", siblingOrder: 1 }, ["blocker"]);
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    await first.service.close();
+
+    const second = await open();
+    schedule(second.service);
+    expect(second.executed).toEqual([]);
+
+    second.store.upsertIssue({
+      id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
+      sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    schedule(second.service);
+    expect(second.executed).toEqual(["issue"]);
+    await second.service.close();
+  });
+
   test("a parked item keeps its wake-up across a restart and is scheduled when due", async () => {
     const { config, first, open } = await setup();
     const wakeAt = new Date(Date.now() + 600).toISOString();

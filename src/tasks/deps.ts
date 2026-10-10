@@ -24,6 +24,7 @@ export interface TaskDeps {
     | "managedRevision"
     | "setParent"
     | "setDependencies"
+    | "listSubIssues"
     | "replaceManagedProjectLabels"
     | "createChildIssue"
     | "setTitle"

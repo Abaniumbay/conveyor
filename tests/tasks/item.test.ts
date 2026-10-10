@@ -144,7 +144,15 @@ const EFFORT = { id: 11, name: "Effort", dataType: "single_select", options: ["H
 const TARGET = { id: 12, name: "Target date", dataType: "date", options: [] };
 const PRIORITY = { id: 13, name: "Priority", dataType: "single_select", options: ["Urgent", "High", "Medium", "Low"] };
 
-async function world(options: { refinement?: typeof REFINEMENT; types?: string[] | null; fields?: unknown[] | null; values?: Record<string, string> } = {}) {
+async function world(options: {
+  refinement?: typeof REFINEMENT;
+  types?: string[] | null;
+  fields?: unknown[] | null;
+  values?: Record<string, string>;
+  children?: number[];
+  failDependencyWriteOnce?: boolean;
+  failDependencySectionWriteOnce?: boolean;
+} = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -165,12 +173,26 @@ async function world(options: { refinement?: typeof REFINEMENT; types?: string[]
   const items = {
     getIssue: async (...a: unknown[]) => { calls.push(["getIssue", a]); return { id: "i", number: 1, body: "B", title: "T", url: "u", state: "open", labels: [], updatedAt: "" }; },
     addComment: async (...a: unknown[]) => { calls.push(["addComment", a]); return 42; },
-    updateManagedSection: async (input: unknown) => { calls.push(["updateManagedSection", input]); return { body: "updated" }; },
+    updateManagedSection: async (input: unknown) => {
+      calls.push(["updateManagedSection", input]);
+      if (options.failDependencySectionWriteOnce) {
+        options.failDependencySectionWriteOnce = false;
+        throw new Error("temporary dependency section failure");
+      }
+      return { body: "updated" };
+    },
     managedRevision: (body: string) => `rev:${body}`,
     setParent: async (i: unknown) => { calls.push(["setParent", i]); },
-    setDependencies: async (i: unknown) => { calls.push(["setDependencies", i]); },
+    setDependencies: async (i: unknown) => {
+      calls.push(["setDependencies", i]);
+      if (options.failDependencyWriteOnce) {
+        options.failDependencyWriteOnce = false;
+        throw new Error("temporary dependency failure");
+      }
+    },
     replaceManagedProjectLabels: async (...a: unknown[]) => { calls.push(["replaceManagedProjectLabels", a]); },
     createChildIssue: async (i: unknown) => { calls.push(["createChildIssue", i]); return { id: "c", number: 99 }; },
+    listSubIssues: async (_address: string, _parentNumber: number) => (options.children ?? []).map((number) => ({ id: `child-${number}`, number })),
     setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
     listIssueTypes: async () => (options.types === undefined ? ["Task", "Bug", "Feature"] : options.types),
     listIssueFields: async () => (options.fields === undefined ? [EFFORT, TARGET, PRIORITY] : options.fields),
@@ -338,6 +360,61 @@ describe("item tools", () => {
       labels: ["conveyor", "conveyor:implementation", "area:api"],
     });
     expect((w.calls[0]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
+  });
+
+  test("createChild records dependencies on existing siblings and their managed section", async () => {
+    const w = await world({ children: [7, 8] }); w.add("i1", 5);
+    const out = await tool("item.createChild", w.deps(), {
+      title: "Later child", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7, 8],
+    });
+
+    expect(out.output).toEqual({ id: "c", number: 99, dependsOn: [7, 8] });
+    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection"]);
+    expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
+    expect(w.calls[3]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
+  });
+
+  test("createChild rejects invalid or non-sibling dependencies before creating a child", async () => {
+    for (const dependsOn of [[0], [1.5], [5], [8]]) {
+      const w = await world({ children: [7] }); w.add("i1", 5);
+      await expect(tool("item.createChild", w.deps(), {
+        title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn,
+      })).rejects.toThrow(/dependsOn value .*existing sibling child of the current parent/i);
+      expect(w.calls).toEqual([]);
+    }
+  });
+
+  test("createChild retries a failed dependency write against its existing child", async () => {
+    const w = await world({ children: [7], failDependencyWriteOnce: true }); w.add("i1", 5);
+    const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
+    await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency failure");
+    await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });
+    const creates = w.calls.filter(([name]) => name === "createChildIssue");
+    expect(creates).toHaveLength(2);
+    expect((creates[0]![1] as { body: string }).body).toBe((creates[1]![1] as { body: string }).body);
+    expect(w.calls.filter(([name]) => name === "setDependencies")).toHaveLength(2);
+  });
+
+  test("createChild retries a failed dependency section write against its existing child", async () => {
+    const w = await world({ children: [7], failDependencySectionWriteOnce: true }); w.add("i1", 5);
+    const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
+    await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency section failure");
+    await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });
+    const creates = w.calls.filter(([name]) => name === "createChildIssue");
+    expect(creates).toHaveLength(2);
+    expect((creates[0]![1] as { body: string }).body).toBe((creates[1]![1] as { body: string }).body);
+    expect(w.calls.filter(([name]) => name === "setDependencies")).toHaveLength(2);
+    expect(w.calls.filter(([name]) => name === "updateManagedSection")).toHaveLength(2);
+  });
+
+  test("createChild without dependencies retains its existing response and does not write relationships", async () => {
+    for (const dependsOn of [undefined, []]) {
+      const w = await world(); w.add("i1", 5);
+      const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }] };
+      const out = await tool("item.createChild", w.deps(), dependsOn === undefined ? input : { ...input, dependsOn });
+      expect(out.output).toEqual({ id: "c", number: 99 });
+      expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue"]);
+    }
   });
 
   test("setType writes a type the organization defines, in its own spelling, and keeps it for the dashboard", async () => {
