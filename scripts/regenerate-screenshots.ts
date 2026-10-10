@@ -22,6 +22,7 @@ const DEMO_TIMEOUT = 30_000;
 const DEMO_TIME = "2026-09-15T12:00:00.000Z";
 const DEMO_FINISHED_TIME = "2026-09-15T12:01:32.000Z";
 const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
+const PHONE_OVERFLOW_REPOSITORY = "MobileViewportRegressionContentMustWrapWithoutCreatingADocumentWideHorizontalScrollRange";
 const DEMO_SOURCE_ISSUES = [
   {
     id: 10_001,
@@ -170,7 +171,7 @@ async function configureDemo(
       "cat >/dev/null",
       'printf \'%s\\n\' "$*" >> "$CONVEYOR_DEMO_GH_LOG"',
       'case "$*" in',
-      `  *\"/issues?state=all\"*) printf '%s\\n' '${sourceSnapshot}' ;;`,
+      `  *\"/repos/demo/dashboard-demo/issues?state=all\"*) printf '%s\\n' '${sourceSnapshot}' ;;`,
       "  *\"--method POST\"*) printf '%s\\n' '{}' ;;",
       "  *) printf '%s\\n' '[]' ;;",
       "esac",
@@ -206,31 +207,37 @@ async function configureDemo(
   }
 
   const configPath = path.join(home, "config", "conveyor.yaml");
-  const repositoryPath = path.join(home, "config", "repositories", "demo.yaml");
+  const repositoriesDirectory = path.join(home, "config", "repositories");
+  const repositoryPaths = [
+    path.join(repositoriesDirectory, "demo.yaml"),
+    path.join(repositoriesDirectory, `${PHONE_OVERFLOW_REPOSITORY}.yaml`),
+  ];
   let config = await readFile(configPath, "utf8");
   config = config.replace(
     "listen: 127.0.0.1:7788",
     `listen: ${listen}\n  steering:\n    agent: omid\n    workspace: ${workspace}`,
   );
   await writeFile(configPath, config);
-  await mkdir(path.dirname(repositoryPath), { recursive: true });
-  await writeFile(
-    repositoryPath,
-    [
-      "source: github",
-      "codeHost: github",
-      "address: demo/dashboard-demo",
-      `folder: ${workspace}`,
-      "baseBranch: main",
-      "pipeline: delivery",
-      "ci:",
-      "  mode: disabled",
-      "agentEgress:",
-      "  allowLoopbackMcp: true",
-      "  httpsHosts: []",
-      "",
-    ].join("\n"),
-  );
+  await mkdir(repositoriesDirectory, { recursive: true });
+  await Promise.all(repositoryPaths.map((repositoryPath, index) =>
+    writeFile(
+      repositoryPath,
+      [
+        "source: github",
+        "codeHost: github",
+        `address: ${index === 0 ? "demo/dashboard-demo" : "demo/phone-overflow"}`,
+        `folder: ${workspace}`,
+        "baseBranch: main",
+        "pipeline: delivery",
+        "ci:",
+        "  mode: disabled",
+        "agentEgress:",
+        "  allowLoopbackMcp: true",
+        "  httpsHosts: []",
+        "",
+      ].join("\n"),
+    ),
+  ));
   return environment;
 }
 
@@ -274,6 +281,14 @@ async function seedDemo(home: string): Promise<void> {
       folder: path.join(home, "workspace"),
       configHash: "demo-config",
     });
+    store.upsertRepository({
+      id: PHONE_OVERFLOW_REPOSITORY,
+      configName: PHONE_OVERFLOW_REPOSITORY,
+      source: "github",
+      address: "demo/phone-overflow",
+      folder: path.join(home, "workspace"),
+      configHash: "demo-config",
+    });
     const issues = [
       issue(1, "Ship a reliable dashboard overview", "implementation"),
       issue(2, "Review accessible status indicators", "review"),
@@ -287,6 +302,12 @@ async function seedDemo(home: string): Promise<void> {
         labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
       },
     ];
+    const phoneOverflowIssue = {
+      ...issue(6, "Keep repository controls reachable on phone widths", "review"),
+      id: `${PHONE_OVERFLOW_REPOSITORY}#6`,
+      repositoryId: PHONE_OVERFLOW_REPOSITORY,
+    };
+    issues.push(phoneOverflowIssue);
     for (const entry of issues) store.upsertIssue(entry);
     store.setIssueProjection("demo#1", {
       stage: "implementation",
@@ -313,12 +334,18 @@ async function seedDemo(home: string): Promise<void> {
       state: "blocked",
       warning: "Investigating the rollout alert",
     });
+    store.setIssueProjection(phoneOverflowIssue.id, {
+      stage: "review",
+      state: "active",
+      warning: null,
+    });
     for (const [id, stage, status] of [
       ["demo#1", "implementation", "completed"],
       ["demo#2", "review", "completed"],
       ["demo#3", "refinement", "completed"],
       ["demo#4", "implementation", "stopped"],
       ["demo#5", "implementation", "stopped"],
+      [phoneOverflowIssue.id, "review", "completed"],
     ] as const)
       store.setStageState({
         issueId: id,
@@ -517,6 +544,42 @@ async function expectDocumentToFitPhoneViewport(
   }
 }
 
+async function expectNonScrollerContentToFitPhoneViewport(
+  page: Page,
+  name: string,
+  width: number,
+): Promise<void> {
+  const outsideViewport = await page.evaluate(() => {
+    const intentionalHorizontalScrollers = ".board,.tabs,.details-tabs,.report-table-wrap,.mini-line,.agent-history ol";
+    const root = document.documentElement;
+    const previousScrollTop = window.scrollY;
+    window.scrollTo({ top: root.scrollHeight });
+    const description = (element: HTMLElement) => {
+      const classes = [...element.classList].slice(0, 2).join(".");
+      return `${element.tagName.toLowerCase()}${classes ? `.${classes}` : ""}`;
+    };
+
+    const outsideViewport = [...document.body.querySelectorAll<HTMLElement>("*")].flatMap((element) => {
+      const bounds = element.getBoundingClientRect();
+      if (
+        bounds.width === 0 ||
+        bounds.height === 0 ||
+        bounds.right <= window.innerWidth + 1 ||
+        element.closest("details:not([open])") ||
+        element.closest(intentionalHorizontalScrollers)
+      ) return [];
+      return [{ element: description(element), right: Math.ceil(bounds.right) }];
+    }).slice(0, 10);
+    window.scrollTo({ top: previousScrollTop });
+    return outsideViewport;
+  });
+  if (outsideViewport.length > 0) {
+    throw new Error(
+      `${name} has non-scroller content beyond the ${width}px viewport: ${JSON.stringify(outsideViewport)}`,
+    );
+  }
+}
+
 async function expectLastChildReachable(
   page: Page,
   containerSelector: string,
@@ -524,7 +587,7 @@ async function expectLastChildReachable(
   name: string,
   requireOverflow = false,
 ): Promise<void> {
-  const result = await page.locator(containerSelector).evaluate(
+  const result = await page.locator(containerSelector).first().evaluate(
     (container, selector) => {
       const children = container.querySelectorAll<HTMLElement>(selector);
       const lastChild = children.item(children.length - 1);
@@ -561,7 +624,7 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
     ["team", "/team"],
     ["operator", "/operator"],
     ["reports", "/reports"],
-    ["item detail", "/issues/demo/1/conversation"],
+    ["item detail", `/issues/${PHONE_OVERFLOW_REPOSITORY}/6/conversation`],
   ] as const;
 
   for (const width of [320, 390] as const) {
@@ -573,6 +636,7 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
       if (name === "item detail")
         await page.locator(".issue-inspector[open]").waitFor({ state: "visible" });
       await expectDocumentToFitPhoneViewport(page, name, width);
+      await expectNonScrollerContentToFitPhoneViewport(page, name, width);
       if (name === "board") {
         await expectLastChildReachable(
           page,
@@ -583,6 +647,16 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         );
         await expectLastChildReachable(page, ".tabs", ".tab", "Navigation tabs");
       }
+      if (name === "reports")
+        await expectLastChildReachable(
+          page,
+          ".report-table-wrap",
+          ".report-table thead th:last-child",
+          "Report's last column",
+          true,
+        );
+      if (name === "item detail")
+        await expectLastChildReachable(page, ".details-tabs", "[role=tab]", "Issue detail tabs");
     }
   }
   await page.setViewportSize({ width: 1440, height: 1024 });
