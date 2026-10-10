@@ -10,6 +10,7 @@ import { EXIT } from "../../src/cli/args";
 import { type CommandContext } from "../../src/cli/command";
 import { homePaths } from "../../src/cli/home";
 import { waitForSwitch } from "../../src/cli/commands/release";
+import { waitForSupervisedRestartShutdown } from "../../src/cli/commands/serve";
 import { runCli } from "../../src/cli/main";
 import { ReleaseCoordinator, SwitchRefused } from "../../src/control/releases";
 import { serveControlSocket } from "../../src/control/server";
@@ -252,6 +253,16 @@ describe("switching the running service", () => {
     expect(state.pending).toBeNull();
     expect(state.history).toMatchObject([{ id: pending.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", status: "switched", fromSchema: LATEST_SCHEMA_VERSION }]);
     expect(await readdir(state.history[0]!.backup!)).toContain("conveyor.sqlite");
+
+    const forced = await waitForSupervisedRestartShutdown(new Promise<void>(() => {}), {
+      scheduleTimeout: (callback) => {
+        queueMicrotask(callback);
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+    expect(forced).toMatchObject({ exitCode: EXIT.failure, timedOut: true });
+    expect(await currentVersion(world.prefix)).toBe("9.9.9");
+    expect((await readReleaseState(world.home)).history).toMatchObject([{ id: pending.id, status: "switched" }]);
     world.close();
   });
 

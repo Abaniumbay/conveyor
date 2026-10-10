@@ -3,6 +3,8 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
+import { RESTART_EXIT_CODE, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS, waitForSupervisedRestartShutdown } from "../../src/cli/commands/serve";
+import { EXIT } from "../../src/cli/args";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
@@ -14,6 +16,34 @@ afterEach(async () => {
 });
 
 describe("ConveyorService shutdown", () => {
+  test("fails a stalled supervised restart before the systemd stop timeout", async () => {
+    let deadline: number | undefined;
+    const stalled = new Promise<void>(() => {});
+
+    const result = await waitForSupervisedRestartShutdown(stalled, {
+      scheduleTimeout: (callback, milliseconds) => {
+        deadline = milliseconds;
+        queueMicrotask(callback);
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+
+    expect(deadline).toBe(SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS);
+    expect(SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS).toBeLessThan(30_000);
+    expect(result).toEqual({ exitCode: EXIT.failure, timedOut: true });
+  });
+
+  test("keeps the requested restart status when supervised cleanup finishes", async () => {
+    let closed = false;
+
+    const result = await waitForSupervisedRestartShutdown(Promise.resolve().then(() => { closed = true; }), {
+      scheduleTimeout: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    });
+
+    expect(closed).toBe(true);
+    expect(result).toEqual({ exitCode: RESTART_EXIT_CODE, timedOut: false });
+  });
+
   test("close waits for an in-flight reconcile instead of closing the database under it", async () => {
     const { directory, base } = await referenceConfigDirectory();
     bases.push(base);
