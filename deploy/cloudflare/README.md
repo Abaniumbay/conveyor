@@ -32,6 +32,9 @@ Use a **Worker route**, not a Worker Custom Domain. Keep the existing proxied DN
 and tunnel configuration. `fetch(request)` on a route continues to that origin.
 Check existing overlapping routes before deploying; a more specific route can
 bypass this Worker, and replacing an existing route can displace its Worker.
+Before deployment, replace the example route `conveyor.example.com/*` and zone
+`example.com` in `wrangler.jsonc` with the route and zone that serve your
+Conveyor instance.
 
 ## Check behavior
 
@@ -46,5 +49,6 @@ scheduled Conveyor restart, opening `/board` should return this page with HTTP
 should reload automatically. The Worker does not retry mutations, replace API,
 asset or SSE error responses with HTML, or cache authenticated responses.
 
-To remove the fallback, detach only the `conveyor.example.com/*` route from the
+To remove the fallback, detach only your configured Worker route (for example,
+`conveyor.example.com/*`) from the
 `conveyor-deployment-page` Worker. Leave the tunnel and DNS record intact.
