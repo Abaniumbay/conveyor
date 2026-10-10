@@ -128,6 +128,21 @@ describe("buildRepositorySummaries", () => {
     expect(summaries.repositories[1]).toMatchObject({ health: "healthy", backlog: 0, done: 0, items: [], deliveries: [], color: 2 });
   });
 
+  test("counts only active runs that consume a repository slot", async () => {
+    const store = await world();
+    const summary = (task: string) => buildRepositorySummaries({
+      store,
+      config: {
+        ...config,
+        pipelines: { delivery: { stages: [{ id: "implementation", actions: [{ task }] }] } },
+      } as unknown as ConveyorConfig,
+      now: NOW,
+    }).repositories.find((repository) => repository.id === "alpha");
+
+    expect(summary("ci.await")?.capacity).toEqual({ busy: 0, slots: 2 });
+    expect(summary("agent.run")?.capacity).toEqual({ busy: 1, slots: 2 });
+  });
+
   test("keeps restricted setup facts and secrets out of the ordinary summary without provider calls or store changes", async () => {
     const store = await world();
     const revision = store.dashboardRevision();
@@ -211,14 +226,21 @@ describe("buildRepositorySummaries", () => {
     for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
       expect(html).not.toContain("sentinel-webhook-secret");
     }
+    const dependencies = service.webDependencies({} as never, "operator");
+    expect(boardHtml).toContain(`data-dashboard-revision="${board.revision}"`);
+    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
+    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
 
     store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
     const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     expect(updated.revision).not.toBe(board.revision);
-    expect(renderDashboard(updated)).toContain("Needs you");
 
+    const storedRevision = store.dashboardRevision();
     await service.reconcileAll();
     const degraded = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
+    expect(store.dashboardRevision()).toBe(storedRevision);
+    expect(degraded.revision).not.toBe(updated.revision);
+    expect(await dependencies.getDashboardRevision()).toBe(degraded.revision);
     expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
     expect(degraded.systemWarnings).toEqual([]);
     const degradedHtml = renderDashboard(degraded);

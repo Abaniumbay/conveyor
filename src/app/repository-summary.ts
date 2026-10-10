@@ -2,6 +2,7 @@
 // It deliberately has no source/provider dependency so callers can render it without a request.
 
 import { buildReport } from "./reports";
+import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { concise, displayName } from "../tasks/agent-support";
@@ -178,7 +179,9 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         .slice(0, 10)
         .map((delivery) => ({ number: delivery.source_number, title: delivery.title, deliveredAt: delivery.delivered_at })),
       capacity: {
-        busy: new Set(activeRuns.filter((run) => run.repository === id).map((run) => run.issueId)).size,
+        busy: new Set(activeRuns
+          .filter((run) => run.repository === id && !isLightweightRepositoryStage(config, run.repository, run.stageId))
+          .map((run) => run.issueId)).size,
         slots: repository.concurrency,
       },
       setup: {
