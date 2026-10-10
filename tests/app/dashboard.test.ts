@@ -879,6 +879,74 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("keeps a parent refinement question visible while relationship reconciliation sees children", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-parked-parent-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { "needs-input": "conveyor:needs-input" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          stages: [
+            { id: "refinement", run: { type: "agent", agent: "refiner" } },
+            { id: "implementation", run: { type: "agent", agent: "refiner" } },
+          ],
+        },
+      },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" } },
+      agents: { refiner: { name: "Refiner", title: "Product Owner", runner: "codex" } },
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({
+      id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash,
+    });
+    for (const issue of [
+      { id: "parent", number: 1, title: "Parent", labels: ["conveyor", "conveyor:refinement"] },
+      { id: "child", number: 2, title: "Child", labels: ["conveyor", "conveyor:refinement"] },
+    ]) {
+      store.upsertIssue({
+        id: issue.id, repositoryId: "repo", sourceNumber: issue.number,
+        sourceUrl: `https://github.com/owner/repo/issues/${issue.number}`,
+        title: issue.title, body: "", sourceState: "open", labels: issue.labels, sourceUpdatedAt: "2026-09-29T00:00:00Z",
+      });
+      store.setIssueProjection(issue.id, { stage: "refinement", state: "active", warning: null });
+    }
+    store.openQuestion({
+      issueId: "parent", runId: null, prompt: "Which scope?", reason: "A decision is needed", options: ["small", "large"], allowFreeText: false,
+    });
+    const source = {
+      async listSubIssues(_address: string, number: number) {
+        return number === 1 ? [{
+          id: "github:owner/repo#2", number: 2, url: "https://github.com/owner/repo/issues/2", title: "Child", body: "",
+          state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:refinement"], updatedAt: "2026-09-29T00:00:00Z",
+        }] : [];
+      },
+      async listDependencies() { return []; },
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) {
+        expect(labels).toEqual(["conveyor", "conveyor:refinement", "conveyor:needs-input"]);
+      },
+    };
+    const service = new ConveyorService(config, store, source as never);
+
+    await (service as unknown as {
+      reconcileRelationships(repositoryId: string, address: string): Promise<void>;
+    }).reconcileRelationships("repo", "owner/repo");
+
+    expect(store.listChildren("parent")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
+    expect(store.getIssue("parent")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
+    expect(service.dashboard("csrf").needsYou).toEqual([expect.objectContaining({
+      id: "parent", state: "needs-input", reason: expect.stringContaining("Which scope?"),
+    })]);
+    store.close();
+  });
+
   test("places untouched, staged, closed, and invalid issues in distinct lanes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-"));
     temporaryDirectories.push(root);

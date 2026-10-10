@@ -28,6 +28,7 @@ import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, t
 import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
+import { questionConfigurationError } from "../questions";
 
 type Deps = TaskDeps;
 
@@ -309,6 +310,8 @@ const askQuestion: TaskDefinition<unknown, z.output<typeof askInput>, Deps> = {
   input: askInput,
   run({ deps, input }) {
     const run = runOf(deps);
+    const questionError = questionConfigurationError(input!.options ?? [], input!.allowFreeText === true);
+    if (questionError) throw new Error(questionError);
     const question = deps.store.openQuestion({
       issueId: deps.issueId,
       runId: run.id,

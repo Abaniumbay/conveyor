@@ -195,6 +195,7 @@ const dashboard: DashboardViewModel = {
       reason: "Both satisfy the acceptance criteria.",
       options: [{ id: "compact", label: "Compact" }],
       allowFreeText: false,
+      answerError: null,
     },
   ],
   needsYou: [parent],
@@ -480,6 +481,22 @@ describe("renderDashboard", () => {
     expect(html).toContain('--repo-3:#63D5C5');
     expect(html).toContain('--repo-4:#C5D66D');
     expect(html).toContain('--repo-5:#66C7F0');
+  });
+
+  test("renders legacy string choices and an actionable error instead of an empty answer form", () => {
+    const legacy = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [{ id: "compact", label: "Compact" }, { id: "expanded", label: "Expanded" }], answerError: null }],
+    });
+    expect(legacy).toContain('type="radio" name="answer" value="compact"');
+    expect(legacy).toContain('type="radio" name="answer" value="expanded"');
+
+    const invalid = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [], allowFreeText: false, answerError: "A question needs at least one valid choice or free-text input." }],
+    });
+    expect(invalid).toContain('role="alert">A question needs at least one valid choice or free-text input.</p>');
+    expect(invalid).not.toContain('/questions/question%2F1/answer');
   });
 
   test("gives running and needs-attention cards distinct accessible glows", () => {
