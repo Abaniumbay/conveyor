@@ -592,23 +592,52 @@ export class ConveyorService {
 
   private refinementComplete(issue: StoredIssue): boolean {
     if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
-    // Ordinary roll-up parents never ran refinement themselves. Only hold a
-    // parent at this stage once it has actually asked a refinement question.
-    if (!this.store.hasQuestionForIssue(issue.id)) return true;
-    // Roll-up reconciliation may later project the parent back to a child’s
-    // stage. The completed stage transition, unlike that projection, proves
-    // that the parent’s own refinement run has actually succeeded.
-    return this.store.listStageTransitions(issue.id).some((transition) =>
+    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
+    // Pipelines without a refinement stage have no refinement decision to
+    // wait for. Their parents retain the ordinary roll-up behaviour.
+    if (!pipeline?.stages.some((stage) => stage.id === "refinement")) return true;
+    // A projected child stage is not evidence that the parent completed its
+    // own refinement. Only an advance from the current refinement visit can
+    // release it. A correction or a fresh enrollment back to refinement
+    // starts a new visit; a roll-up to refinement only follows children and
+    // deliberately does not invalidate the parent's earlier passage.
+    const transitions = this.store.listStageTransitions(issue.id)
+      .filter((transition) => transition.status === "completed");
+    // An item may be enrolled directly at a later pipeline stage. In that
+    // case it never owned a refinement decision, so retain ordinary roll-up
+    // behavior rather than waiting for an advance it cannot produce.
+    const currentStage = this.store.getStageState(issue.id)?.stageId;
+    // A parent currently running refinement owns a refinement decision even
+    // before that visit has produced its first completed transition. Do not
+    // mistake the absence of a transition for direct later-stage enrollment.
+    if (currentStage !== "refinement" && !transitions.some((transition) => transition.toStage === "refinement")) return true;
+    let refinementVisit = 0;
+    for (const [index, transition] of transitions.entries()) {
+      const startsRefinementVisit =
+        transition.toStage === "refinement" &&
+        transition.kind !== "rollup" &&
+        (transition.kind === "onboarded" || transition.fromStage !== "refinement");
+      if (startsRefinementVisit) {
+        refinementVisit = index + 1;
+      }
+    }
+    return transitions.slice(refinementVisit).some((transition) =>
       transition.status === "completed" &&
       transition.kind === "advance" &&
       transition.fromStage === "refinement",
     );
   }
 
+  private hasRollupStopLabel(issue: StoredIssue): boolean {
+    // Every configured state label puts an item in the evaluator's stopped
+    // mode. Do not let a roll-up silently replace any of them.
+    const stopLabels = Object.values(this.config.labels.states);
+    return issue.labels.some((label) => stopLabels.includes(label));
+  }
+
   private resumingParentRefinement(issue: StoredIssue): boolean {
-    if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
-    const cursor = this.store.executions().getCursor(issue.id);
-    return cursor?.state === "pending" && cursor.list === "actions" && cursor.stage === "refinement";
+    return this.store.getStageState(issue.id)?.stageId === "refinement" &&
+      !this.refinementComplete(issue);
   }
 
   private concurrencyLimits(): ConcurrencyLimits {
@@ -1242,6 +1271,9 @@ export class ConveyorService {
         }
         continue;
       }
+      // A stage that passed earlier may subsequently be stopped. Never let a
+      // roll-up erase that stop while its source state still says to park it.
+      if (this.hasRollupStopLabel(parent)) continue;
       // A parent with children may still own the refinement decision which
       // created them. Do not roll it forward, clean its workspace, or mark it
       // done until that refinement has genuinely completed.
@@ -1280,7 +1312,7 @@ export class ConveyorService {
             .update(`${parent.id}\0${parent.sourceUpdatedAt}\0${parent.projectedStage ?? ""}\0${targetStage}`)
             .digest("hex")
             .slice(0, 24);
-          await applyRollupTransition({
+          const applied = await applyRollupTransition({
             store: this.store,
             source: this.github,
             sourceName: this.config.repositories[repositoryId]!.source,
@@ -1292,6 +1324,14 @@ export class ConveyorService {
             labels: this.config.labels,
             reason: `Following the earliest unfinished child stage: ${targetStage}`,
           });
+          if (applied) {
+            log.info("Roll-up stage transition completed", {
+              ...this.itemFields(parent.id),
+              sourceStage: parent.projectedStage,
+              targetStage,
+              reason: `Following the earliest unfinished child stage: ${targetStage}`,
+            });
+          }
         }
       }
       if (
@@ -1312,6 +1352,12 @@ export class ConveyorService {
           this.config.labels.metadata.closable,
           ...metadata,
         ]);
+        log.info("Parent roll-up completed", {
+          ...this.itemFields(parent.id),
+          sourceStage: parent.projectedStage,
+          targetStage: "done",
+          reason: "All child items are complete",
+        });
       }
     }
   }
@@ -2489,7 +2535,7 @@ export class ConveyorService {
         issue.labels.includes(this.config.labels.enrollment) &&
         ["blocked", "error", "needs-intervention"].includes(projectedState) &&
         !activeIssueIds.has(issue.id) &&
-        children.length === 0;
+        (children.length === 0 || issue.projectedStage === "refinement");
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -3034,8 +3080,6 @@ export class ConveyorService {
       if (this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId)) {
         throw new Error("issue is already running");
       }
-      if (this.store.listChildren(issueId).length > 0) throw new Error("roll-up parents cannot be retried directly");
-
       const pipeline = this.config.pipelines[repository.pipeline];
       if (!pipeline) throw new Error("issue pipeline is not configured");
       const live = await this.github.getIssue(repository.address, issue.sourceNumber);
@@ -3055,6 +3099,9 @@ export class ConveyorService {
       }
 
       const stageId = evaluated.stage;
+      if (this.store.listChildren(issueId).length > 0 && stageId !== "refinement") {
+        throw new Error("roll-up parents cannot be retried directly");
+      }
       const mutation = this.store.beginSourceMutation({
         idempotencyKey: `web-retry:${randomUUID()}`,
         source: repository.source,
