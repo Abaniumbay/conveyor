@@ -158,20 +158,27 @@ export const serve: Command = {
             await server.stop(false);
             await mcpSocket?.stop();
             await service.close();
-            await afterClose?.().catch((error: unknown) => log.error("Finishing the stop failed", { reason }, error));
           })();
           try {
             const result = supervised && code === RESTART_EXIT_CODE
               ? await waitForSupervisedRestartShutdown(cleanup)
-              : { exitCode: code, timedOut: false };
+              : (await cleanup, { exitCode: code, timedOut: false });
             if (result.timedOut) {
               log.error("Conveyor shutdown timed out; forcing exit", { reason, timeoutMs: SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS });
               process.exit(EXIT.failure);
+              return resolve(EXIT.failure);
             }
+            // Rollback restoration mutates several files and is recoverable on failure. It must
+            // finish after the bounded service shutdown rather than being cut off mid-restore.
+            await afterClose?.().catch((error: unknown) => log.error("Finishing the stop failed", { reason }, error));
             log.info("Conveyor stopped", { reason });
             resolve(result.exitCode);
           } catch (error) {
             log.error("Conveyor shutdown failed", { reason }, error);
+            if (supervised && code === RESTART_EXIT_CODE) {
+              process.exit(EXIT.failure);
+              return resolve(EXIT.failure);
+            }
             resolve(EXIT.failure);
           }
         })();

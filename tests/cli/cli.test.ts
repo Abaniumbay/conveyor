@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,7 +7,9 @@ import { parse, stringify } from "yaml";
 
 import { CliError, EXIT, parseArgs } from "../../src/cli/args";
 import { doctorChecks } from "../../src/cli/commands/doctor";
+import { RESTART_EXIT_CODE, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS } from "../../src/cli/commands/serve";
 import { runCli } from "../../src/cli/main";
+import { ConveyorService } from "../../src/app/service";
 import { Database } from "bun:sqlite";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
@@ -49,6 +51,32 @@ async function initialisedHome(): Promise<string> {
 
 async function mode(file: string): Promise<number> {
   return (await stat(file)).mode & 0o777;
+}
+
+async function waitFor(check: () => boolean, message: string): Promise<void> {
+  for (let attempt = 0; attempt < 100 && !check(); attempt += 1) await Bun.sleep(10);
+  if (!check()) throw new Error(message);
+}
+
+async function waitForControlSocket(home: string, serving?: Promise<{ code: number; out: string; err: string }>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const live = await fetch("http://x/v1/status", { unix: path.join(home, "run/control.sock") }).then((response) => response.ok, () => false);
+    if (live) return;
+    await Bun.sleep(10);
+  }
+  const result = serving ? await Promise.race([serving, Bun.sleep(1).then(() => null)]) : null;
+  throw new Error(`control socket did not start${result ? `: ${JSON.stringify(result)}` : ""}`);
+}
+
+async function configureFreeDashboardPort(home: string): Promise<void> {
+  const port = await new Promise<number>((resolve) => {
+    const probe = net.createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(free));
+    });
+  });
+  const config = path.join(home, "config/conveyor.yaml");
+  await writeFile(config, (await readFile(config, "utf8")).replace("127.0.0.1:7788", `127.0.0.1:${port}`));
 }
 
 describe("parseArgs", () => {
@@ -351,6 +379,102 @@ describe("conveyor serve", () => {
     } finally {
       process.emit("SIGTERM");
       expect((await serving).code).toBe(EXIT.ok);
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
+  test("uses the supervised restart status after the real stop path finishes cleanup", async () => {
+    const home = await initialisedHome();
+    await configureFreeDashboardPort(home);
+    const invocation = process.env.INVOCATION_ID;
+    process.env.INVOCATION_ID = "test-supervised-restart";
+    const serving = cli("serve", "--home", home);
+    try {
+      await waitForControlSocket(home, serving);
+      expect((await fetch("http://x/v1/restart", { unix: path.join(home, "run/control.sock"), method: "POST", body: "{}" })).status).toBe(200);
+      expect((await serving).code).toBe(RESTART_EXIT_CODE);
+    } finally {
+      if (invocation === undefined) delete process.env.INVOCATION_ID;
+      else process.env.INVOCATION_ID = invocation;
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
+  test("forces a stalled supervised stop before 30 seconds without changing the switched release", async () => {
+    const home = await initialisedHome();
+    await configureFreeDashboardPort(home);
+    const prefix = path.join(home, "releases");
+    await mkdir(path.join(prefix, "versions/next"), { recursive: true });
+    await symlink("versions/next", path.join(prefix, "current"));
+    const switched = { pending: null, history: [{ id: "switch", kind: "upgrade", from: "previous", to: "next", fromSchema: 1, toSchema: null, backup: null, status: "switched", reason: null, requestedAt: "now", finishedAt: null }] };
+    const invocation = process.env.INVOCATION_ID;
+    const originalClose = ConveyorService.prototype.close;
+    let running: ConveyorService | null = null;
+    let stall = false;
+    const close = spyOn(ConveyorService.prototype, "close").mockImplementation(function (this: ConveyorService) {
+      running = this;
+      return stall ? new Promise<void>(() => {}) : originalClose.call(this);
+    });
+    const exit = spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const nativeSetTimeout = globalThis.setTimeout as unknown as (callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => ReturnType<typeof setTimeout>;
+    const timers = spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => {
+      if (milliseconds === SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS) {
+        queueMicrotask(() => callback(...args));
+        return 0 as never;
+      }
+      return nativeSetTimeout(callback, milliseconds, ...args);
+    }) as typeof setTimeout);
+    process.env.INVOCATION_ID = "test-supervised-restart";
+    const serving = cli("serve", "--home", home);
+    try {
+      await waitForControlSocket(home, serving);
+      await writeFile(path.join(home, "state/releases.json"), `${JSON.stringify(switched)}\n`);
+      stall = true;
+      expect((await fetch("http://x/v1/restart", { unix: path.join(home, "run/control.sock"), method: "POST", body: "{}" })).status).toBe(200);
+      await waitFor(() => exit.mock.calls.length === 1, "supervised shutdown did not force an exit");
+      expect(timers.mock.calls.some(([, milliseconds]) => milliseconds === SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS)).toBe(true);
+      expect(SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS).toBeLessThan(30_000);
+      expect(exit).toHaveBeenCalledWith(EXIT.failure);
+      expect(await readFile(path.join(home, "state/releases.json"), "utf8")).toBe(`${JSON.stringify(switched)}\n`);
+      expect(await readlink(path.join(prefix, "current"))).toBe("versions/next");
+      expect((await serving).code).toBe(EXIT.failure);
+    } finally {
+      stall = false;
+      if (running) await originalClose.call(running);
+      close.mockRestore();
+      exit.mockRestore();
+      timers.mockRestore();
+      if (invocation === undefined) delete process.env.INVOCATION_ID;
+      else process.env.INVOCATION_ID = invocation;
+      log.configure({ sinks: [new ConsoleSink()] });
+    }
+  });
+
+  test("forces a supervised restart exit when cleanup fails", async () => {
+    const home = await initialisedHome();
+    await configureFreeDashboardPort(home);
+    const invocation = process.env.INVOCATION_ID;
+    const originalClose = ConveyorService.prototype.close;
+    let running: ConveyorService | null = null;
+    const close = spyOn(ConveyorService.prototype, "close").mockImplementation(function (this: ConveyorService) {
+      running = this;
+      return Promise.reject(new Error("close failed"));
+    });
+    const exit = spyOn(process, "exit").mockImplementation(() => undefined as never);
+    process.env.INVOCATION_ID = "test-supervised-restart";
+    const serving = cli("serve", "--home", home);
+    try {
+      await waitForControlSocket(home, serving);
+      expect((await fetch("http://x/v1/restart", { unix: path.join(home, "run/control.sock"), method: "POST", body: "{}" })).status).toBe(200);
+      await waitFor(() => exit.mock.calls.length === 1, "failed cleanup did not force an exit");
+      expect(exit).toHaveBeenCalledWith(EXIT.failure);
+      expect((await serving).code).toBe(EXIT.failure);
+    } finally {
+      if (running) await originalClose.call(running).catch(() => {});
+      close.mockRestore();
+      exit.mockRestore();
+      if (invocation === undefined) delete process.env.INVOCATION_ID;
+      else process.env.INVOCATION_ID = invocation;
       log.configure({ sinks: [new ConsoleSink()] });
     }
   });
