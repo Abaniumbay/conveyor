@@ -4,10 +4,10 @@
 
 This moves a server that runs Conveyor from a source checkout onto the released executable. On such
 a server, `bun run src/cli.ts serve --config <directory>` is started by a systemd unit with
-`CONVEYOR_*` variables. The examples use neutral paths: checkout `/srv/conveyor/source`,
-configuration directory `/etc/conveyor`, and data under `/var/lib/conveyor`. Nothing in the old
-locations is changed or deleted, so going back is
-always possible.
+`CONVEYOR_*` variables. The examples use neutral paths: checkout `/srv/conveyor/source`, source
+configuration `/srv/conveyor/source/config`, release configuration `/etc/conveyor`, and data under
+`/var/lib/conveyor`. Nothing in the old locations is changed or deleted, so going back is always
+possible.
 
 This release adds no database migration, so the old checkout can still run on the same database.
 
@@ -21,19 +21,19 @@ This release adds no database migration, so the old checkout can still run on th
 2. **Convert the configuration** into the new home:
 
    ```sh
-   conveyor config migrate --from ~/.config/conveyor-v2 --to ~/.conveyor/config
+   conveyor config migrate --from /srv/conveyor/source/config --to /etc/conveyor
    ```
 
    It must report identical compiled plans and an identical effective configuration. The new
    `conveyor.yaml` writes out the old database, logs, workspaces and artifacts paths and the listen
    address, so the service keeps its data and its port. The agent instruction files are copied into
-   `~/.conveyor/config/instructions/`, and the pinned `import` is inlined. Stage scripts keep their
-   absolute paths under `~/.config/conveyor-v2/stages/`, so keep that directory (or move the
-   scripts into the new configuration and update the paths). Run `conveyor config compare
-   ~/.config/conveyor-v2 ~/.conveyor/config/conveyor.yaml` at any time to compare again.
+   `/etc/conveyor/instructions/`, and the pinned `import` is inlined. Stage scripts keep their
+   absolute paths under `/srv/conveyor/source/config/stages/`, so keep that directory (or move the
+   scripts into the release configuration and update the paths). Run `conveyor config compare
+   /srv/conveyor/source/config /etc/conveyor/conveyor.yaml` at any time to compare again.
 
 3. **Move the credentials out of the unit.** The new unit carries no `CONVEYOR_*` variables. Put
-   their values in `~/.conveyor/config/secrets.yaml` and reference them:
+   their values in `/etc/conveyor/secrets.yaml` and reference them:
 
    ```yaml
    # secrets.yaml
@@ -66,10 +66,10 @@ This release adds no database migration, so the old checkout can still run on th
    when the old service stops is interrupted and resumes after the new one starts.
 
    ```sh
-   sudo cp /etc/systemd/system/conveyor.service ~/conveyor.service.source-checkout
+   sudo cp /etc/systemd/system/conveyor.service /var/lib/conveyor/conveyor.service.source-checkout
    sudo systemctl stop conveyor
-   cp ~/.local/share/conveyor-v2/conveyor.sqlite ~/conveyor.sqlite.before-release
-   sudo conveyor service install --account ubuntu     # replaces conveyor.service
+   cp /var/lib/conveyor/conveyor.sqlite /var/lib/conveyor/conveyor.sqlite.before-release
+   sudo conveyor service install --account <service-account>     # replaces conveyor.service
    sudo conveyor service start
    conveyor status
    ```
@@ -77,12 +77,12 @@ This release adds no database migration, so the old checkout can still run on th
 6. **Verify:** sign in to the dashboard with the same account, check that the board lists every
    item, and run `conveyor item show <item>` on one. `conveyor logs` shows the service log.
 
-**Going back:** `sudo conveyor service stop`, restore `~/conveyor.service.source-checkout` to
+**Going back:** `sudo conveyor service stop`, restore `/var/lib/conveyor/conveyor.service.source-checkout` to
 `/etc/systemd/system/conveyor.service`, then `sudo systemctl daemon-reload && sudo systemctl start
 conveyor`.
 
 **Afterwards:** upgrade with `conveyor upgrade --version <tag>` instead of updating the checkout;
-`scripts/deploy-when-idle.ts` is only for source-checkout deployments. Keep `~/.conveyor/config` in
+`scripts/deploy-when-idle.ts` is only for source-checkout deployments. Keep `/etc/conveyor` in
 a private Git repository if you like (without `secrets.yaml`).
 
 ## Adopting the reference configuration (source checkouts)
@@ -129,7 +129,7 @@ Imported files are copied to `<settings.artifacts>/config-imports/<sha>/`. The c
 Compile the current and the new configuration and read the differences before changing anything live:
 
 ```sh
-bun run src/cli.ts check-config --config ~/.config/conveyor-v2 --compare /path/to/candidate-config   # with a release: conveyor config compare <current> <candidate>
+bun run src/cli.ts check-config --config /etc/conveyor --compare /path/to/candidate-config   # with a release: conveyor config compare <current> <candidate>
 ```
 
 The candidate directory is a copy of `examples/config` plus a local file with settings and repositories (or the same `import:` block). The command prints, for each repository present in either side and for each stage, the task sequences side by side (current on the left), then a summary: `added`, `removed` and `changed` tasks, including `onFail` routes, `wait` timeouts and polls, `with` values, and stage `concurrency`/`retries`. It exits 0; reading the summary is the review. Expect: the legacy `ci` stage gone (CI is now part of implementation and review gates), enter/exit checks replaced by exit gates, and no AI verifier.
