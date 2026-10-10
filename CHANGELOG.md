@@ -18,6 +18,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 ### Fixed
 - Prevented document-wide horizontal overflow in the dashboard at phone viewport widths while
   preserving the Board, navigation, report, and item-detail scrollers.
+- Restored dashboard live updates after an installed PWA resumes from standby by reconnecting a
+  stale event stream and catching up the current dashboard view.
 
 ## [0.3.1] - 2026-10-07
 
