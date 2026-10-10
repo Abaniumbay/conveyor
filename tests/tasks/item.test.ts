@@ -191,6 +191,7 @@ async function world(options: {
       }
     },
     replaceManagedProjectLabels: async (...a: unknown[]) => { calls.push(["replaceManagedProjectLabels", a]); },
+    replaceConveyorLabels: async (...a: unknown[]) => { calls.push(["replaceConveyorLabels", a]); },
     createChildIssue: async (i: unknown) => { calls.push(["createChildIssue", i]); return { id: "c", number: 99 }; },
     listSubIssues: async (_address: string, _parentNumber: number) => (options.children ?? []).map((number) => ({ id: `child-${number}`, number })),
     setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
@@ -369,9 +370,11 @@ describe("item tools", () => {
     });
 
     expect(out.output).toEqual({ id: "c", number: 99, dependsOn: [7, 8] });
-    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection"]);
+    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels"]);
+    expect(w.calls[0]![1]).toMatchObject({ labels: [] });
     expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
     expect(w.calls[3]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls[4]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"]]);
   });
 
   test("createChild rejects invalid or non-sibling dependencies before creating a child", async () => {
@@ -388,11 +391,14 @@ describe("item tools", () => {
     const w = await world({ children: [7], failDependencyWriteOnce: true }); w.add("i1", 5);
     const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
     await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency failure");
+    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies"]);
+    expect(w.calls[0]![1]).toMatchObject({ labels: [] });
     await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });
     const creates = w.calls.filter(([name]) => name === "createChildIssue");
     expect(creates).toHaveLength(2);
     expect((creates[0]![1] as { body: string }).body).toBe((creates[1]![1] as { body: string }).body);
     expect(w.calls.filter(([name]) => name === "setDependencies")).toHaveLength(2);
+    expect(w.calls.filter(([name]) => name === "replaceConveyorLabels")).toHaveLength(1);
   });
 
   test("createChild retries a failed dependency section write against its existing child", async () => {

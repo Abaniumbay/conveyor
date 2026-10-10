@@ -507,14 +507,17 @@ const createChild = tool("item.createChild",
       title: input!.title, body, labels: systemLabels, type: plan.type ?? null, fields: plan.fields, dependsOn,
     })).digest("hex");
     body = `${body.trimEnd()}\n\n<!-- conveyor:child-create:${marker} -->\n`;
+    const enrollmentLabels = [
+      deps.config.labels.enrollment,
+      ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
+    ];
     const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
       title: input!.title,
       body,
       labels: [
-        deps.config.labels.enrollment,
-        ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
+        ...(dependsOn.length > 0 ? [] : enrollmentLabels),
         ...systemLabels,
       ],
       ...(plan.type ? { type: plan.type } : {}),
@@ -534,6 +537,7 @@ const createChild = tool("item.createChild",
         markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
         expectedRevision: deps.items.managedRevision(current.body),
       });
+      await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
     }
     return {
       ...child,

@@ -25,6 +25,7 @@ export interface TaskDeps {
     | "setParent"
     | "setDependencies"
     | "listSubIssues"
+    | "replaceConveyorLabels"
     | "replaceManagedProjectLabels"
     | "createChildIssue"
     | "setTitle"
