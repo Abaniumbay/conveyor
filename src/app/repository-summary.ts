@@ -82,10 +82,12 @@ interface DeliveryRow {
 }
 
 const DONE_STATES = new Set(["done", "completed"]);
+const INACTIVE_STATES = new Set(["closed", "missing", "offboarded", "paused"]);
 const BLOCKED_STATES = new Set(["blocked", "error", "failed", "rejected", "inconsistent"]);
 const NEEDS_YOU_STATES = new Set(["needs-input", "needs-intervention"]);
 
 const isDone = (issue: StoredIssue) => DONE_STATES.has(issue.projectedState ?? "");
+const isActiveWork = (issue: StoredIssue) => !isDone(issue) && !INACTIVE_STATES.has(issue.projectedState ?? "");
 
 function deliveryRows(store: ConveyorStore): DeliveryRow[] {
   return store.sqlite().query(`
@@ -132,16 +134,19 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }
   const recordedDeliveries = deliveryRows(store);
+  const reportByRepository = new Map(
+    buildReport({ store, config, period: "30d", repository: null, now }).byRepository.map((report) => [report.id, report]),
+  );
 
   const repositories = Object.entries(config.repositories).map(([id, repository], index) => {
     const issues = issuesByRepository.get(id) ?? [];
-    const nonDone = issues.filter((issue) => !isDone(issue));
+    const nonDone = issues.filter(isActiveWork);
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
     const error = errorsFor(id, onboarding, reconciliation);
     const source = config.sources[repository.source];
     const ciProvider = repository.ci.provider ? config.ci[repository.ci.provider]?.type ?? null : null;
-    const report = buildReport({ store, config, period: "30d", repository: id, now });
+    const report = reportByRepository.get(id)!;
 
     return {
       id,
@@ -176,16 +181,16 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         pipeline: repository.pipeline,
         baseBranch: repository.baseBranch,
         itemProvider: source?.type ?? repository.source,
-        itemSync: source?.autoConfigureWebhook ? "webhook" : "polling",
+        itemSync: source?.type === "github" && config.web.publicUrl ? "webhook" : "polling",
         ciProvider,
         ciMode: repository.ci.mode,
         systemLabels: [...repository.systemLabels],
       },
       report30d: {
-        delivered: report.totals.delivered,
-        inputTokens: report.totals.inputTokens,
-        outputTokens: report.totals.outputTokens,
-        agentMs: report.totals.agentMs,
+        delivered: report.delivered,
+        inputTokens: report.inputTokens,
+        outputTokens: report.outputTokens,
+        agentMs: report.agentMs,
       },
     } satisfies RepositorySummary;
   });

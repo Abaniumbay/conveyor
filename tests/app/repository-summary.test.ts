@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { buildRepositorySummaries } from "../../src/app/repository-summary";
+import { buildReport } from "../../src/app/reports";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 
@@ -14,6 +15,7 @@ afterEach(async () => {
 
 const NOW = new Date("2026-10-20T00:00:00.000Z");
 const config = {
+  web: { publicUrl: "https://conveyor.example.test" },
   sources: { github: { type: "github", autoConfigureWebhook: true, webhookSecret: "never-public" } },
   ci: { checks: { type: "github-actions" } },
   pipelines: { delivery: { stages: [{ id: "implementation" }, { id: "review", name: "Code review" }] } },
@@ -64,6 +66,9 @@ async function world() {
     .run("2026-10-19T20:00:00.000Z", "2026-10-19T20:00:00.000Z");
   issue("blocked", "alpha", 16, "blocked", null);
   issue("queued", "alpha", 17, "active", "implementation");
+  issue("closed", "alpha", 18, "closed", "implementation");
+  issue("missing", "alpha", 19, "missing", "review");
+  issue("paused", "alpha", 20, "paused", null);
   for (let number = 4; number <= 14; number += 1) {
     const id = `done-${number}`;
     issue(id, "alpha", number, "done", "review");
@@ -112,27 +117,58 @@ describe("buildRepositorySummaries", () => {
       { number: 16, title: "Item 16", stage: null, state: "Blocked" },
       { number: 17, title: "Item 17", stage: "implementation", state: "Queued" },
     ]);
+    expect(alpha.items.map((item) => item.number)).not.toContain(18);
+    expect(alpha.items.map((item) => item.number)).not.toContain(19);
+    expect(alpha.items.map((item) => item.number)).not.toContain(20);
     expect(alpha.deliveries).toHaveLength(10);
     expect(alpha.deliveries[0]).toMatchObject({ number: 14, deliveredAt: "2026-10-14T12:00:00.000Z" });
     expect(alpha.deliveries.some((delivery) => delivery.number === 15)).toBeFalse();
     expect(summaries.repositories[1]).toMatchObject({ health: "healthy", backlog: 0, done: 0, items: [], deliveries: [], color: 2 });
   });
 
-  test("keeps restricted setup facts and secrets out of the ordinary summary and makes no store change", async () => {
+  test("keeps restricted setup facts and secrets out of the ordinary summary without provider calls or store changes", async () => {
     const store = await world();
     const revision = store.dashboardRevision();
-    const reportBefore = buildRepositorySummaries({ store, config, now: NOW }).repositories[0]!.report30d;
-    const result = buildRepositorySummaries({ store, config, now: NOW });
+    const originalFetch = globalThis.fetch;
+    const originalSpawn = Bun.spawn;
+    globalThis.fetch = (() => { throw new Error("provider calls are forbidden"); }) as unknown as typeof fetch;
+    Bun.spawn = (() => { throw new Error("provider calls are forbidden"); }) as typeof Bun.spawn;
+    let result;
+    try {
+      result = buildRepositorySummaries({ store, config, now: NOW });
+    } finally {
+      globalThis.fetch = originalFetch;
+      Bun.spawn = originalSpawn;
+    }
+    const report = buildReport({ store, config, period: "30d", repository: null, now: NOW });
+    const reportBefore = report.byRepository.find((repository) => repository.id === "alpha");
 
     expect(store.dashboardRevision()).toBe(revision);
-    expect(result.repositories[0]!.report30d).toEqual(reportBefore);
-    expect(JSON.stringify(result.repositories)).not.toContain("never-public");
-    expect(JSON.stringify(result.repositories)).not.toContain("/work/alpha");
-    expect(JSON.stringify(result.repositories)).not.toContain("api.example.test");
-    expect(JSON.stringify(result.restrictedRepositories)).not.toContain("never-public");
-    expect(result.restrictedRepositories).toEqual([
+    expect(result!.repositories[0]!.report30d).toEqual({
+      delivered: reportBefore!.delivered,
+      inputTokens: reportBefore!.inputTokens,
+      outputTokens: reportBefore!.outputTokens,
+      agentMs: reportBefore!.agentMs,
+    });
+    expect(JSON.stringify(result!.repositories)).not.toContain("never-public");
+    expect(JSON.stringify(result!.repositories)).not.toContain("/work/alpha");
+    expect(JSON.stringify(result!.repositories)).not.toContain("api.example.test");
+    expect(JSON.stringify(result!.restrictedRepositories)).not.toContain("never-public");
+    expect(result!.restrictedRepositories).toEqual([
       { id: "alpha", folder: "/work/alpha", agentEgressHosts: ["api.example.test"] },
       { id: "empty", folder: "/work/empty", agentEgressHosts: [] },
     ]);
+  });
+
+  test("reports webhook sync whenever the public webhook endpoint is configured", async () => {
+    const store = await world();
+    const manuallyConfigured = {
+      ...config,
+      sources: { github: { ...config.sources.github, autoConfigureWebhook: false } },
+    } as ConveyorConfig;
+    const pollingOnly = { ...config, web: {} } as ConveyorConfig;
+
+    expect(buildRepositorySummaries({ store, config: manuallyConfigured, now: NOW }).repositories[0]!.setup.itemSync).toBe("webhook");
+    expect(buildRepositorySummaries({ store, config: pollingOnly, now: NOW }).repositories[0]!.setup.itemSync).toBe("polling");
   });
 });
