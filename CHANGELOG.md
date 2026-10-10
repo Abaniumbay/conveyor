@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-10
+
+This release replaces 0.4.0 and the releases before it, which were withdrawn when installation-specific details were removed from the repository's history. Conveyor itself behaves exactly as in 0.4.0; the release adds a contributor guide. If you install a specific version, use this one: the earlier tags and downloads no longer exist.
+
 ### Added
 - `CONTRIBUTING.md` describes how to report problems, the development setup and what a pull request
   needs.
