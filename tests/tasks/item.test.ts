@@ -9,6 +9,7 @@ import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ItemContext, TaskContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
+import { ToolRequestError } from "../../src/tasks/errors";
 import { criteriaFromBody } from "../../src/tasks/item";
 import { parseManagedSections, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
 
@@ -470,8 +471,9 @@ describe("item tools", () => {
     expect((w.calls[0]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
   });
 
-  test("createChild records dependencies on existing siblings and their managed section", async () => {
-    const w = await world({ children: [7, 8] }); w.add("i1", 5);
+  test("createChild records sibling and cross-parent dependencies and waits for all of them", async () => {
+    const w = await world(); w.add("i1", 5); w.add("sibling", 7, { body: criteriaBody("- [ ] Existing <!-- conveyor:criterion:existing -->") }); w.add("cross-parent", 8);
+    w.store.replaceRelationships("sibling", { parentId: "i1", siblingOrder: null }, []);
     const out = await tool("item.createChild", w.deps(), {
       title: "Later child", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7, 8],
     });
@@ -487,30 +489,67 @@ describe("item tools", () => {
       labels: ["conveyor", "conveyor:implementation"],
       body: expect.stringContaining("Do <!-- conveyor:criterion:a -->"),
     });
-    expect(w.store.listChildren("i1").map((child) => child.issueId)).toEqual(["c"]);
-    expect(w.store.listDependencies("c")).toEqual(["github:o/r#7", "github:o/r#8"]);
+    expect(w.store.listChildren("i1").map((child) => child.issueId)).toEqual(expect.arrayContaining(["c", "sibling"]));
+    expect(w.store.listDependencies("c")).toEqual(["cross-parent", "sibling"]);
 
     const parent = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
-    expect(parent.children).toMatchObject([{ id: "c", number: 99, enrolled: true, hasCriteria: true }]);
+    expect(parent.children).toEqual(expect.arrayContaining([expect.objectContaining({ id: "c", number: 99, enrolled: true, hasCriteria: true })]));
     expect((await run("item.childrenValid", { context: ctx(parent) })).status).toBe("pass");
 
     const child = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
-    expect(child).toMatchObject({ criteria: [{ id: "a", text: "Do" }], dependencies: [{ number: 7, satisfied: false }, { number: 8, satisfied: false }] });
-    expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pending", message: "Waiting for dependencies: #7, #8" });
+    expect(child).toMatchObject({ criteria: [{ id: "a", text: "Do" }] });
+    expect(child.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ number: 7, satisfied: false }),
+      expect.objectContaining({ number: 8, satisfied: false }),
+    ]));
+    expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pending", message: "Waiting for dependencies: #8, #7" });
+    w.add("sibling", 7, { state: "closed" });
+    w.add("cross-parent", 8, { state: "closed" });
+    const unblocked = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(await run("item.dependenciesMet", { context: ctx(unblocked) })).toEqual({ status: "pass" });
   });
 
-  test("createChild rejects invalid or non-sibling dependencies before creating a child", async () => {
-    for (const dependsOn of [[0], [1.5], [5], [8]]) {
-      const w = await world({ children: [7] }); w.add("i1", 5);
-      await expect(tool("item.createChild", w.deps(), {
+  test("createChild rejects invalid, unavailable and excluded dependencies before creating a child", async () => {
+    const cases: Array<{ dependsOn: number[]; expected: RegExp; setup?: (w: Awaited<ReturnType<typeof world>>) => void }> = [
+      { dependsOn: [0], expected: /Invalid dependsOn value 0: it must be a positive integer/i },
+      { dependsOn: [1.5], expected: /Invalid dependsOn value 1.5: it must be a positive integer/i },
+      { dependsOn: [5], expected: /Invalid dependsOn value 5: it must not identify the current parent/i },
+      { dependsOn: [6], expected: /Invalid dependsOn value 6: it must identify an open, Conveyor-enrolled issue in this repository/i },
+      { dependsOn: [7], expected: /Invalid dependsOn value 7: issue #7 is closed/i, setup: (w) => w.add("closed", 7, { state: "closed" }) },
+      { dependsOn: [8], expected: /Invalid dependsOn value 8: issue #8 is not enrolled in Conveyor/i, setup: (w) => w.add("unenrolled", 8, { labels: [] }) },
+      { dependsOn: [9], expected: /Invalid dependsOn value 9: issue #9 belongs to another repository/i, setup: (w) => {
+        w.store.upsertRepository({ id: "other", configName: "other", source: "github", address: "o/other", folder: "/other", configHash: "h" });
+        w.store.upsertIssue({ id: "elsewhere", repositoryId: "other", sourceNumber: 9, sourceUrl: "https://x/9", title: "Elsewhere", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+      } },
+    ];
+    for (const { dependsOn, expected, setup } of cases) {
+      const w = await world(); w.add("i1", 5); setup?.(w);
+      const attempt = tool("item.createChild", w.deps(), {
         title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn,
-      })).rejects.toThrow(/dependsOn value .*existing sibling child of the current parent/i);
+      });
+      await expect(attempt).rejects.toThrow(ToolRequestError);
+      await expect(attempt).rejects.toThrow(expected);
       expect(w.calls).toEqual([]);
     }
   });
 
+  test("createChild rejects the returned child and dependency cycles without writing a link", async () => {
+    const self = await world(); self.add("i1", 5); self.add("existing-child", 99);
+    await expect(tool("item.createChild", self.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [99],
+    })).rejects.toThrow("Invalid dependsOn value 99: it must not identify the child itself");
+    expect(self.store.listDependencies("existing-child")).toEqual([]);
+
+    const cycle = await world(); cycle.add("i1", 5); cycle.add("blocker", 7); cycle.add("existing-child", 99);
+    cycle.store.replaceRelationships("blocker", null, ["existing-child"]);
+    await expect(tool("item.createChild", cycle.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+    })).rejects.toThrow("Invalid dependsOn value 7: it would form a dependency cycle");
+    expect(cycle.store.listDependencies("existing-child")).toEqual([]);
+  });
+
   test("createChild retries a failed dependency write against its existing child", async () => {
-    const w = await world({ children: [7], failDependencyWriteOnce: true }); w.add("i1", 5);
+    const w = await world({ failDependencyWriteOnce: true }); w.add("i1", 5); w.add("blocker", 7);
     const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
     await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency failure");
     expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies"]);
@@ -524,7 +563,7 @@ describe("item tools", () => {
   });
 
   test("createChild retries a failed dependency section write against its existing child", async () => {
-    const w = await world({ children: [7], failDependencySectionWriteOnce: true }); w.add("i1", 5);
+    const w = await world({ failDependencySectionWriteOnce: true }); w.add("i1", 5); w.add("blocker", 7);
     const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
     await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency section failure");
     await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });

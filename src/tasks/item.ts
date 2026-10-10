@@ -482,23 +482,66 @@ async function planMetadata(deps: Deps, input: { type?: string | undefined; fiel
   return plan;
 }
 
-/** A child can only depend on an already-created sibling of the same roll-up parent. */
-async function childDependencies(deps: Deps, parentNumber: number, dependsOn: readonly number[] | undefined): Promise<number[]> {
-  const requested = dependsOn ?? [];
-  for (const number of requested) {
-    if (!Number.isSafeInteger(number) || number <= 0 || number === parentNumber) {
-      throw new Error(`Invalid dependsOn value ${String(number)}: it must identify an existing sibling child of the current parent.`);
-    }
-  }
-  if (requested.length === 0) return [];
+const dependencyRule = "it must identify an open, Conveyor-enrolled issue in this repository";
 
-  const siblings = new Set((await deps.items.listSubIssues(deps.repository.address, parentNumber)).map((child) => child.number));
+function invalidDependency(number: number, reason: string): ToolRequestError {
+  return new ToolRequestError(`Invalid dependsOn value ${String(number)}: ${reason}`);
+}
+
+/** Validate blockers that can be identified before creating the child. */
+function childDependencies(deps: Deps, parentNumber: number, dependsOn: readonly number[] | undefined): number[] {
+  const requested = [...new Set(dependsOn ?? [])];
+  const issues = new Map(deps.store.listIssues(deps.repository.id).map((issue) => [issue.sourceNumber, issue]));
   for (const number of requested) {
-    if (!siblings.has(number)) {
-      throw new Error(`Invalid dependsOn value ${String(number)}: it must identify an existing sibling child of the current parent.`);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+      throw invalidDependency(number, "it must be a positive integer.");
+    }
+    if (number === parentNumber) {
+      throw invalidDependency(number, "it must not identify the current parent.");
+    }
+    const blocker = issues.get(number);
+    if (!blocker) {
+      const otherRepository = deps.store.listIssues().some((issue) => issue.sourceNumber === number);
+      throw invalidDependency(number, otherRepository
+        ? `issue #${number} belongs to another repository; ${dependencyRule}.`
+        : `${dependencyRule}.`);
+    }
+    if (blocker.sourceState !== "open") {
+      throw invalidDependency(number, `issue #${number} is closed; ${dependencyRule}.`);
+    }
+    if (!blocker.labels.includes(deps.config.labels.enrollment)) {
+      throw invalidDependency(number, `issue #${number} is not enrolled in Conveyor; ${dependencyRule}.`);
     }
   }
-  return [...new Set(requested)];
+  return requested;
+}
+
+function dependencyPathExists(deps: Deps, fromIssueId: string, toIssueId: string): boolean {
+  const pending = [fromIssueId];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === toIssueId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    pending.push(...deps.store.listDependencies(current));
+  }
+  return false;
+}
+
+/** A retried creation can return an existing child, so guard the links that only then become knowable. */
+function validateCreatedChildDependencies(deps: Deps, childNumber: number, dependsOn: readonly number[]): void {
+  const child = deps.store.listIssues(deps.repository.id).find((issue) => issue.sourceNumber === childNumber);
+  const issues = new Map(deps.store.listIssues(deps.repository.id).map((issue) => [issue.sourceNumber, issue]));
+  for (const number of dependsOn) {
+    if (number === childNumber) {
+      throw invalidDependency(number, "it must not identify the child itself.");
+    }
+    const blocker = issues.get(number);
+    if (child && blocker && dependencyPathExists(deps, blocker.id, child.id)) {
+      throw invalidDependency(number, "it would form a dependency cycle.");
+    }
+  }
 }
 
 const setType = tool("item.setType",
@@ -542,7 +585,7 @@ const setRefinement = tool("item.setRefinement",
   });
 
 const createChild = tool("item.createChild",
-  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. dependsOn may name only already-created children of the current parent; create blockers first, then later children with their sibling issue numbers. Everything is validated before the child is created.",
+  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first.",
   createChildInput, true,
   async ({ deps, input, instance }, issue) => {
     const repository = deps.config.repositories[deps.repository.id]!;
@@ -551,7 +594,7 @@ const createChild = tool("item.createChild",
     const nextStage = stages[currentIndex + 1]?.id ?? stages[currentIndex]?.id;
     const systemLabels = (input!.systemLabels ?? []).filter((label) => repository.systemLabels.includes(label));
     const plan = await planMetadata(deps, { type: input!.type, fields: input!.fields });
-    const dependsOn = await childDependencies(deps, issue.sourceNumber, input!.dependsOn);
+    const dependsOn = childDependencies(deps, issue.sourceNumber, input!.dependsOn);
     let body = upsertManagedSection(
       input!.body,
       "acceptance-criteria",
@@ -581,6 +624,7 @@ const createChild = tool("item.createChild",
       ...(plan.type ? { type: plan.type } : {}),
       ...(plan.fields.length > 0 ? { fields: plan.fields } : {}),
     });
+    validateCreatedChildDependencies(deps, child.number, dependsOn);
     let sourceChild = child;
     if (dependsOn.length > 0) {
       await deps.items.setDependencies({
