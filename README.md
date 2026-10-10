@@ -52,9 +52,12 @@ is the packaged default. Read more in [docs/architecture.md](docs/architecture.m
 
 ## Quick start
 
-On a Linux machine (x64 or arm64) with Git, the [GitHub CLI](https://cli.github.com/), bubblewrap
-and an agent CLI ([Codex](https://github.com/openai/codex) or
-[Claude Code](https://docs.claude.com/en/docs/claude-code)):
+On a Linux machine (x64 or arm64) with Git, the [GitHub CLI](https://cli.github.com/), bubblewrap,
+and both [Codex](https://github.com/openai/codex) and
+[Claude Code](https://docs.claude.com/en/docs/claude-code) installed and authenticated. The
+packaged default configuration requires both for `conveyor doctor` to pass: Codex is required for
+refinement, while Claude Code is the first reviewer and the implementation fallback when Codex
+cannot run.
 
 ```sh
 curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/latest/download/install.sh
@@ -78,10 +81,15 @@ agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }
 Check everything, then start it:
 
 ```sh
-gh auth login && codex login     # the accounts Conveyor's agents use
-conveyor doctor                  # lists anything missing, with the fix
+gh auth login                    # the account Conveyor uses for managed repositories
+codex login                      # required by the packaged default for refinement
+claude login                     # required by the packaged default for review and fallback implementation
+conveyor doctor                  # checks both configured agent harnesses and lists any fix
 conveyor serve                   # dashboard on http://127.0.0.1:7788
 ```
+
+If you customize the agent configuration, install and sign in to every CLI that configuration
+uses; `conveyor doctor` checks the harnesses in the loaded configuration.
 
 Label an issue `conveyor` and watch it move. To run Conveyor as a service:
 
