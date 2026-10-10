@@ -3,10 +3,124 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { dashboardClient } from "../../src/web/client";
+import { createDashboardEventConnection, dashboardClient } from "../../src/web/client";
 import { quotaCountdown, updateQuotaWindow } from "../../src/usage/quota-time";
 
 describe("dashboard browser client", () => {
+  test("recovers a failed or silent dashboard stream with one bounded replacement stream", () => {
+    let now = 0;
+    let pageActive = true;
+    let online = true;
+    const states: boolean[] = [];
+    const reconnects: number[] = [];
+    const events: string[] = [];
+    const timers: Array<{ delay: number; callback: () => void; cancelled: boolean }> = [];
+    let watchdog: (() => void) | null = null;
+    const sources: Array<{
+      readyState: number;
+      closed: boolean;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      listeners: Map<string, (event: { data: string }) => void>;
+      close: () => void;
+      addEventListener: (type: string, listener: (event: { data: string }) => void) => void;
+    }> = [];
+    const connection = createDashboardEventConnection({
+      createEventSource: () => {
+        const source = {
+          readyState: 0,
+          closed: false,
+          onopen: null as (() => void) | null,
+          onerror: null as (() => void) | null,
+          listeners: new Map<string, (event: { data: string }) => void>(),
+          close: () => { source.closed = true; source.readyState = 2; },
+          addEventListener: (type: string, listener: (event: { data: string }) => void) => source.listeners.set(type, listener),
+        };
+        sources.push(source);
+        return source;
+      },
+      setTimeout: (callback, delay) => {
+        const timer = { callback, delay, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: (timer) => { timer.cancelled = true; },
+      setInterval: (callback) => {
+        watchdog = callback;
+        return callback;
+      },
+      clearInterval: () => { watchdog = null; },
+      now: () => now,
+      pageActive: () => pageActive,
+      online: () => online,
+      staleAfter: 30_000,
+      retryDelay: 5_000,
+      onConnectionChange: (connected) => states.push(connected),
+      onReconnect: () => reconnects.push(now),
+      onEvent: (type) => events.push(type),
+    });
+    const runNextTimer = () => {
+      const timer = timers.shift();
+      expect(timer).toBeDefined();
+      now += timer!.delay;
+      if (!timer!.cancelled) timer!.callback();
+    };
+
+    expect(sources).toHaveLength(1);
+    sources[0]!.readyState = 1;
+    sources[0]!.onopen!();
+    sources[0]!.onerror!();
+    sources[0]!.onerror!();
+    expect(states).toEqual([true, false]);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(0);
+    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
+
+    runNextTimer();
+    expect(sources).toHaveLength(2);
+    sources[1]!.readyState = 1;
+    sources[1]!.onopen!();
+    sources[1]!.listeners.get("revision")!({ data: "revision-2" });
+    expect(reconnects).toEqual([5_000]);
+    expect(events).toEqual(["revision"]);
+    expect(watchdog).not.toBeNull();
+
+    // A PWA that resumes after a silent stream is immediately marked reconnecting,
+    // then receives exactly one replacement after the same bounded delay.
+    pageActive = false;
+    now += 60_000;
+    connection.check();
+    expect(sources[1]!.closed).toBe(false);
+    pageActive = true;
+    connection.check();
+    expect(states.at(-1)).toBe(false);
+    expect(sources[1]!.closed).toBe(true);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(0);
+    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
+
+    online = false;
+    runNextTimer();
+    expect(sources).toHaveLength(2);
+    online = true;
+    connection.check();
+    runNextTimer();
+    expect(sources).toHaveLength(3);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
+    sources[2]!.readyState = 1;
+    sources[2]!.onopen!();
+    sources[2]!.listeners.get("revision")!({ data: "revision-3" });
+    expect(states.at(-1)).toBe(true);
+    expect(reconnects).toEqual([5_000, 75_000]);
+    expect(events).toEqual(["revision", "revision"]);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
+    sources[2]!.onerror!();
+    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
+    runNextTimer();
+    expect(sources).toHaveLength(4);
+    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
+    connection.close();
+    expect(watchdog).toBeNull();
+  });
+
   test("is valid standalone JavaScript", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
@@ -18,9 +132,12 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("'/backlog/move'");
     expect(dashboardClient).toContain("addEventListener('dragend'");
     expect(dashboardClient).toContain("data-detail-tab");
-    expect(dashboardClient).toContain("new EventSource('/events/dashboard')");
-    expect(dashboardClient).toContain("addEventListener('conversation'");
-    expect(dashboardClient).toContain("addEventListener('activity'");
+    expect(dashboardClient).toContain("createDashboardEventConnection");
+    expect(dashboardClient).toContain("document.addEventListener('visibilitychange', dashboardEvents.check)");
+    expect(dashboardClient).toContain("window.addEventListener('online', dashboardEvents.check)");
+    expect(dashboardClient).toContain("const refreshDashboardWhenSafe = () => {");
+    expect(dashboardClient).toContain("onReconnect: refreshDashboardWhenSafe");
+    expect(dashboardClient).toContain("scheduleJourneyRefresh();\n      scheduleSummaryRefresh();\n      pendingRefresh = true;");
     expect(dashboardClient).toContain("scheduleActivityRefresh");
     expect(dashboardClient).toContain("loadIssueJourney");
     expect(dashboardClient).toContain("journey.now");
