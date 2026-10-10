@@ -46,6 +46,25 @@ jobs:
       # checkout, without Bun on PATH: init, config, dashboard assets, sign-in, bridge, agent + MCP,
       # status and logs; then upgrades to a second build and rolls back, restarting like systemd.
       - run: bun run build
+      - name: Verify retired installation defaults are not packaged
+        run: |
+          forbidden='AmirRaptoR|midgame-actions|midgame-delivery|allowedHumanLogins'
+          archive="$(find dist -name '*-linux-x64.tar.gz' -print -quit)"
+          test -n "$archive"
+          temporary="$(mktemp -d)"
+          tar -xzf "$archive" -C "$temporary"
+          executable="$(find "$temporary" -type f -name conveyor -print -quit)"
+          test -n "$executable"
+          for builtin in $("$executable" config builtin); do
+            if "$executable" config builtin "$builtin" | grep -aE "$forbidden"; then
+              echo "retired installation default found in $builtin"
+              exit 1
+            fi
+          done
+          if grep -aE "$forbidden" "$executable"; then
+            echo "retired installation default found in executable"
+            exit 1
+          fi
       - run: bun run scripts/build.ts --out dist-next --version 99.0.0-next
       - run: bun run scripts/smoke-test.ts --dist dist --next dist-next
 

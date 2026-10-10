@@ -3,42 +3,21 @@
 # examples/config so importing the reference configuration never brings these in.
 #
 # Stage scripts are machine-local. Each `deploy` script marked `recovery: reconcile` needs an
-# `observe` phase before the canary (docs/migration.md); conveyor's own deploy is a replay-safe no-op.
+# `observe` phase before the canary (docs/migration.md).
 repositories:
-  caravan:
+  service:
     items: github
     code: github
-    ci: { mode: disabled }                 # no workflows today
-    address: Abaniumbay/caravan
-    folder: /home/ubuntu/codes/caravan-v2
-    baseBranch: master
-    pipeline: delivery
-    concurrency: 1
-    systemLabels: [backend, web, testing]
-    agentEgress:
-      allowLoopbackMcp: true
-      httpsHosts: [registry.npmjs.org, api.nuget.org, globalcdn.nuget.org]   # .NET + npm
-    overrides:
-      stages:
-        deploy:
-          actions:
-            deployScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/deploy-caravan.ts, recovery: reconcile } }
-        verify:
-          actions:
-            verifyScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/verify-caravan.ts, recovery: replay-safe } }
-  conveyor:
-    items: github
-    code: github
-    ci: { provider: actions, mode: required }   # "Tests and typecheck" (PR #15)
-    address: Abaniumbay/conveyor
-    folder: /home/ubuntu/codes/conveyor-v2
+    ci: { provider: actions, mode: required }
+    address: example/service
+    folder: /srv/conveyor/repos/service
     baseBranch: main
     pipeline: delivery
-    concurrency: 2
-    systemLabels: [backend, web, infrastructure, testing]
-    refinement:                            # what refinement writes on the issue page (org issue types and fields)
-      fields: [Effort, Priority]           # writable by item.setFields; Priority only when the issue states one
-      require: { type: true, fields: [Effort], section: true }   # the refinement exit gate fails without these
+    concurrency: 1
+    systemLabels: [backend, testing]
+    refinement:
+      fields: [Effort, Priority]
+      require: { type: true, fields: [Effort], section: true }
     agentEgress:
       allowLoopbackMcp: true
       httpsHosts: [registry.npmjs.org]
@@ -46,83 +25,7 @@ repositories:
       stages:
         deploy:
           actions:
-            deployScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/skip-conveyor-self-deploy.ts, recovery: replay-safe } }   # no-op: nothing to observe
+            deployScript: { with: { script: /etc/conveyor/stages/deploy-service.ts, recovery: reconcile } }
         verify:
           actions:
-            verifyScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/verify-conveyor.ts, recovery: replay-safe } }
-  meal-planner:
-    items: github-poll
-    code: github
-    ci: { mode: disabled }                 # no workflows today; switch to required once CI exists
-    address: miimra/meal-planner
-    folder: /home/ubuntu/codes/meal-planner
-    baseBranch: main
-    pipeline: delivery
-    concurrency: 1
-    systemLabels: [backend, web, testing]
-    agentEgress:
-      allowLoopbackMcp: true
-      httpsHosts: [registry.npmjs.org]
-    overrides:
-      stages:
-        deploy:
-          actions:
-            deployScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/deploy-meal-planner.ts, recovery: reconcile } }
-        verify:
-          actions:
-            verifyScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/verify-meal-planner.ts, recovery: replay-safe } }
-  midgame:
-    items: github
-    code: github
-    ci: { provider: midgame-actions, mode: required }
-    address: Abaniumbay/midgame
-    folder: /home/ubuntu/codes/midgame
-    baseBranch: main
-    pipeline: midgame-delivery
-    concurrency: 2
-    systemLabels: [backend, web, infrastructure, testing]
-    agentEgress:
-      allowLoopbackMcp: true
-      httpsHosts:
-        - registry.npmjs.org          # Cloud Functions
-        - pub.dev                     # Dart/Flutter packages
-        - storage.googleapis.com      # pub archives, Flutter artifacts
-        - maven.google.com            # Google Maven (redirects to dl.google.com)
-        - dl.google.com
-        - repo.maven.apache.org
-        - plugins.gradle.org          # redirects to plugins-artifacts.gradle.org
-        - plugins-artifacts.gradle.org
-        - services.gradle.org         # Gradle wrapper entry point; redirects through the two hosts below
-        - github.com                  # Gradle distribution redirect; no credentials, and api.github.com stays blocked
-        - release-assets.githubusercontent.com
-        - pypi.org                    # requirements.txt
-        - files.pythonhosted.org
-    overrides:
-      stages:
-        deploy:
-          actions:
-            deployScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/deploy-midgame-action.ts, recovery: reconcile } }
-        verify:
-          actions:
-            verifyScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/verify-midgame.ts, recovery: replay-safe } }
-  quesshi:
-    items: github
-    code: github
-    ci: { provider: actions, mode: required }   # workflow "CI"
-    address: AmirRaptoR/quesshi
-    folder: /home/ubuntu/codes/quesshi
-    baseBranch: main
-    pipeline: delivery
-    concurrency: 2
-    systemLabels: [backend, web, mobile, infrastructure, testing]
-    agentEgress:
-      allowLoopbackMcp: true
-      httpsHosts: [api.nuget.org, globalcdn.nuget.org]
-    overrides:
-      stages:
-        deploy:
-          actions:
-            deployScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/deploy-quesshi.ts, recovery: reconcile } }
-        verify:
-          actions:
-            verifyScript: { with: { script: /home/ubuntu/.config/conveyor-v2/stages/verify-quesshi.ts, recovery: replay-safe } }
+            verifyScript: { with: { script: /etc/conveyor/stages/verify-service.ts, recovery: replay-safe } }

@@ -10,16 +10,16 @@
 # `import` pins the versioned reference configuration (providers, harnesses, agents, pipelines
 # and instructions in examples/config) at a git ref; see docs/migration.md.
 import:
-  repository: /home/ubuntu/codes/conveyor-v2
+  repository: /srv/conveyor/reference-config
   ref: <commit-sha-or-tag>
   path: examples/config
 
 settings:
   runners: 4
-  database: /home/ubuntu/.local/share/conveyor-v2/conveyor.sqlite
-  logs: /home/ubuntu/.local/share/conveyor-v2/logs
-  workspaces: /home/ubuntu/.local/share/conveyor-v2/worktrees
-  artifacts: /home/ubuntu/.local/share/conveyor-v2/artifacts
+  database: /var/lib/conveyor/conveyor.sqlite
+  logs: /var/log/conveyor
+  workspaces: /var/lib/conveyor/worktrees
+  artifacts: /var/lib/conveyor/artifacts
   reconcileInterval: 5m
   maxReturns: 5
   history:
@@ -36,4 +36,4 @@ web:
   listen: 127.0.0.1:4300
   steering:
     agent: omid
-    workspace: /home/ubuntu/codes/conveyor-v2
+    workspace: /srv/conveyor/reference-config

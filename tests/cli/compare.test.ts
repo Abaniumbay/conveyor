@@ -71,15 +71,13 @@ describe("comparePlans", () => {
 
 describe("config compare", () => {
   test("compares the legacy fixture with the reference configuration, per repository and stage", async () => {
-    const { directory, base } = await referenceConfigDirectory({ caravan: "caravan-v2", conveyor: "conveyor-v2" });
+    const { directory, base } = await referenceConfigDirectory();
     bases.push(base);
     const lines: string[] = [];
     const code = await runCli(["config", "compare", LEGACY, directory], { out: (text) => lines.push(text), err: () => {}, interactive: false });
     expect(code).toBe(1);
     const out = lines.join("\n");
-    for (const repository of ["caravan-v2", "conveyor-v2", "meal-planner", "midgame", "quesshi"]) {
-      expect(out).toContain(`Repository ${repository}`);
-    }
+    expect(out).toContain("Repository service");
     // Side by side: legacy adapter tasks on the left, native tasks on the right.
     expect(out).toMatch(/legacy\.produce[^\n]*\|/);
     expect(out).toMatch(/\|\s+refine: agent\.run/);
@@ -102,6 +100,6 @@ describe("config compare", () => {
     expect(stderr.trim().split("\n").every((line) => line.startsWith("warning: loading a configuration directory is deprecated"))).toBe(true);
     expect(code).toBe(0);
     expect(stdout).toContain("Configuration is valid");
-    expect(stdout).toContain("Repository conveyor (only in");
+    expect(stdout).toContain("Repository service");
   });
 });

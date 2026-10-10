@@ -15,7 +15,7 @@ Plan for making Conveyor's dashboard elegant and modern without losing any featu
 1. **Live updates drop every ~25 s.** The status pill flips to "Reconnecting", and the browser logs `ERR_INCOMPLETE_CHUNKED_ENCODING` on `/events/dashboard`. The journal shows `Bun.serve() timed out a request after 10 seconds`: Bun's default `idleTimeout` (10 s) kills the event stream between messages. Send an SSE comment heartbeat (`: ping\n\n`) at least every 5 s, or set `idleTimeout` for that route.
 2. **Stage headers overlap.** In stage column headers, the usage text ("585M in (564M cached) · 1.8M out · 331 runs") is drawn over the stage name.
 3. **Stage names come from ids.** `ci` renders as "Ci". Known acronyms need casing; better, let a stage carry a display name.
-4. **Acceptance criteria missing.** midgame#157 has a full checklist in its issue body, but the summary says "No acceptance criteria recorded." Only Conveyor's managed criteria section is parsed. Fall back to `- [ ]` / `- [x]` items under an "Acceptance criteria" heading.
+4. **Acceptance criteria missing.** An example issue has a full checklist in its issue body, but the summary says "No acceptance criteria recorded." Only Conveyor's managed criteria section is parsed. Fall back to `- [ ]` / `- [x]` items under an "Acceptance criteria" heading.
 5. **Steering reports show raw Markdown.** `**not**` and backticks appear literally. Render a safe Markdown subset: emphasis, code, lists, links. Apply the same to conversation messages.
 6. **The login page has no favicon link**, so browsers request `/favicon.ico` and get a 404.
 7. **Stale labels:**
@@ -181,4 +181,4 @@ Any pending task produces the same record: the pending message, `pending_since`,
 
 ## Follow-up: the journey shows "now"
 
-Owner report (2026-10-01): midgame#161's journey ended with "Implementation stopped" while the item was active again. The engine now records `resumed` and `restarted` entries (PR #41). The journey also opens with a "Now" line, built from the item's current state rather than the history: the stage, the state (running, waiting with its reason, stopped with its reason) and since when. History entries below it stay in time order.
+Owner report (2026-10-01): an item's journey ended with "Implementation stopped" while the item was active again. The engine now records `resumed` and `restarted` entries (PR #41). The journey also opens with a "Now" line, built from the item's current state rather than the history: the stage, the state (running, waiting with its reason, stopped with its reason) and since when. History entries below it stay in time order.
