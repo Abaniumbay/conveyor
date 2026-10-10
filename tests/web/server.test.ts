@@ -1015,15 +1015,31 @@ describe("createWebHandler", () => {
     expect(calls.mcp.at(-1)).toEqual([{ tool: "run.report_progress" }, "internal-secret", "retry-1"]);
   });
 
-  test("returns actionable item-tool request errors to the MCP client", async () => {
-    const { handler } = setup({ handleMcp: async () => { throw new ToolRequestError("This repository has no refinement configuration"); } });
-    const response = await handler(new Request("http://localhost/internal/mcp", {
+  test("returns actionable item input errors, and keeps operational failures opaque, to MCP clients", async () => {
+    const { handler } = setup({
+      handleMcp: async (request: { tool: string }) => {
+        if (request.tool === "item.createChild") {
+          throw new ToolRequestError("Invalid dependsOn value 166: it must identify an open, Conveyor-enrolled issue in this repository");
+        }
+        if (request.tool === "item.setFields") throw new ToolRequestError("This repository has no refinement configuration");
+        throw new Error("database password leaked");
+      },
+    });
+    const request = (tool: string, input: Record<string, unknown>) => handler(new Request("http://localhost/internal/mcp", {
       method: "POST",
       headers: { authorization: "Bearer internal-secret", "content-type": "application/json" },
-      body: JSON.stringify({ tool: "item.setFields", input: { fields: [{ name: "Effort", value: "Low" }] } }),
+      body: JSON.stringify({ tool, input }),
     }));
-    expect(response.status).toBe(422);
-    expect(await response.json()).toEqual({ error: "This repository has no refinement configuration" });
+
+    const dependency = await request("item.createChild", { title: "Child", dependsOn: [166] });
+    expect(dependency.status).toBe(422);
+    expect(await dependency.json()).toEqual({ error: "Invalid dependsOn value 166: it must identify an open, Conveyor-enrolled issue in this repository" });
+    const fields = await request("item.setFields", { fields: [{ name: "Effort", value: "Low" }] });
+    expect(fields.status).toBe(422);
+    expect(await fields.json()).toEqual({ error: "This repository has no refinement configuration" });
+    const failure = await request("item.setTitle", { title: "Valid title" });
+    expect(failure.status).toBe(500);
+    expect(await failure.json()).toEqual({ error: "MCP request failed" });
   });
 
   test("enforces body limits and rejects malformed or unsupported forms", async () => {
