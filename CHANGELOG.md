@@ -20,6 +20,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   preserving the Board, navigation, report, and item-detail scrollers.
 - Restored dashboard live updates after an installed PWA resumes from standby by reconnecting a
   stale event stream and catching up the current dashboard view.
+- A question asked on a parent item during refinement stays open and answerable after that run
+  created child issues. The parent stays in refinement, and its children do not start until the
+  answered refinement run completes. The dashboard's answer form works for choice and free-text
+  questions, and an answer whose mirroring to the issue failed can be retried without being lost or
+  posted twice (#144).
+- The dashboard's account menu no longer shows a second Change password link; the password is
+  changed on the Profile page (#126).
 
 ## [0.3.1] - 2026-10-07
 
