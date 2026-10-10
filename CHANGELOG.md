@@ -15,8 +15,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Added
 
-- The dashboard now shows configured repositories, including their health and current work, and
-  provides read-only repository list and detail pages.
+- The Board now includes a Repositories strip for configured repositories, including their health
+  and current work, with read-only repository list and detail pages.
 
 ## [0.4.3] - 2026-10-10
 
