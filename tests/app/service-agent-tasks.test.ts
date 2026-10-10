@@ -22,7 +22,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -79,11 +79,19 @@ repositories:
 
   const calls: Call[] = [];
   let sessionResume = true;
+  let started: (() => void) | null = null;
+  const running = new Promise<void>((resolve) => { started = resolve; });
   const harness: Harness = {
     id: "fake",
     get capabilities() { return { sessionResume }; },
     async run(input): Promise<RunEnvelope> {
       calls.push(input);
+      if (options.waitForAbort) {
+        started!();
+        await new Promise<never>((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason ?? new Error("interrupted")), { once: true });
+        });
+      }
       const runId = path.basename(input.artifactsDirectory);
       const first = calls.length === 1;
       if (first) store.openQuestion({
@@ -125,10 +133,31 @@ repositories:
 
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
-  return { store, service, execute, calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
+  const schedule = () => (Object.getPrototypeOf(service) as { schedule(this: unknown): void }).schedule.call(service);
+  return { config, store, service, execute, schedule, running, calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
+  test("interrupts a running agent stage for restart and queues the same workspace again", async () => {
+    const first = await setup({ waitForAbort: true });
+    first.schedule();
+    await first.running;
+    await first.service.close();
+
+    const restarted = await ConveyorStore.open(path.join(first.root, "db.sqlite"));
+    expect(restarted.getStageState("issue")).toMatchObject({ status: "interrupted" });
+    expect(restarted.listIssueRuns("issue")[0]).toMatchObject({ status: "interrupted" });
+    expect(restarted.getIssue("issue")).toMatchObject({ projectedState: "active" });
+    expect(restarted.getActiveWorkspace("issue")).toMatchObject({ path: first.workspace });
+    expect(restarted.recoverInterruptedExecutions(first.config.hash)).toEqual({ runs: 0, stages: 1, recoveredStages: [{ issueId: "issue", stageId: "refinement" }] });
+    const resumed: string[] = [];
+    const service = new ConveyorService(first.config, restarted, { upsertStatusComment: async () => 1 } as never);
+    (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => { resumed.push(issue.id); };
+    (Object.getPrototypeOf(service) as { schedule(this: unknown): void }).schedule.call(service);
+    expect(resumed).toEqual(["issue"]);
+    await service.close();
+  });
+
   test("a native stage whose first action is agent.run gets a workspace on an item that has none", async () => {
     const w = await setup({ noWorkspace: true });
     expect(w.store.getActiveWorkspace("issue")).toBeNull();

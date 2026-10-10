@@ -61,6 +61,7 @@ interface ActiveRun {
   controller: AbortController;
   /** Runs no runner process; excluded from global and repository permits. */
   lightweight: boolean;
+  interrupted: boolean;
 }
 
 type LiveIssueStatus = IssueWaitingViewModel & { kind: "waiting" | "queued" };
@@ -318,6 +319,9 @@ export class ConveyorService {
     const recovered = store.recoverInterruptedExecutions(config.hash);
     if (recovered.runs > 0 || recovered.stages > 0) {
       log.warn("Recovered interrupted work after restart", { runs: recovered.runs, stages: recovered.stages });
+      for (const stage of recovered.recoveredStages) {
+        log.info("Stage queued after restart", { itemId: stage.issueId, stage: stage.stageId });
+      }
     }
     const removedRepositories = store.removeRepositoriesExcept(Object.keys(config.repositories));
     if (removedRepositories.length > 0) {
@@ -468,7 +472,11 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
-    for (const active of this.#active.values()) active.controller.abort();
+    for (const [issueId, active] of this.#active) {
+      active.interrupted = true;
+      log.warn("Stage interrupted during shutdown", { ...this.itemFields(issueId), stage: active.stageId });
+      active.controller.abort();
+    }
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
     while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#tickRunning || this.#advisoryPolling) {
@@ -521,11 +529,15 @@ export class ConveyorService {
         stageId: candidate.stageId,
         controller: new AbortController(),
         lightweight: candidate.lightweight === true,
+        interrupted: false,
       });
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       void this.execute(issue, active.controller.signal).finally(() => {
         this.#active.delete(issue.id);
+        if (this.#drain && !active.interrupted) {
+          log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
+        }
       });
     }
     const selectedIds = new Set(selected.map((candidate) => candidate.id));
@@ -3065,6 +3077,9 @@ export class ConveyorService {
     if (!this.#drain) {
       this.#drain = { since: new Date().toISOString(), reason };
       log.info("Admission paused: draining", { reason });
+      for (const [issueId, active] of this.#active) {
+        log.info("Stage waiting during drain", { ...this.itemFields(issueId), stage: active.stageId });
+      }
     }
     return this.#drain;
   }

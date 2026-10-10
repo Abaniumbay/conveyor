@@ -256,7 +256,12 @@ async function runAgent(
     agentMessage(store, deps.config, issue.id, stageId, runId, agentId, producerConversationMessage(stageId, result));
     return outcomeOf(deps, runId, agentId, result);
   } catch (error) {
-    finishRun(store, runId, "failed", failedEnvelope(error, Math.max(0, Math.round(performance.now() - started))));
+    finishRun(
+      store,
+      runId,
+      deps.signal?.aborted ? "interrupted" : "failed",
+      failedEnvelope(error, Math.max(0, Math.round(performance.now() - started))),
+    );
     throw error;
   }
 }

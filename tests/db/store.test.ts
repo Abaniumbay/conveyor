@@ -865,6 +865,7 @@ describe("ConveyorStore", () => {
     expect(store.recoverInterruptedExecutions("config-hash")).toEqual({
       runs: 1,
       stages: 1,
+      recoveredStages: [{ issueId: "issue-1", stageId: "implementation" }],
     });
     expect(store.getRun("orphaned-run")).toMatchObject({
       status: "interrupted",
@@ -880,10 +881,14 @@ describe("ConveyorStore", () => {
     expect(store.recoverInterruptedExecutions("config-hash")).toEqual({
       runs: 0,
       stages: 0,
+      recoveredStages: [],
     });
-    // A stage waiting on an in-memory retry timer when the process stopped retries after restart.
+    // A stage waiting on an in-memory retry timer or interrupted by shutdown retries after restart.
     store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "error", feedbackCycle: 1, configHash: "config-hash" });
-    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1 });
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1, recoveredStages: [{ issueId: "issue-1", stageId: "implementation" }] });
+    expect(store.getStageState("issue-1")).toMatchObject({ stageId: "implementation", status: "ready" });
+    store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "interrupted", feedbackCycle: 1, configHash: "config-hash" });
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1, recoveredStages: [{ issueId: "issue-1", stageId: "implementation" }] });
     expect(store.getStageState("issue-1")).toMatchObject({ stageId: "implementation", status: "ready" });
     store.close();
   });

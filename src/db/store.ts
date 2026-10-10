@@ -1276,7 +1276,7 @@ export class ConveyorStore {
       );
   }
 
-  recoverInterruptedExecutions(configHash: string): { runs: number; stages: number } {
+  recoverInterruptedExecutions(configHash: string): { runs: number; stages: number; recoveredStages: Array<{ issueId: string; stageId: string }> } {
     return this.#database.transaction(() => {
       const timestamp = now();
       const interruptedRuns = this.#database
@@ -1306,19 +1306,21 @@ export class ConveyorStore {
           .run(randomUUID(), run.id, durationMs, timestamp);
       }
 
-      const runningStages = this.#database
-        .query("SELECT COUNT(*) AS count FROM stage_states WHERE status IN ('running', 'error')")
-        .get() as { count: number };
-      // 'error' stages were waiting on an in-memory retry timer that did not survive the restart.
+      const interruptedStages = this.#database
+        .query("SELECT issue_id, stage_id FROM stage_states WHERE status IN ('running', 'error', 'interrupted')")
+        .all() as Array<{ issue_id: string; stage_id: string }>;
+      // 'error' stages were waiting on an in-memory retry timer and 'interrupted' stages were
+      // deliberately stopped during shutdown; neither has a live process after restart.
       this.#database
         .query(
           `UPDATE stage_states SET status = 'ready', config_hash = ?, updated_at = ?
-           WHERE status IN ('running', 'error')`,
+           WHERE status IN ('running', 'error', 'interrupted')`,
         )
         .run(configHash, timestamp);
       return {
         runs: interruptedRuns.length,
-        stages: Number(runningStages.count),
+        stages: interruptedStages.length,
+        recoveredStages: interruptedStages.map((stage) => ({ issueId: stage.issue_id, stageId: stage.stage_id })),
       };
     })();
   }

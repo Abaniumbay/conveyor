@@ -156,8 +156,9 @@ export const serve: Command = {
             clearInterval(pushTimer);
             await control.stop();
             await server.stop(false);
-            await mcpSocket?.stop();
             await service.close();
+            // Keep agent control available until active stages have completed or been interrupted.
+            await mcpSocket?.stop();
           })();
           try {
             const result = supervised && code === RESTART_EXIT_CODE
