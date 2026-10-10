@@ -690,6 +690,20 @@ export class GitHubAdapter {
     return comment.id;
   }
 
+  /** Finds a prior Conveyor comment by its durable marker before retrying a source mutation. */
+  async hasCommentWithMarker(
+    address: string,
+    issueNumber: number,
+    marker: string,
+  ): Promise<boolean> {
+    const comments = await this.transport.request<GitHubComment[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/comments?per_page=100`,
+      paginate: true,
+    });
+    return comments.some((comment) => comment.body?.includes(marker));
+  }
+
   /** Creates an issue/pull request comment and returns where it lives. */
   async createComment(address: string, issueNumber: number, markdown: string): Promise<{ id: number; url: string }> {
     const comment = await this.transport.request<GitHubComment & { html_url: string }>({

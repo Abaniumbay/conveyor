@@ -22,7 +22,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -70,6 +70,7 @@ repositories:
   let failComments = 0;
   const github = {
     replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => { labelWrites.push([...labels]); },
+    hasCommentWithMarker: async (_a: string, _n: number, marker: string) => comments.some((comment) => comment.includes(marker)),
     addComment: async (_a: string, _n: number, body: string) => {
       if (failComments > 0) { failComments -= 1; throw new Error("temporary source outage"); }
       comments.push(body); return 1;
@@ -85,7 +86,10 @@ repositories:
       calls.push(input);
       const runId = path.basename(input.artifactsDirectory);
       const first = calls.length === 1;
-      if (first) store.openQuestion({ issueId: "issue", runId, prompt: "Which database?", reason: "need it", options: [], allowFreeText: true });
+      if (first) store.openQuestion({
+        issueId: "issue", runId, prompt: "Which database?", reason: "need it",
+        options: options.questionOptions ?? [], allowFreeText: options.allowFreeText ?? true,
+      });
       return {
         stageResult: first
           ? { outcome: "failure", status: "needs-input", summary: "Asked", reason: "Which database?", metrics: {} }
@@ -174,6 +178,21 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
+  test("normalizes a choice-label conversation reply before recording it and rejects invalid replies", async () => {
+    const w = await setup({
+      questionOptions: [{ id: " postgres ", label: " PostgreSQL " }],
+      allowFreeText: false,
+    });
+    await w.execute();
+    await expect(w.service.postIssueMessage("issue", "not one of the choices", "operator")).rejects.toThrow("Choose one of the available answers.");
+    expect(w.store.listConversationMessages("issue").some((entry) => entry.actorType === "user")).toBe(false);
+
+    await w.service.postIssueMessage("issue", "postgresql", "operator");
+    expect(w.store.getQuestion(w.store.listOpenQuestions()[0]?.id ?? "missing")).toBeNull();
+    expect(w.comments[0]).toContain("postgres");
+    await w.service.close();
+  });
+
   test("keeps a saved answer retryable until its source mirror succeeds", async () => {
     const w = await setup();
     await w.execute();
@@ -197,7 +216,20 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("does not mirror a duplicate submission while the first answer is in flight", async () => {
+  test("wakes the parked refinement when reconciliation after an answer is temporarily unavailable", async () => {
+    const w = await setup();
+    await w.execute();
+    Object.assign(w.service as object, { reconcileRepository: async () => { throw new Error("temporary source outage"); } });
+
+    const question = w.store.listOpenQuestions()[0]!;
+    await w.service.answerQuestion(question.id, "PostgreSQL");
+    expect(w.store.getQuestion(question.id)?.status).toBe("answered");
+    expect(Date.parse(w.store.executions().wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
+    expect(w.store.getIssue("issue")).toMatchObject({ projectedState: "active", warning: null });
+    await w.service.close();
+  });
+
+  test("recognizes a stale pending mirror that reached the source and does not duplicate its comment", async () => {
     const w = await setup();
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
@@ -205,10 +237,38 @@ describe("agent.run through the service", () => {
     w.store.beginSourceMutation({
       idempotencyKey: `question-answer:${question.id}`, source: "github", operation: "issue.comment.answer", request: {},
     });
+    w.comments.push(`<!-- conveyor:answer:${question.id} -->\n**Conveyor answer:** PostgreSQL`);
 
+    await w.service.answerQuestion(question.id, "PostgreSQL");
+    expect(w.store.getQuestion(question.id)?.status).toBe("answered");
+    expect(w.comments).toHaveLength(1);
+    await w.service.close();
+  });
+
+  test("keeps a live answer mirror single-flight while allowing stale mutations to recover", async () => {
+    const w = await setup();
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    let releaseComment: (() => void) | undefined;
+    let markCommentStarted: (() => void) | undefined;
+    const commentStarted = new Promise<void>((resolve) => { markCommentStarted = resolve; });
+    Object.assign((w.service as unknown as { github: object }).github, {
+      async addComment(_address: string, _number: number, markdown: string) {
+        markCommentStarted?.();
+        await new Promise<void>((resolve) => { releaseComment = resolve; });
+        w.comments.push(markdown);
+        return 1;
+      },
+    });
+
+    const first = w.service.answerQuestion(question.id, "PostgreSQL");
+    await commentStarted;
     await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already being recorded");
-    expect(w.store.getQuestion(question.id)?.status).toBe("open");
-    expect(w.comments).toEqual([]);
+    releaseComment?.();
+    await first;
+
+    expect(w.store.getQuestion(question.id)?.status).toBe("answered");
+    expect(w.comments).toHaveLength(1);
     await w.service.close();
   });
 
@@ -230,7 +290,10 @@ describe("agent.run through the service", () => {
     await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
     expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
 
-    w.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+    await w.execute();
+    // Relationship roll-up may project the parent back to the child frontier,
+    // but the successful refinement transition remains the scheduler boundary.
+    w.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
     expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(true);
     await w.service.close();
   });
