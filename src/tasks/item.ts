@@ -22,6 +22,7 @@ import {
   renderRefinementSection,
   upsertManagedSection,
 } from "../source/github/managed-sections";
+import type { SourceIssue } from "../source/types";
 
 export const acceptanceCriterionInput = z.object({
   id: z.string().min(1),
@@ -116,6 +117,45 @@ function issueOf(deps: Deps) {
   const issue = deps.store.getIssue(deps.issueId);
   if (!issue) throw new Error(`issue ${deps.issueId} is not stored`);
   return issue;
+}
+
+/** Store the source snapshot a successful item write produced, without waiting for reconciliation. */
+function persistSourceIssue(deps: Deps, source: SourceIssue, storedId?: string) {
+  const existing = storedId
+    ? deps.store.getIssue(storedId)
+    : deps.store.listIssues(deps.repository.id).find((candidate) => candidate.sourceNumber === source.number);
+  const id = existing?.id ?? source.id;
+  deps.store.upsertIssue({
+    id,
+    repositoryId: deps.repository.id,
+    sourceNumber: source.number,
+    sourceUrl: source.url,
+    title: source.title,
+    body: source.body,
+    sourceState: source.state,
+    sourceStateReason: source.stateReason ?? null,
+    labels: source.labels,
+    sourceUpdatedAt: source.updatedAt,
+    ...(source.type !== undefined ? { issueType: source.type } : {}),
+  });
+  return deps.store.getIssue(id)!;
+}
+
+function storedParent(deps: Deps, issue: ReturnType<typeof issueOf>) {
+  if (!issue.parentId) return null;
+  const relationship = deps.store.listChildren(issue.parentId).find(({ issueId }) => issueId === issue.id);
+  return { parentId: issue.parentId, siblingOrder: relationship?.siblingOrder ?? null };
+}
+
+async function persistDependencies(
+  deps: Deps,
+  issue: ReturnType<typeof issueOf>,
+  numbers: readonly number[],
+): Promise<void> {
+  const blockers = await Promise.all([...new Set(numbers)].map(async (number) =>
+    persistSourceIssue(deps, await deps.items.getIssue(deps.repository.address, number)).id,
+  ));
+  deps.store.replaceRelationships(issue.id, storedParent(deps, issue), blockers);
 }
 
 const ownerOf = (address: string) => address.split("/")[0]!;
@@ -348,6 +388,7 @@ const setCriteria = tool("item.setCriteria", "Replace acceptance criteria on the
       markdown: renderAcceptanceCriteriaSection(input!.criteria.map(normalise)),
       expectedRevision: deps.items.managedRevision(current.body),
     });
+    persistSourceIssue(deps, updated, issue.id);
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
@@ -356,7 +397,9 @@ const setTitle = tool("item.setTitle",
   titleInput, true,
   async ({ deps, input }, issue) => {
     await deps.items.setTitle(deps.repository.address, issue.sourceNumber, input!.title);
-    return { title: input!.title };
+    const updated = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
+    persistSourceIssue(deps, updated, issue.id);
+    return { title: updated.title };
   });
 
 const setSystemLabels = tool("item.setSystemLabels",
@@ -374,6 +417,7 @@ const setSystemLabels = tool("item.setSystemLabels",
       configured,
       input!.labels,
     );
+    persistSourceIssue(deps, await deps.items.getIssue(deps.repository.address, issue.sourceNumber), issue.id);
     return ACCEPTED;
   });
 
@@ -384,6 +428,8 @@ const setParent = tool("item.setParent", "Set the parent of the current issue.",
       childNumber: issue.sourceNumber,
       parentNumber: input!.parentNumber,
     });
+    const parent = persistSourceIssue(deps, await deps.items.getIssue(deps.repository.address, input!.parentNumber));
+    deps.store.replaceRelationships(issue.id, { parentId: parent.id, siblingOrder: null }, deps.store.listDependencies(issue.id));
     return ACCEPTED;
   });
 
@@ -392,13 +438,15 @@ const setDependencies = tool("item.setDependencies", "Replace dependencies of th
     const address = deps.repository.address;
     await deps.items.setDependencies({ address, issueNumber: issue.sourceNumber, blockerNumbers: input!.issueNumbers });
     const current = await deps.items.getIssue(address, issue.sourceNumber);
-    await deps.items.updateManagedSection({
+    const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "dependencies",
       markdown: formatDependencies(input!.issueNumbers.map((number) => ({ number }))),
       expectedRevision: deps.items.managedRevision(current.body),
     });
+    const stored = persistSourceIssue(deps, updated, issue.id);
+    await persistDependencies(deps, stored, input!.issueNumbers);
     return ACCEPTED;
   });
 
@@ -489,6 +537,7 @@ const setRefinement = tool("item.setRefinement",
       markdown: renderRefinementSection(input!),
       expectedRevision: deps.items.managedRevision(current.body),
     });
+    persistSourceIssue(deps, updated, issue.id);
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
@@ -532,6 +581,7 @@ const createChild = tool("item.createChild",
       ...(plan.type ? { type: plan.type } : {}),
       ...(plan.fields.length > 0 ? { fields: plan.fields } : {}),
     });
+    let sourceChild = child;
     if (dependsOn.length > 0) {
       await deps.items.setDependencies({
         address: deps.repository.address,
@@ -539,7 +589,7 @@ const createChild = tool("item.createChild",
         blockerNumbers: dependsOn,
       });
       const current = await deps.items.getIssue(deps.repository.address, child.number);
-      await deps.items.updateManagedSection({
+      sourceChild = await deps.items.updateManagedSection({
         address: deps.repository.address,
         issueNumber: child.number,
         section: "dependencies",
@@ -547,7 +597,14 @@ const createChild = tool("item.createChild",
         expectedRevision: deps.items.managedRevision(current.body),
       });
       await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+      sourceChild = await deps.items.getIssue(deps.repository.address, child.number);
     }
+    const storedChild = persistSourceIssue(deps, sourceChild);
+    if (plan.fields.length > 0) {
+      deps.store.setIssueMetadata(storedChild.id, { fields: Object.fromEntries(plan.fields.map(({ name, value }) => [name, value])) });
+    }
+    await persistDependencies(deps, storedChild, dependsOn);
+    deps.store.replaceRelationships(storedChild.id, { parentId: issue.id, siblingOrder: null }, deps.store.listDependencies(storedChild.id));
     return {
       ...child,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),

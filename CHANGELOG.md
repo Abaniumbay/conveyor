@@ -15,6 +15,9 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- Successful item writes now immediately update the stored issue and relationship snapshots used by
+  refinement gates, so labels, managed body sections, parent-child links, and dependencies are
+  visible in the same run even when a source is polled without webhooks.
 - Issues first stored as dependencies are now enrolled and queued when their repository snapshot
   carries the Conveyor label, rather than remaining active without a queue position.
 

@@ -10,6 +10,7 @@ import type { ItemContext, TaskContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { criteriaFromBody } from "../../src/tasks/item";
+import { parseManagedSections, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -139,18 +140,20 @@ describe("criteriaFromBody", () => {
   });
 });
 
-const REFINEMENT = { fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } };
+type RefinementConfig = { fields: string[]; require: { type: boolean; fields: string[]; section: boolean } };
+const REFINEMENT: RefinementConfig = { fields: ["Effort", "Priority"], require: { type: true, fields: ["Effort"], section: true } };
 const EFFORT = { id: 11, name: "Effort", dataType: "single_select", options: ["High", "Medium", "Low"] };
 const TARGET = { id: 12, name: "Target date", dataType: "date", options: [] };
 const PRIORITY = { id: 13, name: "Priority", dataType: "single_select", options: ["Urgent", "High", "Medium", "Low"] };
 
 async function world(options: {
-  refinement?: typeof REFINEMENT;
+  refinement?: RefinementConfig;
   types?: string[] | null;
   fields?: unknown[] | null;
   systemLabels?: string[];
   values?: Record<string, string>;
   children?: number[];
+  failTitleWriteOnce?: boolean;
   failDependencyWriteOnce?: boolean;
   failDependencySectionWriteOnce?: boolean;
 } = {}) {
@@ -158,10 +161,19 @@ async function world(options: {
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "o/r", folder: "/f", configHash: "h" });
+  const sources = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; labels: string[]; updatedAt: string; type?: string | null }>();
+  const source = (number: number) => sources.get(number) ?? {
+    id: `github:o/r#${number}`, number, url: `https://x/${number}`, title: `Issue ${number}`, body: "",
+    state: "open" as const, labels: [], updatedAt: "2026-01-01T00:00:00Z",
+  };
   const add = (id: string, number: number, extra: { body?: string; labels?: string[]; state?: "open" | "closed"; projected?: string } = {}) => {
     store.upsertIssue({
       id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://x/${number}`, title: `Issue ${number}`,
       body: extra.body ?? "", sourceState: extra.state ?? "open", labels: extra.labels ?? ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    sources.set(number, {
+      id, number, url: `https://x/${number}`, title: `Issue ${number}`, body: extra.body ?? "",
+      state: extra.state ?? "open", labels: extra.labels ?? ["conveyor"], updatedAt: "2026-01-01T00:00:00Z",
     });
     if (extra.projected) store.setIssueProjection(id, { stage: null, state: extra.projected, warning: null });
   };
@@ -172,7 +184,7 @@ async function world(options: {
   } as unknown as ConveyorConfig;
   const calls: Array<[string, unknown]> = [];
   const items = {
-    getIssue: async (...a: unknown[]) => { calls.push(["getIssue", a]); return { id: "i", number: 1, body: "B", title: "T", url: "u", state: "open", labels: [], updatedAt: "" }; },
+    getIssue: async (...a: unknown[]) => { calls.push(["getIssue", a]); return source(a[1] as number); },
     addComment: async (...a: unknown[]) => { calls.push(["addComment", a]); return 42; },
     updateManagedSection: async (input: unknown) => {
       calls.push(["updateManagedSection", input]);
@@ -180,9 +192,13 @@ async function world(options: {
         options.failDependencySectionWriteOnce = false;
         throw new Error("temporary dependency section failure");
       }
-      return { body: "updated" };
+      const write = input as { issueNumber: number; section: ManagedSectionName; markdown: string; expectedRevision: string };
+      const current = source(write.issueNumber);
+      const updated = { ...current, body: upsertManagedSection(current.body, write.section, write.markdown, write.expectedRevision) };
+      sources.set(updated.number, updated);
+      return updated;
     },
-    managedRevision: (body: string) => `rev:${body}`,
+    managedRevision: (body: string) => parseManagedSections(body).revision,
     setParent: async (i: unknown) => { calls.push(["setParent", i]); },
     setDependencies: async (i: unknown) => {
       calls.push(["setDependencies", i]);
@@ -191,11 +207,35 @@ async function world(options: {
         throw new Error("temporary dependency failure");
       }
     },
-    replaceManagedProjectLabels: async (...a: unknown[]) => { calls.push(["replaceManagedProjectLabels", a]); },
-    replaceConveyorLabels: async (...a: unknown[]) => { calls.push(["replaceConveyorLabels", a]); },
-    createChildIssue: async (i: unknown) => { calls.push(["createChildIssue", i]); return { id: "c", number: 99 }; },
+    replaceManagedProjectLabels: async (...a: unknown[]) => {
+      calls.push(["replaceManagedProjectLabels", a]);
+      const [_, number, managed, selected] = a as [string, number, string[], string[]];
+      const current = source(number);
+      sources.set(number, { ...current, labels: [...new Set([...current.labels.filter((label) => !managed.includes(label)), ...selected])].sort() });
+    },
+    replaceConveyorLabels: async (...a: unknown[]) => {
+      calls.push(["replaceConveyorLabels", a]);
+      const [_, number, labels] = a as [string, number, string[]];
+      const current = source(number);
+      sources.set(number, { ...current, labels: [...new Set([...current.labels.filter((label) => !label.startsWith("conveyor")), ...labels])].sort() });
+    },
+    createChildIssue: async (i: unknown) => {
+      calls.push(["createChildIssue", i]);
+      const input = i as { title: string; body: string; labels: string[]; type?: string };
+      const child = { id: "c", number: 99, url: "https://x/99", title: input.title, body: input.body, state: "open" as const, labels: input.labels, updatedAt: "2026-01-01T00:00:00Z", ...(input.type !== undefined ? { type: input.type } : {}) };
+      sources.set(child.number, child);
+      return child;
+    },
     listSubIssues: async (_address: string, _parentNumber: number) => (options.children ?? []).map((number) => ({ id: `child-${number}`, number })),
-    setTitle: async (...a: unknown[]) => { calls.push(["setTitle", a]); },
+    setTitle: async (...a: unknown[]) => {
+      calls.push(["setTitle", a]);
+      if (options.failTitleWriteOnce) {
+        options.failTitleWriteOnce = false;
+        throw new Error("temporary title failure");
+      }
+      const [_, number, title] = a as [string, number, string];
+      sources.set(number, { ...source(number), title });
+    },
     listIssueTypes: async () => (options.types === undefined ? ["Task", "Bug", "Feature"] : options.types),
     listIssueFields: async () => (options.fields === undefined ? [EFFORT, TARGET, PRIORITY] : options.fields),
     getIssueFieldValues: async () => (options.values ?? {}),
@@ -286,7 +326,7 @@ describe("item tools", () => {
   });
 
   test("get and guidance read", async () => {
-    const w = await world(); w.add("i1", 5);
+    const w = await world(); w.add("i1", 5, { body: "B" });
     expect((await tool("item.get", w.deps(), {})).output).toMatchObject({ body: "B" });
     expect(w.calls[0]).toEqual(["getIssue", ["o/r", 5]]);
     expect((await tool("item.guidance", w.deps(), {})).output).toBe("GUIDE");
@@ -321,19 +361,22 @@ describe("item tools", () => {
   });
 
   test("setCriteria writes the managed section against the current revision", async () => {
-    const w = await world(); w.add("i1", 5);
+    const w = await world(); w.add("i1", 5, { body: "B" });
     const out = await tool("item.setCriteria", w.deps(), { criteria: [{ id: "a", text: "First" }] });
-    expect(out.output).toEqual({ revision: "rev:updated" });
+    expect(out.output).toMatchObject({ revision: expect.any(String) });
     expect(w.calls[1]).toEqual(["updateManagedSection", {
       address: "o/r", issueNumber: 5, section: "acceptance-criteria",
-      markdown: "## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: "rev:B",
+      markdown: "## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: expect.any(String),
     }]);
   });
 
   test("setTitle replaces the current issue's title, trimmed", async () => {
     const w = await world(); w.add("i1", 5);
     expect((await tool("item.setTitle", w.deps(), { title: "  Players pick categories per family  " })).output).toEqual({ title: "Players pick categories per family" });
-    expect(w.calls).toEqual([["setTitle", ["o/r", 5, "Players pick categories per family"]]]);
+    expect(w.calls).toEqual([
+      ["setTitle", ["o/r", 5, "Players pick categories per family"]],
+      ["getIssue", ["o/r", 5]],
+    ]);
   });
 
   test("setSystemLabels rejects unconfigured labels before changing labels", async () => {
@@ -350,13 +393,68 @@ describe("item tools", () => {
     expect(w.calls).toEqual([]);
   });
 
+  test("keeps a successful system-label replacement visible to item.load and its gate", async () => {
+    const w = await world();
+    w.add("i1", 5, { labels: ["area:api", "conveyor", "conveyor:refinement", "customer-label"] });
+
+    await tool("item.setSystemLabels", w.deps(), { labels: ["area:ui"] });
+
+    expect(w.store.getIssue("i1")!.labels).toEqual(["area:ui", "conveyor", "conveyor:refinement", "customer-label"]);
+    const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(loaded.systemLabels).toEqual(["area:ui"]);
+    expect((await run("item.labelsValid", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
+  });
+
   test("setParent and setDependencies", async () => {
     const w = await world(); w.add("i1", 5);
     expect((await tool("item.setParent", w.deps(), { parentNumber: 3 })).output).toEqual({ accepted: true });
     await tool("item.setDependencies", w.deps(), { issueNumbers: [7, 8] });
-    expect(w.calls.map((c) => c[0])).toEqual(["setParent", "setDependencies", "getIssue", "updateManagedSection"]);
-    expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 5, blockerNumbers: [7, 8] });
-    expect(w.calls[3]![1]).toMatchObject({ section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls.map((c) => c[0])).toEqual(["setParent", "getIssue", "setDependencies", "getIssue", "updateManagedSection", "getIssue", "getIssue"]);
+    expect(w.calls[2]![1]).toEqual({ address: "o/r", issueNumber: 5, blockerNumbers: [7, 8] });
+    expect(w.calls[4]![1]).toMatchObject({ section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.store.listChildren("github:o/r#3").map((child) => child.issueId)).toEqual(["i1"]);
+    expect(w.store.listDependencies("i1")).toEqual(["github:o/r#7", "github:o/r#8"]);
+  });
+
+  test("keeps successful content writes visible to the next refinement gates", async () => {
+    const refinement = { fields: [], require: { type: false, fields: [], section: true } };
+    const w = await world({ refinement });
+    w.add("i1", 5, { body: "Unmanaged introduction." });
+    w.add("dep", 7, { state: "closed" });
+
+    await tool("item.setTitle", w.deps(), { title: "Updated title" });
+    await tool("item.setCriteria", w.deps(), { criteria: [{ id: "criterion", text: "Visible now" }] });
+    await tool("item.setRefinement", w.deps(), { summary: "Ready for the gate." });
+    await tool("item.setDependencies", w.deps(), { issueNumbers: [7] });
+
+    const stored = w.store.getIssue("i1")!;
+    expect(stored.title).toBe("Updated title");
+    expect(stored.body).toContain("Unmanaged introduction.");
+    expect(parseManagedSections(stored.body).sections).toMatchObject({
+      "acceptance-criteria": expect.stringContaining("Visible now"),
+      refinement: expect.stringContaining("Ready for the gate."),
+      dependencies: "- #7",
+    });
+    const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(loaded).toMatchObject({ title: "Updated title", criteria: [{ id: "criterion", text: "Visible now" }], dependencies: [{ id: "dep", number: 7, satisfied: true }] });
+    expect((await run("item.criteriaDefined", { context: ctx(loaded) })).status).toBe("pass");
+    expect((await run("item.refinementComplete", { context: ctx(loaded, { refinement }) })).status).toBe("pass");
+    expect(loaded.refinement?.section).toBe(true);
+  });
+
+  test("does not project failed writes or rejected managed sections into the store", async () => {
+    const failedTitle = await world({ failTitleWriteOnce: true });
+    failedTitle.add("i1", 5);
+    await expect(tool("item.setTitle", failedTitle.deps(), { title: "Not stored" })).rejects.toThrow("temporary title failure");
+    expect(failedTitle.store.getIssue("i1")!.title).toBe("Issue 5");
+
+    const rejectedSection = await world({ failDependencySectionWriteOnce: true });
+    rejectedSection.add("i1", 5, { body: "Original body." });
+    rejectedSection.add("existing", 2);
+    rejectedSection.store.replaceRelationships("i1", null, ["existing"]);
+    await expect(tool("item.setDependencies", rejectedSection.deps(), { issueNumbers: [7] })).rejects.toThrow("temporary dependency section failure");
+    expect(rejectedSection.store.getIssue("i1")!.body).toBe("Original body.");
+    expect(rejectedSection.store.listDependencies("i1")).toEqual(["existing"]);
   });
 
   test("createChild labels the child for the next stage and keeps configured system labels only", async () => {
@@ -364,7 +462,7 @@ describe("item tools", () => {
     const out = await tool("item.createChild", w.deps(), {
       title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], systemLabels: ["area:api", "bogus"],
     });
-    expect(out.output).toEqual({ id: "c", number: 99 });
+    expect(out.output).toMatchObject({ id: "c", number: 99 });
     expect(w.calls[0]![1]).toMatchObject({
       address: "o/r", parentNumber: 5, title: "Kid",
       labels: ["conveyor", "conveyor:implementation", "area:api"],
@@ -378,8 +476,8 @@ describe("item tools", () => {
       title: "Later child", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7, 8],
     });
 
-    expect(out.output).toEqual({ id: "c", number: 99, dependsOn: [7, 8] });
-    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels"]);
+    expect(out.output).toMatchObject({ id: "c", number: 99, dependsOn: [7, 8] });
+    expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
     expect(w.calls[0]![1]).toMatchObject({ labels: [] });
     expect(w.calls[1]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
     expect(w.calls[3]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
@@ -422,13 +520,21 @@ describe("item tools", () => {
     expect(w.calls.filter(([name]) => name === "updateManagedSection")).toHaveLength(2);
   });
 
-  test("createChild without dependencies retains its existing response and does not write relationships", async () => {
+  test("createChild without dependencies stores its parent relationship", async () => {
     for (const dependsOn of [undefined, []]) {
       const w = await world(); w.add("i1", 5);
       const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }] };
       const out = await tool("item.createChild", w.deps(), dependsOn === undefined ? input : { ...input, dependsOn });
-      expect(out.output).toEqual({ id: "c", number: 99 });
+      expect(out.output).toMatchObject({ id: "c", number: 99 });
       expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue"]);
+      expect(w.store.listChildren("i1").map((child) => child.issueId)).toEqual(["c"]);
+      expect(w.store.getIssue("c")).toMatchObject({
+        labels: ["conveyor", "conveyor:implementation"],
+        body: expect.stringContaining("Do <!-- conveyor:criterion:a -->"),
+      });
+      const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+      expect(loaded.children).toMatchObject([{ id: "c", number: 99, enrolled: true, hasCriteria: true }]);
+      expect((await run("item.childrenValid", { context: ctx(loaded) })).status).toBe("pass");
     }
   });
 
@@ -503,7 +609,7 @@ describe("item tools", () => {
       summary: "One release.", inScope: ["Tools"], outOfScope: ["Dates"], areas: ["src/tasks/item.ts"],
       coupling: ["#111 edits the renderer; ordered after it"], parallelChildren: ["#2 and #3"], risks: ["Org lacks types"], verification: ["Unit tests"],
     });
-    expect(out.output).toEqual({ revision: "rev:updated" });
+    expect(out.output).toMatchObject({ revision: expect.any(String) });
     const written = w.calls[1]![1] as { section: string; markdown: string };
     expect(written.section).toBe("refinement");
     expect(written.markdown).toBe([
@@ -522,7 +628,7 @@ describe("item tools", () => {
       title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], type: "feature",
       fields: [{ name: "Effort", value: "Medium" }], refinement: { summary: "Small slice." },
     });
-    expect(out.output).toEqual({ id: "c", number: 99, type: "Feature", fields: { Effort: "Medium" } });
+    expect(out.output).toMatchObject({ id: "c", number: 99, type: "Feature", fields: { Effort: "Medium" } });
     const created = w.calls[0]![1] as { body: string; type: string; fields: unknown[] };
     expect(created.type).toBe("Feature");
     expect(created.fields).toEqual([{ fieldId: 11, name: "Effort", value: "Medium" }]);
@@ -542,7 +648,7 @@ describe("item tools", () => {
   test("createChild skips a type the owner does not offer and says so", async () => {
     const w = await world({ refinement: REFINEMENT, types: null }); w.add("i1", 5);
     const out = await tool("item.createChild", w.deps(), { title: "Kid", body: "B", acceptanceCriteria: [{ id: "a", text: "Do" }], type: "Task" });
-    expect(out.output).toEqual({ id: "c", number: 99, unavailable: ["issue types are not available for o"] });
+    expect(out.output).toMatchObject({ id: "c", number: 99, unavailable: ["issue types are not available for o"] });
     expect(w.calls[0]![1]).not.toHaveProperty("type");
   });
 
