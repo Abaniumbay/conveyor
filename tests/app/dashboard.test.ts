@@ -977,6 +977,49 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("keeps ordinary roll-up and child scheduling available after later-stage enrollment", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-later-enrollment-rollup-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      labels: {
+        enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", blocked: "conveyor:blocked" },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: { default: { stages: [{ id: "refinement" }, { id: "implementation" }, { id: "review" }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" } },
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    for (const issue of [
+      { id: "parent", number: 1, stage: "implementation", labels: ["conveyor", "conveyor:implementation"] },
+      { id: "child", number: 2, stage: "review", labels: ["conveyor", "conveyor:review"] },
+    ]) {
+      store.upsertIssue({ id: issue.id, repositoryId: "repo", sourceNumber: issue.number, sourceUrl: `https://example.test/${issue.number}`, title: issue.id, body: "", sourceState: "open", labels: issue.labels, sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+      store.setIssueProjection(issue.id, { stage: issue.stage, state: "active", warning: null });
+      store.setQueueRank(issue.id, issue.number);
+    }
+    store.setStageState({ issueId: "child", stageId: "review", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    const writes: Array<{ number: number; labels: readonly string[] }> = [];
+    const source = {
+      async listSubIssues(_address: string, number: number) {
+        return number === 1 ? [{ id: "github:owner/repo#2", number: 2, url: "https://example.test/2", title: "child", body: "", state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:review"], updatedAt: "2026-01-01T00:00:00Z" }] : [];
+      },
+      async listDependencies() { return []; },
+      async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) { writes.push({ number, labels }); },
+    };
+    const service = new ConveyorService(config, store, source as never);
+    await (service as unknown as { reconcileRelationships(repositoryId: string, address: string): Promise<void> }).reconcileRelationships("repo", "owner/repo");
+
+    expect(writes).toEqual([{ number: 1, labels: ["conveyor", "conveyor:review"] }]);
+    expect(store.getStageState("parent")).toMatchObject({ stageId: "review", status: "awaiting-source" });
+    expect((service as unknown as { schedulerCandidates(): Array<{ id: string; eligible: boolean }> }).schedulerCandidates())
+      .toContainEqual(expect.objectContaining({ id: "child", eligible: true }));
+    store.close();
+  });
+
   test("requires a refinement advance from the current refinement visit", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-refinement-visit-"));
     temporaryDirectories.push(root);

@@ -603,6 +603,10 @@ export class ConveyorService {
     // deliberately does not invalidate the parent's earlier passage.
     const transitions = this.store.listStageTransitions(issue.id)
       .filter((transition) => transition.status === "completed");
+    // An item may be enrolled directly at a later pipeline stage. In that
+    // case it never owned a refinement decision, so retain ordinary roll-up
+    // behavior rather than waiting for an advance it cannot produce.
+    if (!transitions.some((transition) => transition.toStage === "refinement")) return true;
     let refinementVisit = 0;
     for (const [index, transition] of transitions.entries()) {
       const startsRefinementVisit =
