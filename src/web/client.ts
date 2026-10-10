@@ -4,8 +4,119 @@ import { quotaCountdown, updateQuotaWindow } from "../usage/quota-time";
 export const quotaClient = `const quotaCountdown = ${quotaCountdown.toString()};
   const updateQuotaWindow = ${updateQuotaWindow.toString()};`;
 
+type DashboardEventSource = {
+  readyState: number;
+  onopen: ((event: Event) => void) | null;
+  onerror: ((event: Event) => void) | null;
+  close(): void;
+  addEventListener(type: string, listener: (event: { data: string }) => void): void;
+};
+
+export function createDashboardEventConnection(options: {
+  createEventSource?: () => DashboardEventSource;
+  onConnectionChange: (connected: boolean) => void;
+  onReconnect: () => void;
+  onEvent: (type: string, event: { data: string }) => void;
+  pageActive?: () => boolean;
+  online?: () => boolean;
+  now?: () => number;
+  retryDelay?: number;
+  staleAfter?: number;
+  setTimeout?: (callback: () => void, delay: number) => any;
+  clearTimeout?: (timer: any) => void;
+  setInterval?: (callback: () => void, delay: number) => any;
+  clearInterval?: (timer: any) => void;
+}) {
+  const createEventSource = options.createEventSource ?? (() => new EventSource('/events/dashboard'));
+  const pageActive = options.pageActive ?? (() => document.visibilityState === 'visible');
+  const online = options.online ?? (() => navigator.onLine);
+  const now = options.now ?? (() => Date.now());
+  const retryDelay = options.retryDelay ?? 5_000;
+  const staleAfter = options.staleAfter ?? 30_000;
+  const setTimer = options.setTimeout ?? ((callback, delay) => setTimeout(callback, delay));
+  const clearTimer = options.clearTimeout ?? ((timer) => clearTimeout(timer));
+  const setWatchdog = options.setInterval ?? ((callback, delay) => setInterval(callback, delay));
+  const clearWatchdog = options.clearInterval ?? ((timer) => clearInterval(timer));
+  const eventTypes = ['status', 'revision', 'conversation', 'activity'];
+  let source: DashboardEventSource | null = null;
+  let retryTimer: any = null;
+  let lastActivity = now();
+  let opened = false;
+  let closed = false;
+
+  const clearRetry = () => {
+    if (retryTimer === null) return;
+    clearTimer(retryTimer);
+    retryTimer = null;
+  };
+  const closeSource = () => {
+    if (!source) return;
+    const current = source;
+    source = null;
+    current.close();
+  };
+  const canConnect = () => !closed && pageActive() && online();
+  const scheduleRetry = () => {
+    if (!canConnect() || retryTimer !== null) return;
+    retryTimer = setTimer(() => {
+      retryTimer = null;
+      open();
+    }, retryDelay);
+  };
+  const reconnect = () => {
+    options.onConnectionChange(false);
+    closeSource();
+    scheduleRetry();
+  };
+  const open = () => {
+    if (!canConnect() || source) return;
+    const current = createEventSource();
+    source = current;
+    lastActivity = now();
+    current.onopen = () => {
+      if (source !== current) return;
+      lastActivity = now();
+      clearRetry();
+      options.onConnectionChange(true);
+      if (opened) options.onReconnect();
+      opened = true;
+    };
+    current.onerror = () => {
+      if (source !== current) return;
+      reconnect();
+    };
+    for (const type of eventTypes) current.addEventListener(type, (event) => {
+      if (source !== current) return;
+      lastActivity = now();
+      options.onEvent(type, event);
+    });
+  };
+  const check = () => {
+    if (closed || !pageActive()) return;
+    if (!online()) {
+      options.onConnectionChange(false);
+      closeSource();
+      return;
+    }
+    if (!source || now() - lastActivity >= staleAfter) reconnect();
+  };
+
+  const watchdog = setWatchdog(check, Math.min(retryDelay, staleAfter));
+  open();
+  return {
+    check,
+    close: () => {
+      closed = true;
+      clearRetry();
+      clearWatchdog(watchdog);
+      closeSource();
+    },
+  };
+}
+
 export const dashboardClient = String.raw`(() => {
   ${quotaClient}
+  const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
   const body = document.body;
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
   let board = document.querySelector('.board');
@@ -1210,7 +1321,6 @@ export const dashboardClient = String.raw`(() => {
   let dashboardRefreshQueued = false;
   let dashboardRequestVersion = 0;
   let revision = body.dataset.dashboardRevision || '';
-  const dashboardEvents = new EventSource('/events/dashboard');
   const setConnection = (nextConnected) => {
     connected = nextConnected;
     if (!serverStatus || !connectionState) return;
@@ -1304,39 +1414,45 @@ export const dashboardClient = String.raw`(() => {
   };
   bindServerStatus();
   syncThemeControls();
-  dashboardEvents.onopen = () => setConnection(true);
-  dashboardEvents.onerror = () => setConnection(false);
-  dashboardEvents.addEventListener('status', (message) => {
-    try {
-      latestServerStatus = JSON.parse(message.data);
-      renderServerStatus();
-    } catch {
-      if (serverMetrics) serverMetrics.textContent = 'Server metrics unavailable';
-    }
-  });
-  dashboardEvents.addEventListener('revision', (message) => {
-    try {
-      const next = JSON.parse(message.data);
-      if (typeof next.revision !== 'string' || next.revision === revision) return;
-      revision = next.revision;
-      body.dataset.dashboardRevision = revision;
-      if (body.dataset.dashboardView === 'agent') return;
-      if (backlogBusy) {
-        pendingRefresh = true;
+  const dashboardEvents = createDashboardEventConnection({
+    onConnectionChange: setConnection,
+    onReconnect: () => void refreshDashboard(),
+    onEvent: (type, message) => {
+      if (type === 'status') {
+        try {
+          latestServerStatus = JSON.parse(message.data);
+          renderServerStatus();
+        } catch {
+          if (serverMetrics) serverMetrics.textContent = 'Server metrics unavailable';
+        }
         return;
       }
-      const openDialog = document.querySelector('dialog[open]');
-      if (openDialog) {
-        scheduleJourneyRefresh();
-        scheduleSummaryRefresh();
-        pendingRefresh = true;
-        return;
-      }
-      void refreshDashboard();
-    } catch {}
+      if (type === 'conversation') return scheduleConversationRefresh();
+      if (type === 'activity') return scheduleActivityRefresh();
+      try {
+        const next = JSON.parse(message.data);
+        if (typeof next.revision !== 'string' || next.revision === revision) return;
+        revision = next.revision;
+        body.dataset.dashboardRevision = revision;
+        if (body.dataset.dashboardView === 'agent') return;
+        if (backlogBusy) {
+          pendingRefresh = true;
+          return;
+        }
+        const openDialog = document.querySelector('dialog[open]');
+        if (openDialog) {
+          scheduleJourneyRefresh();
+          scheduleSummaryRefresh();
+          pendingRefresh = true;
+          return;
+        }
+        void refreshDashboard();
+      } catch {}
+    },
   });
-  dashboardEvents.addEventListener('conversation', scheduleConversationRefresh);
-  dashboardEvents.addEventListener('activity', scheduleActivityRefresh);
+  document.addEventListener('visibilitychange', dashboardEvents.check);
+  window.addEventListener('online', dashboardEvents.check);
+  window.addEventListener('offline', dashboardEvents.check);
 
   let steeringSource = null;
   let steeringPanel = null;
