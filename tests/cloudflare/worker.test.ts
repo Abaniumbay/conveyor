@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { handleRequest } from "../../deploy/cloudflare/worker";
 
 const origin = (response: Response) => async () => response;
-const request = (method = "GET", accept = "text/html") => new Request("https://reports.number34.nl/board", { method, headers: { accept } });
+const request = (method = "GET", accept = "text/html") => new Request("https://conveyor.example.com/board", { method, headers: { accept } });
 
 test("passes healthy, authenticated, redirect, and application error responses through unchanged", async () => {
   for (const status of [200, 302, 401, 403, 404, 500]) {

@@ -329,9 +329,10 @@ describe("renderDashboard", () => {
   });
 
   test("renders harness quotas in the shared header with low-capacity and exact reset details", () => {
+    const lowCapacityReset = new Date(Date.now() + 3_600_000).toISOString();
     for (const view of ["board", "attention", "team", "reports"] as const) {
       const html = renderDashboard({ ...dashboard, view, harnessUsage: [
-        { id: "codex", name: "Codex", windows: { weekly: { remaining: 4.0000000000000036, resetsAt: "2026-10-09T21:11:00.000Z", reportedAt: "2026-10-03T14:04:00.000Z" } } },
+        { id: "codex", name: "Codex", windows: { weekly: { remaining: 4.0000000000000036, resetsAt: lowCapacityReset, reportedAt: "2026-10-03T14:04:00.000Z" } } },
         { id: "claude", name: "Claude Code", windows: { fiveHour: { remaining: 86, resetsAt: "2026-10-03T18:30:00.000Z", reportedAt: "2026-10-03T14:04:00.000Z" } } },
         { id: "stale", name: "Stale", windows: { weekly: { remaining: 70, resetsAt: "2020-01-01T00:00:00.000Z", reportedAt: "2019-12-25T00:00:00.000Z" } } },
         { id: "unavailable", name: "Unavailable", windows: {} },
@@ -350,7 +351,7 @@ describe("renderDashboard", () => {
       expect(html).toContain("quota-window--low");
       expect(html).toContain('tabindex="0"');
       expect(html).toContain('data-countdown');
-      expect(html).toContain('data-reset-at="2026-10-09T21:11:00.000Z"');
+      expect(html).toContain(`data-reset-at="${lowCapacityReset}"`);
       expect(html).toContain('data-reported-at="2026-10-03T14:04:00.000Z"');
       expect(html).toContain("Usage unavailable");
       expect(html).not.toContain("Unavailable 0% left");
