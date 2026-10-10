@@ -43,7 +43,7 @@ async function databasePath(context: CommandContext): Promise<string> {
   return (await loadCommandConfig(context, null)).settings.database;
 }
 
-interface ServiceStatus { version: { version: string }; ready: boolean; startedAt: string }
+interface ServiceStatus { version: { version: string }; ready: boolean; startedAt: string; pid?: number }
 
 /**
  * The running service's status, or null only when no Conveyor process runs for this home. A process
@@ -64,22 +64,43 @@ async function serviceStatus(context: CommandContext): Promise<ServiceStatus | n
   return null;
 }
 
-/** Waits until the switch with `id` is recorded and its release reports ready; throws with the recorded reason otherwise. */
-async function waitForSwitch(context: CommandContext, pending: PendingSwitch, timeoutMs: number): Promise<SwitchRecord> {
-  const deadline = Date.now() + timeoutMs;
+/**
+ * Waits through the pending drain, then gives the selected release its own readiness window.
+ * A status request is capped by that window: a socket which accepts a connection but never replies
+ * must not make the command wait indefinitely.
+ */
+export async function waitForSwitch(context: CommandContext, pending: PendingSwitch, waitTimeoutMs: number, oldProcessId?: number): Promise<SwitchRecord> {
+  const drainDeadline = Date.parse(pending.drainDeadline);
+  let readinessDeadline: number | null = null;
   for (;;) {
     const state = await readReleaseState(context.paths.home);
     const record = state.history.find((entry) => entry.id === pending.id);
     if (record && (record.status === "cancelled" || record.status === "failed")) {
       throw new CliError(`the ${pending.kind} to ${pending.version} was ${record.status}: ${record.reason ?? "no reason recorded"}`, EXIT.failure);
     }
-    const service = await serviceStatus(context).catch(() => null);
-    if (record?.status === "completed" && service?.version.version === pending.version && service.ready) return record;
-    if (Date.now() > deadline) {
-      const where = record ? `the service has not reported ${pending.version} ready` : "the service has not switched yet";
-      throw new CliError(`timed out: ${where}. Check conveyor status and conveyor logs; conveyor rollback returns to ${pending.from}.`, EXIT.failure);
+    if (!record) {
+      if (Date.now() >= drainDeadline) {
+        throw new CliError(`timed out: the service has not switched by its drain deadline. Check conveyor status and conveyor logs; conveyor rollback returns to ${pending.from}.`, EXIT.failure);
+      }
+      await Bun.sleep(Math.min(1_000, Math.max(0, drainDeadline - Date.now())));
+      continue;
     }
-    await Bun.sleep(1_000);
+
+    readinessDeadline ??= Date.now() + waitTimeoutMs;
+    const remaining = Math.max(0, readinessDeadline - Date.now());
+    const service = await Promise.race([
+      serviceStatus(context).catch(() => null),
+      Bun.sleep(remaining).then(() => null),
+    ]);
+    if (record.status === "completed" && service?.version.version === pending.version && service.ready) return record;
+    if (Date.now() >= readinessDeadline) {
+      const process = await runningServe(context.paths.run);
+      if (process && (!oldProcessId || process === oldProcessId)) {
+        throw new CliError(`timed out: the old process did not stop before the readiness timeout. Check conveyor status and conveyor logs; conveyor rollback returns to ${pending.from}.`, EXIT.failure);
+      }
+      throw new CliError(`timed out: the selected release did not report ${pending.version} ready before the readiness timeout. Check conveyor status and conveyor logs; conveyor rollback returns to ${pending.from}.`, EXIT.failure);
+    }
+    await Bun.sleep(Math.min(1_000, Math.max(0, readinessDeadline - Date.now())));
   }
 }
 
@@ -161,13 +182,14 @@ export const upgrade: Command = {
       throw new CliError(`${staged.version} is older than ${current}: upgrade only moves forward. To return to an earlier release, use conveyor rollback.`, EXIT.rejected);
     }
     if (service) {
+      const oldProcessId = service.pid ?? await runningServe(context.paths.run) ?? undefined;
       const { pending } = await control<{ pending: PendingSwitch }>(context, "POST", "/v1/releases", { kind: "upgrade", version: staged.version, prefix, drainTimeoutMs });
       if (context.options["no-wait"]) {
         if (context.json) return printJson(context, { scheduled: pending });
         return context.out(`Scheduled the upgrade from ${pending.from} to ${pending.version}: the service switches once running work finishes (by ${pending.drainDeadline}).`);
       }
       context.err(`Draining: the service switches to ${pending.version} once running work finishes (by ${pending.drainDeadline})...`);
-      const record = await waitForSwitch(context, pending, drainTimeoutMs + waitTimeoutMs);
+      const record = await waitForSwitch(context, pending, waitTimeoutMs, oldProcessId);
       if (context.json) return printJson(context, record);
       return context.out(`Upgraded from ${record.from} to ${record.to}; it is running and ready. Backup: ${record.backup}${record.toSchema !== record.fromSchema ? ` (database schema ${record.fromSchema} -> ${record.toSchema})` : ""}`);
     }
@@ -197,12 +219,13 @@ export const rollback: Command = {
     const restore = context.options["restore-backup"] === true;
     const service = await serviceStatus(context);
     if (service) {
+      const oldProcessId = service.pid ?? await runningServe(context.paths.run) ?? undefined;
       const { pending } = await control<{ pending: PendingSwitch }>(context, "POST", "/v1/releases", {
         kind: "rollback", prefix, restoreBackup: restore, drainTimeoutMs: timeout(context, "drain-timeout", "30m"),
       });
       if (context.options["no-wait"]) return context.out(`Scheduled the rollback from ${pending.from} to ${pending.version}.`);
       context.err(`Draining: the service rolls back to ${pending.version} once running work finishes...`);
-      const record = await waitForSwitch(context, pending, timeout(context, "drain-timeout", "30m") + timeout(context, "wait-timeout", "5m"));
+      const record = await waitForSwitch(context, pending, timeout(context, "wait-timeout", "5m"), oldProcessId);
       if (context.json) return printJson(context, record);
       return context.out(`Rolled back from ${record.from} to ${record.to}${pending.restoreBackup ? ` and restored ${pending.restoreBackup}` : ""}; it is running and ready.`);
     }

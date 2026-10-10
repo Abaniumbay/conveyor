@@ -7,13 +7,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { EXIT } from "../../src/cli/args";
+import { type CommandContext } from "../../src/cli/command";
+import { homePaths } from "../../src/cli/home";
+import { waitForSwitch } from "../../src/cli/commands/release";
 import { runCli } from "../../src/cli/main";
 import { ReleaseCoordinator, SwitchRefused } from "../../src/control/releases";
+import { serveControlSocket } from "../../src/control/server";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION, NewerSchemaError } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
 import { claimPidFile, runningServe } from "../../src/cli/process-lock";
 import { currentVersion, detectPrefix, stageRelease, switchCurrent } from "../../src/release/install";
-import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, writeReleaseState, type ReleaseState, type SwitchRecord } from "../../src/release/state";
+import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, writeReleaseState, type PendingSwitch, type ReleaseState, type SwitchRecord } from "../../src/release/state";
 import { BUILD } from "../../src/version";
 
 const directories: string[] = [];
@@ -339,6 +343,77 @@ describe("switching the running service", () => {
     const restored = await ConveyorStore.open(world.store.sqlite().filename).catch(() => null);
     expect(restored?.dashboardAccounts().map((account) => account.username)).toEqual([]);
     restored?.close();
+  });
+});
+
+describe("release command readiness waiting", () => {
+  function pending(id: string, home: string, version = "9.9.9", drainMs = 50): PendingSwitch {
+    return { id, kind: "upgrade", version, from: BUILD.version, prefix: "/prefix", restoreBackup: null, requestedAt: new Date().toISOString(), drainDeadline: new Date(Date.now() + drainMs).toISOString() };
+  }
+
+  function context(home: string): CommandContext {
+    return { positionals: [], options: {}, paths: homePaths(home), json: false, interactive: false, out: () => {}, err: () => {} };
+  }
+
+  async function statusServer(home: string, status: () => { version: { version: string }; ready: boolean }) {
+    return serveControlSocket(homePaths(home).controlSocket, async () => Response.json(status()));
+  }
+
+  test("a switched upgrade gives the selected release its full readiness allowance after a partial drain", async () => {
+    const home = await temporary();
+    const switchRequest = pending("partial-drain", home, "9.9.9", 600);
+    const control = await statusServer(home, () => ({ version: { version: "9.9.9" }, ready: true }));
+    try {
+      setTimeout(() => void writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "completed", reason: null, requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] }), 250);
+      await expect(waitForSwitch(context(home), switchRequest, 150)).resolves.toMatchObject({ status: "completed" });
+    } finally {
+      await control.stop();
+    }
+  });
+
+  test("a stalled old process cannot spend the readiness allowance", async () => {
+    const home = await temporary();
+    const switchRequest = pending("stalled-old", home);
+    await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "switched", reason: null, requestedAt: switchRequest.requestedAt, finishedAt: null }] });
+    const old = Bun.spawn(["sh", "-c", "sleep 30", "conveyor", "serve"], { stdout: "ignore" });
+    await mkdir(path.join(home, "run"), { recursive: true });
+    await writeFile(path.join(home, "run/conveyor.pid"), `${old.pid}\n`);
+    const started = Date.now();
+    try {
+      await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("old process did not stop");
+      expect(Date.now() - started).toBeLessThan(2_020);
+    } finally {
+      old.kill();
+      await old.exited;
+    }
+  });
+
+  test("a stopped old process reports the readiness timeout when the selected release is not ready", async () => {
+    const home = await temporary();
+    const switchRequest = pending("not-ready", home);
+    await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "completed", reason: null, requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] });
+    const control = await statusServer(home, () => ({ version: { version: "9.9.9" }, ready: false }));
+    try {
+      await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("readiness timeout");
+    } finally {
+      await control.stop();
+    }
+  });
+
+  test("ready and terminal recorded switches retain their success and failure boundaries", async () => {
+    const home = await temporary();
+    const switchRequest = pending("ready", home);
+    const control = await statusServer(home, () => ({ version: { version: "9.9.9" }, ready: true }));
+    try {
+      await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "completed", reason: null, requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] });
+      await expect(waitForSwitch(context(home), switchRequest, 20)).resolves.toMatchObject({ status: "completed" });
+      await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "failed", reason: "switch failed", requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] });
+      await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("switch failed");
+      await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "cancelled", reason: "drain cancelled", requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] });
+      await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("drain cancelled");
+    } finally {
+      await control.stop();
+    }
   });
 });
 
