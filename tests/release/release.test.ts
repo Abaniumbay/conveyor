@@ -355,8 +355,11 @@ describe("release command readiness waiting", () => {
     return { positionals: [], options: {}, paths: homePaths(home), json: false, interactive: false, out: () => {}, err: () => {} };
   }
 
-  async function statusServer(home: string, status: () => { version: { version: string }; ready: boolean }) {
-    return serveControlSocket(homePaths(home).controlSocket, async () => Response.json(status()));
+  async function statusServer(home: string, status: () => { version: { version: string }; ready: boolean } | Promise<Response>) {
+    return serveControlSocket(homePaths(home).controlSocket, async () => {
+      const response = await status();
+      return response instanceof Response ? response : Response.json(response);
+    });
   }
 
   test("a switched upgrade gives the selected release its full readiness allowance after a partial drain", async () => {
@@ -398,6 +401,27 @@ describe("release command readiness waiting", () => {
     } finally {
       await control.stop();
     }
+  });
+
+  test("a stalled status response is aborted at the readiness deadline", async () => {
+    const home = await temporary();
+    const switchRequest = pending("stalled-status", home);
+    await writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "completed", reason: null, requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] });
+    const control = await statusServer(home, () => new Promise<Response>(() => {}));
+    const started = Date.now();
+    try {
+      await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("readiness timeout");
+      expect(Date.now() - started).toBeLessThan(2_020);
+    } finally {
+      await control.stop();
+    }
+  });
+
+  test("a drain cancellation recorded just after its deadline reports its reason", async () => {
+    const home = await temporary();
+    const switchRequest = pending("late-cancel", home, "9.9.9", 1);
+    setTimeout(() => void writeReleaseState(home, { pending: null, history: [{ id: switchRequest.id, kind: "upgrade", from: BUILD.version, to: "9.9.9", fromSchema: null, toSchema: null, backup: null, status: "cancelled", reason: "the drain timed out with work still running", requestedAt: switchRequest.requestedAt, finishedAt: new Date().toISOString() }] }), 10);
+    await expect(waitForSwitch(context(home), switchRequest, 20)).rejects.toThrow("the drain timed out with work still running");
   });
 
   test("ready and terminal recorded switches retain their success and failure boundaries", async () => {

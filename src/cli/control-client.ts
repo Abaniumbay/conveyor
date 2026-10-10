@@ -46,7 +46,7 @@ async function unreachableReason(socket: string): Promise<string | undefined> {
 }
 
 /** Calls the running service; refusals exit 5, a missing item 1, an unreachable service 4. */
-export async function control<T>(context: CommandContext, method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<T> {
+export async function control<T>(context: CommandContext, method: "GET" | "POST" | "DELETE", route: string, body?: unknown, options?: { signal?: AbortSignal }): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`http://conveyor${route}`, {
@@ -54,8 +54,10 @@ export async function control<T>(context: CommandContext, method: "GET" | "POST"
       method,
       headers: { "content-type": "application/json", "x-conveyor-actor": caller() },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
-  } catch {
+  } catch (error) {
+    if (options?.signal?.aborted) throw error;
     throw new ServiceUnavailable(context.paths.controlSocket, await unreachableReason(context.paths.controlSocket));
   }
   const payload = (await response.json().catch(() => ({}))) as T & { error?: string };

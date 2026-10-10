@@ -49,8 +49,9 @@ interface ServiceStatus { version: { version: string }; ready: boolean; startedA
  * The running service's status, or null only when no Conveyor process runs for this home. A process
  * that is starting (or not answering) is not "stopped": acting directly under it would corrupt state.
  */
-async function serviceStatus(context: CommandContext): Promise<ServiceStatus | null> {
-  const status = await control<ServiceStatus>(context, "GET", "/v1/status").catch((error: unknown) => {
+async function serviceStatus(context: CommandContext, signal?: AbortSignal): Promise<ServiceStatus | null> {
+  const status = await control<ServiceStatus>(context, "GET", "/v1/status", undefined, signal ? { signal } : undefined).catch((error: unknown) => {
+    if (signal?.aborted) throw error;
     if (error instanceof ServiceUnavailable) return null;
     throw error;
   });
@@ -71,6 +72,9 @@ async function serviceStatus(context: CommandContext): Promise<ServiceStatus | n
  */
 export async function waitForSwitch(context: CommandContext, pending: PendingSwitch, waitTimeoutMs: number, oldProcessId?: number): Promise<SwitchRecord> {
   const drainDeadline = Date.parse(pending.drainDeadline);
+  // The service records an expired drain from a one-second tick. Give that terminal record
+  // a bounded chance to arrive so its reason reaches the operator.
+  const drainRecordGraceMs = 2_000;
   let readinessDeadline: number | null = null;
   for (;;) {
     const state = await readReleaseState(context.paths.home);
@@ -79,19 +83,31 @@ export async function waitForSwitch(context: CommandContext, pending: PendingSwi
       throw new CliError(`the ${pending.kind} to ${pending.version} was ${record.status}: ${record.reason ?? "no reason recorded"}`, EXIT.failure);
     }
     if (!record) {
-      if (Date.now() >= drainDeadline) {
+      const drainRemaining = drainDeadline - Date.now();
+      if (drainRemaining > 0) {
+        await Bun.sleep(Math.min(1_000, drainRemaining));
+        continue;
+      }
+      const graceRemaining = drainDeadline + drainRecordGraceMs - Date.now();
+      if (graceRemaining <= 0) {
         throw new CliError(`timed out: the service has not switched by its drain deadline. Check conveyor status and conveyor logs; conveyor rollback returns to ${pending.from}.`, EXIT.failure);
       }
-      await Bun.sleep(Math.min(1_000, Math.max(0, drainDeadline - Date.now())));
+      await Bun.sleep(Math.min(1_000, graceRemaining));
       continue;
     }
 
     readinessDeadline ??= Date.now() + waitTimeoutMs;
     const remaining = Math.max(0, readinessDeadline - Date.now());
-    const service = await Promise.race([
-      serviceStatus(context).catch(() => null),
-      Bun.sleep(remaining).then(() => null),
-    ]);
+    let service: ServiceStatus | null = null;
+    if (remaining > 0) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), remaining);
+      try {
+        service = await serviceStatus(context, controller.signal).catch(() => null);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
     if (record.status === "completed" && service?.version.version === pending.version && service.ready) return record;
     if (Date.now() >= readinessDeadline) {
       const process = await runningServe(context.paths.run);
