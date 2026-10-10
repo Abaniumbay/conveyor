@@ -323,8 +323,10 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="/profile"');
     expect(html).toContain('>Profile</a>');
 
+    expect(dashboardCss).toContain(".dashboard{min-width:0;max-width:100%;overflow-x:clip;padding:.45rem .5rem 1rem}");
+    expect(dashboardCss).toContain(".dashboard-header{min-width:0;max-width:100%;grid-template-columns:auto minmax(0,1fr) auto");
     expect(dashboardCss).toContain(".total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}");
-    expect(dashboardCss).toContain(".tabs{margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
+    expect(dashboardCss).toContain(".tabs{min-width:0;margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
     expect(dashboardCss).toContain(".tab{flex:0 0 auto;padding:.55rem .65rem;white-space:nowrap}");
   });
 

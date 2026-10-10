@@ -498,6 +498,96 @@ async function expectCardsToFitViewport(page: Page): Promise<void> {
   }
 }
 
+async function expectDocumentToFitPhoneViewport(
+  page: Page,
+  name: string,
+  width: number,
+): Promise<void> {
+  const dimensions = await page.evaluate(() => {
+    const root = document.documentElement;
+    window.scrollTo({ top: root.scrollHeight });
+    const result = { clientWidth: root.clientWidth, scrollWidth: root.scrollWidth };
+    window.scrollTo({ top: 0 });
+    return result;
+  });
+  if (dimensions.scrollWidth > dimensions.clientWidth) {
+    throw new Error(
+      `${name} has document-wide horizontal overflow at ${width}px (${dimensions.scrollWidth}px > ${dimensions.clientWidth}px)`,
+    );
+  }
+}
+
+async function expectLastChildReachable(
+  page: Page,
+  containerSelector: string,
+  childSelector: string,
+  name: string,
+  requireOverflow = false,
+): Promise<void> {
+  const result = await page.locator(containerSelector).evaluate(
+    (container, selector) => {
+      const children = container.querySelectorAll<HTMLElement>(selector);
+      const lastChild = children.item(children.length - 1);
+      if (!lastChild)
+        return { found: false, hasOverflow: false, reachable: false };
+
+      container.scrollLeft = container.scrollWidth;
+      const containerBounds = container.getBoundingClientRect();
+      const childBounds = lastChild.getBoundingClientRect();
+      return {
+        found: true,
+        hasOverflow: container.scrollWidth > container.clientWidth,
+        reachable:
+          childBounds.left >= containerBounds.left - 1 &&
+          childBounds.right <= containerBounds.right + 1,
+        childLeft: childBounds.left,
+        childRight: childBounds.right,
+        containerLeft: containerBounds.left,
+        containerRight: containerBounds.right,
+      };
+    },
+    childSelector,
+  );
+  if (!result.found || !result.reachable || (requireOverflow && !result.hasOverflow)) {
+    throw new Error(
+      `${name} is not reachable through its horizontal scroller: ${JSON.stringify(result)}`,
+    );
+  }
+}
+
+async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
+  const pages = [
+    ["board", "/board"],
+    ["team", "/team"],
+    ["operator", "/operator"],
+    ["reports", "/reports"],
+    ["item detail", "/issues/demo/1/conversation"],
+  ] as const;
+
+  for (const width of [320, 390] as const) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const [name, route] of pages) {
+      await page.goto(`${baseUrl}${route}`, { waitUntil: "networkidle" });
+      await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
+      await stabilize(page);
+      if (name === "item detail")
+        await page.locator(".issue-inspector[open]").waitFor({ state: "visible" });
+      await expectDocumentToFitPhoneViewport(page, name, width);
+      if (name === "board") {
+        await expectLastChildReachable(
+          page,
+          ".board",
+          ".stage",
+          "Board's last stage",
+          true,
+        );
+        await expectLastChildReachable(page, ".tabs", ".tab", "Navigation tabs");
+      }
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1024 });
+}
+
 async function capture(
   page: Page,
   baseUrl: string,
@@ -595,6 +685,7 @@ async function main(): Promise<void> {
       "Ship a reliable dashboard overview",
       "The dashboard overview is implemented",
     ]);
+    await verifyPhoneLayouts(page, baseUrl);
     await page.goto(`${baseUrl}/issues/demo/1/journey`, {
       waitUntil: "networkidle",
     });
