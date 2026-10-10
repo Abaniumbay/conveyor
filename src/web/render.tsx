@@ -62,7 +62,7 @@ function Markdown({ text }: { text: string }) {
 }
 
 function RepositoryBadge({ repository }: { repository: string }) {
-  return <span class="repository-badge"><i class="repository-dot" aria-hidden="true" />{repository}</span>;
+  return <span class="repository-badge"><i class="repository-dot" aria-hidden="true" /><span class="repository-name">{repository}</span></span>;
 }
 
 function canManageDashboard(model: DashboardViewModel): boolean {

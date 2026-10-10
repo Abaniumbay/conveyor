@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { claudeArguments, claudeSchema, runClaudeCode, sandboxArguments } from "../../src/runner/claude-code";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
+const bwrapUnavailable = bwrapUnavailableReason();
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -86,7 +88,7 @@ describe("claude code runner", () => {
     expect(args).not.toContain("missing");
   });
 
-  test.skipIf(!Bun.which("bwrap"))("parses the result, usage and session, and cannot write the workspace", async () => {
+  test.skipIf(bwrapUnavailable !== null)("parses the result, usage and session, and cannot write the workspace", async () => {
     const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-test-"));
     directories.push(root);
     const workspace = path.join(root, "ws");
@@ -109,7 +111,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-9
     expect(await readFile(path.join(workspace, "file.txt"), "utf8")).toBe("keep");
   });
 
-  test.skipIf(!Bun.which("bwrap"))("a workspace-write agent can change its worktree but nothing beside it", async () => {
+  test.skipIf(bwrapUnavailable !== null)("a workspace-write agent can change its worktree but nothing beside it", async () => {
     const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-test-"));
     directories.push(root);
     const workspace = path.join(root, "ws");
