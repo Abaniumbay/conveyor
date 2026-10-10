@@ -14,8 +14,8 @@ This release adds no database migration, so the old checkout can still run on th
 1. **Install the release**, which leaves the checkout alone:
 
    ```sh
-   curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/download/v0.2.0/install.sh
-   sh install.sh --version v0.2.0
+   curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/download/v0.4.1/install.sh
+   sh install.sh --version v0.4.1
    ```
 
 2. **Convert the configuration** into the new home:

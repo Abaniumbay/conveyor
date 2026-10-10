@@ -51,8 +51,8 @@ home and the install prefix and holds the GitHub and agent sign-ins.
 As the account that will run Conveyor:
 
 ```sh
-curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/download/v0.2.0/install.sh
-sh install.sh --version v0.2.0        # omit --version for the latest release
+curl -fsSLO https://github.com/Abaniumbay/conveyor/releases/download/v0.4.1/install.sh
+sh install.sh --version v0.4.1        # omit --version for the latest release
 conveyor --version
 ```
 
@@ -216,7 +216,7 @@ and 5 means it refused the request (the reason is printed).
 ## Upgrades and rollback
 
 ```sh
-conveyor upgrade --version v0.3.0     # sudo works too
+conveyor upgrade --version v0.4.1     # sudo works too
 ```
 
 The steps:
@@ -274,7 +274,7 @@ Two rules matter:
 A second instance `b` beside the first, under the same account:
 
 ```sh
-sh install.sh --version v0.2.0 --prefix ~/.local/share/conveyor-b --bin-dir ~/.local/bin-b
+sh install.sh --version v0.4.1 --prefix ~/.local/share/conveyor-b --bin-dir ~/.local/bin-b
 alias conveyor-b="$HOME/.local/bin-b/conveyor --home $HOME/.conveyor-b"
 conveyor-b init                       # then set web.listen to another port, e.g. 127.0.0.1:7789
 conveyor-b doctor
