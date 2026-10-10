@@ -22,7 +22,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -41,7 +41,7 @@ agents: { worker: { runner: codex, instructions: ./worker.md, name: Worker, titl
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
-  states: { done: "conveyor:done", blocked: "conveyor:blocked" }
+  states: { done: "conveyor:done", blocked: "conveyor:blocked"${options.needsInput ? ', "needs-input": "conveyor:needs-input"' : ""} }
   metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" }
 pipelines:
   default:
@@ -67,9 +67,13 @@ repositories:
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repositoryPath, configHash: config.hash });
   const labelWrites: string[][] = [];
   const comments: string[] = [];
+  let failComments = 0;
   const github = {
     replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => { labelWrites.push([...labels]); },
-    addComment: async (_a: string, _n: number, body: string) => { comments.push(body); return 1; },
+    addComment: async (_a: string, _n: number, body: string) => {
+      if (failComments > 0) { failComments -= 1; throw new Error("temporary source outage"); }
+      comments.push(body); return 1;
+    },
   };
 
   const calls: Call[] = [];
@@ -81,7 +85,7 @@ repositories:
       calls.push(input);
       const runId = path.basename(input.artifactsDirectory);
       const first = calls.length === 1;
-      if (first) store.openQuestion({ issueId: "issue", runId, prompt: "Which database?", reason: "need it", options: [] });
+      if (first) store.openQuestion({ issueId: "issue", runId, prompt: "Which database?", reason: "need it", options: [], allowFreeText: true });
       return {
         stageResult: first
           ? { outcome: "failure", status: "needs-input", summary: "Asked", reason: "Which database?", metrics: {} }
@@ -95,7 +99,7 @@ repositories:
 
   store.upsertIssue({
     id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Issue", body: CRITERIA,
-    sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    sourceState: "open", labels: ["conveyor", "conveyor:refinement", ...(options.needsInput ? ["conveyor:needs-input"] : [])], sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
   store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
   store.setQueueRank("issue", store.nextQueueRank());
@@ -117,7 +121,7 @@ repositories:
 
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
-  return { store, service, execute, calls, created, workspace, labelWrites, comments, root, setResume: (value: boolean) => { sessionResume = value; } };
+  return { store, service, execute, calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
@@ -167,6 +171,67 @@ describe("agent.run through the service", () => {
     expect(w.store.listOpenQuestions()).toEqual([]);
     expect(Date.parse(w.store.executions().wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
     expect(w.labelWrites).toEqual([]);
+    await w.service.close();
+  });
+
+  test("keeps a saved answer retryable until its source mirror succeeds", async () => {
+    const w = await setup();
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    w.failNextComment();
+    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("saved but could not be mirrored");
+    expect(w.store.getQuestion(question.id)).toMatchObject({ status: "open", answer: { answer: "PostgreSQL" } });
+    await w.service.answerQuestion(question.id, "PostgreSQL");
+    expect(w.store.getQuestion(question.id)?.status).toBe("answered");
+    expect(w.comments).toHaveLength(1);
+    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already been answered");
+    await w.service.close();
+  });
+
+  test("clears the configured needs-input label before waking the parked refinement", async () => {
+    const w = await setup({ needsInput: true });
+    await w.execute();
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    expect(w.labelWrites.at(-1)).toEqual(["conveyor", "conveyor:refinement"]);
+    expect(Date.parse(w.store.executions().wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
+    await w.service.close();
+  });
+
+  test("does not mirror a duplicate submission while the first answer is in flight", async () => {
+    const w = await setup();
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    w.store.recordQuestionAnswer(question.id, "web", { answer: "PostgreSQL" });
+    w.store.beginSourceMutation({
+      idempotencyKey: `question-answer:${question.id}`, source: "github", operation: "issue.comment.answer", request: {},
+    });
+
+    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already being recorded");
+    expect(w.store.getQuestion(question.id)?.status).toBe("open");
+    expect(w.comments).toEqual([]);
+    await w.service.close();
+  });
+
+  test("holds child scheduling until its parent's answered refinement leaves refinement", async () => {
+    const w = await setup();
+    await w.execute();
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "refinement", state: "active", warning: null });
+    w.store.setQueueRank("child", w.store.nextQueueRank());
+    w.store.setStageState({ issueId: "child", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "test" });
+    w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
+
+    const candidates = () => (w.service as unknown as { schedulerCandidates(): Array<{ id: string; eligible: boolean }> }).schedulerCandidates();
+    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
+
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
+
+    w.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(true);
     await w.service.close();
   });
 });

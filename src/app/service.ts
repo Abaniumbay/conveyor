@@ -53,6 +53,7 @@ import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
 import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
+import { questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 
 interface ActiveRun {
   repositoryId: string;
@@ -547,14 +548,41 @@ export class ConveyorService {
         eligible:
           issue.projectedState === "active" &&
           state.status === "ready" &&
+          this.parentRefinementComplete(issue) &&
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
-        rollupOnly: this.store.listChildren(issue.id).length > 0,
+        rollupOnly: this.store.listChildren(issue.id).length > 0 && !this.resumingParentRefinement(issue),
         lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
+  }
+
+  /** Children remain parked until their parent has actually left refinement. */
+  private parentRefinementComplete(issue: StoredIssue): boolean {
+    if (!issue.parentId) return true;
+    const parent = this.store.getIssue(issue.parentId);
+    if (!parent || parent.sourceState === "closed" || parent.projectedState === "done") return true;
+    return this.refinementComplete(parent);
+  }
+
+  private refinementComplete(issue: StoredIssue): boolean {
+    if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
+    // Ordinary roll-up parents never ran refinement themselves. Only hold a
+    // parent at this stage once it has actually asked a refinement question.
+    if (!this.store.hasQuestionForIssue(issue.id)) return true;
+    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
+    const refinement = pipeline?.stages.findIndex((stage) => stage.id === "refinement") ?? -1;
+    if (refinement < 0) return true;
+    const current = issue.projectedStage ? pipeline?.stages.findIndex((stage) => stage.id === issue.projectedStage) ?? -1 : -1;
+    return current > refinement;
+  }
+
+  private resumingParentRefinement(issue: StoredIssue): boolean {
+    if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
+    const cursor = this.store.executions().getCursor(issue.id);
+    return cursor?.state === "pending" && cursor.list === "actions" && cursor.stage === "refinement";
   }
 
   private concurrencyLimits(): ConcurrencyLimits {
@@ -1165,6 +1193,31 @@ export class ConveyorService {
       ) {
         continue;
       }
+      const openQuestion = this.store.listOpenQuestions().find((question) => question.issueId === parent.id);
+      if (openQuestion) {
+        // Source labels can be overwritten by a child roll-up between polls.
+        // Restore the parked parent's state before skipping its roll-up.
+        const needsInput = this.config.labels.states["needs-input"];
+        if (needsInput && !parent.labels.includes(needsInput)) {
+          const runStage = openQuestion.runId ? this.store.getRun(openQuestion.runId)?.stageId : null;
+          const stage = runStage ?? parent.projectedStage ?? "refinement";
+          const metadata = parent.labels.filter((label) =>
+            label === this.config.labels.metadata.closable ||
+            label.startsWith(this.config.labels.metadata.orderTemplate.split("{number}")[0]!),
+          );
+          await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
+            this.config.labels.enrollment,
+            this.config.labels.stageTemplate.replace("{stage}", stage),
+            needsInput,
+            ...metadata,
+          ]);
+        }
+        continue;
+      }
+      // A parent with children may still own the refinement decision which
+      // created them. Do not roll it forward, clean its workspace, or mark it
+      // done until that refinement has genuinely completed.
+      if (!this.refinementComplete(parent)) continue;
       if (runningIssueIds.has(parent.id)) continue;
       if (this.store.getStageState(parent.id)?.status !== "running") {
         await removeWorkspace({
@@ -1851,16 +1904,61 @@ export class ConveyorService {
   async answerQuestion(questionId: string, answer: string): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
-    this.store.answerQuestion(questionId, "web", { answer });
+    const response = validatedQuestionAnswer(question, answer);
+    if (question.status !== "open") throw new Error("This question has already been answered.");
+    if (question.answer !== null) {
+      const prior = typeof question.answer === "object" && question.answer !== null
+        ? (question.answer as { answer?: unknown }).answer
+        : question.answer;
+      if (prior !== response) throw new Error("This question already has a pending answer; retry the same answer.");
+    } else {
+      this.store.recordQuestionAnswer(questionId, "web", { answer: response });
+    }
     const issue = this.store.getIssue(question.issueId);
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
-    await this.github.addComment(
-      repository.address,
-      issue.sourceNumber,
-      `<!-- conveyor:answer:${question.id} -->\n**Conveyor answer:** ${answer}`,
-    );
+    const mirrorKey = `question-answer:${question.id}`;
+    const pendingMirror = this.store.getSourceMutationByKey(mirrorKey);
+    if (pendingMirror?.status === "pending") {
+      throw new Error("This answer is already being recorded. Please retry shortly.");
+    }
+    const mirror = this.store.beginSourceMutation({
+      idempotencyKey: mirrorKey,
+      source: repository.source,
+      operation: "issue.comment.answer",
+      request: { issueId: issue.id, questionId: question.id, answer: response },
+    });
+    if (mirror.status !== "succeeded") {
+      try {
+        await this.github.addComment(repository.address, issue.sourceNumber, `<!-- conveyor:answer:${question.id} -->\n**Conveyor answer:** ${response}`);
+        this.store.completeSourceMutation(mirror.id, { questionId: question.id });
+      } catch (error) {
+        this.store.failSourceMutation(mirror.id, error instanceof Error ? error.message : String(error));
+        throw new Error("Your answer was saved but could not be mirrored. Submit the same answer to retry.");
+      }
+    }
+    const needsInput = this.config.labels.states["needs-input"];
+    const hadNeedsInput = Boolean(needsInput && issue.labels.includes(needsInput));
+    if (hadNeedsInput) {
+      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
+      const stage = runStage ?? issue.projectedStage;
+      const metadata = issue.labels.filter((label) =>
+        label === this.config.labels.metadata.closable ||
+        label.startsWith(this.config.labels.metadata.orderTemplate.split("{number}")[0]!),
+      );
+      try {
+        await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
+          this.config.labels.enrollment,
+          ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
+          ...metadata,
+        ]);
+      } catch {
+        throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
+      }
+    }
+    this.store.completeQuestionAnswer(question.id);
+    if (hadNeedsInput) await this.reconcileRepository(issue.repositoryId);
     // A stage parked on an agent's question continues where it stopped; legacy stages restart.
     if (this.wakeParkedAgent(question)) {
       await this.updateStatusComment(issue.id);
@@ -2458,14 +2556,7 @@ export class ConveyorService {
     const questions: QuestionViewModel[] = openQuestions.flatMap((question) => {
       const issue = byId.get(question.issueId);
       if (!issue) return [];
-      const options = question.options.flatMap((value) => {
-        try {
-          const item = object(value);
-          return [{ id: string(item.id, "option.id"), label: string(item.label, "option.label") }];
-        } catch {
-          return [];
-        }
-      });
+      const options = questionOptions(question.options);
       return [{
         id: question.id,
         issueId: issue.id,
@@ -2477,6 +2568,7 @@ export class ConveyorService {
         reason: question.reason,
         options,
         allowFreeText: question.allowFreeText,
+        answerError: questionConfigurationError(question.options, question.allowFreeText),
       }];
     });
     const total = this.store.costSummary();
@@ -2731,7 +2823,8 @@ export class ConveyorService {
     }
     const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
     const running = this.#active.has(issueId) || Boolean(activeRun);
-    if (!running && this.store.listChildren(issueId).length > 0) {
+    const question = this.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId);
+    if (!running && !question && this.store.listChildren(issueId).length > 0) {
       throw new Error("roll-up parents cannot run directly; message a child issue instead");
     }
     const stageId = issue.projectedStage ?? this.store.getStageState(issueId)?.stageId ?? activeRun?.stageId ?? null;
@@ -2755,7 +2848,6 @@ export class ConveyorService {
       throw new Error("issue has no unambiguous configured stage to resume");
     }
 
-    const question = this.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId);
     if (question) {
       await this.answerQuestion(question.id, message);
     } else {

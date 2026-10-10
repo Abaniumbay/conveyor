@@ -1063,12 +1063,12 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
       const answer = oneValue(form, "answer");
-      if (answer === null || answer.length === 0) return text("Invalid answer", 400);
+      if (answer === null || answer.trim().length === 0) return text("An answer is required", 400);
       try {
         await dependencies.answerQuestion(questionId, answer);
         return redirect("/board");
-      } catch {
-        return text("Unable to record answer", 409);
+      } catch (error) {
+        return text(error instanceof Error ? error.message : "Unable to record answer", 409);
       }
     }
 

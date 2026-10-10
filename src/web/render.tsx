@@ -440,7 +440,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <h3><RepositoryBadge repository={question.repository} /> · #{question.issueNumber} {question.prompt}</h3>
               <p>{question.reason}</p>
             </div>
-            {canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
+            {canManage && question.answerError ? <p role="alert">{question.answerError}</p> : canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
               <input type="hidden" name="csrf" value={model.csrfToken} />
               {question.allowFreeText ? (
                 <Fragment>

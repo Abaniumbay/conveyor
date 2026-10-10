@@ -597,6 +597,14 @@ describe("agent tools", () => {
     expect(events(w, run.id)).toContainEqual(["question", { questionId }]);
   });
 
+  test("askQuestion rejects a question with neither a usable choice nor free text", async () => {
+    const { w, run } = await withRun();
+    await expect(tool(w, "agent.askQuestion", {
+      prompt: "Which?", reason: "Need it", options: [{ id: "missing-label" }], allowFreeText: false,
+    }, run)).rejects.toThrow("at least one valid choice or free-text input");
+    expect(w.store.listOpenQuestions()).toEqual([]);
+  });
+
   test("report tools record run events; reportProgress also posts to the conversation", async () => {
     const { w, run } = await withRun();
     for (const [name, event] of [["agent.reportRationale", "report_rationale"], ["agent.reportBlocker", "report_blocker"], ["agent.reportResult", "report_result"], ["agent.reportMilestone", "report_milestone"]] as const) {

@@ -93,7 +93,14 @@ export async function reconcileRepository(
       expectedPostMergeClosure:
         input.expectedPostMergeClosure?.(issueId) ?? false,
     });
-    const projectedState = projected.state ?? projected.mode;
+    // A question is durable local state. Source updates which race with relationship
+    // roll-up must not turn its parked owner back into an active item.
+    const openQuestion = input.store.listOpenQuestions().find((question) => question.issueId === issueId);
+    const questionRun = openQuestion?.runId ? input.store.getRun(openQuestion.runId) : null;
+    const projectedState = openQuestion ? "needs-input" : projected.state ?? projected.mode;
+    const projectedStage = openQuestion
+      ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
+      : projected.stage;
     const priorState = prior?.projectedState ?? null;
     const resumed = projectedState === "active" && priorState !== null && STOPPED_STATES.has(priorState);
     if (resumed) {
@@ -107,14 +114,14 @@ export async function reconcileRepository(
       });
     }
     input.store.setIssueProjection(issueId, {
-      stage: projected.visible ? projected.stage : null,
+      stage: projected.visible ? projectedStage : null,
       state: projectedState,
       warning: projected.warnings.length > 0 ? projected.warnings.join("; ") : null,
     });
 
     if (!projected.visible) {
       input.store.endActiveEnrollment(issueId, "offboarded");
-    } else if (projected.mode === "active" && projected.stage) {
+    } else if (!openQuestion && projected.mode === "active" && projected.stage) {
       const stageState = input.store.getStageState(issueId);
       const awaitingDifferentStage =
         stageState?.status === "awaiting-source" &&
