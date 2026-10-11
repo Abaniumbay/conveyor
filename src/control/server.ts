@@ -82,7 +82,9 @@ function status(service: ConveyorService, info: ControlInfo) {
         state: issue.projectedState,
         reason: service.issueJourney(issue.id)?.now.reason ?? issue.warning,
       })),
-    openQuestions: service.store.listOpenQuestions().length,
+    openQuestions: service.store.listOpenQuestions()
+      .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
+      .length,
   };
 }
 
@@ -151,10 +153,12 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
       if (route === "GET /v1/status") return json(status(service, info));
       if (route === "GET /v1/board") return json(board(service));
       if (route === "GET /v1/questions") {
-        return json(service.store.listOpenQuestions().map((question) => ({
+        return json(service.store.listOpenQuestions()
+          .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
+          .map((question) => ({
           id: question.id, item: itemReference(service, question.issueId), prompt: question.prompt, reason: question.reason,
           options: question.options, allowFreeText: question.allowFreeText, createdAt: question.createdAt,
-        })));
+          })));
       }
       const answer = /^POST \/v1\/questions\/([^/]+)\/answer$/.exec(route);
       if (answer) {

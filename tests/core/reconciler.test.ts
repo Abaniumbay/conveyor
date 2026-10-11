@@ -65,6 +65,50 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("keeps a parked question active when only the base enrollment label is removed", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"], labels,
+    };
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    const enrollment = store.activateEnrollment("github:owner/repo#1");
+    const question = store.openQuestion({ issueId: "github:owner/repo#1", runId: null, prompt: "Which scope?", reason: "Need a decision", options: ["small"] });
+
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor:refinement"])]; } } });
+
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
+    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "active" });
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+    store.close();
+  });
+
+  test("offboards a parked question until the item is enrolled again", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation"], labels,
+    };
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    const enrollment = store.activateEnrollment("github:owner/repo#1");
+    const question = store.openQuestion({ issueId: "github:owner/repo#1", runId: null, prompt: "Which scope?", reason: "Need a decision", options: ["small"] });
+
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["backend"])]; } } });
+
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: null, projectedState: "offboarded" });
+    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "offboarded" });
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+
+    await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input" });
+    expect(store.getQuestion(question.id)).toMatchObject({ id: question.id, status: "open", answer: null });
+    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(enrollment.generation + 1);
+    store.close();
+  });
+
   test("preserves issue identity and history when a repository address changes", async () => {
     const store = await openStore();
     const repository = {

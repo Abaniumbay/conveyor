@@ -117,7 +117,9 @@ export async function reconcileRepository(
     // roll-up must not turn its parked owner back into an active item.
     const openQuestion = input.store.listOpenQuestions().find((question) => question.issueId === issueId);
     const questionRun = openQuestion?.runId ? input.store.getRun(openQuestion.runId) : null;
-    const projectedState = openQuestion ? "needs-input" : projected.state ?? projected.mode;
+    const projectedState = !projected.visible
+      ? "offboarded"
+      : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
       : projected.stage;

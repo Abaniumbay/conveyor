@@ -213,6 +213,24 @@ describe("operating through the CLI", () => {
     expect((await cli("questions", "answer", question.id, "us")).code).toBe(EXIT.rejected);
   });
 
+  test("offboarded questions are hidden and cannot be answered", async () => {
+    const { cli, store, issues } = await running();
+    const question = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Which region?", reason: "two are configured", options: ["eu", "us"] });
+    store.setIssueProjection("issue-1", { stage: null, state: "offboarded", warning: null });
+    const labelsBefore = [...issues[0]!.labels];
+
+    expect(JSON.parse((await cli("questions", "list", "--json")).out)).toEqual([]);
+    expect(JSON.parse((await cli("status", "--json")).out).service).toMatchObject({ openQuestions: 0, stopped: [{ item: "app:2" }] });
+    expect((await cli("board")).out).not.toContain("app:1");
+    expect((await cli("item", "show", "app:1")).code).toBe(EXIT.failure);
+
+    const answer = await cli("questions", "answer", question.id, "eu");
+    expect(answer.code).toBe(EXIT.rejected);
+    expect(answer.err).toContain("offboarded");
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+    expect(issues[0]!.labels).toEqual(labelsBefore);
+  });
+
   test("item logs prints the run history from a cursor", async () => {
     const { cli, store } = await running();
     store.createRun({ id: "run-1", issueId: "issue-1", stageId: "implementation", attempt: 1, kind: "producer", status: "completed", configHash: "config-hash", startedAt: "2026-10-06T10:00:00Z" });
