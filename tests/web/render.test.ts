@@ -489,6 +489,7 @@ describe("renderDashboard", () => {
   test("renders the ordered Board strip and repository list without a horizontal phone layout", () => {
     const summary = (id: string, health: "healthy" | "degraded", items: DashboardViewModel["repositories"][number]["items"], errorSummary: string | null = null) => ({
       id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
+      addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
       backlog: 1, stages: [{ id: "implementation", name: "Implementation", count: 1 }], done: 2, items,
       deliveries: [], capacity: { busy: 1, slots: 2 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
@@ -525,6 +526,7 @@ describe("renderDashboard", () => {
     const repository = {
       id: "space/name", address: "owner/space-name", color: 2, health: "degraded" as const,
       error: "The full reconciliation error", errorSummary: "Reconciliation failed", backlog: 4,
+      addressUrl: "https://github.com/owner/space-name", lastReconciledAt: "2026-10-01T00:00:00.000Z",
       stages: [{ id: "implementation", name: "Implementation", count: 2 }], done: 8,
       items: [{ number: 7, title: "Current item", stage: "implementation", state: "Running" as const }],
       deliveries: [{ number: 6, title: "Delivered item", deliveredAt: "2026-10-01T00:00:00.000Z" }],
@@ -536,12 +538,31 @@ describe("renderDashboard", () => {
     const reader = renderDashboard({ ...base, account: { id: "reader", username: "reader", role: "user", avatar: "🦊" } });
     expect(reader).toContain("The full reconciliation error");
     expect(reader).toContain('href="/issues/space%2Fname/7"');
+    expect(reader).toContain('href="/repositories"');
+    expect(reader).toContain("‹ Repositories");
+    expect(reader).toContain('href="https://github.com/owner/space-name"');
+    expect(reader).toContain('data-relative-time="true">recently</time>');
+    expect(reader).toContain("Last checked");
+    expect(reader).toContain("Slots");
+    expect(reader).toContain("1 of 2");
+    expect(reader).toContain('href="/board">4 backlog</a>');
+    expect(reader).toContain('href="/board">2 Implementation</a>');
+    expect(reader).toContain('href="/board">8 completed all-time</a>');
+    expect(reader).toContain("Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.");
+    expect(reader).toContain('href="/reports/space%2Fname?period=30d"');
+    expect(reader).toContain("Full report →");
     for (const heading of ["Line", "Now", "Recently delivered", "Setup", "Last 30 days"]) expect(reader).toContain(`<h3>${heading}</h3>`);
     expect(reader).not.toContain("/sentinel/local-folder");
     expect(reader).not.toContain("sentinel.egress.example");
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(superuser).toContain("/sentinel/local-folder");
     expect(superuser).toContain("sentinel.egress.example");
+
+    const unreconciled = renderDashboard({ ...base, repositories: [{ ...repository, lastReconciledAt: null }] });
+    expect(unreconciled).not.toContain("Last checked");
+
+    const idle = renderDashboard({ ...base, repositories: [{ ...repository, capacity: { busy: 0, slots: 2 } }] });
+    expect(idle).toContain("<dt>Slots</dt><dd>0 of 2</dd>");
   });
 
   test("renders legacy string choices and an actionable error instead of an empty answer form", () => {

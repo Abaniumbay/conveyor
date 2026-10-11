@@ -206,10 +206,12 @@ export interface RepositoryDashboardItem {
 export interface RepositoryDashboardSummary {
   id: string;
   address: string;
+  addressUrl: string | null;
   color: number;
   health: "healthy" | "degraded";
   error: string | null;
   errorSummary: string | null;
+  lastReconciledAt: string | null;
   backlog: number;
   stages: readonly { id: string; name: string; count: number }[];
   done: number;

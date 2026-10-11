@@ -462,7 +462,8 @@ describe("createWebHandler", () => {
   test("serves repository pages with encoded ids and keeps unknown or malformed ids in the dashboard shell", async () => {
     const repository = {
       id: "space/name", address: "owner/space-name", color: 1, health: "healthy" as const,
-      error: null, errorSummary: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [],
+      addressUrl: "https://github.com/owner/space-name", error: null, errorSummary: null, lastReconciledAt: null,
+      backlog: 0, stages: [], done: 0, items: [], deliveries: [],
       capacity: { busy: 0, slots: 1 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
