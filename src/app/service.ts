@@ -2423,9 +2423,9 @@ export class ConveyorService {
     });
   }
 
-  /** Matches the event stream revision to dashboard facts without volatile report timestamps. */
+  /** Matches the event stream revision to displayed repository facts, excluding volatile report timestamps. */
   private dashboardRevision(repositorySummaries = this.repositorySummaries()): string {
-    const repositoryFacts = repositorySummaries.repositories.map(({ id, health, error }) => ({ id, health, error }));
+    const repositoryFacts = repositorySummaries.repositories.map(({ id, health, error, lastReconciledAt }) => ({ id, health, error, lastReconciledAt }));
     const repositoryDigest = createHash("sha256").update(JSON.stringify(repositoryFacts)).digest("hex");
     return `${this.store.dashboardRevision()}|repositories:${repositoryDigest}`;
   }

@@ -255,6 +255,9 @@ describe("buildRepositorySummaries", () => {
     expect(degraded.revision).not.toBe(updated.revision);
     expect(await dependencies.getDashboardRevision()).toBe(degraded.revision);
     expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
+    await Bun.sleep(2);
+    await service.reconcileAll();
+    expect(await dependencies.getDashboardRevision()).not.toBe(degraded.revision);
     expect(degraded.systemWarnings).toEqual([]);
     const degradedHtml = renderDashboard(degraded);
     expect(degradedHtml).toContain("provider access is forbidden");
