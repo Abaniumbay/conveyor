@@ -25,6 +25,7 @@ export interface RepositoryDeliverySummary {
 export interface RepositorySummary {
   id: string;
   address: string;
+  addressUrl: string | null;
   color: number;
   health: "healthy" | "degraded";
   error: string | null;
@@ -149,6 +150,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     // repository records. Keep this derived, read-only view safe while configuration
     // loading remains responsible for enforcing the complete production schema.
     const source = config.sources?.[repository.source];
+    const codeHost = config.codeHosts?.[repository.codeHost ?? repository.source] ?? source;
     const ci = repository.ci ?? { mode: "disabled" as const };
     const ciProvider = ci.provider ? config.ci?.[ci.provider]?.type ?? null : null;
     const report = reportByRepository.get(id)!;
@@ -156,6 +158,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     return {
       id,
       address: repository.address,
+      addressUrl: codeHost?.type === "github" ? `https://github.com/${repository.address}` : null,
       color: (index % 8) + 1,
       health: error === null ? "healthy" : "degraded",
       error,
@@ -188,7 +191,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         pipeline: repository.pipeline,
         baseBranch: repository.baseBranch,
         itemProvider: source?.type ?? repository.source,
-        itemSync: source?.type === "github" && config.web.publicUrl ? "webhook" : "polling",
+        itemSync: source?.type === "github" && source.autoConfigureWebhook && config.web.publicUrl ? "webhook" : "polling",
         ciProvider,
         ciMode: ci.mode,
         systemLabels: [...(repository.systemLabels ?? [])],

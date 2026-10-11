@@ -79,6 +79,9 @@ async function world() {
     run(`run-${number}`, id, "succeeded", at, number === 14 ? 100 : 0, number === 14 ? 50 : 0);
   }
   issue("imported", "alpha", 15, "done", "review");
+  issue("imported-child", "alpha", 21, "done", "review");
+  delivery("delivery-imported-child", "imported-child", "2026-10-15T12:00:00.000Z");
+  store.replaceRelationships("imported-child", { parentId: "imported", siblingOrder: 1 }, []);
   issue("unconfigured", "unconfigured", 99, "done", "review");
   delivery("unconfigured-delivery", "unconfigured", "2026-10-19T12:00:00.000Z");
   return store;
@@ -97,10 +100,11 @@ describe("buildRepositorySummaries", () => {
     const alpha = summaries.repositories[0]!;
     expect(alpha).toMatchObject({
       address: "owner/alpha", color: 1, health: "degraded",
+      addressUrl: "https://github.com/owner/alpha",
       error: "Webhook setup failed\nwith a detailed explanation\nLatest reconciliation failed",
       errorSummary: "Webhook setup failed with a detailed explanation Latest reconciliation failed",
       lastReconciledAt: "2026-10-20T00:00:00.000Z",
-      backlog: 1, done: 12,
+      backlog: 1, done: 13,
       stages: [
         { id: "implementation", name: "Implementation", count: 2 },
         { id: "review", name: "Code review", count: 2 },
@@ -110,7 +114,7 @@ describe("buildRepositorySummaries", () => {
         pipeline: "delivery", baseBranch: "trunk", itemProvider: "github", itemSync: "webhook",
         ciProvider: "github-actions", ciMode: "required", systemLabels: ["conveyor", "managed"],
       },
-      report30d: { delivered: 11, inputTokens: 100, outputTokens: 50, agentMs: 3_600_000 },
+      report30d: { delivered: 12, inputTokens: 100, outputTokens: 50, agentMs: 3_600_000 },
     });
     expect(alpha.items).toEqual([
       { number: 1, title: "Item 1", stage: "implementation", state: "Running" },
@@ -123,7 +127,7 @@ describe("buildRepositorySummaries", () => {
     expect(alpha.items.map((item) => item.number)).not.toContain(19);
     expect(alpha.items.map((item) => item.number)).not.toContain(20);
     expect(alpha.deliveries).toHaveLength(10);
-    expect(alpha.deliveries[0]).toMatchObject({ number: 14, deliveredAt: "2026-10-14T12:00:00.000Z" });
+    expect(alpha.deliveries[0]).toMatchObject({ number: 21, deliveredAt: "2026-10-15T12:00:00.000Z" });
     expect(alpha.deliveries.some((delivery) => delivery.number === 15)).toBeFalse();
     expect(summaries.repositories[1]).toMatchObject({ health: "healthy", backlog: 0, done: 0, items: [], deliveries: [], color: 2 });
   });
@@ -141,6 +145,15 @@ describe("buildRepositorySummaries", () => {
 
     expect(summary("ci.await")?.capacity).toEqual({ busy: 0, slots: 2 });
     expect(summary("agent.run")?.capacity).toEqual({ busy: 1, slots: 2 });
+  });
+
+  test("counts a completed roll-up parent without a delivery as all-time completed", async () => {
+    const store = await world();
+    const alpha = buildRepositorySummaries({ store, config, now: NOW }).repositories[0]!;
+
+    expect(store.listChildren("imported")).toEqual([{ issueId: "imported-child", siblingOrder: 1 }]);
+    expect(alpha.done).toBe(alpha.report30d.delivered + 1);
+    expect(alpha.deliveries.some((delivery) => delivery.number === 15)).toBeFalse();
   });
 
   test("keeps restricted setup facts and secrets out of the ordinary summary without provider calls or store changes", async () => {
@@ -248,15 +261,14 @@ describe("buildRepositorySummaries", () => {
     expect(degradedHtml).not.toContain("System attention");
   });
 
-  test("reports webhook sync whenever the public webhook endpoint is configured", async () => {
+  test("reports sync mode from the configured item provider", async () => {
     const store = await world();
-    const manuallyConfigured = {
+    const pollingSource = {
       ...config,
       sources: { github: { ...config.sources.github, autoConfigureWebhook: false } },
     } as ConveyorConfig;
-    const pollingOnly = { ...config, web: {} } as ConveyorConfig;
 
-    expect(buildRepositorySummaries({ store, config: manuallyConfigured, now: NOW }).repositories[0]!.setup.itemSync).toBe("webhook");
-    expect(buildRepositorySummaries({ store, config: pollingOnly, now: NOW }).repositories[0]!.setup.itemSync).toBe("polling");
+    expect(buildRepositorySummaries({ store, config: pollingSource, now: NOW }).repositories[0]!.setup.itemSync).toBe("polling");
+    expect(buildRepositorySummaries({ store, config, now: NOW }).repositories[0]!.setup.itemSync).toBe("webhook");
   });
 });

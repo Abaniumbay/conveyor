@@ -552,20 +552,23 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
   const restricted = model.account?.role === "superuser"
     ? model.restrictedRepositories.find((candidate) => candidate.id === repository.id)
     : undefined;
-  const line = [`${repository.backlog} backlog`, ...repository.stages.map((stage) => `${stage.count} ${stage.name}`), `${repository.done} done`];
+  const addressUrl = safeUrl(repository.addressUrl);
+  const line = [`${repository.backlog} backlog`, ...repository.stages.map((stage) => `${stage.count} ${stage.name}`), `${repository.done} completed all-time`];
   return (
     <article class="repository-detail">
       <header class={`repository-detail-header repo-color-${repository.color}`}>
-        <p><i class="repository-dot" aria-hidden="true" /> Repository</p>
+        <a class="repository-back-link" href="/repositories">‹ Repositories</a>
+        <p class="repository-detail-kind"><i class="repository-dot" aria-hidden="true" /> Repository</p>
         <h2>{repository.id}</h2>
-        <p>{repository.address} · <span role="img" aria-label={repository.health === "healthy" ? "Healthy" : "Degraded"}>{repository.health === "healthy" ? "✓ Healthy" : "! Degraded"}</span></p>
+        <p class="repository-address">{addressUrl ? <a href={addressUrl}>{repository.address}</a> : repository.address} · <span role="img" aria-label={repository.health === "healthy" ? "Healthy" : "Degraded"}>{repository.health === "healthy" ? "✓ Healthy" : "! Degraded"}</span></p>
+        {repository.lastReconciledAt && <p class="repository-last-checked">Last checked <RelativeTime value={repository.lastReconciledAt} /></p>}
         {repository.error && <p class="repository-error">{repository.error}</p>}
       </header>
-      <section><h3>Line</h3><p>{line.join(" · ")}</p></section>
+      <section><h3>Line</h3><p>{line.map((count, index) => <Fragment key={count}>{index > 0 && " · "}<a href="/board">{count}</a></Fragment>)}</p><p class="repository-empty">Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.</p></section>
       <section><h3>Now</h3>{repository.items.length > 0 ? <><p>{repository.capacity.busy} of {repository.capacity.slots} run slots busy</p><ol class="repository-items">{repository.items.map((item) => <li key={item.number}><a href={issueHref(repository.id, item.number)}>#{item.number} {item.title}</a><span>{item.stage ?? "Backlog"} · {item.state}</span></li>)}</ol></> : <p class="repository-empty">No work is in progress.</p>}</section>
       <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
-      <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
-      <section><h3>Last 30 days</h3><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
+      <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
+      <section><h3>Last 30 days</h3><a href={`/reports/${encodeURIComponent(repository.id)}?period=30d`}>Full report →</a><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
     </article>
   );
 }
