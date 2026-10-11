@@ -2012,6 +2012,10 @@ export class ConveyorService {
   async answerQuestion(questionId: string, answer: string): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
+    const issue = this.store.getIssue(question.issueId);
+    if (issue?.projectedState === "offboarded") {
+      throw new Error("This question belongs to an offboarded item.");
+    }
     const response = validatedQuestionAnswer(question, answer);
     if (question.status !== "open") throw new Error("This question has already been answered.");
     if (question.answer !== null) {
@@ -2022,7 +2026,6 @@ export class ConveyorService {
     } else {
       this.store.recordQuestionAnswer(questionId, "web", { answer: response });
     }
-    const issue = this.store.getIssue(question.issueId);
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
@@ -2462,9 +2465,9 @@ export class ConveyorService {
     ));
     const activeRuns = this.store.listActiveIssueRuns();
     const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
-    const openQuestions = this.store.listOpenQuestions();
-    const questionIssueIds = new Set(openQuestions.map((question) => question.issueId));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    const openQuestions = this.store.listOpenQuestions().filter((question) => byId.has(question.issueId));
+    const questionIssueIds = new Set(openQuestions.map((question) => question.issueId));
     const relation = (issue: StoredIssue): IssueRelationViewModel => ({
       id: issue.id,
       repository: issue.repositoryId,

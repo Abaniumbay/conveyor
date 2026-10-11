@@ -8,6 +8,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Fixed
+
+- Offboarded items with open questions no longer remain visible or answerable. Their questions stay
+  stored and become visible again when the item is re-enrolled.
+
 ## [0.5.0] - 2026-10-11
 
 The Board now shows the repositories Conveyor works for, with a list page and a read-only page per repository. This release also keeps a parent item stopped in refinement until its own refinement passes, lets a child depend on an open item outside its parent, reports item tool input errors to the agent, and resumes agent stages after a service restart instead of blocking them.

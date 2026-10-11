@@ -1162,6 +1162,7 @@ describe("ConveyorService dashboard", () => {
         },
       },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" } },
+      sources: {},
       agents: { refiner: { name: "Refiner", title: "Product Owner", runner: "codex" } },
     } as unknown as ConveyorConfig;
     store.upsertRepository({
@@ -1206,7 +1207,7 @@ describe("ConveyorService dashboard", () => {
     })]);
     expect(service.dashboard("csrf").questions.map((question) => question.prompt)).toEqual(["Which scope?"]);
 
-    // A paused (unenrolled) or closed item keeps its question, but no longer asks the owner.
+    // Paused, offboarded, or closed items keep their question, but no longer ask the owner.
     const parent = {
       id: "parent", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://github.com/owner/repo/issues/1",
       title: "Parent", body: "", sourceUpdatedAt: "2026-09-29T00:00:00Z",
@@ -1214,6 +1215,17 @@ describe("ConveyorService dashboard", () => {
     store.upsertIssue({ ...parent, sourceState: "open", labels: [] });
     expect(service.dashboard("csrf").questions).toEqual([]);
     expect(service.dashboard("csrf").needsYou).toEqual([]);
+    store.setIssueProjection("parent", { stage: null, state: "offboarded", warning: null });
+    expect(service.dashboard("csrf").questions).toEqual([]);
+    expect(service.dashboard("csrf").needsYou).toEqual([]);
+    const account = store.createDashboardUser("reader", "hash");
+    store.putPushSubscription(account.id, "https://push.example/active", { p256dh: "key", auth: "secret" });
+    store.setPushPreferences(account.id, { questions: true, stopped: false, done: false });
+    store.recordPushEvent({ id: "parent-question", category: "questions", target: "parent" });
+    await service.webDependencies({} as never, "reader", {
+      publicKey: "public", privateKey: "private", subject: "mailto:ops@example.test",
+    }).dispatchPushEvents?.();
+    expect(store.pendingPushEvents()).toEqual([{ id: "parent-question", category: "questions", target: "parent" }]);
     store.upsertIssue({ ...parent, sourceState: "closed", labels: ["conveyor", "conveyor:refinement", "conveyor:needs-input"] });
     expect(service.dashboard("csrf").questions).toEqual([]);
     expect(service.dashboard("csrf").needsYou).toEqual([]);
