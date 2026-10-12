@@ -188,7 +188,12 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("name === 'journey'");
     expect(dashboardClient).toContain("new DOMParser()");
     expect(dashboardClient).toContain("currentDashboard.replaceWith(nextDashboard)");
+    expect(dashboardClient).toContain("const captureDashboardPosition = () => {");
+    expect(dashboardClient).toContain("const restoreDashboardPosition = (position) => {");
+    expect(dashboardClient).toContain("captureDashboardPosition() : null");
     expect(dashboardClient).toContain("history.pushState({ conveyorPage: true }");
+    expect(dashboardClient).toContain("load: (target, historyMode) => replaceDashboard(target, { historyMode, preservePosition: false })");
+    expect(dashboardClient).toContain("else if (target.hash)");
     expect(dashboardClient).toContain("document.title = nextDocument.title");
     expect(dashboardClient).toContain("void navigateDashboard(destination)");
     expect(dashboardClient).toContain("new URL(location.href), 'none'");

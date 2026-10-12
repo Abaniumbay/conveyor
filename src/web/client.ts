@@ -1421,6 +1421,43 @@ export const dashboardClient = String.raw`(() => {
       else field.value = entry;
     }
   };
+  const clampScrollOffset = (value, maximum) => Math.min(Math.max(0, value), Math.max(0, maximum));
+  const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
+  const boardScrollMaximum = () => board ? Math.max(0, board.scrollWidth - board.clientWidth) : 0;
+  const captureDashboardPosition = () => {
+    const visibleIssues = [...document.querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
+      const bounds = issue.getBoundingClientRect();
+      return bounds.bottom > 0 && bounds.top < window.innerHeight;
+    });
+    const issue = visibleIssues.sort((left, right) => {
+      const target = window.innerHeight / 2;
+      return Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target);
+    })[0];
+    const stages = board ? [...board.querySelectorAll('.stage[id]')].map((stage) => {
+      const bounds = stage.getBoundingClientRect();
+      const boardBounds = board.getBoundingClientRect();
+      return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
+    }).sort((left, right) => right.overlap - left.overlap) : [];
+    const stage = stages[0]?.stage;
+    return {
+      scrollX: board ? board.scrollLeft : 0,
+      scrollY: window.scrollY,
+      issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
+      stage: stage ? { id: stage.id, left: stage.getBoundingClientRect().left } : null,
+    };
+  };
+  const restoreDashboardPosition = (position) => {
+    window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
+    if (board) {
+      board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
+      const stage = position.stage && document.getElementById(position.stage.id);
+      if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
+    }
+    if (position.issue?.id) {
+      const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
+      if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + issue.getBoundingClientRect().top - position.issue.top, documentScrollMaximum()));
+    }
+  };
   const interactionInProgress = () => {
     if (document.querySelector('.dashboard-header details[open]')) return true;
     const active = document.activeElement;
@@ -1429,8 +1466,7 @@ export const dashboardClient = String.raw`(() => {
   const replaceDashboard = async (target, options = {}) => {
     const requestVersion = ++dashboardRequestVersion;
     const preservePosition = options.preservePosition === true;
-    const scrollX = board ? board.scrollLeft : 0;
-    const scrollY = window.scrollY;
+    const position = preservePosition ? captureDashboardPosition() : null;
     try {
       const response = await fetch(target.pathname + target.search, {
         headers: { accept: 'text/html' },
@@ -1463,8 +1499,7 @@ export const dashboardClient = String.raw`(() => {
       bindServerStatus();
       document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered'));
       if (preservePosition) {
-        window.scrollTo(0, scrollY);
-        if (board) board.scrollLeft = scrollX;
+        restoreDashboardPosition(position);
       } else if (target.hash) {
         try {
           const anchor = document.getElementById(decodeURIComponent(target.hash.slice(1)));
