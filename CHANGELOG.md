@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-12
+
+- Offboarded items with open questions no longer stay visible or answerable
+
 ### Fixed
 
 - Offboarded items with open questions no longer remain visible or answerable. Their questions stay
