@@ -823,7 +823,11 @@ function ThemeControl() {
 
 /** Names the view in the document title, so tabs, history entries and screen readers tell the pages apart. */
 function pageTitle(model: DashboardViewModel): string {
-  if (model.selectedIssue) return `#${model.selectedIssue.number} ${model.selectedIssue.title}`;
+  return model.selectedIssue ? `#${model.selectedIssue.number} ${model.selectedIssue.title}` : viewTitle(model);
+}
+
+/** The view's own name, which the title returns to when an item's details are closed. */
+function viewTitle(model: DashboardViewModel): string {
   if (model.view === "repository") return model.repositoryId ?? "Repository";
   if (model.view === "reports" && model.report?.repository) return `Reports · ${model.report.repository}`;
   const names: Record<Exclude<DashboardView, "repository">, string> = {
@@ -877,7 +881,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <script src="/assets/dashboard.js" defer />
         <script src="/assets/notifications.js" defer />
       </head>
-      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
+      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-view-title={`${viewTitle(model)} · ${model.title}`} data-csrf-token={model.csrfToken}>
         <a class="skip-link" href="#content">Skip to content</a>
         <main class="dashboard">
           <header class="dashboard-header">

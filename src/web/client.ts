@@ -828,6 +828,12 @@ export const dashboardClient = String.raw`(() => {
     const selectedTab = dialog.querySelector('[role="tab"][aria-selected="true"]');
     if (selectedTab instanceof HTMLElement) selectedTab.focus({ preventScroll: true });
     markOpener(dialog, true);
+    // An item opened in place gets the title the server gives its own page; closing it restores the view's.
+    const viewTitle = body.dataset.viewTitle || document.title;
+    const heading = dialog.querySelector('.details-header h2');
+    if (dialog.dataset.issueId && heading) {
+      document.title = '#' + dialog.dataset.issueNumber + ' ' + heading.textContent + viewTitle.slice(viewTitle.lastIndexOf(' · '));
+    }
   };
 
   const openIssueDialog = (opener, updateUrl = true) => {
@@ -1140,6 +1146,8 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('close', (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
     markOpener(event.target, false);
+    // Opening one item from another closes the first after the second has set its title.
+    if (body.dataset.viewTitle && !document.querySelector('dialog[open]')) document.title = body.dataset.viewTitle;
     const currentPath = parseDashboardPath();
     const agentId = event.target.dataset.agentId;
     if (agentId && currentPath.agent === agentId) {
@@ -1444,6 +1452,7 @@ export const dashboardClient = String.raw`(() => {
       document.title = nextDocument.title;
       body.dataset.csrfToken = nextDocument.body.dataset.csrfToken || body.dataset.csrfToken || '';
       body.dataset.dashboardView = nextDocument.body.dataset.dashboardView || body.dataset.dashboardView || '';
+      body.dataset.viewTitle = nextDocument.body.dataset.viewTitle || '';
       revision = nextDocument.body.dataset.dashboardRevision || revision;
       body.dataset.dashboardRevision = revision;
       body.classList.remove('page-loading', 'dashboard-navigating');

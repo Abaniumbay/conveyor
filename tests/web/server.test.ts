@@ -362,6 +362,11 @@ describe("createWebHandler", () => {
     const body = new Uint8Array(await zipped.arrayBuffer());
     expect(new TextDecoder().decode(Bun.gunzipSync(body))).toBe(await plain.text());
     expect(body.byteLength).toBeLessThan(40_000);
+    // A quality of zero refuses the coding; `*` accepts it unless gzip itself is refused.
+    for (const [accepted, encoding] of [["gzip;q=0, br", null], ["GZIP;q=0.5", "gzip"], ["br, *;q=0.1", "gzip"], ["*, gzip;q=0", null], ["br", null]] as const) {
+      const answered = await handler(new Request("http://localhost/board", { headers: { cookie, "accept-encoding": accepted } }));
+      expect(answered.headers.get("content-encoding")).toBe(encoding);
+    }
 
     const script = await handler(new Request("http://localhost/assets/dashboard.js"));
     const etag = script.headers.get("etag")!;

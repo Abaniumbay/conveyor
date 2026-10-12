@@ -998,6 +998,10 @@ describe("renderDashboard", () => {
 
   test("names each view in the document title and offers a skip link past the shared header", () => {
     expect(renderDashboard(dashboard)).toContain("<title>Board · Conveyor</title>");
+    // The client swaps between an open item's title and the view's own, which the body carries.
+    const item = renderDashboard({ ...dashboard, selectedIssue: dashboard.stages[0]!.issues[0]! });
+    expect(item).toMatch(/<title>#\d+ [^<]+ · Conveyor<\/title>/);
+    expect(item).toContain('data-view-title="Board · Conveyor"');
     expect(renderDashboard({ ...dashboard, view: "agent" })).toContain("<title>Operator · Conveyor</title>");
     expect(renderDashboard({ ...dashboard, view: "repository", repositoryId: "demo" })).toContain("<title>demo · Conveyor</title>");
 

@@ -101,6 +101,17 @@ const SCRIPT_ASSETS = new Map(Object.entries({
 const COMPRESSIBLE_TYPE = /^(text\/(html|javascript|css|plain)|application\/(json|manifest\+json)|image\/svg\+xml)/;
 const MIN_COMPRESSED_BYTES = 1024;
 
+/** Whether Accept-Encoding allows gzip: listed (or covered by `*`) with a quality above zero. */
+function acceptsGzip(header: string | null): boolean {
+  const qualities = new Map((header ?? "").split(",").map((entry) => {
+    const [coding = "", ...parameters] = entry.split(";").map((part) => part.trim().toLowerCase());
+    const quality = parameters.find((parameter) => parameter.startsWith("q="));
+    return [coding, quality ? Number(quality.slice(2)) : 1] as const;
+  }));
+  const quality = qualities.get("gzip") ?? qualities.get("*") ?? 0;
+  return quality > 0;
+}
+
 /** Gzips complete text responses for clients that accept it; event streams and fonts pass through untouched. */
 async function compressed(request: Request, result: Response): Promise<Response> {
   if (result.status !== 200 || !result.body || result.headers.has("content-encoding")) return result;
@@ -108,7 +119,7 @@ async function compressed(request: Request, result: Response): Promise<Response>
   const headers = new Headers(result.headers);
   headers.append("vary", "accept-encoding");
   const body = new Uint8Array(await result.arrayBuffer());
-  if (body.byteLength < MIN_COMPRESSED_BYTES || !/\bgzip\b/.test(request.headers.get("accept-encoding") ?? "")) {
+  if (body.byteLength < MIN_COMPRESSED_BYTES || !acceptsGzip(request.headers.get("accept-encoding"))) {
     return new Response(body, { status: result.status, headers });
   }
   headers.set("content-encoding", "gzip");
