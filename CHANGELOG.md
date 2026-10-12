@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-12
+
+This release is a quality pass over the dashboard. It fixes keyboard access to an item's tabs, focus and page titles when moving between views, and the sign-in card on phones; the header no longer overlaps at medium widths, repository cards share one size, and dialogs and menus open and close smoothly. Pages are now compressed. It also stops the dashboard from showing the sign-in page when it is opened from a link on another site, and renews sessions while the dashboard is in use.
+
 ### Changed
 
 - Dashboard sessions are now renewed while the dashboard is in use: loading a page extends a session
