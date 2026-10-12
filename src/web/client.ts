@@ -824,6 +824,9 @@ export const dashboardClient = String.raw`(() => {
   const showDialog = (dialog) => {
     for (const openDialog of document.querySelectorAll('dialog[open]')) openDialog.close();
     dialog.showModal();
+    // Start on the current section rather than on the first link in the header.
+    const selectedTab = dialog.querySelector('[role="tab"][aria-selected="true"]');
+    if (selectedTab instanceof HTMLElement) selectedTab.focus({ preventScroll: true });
     markOpener(dialog, true);
   };
 
@@ -935,7 +938,7 @@ export const dashboardClient = String.raw`(() => {
       return;
     }
 
-    if (event.target.closest('a, button, input, textarea, select, label, form')) return;
+    if (!event.target.closest('.card-open') && event.target.closest('a, button, input, textarea, select, label, form')) return;
     const opener = event.target.closest('[data-dialog-open]');
     if (opener) openIssueDialog(opener);
   });
@@ -957,12 +960,24 @@ export const dashboardClient = String.raw`(() => {
       }
       return;
     }
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    if (!(event.target instanceof Element)) return;
-    const opener = event.target.closest('[data-dialog-open]');
-    if (!opener || event.target !== opener) return;
-    event.preventDefault();
-    openIssueDialog(opener);
+    // Only the selected detail tab is a tab stop; the arrow keys, Home and End reach the others.
+    const detailTab = event.target instanceof Element ? event.target.closest('[role="tab"][data-detail-tab]') : null;
+    if (detailTab) {
+      const tabs = [...detailTab.closest('[role="tablist"]').querySelectorAll('[data-detail-tab]')];
+      const index = tabs.indexOf(detailTab);
+      const next = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? tabs[(index + 1) % tabs.length]
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? tabs[(index - 1 + tabs.length) % tabs.length]
+        : event.key === 'Home' ? tabs[0]
+        : event.key === 'End' ? tabs[tabs.length - 1]
+        : null;
+      const dialog = detailTab.closest('dialog');
+      if (next instanceof HTMLElement && dialog instanceof HTMLDialogElement) {
+        event.preventDefault();
+        selectDetailTab(dialog, next.getAttribute('data-detail-tab') || 'summary', true);
+        next.focus();
+      }
+      return;
+    }
   });
 
   document.addEventListener('toggle', (event) => {
@@ -1361,6 +1376,48 @@ export const dashboardClient = String.raw`(() => {
     setConnection(connected);
     renderServerStatus();
   };
+  // The whole dashboard is swapped on navigation and on live updates, so the focused control and
+  // anything half-entered are carried over by hand.
+  const describeFocus = (main) => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !main.contains(active)) return null;
+    const card = active.closest('[data-dialog-open]');
+    const selector = active.id ? '#' + CSS.escape(active.id)
+      : card && active.matches('.card-open') ? '[data-dialog-open="' + CSS.escape(card.getAttribute('data-dialog-open') || '') + '"] .card-open'
+      : active instanceof HTMLAnchorElement ? 'a[href="' + CSS.escape(active.getAttribute('href') || '') + '"]'
+      : active.tagName.toLowerCase();
+    return { selector, index: [...main.querySelectorAll(selector)].indexOf(active), link: active instanceof HTMLAnchorElement };
+  };
+  const restoreFocus = (main, focus) => {
+    const target = focus ? main.querySelectorAll(focus.selector)[focus.index] : null;
+    if (target instanceof HTMLElement) target.focus({ preventScroll: true });
+    return target instanceof HTMLElement;
+  };
+  const fieldKey = (field) => [field.form ? field.form.getAttribute('action') || field.form.getAttribute('data-retry-url') || '' : '', field.id, field.name, field.type === 'radio' || field.type === 'checkbox' ? field.value : ''].join('|');
+  const editableFields = (main) => [...main.querySelectorAll('textarea, select, input:not([type=hidden])')];
+  const describeEntries = (main) => {
+    const entries = new Map();
+    for (const field of editableFields(main)) {
+      if (field.type === 'radio' || field.type === 'checkbox') {
+        if (field.checked !== field.defaultChecked) entries.set(fieldKey(field), field.checked);
+      } else if (!(field instanceof HTMLSelectElement) && field.value !== field.defaultValue) entries.set(fieldKey(field), field.value);
+    }
+    return entries;
+  };
+  const restoreEntries = (main, entries) => {
+    if (entries.size === 0) return;
+    for (const field of editableFields(main)) {
+      const entry = entries.get(fieldKey(field));
+      if (entry === undefined) continue;
+      if (typeof entry === 'boolean') field.checked = entry;
+      else field.value = entry;
+    }
+  };
+  const interactionInProgress = () => {
+    if (document.querySelector('.dashboard-header details[open]')) return true;
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active.matches('main.dashboard textarea, main.dashboard select, main.dashboard input:not([type=hidden]):not([type=radio]):not([type=checkbox])');
+  };
   const replaceDashboard = async (target, options = {}) => {
     const requestVersion = ++dashboardRequestVersion;
     const preservePosition = options.preservePosition === true;
@@ -1377,7 +1434,10 @@ export const dashboardClient = String.raw`(() => {
       const nextDashboard = nextDocument.querySelector('main.dashboard');
       if (!currentDashboard || !nextDashboard) throw new Error('dashboard response is incomplete');
       if (requestVersion !== dashboardRequestVersion) return true;
+      const focus = describeFocus(currentDashboard);
+      const entries = preservePosition ? describeEntries(currentDashboard) : new Map();
       currentDashboard.replaceWith(nextDashboard);
+      restoreEntries(nextDashboard, entries);
       if (options.historyMode === 'push') history.pushState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
       else if (options.historyMode === 'replace') history.replaceState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
       renderedUrl = target.pathname + target.search;
@@ -1406,6 +1466,17 @@ export const dashboardClient = String.raw`(() => {
         window.scrollTo(0, 0);
       }
       syncRouteDialogs();
+      if (!document.querySelector('dialog[open]')) {
+        if (preservePosition) restoreFocus(nextDashboard, focus);
+        else if (focus && !(focus.link && restoreFocus(nextDashboard, focus))) {
+          const content = nextDashboard.querySelector('#content');
+          if (content instanceof HTMLElement) content.focus({ preventScroll: true });
+        }
+      }
+      if (!preservePosition) {
+        const announcer = document.querySelector('[data-route-announcer]');
+        if (announcer) announcer.textContent = document.title;
+      }
       return true;
     } catch {
       return requestVersion !== dashboardRequestVersion;
@@ -1446,8 +1517,20 @@ export const dashboardClient = String.raw`(() => {
       pendingRefresh = true;
       return;
     }
+    // Typing in a field or reading an open header menu is not interrupted; the update lands afterwards.
+    if (interactionInProgress()) {
+      pendingRefresh = true;
+      return;
+    }
     void refreshDashboard();
   };
+  const resumePendingRefresh = () => setTimeout(() => {
+    if (!pendingRefresh || backlogBusy || document.querySelector('dialog[open]') || interactionInProgress()) return;
+    pendingRefresh = false;
+    void refreshDashboard();
+  }, 0);
+  document.addEventListener('focusout', resumePendingRefresh);
+  document.addEventListener('toggle', resumePendingRefresh, true);
   bindServerStatus();
   syncThemeControls();
   const dashboardEvents = createDashboardEventConnection({

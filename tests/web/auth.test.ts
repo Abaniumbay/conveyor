@@ -49,7 +49,8 @@ describe("web authentication", () => {
     expect(session!.expiresAt).toBe(1_000_000 + sevenDaysSeconds * 1000);
     expect(session!.cookie).toContain("; Path=/;");
     expect(session!.cookie).toContain("; HttpOnly;");
-    expect(session!.cookie).toContain("; SameSite=Strict;");
+    // Lax, so opening the dashboard from a link on another site keeps the session.
+    expect(session!.cookie).toContain("; SameSite=Lax;");
     expect(session!.cookie).toContain(`; Max-Age=${sevenDaysSeconds};`);
     expect(session!.cookie).toContain(`; Expires=${new Date(session!.expiresAt).toUTCString()}`);
     expect(session!.cookie).toContain("; Secure");
@@ -145,5 +146,25 @@ describe("web authentication", () => {
     expect(parseCookie("conveyor_session=first; conveyor_session=second", "conveyor_session")).toBeNull();
     expect(parseCookie("conveyor_session=%0d%0a", "conveyor_session")).toBeNull();
     expect(parseCookie("conveyor_session", "conveyor_session")).toBeNull();
+  });
+
+  test("renews a session past half its lifetime and keeps its CSRF token", () => {
+    let now = 1_000_000;
+    const auth = createWebAuth({ passwordHash, sessionSecret, sessionTtlSeconds: 1000 }, { now: () => now });
+    const session = auth.createSession()!;
+
+    now += 400_000;
+    expect(auth.renewSession(auth.getSession(session.cookie)!)).toBeNull();
+
+    now += 200_000;
+    const renewed = auth.renewSession(auth.getSession(session.cookie)!)!;
+    const extended = auth.getSession(renewed)!;
+    expect(extended.expiresAt).toBe(now + 1_000_000);
+    expect(extended.csrfToken).toBe(session.csrfToken);
+
+    // The original would have lapsed by now; the renewed one has not.
+    now += 500_000;
+    expect(auth.getSession(session.cookie)).toBeNull();
+    expect(auth.getSession(renewed)).not.toBeNull();
   });
 });

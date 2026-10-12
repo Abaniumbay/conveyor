@@ -139,7 +139,7 @@ For a deployment that still runs from a source checkout: keep development work o
 
 Conveyor is intended for a trusted single-user server, not hostile multi-tenant execution.
 
-- The dashboard uses a scrypt password hash, signed `HttpOnly`/`SameSite=Strict` sessions, and CSRF protection.
+- The dashboard uses a scrypt password hash, signed `HttpOnly`/`SameSite=Lax` sessions that are renewed while the dashboard is in use, and CSRF protection.
 - Public deployments should sit behind a TLS reverse proxy; secure cookies are enabled when `web.publicUrl` is HTTPS.
 - GitHub webhooks are verified with HMAC-SHA256.
 - Internal MCP requests use random bearer grants scoped to one live run and an explicit tool allowlist.

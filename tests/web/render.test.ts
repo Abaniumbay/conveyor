@@ -306,9 +306,11 @@ describe("renderDashboard", () => {
     expect(html).toContain(`Development build, Bun ${BUILD.runtime}`);
   });
 
-  test("keeps all desktop header controls on one row and account-page links compact", () => {
-    expect(quotaHeaderCss).toContain(".dashboard-header{grid-template-columns:auto auto auto auto minmax(8rem,1fr) auto auto auto}");
-    expect(quotaHeaderCss).toContain(".dashboard-header>.account-menu{justify-self:end}");
+  test("lets header controls wrap instead of overlapping and keeps account-page links compact", () => {
+    // Fixed grid columns let neighbouring texts run into each other between phone and wide desktop widths.
+    expect(dashboardCss).toContain(".dashboard-header{display:flex;flex-wrap:wrap;align-items:center;");
+    expect(dashboardCss).toContain(".total-usage{flex:1 1 8rem;min-width:0;overflow:hidden;");
+    expect(quotaHeaderCss).toContain("@media(max-width:1380px){.harness-usage{order:10;flex-basis:100%}}");
     expect(quotaHeaderCss).toContain(".account-page .dashboard-header>.header-link{justify-self:start}");
   });
 
@@ -316,7 +318,7 @@ describe("renderDashboard", () => {
     const totalUsage = "19M in (13M cached) · 1.1M out · 48 runs";
     const html = renderDashboard({ ...dashboard, totalUsage });
 
-    expect(html).toContain(`<span class="total-usage">${totalUsage}</span>`);
+    expect(html).toContain(`<span class="total-usage" title="${totalUsage}">${totalUsage}</span>`);
     expect(html).toContain('<a href="/board">Conveyor</a>');
     expect(html).toMatch(/data-connection-state(?:="true")?>Connecting/);
     expect(html).toContain('1 of 4</strong> runners');
@@ -328,9 +330,9 @@ describe("renderDashboard", () => {
     expect(html).toContain('>Profile</a>');
 
     expect(dashboardCss).toContain(".dashboard{min-width:0;max-width:100%;overflow-x:hidden;padding:.45rem .5rem 1rem}");
-    expect(dashboardCss).toContain(".repository-badge{min-width:0;max-width:100%}.repository-name{min-width:0;overflow-wrap:anywhere}");
-    expect(dashboardCss).toContain(".dashboard-header{min-width:0;max-width:100%;grid-template-columns:auto minmax(0,1fr) auto");
-    expect(dashboardCss).toContain(".total-usage{grid-column:2;grid-row:2;justify-self:start;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}");
+    expect(dashboardCss).toContain(".repository-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}");
+    expect(dashboardCss).toContain(".dashboard-header{min-width:0;max-width:100%;gap:.2rem .9rem;padding:.45rem 0}");
+    expect(dashboardCss).toContain(".total-usage{order:11;flex-basis:100%;text-align:left}");
     expect(dashboardCss).toContain(".tabs{min-width:0;margin-bottom:.7rem;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}");
     expect(dashboardCss).toContain(".tab{flex:0 0 auto;padding:.55rem .65rem;white-space:nowrap}");
   });
@@ -469,8 +471,8 @@ describe("renderDashboard", () => {
     const html = renderDashboard(dashboard);
 
     expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention issue--rollup repo-color-1"');
-    expect(html).toContain('class="repository-badge" href="/repositories/sample"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></a>:#41');
-    expect(html).toContain('class="details-kicker repo-color-1"><a class="repository-badge" href="/repositories/sample">');
+    expect(html).toContain('class="repository-badge" href="/repositories/sample" title="sample"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></a><span class="issue-number">#41</span>');
+    expect(html).toContain('class="details-kicker repo-color-1"><a class="repository-badge" href="/repositories/sample" title="sample">');
     expect(html).toContain('class="needs-you-item repo-color-1"');
     expect(html).toContain('class="needs-you-item needs-you-item--question repo-color-1"');
     expect(html).toContain('--repo-1:#2563EB');
@@ -545,9 +547,8 @@ describe("renderDashboard", () => {
     expect(reader).toContain("Last checked");
     expect(reader).toContain("Slots");
     expect(reader).toContain("1 of 2");
-    expect(reader).toContain('href="/board">4 backlog</a>');
-    expect(reader).toContain('href="/board">2 Implementation</a>');
-    expect(reader).toContain('href="/board">8 completed all-time</a>');
+    // Counts, not nine links to the same Board page.
+    expect(reader).toContain("<p>4 backlog · 2 Implementation · 8 completed all-time</p>");
     expect(reader).toContain("Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.");
     expect(reader).toContain('href="/reports/space%2Fname?period=30d"');
     expect(reader).toContain("Full report →");
@@ -644,14 +645,14 @@ describe("renderDashboard", () => {
     expect(secondary.indexOf('class="tabs"')).toBeLessThan(secondary.indexOf('class="team"'));
     expect(secondary).not.toContain('id="line-heading"');
     expect(secondary).not.toContain('id="needs-you-heading"');
-    expect(secondary).toContain('href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">2</span>');
+    expect(secondary).toContain('href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true"></i><span><strong>2</strong> need you</span></a>');
     expect(secondary).toContain('>Label problems<span class="tab-count">1</span>');
     expect(secondary).not.toContain('href="/profile" class="tab');
     expect(secondary).not.toContain('href="/accounts" class="tab');
     expect(secondary).not.toContain('href="/about" class="tab');
     expect(secondary).not.toContain('href="/accounts" class="account-menu-item"');
     expect(secondary).toContain('>About Conveyor</a>');
-    expect(questionAndStopped).toContain('href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">2</span>');
+    expect(questionAndStopped).toContain('href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true"></i><span><strong>2</strong> need you</span></a>');
     expect(empty).not.toContain('/board#needs-you-heading');
     expect(empty).not.toContain('href="/attention"');
     expect(attention).toContain('href="/attention" class="tab tab--active" aria-current="page">Label problems<span class="tab-count">0</span>');
@@ -713,12 +714,14 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-dashboard-revision="revision-1"');
     expect(html).toContain('src="/assets/dashboard.js"');
     expect(html).toContain('data-dialog-open="issue-parent-41"');
-    expect(html).toContain('aria-label="Open details for issue #41"');
+    // The title is the control that opens the details, so assistive technology announces a button.
+    expect(html).toContain('<button type="button" class="card-open" aria-haspopup="dialog">');
+    expect(html).not.toContain('aria-label="Open details for issue #41"');
     expect(html).toContain("<summary><strong>1 of 4</strong> runners</summary>");
     expect(html).toContain("<h2>Active work</h2>");
     expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain('href="/issues/sample/41"');
-    expect(html).toContain('<span class="repository-name">sample</span></a>:#41');
+    expect(html).toContain('<span class="repository-name">sample</span></a><span class="issue-number">#41</span>');
     expect(html).toContain('href="/issues/sample/42"');
     expect(html).toContain('href="/issues/foundation/40"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
@@ -806,7 +809,8 @@ describe("renderDashboard", () => {
 
     expect(html).toContain("585M in (564M cached) · 1.8M out · 331 runs");
     expect(html).toContain(".stage-heading{display:grid;grid-template-columns:minmax(0,1fr)");
-    expect(html).toContain(".stage-summary{display:flex;min-width:0;align-items:center;justify-content:space-between");
+    // The count always sits beside the stage name; a long usage line gets the full width below.
+    expect(html).toContain(".stage-heading .count{grid-column:2;grid-row:1}.stage-actors,.stage-cost{grid-column:1/-1}");
   });
 
   test("keeps board cards compact and ellipsizes a blocker while preserving its full summary", () => {
@@ -918,6 +922,11 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-dialog-open="agent-kaveh"');
     expect(html).toContain('data-dialog-open="agent-darya"');
     expect(html).toContain('<dialog class="agent-dialog" id="agent-kaveh" aria-labelledby="agent-kaveh-title" data-agent-id="kaveh">');
+    // Every profile is on the page at once, so its section ids carry the agent.
+    expect(html).toContain('<h2 id="agent-kaveh-config">Configuration</h2>');
+    expect(html).toContain('<h2 id="agent-darya-config">Configuration</h2>');
+    expect(html).toContain('<h2 class="sr-only" id="team-heading">Team</h2>');
+    expect(html).toContain('<h3><button type="button" class="card-open" aria-haspopup="dialog">Kaveh</button></h3>');
     expect(html).toContain("Product Owner");
     expect(html).toContain("gpt-6-luna");
     expect(html).toContain("workspace.push");
@@ -985,5 +994,24 @@ describe("renderDashboard", () => {
 
     expect(html).toContain('data-selected-issue="true"');
     expect(html).toContain('data-issue-id="completed"');
+  });
+
+  test("names each view in the document title and offers a skip link past the shared header", () => {
+    expect(renderDashboard(dashboard)).toContain("<title>Board · Conveyor</title>");
+    expect(renderDashboard({ ...dashboard, view: "agent" })).toContain("<title>Operator · Conveyor</title>");
+    expect(renderDashboard({ ...dashboard, view: "repository", repositoryId: "demo" })).toContain("<title>demo · Conveyor</title>");
+
+    const html = renderDashboard({ ...dashboard, view: "about" });
+    expect(html).toContain("<title>About · Conveyor</title>");
+    expect(html.indexOf('<a class="skip-link" href="#content">')).toBeLessThan(html.indexOf('<main class="dashboard">'));
+    expect(html.indexOf('id="content"')).toBeGreaterThan(html.indexOf('aria-label="Dashboard views"'));
+    expect(html).toContain('role="status" data-route-announcer');
+  });
+
+  test("keeps status text readable in the light theme while the signal dots stay vivid", () => {
+    const html = renderDashboard(dashboard);
+    expect(html).toContain("--run-text:#17704A;--wait-text:#8A5200;--stop-text:#A72F1D");
+    expect(html).toContain(".indicator-chip--passing{border-color:var(--run);color:var(--run-text)}");
+    expect(html).toContain(".andon--wait{background:var(--wait)}");
   });
 });

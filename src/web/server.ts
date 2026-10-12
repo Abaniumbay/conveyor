@@ -92,11 +92,36 @@ const FONT_ASSETS = new Map<string, string>([
   ["/assets/fonts/ibm-plex-mono-400.woff2", plexMono400],
 ]);
 
+// The scripts change only with a release, so browsers revalidate them instead of downloading them with every page.
+const SCRIPT_ASSETS = new Map(Object.entries({
+  "/assets/dashboard.js": dashboardClient,
+  "/assets/notifications.js": notificationClient,
+  "/assets/theme.js": themeInitScript,
+}).map(([path, source]) => [path, { source, etag: `"${Bun.hash(source).toString(36)}"` }]));
+const COMPRESSIBLE_TYPE = /^(text\/(html|javascript|css|plain)|application\/(json|manifest\+json)|image\/svg\+xml)/;
+const MIN_COMPRESSED_BYTES = 1024;
+
+/** Gzips complete text responses for clients that accept it; event streams and fonts pass through untouched. */
+async function compressed(request: Request, result: Response): Promise<Response> {
+  if (result.status !== 200 || !result.body || result.headers.has("content-encoding")) return result;
+  if (!COMPRESSIBLE_TYPE.test(result.headers.get("content-type") ?? "")) return result;
+  const headers = new Headers(result.headers);
+  headers.append("vary", "accept-encoding");
+  const body = new Uint8Array(await result.arrayBuffer());
+  if (body.byteLength < MIN_COMPRESSED_BYTES || !/\bgzip\b/.test(request.headers.get("accept-encoding") ?? "")) {
+    return new Response(body, { status: result.status, headers });
+  }
+  headers.set("content-encoding", "gzip");
+  headers.delete("content-length");
+  return new Response(Bun.gzipSync(body), { status: result.status, headers });
+}
+
 function response(body: BodyInit | null, status: number, contentType: string, headers?: HeadersInit): Response {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("content-type", contentType);
   responseHeaders.set("x-content-type-options", "nosniff");
   responseHeaders.set("referrer-policy", "same-origin");
+  responseHeaders.set("x-robots-tag", "noindex");
   if (!responseHeaders.has("cache-control")) responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("content-security-policy", "default-src 'none'; manifest-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers: responseHeaders });
@@ -150,7 +175,7 @@ function safeReturnTo(value: string | null | undefined): string | null {
 function loginPage(message = "", returnTo: string | null = null): string {
   const error = message ? `<p role="alert" class="error">${escapeHtml(message)}</p>` : "";
   const returnField = returnTo ? `<input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{width:min(24rem,calc(100% - 2rem));padding:2rem;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font:inherit}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:7px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login">${returnField}<label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><title>Sign in · Conveyor</title><script src="/assets/theme.js"></script><style>@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}@font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-600.woff2") format("woff2")}:root{color-scheme:light;--concrete:#E8EBE8;--panel:#F8F9F7;--ink:#1C2328;--steel:#5D6970;--line:#8A959B;--signal:#2A5BD7;--stop:#A72F1D;--on-signal:#FFFFFF;--shadow:0 8px 32px rgba(28,35,40,.07)}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--line:#66737A;--signal:#83A7FF;--stop:#FF7B69;--on-signal:#0E1A34;--shadow:0 8px 32px rgba(0,0,0,.48)}}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--concrete);color:var(--ink);font:15px/1.5 "IBM Plex Sans",sans-serif}.login{box-sizing:border-box;width:min(24rem,calc(100% - 2rem));padding:clamp(1.25rem,6vw,2rem);background:var(--panel);border:1px solid var(--line);border-radius:2px;box-shadow:var(--shadow)}h1{margin:0 0 .35rem;font-size:24px}.muted{margin:0 0 1.25rem;color:var(--steel)}label{display:block;margin:.8rem 0 .4rem;font-weight:600}input{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid var(--line);border-radius:2px;background:var(--panel);color:var(--ink);font:inherit;caret-color:var(--signal)}button{width:100%;margin-top:1rem;padding:.7rem;border:0;border-radius:2px;background:var(--signal);color:var(--on-signal);font:inherit;font-weight:600;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid var(--signal);outline-offset:2px}.error{color:var(--stop)}::selection{background:var(--signal);color:var(--on-signal)}</style></head><body><main class="login"><h1>Sign in</h1><p class="muted">Access the Conveyor dashboard.</p>${error}<form method="post" action="/login">${returnField}<label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Continue</button></form></main></body></html>`;
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<Uint8Array | Response> {
@@ -461,7 +486,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     return !current ? json({ error: "unauthorized" }, 401) : current.account.role !== "superuser" ? json({ error: "forbidden" }, 403) : null;
   }
 
-  return async (request: Request): Promise<Response> => {
+  const handle = async (request: Request): Promise<Response> => {
     let url: URL;
     try {
       url = new URL(request.url);
@@ -485,9 +510,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       });
     }
 
-    if (path === "/assets/notifications.js") {
+    const script = SCRIPT_ASSETS.get(path);
+    if (script) {
       const methodError = requireMethod(request, "GET");
-      return methodError ?? response(notificationClient, 200, "text/javascript; charset=utf-8");
+      if (methodError) return methodError;
+      const headers = { "cache-control": "no-cache", etag: script.etag };
+      return request.headers.get("if-none-match") === script.etag
+        ? response(null, 304, "text/javascript; charset=utf-8", headers)
+        : response(script.source, 200, "text/javascript; charset=utf-8", headers);
     }
 
     const pwaIcon = pwaIcons.get(path);
@@ -496,16 +526,6 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return methodError ?? response(pwaIcon, 200, "image/svg+xml; charset=utf-8", {
         "cache-control": "public, max-age=31536000, immutable",
       });
-    }
-
-    if (path === "/assets/dashboard.js") {
-      const methodError = requireMethod(request, "GET");
-      return methodError ?? response(dashboardClient, 200, "text/javascript; charset=utf-8");
-    }
-
-    if (path === "/assets/theme.js") {
-      const methodError = requireMethod(request, "GET");
-      return methodError ?? response(themeInitScript, 200, "text/javascript; charset=utf-8");
     }
 
     const fontAsset = FONT_ASSETS.get(path);
@@ -543,7 +563,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
 
     if (path === "/login") {
       const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
-      if (request.method === "GET") return response(loginPage("", returnTo), 200, "text/html; charset=utf-8");
+      if (request.method === "GET") {
+        return session(request) ? redirect(returnTo ?? "/board") : response(loginPage("", returnTo), 200, "text/html; charset=utf-8");
+      }
       if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "GET, POST" });
       if (!dependencies.auth.isConfigured) return text("Web authentication is not configured", 503);
       const form = await readForm(request, maxBodyBytes);
@@ -1130,5 +1152,16 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     }
 
     return text("Not found", 404);
+  };
+  return async (request: Request): Promise<Response> => {
+    const result = await handle(request);
+    // Loading a page counts as activity: a session past half its lifetime is extended, so only a
+    // stretch without visits signs anyone out.
+    if (request.method === "GET" && result.status === 200 && !result.headers.has("set-cookie") && result.headers.get("content-type")?.startsWith("text/html")) {
+      const current = session(request);
+      const renewed = current && dependencies.auth.renewSession(current);
+      if (renewed) result.headers.append("set-cookie", renewed);
+    }
+    return compressed(request, result);
   };
 }

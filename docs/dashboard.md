@@ -23,6 +23,10 @@ The board shows backlog, configured stages, completed work, active runner capaci
 
 Above the board, every configured agent links to a read-only profile page (`/agents/<id>`; `/agents` lists them all) showing its harness, model, effort, workspace access, the pipeline stages it works in, its granted tools, and its instructions.
 
+## Keyboard and assistive technology
+
+Every view has its own page title, and a **Skip to content** link is the first tab stop. Issue and agent cards open from the button in their title with Enter or Space; inside an item, the arrow keys, Home and End move between Summary, Conversation, Journey and Technical logs, and Escape closes it and returns to the card. Following a link keeps keyboard focus on that link when the next view has it, and otherwise moves it to the start of the content. Live updates keep the focused control and anything half-entered, and wait while you are typing or have a header menu open.
+
 ## Repositories
 
 The Board includes a **Repositories** strip for the configured delivery sources. Each card shows its repository id and address, current health, and active work; select a card to open its read-only detail view. The strip keeps the same health signals as the dedicated pages, including degraded repositories when a provider cannot be reached.

@@ -168,9 +168,12 @@ export function parseCookie(header: string | undefined, name: string): string | 
   return found;
 }
 
+// Lax, not Strict: a Strict cookie is withheld when the dashboard is opened from a link on another site
+// (a GitHub comment, an email, a chat), which looks like being signed out. Every state change is a POST
+// guarded by the session's CSRF token, and Lax never sends the cookie with a cross-site POST.
 function serializeSessionCookie(value: string, expiresAt: number, ttlSeconds: number, secure: boolean): string {
   const expires = new Date(expiresAt).toUTCString();
-  return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttlSeconds}; Expires=${expires}${secure ? "; Secure" : ""}`;
+  return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ttlSeconds}; Expires=${expires}${secure ? "; Secure" : ""}`;
 }
 
 function deriveKey(secret: Buffer, purpose: string): Buffer {
@@ -249,12 +252,12 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
     }
   }
 
-  function createSession(account: WebAccountIdentity = { id: "legacy", username: config.username ?? "operator", role: "superuser", avatar: "🐼", sessionVersion: 1 }): CreatedWebSession | null {
+  function createSession(account: WebAccountIdentity = { id: "legacy", username: config.username ?? "operator", role: "superuser", avatar: "🐼", sessionVersion: 1 }, csrf?: string): CreatedWebSession | null {
     if (!isConfigured || !encryptionKey || !signingKey) return null;
     const issuedAt = now();
     if (!Number.isSafeInteger(issuedAt)) return null;
     const expiresAt = issuedAt + ttl * 1000;
-    const csrfToken = toBase64Url(random(CSRF_BYTES));
+    const csrfToken = csrf ?? toBase64Url(random(CSRF_BYTES));
     if (fromBase64Url(csrfToken)?.length !== CSRF_BYTES) return null;
     const ivBytes = random(12);
     if (ivBytes.length !== 12) return null;
@@ -299,13 +302,21 @@ export function createWebAuth(config: WebAuthConfig, dependencies: WebAuthDepend
     },
     createSession,
     getSession,
+    /**
+     * A fresh cookie for a session past half its lifetime, else null. The CSRF token is kept, so
+     * forms in pages that are already open keep working.
+     */
+    renewSession(session: WebSession): string | null {
+      if (session.expiresAt - now() > (ttl * 1000) / 2) return null;
+      return createSession(session.account, session.csrfToken)?.cookie ?? null;
+    },
     validateCsrf(cookieHeader: string | undefined, submittedToken: string | undefined): boolean {
       const session = getSession(cookieHeader);
       if (!session || !submittedToken) return false;
       return safeEqualBase64Url(session.csrfToken, submittedToken, CSRF_BYTES);
     },
     clearCookie(): string {
-      return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secureCookies ? "; Secure" : ""}`;
+      return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secureCookies ? "; Secure" : ""}`;
     },
   };
 }

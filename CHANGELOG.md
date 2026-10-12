@@ -8,6 +8,37 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Changed
+
+- Dashboard sessions are now renewed while the dashboard is in use: loading a page extends a session
+  that is past half its lifetime, so only a full session lifetime without a visit signs you out. The
+  session cookie is `SameSite=Lax` instead of `Strict`.
+- The dashboard header wraps instead of letting its texts overlap at medium widths, repository cards
+  share one size and truncate long names, addresses and errors, each stage's count sits beside its
+  name, and the "needs you" shortcut is a separate alert at the end of the navigation row rather
+  than a tab.
+- Item and agent dialogs and the header menus open and close with a short transition, which is
+  skipped when the system asks for reduced motion.
+- Pages are compressed and the dashboard scripts are revalidated instead of downloaded with every
+  page. Dashboard responses ask search engines not to index them.
+- The Line on a repository page lists its counts as text instead of links to the Board.
+
+### Fixed
+
+- Opening the dashboard from a link on another site (a GitHub comment, an email, a chat) no longer
+  shows the sign-in page while you are still signed in, and the sign-in page forwards visitors who
+  are already signed in.
+- The Conversation, Journey and Technical logs tabs of an item can be reached with the keyboard
+  (arrow keys, Home and End).
+- The sign-in card is no longer clipped on phone-width screens.
+- Following a link inside the dashboard keeps keyboard focus and announces the new view, every view
+  has its own page title, and a "Skip to content" link comes first.
+- Live updates keep the focused control and half-entered answers, and wait while you are typing or
+  have a header menu open.
+- Issue and agent cards open from a real button, status text meets contrast requirements in the
+  light theme, report charts and tables are exposed to assistive technology, and touch targets are
+  larger on touch screens.
+
 ## [0.5.1] - 2026-10-12
 
 This patch hides the open questions of offboarded items, so they no longer appear in Needs you and

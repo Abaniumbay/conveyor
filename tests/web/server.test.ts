@@ -349,6 +349,67 @@ describe("createWebHandler", () => {
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
   });
 
+  test("compresses pages on request and lets browsers revalidate the scripts", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+
+    const plain = await handler(new Request("http://localhost/board", { headers: { cookie } }));
+    const zipped = await handler(new Request("http://localhost/board", { headers: { cookie, "accept-encoding": "gzip, br" } }));
+    expect(plain.headers.get("content-encoding")).toBeNull();
+    expect(zipped.headers.get("content-encoding")).toBe("gzip");
+    expect(zipped.headers.get("vary")).toBe("accept-encoding");
+    expect(zipped.headers.get("x-robots-tag")).toBe("noindex");
+    const body = new Uint8Array(await zipped.arrayBuffer());
+    expect(new TextDecoder().decode(Bun.gunzipSync(body))).toBe(await plain.text());
+    expect(body.byteLength).toBeLessThan(40_000);
+
+    const script = await handler(new Request("http://localhost/assets/dashboard.js"));
+    const etag = script.headers.get("etag")!;
+    expect(script.headers.get("cache-control")).toBe("no-cache");
+    const unchanged = await handler(new Request("http://localhost/assets/dashboard.js", { headers: { "if-none-match": etag } }));
+    expect(unchanged.status).toBe(304);
+    expect(await unchanged.text()).toBe("");
+    expect((await handler(new Request("http://localhost/assets/dashboard.js", { headers: { "if-none-match": '"stale"' } }))).status).toBe(200);
+  });
+
+  test("extends an active session on page loads and skips the sign-in form for signed-in visitors", async () => {
+    let now = 1_000_000;
+    const auth = createWebAuth({
+      passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      secureCookies: false,
+      sessionTtlSeconds: 1000,
+    }, { now: () => now });
+    const { handler } = setup({ auth });
+    const { cookie } = await login(handler);
+
+    const fresh = await handler(new Request("http://localhost/board", { headers: { cookie } }));
+    expect(fresh.headers.get("set-cookie")).toBeNull();
+
+    now += 600_000;
+    // Background requests do not count as a visit.
+    expect((await handler(new Request("http://localhost/assets/dashboard.js", { headers: { cookie } }))).headers.get("set-cookie")).toBeNull();
+    const visited = await handler(new Request("http://localhost/board", { headers: { cookie } }));
+    const renewed = visited.headers.get("set-cookie")!.split(";")[0]!;
+    expect(renewed).not.toBe(cookie);
+
+    now += 500_000;
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie }, redirect: "manual" }))).status).toBe(303);
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie: renewed } }))).status).toBe(200);
+
+    const signIn = await handler(new Request("http://localhost/login?returnTo=%2Fteam", { headers: { cookie: renewed } }));
+    expect(signIn.status).toBe(303);
+    expect(signIn.headers.get("location")).toBe("/team");
+    expect((await handler(new Request("http://localhost/login"))).status).toBe(200);
+  });
+
+  test("keeps the login card inside a phone viewport", async () => {
+    const { handler } = setup();
+    const html = await (await handler(new Request("http://localhost/login"))).text();
+    // Without border-box the padding is added to the width and the card is clipped at phone widths.
+    expect(html).toContain(".login{box-sizing:border-box;width:min(24rem,calc(100% - 2rem))");
+  });
+
   test("links the app favicon from the login page", async () => {
     const { handler } = setup();
     const loginPage = await handler(new Request("http://localhost/login"));
