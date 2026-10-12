@@ -10,7 +10,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [0.5.1] - 2026-10-12
 
-- Offboarded items with open questions no longer stay visible or answerable
+This patch hides the open questions of offboarded items, so they no longer appear in Needs you and
+can't be answered. The questions are kept and become visible again when the item is re-enrolled.
 
 ### Fixed
 
