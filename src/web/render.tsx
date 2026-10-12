@@ -64,7 +64,7 @@ function Markdown({ text }: { text: string }) {
 }
 
 function RepositoryBadge({ repository }: { repository: string }) {
-  return <a class="repository-badge" href={`/repositories/${encodeURIComponent(repository)}`}><i class="repository-dot" aria-hidden="true" /><span class="repository-name">{repository}</span></a>;
+  return <a class="repository-badge" href={`/repositories/${encodeURIComponent(repository)}`} title={repository}><i class="repository-dot" aria-hidden="true" /><span class="repository-name">{repository}</span></a>;
 }
 
 function canManageDashboard(model: DashboardViewModel): boolean {
@@ -121,7 +121,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
     <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
-          <p class={`details-kicker repo-color-${issue.repositoryColor}`}><RepositoryBadge repository={issue.repository} />:#{issue.number}</p>
+          <p class={`details-kicker repo-color-${issue.repositoryColor}`}><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
           <h2 id={`${id}-title`}>{issue.title}</h2>
         </div>
         <div class="details-header-actions">
@@ -328,12 +328,9 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
-      tabIndex={0}
-      aria-label={`Open details for issue #${issue.number}`}
-      aria-haspopup="dialog"
     >
-      <p class="issue-kicker"><RepositoryBadge repository={issue.repository} />:#{issue.number}</p>
-      <h3 class="issue-title">{issue.title}</h3>
+      <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
+      <h3 class="issue-title"><button type="button" class="card-open" aria-haspopup="dialog">{issue.title}</button></h3>
       <p class="issue-status">
         <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
         <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
@@ -488,7 +485,7 @@ function Navigation({ model }: { model: DashboardViewModel }) {
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
-      {needsYou.total > 0 && <a href="/board#needs-you-heading" class="tab">Needs you <span class="tab-count">{needsYou.total}</span></a>}
+      {needsYou.total > 0 && <a href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true" /><span><strong>{needsYou.total}</strong> {needsYou.total === 1 ? "needs" : "need"} you</span></a>}
     </nav>
   );
 }
@@ -521,9 +518,9 @@ function RepositoryCard({ repository }: { repository: RepositoryDashboardSummary
   const health = repository.health === "healthy" ? "Healthy" : "Degraded";
   return (
     <a class={`repository-card repo-color-${repository.color} repository-card--${repository.health}`} href={repositoryHref(repository.id)}>
-      <span class="repository-card-heading"><i class="repository-dot" aria-hidden="true" /><strong>{repository.id}</strong><span class="repository-health" role="img" aria-label={health}>{repository.health === "healthy" ? "✓" : "!"}</span></span>
+      <span class="repository-card-heading"><i class="repository-dot" aria-hidden="true" /><strong title={repository.id}>{repository.id}</strong><span class="repository-health" role="img" aria-label={health}>{repository.health === "healthy" ? "✓" : "!"}</span></span>
       <span class="repository-address">{repository.address}</span>
-      <span class="repository-status">{repositoryStatus(repository)}</span>
+      <span class="repository-status" title={repository.errorSummary ?? undefined}>{repositoryStatus(repository)}</span>
     </a>
   );
 }
@@ -564,7 +561,7 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
         {repository.lastReconciledAt && <p class="repository-last-checked">Last checked <RelativeTime value={repository.lastReconciledAt} /></p>}
         {repository.error && <p class="repository-error">{repository.error}</p>}
       </header>
-      <section><h3>Line</h3><p>{line.map((count, index) => <Fragment key={count}>{index > 0 && " · "}<a href="/board">{count}</a></Fragment>)}</p><p class="repository-empty">Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.</p></section>
+      <section><h3>Line</h3><p>{line.join(" · ")}</p><p class="repository-empty">Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.</p></section>
       <section><h3>Now</h3>{repository.items.length > 0 ? <><p>{repository.capacity.busy} of {repository.capacity.slots} run slots busy</p><ol class="repository-items">{repository.items.map((item) => <li key={item.number}><a href={issueHref(repository.id, item.number)}>#{item.number} {item.title}</a><span>{item.stage ?? "Backlog"} · {item.state}</span></li>)}</ol></> : <p class="repository-empty">No work is in progress.</p>}</section>
       <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
       <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
@@ -809,7 +806,7 @@ function HarnessUsage({ model }: { model: DashboardViewModel }) {
 function ThemeControl() {
   return (
     <details class="theme-control" data-theme-control>
-      <summary aria-label="Choose colour theme"><strong data-theme-label>System</strong></summary>
+      <summary><span class="sr-only">Colour theme: </span><strong data-theme-label>System</strong></summary>
       <div class="header-popover theme-popover">
         <h2>Theme</h2>
         <div class="theme-options">
@@ -822,6 +819,30 @@ function ThemeControl() {
       </div>
     </details>
   );
+}
+
+/** Names the view in the document title, so tabs, history entries and screen readers tell the pages apart. */
+function pageTitle(model: DashboardViewModel): string {
+  return model.selectedIssue ? `#${model.selectedIssue.number} ${model.selectedIssue.title}` : viewTitle(model);
+}
+
+/** The view's own name, which the title returns to when an item's details are closed. */
+function viewTitle(model: DashboardViewModel): string {
+  if (model.view === "repository") return model.repositoryId ?? "Repository";
+  if (model.view === "reports" && model.report?.repository) return `Reports · ${model.report.repository}`;
+  const names: Record<Exclude<DashboardView, "repository">, string> = {
+    board: "Board",
+    attention: "Label problems",
+    agent: "Operator",
+    team: "Team",
+    reports: "Reports",
+    repositories: "Repositories",
+    about: "About",
+    accounts: "Accounts",
+    profile: "Profile",
+    notifications: "Notifications",
+  };
+  return names[model.view];
 }
 
 function Page({ model }: { model: DashboardViewModel }) {
@@ -854,13 +875,14 @@ function Page({ model }: { model: DashboardViewModel }) {
         <link rel="manifest" href="/manifest.webmanifest" />
         <meta name="theme-color" content="#087f72" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-        <title>{model.title} · Conveyor</title>
+        <title>{pageTitle(model)} · {model.title}</title>
         <script src="/assets/theme.js" />
         <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss }} />
         <script src="/assets/dashboard.js" defer />
         <script src="/assets/notifications.js" defer />
       </head>
-      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-csrf-token={model.csrfToken}>
+      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-view-title={`${viewTitle(model)} · ${model.title}`} data-csrf-token={model.csrfToken}>
+        <a class="skip-link" href="#content">Skip to content</a>
         <main class="dashboard">
           <header class="dashboard-header">
             <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
@@ -874,7 +896,7 @@ function Page({ model }: { model: DashboardViewModel }) {
             </details>
             <RunnerStatus model={model} />
             <HarnessUsage model={model} />
-            <span class="total-usage">{model.totalUsage}</span>
+            <span class="total-usage" title={model.totalUsage}>{model.totalUsage}</span>
             <ThemeControl />
             <a class={model.view === "notifications" ? "header-link header-link--active" : "header-link"} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
             <details class="account-menu">
@@ -889,6 +911,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           </header>
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Navigation model={model} />
+          <div class="content-anchor" id="content" tabIndex={-1} />
           {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /><Repositories model={model} limited /></>}
           {content}
           {model.selectedIssue && (
@@ -900,6 +923,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           )}
           <div class="page-loader" role="status" aria-live="polite"><span />Loading…</div>
         </main>
+        <p class="sr-only" role="status" data-route-announcer />
       </body>
     </html>
   );

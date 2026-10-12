@@ -80,7 +80,7 @@ function BarChart({ title, caption, bars }: { title: string; caption?: string; b
               <li key={bar.label}>
                 <span class="report-bar-label">{bar.label}</span>
                 <span class="report-bar-track">
-                  {bar.value > 0 && <span class="report-bar" style={`width:${Math.max(1, (bar.value / max) * 100)}%`} tabIndex={0} data-tip={bar.tip ?? `${bar.label}: ${bar.display}`} aria-label={bar.tip ?? `${bar.label}: ${bar.display}`} />}
+                  {bar.value > 0 && <span class="report-bar" style={`width:${Math.max(1, (bar.value / max) * 100)}%`} tabIndex={0} role="img" data-tip={bar.tip ?? `${bar.label}: ${bar.display}`} aria-label={bar.tip ?? `${bar.label}: ${bar.display}`} />}
                 </span>
                 <span class="report-bar-value">{bar.display}</span>
               </li>
@@ -108,7 +108,7 @@ function ColumnChart({ title, caption, columns, format }: { title: string; capti
                 <li key={column.label}>
                   <span class="report-column-plot">
                     {column.value > 0 && (
-                      <span class="report-column" style={`height:${Math.max(1, (column.value / max) * 100)}%`} tabIndex={0} data-tip={column.tip ?? `${column.label}: ${column.display}`} aria-label={column.tip ?? `${column.label}: ${column.display}`}>
+                      <span class="report-column" style={`height:${Math.max(1, (column.value / max) * 100)}%`} tabIndex={0} role="img" data-tip={column.tip ?? `${column.label}: ${column.display}`} aria-label={column.tip ?? `${column.label}: ${column.display}`}>
                         <span class="report-column-value">{column.display}</span>
                       </span>
                     )}
@@ -151,7 +151,7 @@ function RepositoryTable({ report }: { report: ReportViewModel }) {
   return (
     <section class="report-section" aria-labelledby="report-repositories">
       <h3 id="report-repositories">By repository</h3>
-      <div class="report-table-wrap">
+      <div class="report-table-wrap" role="group" aria-labelledby="report-repositories" tabIndex={0}>
         <table class="report-table">
           <thead><tr><th scope="col">Repository</th><th scope="col">Delivered</th><th scope="col">In progress</th><th scope="col">Runs</th><th scope="col">Tokens</th><th scope="col">Agent time</th><th scope="col">Tokens per item</th><th scope="col">Lead time per item</th><th scope="col">Returns per item</th><th scope="col">First pass</th></tr></thead>
           <tbody>
@@ -181,7 +181,7 @@ function Months({ report }: { report: ReportViewModel }) {
         <ColumnChart title="Tokens" caption="input and output" columns={months.map((row) => ({ label: monthLabel(row.month), value: row.tokens, display: formatCompact(row.tokens) }))} format={formatCompact} />
         <ColumnChart title="Tokens per delivered item" columns={months.flatMap((row) => row.avgTokensPerItem === null ? [] : [{ label: monthLabel(row.month), value: row.avgTokensPerItem, display: formatCompact(row.avgTokensPerItem) }])} format={formatCompact} />
       </div>
-      <div class="report-table-wrap">
+      <div class="report-table-wrap" role="group" aria-labelledby="report-months" tabIndex={0}>
         <table class="report-table">
           <thead><tr><th scope="col">Month</th><th scope="col">Delivered</th><th scope="col">Runs</th><th scope="col">Tokens</th><th scope="col">Agent time</th><th scope="col">Tokens per item</th><th scope="col">Lead time per item</th></tr></thead>
           <tbody>
@@ -214,7 +214,7 @@ function TimeAndStages({ report }: { report: ReportViewModel }) {
         <BarChart title="Tokens by stage" bars={report.byStage.map((stage) => ({ label: stage.name, value: stage.tokens, display: formatCompact(stage.tokens) }))} />
         <BarChart title="Agent time by stage" bars={report.byStage.map((stage) => ({ label: stage.name, value: stage.agentMs, display: formatSpan(stage.agentMs) }))} />
       </div>
-      <div class="report-table-wrap">
+      <div class="report-table-wrap" role="group" aria-labelledby="report-time" tabIndex={0}>
         <table class="report-table">
           <thead><tr><th scope="col">Stage</th><th scope="col">Runs</th><th scope="col">Did not succeed</th><th scope="col">Tokens</th><th scope="col">Agent time</th><th scope="col">Average run</th></tr></thead>
           <tbody>
@@ -243,7 +243,7 @@ function Items({ report }: { report: ReportViewModel }) {
       {report.items.length === 0
         ? <p class="report-empty">No item was active in this period.</p>
         : (
-          <div class="report-table-wrap">
+          <div class="report-table-wrap" role="group" aria-labelledby="report-items" tabIndex={0}>
             <table class="report-table report-table--items">
               <thead><tr><th scope="col">Item</th><th scope="col">State</th><th scope="col">Lead time</th><th scope="col">Agent time</th><th scope="col">Waiting on checks</th><th scope="col">Waiting for you</th><th scope="col">Runs</th><th scope="col">Tokens</th><th scope="col">Returns</th><th scope="col">Stops</th></tr></thead>
               <tbody>
