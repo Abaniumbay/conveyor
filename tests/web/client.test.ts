@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createDashboardEventConnection, dashboardClient } from "../../src/web/client";
+import { createDashboardEventConnection, createDashboardNavigation, dashboardClient } from "../../src/web/client";
 import { quotaCountdown, updateQuotaWindow } from "../../src/usage/quota-time";
 
 describe("dashboard browser client", () => {
@@ -121,6 +121,35 @@ describe("dashboard browser client", () => {
     expect(watchdog).toBeNull();
   });
 
+  test("keeps dashboard navigation feedback with the latest delayed response", async () => {
+    const events: string[] = [];
+    const requests: Array<{ target: string; resolve: (loaded: boolean) => void }> = [];
+    const navigate = createDashboardNavigation<string>({
+      load: (target) => new Promise<boolean>((resolve) => requests.push({ target, resolve })),
+      start: () => events.push("start"),
+      finish: () => events.push("finish"),
+      fallback: (target) => events.push(`fallback:${target}`),
+    });
+
+    const first = navigate("/first");
+    expect(events).toEqual(["start"]);
+    const second = navigate("/second");
+    expect(events).toEqual(["start", "start"]);
+
+    requests[1]!.resolve(true);
+    await second;
+    expect(events).toEqual(["start", "start", "finish"]);
+
+    requests[0]!.resolve(true);
+    await first;
+    expect(events).toEqual(["start", "start", "finish"]);
+
+    const failed = navigate("/failed");
+    requests[2]!.resolve(false);
+    await failed;
+    expect(events).toEqual(["start", "start", "finish", "start", "finish", "fallback:/failed"]);
+  });
+
   test("is valid standalone JavaScript", () => {
     expect(() => new Function(dashboardClient)).not.toThrow();
     expect(dashboardClient).toContain("activityUrl");
@@ -165,8 +194,9 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("new URL(location.href), 'none'");
     expect(dashboardClient).toContain("conveyor:dashboard-rendered");
     expect(dashboardClient).toContain("destination.origin !== location.origin");
-    expect(dashboardClient).toContain("body.classList.add('dashboard-navigating')");
-    expect(dashboardClient).not.toContain("body.classList.add('page-loading')");
+    expect(dashboardClient).toContain("const createDashboardNavigation =");
+    expect(dashboardClient).toContain("body.classList.add('page-loading', 'dashboard-navigating')");
+    expect(dashboardClient).toContain("body.classList.remove('page-loading', 'dashboard-navigating')");
     expect(dashboardClient).toContain("time[data-relative-time][datetime]");
     expect(dashboardClient).not.toContain("location.reload()")
     expect(dashboardClient).toContain("dialog.showModal();");

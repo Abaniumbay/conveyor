@@ -114,9 +114,29 @@ export function createDashboardEventConnection(options: {
   };
 }
 
+export function createDashboardNavigation<T>(options: {
+  load: (target: T, historyMode: string) => Promise<boolean>;
+  start: () => void;
+  finish: () => void;
+  fallback: (target: T) => void;
+}) {
+  let navigationVersion = 0;
+  return async (target: T, historyMode = 'push') => {
+    const requestVersion = ++navigationVersion;
+    options.start();
+    const loaded = await options.load(target, historyMode).catch(() => false);
+    if (requestVersion !== navigationVersion) return true;
+    options.finish();
+    if (loaded) return true;
+    options.fallback(target);
+    return false;
+  };
+}
+
 export const dashboardClient = String.raw`(() => {
   ${quotaClient}
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
+  const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const body = document.body;
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
   let board = document.querySelector('.board');
@@ -1391,11 +1411,12 @@ export const dashboardClient = String.raw`(() => {
       return requestVersion !== dashboardRequestVersion;
     }
   };
-  const navigateDashboard = async (target, historyMode = 'push') => {
-    body.classList.add('dashboard-navigating');
-    const loaded = await replaceDashboard(target, { historyMode, preservePosition: false });
-    if (!loaded) location.assign(target.href);
-  };
+  const navigateDashboard = createDashboardNavigation({
+    load: (target, historyMode) => replaceDashboard(target, { historyMode, preservePosition: false }),
+    start: () => body.classList.add('page-loading', 'dashboard-navigating'),
+    finish: () => body.classList.remove('page-loading', 'dashboard-navigating'),
+    fallback: (target) => location.assign(target.href),
+  });
   const refreshDashboard = async () => {
     if (dashboardRefresh) {
       dashboardRefreshQueued = true;
