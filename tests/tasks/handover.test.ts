@@ -85,7 +85,7 @@ describe("handover", () => {
     findings.resolve("i1", resolved.id, "kaveh");
     w.listed.push({ name: "Check", state: "failed" }, { name: "Check", state: "passed" }, { name: "E2E", state: "running" });
     const h = await w.build();
-    expect(h.todos).toMatchObject({ progress: "1/2 done", items: [{ id: "t1", status: "done" }, { id: "t2", status: "in_progress", note: "stopped here" }] });
+    expect(h.todos).toMatchObject({ progress: "1/2 finished", items: [{ id: "t1", status: "done" }, { id: "t2", status: "in_progress", note: "stopped here" }] });
     expect(h.openFindings).toMatchObject({ count: 1, items: [{ author: "reviewer", file: "a.ts", line: 3, text: "Open one" }] });
     expect(h.change).toMatchObject({ number: 5, url: "https://x/pull/5", headSha: "head-2", mergeable: "yes" });
     expect((h.change as { ci: unknown }).ci).toEqual({

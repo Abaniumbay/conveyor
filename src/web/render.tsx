@@ -17,6 +17,7 @@ import type {
   RepositoryDashboardSummary,
   StageColumnViewModel,
 } from "./types";
+import { TODO_OWNING_STAGE } from "../engine/todos";
 import { BUILD } from "../version";
 
 function safeUrl(value: string | null): string | null {
@@ -259,12 +260,12 @@ function waitingStateWord(kind: "waiting" | "queued"): string {
 
 function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
   const todos = issue.todos;
-  if (!todos) return null;
-  const label = `${todos.done} of ${todos.total} todos done`;
+  if (!todos || issue.stage !== TODO_OWNING_STAGE) return null;
+  const label = `${todos.finished} of ${todos.total} todos finished`;
   return (
     <div class="todo-progress" aria-label={`Todo progress for #${issue.number}: ${label}`}>
-      <meter min={0} max={todos.total} value={todos.done} aria-hidden="true" />
-      <span class="todo-progress-count">{todos.done}/{todos.total}</span>
+      <meter min={0} max={todos.total} value={todos.finished} aria-hidden="true" />
+      <span class="todo-progress-count">{todos.finished}/{todos.total}</span>
       {todos.current && <span class="todo-progress-current" title={todos.current}>{todos.current}</span>}
     </div>
   );
@@ -273,15 +274,15 @@ function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
 function TodoChecklist({ issue }: { issue: IssueCardViewModel }) {
   const todos = issue.todos;
   if (!todos) return null;
-  const marks = { done: "Done", in_progress: "In progress", pending: "Pending" } as const;
+  const marks = { done: "Done", in_progress: "In progress", pending: "Pending", skipped: "Skipped" } as const;
   return (
     <section class="todos" aria-label="Implementation todos">
-      <h3>Todos <span class="todos-count">{todos.done}/{todos.total}</span></h3>
+      <h3>Todos <span class="todos-count">{todos.finished}/{todos.total}{todos.skipped > 0 && <>, {todos.skipped} skipped</>}</span></h3>
       <ol class="todo-list">
         {todos.items.map((item) => (
           <li class={`todo todo--${item.status}`} key={item.id}>
             <span class="todo-mark" aria-label={marks[item.status]} />
-            <span class="todo-text">{item.text}</span>
+            <span class="todo-text">{item.status === "skipped" && <span class="todo-skipped-label">Skipped · </span>}{item.text}</span>
             {item.note && <span class="todo-note">{item.note}</span>}
           </li>
         ))}

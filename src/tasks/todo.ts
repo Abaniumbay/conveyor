@@ -9,7 +9,7 @@ import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 
 const MAX_UNFINISHED_ITEMS = 40;
 
-const statusSchema = z.enum(["pending", "in_progress", "done"]);
+const statusSchema = z.enum(["pending", "in_progress", "done", "skipped"]);
 const itemSchema = z.object({
   id: z.string().trim().min(1).max(40),
   text: z.string().trim().min(1).max(200),
@@ -45,7 +45,7 @@ function problems(items: readonly TodoItem[]): string | null {
 }
 
 function unfinishedItemLimitProblem(items: readonly TodoItem[]): string | null {
-  if (items.filter((item) => item.status !== "done").length > MAX_UNFINISHED_ITEMS) {
+  if (items.filter((item) => item.status === "pending" || item.status === "in_progress").length > MAX_UNFINISHED_ITEMS) {
     return `at most ${MAX_UNFINISHED_ITEMS} pending or in_progress todos are allowed`;
   }
   return null;
@@ -53,17 +53,25 @@ function unfinishedItemLimitProblem(items: readonly TodoItem[]): string | null {
 
 function replacementProblem(current: readonly TodoItem[], next: readonly TodoItem[]): string | null {
   const nextById = new Map(next.map((item) => [item.id, item]));
-  const missingCompletedIds = current
-    .filter((item) => item.status === "done" && !nextById.has(item.id))
+  const missingTerminalIds = current
+    .filter((item) => (item.status === "done" || item.status === "skipped") && !nextById.has(item.id))
     .map((item) => `"${item.id}"`);
-  if (missingCompletedIds.length > 0) {
-    return `completed todo ids must be kept: ${missingCompletedIds.join(", ")}; keep completed items and add new work under new ids`;
+  if (missingTerminalIds.length > 0) {
+    return `completed todo ids must be kept: ${missingTerminalIds.join(", ")}; keep completed items and add new work under new ids`;
   }
 
   for (const item of current) {
     const replacement = nextById.get(item.id);
     if (replacement && replacement.text !== item.text) return `todo id "${item.id}" must keep its original text`;
     if (item.status === "done" && replacement?.status !== "done") return `completed todo id "${item.id}" must remain done`;
+    if (item.status === "skipped" && (!replacement || replacement.status !== "skipped" || replacement.note !== item.note)) {
+      return `skipped todo id "${item.id}" is Conveyor history and must remain unchanged`;
+    }
+  }
+  for (const item of next) {
+    if (item.status === "skipped" && current.find((currentItem) => currentItem.id === item.id)?.status !== "skipped") {
+      return `skipped todo id "${item.id}" can only be created by Conveyor`;
+    }
   }
   return null;
 }
@@ -71,7 +79,7 @@ function replacementProblem(current: readonly TodoItem[], next: readonly TodoIte
 const get: TaskDefinition<unknown, unknown, Deps> = {
   name: "todo.get",
   kind: "tool",
-  description: "Read the current item's todo list (kept across runs and returns), with done/total progress.",
+  description: "Read the current item's todo list (kept across runs and returns), with finished/total progress and skipped history.",
   reads: [],
   writes: [],
   invalidates: [],
@@ -84,7 +92,7 @@ const get: TaskDefinition<unknown, unknown, Deps> = {
 const set: TaskDefinition<unknown, z.output<typeof todoSetInput>, Deps> = {
   name: "todo.set",
   kind: "tool",
-  description: `Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). Retain existing completed items and their ids; after feedback add new ids for each required fix, failing CI check, or open finding. At most ${MAX_UNFINISHED_ITEMS} pending or in_progress items and one in_progress.`,
+  description: `Replace the current item's whole todo list: ordered items with a stable id, a short text and a status (pending, in_progress, done). Retain existing completed and Conveyor-skipped history with their ids unchanged; after feedback add new ids for each required fix, failing CI check, or open finding. At most ${MAX_UNFINISHED_ITEMS} pending or in_progress items and one in_progress.`,
   reads: [],
   writes: [],
   invalidates: [],
@@ -107,7 +115,7 @@ const set: TaskDefinition<unknown, z.output<typeof todoSetInput>, Deps> = {
 const update: TaskDefinition<unknown, z.output<typeof todoUpdateInput>, Deps> = {
   name: "todo.update",
   kind: "tool",
-  description: "Change one todo's status (pending, in_progress, done) and/or note by id. Starting one item moves no other: finish or pause the current one first.",
+  description: "Change one todo's status (pending, in_progress, done) and/or note by id. Conveyor-skipped entries are immutable history. Starting one item moves no other: finish or pause the current one first.",
   reads: [],
   writes: [],
   invalidates: [],
@@ -120,6 +128,9 @@ const update: TaskDefinition<unknown, z.output<typeof todoUpdateInput>, Deps> = 
     if (!current.some((item) => item.id === input!.id)) {
       return fail(`no todo with id "${input!.id}"; read todo.get or replace the list with todo.set`);
     }
+    const existing = current.find((item) => item.id === input!.id)!;
+    if (existing.status === "skipped") return fail(`skipped todo id "${existing.id}" is Conveyor history and cannot be changed`);
+    if (input!.status === "skipped") return fail("skipped status is reserved for Conveyor closeout");
     const items = current.map((item) => {
       if (item.id !== input!.id) return item;
       const next: TodoItem = { ...item, ...(input!.status ? { status: input!.status } : {}) };

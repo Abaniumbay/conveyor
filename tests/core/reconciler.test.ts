@@ -6,6 +6,7 @@ import path from "node:path";
 import { reconcileRepository } from "../../src/core/reconciler";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
+import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
 import type { SourceIssue } from "../../src/source/types";
 
 const temporaryDirectories: string[] = [];
@@ -386,6 +387,48 @@ describe("reconcileRepository", () => {
       stageId: "review",
       status: "ready",
     });
+    store.close();
+  });
+
+  test("closes implementation todos when reconciliation recovers a source-only advance", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      stages: ["refinement", "implementation", "review"],
+      labels,
+    };
+    await reconcileRepository({
+      ...common,
+      source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:implementation"])]; } },
+    });
+    const todos = new ItemTodos(store.sqlite());
+    todos.set("github:owner/repo#1", [
+      { id: "done", text: "Completed", status: "done", note: "kept" },
+      { id: "open", text: "Interrupted", status: "in_progress", note: "working" },
+    ], "run", "2026-10-01T00:00:00Z");
+    store.setStageState({
+      issueId: "github:owner/repo#1",
+      stageId: "implementation",
+      status: "running",
+      feedbackCycle: 0,
+      configHash: "hash-1",
+    });
+
+    const advanced = {
+      ...common,
+      source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:review"])]; } },
+    };
+    await reconcileRepository(advanced);
+    const closed = todos.get("github:owner/repo#1")!.items;
+    expect(closed).toEqual([
+      { id: "done", text: "Completed", status: "done", note: "kept" },
+      { id: "open", text: "Interrupted", status: "skipped", note: TODO_CLOSEOUT_NOTE },
+    ]);
+
+    await reconcileRepository(advanced);
+    expect(todos.get("github:owner/repo#1")!.items).toEqual(closed);
     store.close();
   });
 

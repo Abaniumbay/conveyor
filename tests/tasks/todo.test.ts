@@ -63,7 +63,7 @@ describe("todo tools", () => {
         { id: "t2", text: "Tenant family settings endpoint", status: "in_progress", note: "admin auth first" },
         { id: "t3", text: "Lobby picker uses the family list", status: "pending" },
       ],
-      summary: { done: 1, total: 3, current: "Tenant family settings endpoint" },
+      summary: { finished: 1, total: 3, skipped: 0, current: "Tenant family settings endpoint" },
     });
     expect(new ItemTodos(w.store.sqlite()).get("i1")).toMatchObject({ runId: "run-1", updatedAt: "2026-10-03T10:00:00.000Z" });
   });
@@ -82,6 +82,32 @@ describe("todo tools", () => {
       message: 'completed todo ids must be kept: "t1", "t2"; keep completed items and add new work under new ids',
     });
     expect(output(await w.call("todo.get", {})).items).toEqual(initial);
+  });
+
+  test("keeps Conveyor-skipped history unchanged and prevents agents creating or editing it", async () => {
+    const w = await world();
+    const skipped = { id: "old", text: "Closed by the gate", status: "skipped" as const, note: "Closed when the implementation stage passed." };
+    new ItemTodos(w.store.sqlite()).set("i1", [skipped], null, "2026-10-02T10:00:00Z");
+
+    expect(output(await w.call("todo.set", { items: [skipped, { id: "new", text: "Returned work" }] }))).toEqual({
+      items: [skipped, { id: "new", text: "Returned work", status: "pending" }],
+      summary: { finished: 1, total: 2, skipped: 1, current: "Returned work" },
+    });
+    expect(await w.call("todo.set", { items: [{ ...skipped, note: "changed" }, { id: "new", text: "Returned work" }] })).toEqual({
+      status: "fail", message: 'skipped todo id "old" is Conveyor history and must remain unchanged',
+    });
+    expect(await w.call("todo.set", { items: [skipped, { id: "agent", text: "Agent closeout", status: "skipped" }, { id: "new", text: "Returned work" }] })).toEqual({
+      status: "fail", message: 'skipped todo id "agent" can only be created by Conveyor',
+    });
+    expect(await w.call("todo.set", { items: [skipped, { id: "new", text: "Returned work", status: "skipped" }] })).toEqual({
+      status: "fail", message: 'skipped todo id "new" can only be created by Conveyor',
+    });
+    expect(await w.call("todo.update", { id: "old", note: "changed" })).toEqual({
+      status: "fail", message: 'skipped todo id "old" is Conveyor history and cannot be changed',
+    });
+    expect(await w.call("todo.update", { id: "new", status: "skipped" })).toEqual({
+      status: "fail", message: "skipped status is reserved for Conveyor closeout",
+    });
   });
 
   test("keeps text and done status for stored ids when replacing a list", async () => {
@@ -172,9 +198,9 @@ describe("todo tools", () => {
 });
 
 describe("summarizeTodos", () => {
-  test("counts done items and names the item in progress, else the next pending one", () => {
+  test("counts terminal items and names the item in progress, else the next pending one", () => {
     expect(summarizeTodos([])).toBeNull();
-    expect(summarizeTodos([{ id: "a", text: "A", status: "done" }, { id: "b", text: "B", status: "pending" }])).toEqual({ done: 1, total: 2, current: "B" });
-    expect(summarizeTodos([{ id: "a", text: "A", status: "done" }])).toEqual({ done: 1, total: 1, current: null });
+    expect(summarizeTodos([{ id: "a", text: "A", status: "done" }, { id: "b", text: "B", status: "pending" }])).toEqual({ finished: 1, total: 2, skipped: 0, current: "B" });
+    expect(summarizeTodos([{ id: "a", text: "A", status: "done" }, { id: "b", text: "B", status: "skipped", note: "Closed when the implementation stage passed." }])).toEqual({ finished: 2, total: 2, skipped: 1, current: null });
   });
 });

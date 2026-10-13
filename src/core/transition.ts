@@ -1,6 +1,7 @@
 import type { StoredIssue, ConveyorStore } from "../db/store";
 import type { StageExecutionResult } from "./pipeline";
 import type { LabelConfiguration } from "./issue-state";
+import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
 
 export interface TransitionSource {
   replaceConveyorLabels(
@@ -189,15 +190,21 @@ export async function applyStageTransition(
       throw error;
     }
   }
-  input.store.completeStageTransition(input.transitionId);
-  input.store.setStageState({
-    issueId: input.issue.id,
-    stageId: target.stageId,
-    status: target.state,
-    feedbackCycle:
-      input.result.kind === "correction" ? 0 : input.result.feedbackCycles,
-    configHash: input.configHash,
-  });
+  // The source transition succeeded: close the todo list out together with the local advance.
+  input.store.sqlite().transaction(() => {
+    input.store.completeStageTransition(input.transitionId);
+    if (input.result.kind === "advance" && input.result.stageId === TODO_OWNING_STAGE) {
+      new ItemTodos(input.store.sqlite()).closeOut(input.issue.id);
+    }
+    input.store.setStageState({
+      issueId: input.issue.id,
+      stageId: target.stageId,
+      status: target.state,
+      feedbackCycle:
+        input.result.kind === "correction" ? 0 : input.result.feedbackCycles,
+      configHash: input.configHash,
+    });
+  })();
 }
 
 /** Move a non-runnable roll-up parent with the earliest unfinished child frontier. */

@@ -20,11 +20,12 @@ export interface IssueWaitingViewModel {
 
 /** A server-ready issue card with lightweight hierarchy references. */
 export interface IssueTodosViewModel {
-  done: number;
+  finished: number;
   total: number;
-  /** The item in progress, or else the next pending one; null when every item is done. */
+  skipped: number;
+  /** The item in progress, or else the next pending one; null when every item is terminal. */
   current: string | null;
-  items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done"; note?: string }>;
+  items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done" | "skipped"; note?: string }>;
 }
 
 export interface IssueCriterionViewModel {
@@ -53,6 +54,8 @@ export interface IssueCardViewModel {
   acceptanceCriteria: readonly IssueCriterionViewModel[];
   /** The implementer's todo list, kept by Conveyor; null until one is written. */
   todos: IssueTodosViewModel | null;
+  /** The stage the item is in; card todo progress is shown only in the stage that owns the list. */
+  stage?: string | null;
   /** Stored status indicators (CI first); rendered by one shared component on the card and in the details. */
   indicators: readonly IndicatorViewModel[];
   activity: string | null;
