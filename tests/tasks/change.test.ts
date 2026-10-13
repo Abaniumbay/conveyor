@@ -325,6 +325,15 @@ describe("change tools", () => {
     expect(registry.require("change.setMetadata").description).toContain("description");
   });
 
+  test("change.setMetadata reports the normalized stored description length", async () => {
+    const w = await world();
+
+    await expect(dispatchMetadata(w, "change.setMetadata", { description: "a\r\nb\n" })).resolves.toEqual({
+      pullRequest: { number: 5, url: "https://x/pull/5" },
+      descriptionLength: 3,
+    });
+  });
+
   test("change.setMetadata rejects unknown fields and descriptions longer than 32,000 characters before a provider write", async () => {
     const w = await world();
     await expect(dispatchMetadata(w, "change.setMetadata", { description: "x", title: "T", labels: ["a"] })).rejects.toThrow(/title.*labels|labels.*title/);

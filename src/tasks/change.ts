@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { pushAndEnsureChange } from "../codehost/actions";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
+import { parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, syncChecklist, uncheckCriterion } from "./change-criteria";
@@ -213,9 +214,10 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
       id: stored.id,
       markdown: description,
     });
+    if (change.body === undefined) throw new Error("provider did not return the updated pull request body");
     return pass({
       pullRequest: { number: change.number, url: change.url },
-      descriptionLength: description.length,
+      descriptionLength: parseManagedSections(change.body).sections.description?.length ?? 0,
     });
   },
 };
