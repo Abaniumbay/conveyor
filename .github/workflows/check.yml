@@ -30,6 +30,8 @@ jobs:
           git config --global user.email "ci@conveyor.invalid"
           git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
       - run: bun run check
 
   package:
