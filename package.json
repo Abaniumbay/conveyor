@@ -1,6 +1,6 @@
 {
   "name": "conveyor",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "A GitHub-native autonomous software delivery orchestrator",
   "license": "MIT",
   "repository": {
