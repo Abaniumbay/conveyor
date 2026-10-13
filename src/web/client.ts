@@ -114,6 +114,87 @@ export function createDashboardEventConnection(options: {
   };
 }
 
+/**
+ * Makes `current` match `next` in place, touching only the nodes that differ, so what the reader is
+ * looking at is never taken out of the page. Children are matched by item id or element id, then by
+ * position. A card the server sent as a placeholder (`data-keep`) stands for the card this page
+ * already holds with that revision; it throws when the page holds none, and the caller reloads.
+ */
+export function morphDashboard(current: any, next: any): void {
+  const keyOf = (node: any): string | null => {
+    if (node.nodeType !== 1) return null;
+    const own = node.getAttribute("data-issue-id") || node.id;
+    if (own) return node.tagName + "#" + own;
+    const card = node.tagName === "LI" ? node.firstElementChild : null;
+    const inner = card && card.getAttribute("data-issue-id");
+    return inner ? "LI#" + inner : null;
+  };
+  const held = (placeholder: any): any => {
+    const card = [...current.querySelectorAll("article[data-issue-id]")].find((candidate: any) =>
+      candidate.getAttribute("data-issue-id") === placeholder.getAttribute("data-issue-id") &&
+      candidate.getAttribute("data-card-revision") === placeholder.getAttribute("data-card-revision"));
+    if (!card) throw new Error("the page does not hold a card the update kept");
+    return card.cloneNode(true);
+  };
+  const adopt = (node: any): any => {
+    if (node.nodeType !== 1) return current.ownerDocument.importNode(node, true);
+    if (node.hasAttribute("data-keep")) return held(node);
+    const copy = current.ownerDocument.importNode(node, true);
+    for (const placeholder of copy.querySelectorAll("[data-keep]")) placeholder.replaceWith(held(placeholder));
+    return copy;
+  };
+  const morph = (from: any, to: any): void => {
+    if (to.nodeType === 1 && to.hasAttribute("data-keep")) {
+      if (from.getAttribute("data-card-revision") !== to.getAttribute("data-card-revision")) from.replaceWith(held(to));
+      return;
+    }
+    if (from.isEqualNode(to)) return;
+    if (from.nodeType !== 1) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return;
+    }
+    for (const name of from.getAttributeNames()) {
+      // A disclosure the reader opened stays open.
+      if (!to.hasAttribute(name) && !(name === "open" && from.tagName === "DETAILS")) from.removeAttribute(name);
+    }
+    for (const name of to.getAttributeNames()) {
+      if (from.getAttribute(name) !== to.getAttribute(name)) from.setAttribute(name, to.getAttribute(name));
+    }
+    const keyed = new Map<string, any>();
+    for (const child of from.childNodes) {
+      const key = keyOf(child);
+      if (key && !keyed.has(key)) keyed.set(key, child);
+    }
+    // Everything before the cursor is in place; the cursor and what follows are still to be matched.
+    let cursor: any = from.firstChild;
+    for (const wanted of [...to.childNodes] as any[]) {
+      const key = keyOf(wanted);
+      let match: any = null;
+      if (key) {
+        match = keyed.get(key) ?? null;
+        keyed.delete(key);
+      } else {
+        let candidate = cursor;
+        while (candidate && keyOf(candidate)) candidate = candidate.nextSibling;
+        if (candidate && candidate.nodeType === wanted.nodeType && candidate.nodeName === wanted.nodeName) match = candidate;
+      }
+      if (!match) {
+        from.insertBefore(adopt(wanted), cursor);
+        continue;
+      }
+      if (match === cursor) cursor = cursor.nextSibling;
+      else from.insertBefore(match, cursor);
+      morph(match, wanted);
+    }
+    while (cursor) {
+      const stale = cursor;
+      cursor = cursor.nextSibling;
+      stale.remove();
+    }
+  };
+  morph(current, next);
+}
+
 export function createDashboardNavigation<T>(options: {
   load: (target: T, historyMode: string) => Promise<boolean>;
   start: () => void;
@@ -137,6 +218,7 @@ export const dashboardClient = String.raw`(() => {
   ${quotaClient}
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
+  const morphDashboard = ${morphDashboard.toString()};
   const body = document.body;
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {});
   let board = document.querySelector('.board');
@@ -1466,10 +1548,13 @@ export const dashboardClient = String.raw`(() => {
   const replaceDashboard = async (target, options = {}) => {
     const requestVersion = ++dashboardRequestVersion;
     const preservePosition = options.preservePosition === true;
-    const position = preservePosition ? captureDashboardPosition() : null;
+    // A live update tells the server which cards this page holds, and gets back only the others.
+    const heldCards = preservePosition && options.everyCard !== true
+      ? [...new Set([...document.querySelectorAll('main.dashboard article.issue[data-card-revision]')].map((card) => card.getAttribute('data-card-revision')))].join(' ')
+      : '';
     try {
       const response = await fetch(target.pathname + target.search, {
-        headers: { accept: 'text/html' },
+        headers: heldCards && heldCards.length < 16000 ? { accept: 'text/html', 'x-conveyor-cards': heldCards } : { accept: 'text/html' },
         cache: 'no-store',
       });
       if (!response.ok) throw new Error('dashboard navigation failed');
@@ -1480,8 +1565,23 @@ export const dashboardClient = String.raw`(() => {
       if (requestVersion !== dashboardRequestVersion) return true;
       const focus = describeFocus(currentDashboard);
       const entries = preservePosition ? describeEntries(currentDashboard) : new Map();
-      currentDashboard.replaceWith(nextDashboard);
-      restoreEntries(nextDashboard, entries);
+      // Measured here, not before the request: the reader may have scrolled while it was in flight.
+      const position = preservePosition ? captureDashboardPosition() : null;
+      // A live update is patched into the page; navigation swaps the page.
+      let rendered = nextDashboard;
+      if (preservePosition) {
+        try {
+          morphDashboard(currentDashboard, nextDashboard);
+          rendered = currentDashboard;
+        } catch {
+          // The update kept a card this page no longer holds: take every card instead.
+          if (heldCards) return replaceDashboard(target, { ...options, everyCard: true });
+          currentDashboard.replaceWith(nextDashboard);
+        }
+      } else {
+        currentDashboard.replaceWith(nextDashboard);
+      }
+      if (rendered === nextDashboard) restoreEntries(nextDashboard, entries);
       if (options.historyMode === 'push') history.pushState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
       else if (options.historyMode === 'replace') history.replaceState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
       renderedUrl = target.pathname + target.search;
@@ -1493,8 +1593,8 @@ export const dashboardClient = String.raw`(() => {
       body.dataset.dashboardRevision = revision;
       body.classList.remove('page-loading', 'dashboard-navigating');
       board = document.querySelector('.board');
-      localizeTimes(nextDashboard);
-      syncThemeControls(nextDashboard);
+      localizeTimes(rendered);
+      syncThemeControls(rendered);
       updateQuotaCountdowns();
       bindServerStatus();
       document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered'));
@@ -1511,9 +1611,9 @@ export const dashboardClient = String.raw`(() => {
       }
       syncRouteDialogs();
       if (!document.querySelector('dialog[open]')) {
-        if (preservePosition) restoreFocus(nextDashboard, focus);
-        else if (focus && !(focus.link && restoreFocus(nextDashboard, focus))) {
-          const content = nextDashboard.querySelector('#content');
+        if (preservePosition) restoreFocus(rendered, focus);
+        else if (focus && !(focus.link && restoreFocus(rendered, focus))) {
+          const content = rendered.querySelector('#content');
           if (content instanceof HTMLElement) content.focus({ preventScroll: true });
         }
       }
@@ -1566,8 +1666,27 @@ export const dashboardClient = String.raw`(() => {
       pendingRefresh = true;
       return;
     }
+    // Nor is a finger on the screen or a scroll still coasting: the update waits for it to settle.
+    if (touching || performance.now() - lastScrolledAt < 150) {
+      if (gestureRetry === null) gestureRetry = setTimeout(() => {
+        gestureRetry = null;
+        refreshDashboardWhenSafe();
+      }, 200);
+      return;
+    }
     void refreshDashboard();
   };
+  let touching = false;
+  let lastScrolledAt = -Infinity;
+  let gestureRetry = null;
+  document.addEventListener('touchstart', () => { touching = true; }, { passive: true });
+  for (const finished of ['touchend', 'touchcancel']) {
+    document.addEventListener(finished, (event) => {
+      touching = event.touches.length > 0;
+      lastScrolledAt = performance.now();
+    }, { passive: true });
+  }
+  document.addEventListener('scroll', () => { lastScrolledAt = performance.now(); }, { passive: true, capture: true });
   const resumePendingRefresh = () => setTimeout(() => {
     if (!pendingRefresh || backlogBusy || document.querySelector('dialog[open]') || interactionInProgress()) return;
     pendingRefresh = false;

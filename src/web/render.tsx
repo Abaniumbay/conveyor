@@ -310,7 +310,21 @@ function stateWords(issue: IssueCardViewModel): string {
   return words[issue.state] ?? issue.state.replaceAll(/[-_]/g, " ").replace(/^./, (letter) => letter.toUpperCase());
 }
 
+/**
+ * The cards the browser already holds, by revision, while a live update is rendered; null renders
+ * every card. A card whose revision is among them is sent as a placeholder the browser keeps its
+ * own node for, so an update carries only the cards that changed.
+ */
+let heldCards: ReadonlySet<string> | null = null;
+
+/** Changes whenever anything the card shows does. */
+function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean): string {
+  return Bun.hash(JSON.stringify([issue, actors, canManage])).toString(36);
+}
+
 function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean }) {
+  const revision = cardRevision(issue, actors, canManage);
+  if (heldCards?.has(revision)) return <article class="issue" data-issue-id={issue.id} data-card-revision={revision} data-keep />;
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
   const completedChildren = issue.children.filter((child) => child.satisfied).length;
@@ -329,6 +343,7 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
+      data-card-revision={revision}
     >
       <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
       <h3 class="issue-title"><button type="button" class="card-open" aria-haspopup="dialog">{issue.title}</button></h3>
@@ -930,8 +945,13 @@ function Page({ model }: { model: DashboardViewModel }) {
   );
 }
 
-export function renderDashboard(model: DashboardViewModel): string {
-  return `<!doctype html>${renderToString(<Page model={model} />)}`;
+export function renderDashboard(model: DashboardViewModel, held: ReadonlySet<string> | null = null): string {
+  heldCards = held;
+  try {
+    return `<!doctype html>${renderToString(<Page model={model} />)}`;
+  } finally {
+    heldCards = null;
+  }
 }
 
 export { dashboardCss } from "./styles";
