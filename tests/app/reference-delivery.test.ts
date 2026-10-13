@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 
-import { deliveryWorld, type DeliveryWorld } from "../support/delivery-world";
+import { deliveryWorld, REQUIRED_DESCRIPTION, type DeliveryWorld } from "../support/delivery-world";
 
 let world: DeliveryWorld | null = null;
 afterEach(async () => { await world?.close(); world = null; });
@@ -22,4 +22,17 @@ test("a fresh item runs the whole reference delivery pipeline and ends done", as
   expect(checkpoints.reviewPassed?.sha).toBe(w.host.headSha);
   expect(w.host.merges).toHaveLength(1);
   expect(w.host.merges[0]!.expectedHeadSha).toBe(w.host.headSha);
+});
+
+test("an implementation agent explains a criterion-required result through the managed PR description", async () => {
+  world = await deliveryWorld({ requireDescription: true });
+  const w = world;
+  await w.drive();
+
+  expect(w.agentRuns).toEqual(["refinement", "implementation", "review", "implementation", "review"]);
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+  expect((await w.host.getChange({ address: "owner/conveyor", id: "github:owner/conveyor#pr-5" })).body).toContain(REQUIRED_DESCRIPTION);
+  expect(w.host.descriptionUpdates).toBe(1);
+  expect(w.host.humanBodyEdits).toBe(0);
+  expect(w.store.executions().getContext("issue")!.context.checkpoints.reviewPassed?.sha).toBe(w.host.headSha);
 });

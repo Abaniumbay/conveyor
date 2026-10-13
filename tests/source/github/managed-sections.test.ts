@@ -71,6 +71,35 @@ describe("managed GitHub issue body sections", () => {
     );
   });
 
+  test("places a description after the closing reference and before criteria without altering other text", () => {
+    const body = [
+      "Closes #7",
+      "",
+      "<!-- conveyor:acceptance-criteria:start -->",
+      "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      "<!-- conveyor:acceptance-criteria:end -->",
+      "",
+      "Human footer.",
+    ].join("\n");
+
+    const first = upsertManagedSection(body, "description", "Explains the pull request.", parseManagedSections(body).revision);
+    expect(first).toBe([
+      "Closes #7",
+      "<!-- conveyor:description:start -->",
+      "Explains the pull request.",
+      "<!-- conveyor:description:end -->",
+      "",
+      "<!-- conveyor:acceptance-criteria:start -->",
+      "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      "<!-- conveyor:acceptance-criteria:end -->",
+      "",
+      "Human footer.",
+    ].join("\n"));
+    const replaced = upsertManagedSection(first, "description", "Replacement.", parseManagedSections(first).revision);
+    expect(replaced).toBe(first.replace("Explains the pull request.", "Replacement."));
+    expect(upsertManagedSection(replaced, "description", "Replacement.", parseManagedSections(replaced).revision)).toBe(replaced);
+  });
+
   test("rejects stale revisions before changing the body", () => {
     expect(() =>
       upsertManagedSection("Changed by a person", "dependencies", "- #2", "0".repeat(64)),
@@ -148,7 +177,7 @@ describe("refinement section and legacy criteria", () => {
     expect(parseManagedSections(second).sections.refinement).toBe("## Refinement\n\nChanged.");
     expect(second.replace("Changed.", "One release.")).not.toBe(first);
     const { refinement: _gone, ...others } = parseManagedSections(second).sections;
-    expect(others).toEqual({ "acceptance-criteria": "- [ ] A <!-- conveyor:criterion:a -->", dependencies: "- #1" });
+    expect(others).toEqual({ "acceptance-criteria": "- [ ] A <!-- conveyor:criterion:a -->", dependencies: "- #1", description: undefined });
     expect(second.startsWith("Intro\n<!-- conveyor:acceptance-criteria:start -->")).toBe(true);
     expect(second.endsWith("Footer\n\n<!-- conveyor:refinement:start -->\n## Refinement\n\nChanged.\n<!-- conveyor:refinement:end -->\n")).toBe(true);
   });

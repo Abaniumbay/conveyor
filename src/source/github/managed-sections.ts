@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-/** The only issue-body blocks this module considers Conveyor-owned. */
-export type ManagedSectionName = "acceptance-criteria" | "dependencies" | "refinement";
+/** The only issue or pull-request body blocks this module considers Conveyor-owned. */
+export type ManagedSectionName = "acceptance-criteria" | "dependencies" | "description" | "refinement";
 
 export interface ManagedSectionsSnapshot {
   /** SHA-256 of the entire body; pass this back when writing to reject stale edits. */
@@ -17,6 +17,7 @@ export class ManagedSectionError extends Error {
 const SECTION_NAMES: readonly ManagedSectionName[] = [
   "acceptance-criteria",
   "dependencies",
+  "description",
   "refinement",
 ];
 
@@ -45,7 +46,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     if (raw.length === 0) break;
     const contentEnd = offset + raw.replace(/(?:\r\n|\n|\r)$/, "").length;
     const text = body.slice(offset, contentEnd).trim();
-    const match = /^<!-- conveyor:(acceptance-criteria|dependencies|refinement):(start|end) -->$/.exec(text);
+    const match = /^<!-- conveyor:(acceptance-criteria|dependencies|description|refinement):(start|end) -->$/.exec(text);
     if (match) {
       const marker: MarkerLine = {
         name: match[1] as ManagedSectionName,
@@ -71,6 +72,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
   const sections: Record<ManagedSectionName, string | undefined> = {
     "acceptance-criteria": undefined,
     dependencies: undefined,
+    description: undefined,
     refinement: undefined,
   };
   for (const name of SECTION_NAMES) {
@@ -173,6 +175,20 @@ function upsertInto(body: string, name: ManagedSectionName, content: string, new
   const ends = [...body.matchAll(new RegExp(`^[ \\t]*<!-- conveyor:${name}:end -->[ \\t]*\\r?$`, "gm"))];
 
   if (parsed.sections[name] === undefined) {
+    if (name === "description") {
+      const criteria = /^[ \t]*<!-- conveyor:acceptance-criteria:start -->[ \t]*\r?$/gm.exec(body);
+      const closing = /(?:^|\r\n|\n|\r)Closes #\d+[^\r\n]*(?:\r\n|\n|\r|$)/m.exec(body);
+      const at = closing ? closing.index + closing[0].length : criteria?.index;
+      if (at !== undefined) {
+        const before = body.slice(0, at);
+        const after = body.slice(at);
+        const separator = before.length > 0 && !before.endsWith("\n") && !before.endsWith("\r") ? newline : "";
+        const block = `<!-- conveyor:${name}:start -->${newline}${content}${content ? newline : ""}<!-- conveyor:${name}:end -->${newline}`;
+        const updated = `${before}${separator}${block}${after}`;
+        parseManagedSections(updated);
+        return updated;
+      }
+    }
     const separator = body.length === 0 ? "" : body.endsWith("\n") || body.endsWith("\r") ? newline : `${newline}${newline}`;
     const updated = `${body}${separator}<!-- conveyor:${name}:start -->${newline}${content}${content ? newline : ""}<!-- conveyor:${name}:end -->${newline}`;
     parseManagedSections(updated);

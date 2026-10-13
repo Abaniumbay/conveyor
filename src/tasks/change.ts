@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { pushAndEnsureChange } from "../codehost/actions";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
+import { parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, syncChecklist, uncheckCriterion } from "./change-criteria";
@@ -25,7 +26,10 @@ const ensureConfig = z.object({
 });
 const mergeConfig = z.object({ method: z.literal("squash").default("squash") });
 const emptyInput = z.object({});
-const metadataInput = z.looseObject({});
+const MAX_DESCRIPTION_LENGTH = 32_000;
+const metadataInput = z.object({
+  description: z.string().max(MAX_DESCRIPTION_LENGTH, "description must be at most 32,000 characters"),
+}).strict();
 
 function codeHostOf(deps: Deps): CodeHost {
   if (!deps.codeHost) throw new Error(`no code host configured for ${deps.issueId}`);
@@ -197,14 +201,24 @@ const get: TaskDefinition<unknown, unknown, Deps> = {
 const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps> = {
   name: "change.setMetadata",
   kind: "tool",
-  description: "Record change request metadata (title, labels) for the run.",
-  reads: [], writes: [], invalidates: [],
+  description: "Set only `{ description }` (Markdown up to 32,000 characters; empty clears) in the pull request's managed description section and return its pull request and stored length.",
+  reads: [], writes: [], invalidates: ["change"],
   mutating: true,
   input: metadataInput,
-  run({ deps, input }) {
-    if (!deps.run) throw new Error("change.setMetadata needs a run: call it through an agent MCP grant");
-    deps.store.appendRunEvent(deps.run.id, "source.set_pull_request_metadata", input);
-    return pass({ accepted: true });
+  async run({ deps, input }) {
+    const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    if (!stored) return fail(NO_CHANGE);
+    const description = input!.description;
+    const change = await codeHostOf(deps).setChangeDescription({
+      address: deps.repository.address,
+      id: stored.id,
+      markdown: description,
+    });
+    if (change.body === undefined) throw new Error("provider did not return the updated pull request body");
+    return pass({
+      pullRequest: { number: change.number, url: change.url },
+      descriptionLength: parseManagedSections(change.body).sections.description?.length ?? 0,
+    });
   },
 };
 

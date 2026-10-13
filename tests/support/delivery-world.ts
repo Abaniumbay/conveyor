@@ -20,10 +20,13 @@ import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-r
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
+import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { dispatchTool } from "../../src/tasks/dispatch";
 import { criteriaOf } from "../../src/tasks/item";
 
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
-export const CRITERIA_BODY = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!-- conveyor:criterion:works -->\n<!-- conveyor:acceptance-criteria:end -->\n";
+export const REQUIRED_DESCRIPTION = "The implementation explains how the feature satisfies its pull-request criterion.";
+export const CRITERIA_BODY = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] The pull request explains how it works <!-- conveyor:criterion:works -->\n<!-- conveyor:acceptance-criteria:end -->\n";
 
 export async function git(cwd: string, ...args: string[]): Promise<string> {
   const child = Bun.spawn(["git", "-c", "user.email=t@example.test", "-c", "user.name=Tests", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -56,6 +59,8 @@ export interface FakeHost extends CodeHost {
   headSha: string;
   merges: Array<{ id: string; expectedHeadSha?: string }>;
   state: ChangeRequest["state"];
+  descriptionUpdates: number;
+  humanBodyEdits: number;
 }
 
 function fakeHost(): FakeHost {
@@ -65,6 +70,8 @@ function fakeHost(): FakeHost {
     headSha: "",
     merges: [],
     state: "open",
+    descriptionUpdates: 0,
+    humanBodyEdits: 0,
     async pushBranch(input) {
       await git(input.workspace.path, "push", "--set-upstream", "origin", input.workspace.branch);
       host.headSha = await git(input.workspace.path, "rev-parse", "HEAD");
@@ -79,6 +86,12 @@ function fakeHost(): FakeHost {
     },
     async setChangeChecklist(input) {
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
+    },
+    async setChangeDescription(input) {
+      const updated = upsertManagedSection(body, "description", input.markdown, parseManagedSections(body).revision);
+      if (updated !== body) host.descriptionUpdates += 1;
+      body = updated;
+      return change();
     },
     async getChangeDelivery(): Promise<ChangeDelivery> {
       const current = change();
@@ -109,7 +122,7 @@ const envelope = (summary: string): RunEnvelope => ({
   sessionId: null, usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
 });
 
-export async function deliveryWorld(): Promise<DeliveryWorld> {
+export async function deliveryWorld(options: { requireDescription?: boolean } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
   await mkdir(directory, { recursive: true });
@@ -166,6 +179,7 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
     async log() { return ""; },
   };
   const agentRuns: string[] = [];
+  let implementationRuns = 0;
   const labelWrites: string[][] = [];
   const github = {
     replaceConveyorLabels: async (_address: string, _number: number, labels: string[]) => { labelWrites.push([...labels]); },
@@ -191,21 +205,53 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
         // item.setType / item.setFields keep the type and Effort in the store as well as on GitHub.
         store.setIssueMetadata(issue.id, { type: "Feature", fields: { Effort: "Low" } });
       } else if (stage === "implementation") {
-        // kaveh: commits and pushes the branch.
-        await writeFile(path.join(input.workspace, "feature.txt"), "feature\n");
-        await git(input.workspace, "add", "feature.txt");
-        await git(input.workspace, "commit", "-m", "Add the feature");
-        const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
-        await git(input.workspace, "push", "--set-upstream", "origin", branch);
+        implementationRuns += 1;
+        if (implementationRuns === 1) {
+          // kaveh: commits and pushes the branch.
+          await writeFile(path.join(input.workspace, "feature.txt"), "feature\n");
+          await git(input.workspace, "add", "feature.txt");
+          await git(input.workspace, "commit", "-m", "Add the feature");
+          const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
+          await git(input.workspace, "push", "--set-upstream", "origin", branch);
+        } else if (options.requireDescription) {
+          // kaveh: follows the criterion's request through the granted agent tool, not a human body edit.
+          const run = store.listRunsForStage("issue", "implementation", "producer")[0];
+          const pullRequest = store.getCurrentPullRequest("issue");
+          if (!run || !pullRequest) throw new Error("the implementation tool call requires its active run and pull request");
+          const actor = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };
+          await dispatchTool(
+            {
+              name: "change.setMetadata",
+              input: { description: REQUIRED_DESCRIPTION },
+              actor,
+              grant: { runId: run.id, stageId: "implementation", issueScoped: true, actor, tasks: new Set(["change.setMetadata"]) },
+            },
+            {
+              registry: createTaskRegistry(),
+              deps: () => ({
+                store, config, items: github as never,
+                repository: { id: "conveyor", address: "owner/conveyor", folder, baseBranch: "main" },
+                issueId: "issue", sourceGuidance: "", git: {} as never, workspaces: {} as never,
+                codeHost: host,
+              }),
+              liveHeadSha: async () => host.headSha,
+              store,
+            },
+          );
+        }
       } else if (stage === "review") {
-        // shirin: approves every criterion for the current head; no findings.
+        // shirin approves only after the implementation agent has supplied the requested explanation.
         const issue = store.getIssue("issue")!;
-        const approvals = new CriterionApprovals(store.sqlite());
-        for (const criterion of criteriaOf(issue.body)) {
-          approvals.approve({
-            issueId: issue.id, criterionId: criterion.id, reviewer: "shirin", headSha: host.headSha,
-            checkedAt: new Date().toISOString(), textHash: criterionTextHash(criterion.text),
-          });
+        const body = (await host.getChange({ address: "owner/conveyor", id: "github:owner/conveyor#pr-5" })).body ?? "";
+        const description = parseManagedSections(body).sections.description;
+        if (!options.requireDescription || description === REQUIRED_DESCRIPTION) {
+          const approvals = new CriterionApprovals(store.sqlite());
+          for (const criterion of criteriaOf(issue.body)) {
+            approvals.approve({
+              issueId: issue.id, criterionId: criterion.id, reviewer: "shirin", headSha: host.headSha,
+              checkedAt: new Date().toISOString(), textHash: criterionTextHash(criterion.text),
+            });
+          }
         }
       }
       return envelope(`${stage} done`);
@@ -213,7 +259,7 @@ export async function deliveryWorld(): Promise<DeliveryWorld> {
   };
 
   const service = new ConveyorService(config, store, github as never, {
-    harnesses: { codex: harness },
+    harnesses: { codex: harness, "claude-code": harness },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
   Object.assign(service as object, {

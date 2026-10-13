@@ -210,6 +210,11 @@ export class GitHubCodeHost implements CodeHost {
     await this.github.setPullRequestChecklist(input.address, reference(input.address, input.id), input.markdown);
   }
 
+  async setChangeDescription(input: { address: string; id: string; markdown: string }): Promise<ChangeRequest> {
+    await this.github.setPullRequestDescription(input.address, reference(input.address, input.id), input.markdown);
+    return this.getChange({ address: input.address, id: input.id });
+  }
+
   async getChangeDelivery(input: { address: string; id: string }): Promise<ChangeDelivery> {
     const delivery = await this.github.getPullRequestDelivery(input.address, reference(input.address, input.id));
     return {

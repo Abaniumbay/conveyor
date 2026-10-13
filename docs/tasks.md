@@ -106,7 +106,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `change.mergeable` | check | change | - | Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts. |
 | `change.merged` | check | change | - | Passes when the change request is merged. |
 | `change.resolveFinding` | tool | - | invalidates change | Close an open review finding, whoever wrote it (a reviewer agent, a person or a review bot): verdict fixed when the problem is fixed and pushed, invalid when the finding is wrong, not applicable or already satisfied. The comment says what changed or why nothing did; it is posted as a reply naming the current head commit and you, with a thumbs up (fixed) or down (invalid), and the thread is resolved. A resolved finding stays so; dismissed and withdrawn findings cannot be resolved. |
-| `change.setMetadata` | tool | - | - | Record change request metadata (title, labels) for the run. |
+| `change.setMetadata` | tool | - | invalidates change | Set only `{ description }` (Markdown up to 32,000 characters; empty clears) in the pull request's managed description section and return its pull request and stored length. |
 | `change.uncheckCriterion` | tool | - | invalidates change | Withdraw the approval of one acceptance criterion and untick it in the pull request checklist. headSha must be the current head. |
 
 ### ci

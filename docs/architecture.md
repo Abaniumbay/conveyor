@@ -10,7 +10,7 @@ How Conveyor is built and why it behaves as it does. For using it, start with th
 - **Runs are least-privilege.** Every agent receives a per-run MCP server exposing only its configured tools and issue context.
 - **Work is isolated.** Feature changes happen in Git worktrees; Conveyor does not edit a repository's primary checkout.
 - **Progress is durable.** SQLite journals runs, attempts, transitions, questions, costs, source mutations, conversation messages, and every task execution with the context it ran against.
-- **External mutations are idempotent.** Each act records a planned execution before it changes anything, observes external state first and does only the missing work, so a crash between a side effect and its record is repaired rather than repeated.
+- **External mutations are idempotent.** Each act records a planned execution before it changes anything, observes external state first and does only the missing work, so a crash between a side effect and its record is repaired rather than repeated. For pull-request descriptions, recovery rereads the managed section before patching the provider, so a write that succeeded just before a crash is recorded without a second provider update.
 - **Humans stay in control.** Conveyor never directly closes an issue. It can mark completed open issues as closable and let GitHub close an issue through an ordinary PR reference.
 
 ## Components
@@ -82,7 +82,7 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 
 - read tools for the issue, workspace, delivery state, and shared conversation;
 - user-facing progress, questions, blockers, milestones, rationale, results, and artifacts;
-- constrained label, acceptance-criteria, hierarchy, dependency, comment, and PR metadata changes;
+- constrained label, acceptance-criteria, hierarchy, dependency, comment, and managed pull-request-description changes;
 - scoped workspace fetch, push, and artifact operations;
 - read-only CI logs and review findings.
 
@@ -111,6 +111,8 @@ Tools are the registry's `tool` tasks, named in camelCase:
 Review findings are recorded by Conveyor, not by the code host: an agent creates one with `change.comment` (an inline review comment when `path` and `line` are in the diff, otherwise a managed change comment), and `change.load` imports native human review (unresolved threads and changes-requested reviews; ordinary conversation comments are ignored). A finding is `open` until it is resolved (`change.resolveFinding`, or the thread resolved on the host), dismissed by a person, or withdrawn because its native comment was deleted; every change is kept in an audit trail. Agents close every finding themselves, whoever wrote it, so nothing waits for a person: `change.resolveFinding` takes a verdict (`fixed`, or `invalid` when the finding is wrong, does not apply or is already satisfied) and a comment, posts "👍 Fixed in <head> by <agent>: …" or "👎 Not changed by <agent>: …" as a reply with a matching reaction, and resolves the thread; an imported finding is resolved only once its native thread is. The `change.findingsResolved` check fails while any finding is open, and the review gate passing records the `reviewPassed` checkpoint that `change.merge` requires. A reviewer agent that returns `changes-requested` without recording a finding stops with an error. An operator dismisses a finding with `POST /api/issues/:issueId/findings/:findingId/dismiss` (signed-in session, `X-CSRF-Token` header, JSON `{ "reason": "..." }`, reason required); there is no dismiss button in the web UI yet.
 
 Every call goes through one dispatcher in the service that re-checks the grant, validates input, actor and preconditions (an input `headSha` must equal the live change head), and journals mutating calls by run, tool and input so a retried call returns the stored response. Read tools are always live. Source and workspace mutations pass back through the Conveyor service, where scope, idempotency, and branch rules are enforced. In the deprecated legacy shape, verifier agents receive a read/report-only subset even if their agent definition lists mutation tools.
+
+`change.setMetadata` supports only `{ description }`: Markdown of at most 32,000 characters, with an empty string clearing Conveyor's description. It rejects `title`, `labels`, and every other field. It places that text in a `conveyor:description` managed section in the pull-request body. On its first write, the section is inserted after `Closes #N` and before the managed acceptance-criteria section; later writes replace only that section, preserving the `Closes` line, criteria and every human-authored byte outside managed sections. A successful result identifies the pull request and the stored character count, and `change.get` reads the live body so the agent can verify it. The legacy `source.set_pull_request_metadata` alias follows the same validation and write path.
 
 ## Reliability and recovery
 

@@ -85,7 +85,7 @@ interface ServiceImplementations {
   harnesses?: Record<string, Harness>;
 }
 
-const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria and dependencies, and report blockers with a concrete reason.`;
+const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
 const DASHBOARD_PAGE_SIZE = 20;
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
