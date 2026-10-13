@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-13
+
+This release makes the dashboard fast again on installations with a long run history. Rendering a page read every run once per item to total its cost, and each open tab's live-update stream scanned the whole run event table on every tick, which blocked the service for seconds at a time. Upgrading adds three database indexes that turn these into lookups.
+
 ### Fixed
 
 - The dashboard no longer slows down as run history grows. Rendering a page read every run once per
