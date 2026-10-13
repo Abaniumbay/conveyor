@@ -8,6 +8,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard pages no longer take seconds to build. Every card worked out its queue status by
+  rebuilding the scheduler's view of all items, so a page cost one pass over every item per card:
+  2.8 seconds for 70 cards over 415 items, on every page and every live refresh. The view is now
+  built once per page (225 ms on the same data).
+
 ## [0.6.4] - 2026-10-13
 
 This release makes the dashboard fast again on installations with a long run history. Rendering a page read every run once per item to total its cost, and each open tab's live-update stream scanned the whole run event table on every tick, which blocked the service for seconds at a time. Upgrading adds three database indexes that turn these into lookups.

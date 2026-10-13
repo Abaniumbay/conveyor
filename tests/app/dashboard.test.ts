@@ -310,6 +310,38 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("building a dashboard reads the item list a fixed number of times, however many cards it shows", async () => {
+    const listings = async (count: number): Promise<number> => {
+      const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-cost-"));
+      temporaryDirectories.push(root);
+      const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+      const config = {
+        hash: "config-hash", root,
+        settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+        web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+        labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+        pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+        repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+        agents: {},
+      } as unknown as ConveyorConfig;
+      store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+      for (let number = 1; number <= count; number += 1) {
+        const id = `item-${number}`;
+        store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`, title: id, body: "", sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+        store.setQueueRank(id, number);
+        store.setIssueProjection(id, { stage: "implementation", state: "active", warning: null });
+        store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+      }
+      const service = new ConveyorService(config, store, {} as never);
+      const listIssues = spyOn(store, "listIssues");
+      expect(service.dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
+      const calls = listIssues.mock.calls.length;
+      store.close();
+      return calls;
+    };
+    expect(await listings(12)).toBe(await listings(2));
+  });
+
   test("a card carries the item's todo list with done/total progress and the current item", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-todos-"));
     temporaryDirectories.push(root);

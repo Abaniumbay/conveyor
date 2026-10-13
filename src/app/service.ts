@@ -681,7 +681,16 @@ export class ConveyorService {
   }
 
   /** The current presentation status, derived from durable gate state and live scheduler facts. */
-  private currentIssueStatus(issue: StoredIssue): LiveIssueStatus | null {
+  /**
+   * `queue` is the scheduler's view of every item. Reading it costs a pass over all of them, so a
+   * caller that asks about many items builds it once and passes it along.
+   */
+  private schedulerQueue(): () => { candidates: SchedulerCandidate[]; occupants: SchedulerOccupant[] } {
+    let queue: { candidates: SchedulerCandidate[]; occupants: SchedulerOccupant[] } | undefined;
+    return () => queue ??= { candidates: this.schedulerCandidates(), occupants: this.schedulerOccupants() };
+  }
+
+  private currentIssueStatus(issue: StoredIssue, queue = this.schedulerQueue()): LiveIssueStatus | null {
     const cursor = this.store.executions().getCursor(issue.id);
     const pending = cursor?.state === "pending" ? this.store.executions().pendingMessage(issue.id) : null;
     const wakeAt = cursor?.state === "pending" ? cursor.wakeAt : null;
@@ -696,9 +705,9 @@ export class ConveyorService {
       };
     }
 
-    const candidate = this.schedulerCandidates().find((item) => item.id === issue.id);
+    const candidate = queue().candidates.find((item) => item.id === issue.id);
     if (!candidate || !candidate.eligible || !candidate.dependenciesSatisfied || candidate.rollupOnly) return null;
-    const blockers = capacityBlockers(candidate, this.concurrencyLimits(), this.schedulerOccupants());
+    const blockers = capacityBlockers(candidate, this.concurrencyLimits(), queue().occupants);
     if (blockers.length === 0) return null;
     const reason = blockers.map((blocker) => {
       const holderNumbers = blocker.occupants
@@ -2489,6 +2498,7 @@ export class ConveyorService {
       return "active";
     };
     const todos = new ItemTodos(this.store.sqlite());
+    const schedulerQueue = this.schedulerQueue();
     const renderedAt = Date.now();
     const indicators = new Map<string, IndicatorViewModel[]>();
     for (const stored of this.store.listIndicators()) {
@@ -2516,7 +2526,7 @@ export class ConveyorService {
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
       const cursor = this.store.executions().getCursor(issue.id);
-      const parked = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue) : null;
+      const parked = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue, schedulerQueue) : null;
       const retry = !activeIssueIds.has(issue.id)
         ? this.#infrastructureFailures.get(issue.id)?.waiting ?? null
         : null;
