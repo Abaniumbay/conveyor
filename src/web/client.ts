@@ -1466,7 +1466,6 @@ export const dashboardClient = String.raw`(() => {
   const replaceDashboard = async (target, options = {}) => {
     const requestVersion = ++dashboardRequestVersion;
     const preservePosition = options.preservePosition === true;
-    const position = preservePosition ? captureDashboardPosition() : null;
     try {
       const response = await fetch(target.pathname + target.search, {
         headers: { accept: 'text/html' },
@@ -1480,6 +1479,8 @@ export const dashboardClient = String.raw`(() => {
       if (requestVersion !== dashboardRequestVersion) return true;
       const focus = describeFocus(currentDashboard);
       const entries = preservePosition ? describeEntries(currentDashboard) : new Map();
+      // Measured here, not before the request: the reader may have scrolled while it was in flight.
+      const position = preservePosition ? captureDashboardPosition() : null;
       currentDashboard.replaceWith(nextDashboard);
       restoreEntries(nextDashboard, entries);
       if (options.historyMode === 'push') history.pushState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);

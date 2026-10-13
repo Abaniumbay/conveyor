@@ -119,10 +119,14 @@ describe("dashboard live refresh position", () => {
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
       secureCookies: false,
     });
+    let responseDelayMs = 0;
     const handler = createWebHandler({
       auth,
       username: "operator",
-      getDashboard: () => currentDashboard,
+      getDashboard: async () => {
+        if (responseDelayMs > 0) await Bun.sleep(responseDelayMs);
+        return currentDashboard;
+      },
       getDashboardRevision: () => revision,
       getConversationRevision: () => "conversation-1",
       getActivityRevision: () => "activity-1",
@@ -201,6 +205,23 @@ describe("dashboard live refresh position", () => {
       expect(Math.abs(afterRemoval.scrollY - Math.min(priorOffsets.scrollY, Math.max(0, afterRemoval.maxScrollY)))).toBeLessThanOrEqual(24);
       expect(Math.abs(afterRemoval.scrollX - Math.min(priorOffsets.scrollX, Math.max(0, afterRemoval.maxScrollX)))).toBeLessThanOrEqual(24);
 
+      // A reader who keeps scrolling while a slow refresh is in flight stays where they scrolled to.
+      responseDelayMs = 800;
+      const refreshRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
+      await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
+      currentDashboard = { ...currentDashboard, revision: "revision-3-slow" };
+      revision = "revision-3-slow";
+      await refreshRequest;
+      const scrolledTo = await page.evaluate(() => {
+        const maximum = document.documentElement.scrollHeight - window.innerHeight;
+        window.scrollBy(0, window.scrollY >= 150 ? -150 : Math.min(150, maximum - window.scrollY));
+        return window.scrollY;
+      });
+      expect(Math.abs(scrolledTo - afterRemoval.scrollY)).toBeGreaterThan(60);
+      await page.waitForFunction(() => !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh"));
+      expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolledTo)).toBeLessThanOrEqual(24);
+      responseDelayMs = 0;
+
       await page.locator('article.issue[data-issue-id="above-0"] .card-open').click();
       expect(await page.locator("dialog[open]").count()).toBe(1);
       await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
@@ -217,5 +238,5 @@ describe("dashboard live refresh position", () => {
     } finally {
       server.stop(true);
     }
-  }, 20_000);
+  }, 30_000);
 });
