@@ -23,12 +23,26 @@ afterEach(async () => {
 });
 
 describe("ConveyorStore", () => {
+  test("the queries a dashboard repeats for every item and every open tab never scan a whole table", async () => {
+    const store = await openStore();
+    const plan = (sql: string, ...args: string[]) =>
+      (store.sqlite().query(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>).map((row) => row.detail).join("; ");
+
+    // costSummary({ issueId }), once per card.
+    expect(plan("SELECT COUNT(*) FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id WHERE r.issue_id = ?", "i1")).not.toMatch(/SCAN (u|r)\b/);
+    // latestRunSummary(issueId).
+    expect(plan("SELECT id FROM runs r WHERE r.issue_id = ? ORDER BY r.started_at DESC, r.id DESC LIMIT 1", "i1")).toContain("runs_issue_idx");
+    // activityRevision(), on every tick of every dashboard event stream.
+    expect(plan("SELECT MAX(created_at) FROM run_events")).toContain("run_events_created_idx");
+    store.close();
+  });
+
   test("migrates a new database with durable SQLite settings", async () => {
     const store = await openStore();
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(17);
+    expect(store.schemaVersion()).toBe(18);
 
     store.close();
   });
@@ -274,7 +288,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE harness_quota_events; DROP TABLE item_indicators; ALTER TABLE issues DROP COLUMN metadata_json; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17);");
+    store.sqlite().exec("DROP TABLE harness_quota_events; DROP TABLE item_indicators; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18);");
     store.close();
 
     store = await ConveyorStore.open(database);
