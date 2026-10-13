@@ -101,6 +101,55 @@ async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>)
   await page.waitForFunction(() => !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh"));
 }
 
+/** A dashboard server whose page, revision and response delay the test controls. */
+function startDashboard(state: { dashboard: () => DashboardViewModel; revision: () => string; delayMs: () => number }) {
+  const auth = createWebAuth({
+    passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
+    sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+    secureCookies: false,
+  });
+  const handler = createWebHandler({
+    auth,
+    username: "operator",
+    getDashboard: async () => {
+      if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
+      return state.dashboard();
+    },
+    getDashboardRevision: () => state.revision(),
+    getConversationRevision: () => "conversation-1",
+    getActivityRevision: () => "activity-1",
+    getSystemStatus: () => ({ memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 }, disk: { usedBytes: 1, totalBytes: 2, availableBytes: 1 }, uptimeSeconds: 1 }),
+    isReady: () => true,
+    webhookPath: "/hooks/custom",
+    answerQuestion: () => {},
+    reorderBacklog: () => {},
+    moveBacklogIssue: () => {},
+    handleWebhook: () => ({}),
+    handleMcp: () => ({}),
+    startSteering: () => "run-1",
+    getSteeringRun: () => null,
+    getSteeringEvents: () => [],
+    getIssueActivity: () => null,
+    getIssueRunEvents: () => null,
+    getIssueConversation: () => null,
+    getIssueJourney: () => null,
+    getIssueRoute: () => null,
+    postIssueMessage: () => ({}),
+    retryIssue: () => ({}),
+    dismissFinding: () => {},
+    getAgentProfiles: () => [],
+    getAgentProfile: () => null,
+  });
+  return Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+}
+
+async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined) {
+  await page.goto(`http://127.0.0.1:${port}/login`);
+  await page.locator('input[name="username"]').fill("operator");
+  await page.locator('input[name="password"]').fill(password);
+  await Promise.all([page.waitForURL("**/board"), page.locator('button[type="submit"]').click()]);
+}
+
 afterEach(async () => {
   await browser?.close();
   browser = null;
@@ -114,45 +163,8 @@ describe("dashboard live refresh position", () => {
     const offscreenIssues = Array.from({ length: 10 }, (_, index) => issue(`before-${index}`, index + 100));
     let revision = "revision-1";
     let currentDashboard = dashboard(revision, [...original, target, ...below], offscreenIssues);
-    const auth = createWebAuth({
-      passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
-      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
-      secureCookies: false,
-    });
     let responseDelayMs = 0;
-    const handler = createWebHandler({
-      auth,
-      username: "operator",
-      getDashboard: async () => {
-        if (responseDelayMs > 0) await Bun.sleep(responseDelayMs);
-        return currentDashboard;
-      },
-      getDashboardRevision: () => revision,
-      getConversationRevision: () => "conversation-1",
-      getActivityRevision: () => "activity-1",
-      getSystemStatus: () => ({ memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 }, disk: { usedBytes: 1, totalBytes: 2, availableBytes: 1 }, uptimeSeconds: 1 }),
-      isReady: () => true,
-      webhookPath: "/hooks/custom",
-      answerQuestion: () => {},
-      reorderBacklog: () => {},
-      moveBacklogIssue: () => {},
-      handleWebhook: () => ({}),
-      handleMcp: () => ({}),
-      startSteering: () => "run-1",
-      getSteeringRun: () => null,
-      getSteeringEvents: () => [],
-      getIssueActivity: () => null,
-      getIssueRunEvents: () => null,
-      getIssueConversation: () => null,
-      getIssueJourney: () => null,
-      getIssueRoute: () => null,
-      postIssueMessage: () => ({}),
-      retryIssue: () => ({}),
-      dismissFinding: () => {},
-      getAgentProfiles: () => [],
-      getAgentProfile: () => null,
-    });
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => responseDelayMs });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -235,6 +247,60 @@ describe("dashboard live refresh position", () => {
       await page.waitForTimeout(1100);
       expect(await page.locator("main.dashboard").getAttribute("data-before-refresh")).toBe("true");
       expect(await page.locator("dialog[open]").count()).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("a live update replaces only the cards that changed, and the server sends only those", async () => {
+    const cards = Array.from({ length: 6 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
+    let revision = "revision-1";
+    let currentDashboard = dashboard(revision, cards);
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+      // Marks that only survive on nodes that are never replaced.
+      await page.evaluate(() => {
+        for (const selector of ["main.dashboard", '[data-issue-id="card-1"]', '[data-issue-id="card-3"]', '[data-issue-id="card-5"]']) {
+          (document.querySelector(selector) as unknown as { untouched: boolean }).untouched = true;
+        }
+      });
+      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      const changed = cards.map((card) => card.id === "card-3" ? { ...card, title: "Card 3 renamed" } : card);
+      currentDashboard = dashboard("revision-2", [changed[0]!, changed[2]!, changed[1]!, ...changed.slice(3, 5), issue("card-new", 90, "New card")]);
+      revision = "revision-2";
+      const response = await refresh;
+      await page.locator('[data-issue-id="card-3"] .issue-title').filter({ hasText: "Card 3 renamed" }).waitFor();
+
+      // The browser said which cards it holds, and got placeholders for the ones that have not changed.
+      expect(response.request().headers()["x-conveyor-cards"]?.split(" ").length).toBeGreaterThanOrEqual(6);
+      const body = await response.text();
+      expect(body).toContain("Card 3 renamed");
+      expect(body).toContain("New card");
+      expect(body).not.toContain("Card 1<");
+      expect(body.match(/data-keep/g)?.length).toBeGreaterThanOrEqual(4);
+
+      const after = await page.evaluate(() => ({
+        dashboardKept: (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true,
+        unchangedKept: (document.querySelector('[data-issue-id="card-1"]') as unknown as { untouched?: boolean }).untouched === true,
+        removedGone: document.querySelector('[data-issue-id="card-5"]') === null,
+        order: [...document.querySelectorAll("#station-reader article.issue")].map((card) => card.getAttribute("data-issue-id")),
+        titles: [...document.querySelectorAll("#station-reader article.issue .issue-title")].map((title) => title.textContent),
+        placeholders: document.querySelectorAll("[data-keep]").length,
+      }));
+      expect(after).toEqual({
+        dashboardKept: true, unchangedKept: true, removedGone: true,
+        order: ["card-0", "card-2", "card-1", "card-3", "card-4", "card-new"],
+        titles: ["Card 0", "Card 2", "Card 1", "Card 3 renamed", "Card 4", "New card"],
+        placeholders: 0,
+      });
+
+      // A freshly loaded page is the same as the live-updated one.
+      const live = await page.locator("#station-reader").innerHTML();
+      await page.reload();
+      expect(await page.locator("#station-reader").innerHTML()).toBe(live);
     } finally {
       server.stop(true);
     }

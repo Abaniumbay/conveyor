@@ -804,12 +804,15 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         }
 
         const page = dashboardPage(url, dashboardView!, repositoryId, runId, issueId);
+        // A live update names the card revisions the browser holds; those come back as placeholders.
+        const held = request.headers.get("x-conveyor-cards");
+        const heldCards = held ? new Set(held.split(" ").filter(Boolean).slice(0, 2_000)) : null;
         const model = await dependencies.getDashboard(currentSession.csrfToken, page);
         if (repositoryPath && (!repositoryId || !model.repositories.some((repository) => repository.id === repositoryId))) repositoryNotFound = true;
         const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
         const accounts = page.view === "accounts" ? dependencies.listAccounts?.() ?? [] : undefined;
         const notifications = page.view === "notifications" ? dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } : undefined;
-        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }), repositoryNotFound ? 404 : 200, "text/html; charset=utf-8");
+        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }, heldCards), repositoryNotFound ? 404 : 200, "text/html; charset=utf-8");
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
