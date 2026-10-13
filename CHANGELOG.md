@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-13
+
+This release fixes dashboard pages taking seconds to load. Every card rebuilt the scheduler's view of all items to work out its queue status, so a page cost one pass over every item per card; on an installation with 415 items that was 2.8 seconds for every page and every live refresh. The view is now built once per page.
+
 ### Fixed
 
 - Dashboard pages no longer take seconds to build. Every card worked out its queue status by
