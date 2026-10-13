@@ -8,6 +8,28 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Added
+
+- `change.setMetadata` writes a pull request description. It takes a Markdown `description` (an
+  empty string clears it) and stores it in a `conveyor:description` managed section of the pull
+  request body, after the `Closes #N` line and before the acceptance criteria. Text outside the
+  managed sections is left exactly as it was, and repeating the same description makes no update.
+  An implementer can now meet a criterion that asks for a statement in the pull request without a
+  person editing it. Descriptions are limited to 32,000 characters, and `title` and `labels` are
+  no longer accepted.
+
+### Changed
+
+- When the stage whose agent owns an item's todo list passes its exit gate, the todos still
+  `pending` or `in_progress` become `skipped`, a new final status that only Conveyor sets, with a
+  short note saying why. Done entries are unchanged, skipped entries stay as history if the item
+  returns to that stage, and agents cannot set or edit them. Progress now counts done and skipped
+  entries as finished, so a completed item no longer shows unfinished todos.
+- Board cards show todo progress only while the item is in the stage that owns the list. Item
+  details still show the whole list in every stage, with skipped entries labelled.
+- Upgrading closes the unfinished todos of items that are already past their todo-owning stage,
+  with the same status and note.
+
 ### Fixed
 
 - Live dashboard refreshes now keep the currently read card and Board stage aligned on phone-sized
