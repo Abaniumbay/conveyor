@@ -89,12 +89,18 @@ describe("todo tools", () => {
     const skipped = { id: "old", text: "Closed by the gate", status: "skipped" as const, note: "Closed when the implementation stage passed." };
     new ItemTodos(w.store.sqlite()).set("i1", [skipped], null, "2026-10-02T10:00:00Z");
 
-    expect((await w.call("todo.set", { items: [skipped, { id: "new", text: "Returned work" }] })).status).toBe("pass");
-    expect(await w.call("todo.set", { items: [{ ...skipped, note: "changed" }] })).toEqual({
+    expect(output(await w.call("todo.set", { items: [skipped, { id: "new", text: "Returned work" }] }))).toEqual({
+      items: [skipped, { id: "new", text: "Returned work", status: "pending" }],
+      summary: { finished: 1, total: 2, skipped: 1, current: "Returned work" },
+    });
+    expect(await w.call("todo.set", { items: [{ ...skipped, note: "changed" }, { id: "new", text: "Returned work" }] })).toEqual({
       status: "fail", message: 'skipped todo id "old" is Conveyor history and must remain unchanged',
     });
-    expect(await w.call("todo.set", { items: [{ id: "agent", text: "Agent closeout", status: "skipped" }] })).toEqual({
-      status: "fail", message: 'completed todo ids must be kept: "old"; keep completed items and add new work under new ids',
+    expect(await w.call("todo.set", { items: [skipped, { id: "agent", text: "Agent closeout", status: "skipped" }, { id: "new", text: "Returned work" }] })).toEqual({
+      status: "fail", message: 'skipped todo id "agent" can only be created by Conveyor',
+    });
+    expect(await w.call("todo.set", { items: [skipped, { id: "new", text: "Returned work", status: "skipped" }] })).toEqual({
+      status: "fail", message: 'skipped todo id "new" can only be created by Conveyor',
     });
     expect(await w.call("todo.update", { id: "old", note: "changed" })).toEqual({
       status: "fail", message: 'skipped todo id "old" is Conveyor history and cannot be changed',

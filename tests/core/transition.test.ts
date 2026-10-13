@@ -6,6 +6,7 @@ import path from "node:path";
 import { applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
+import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
 
 const directories: string[] = [];
 
@@ -91,6 +92,98 @@ describe("applyStageTransition", () => {
       kind: "advance",
       status: "completed",
     }]);
+    store.close();
+  });
+
+  test("closes implementation todos only after its source advance succeeds and preserves the closeout on replay", async () => {
+    const store = await setup();
+    const todos = new ItemTodos(store.sqlite());
+    todos.set("issue", [
+      { id: "done", text: "Completed", status: "done", note: "kept" },
+      { id: "pending", text: "Pending", status: "pending" },
+      { id: "active", text: "Active", status: "in_progress", note: "working" },
+      { id: "old", text: "Older", status: "skipped", note: "old closeout" },
+    ], "run", "2026-10-01T00:00:00Z");
+    let calls = 0;
+    const input = {
+      store,
+      source: { async replaceConveyorLabels() { calls += 1; } },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-closeout",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance" as const, stageId: "implementation", nextStageId: "review", result: null, feedbackCycles: 0 },
+    };
+
+    await applyStageTransition(input);
+    const closed = todos.get("issue")!.items;
+    expect(closed).toEqual([
+      { id: "done", text: "Completed", status: "done", note: "kept" },
+      { id: "pending", text: "Pending", status: "skipped", note: TODO_CLOSEOUT_NOTE },
+      { id: "active", text: "Active", status: "skipped", note: TODO_CLOSEOUT_NOTE },
+      { id: "old", text: "Older", status: "skipped", note: "old closeout" },
+    ]);
+
+    await applyStageTransition(input);
+    expect(calls).toBe(1);
+    expect(todos.get("issue")!.items).toEqual(closed);
+    store.close();
+  });
+
+  test("does not close todos when a source advance fails", async () => {
+    const store = await setup();
+    const todos = new ItemTodos(store.sqlite());
+    todos.set("issue", [{ id: "open", text: "Open", status: "pending" }], "run", "2026-10-01T00:00:00Z");
+
+    await expect(applyStageTransition({
+      store,
+      source: { async replaceConveyorLabels() { throw new Error("source unavailable"); } },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-source-failure",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance", stageId: "implementation", nextStageId: "review", result: null, feedbackCycles: 0 },
+    })).rejects.toThrow("source unavailable");
+
+    expect(todos.get("issue")!.items).toEqual([{ id: "open", text: "Open", status: "pending" }]);
+    expect(store.listStageTransitions("issue")).toMatchObject([{ id: "run-source-failure", status: "failed" }]);
+    store.close();
+  });
+
+  test("does not close todos for later-stage advances or corrections", async () => {
+    const store = await setup();
+    const todos = new ItemTodos(store.sqlite());
+    const open = [{ id: "open", text: "Open", status: "pending" as const }];
+    todos.set("issue", open, "run", "2026-10-01T00:00:00Z");
+    const common = {
+      store,
+      source: { async replaceConveyorLabels() {} },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+    };
+
+    await applyStageTransition({
+      ...common,
+      transitionId: "run-review-advance",
+      result: { kind: "advance", stageId: "review", nextStageId: null, result: null, feedbackCycles: 0 },
+    });
+    await applyStageTransition({
+      ...common,
+      transitionId: "run-correction-with-todos",
+      result: { kind: "correction", stageId: "review", targetStageId: "implementation", reason: "Need revision", requiredFixes: [], evidence: [], result: null },
+    });
+
+    expect(todos.get("issue")!.items).toEqual(open);
     store.close();
   });
 

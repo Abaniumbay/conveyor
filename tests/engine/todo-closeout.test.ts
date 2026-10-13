@@ -31,7 +31,7 @@ describe("todo closeout", () => {
     db.exec("CREATE TABLE issues (id TEXT PRIMARY KEY, projected_stage TEXT, projected_state TEXT)");
     db.exec("CREATE TABLE item_todos (issue_id TEXT PRIMARY KEY, items_json TEXT NOT NULL, run_id TEXT, updated_at TEXT NOT NULL)");
     const open = JSON.stringify([{ id: "a", text: "A", status: "done" }, { id: "b", text: "B", status: "pending" }]);
-    for (const [id, stage, state] of [["impl", "implementation", "active"], ["review", "review", "active"], ["done", "deploy", "done"]] as [string, string, string][]) {
+    for (const [id, stage, state] of [["impl", "implementation", "active"], ["review", "review", "active"], ["done", "deploy", "done"], ["completed", "implementation", "completed"]] as [string, string, string][]) {
       db.query("INSERT INTO issues VALUES (?, ?, ?)").run(id, stage, state);
       db.query("INSERT INTO item_todos VALUES (?, ?, NULL, 'x')").run(id, open);
     }
@@ -39,10 +39,11 @@ describe("todo closeout", () => {
     db.exec(sql);
     const read = (id: string) => JSON.parse((db.query("SELECT items_json FROM item_todos WHERE issue_id = ?").get(id) as { items_json: string }).items_json);
     expect(read("impl")).toEqual(JSON.parse(open));
-    for (const id of ["review", "done"]) {
+    for (const id of ["review", "done", "completed"]) {
       expect(read(id)).toEqual([{ id: "a", text: "A", status: "done" }, { id: "b", text: "B", status: "skipped", note: TODO_CLOSEOUT_NOTE }]);
     }
     db.exec(sql);
     expect(read("review")[1]).toEqual({ id: "b", text: "B", status: "skipped", note: TODO_CLOSEOUT_NOTE });
+    expect(read("completed")[1]).toEqual({ id: "b", text: "B", status: "skipped", note: TODO_CLOSEOUT_NOTE });
   });
 });

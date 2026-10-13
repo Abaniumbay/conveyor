@@ -1,6 +1,7 @@
 import type { LabelConfiguration } from "./issue-state";
 import { evaluateIssueState } from "./issue-state";
 import type { ConveyorStore, RepositoryRecord } from "../db/store";
+import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
 import { log } from "../log/logger";
 import type { IssueSourceAdapter } from "../source/types";
 
@@ -27,6 +28,17 @@ export interface ReconcileRepositoryResult {
 
 /** Projected states an item resumes from when its stopping label is removed (or enrolment restored). */
 const STOPPED_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected", "paused", "waiting"]);
+
+function hasPassedTodoOwningStage(
+  stages: readonly string[],
+  stage: string | null,
+  state: string | null,
+): boolean {
+  if (state === "done" || state === "completed") return true;
+  const owningStage = stages.indexOf(TODO_OWNING_STAGE);
+  const currentStage = stage === null ? -1 : stages.indexOf(stage);
+  return owningStage >= 0 && currentStage > owningStage;
+}
 
 function isConveyorIssue(labels: readonly string[], enrollment: string): boolean {
   return labels.some(
@@ -140,6 +152,12 @@ export async function reconcileRepository(
       state: projectedState,
       warning: projected.warnings.length > 0 ? projected.warnings.join("; ") : null,
     });
+
+    // A process can stop after the source labels advance but before its local transition commits.
+    // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
+    if (projected.visible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
+      new ItemTodos(input.store.sqlite()).closeOut(issueId);
+    }
 
     if (!projected.visible) {
       input.store.endActiveEnrollment(issueId, "offboarded");

@@ -640,7 +640,7 @@ export const migrations: readonly Migration[] = [
       )
       WHERE issue_id IN (
         SELECT id FROM issues
-        WHERE projected_state = 'done' OR COALESCE(projected_stage, 'implementation') NOT IN ('refinement', 'implementation')
+        WHERE projected_state IN ('done', 'completed') OR COALESCE(projected_stage, 'implementation') NOT IN ('refinement', 'implementation')
       ) AND EXISTS (
         SELECT 1 FROM json_each(item_todos.items_json) WHERE json_extract(value, '$.status') IN ('pending', 'in_progress')
       );
