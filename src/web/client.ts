@@ -1425,7 +1425,13 @@ export const dashboardClient = String.raw`(() => {
   const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
   const boardScrollMaximum = () => board ? Math.max(0, board.scrollWidth - board.clientWidth) : 0;
   const captureDashboardPosition = () => {
-    const visibleIssues = [...document.querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
+    const stages = board ? [...board.querySelectorAll('.stage[id]')].map((stage) => {
+      const bounds = stage.getBoundingClientRect();
+      const boardBounds = board.getBoundingClientRect();
+      return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
+    }).sort((left, right) => right.overlap - left.overlap) : [];
+    const stage = stages[0]?.stage;
+    const visibleIssues = [...(stage || document).querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
       const bounds = issue.getBoundingClientRect();
       return bounds.bottom > 0 && bounds.top < window.innerHeight;
     });
@@ -1433,12 +1439,6 @@ export const dashboardClient = String.raw`(() => {
       const target = window.innerHeight / 2;
       return Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target);
     })[0];
-    const stages = board ? [...board.querySelectorAll('.stage[id]')].map((stage) => {
-      const bounds = stage.getBoundingClientRect();
-      const boardBounds = board.getBoundingClientRect();
-      return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
-    }).sort((left, right) => right.overlap - left.overlap) : [];
-    const stage = stages[0]?.stage;
     return {
       scrollX: board ? board.scrollLeft : 0,
       scrollY: window.scrollY,

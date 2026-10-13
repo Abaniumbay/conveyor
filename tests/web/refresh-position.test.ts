@@ -45,7 +45,11 @@ function stage(id: string, name: string, issues: readonly IssueCardViewModel[]):
   return { id, name, actors: [], cost: null, totalIssues: issues.length, page: 1, totalPages: 1, issues };
 }
 
-function dashboard(revision: string, middleIssues: readonly IssueCardViewModel[]): DashboardViewModel {
+function dashboard(
+  revision: string,
+  middleIssues: readonly IssueCardViewModel[],
+  beforeIssues: readonly IssueCardViewModel[] = [issue("before-card", 1)],
+): DashboardViewModel {
   const empty = stage("done", "Done", []);
   return {
     title: "Refresh position test",
@@ -59,7 +63,7 @@ function dashboard(revision: string, middleIssues: readonly IssueCardViewModel[]
     counts: { board: middleIssues.length, attention: 0 },
     activeWork: { runnerCount: 0, runnerCapacity: 1, runs: [] },
     stages: [
-      stage("before", "Before", [issue("before-card", 1)]),
+      stage("before", "Before", beforeIssues),
       stage("reader", "Reader", middleIssues),
       stage("after", "After", [issue("after-card", 99)]),
     ],
@@ -107,8 +111,9 @@ describe("dashboard live refresh position", () => {
     const original = Array.from({ length: 8 }, (_, index) => issue(`above-${index}`, index + 2));
     const target = issue("target", 20, "Target card");
     const below = Array.from({ length: 8 }, (_, index) => issue(`below-${index}`, index + 30));
+    const offscreenIssues = Array.from({ length: 10 }, (_, index) => issue(`before-${index}`, index + 100));
     let revision = "revision-1";
-    let currentDashboard = dashboard(revision, [...original, target, ...below]);
+    let currentDashboard = dashboard(revision, [...original, target, ...below], offscreenIssues);
     const auth = createWebAuth({
       passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
       sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -160,7 +165,11 @@ describe("dashboard live refresh position", () => {
       expect(before.scrollX).toBeGreaterThan(0);
 
       const inserted = Array.from({ length: 5 }, (_, index) => issue(`inserted-${index}`, index + 60));
-      currentDashboard = dashboard("revision-2", [...original, ...inserted, target, ...below]);
+      currentDashboard = dashboard(
+        "revision-2",
+        [...original, ...inserted, target, ...below],
+        [issue("before-inserted", 200), ...offscreenIssues],
+      );
       revision = "revision-2";
       await waitForReplacement(page);
       const afterInsert = await cardPositions(page);
@@ -169,7 +178,11 @@ describe("dashboard live refresh position", () => {
       expect(afterInsert.path).toBe(before.path);
 
       const priorOffsets = await cardPositions(page);
-      currentDashboard = dashboard("revision-3", [...original, ...inserted, ...below]);
+      currentDashboard = dashboard(
+        "revision-3",
+        [...original, ...inserted, ...below],
+        [issue("before-inserted", 200), ...offscreenIssues],
+      );
       revision = "revision-3";
       await waitForReplacement(page);
       const afterRemoval = await page.evaluate(() => {
@@ -191,7 +204,11 @@ describe("dashboard live refresh position", () => {
       await page.locator('article.issue[data-issue-id="above-0"] .card-open').click();
       expect(await page.locator("dialog[open]").count()).toBe(1);
       await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
-      currentDashboard = dashboard("revision-4", [...inserted, ...original, ...below]);
+      currentDashboard = dashboard(
+        "revision-4",
+        [...inserted, ...original, ...below],
+        [issue("before-inserted", 200), ...offscreenIssues],
+      );
       revision = "revision-4";
       await page.waitForFunction(() => document.body.dataset.dashboardRevision === "revision-4");
       await page.waitForTimeout(1100);
