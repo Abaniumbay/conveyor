@@ -8,6 +8,19 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Fixed
+
+- The Release workflow installs the browser that its checks need. The `v0.6.1` tag failed those
+  checks for want of it and published nothing, so the changes listed under 0.6.1 first ship in
+  this release.
+
+## [0.6.1] - 2026-10-13
+
+Tagged but never published: the Release workflow failed before building anything. These changes
+ship in the next release.
+
+This release lets an agent write its pull request's description and tidies up todo lists once a stage is finished. `change.setMetadata` now stores a Markdown description in a managed section of the pull request, so a criterion that asks for a statement in the pull request no longer needs a person to edit it. Todos left unfinished when their stage passes are marked skipped instead of staying open, and upgrading does the same for items already past that stage. It also fixes the dashboard losing your place during a live refresh on phones.
+
 ### Added
 
 - `change.setMetadata` writes a pull request description. It takes a Markdown `description` (an
