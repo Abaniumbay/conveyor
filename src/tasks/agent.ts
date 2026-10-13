@@ -208,6 +208,7 @@ async function runAgent(
         artifactsDirectory: path.join(deps.config.settings.artifacts, runId),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
+        ...(Object.keys(agent.env ?? {}).length > 0 ? { env: agent.env } : {}),
         ...(runner.type === "codex"
           ? {
               sandbox: agent.workspaceAccess === "read-only" ? ("read-only" as const) : runner.sandbox,
@@ -219,7 +220,7 @@ async function runAgent(
           : {
               sandbox: agent.workspaceAccess === "workspace-write" ? ("workspace-write" as const) : ("read-only" as const),
               automaticApprovals: false,
-              ...(runner.configDir ? { env: { CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
+              ...(runner.configDir ? { env: { ...(agent.env ?? {}), CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
               ...(await codexAccess(agent, workspace.path)),
               ...withoutCodexConfig(await codexExtensions(agent, workspace.path)),
             }),

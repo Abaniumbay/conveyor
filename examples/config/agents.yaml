@@ -38,6 +38,15 @@ kaveh:
   # own git metadata is always writable for workspace-write agents.
   writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
                   ~/.dotnet, ~/.pub-cache, ~/.gradle]
+  # A run's HOME is its own empty directory, so toolchains are pointed at the shared caches above
+  # instead of downloading everything again on every run.
+  env:
+    NUGET_PACKAGES: ~/.nuget/packages
+    PUB_CACHE: ~/.pub-cache
+    GRADLE_USER_HOME: ~/.gradle
+    npm_config_cache: ~/.npm
+    BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
+    XDG_CACHE_HOME: ~/.cache
   # Long sessions resend their whole context every turn; compact it before it grows expensive.
   codexConfig: { model_auto_compact_token_limit: 80000 }
   mcpServers: { serena: *serena }        # the same lookup-only code index as Darya
@@ -56,6 +65,15 @@ jamshid:                                 # implements when Kaveh cannot run; Cla
   network: true                          # the Claude CLI needs it for its own API calls anyway
   writableRoots: [~/.bun/install/cache, ~/.npm, ~/.cache, ~/.nuget/packages, ~/.local/share/NuGet,
                   ~/.dotnet, ~/.pub-cache, ~/.gradle]
+  # A run's HOME is its own empty directory, so toolchains are pointed at the shared caches above
+  # instead of downloading everything again on every run.
+  env:
+    NUGET_PACKAGES: ~/.nuget/packages
+    PUB_CACHE: ~/.pub-cache
+    GRADLE_USER_HOME: ~/.gradle
+    npm_config_cache: ~/.npm
+    BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
+    XDG_CACHE_HOME: ~/.cache
   mcpServers:
     serena:
       command: serena

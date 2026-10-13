@@ -8,6 +8,21 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Added
+
+- Agents take an `env` setting: environment variables for the agent's run, with `~/` values
+  expanded. A run's `HOME` is an empty directory of its own, so toolchains never found the package
+  caches listed in `writableRoots` and downloaded them again on every run; `env` points them there
+  (`NUGET_PACKAGES`, `PUB_CACHE`, `GRADLE_USER_HOME`, `npm_config_cache` and so on). Credential-like
+  names are still dropped. The example configuration sets them for its implementers.
+
+### Changed
+
+- A `workspace-write` Codex run can write its own `HOME`, and gets a temporary directory of its own
+  as `TMPDIR`, deleted when the run ends. Agents used to work around an unwritable home by building
+  one under `/tmp` and leaving it there. The directory is created under the service's temporary
+  directory: set `TMPDIR` for the service to keep agent scratch off a memory-backed `/tmp`.
+
 ## [0.6.2] - 2026-10-13
 
 This is the first published build of the changes listed under 0.6.1, whose tag failed its release checks and published nothing. It lets an agent write its pull request's description: `change.setMetadata` now stores a Markdown description in a managed section of the pull request, so a criterion that asks for a statement in the pull request no longer needs a person to edit it. Todos left unfinished when their stage passes are marked skipped instead of staying open, and upgrading does the same for items already past that stage. It also fixes the dashboard losing your place during a live refresh on phones. See the 0.6.1 section of the changelog for the details.

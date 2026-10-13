@@ -46,8 +46,10 @@ function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
  * Hides common host path-based sockets and processes: a private /proc (PID namespace), /tmp and
  * /run/user/<uid> (user bus, ssh/gpg agents), and the Docker socket. Other path sockets stay reachable.
  */
-function isolationMounts(): string[] {
+function isolationMounts(runTmp: string | undefined): string[] {
   const mounts = ["--proc", "/proc", "--tmpfs", "/tmp"];
+  // The run's own temporary directory would vanish behind the private /tmp.
+  if (runTmp?.startsWith("/tmp/") && existsSync(runTmp)) mounts.push("--bind", runTmp, runTmp);
   const runtime = `/run/user/${process.getuid?.() ?? 0}`;
   if (existsSync(runtime)) mounts.push("--tmpfs", runtime);
   // /var/run is usually a symlink to /run; bwrap cannot mount through it, so mask resolved paths once.
@@ -91,7 +93,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
   const spec = JSON.stringify({ forwards, command: options.argv });
   return {
-    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(), "--", ...selfCommand(INTERNAL.bridge, spec)],
+    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...selfCommand(INTERNAL.bridge, spec)],
     env: { ...options.env, ...commandEnv },
     dataEnv,
   };

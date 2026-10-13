@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -39,7 +40,8 @@ async function fixture() {
   await writeFile(executable, `#!/usr/bin/env bun
     const args = process.argv.slice(2);
     await new Response(Bun.stdin.stream()).text();
-    await Bun.write(process.env.ENV_CAPTURE, JSON.stringify(process.env));
+    await Bun.write(process.env.ENV_CAPTURE, JSON.stringify({ ...process.env, TMP_EXISTED: String(require("node:fs").existsSync(process.env.TMPDIR)) }));
+    if (process.env.KIND === "fail") process.exit(3);
     const output = args[args.indexOf("-o") + 1];
     if (output && process.env.KIND === "run") await Bun.write(output, JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "s", reason: null, metrics: {}, artifacts: [] }));
     if (output && process.env.KIND === "check") await Bun.write(output, JSON.stringify({ version: 1, decision: "pass", status: "done", reason: "ok", evidence: [], requiredFixes: [], criteria: [] }));
@@ -80,6 +82,23 @@ describe("agent environment", () => {
       env: { ENV_CAPTURE: files.capture, KIND: "run", LEAK_TOKEN: "x" },
     });
     await expectCredentialFree(files);
+  });
+
+  test("runCodex gives a run its own temp directory and removes it afterwards, also when the run fails", async () => {
+    for (const kind of ["run", "fail"]) {
+      const files = await fixture();
+      const run = runCodex({
+        ...common, command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+        env: { ENV_CAPTURE: files.capture, KIND: kind },
+      });
+      if (kind === "fail") await expect(run).rejects.toThrow();
+      else await run;
+      const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
+      expect(path.dirname(env.TMPDIR!)).toBe(tmpdir());
+      expect(path.basename(env.TMPDIR!)).toStartWith("conveyor-run-");
+      expect(env.TMP_EXISTED).toBe("true");
+      expect(existsSync(env.TMPDIR!)).toBe(false);
+    }
   });
 
   test("runCodexCheck spawns with a sanitized environment", async () => {

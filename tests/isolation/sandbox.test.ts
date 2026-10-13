@@ -159,6 +159,18 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     expect(sandboxed.argv).toContain("--");
   });
 
+  test("a run's temp directory under /tmp stays visible behind the private /tmp", async () => {
+    const runTmp = await mkdtemp("/tmp/conveyor-run-");
+    try {
+      const argv = (env: Record<string, string>) => sandboxCommand({ argv: ["echo", "x"], env, dataProxySocket: "/tmp/d.sock" }).argv.join(" ");
+      expect(argv({ TMPDIR: runTmp })).toContain(`--tmpfs /tmp --bind ${runTmp} ${runTmp}`);
+      expect(argv({ TMPDIR: "/var/tmp" })).not.toContain("--bind");
+      expect(argv({ TMPDIR: "/tmp/conveyor-run-missing" })).not.toContain("--bind");
+    } finally {
+      await rm(runTmp, { recursive: true, force: true });
+    }
+  });
+
   test.each(["read-only", "workspace-write"] as const)(
     "harness reaches the model host only through the token proxy; its commands cannot (%s)",
     async (access) => {

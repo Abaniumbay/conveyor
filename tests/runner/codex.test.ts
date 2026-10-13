@@ -176,16 +176,17 @@ describe("runCodex", () => {
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
     const access = { network: true, writableRoots: ["/repo/.git/worktrees/w", "/home/u/.bun/install/cache"] };
-    const expected = [
-      'web_search="live"',
-      "sandbox_workspace_write.network_access=true",
-      'sandbox_workspace_write.writable_roots=["/repo/.git/worktrees/w","/home/u/.bun/install/cache"]',
-    ];
+    // The run's own home and temp directory follow the configured roots.
+    const roots = async () => JSON.parse((await args()).find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
+    const expected = ['web_search="live"', "sandbox_workspace_write.network_access=true"];
 
     for (const input of [{ ...base, ...access }, { ...base, ...access, resumeSessionId: "sess-1" }]) {
       await runCodex(input);
       const got = await args();
       for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
+      const [git, cache, home, tmp, ...rest] = await roots();
+      expect([git, cache, home, rest]).toEqual(["/repo/.git/worktrees/w", "/home/u/.bun/install/cache", path.join(files.artifacts, "home"), []]);
+      expect(path.basename(tmp!)).toStartWith("conveyor-run-");
     }
 
     await runCodex({ ...base, ...access, sandbox: "read-only", automaticApprovals: false });
@@ -195,7 +196,8 @@ describe("runCodex", () => {
 
     await runCodex(base);
     const plain = await args();
-    expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write."))).toBe(false);
+    expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write.network_access"))).toBe(false);
+    expect((await roots())[0]).toBe(path.join(files.artifacts, "home"));
   });
 
   test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {
