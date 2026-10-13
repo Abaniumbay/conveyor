@@ -246,6 +246,21 @@ describe("agent.run", () => {
     expect(w.store.listConversationMessages("i1").map((m) => [m.actorType, m.message])).toEqual([["agent", "Implementation completed: Implemented."]]);
   });
 
+  test("an agent's env reaches its harness, beside the harness's own variables", async () => {
+    const w = await world();
+    Object.assign(w.deps.config.agents.kaveh!, { env: { NUGET_PACKAGES: "/caches/nuget" } });
+    expect((await w.run(false)).status).toBe("pass");
+    expect(w.calls[0]!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget" });
+
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
+    config.runners.claude = { type: "claude-code", command: "claude", configDir: "/claude-config" };
+    config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude" };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = harnesses.codex;
+    expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
+    expect(w.calls.at(-1)!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget", CLAUDE_CONFIG_DIR: "/claude-config" });
+  });
+
   test("a workspace-write agent may write its worktree's git metadata and its existing extra roots, with network when enabled", async () => {
     const w = await world();
     const workspace = w.store.getActiveWorkspace("i1")!.path;

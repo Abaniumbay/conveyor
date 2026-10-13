@@ -1,4 +1,5 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -230,14 +231,21 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   const startedAt = performance.now();
   let network: RunNetwork | null = null;
   let child: ReturnType<typeof spawnPiped>;
+  // The run's own scratch space, beside the service's other temporary files and gone when it ends.
+  const runTmp = await mkdtemp(path.join(tmpdir(), "conveyor-run-"));
   try {
     const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    environment.TMPDIR = runTmp;
+    // Tools keep their state under HOME, so a run that may write must be able to write its own.
+    const run = input.sandbox === "workspace-write"
+      ? { ...input, writableRoots: [...(input.writableRoots ?? []), environment.HOME!, runTmp] }
+      : input;
     const launch = await codexLaunch({
       command: input.command,
       environment,
       artifactsDirectory: input.artifactsDirectory,
       egress: input.egress,
-      buildArguments: (extra) => buildArguments(input, outputFile, schemaFile, extra),
+      buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
     child = spawnPiped(launch.argv, input.workspace, launch.env);
@@ -245,6 +253,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();
+    await rm(runTmp, { recursive: true, force: true });
     throw error;
   }
   child.stdin.write(input.prompt);
@@ -295,6 +304,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     exitCode = await child.exited;
   } finally {
     await network?.close();
+    await rm(runTmp, { recursive: true, force: true });
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

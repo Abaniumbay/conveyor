@@ -239,6 +239,12 @@ repositories:
       await expect(load("    codexConfig: { \"bad key\": 1 }")).rejects.toThrow("dotted Codex config key");
       await expect(load("    mcpServers: { conveyor: { command: x } }")).rejects.toThrow("reserved");
     });
+    test("env defaults empty, expands ~/ values and rejects invalid variable names", async () => {
+      expect((await load("")).agents.worker).toMatchObject({ env: {} });
+      const config = await load("    env: { NUGET_PACKAGES: ~/.nuget/packages, DOTNET_NOLOGO: '1' }");
+      expect(config.agents.worker!.env).toEqual({ NUGET_PACKAGES: path.join(homedir(), ".nuget/packages"), DOTNET_NOLOGO: "1" });
+      await expect(load("    env: { BAD-NAME: x }")).rejects.toThrow("env");
+    });
     test("a relative writable root is a config error", async () => {
       await expect(load("    writableRoots: [cache]")).rejects.toThrow("writableRoots");
     });
