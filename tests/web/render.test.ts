@@ -383,20 +383,24 @@ describe("renderDashboard", () => {
 
   test("shows todo progress on the card and the escaped checklist in its details; nothing without a list", () => {
     const working = {
-      ...backlogIssue, id: "working", number: 77, working: true,
+      ...backlogIssue, id: "working", number: 77, working: true, stage: "implementation",
       todos: {
-        done: 1, total: 3, current: "Tenant <b>settings</b> endpoint",
+        finished: 2, skipped: 1, total: 4, current: "Tenant <b>settings</b> endpoint",
         items: [
           { id: "t1", text: "Shared repository", status: "done" as const },
           { id: "t2", text: "Tenant <b>settings</b> endpoint", status: "in_progress" as const, note: "admin auth first" },
           { id: "t3", text: "Lobby picker", status: "pending" as const },
+          { id: "t0", text: "Old work", status: "skipped" as const, note: "Closed by Conveyor when the implementation stage passed its gate." },
         ],
       },
     };
     const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [working] }], backlog: [backlogIssue] });
-    expect(html).toContain('aria-label="Todo progress for #77: 1 of 3 todos done"');
-    expect(html).toContain('<meter min="0" max="3" value="1"');
-    expect(html).toContain('<span class="todo-progress-count">1/3</span>');
+    expect(html).toContain('aria-label="Todo progress for #77: 2 of 4 todos finished"');
+    expect(html).toContain('<meter min="0" max="4" value="2"');
+    expect(html).toContain('<span class="todo-progress-count">2/4</span>');
+    expect(html).toContain('class="todo todo--skipped"');
+    expect(html).toContain("Skipped · ");
+    expect(html).toContain("2/4, 1 skipped");
     expect(html).toContain("Tenant &lt;b>settings&lt;/b> endpoint");
     expect(html).not.toContain("<b>settings</b>");
     expect(html).toContain('class="todo todo--done"');
@@ -404,6 +408,18 @@ describe("renderDashboard", () => {
     expect(html).toContain('<span class="todo-note">admin auth first</span>');
     expect(html.match(/class="todo-progress"/g)).toHaveLength(1);
     expect(html.match(/aria-label="Implementation todos"/g)).toHaveLength(1);
+  });
+
+  test("shows card todo progress only in the stage that owns the list, keeping the details checklist", () => {
+    for (const stage of ["review", "merge", "done"]) {
+      const issue = {
+        ...backlogIssue, id: "later", number: 78, stage,
+        todos: { finished: 1, skipped: 1, total: 1, current: null, items: [{ id: "t1", text: "Closed", status: "skipped" as const, note: "n" }] },
+      };
+      const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [issue] }], backlog: [backlogIssue] });
+      expect(html).not.toContain('class="todo-progress"');
+      expect(html.match(/aria-label="Implementation todos"/g)).toHaveLength(1);
+    }
   });
 
   test("renders the Reports view: tab, filters, figures, drill-through links, escaped items and only non-zero bars", () => {

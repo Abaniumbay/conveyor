@@ -1,3 +1,5 @@
+import { TODO_CLOSEOUT_NOTE } from "../engine/todos";
+
 export interface Migration {
   version: number;
   sql: string;
@@ -621,6 +623,27 @@ export const migrations: readonly Migration[] = [
     sql: `
       -- GitHub issue type and organization issue-field values; see IssueMetadata in store.ts.
       ALTER TABLE issues ADD COLUMN metadata_json TEXT;
+    `,
+  },
+  {
+    version: 17,
+    sql: `
+      -- Close the todo lists of items already past their implementing stage, or done, like the gate does.
+      UPDATE item_todos
+      SET items_json = (
+        SELECT json_group_array(json(CASE
+          WHEN json_extract(value, '$.status') IN ('pending', 'in_progress')
+            THEN json_set(value, '$.status', 'skipped', '$.note', '${TODO_CLOSEOUT_NOTE}')
+          ELSE value
+        END))
+        FROM json_each(item_todos.items_json)
+      )
+      WHERE issue_id IN (
+        SELECT id FROM issues
+        WHERE projected_state = 'done' OR COALESCE(projected_stage, 'implementation') NOT IN ('refinement', 'implementation')
+      ) AND EXISTS (
+        SELECT 1 FROM json_each(item_todos.items_json) WHERE json_extract(value, '$.status') IN ('pending', 'in_progress')
+      );
     `,
   },
 ];

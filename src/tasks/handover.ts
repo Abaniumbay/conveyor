@@ -26,13 +26,19 @@ function clip(text: string, limit: number, cut: string[]): string {
   return `${text.slice(0, limit - 1)}…`;
 }
 
+function finishedProgress(items: Parameters<typeof summarizeTodos>[0]): string | null {
+  const summary = summarizeTodos(items);
+  if (!summary) return null;
+  return `${summary.finished}/${summary.total} finished${summary.skipped > 0 ? `, ${summary.skipped} skipped` : ""}`;
+}
+
 function todosPart(deps: TaskDeps) {
   const items = new ItemTodos(deps.store.sqlite()).get(deps.issueId)?.items ?? [];
   if (items.length === 0) return { present: false, note: "This item has no todo list yet.", items: [], progress: null, truncated: null };
   const { shown, truncated } = bounded(items, HANDOVER_LIMITS.todos, "todos", "todo.get");
   return {
     present: true,
-    progress: summarizeTodos(items) ? `${items.filter((i) => i.status === "done").length}/${items.length} done` : null,
+    progress: finishedProgress(items),
     items: shown.map((item) => ({ id: item.id, text: item.text, status: item.status, ...(item.note ? { note: item.note } : {}) })),
     truncated,
   };

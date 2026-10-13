@@ -338,7 +338,7 @@ describe("ConveyorService dashboard", () => {
 
     const service = new ConveyorService(config, store, {} as never);
     const cards = service.dashboard("csrf").stages.flatMap((stage) => stage.issues);
-    expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ done: 1, total: 2, current: "Endpoint", items });
+    expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ finished: 1, total: 2, skipped: 0, current: "Endpoint", items });
     expect(cards.find((card) => card.id === "without")!.todos).toBeNull();
     store.close();
   });

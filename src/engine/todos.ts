@@ -3,7 +3,11 @@
 
 import type { Database } from "bun:sqlite";
 
-export type TodoStatus = "pending" | "in_progress" | "done";
+export type TodoStatus = "pending" | "in_progress" | "done" | "skipped";
+
+/** The stage whose agent owns the todo list; its exit gate closes the list out. */
+export const TODO_OWNING_STAGE = "implementation";
+export const TODO_CLOSEOUT_NOTE = "Closed by Conveyor when the implementation stage passed its gate.";
 
 export interface TodoItem {
   id: string;
@@ -19,9 +23,12 @@ export interface TodoList {
 }
 
 export interface TodoSummary {
-  done: number;
+  /** Terminal entries: agent-completed and Conveyor-closed work. */
+  finished: number;
   total: number;
-  /** The item in progress, or else the next pending one; null when every item is done. */
+  /** Entries closed by Conveyor when the owning stage passed. */
+  skipped: number;
+  /** The item in progress, or else the next pending one; null when every item is terminal. */
   current: string | null;
 }
 
@@ -47,10 +54,28 @@ export class ItemTodos {
               ON CONFLICT(issue_id) DO UPDATE SET items_json = excluded.items_json, run_id = excluded.run_id, updated_at = excluded.updated_at`)
       .run(issueId, JSON.stringify(items), runId, at);
   }
+
+  /**
+   * Marks every pending or in_progress entry skipped with the closeout note. Done and already skipped
+   * entries are untouched, so applying it twice changes nothing.
+   */
+  closeOut(issueId: string): void {
+    const list = this.get(issueId);
+    if (!list || !list.items.some((item) => item.status === "pending" || item.status === "in_progress")) return;
+    const items = list.items.map((item): TodoItem =>
+      item.status === "pending" || item.status === "in_progress" ? { ...item, status: "skipped", note: TODO_CLOSEOUT_NOTE } : item);
+    this.#db.query("UPDATE item_todos SET items_json = ? WHERE issue_id = ?").run(JSON.stringify(items), issueId);
+  }
 }
 
 export function summarizeTodos(items: readonly TodoItem[]): TodoSummary | null {
   if (items.length === 0) return null;
   const current = items.find((item) => item.status === "in_progress") ?? items.find((item) => item.status === "pending");
-  return { done: items.filter((item) => item.status === "done").length, total: items.length, current: current?.text ?? null };
+  const skipped = items.filter((item) => item.status === "skipped").length;
+  return {
+    finished: items.filter((item) => item.status === "done" || item.status === "skipped").length,
+    total: items.length,
+    skipped,
+    current: current?.text ?? null,
+  };
 }

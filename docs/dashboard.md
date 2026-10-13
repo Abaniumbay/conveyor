@@ -15,6 +15,10 @@ The board shows backlog, configured stages, completed work, active runner capaci
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.
 
+### Todos
+
+The implementer keeps a working todo list (`todo.set`, `todo.update`). When the implementation stage passes its exit gate and the item advances, Conveyor closes the list out: every `pending` or `in_progress` entry becomes `skipped` with a system note, and `done` entries are untouched. The skipped status is Conveyor-owned; agents cannot set or change it. If the item returns to implementation (a review finding or a failed gate), skipped entries remain as history and the implementer adds new todos under new ids. Cards show todo progress (`finished/total`, where finished counts done and skipped) only while the item is in the implementation stage; cards in later stages and in done show none. The item details always keep the full list, with skipped entries labelled and the skipped count shown.
+
 ![The Board, with its summaries after the shared navigation](screenshots/board.png)
 
 ![An item's conversation](screenshots/item.png)

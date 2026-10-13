@@ -2552,6 +2552,7 @@ export class ConveyorService {
         issueFields: this.issueFieldValues(issue),
         acceptanceCriteria: this.criterionApprovalStates(issue),
         todos: todosView(todos.get(issue.id)?.items ?? []),
+        stage: issue.projectedStage,
         indicators: indicators.get(issue.id) ?? [],
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
