@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-13
+
+This release stops agents from downloading their toolchains' package caches on every run and from leaving scratch behind in `/tmp`. Agents take an `env` setting that points tools such as NuGet, pub, Gradle and npm at the shared caches listed in `writableRoots`. A workspace-write Codex run can now write its own home and gets a temporary directory of its own, which Conveyor deletes when the run ends; set `TMPDIR` for the service to keep that scratch off a memory-backed `/tmp`.
+
 ### Added
 
 - Agents take an `env` setting: environment variables for the agent's run, with `~/` values
