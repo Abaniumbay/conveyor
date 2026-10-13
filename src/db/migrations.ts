@@ -646,4 +646,14 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 18,
+    sql: `
+      -- What a dashboard asks per item (its runs and their cost) and per open tab (the newest run
+      -- event) scanned whole tables, which grew to seconds per page on a busy installation.
+      CREATE INDEX runs_issue_idx ON runs(issue_id, started_at);
+      CREATE INDEX usage_cost_entries_run_idx ON usage_cost_entries(run_id);
+      CREATE INDEX run_events_created_idx ON run_events(created_at);
+    `,
+  },
 ];
