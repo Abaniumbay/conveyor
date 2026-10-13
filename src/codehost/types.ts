@@ -86,6 +86,8 @@ export interface CodeHost {
   }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }>;
   /** Writes the criteria checklist into the change's description as a Conveyor-managed section; human text is kept. */
   setChangeChecklist(input: { address: string; id: string; markdown: string }): Promise<void>;
+  /** Writes the agent's explanation into the change's description as a Conveyor-managed section; human text is kept. */
+  setChangeDescription(input: { address: string; id: string; markdown: string }): Promise<ChangeRequest>;
   getChangeDelivery(input: {
     address: string;
     id: string;

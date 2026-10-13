@@ -32,7 +32,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
   merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
-  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean;
+  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean; descriptionFails?: boolean;
 } = {}) {
   let body = state.body ?? "";
   const calls: Array<[string, unknown]> = [];
@@ -43,6 +43,13 @@ function hostFake(state: {
     async setChangeChecklist(input) {
       calls.push(["checklist", input]);
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
+    },
+    async setChangeDescription(input) {
+      if (state.descriptionFails) throw new Error("GitHub refused the description");
+      const updated = upsertManagedSection(body, "description", input.markdown, parseManagedSections(body).revision);
+      if (updated !== body) calls.push(["description", input]);
+      body = updated;
+      return { ...(state.change ?? request()), body };
     },
     async mergeChange(input) { calls.push(["merge", input]); return state.merge ?? { merged: true, sha: "merge1" }; },
     async createFinding(input) {
@@ -299,13 +306,73 @@ describe("change tools", () => {
     expect(registry.require("change.get").kind).toBe("tool");
   });
 
-  test("change.setMetadata records the run event exactly as the legacy tool did", async () => {
+  const dispatchMetadata = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, tasks = new Set(["change.setMetadata"]), store = w.store) =>
+    dispatchTool(
+      { name, input, actor: { id: "kaveh", name: "K", title: "T" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store },
+    );
+
+  test("change.setMetadata writes and reports a managed description visible through change.get", async () => {
     const w = await world();
-    const input = { title: "T", labels: ["a"] };
-    const result = await run("change.setMetadata", { context: {}, deps: w.deps, input }) as Pass;
-    expect(result.output).toEqual({ accepted: true });
-    expect(w.store.listRunEvents("run1")).toEqual([expect.objectContaining({ type: "source.set_pull_request_metadata", payload: input })]);
+    const result = await dispatchMetadata(w, "change.setMetadata", { description: "Why this change exists." });
+    expect(result).toEqual({ pullRequest: { number: 5, url: "https://x/pull/5" }, descriptionLength: 23 });
+    expect(w.host.calls.filter(([name]) => name === "description")).toHaveLength(1);
+    w.deps.delivery = async () => ({ ...(await w.host.host.getChangeDelivery({ address: "o/r", id: ID })), pullRequest: null });
+    const visible = await run("change.get", { context: {}, deps: w.deps, input: {} }) as Pass;
+    expect((visible.output as ChangeDelivery).change.body).toContain("Why this change exists.");
+    expect(w.store.listRunEvents("run1")).toEqual([]);
     expect(registry.require("change.setMetadata").mutating).toBe(true);
+    expect(registry.require("change.setMetadata").description).toContain("description");
+  });
+
+  test("change.setMetadata rejects unknown fields and descriptions longer than 32,000 characters before a provider write", async () => {
+    const w = await world();
+    await expect(dispatchMetadata(w, "change.setMetadata", { description: "x", title: "T", labels: ["a"] })).rejects.toThrow(/title.*labels|labels.*title/);
+    await expect(dispatchMetadata(w, "change.setMetadata", { description: "x".repeat(32_001) })).rejects.toThrow("32,000");
+    expect(w.host.calls.filter(([name]) => name === "description")).toEqual([]);
+    await expect(dispatchMetadata(w, "change.setMetadata", { description: "x".repeat(32_000) })).resolves.toMatchObject({ descriptionLength: 32_000 });
+  });
+
+  test("change.setMetadata accepts an empty description to clear its managed section", async () => {
+    const w = await world();
+    await dispatchMetadata(w, "change.setMetadata", { description: "Previously explained" });
+    await expect(dispatchMetadata(w, "change.setMetadata", { description: "" })).resolves.toEqual({
+      pullRequest: { number: 5, url: "https://x/pull/5" }, descriptionLength: 0,
+    });
+    w.deps.delivery = async () => ({ ...(await w.host.host.getChangeDelivery({ address: "o/r", id: ID })), pullRequest: null });
+    const delivery = (await run("change.get", { context: {}, deps: w.deps, input: {} }) as Pass).output as ChangeDelivery;
+    expect(delivery.change.body).toContain("<!-- conveyor:description:start -->\n<!-- conveyor:description:end -->");
+    expect(delivery.change.body).not.toContain("Previously explained");
+  });
+
+  test("change.setMetadata fails without a change, grant, or provider acceptance without claiming success", async () => {
+    const noChange = await world({}, false);
+    await expect(dispatchMetadata(noChange, "change.setMetadata", { description: "x" })).rejects.toThrow("No change request exists yet");
+    expect(noChange.host.calls.filter(([name]) => name === "description")).toEqual([]);
+    const denied = await world();
+    await expect(dispatchMetadata(denied, "change.setMetadata", { description: "x" }, new Set())).rejects.toThrow("not granted");
+    expect(denied.host.calls.filter(([name]) => name === "description")).toEqual([]);
+    const refused = await world({ descriptionFails: true });
+    await expect(dispatchMetadata(refused, "change.setMetadata", { description: "x" })).rejects.toThrow("GitHub refused the description");
+  });
+
+  test("change.setMetadata uses its source-mutation journal and safely recovers a completed provider write", async () => {
+    const w = await world();
+    const input = { description: "Durable explanation" };
+    const first = await dispatchMetadata(w, "source.set_pull_request_metadata", input);
+    const replay = await dispatchMetadata(w, "change.setMetadata", input);
+    expect(replay).toEqual(first);
+    expect(w.host.calls.filter(([name]) => name === "description")).toHaveLength(1);
+
+    const crash = await world();
+    const incompleteStore = {
+      beginSourceMutation: crash.store.beginSourceMutation.bind(crash.store),
+      completeSourceMutation() { throw new Error("simulated crash after provider write"); },
+      failSourceMutation() {},
+    };
+    await expect(dispatchMetadata(crash, "change.setMetadata", input, new Set(["change.setMetadata"]), incompleteStore as never)).rejects.toThrow("simulated crash");
+    await expect(dispatchMetadata(crash, "change.setMetadata", input)).resolves.toMatchObject({ descriptionLength: input.description.length });
+    expect(crash.host.calls.filter(([name]) => name === "description")).toHaveLength(1);
   });
 });
 

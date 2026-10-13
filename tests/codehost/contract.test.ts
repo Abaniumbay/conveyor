@@ -100,6 +100,20 @@ describe("CodeHost contract: GitHub", () => {
     });
   });
 
+  test("setChangeDescription returns the updated change and skips a repeated provider update", async () => {
+    const body = "Closes #8\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] A\n<!-- conveyor:acceptance-criteria:end -->\nHuman footer";
+    const updated = "Closes #8\n<!-- conveyor:description:start -->\nExplains the change\n<!-- conveyor:description:end -->\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] A\n<!-- conveyor:acceptance-criteria:end -->\nHuman footer";
+    const transport = new FakeTransport([{ ...pull(8), body }, { ...pull(8), body: updated }, { ...pull(8), body: updated }, { ...pull(8), body: updated }, { ...pull(8), body: updated }]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+    const result = await host.setChangeDescription({ address: "owner/repo", id: "github:owner/repo#pr-8", markdown: "Explains the change" });
+    expect(result.body).toBe(updated);
+    expect(transport.requests.filter((request) => request.method === "PATCH")).toEqual([
+      { method: "PATCH", path: "repos/owner/repo/pulls/8", body: { body: updated } },
+    ]);
+    await host.setChangeDescription({ address: "owner/repo", id: "github:owner/repo#pr-8", markdown: "Explains the change" });
+    expect(transport.requests.filter((request) => request.method === "PATCH")).toHaveLength(1);
+  });
+
   test("getChange exposes the pull request body", async () => {
     const host = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([{ ...pull(8), body: "Hi" }, { ...pull(8), body: null }]), "conveyor"));
     expect((await host.getChange({ address: "owner/repo", id: "github:owner/repo#pr-8" })).body).toBe("Hi");

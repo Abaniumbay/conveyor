@@ -992,10 +992,24 @@ export class GitHubAdapter {
 
   /** Upserts the acceptance-criteria managed section in a pull request body, keeping the rest. */
   async setPullRequestChecklist(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    await this.setPullRequestManagedSection(address, pullRequestNumber, "acceptance-criteria", markdown);
+  }
+
+  /** Upserts Conveyor's agent-authored description section in a pull request body, keeping the rest. */
+  async setPullRequestDescription(address: string, pullRequestNumber: number, markdown: string): Promise<void> {
+    await this.setPullRequestManagedSection(address, pullRequestNumber, "description", markdown);
+  }
+
+  private async setPullRequestManagedSection(
+    address: string,
+    pullRequestNumber: number,
+    section: "acceptance-criteria" | "description",
+    markdown: string,
+  ): Promise<void> {
     const path = `repos/${address}/pulls/${pullRequestNumber}`;
     const current = await this.transport.request<GitHubPullRequest>({ method: "GET", path });
     const body = current.body ?? "";
-    const updated = upsertManagedSection(body, "acceptance-criteria", markdown, parseManagedSections(body).revision);
+    const updated = upsertManagedSection(body, section, markdown, parseManagedSections(body).revision);
     if (updated !== body) await this.transport.request<GitHubPullRequest>({ method: "PATCH", path, body: { body: updated } });
   }
 

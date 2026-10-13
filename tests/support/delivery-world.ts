@@ -80,6 +80,10 @@ function fakeHost(): FakeHost {
     async setChangeChecklist(input) {
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
     },
+    async setChangeDescription(input) {
+      body = upsertManagedSection(body, "description", input.markdown, parseManagedSections(body).revision);
+      return change();
+    },
     async getChangeDelivery(): Promise<ChangeDelivery> {
       const current = change();
       return {

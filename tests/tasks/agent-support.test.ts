@@ -21,6 +21,11 @@ test("no grant advertises no callable tools", () => {
   expect(prompt({}, "Instructions.")).not.toContain("Conveyor tool names:");
 });
 
+test("handoff explains pull request descriptions only when the write grant is present", () => {
+  expect(conveyorToolGuidance(["change.setMetadata"])).toContain("explain the pull request itself");
+  expect(conveyorToolGuidance(["change.get"])).not.toContain("explain the pull request itself");
+});
+
 test("native runs explain supported stops while legacy runs keep their configured statuses", () => {
   expect(prompt({}, "Review.")).toContain("use blocked or rejected");
   expect(prompt({}, "Review.")).toContain("Do not invent status names such as blocked-external");
