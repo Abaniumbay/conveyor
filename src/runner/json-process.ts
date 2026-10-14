@@ -1,4 +1,5 @@
 import { producerResultSchema, EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "./result";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 
 export interface JsonProcessInput {
   command: string[];
@@ -42,19 +43,40 @@ export interface ProcessOutput {
   durationMs: number;
 }
 
+/** Canonicalize the filesystem references in the standard script-run context. */
+function resolveProcessInput(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const resolved = { ...(input as Record<string, unknown>) };
+  if (typeof resolved.workspace === "string") {
+    resolved.workspace = resolveFilesystemPath(resolved.workspace);
+  } else if (resolved.workspace && typeof resolved.workspace === "object" && !Array.isArray(resolved.workspace)) {
+    const workspace = { ...(resolved.workspace as Record<string, unknown>) };
+    if (typeof workspace.path === "string") workspace.path = resolveFilesystemPath(workspace.path);
+    resolved.workspace = workspace;
+  }
+  if (resolved.repository && typeof resolved.repository === "object" && !Array.isArray(resolved.repository)) {
+    const repository = { ...(resolved.repository as Record<string, unknown>) };
+    if (typeof repository.folder === "string") repository.folder = resolveFilesystemPath(repository.folder);
+    resolved.repository = repository;
+  }
+  return resolved;
+}
+
 /** Runs a command with the JSON input on stdin; a timeout, interrupt or non-zero exit throws RunnerProcessError. */
 export async function runProcess(input: JsonProcessInput): Promise<ProcessOutput> {
   if (input.command.length === 0) throw new Error("runner command cannot be empty");
+  const cwd = resolveFilesystemPath(input.cwd);
+  const environment = resolvePathEnvironment(input.env ? { ...process.env, ...input.env } : process.env);
   const startedAt = performance.now();
   const child = Bun.spawn(input.command, {
-    cwd: input.cwd,
-    env: input.env ? { ...process.env, ...input.env } : process.env,
+    cwd,
+    env: environment,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  child.stdin.write(JSON.stringify(input.input));
+  child.stdin.write(JSON.stringify(resolveProcessInput(input.input)));
   child.stdin.end();
 
   const stdoutPromise = new Response(child.stdout).text();

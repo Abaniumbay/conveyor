@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -74,6 +74,41 @@ describe("runJsonProcess", () => {
     expect(result.stderr).toContain("working on issue-12");
     expect(result.exitCode).toBe(0);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("uses resolved cwd, path-valued environment, and script context", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-runner-paths-"));
+    temporaryDirectories.push(directory);
+    const target = path.join(directory, "target");
+    const link = path.join(directory, "link");
+    await mkdir(path.join(target, "workspace"), { recursive: true });
+    await mkdir(path.join(target, "repository"));
+    await mkdir(path.join(target, "cache"));
+    await symlink(target, link);
+    const filename = await script(`
+      const input = await new Response(Bun.stdin.stream()).json();
+      console.log(JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "ok", reason: null,
+        metrics: { cwd: process.cwd(), cache: process.env.CACHE, workspace: input.workspace.path, repository: input.repository.folder }, artifacts: []
+      }));
+    `);
+
+    const result = await runJsonProcess({
+      command: [process.execPath, filename],
+      cwd: path.join(link, "workspace"),
+      env: { CACHE: path.join(link, "cache") },
+      input: {
+        workspace: { path: path.join(link, "workspace") },
+        repository: { folder: path.join(link, "repository") },
+      },
+    });
+
+    expect(result.stageResult.metrics).toEqual({
+      cwd: path.join(target, "workspace"),
+      cache: path.join(target, "cache"),
+      workspace: path.join(target, "workspace"),
+      repository: path.join(target, "repository"),
+    });
   });
 
   test("rejects stdout containing anything except one result object", async () => {

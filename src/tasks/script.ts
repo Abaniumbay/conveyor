@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import { RunnerProcessError, runProcess } from "../runner/json-process";
+import { resolveFilesystemPath } from "../core/paths";
 import { scriptCommand } from "../self";
 import type { ScriptContext, ScriptRecoveryObservation, ScriptRecoveryRequest } from "./context";
 import { defineGroup, fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
@@ -93,17 +94,19 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   async run({ context, config, deps, instance }: TaskArgs<RunConfig, unknown, Deps>) {
     const issue = deps.store.getIssue(deps.issueId);
     if (!issue) throw new InfrastructureError(`issue ${deps.issueId} is not stored`);
-    const workspace = deps.store.getActiveWorkspace(deps.issueId)?.path ?? null;
+    const activeWorkspace = deps.store.getActiveWorkspace(deps.issueId)?.path ?? null;
+    const workspace = activeWorkspace ? resolveFilesystemPath(activeWorkspace) : null;
+    const repository = { ...deps.repository, folder: resolveFilesystemPath(deps.repository.folder) };
     const call = async (phase: ScriptRecoveryRequest["phase"]) => {
       const request: ScriptRecoveryRequest = { phase, idempotencyKey: instance.idempotencyKey, taskInstanceId: instance.id };
       try {
         return await runProcess({
           command: scriptCommand(config.script, config.interpreter),
-          cwd: workspace ?? deps.repository.folder,
+          cwd: workspace ?? repository.folder,
           // The legacy fields keep stage scripts written for `run: { type: script }` working unchanged.
           input: {
             ...request, context,
-            issue, workspace, repository: context.repository ?? deps.repository,
+            issue, workspace, repository: context.repository ? { ...context.repository, folder: resolveFilesystemPath(context.repository.folder) } : repository,
             runId: instance.idempotencyKey, stageId: instance.stage,
             attempt: context.run?.attempt, feedback: context.run?.feedback ?? null,
           },

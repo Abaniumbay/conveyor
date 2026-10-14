@@ -2,6 +2,8 @@ import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
 
+import { resolveFilesystemPath } from "../core/paths";
+
 export interface CreateWorkspaceInput {
   repositoryPath: string;
   repositoryId: string;
@@ -26,7 +28,7 @@ export interface RemoveWorkspaceInput {
 
 /** The persistent scratch directory paired with a managed worktree. */
 export function workspaceScratchPath(workspacePath: string): string {
-  return `${path.resolve(workspacePath)}.tmp`;
+  return `${resolveFilesystemPath(workspacePath)}.tmp`;
 }
 
 export class WorkspaceError extends Error {
@@ -75,7 +77,7 @@ export class WorkspaceManager {
     if (!path.isAbsolute(root)) {
       throw new WorkspaceError("workspace root must be an absolute path");
     }
-    this.#root = path.resolve(root);
+    this.#root = resolveFilesystemPath(root);
   }
 
   async create(input: CreateWorkspaceInput): Promise<ManagedWorkspace> {
@@ -116,7 +118,7 @@ export class WorkspaceManager {
 
     await this.ensureScratch(workspacePath);
 
-    return { path: workspacePath, branch, baseRevision: revision };
+    return { path: resolveFilesystemPath(workspacePath), branch, baseRevision: revision };
   }
 
   /**
@@ -131,7 +133,7 @@ export class WorkspaceManager {
     baseBranch: string;
   }): Promise<void> {
     const repositoryPath = await this.validateRepository(input.repositoryPath);
-    const workspacePath = path.resolve(input.workspacePath);
+    const workspacePath = resolveFilesystemPath(input.workspacePath);
     this.assertManagedPath(workspacePath);
     await git(repositoryPath, ["worktree", "prune"]);
     await mkdir(path.dirname(workspacePath), { recursive: true });

@@ -9,10 +9,11 @@
 // read tools, Bash and its MCP tools; a workspace-write agent also gets Edit and Write in
 // acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type RunEnvelope } from "./result";
@@ -110,7 +111,7 @@ export function claudeArguments(input: ClaudeCodeRunInput, schema: string): stri
   };
   const serverTools: string[] = [];
   for (const [name, server] of Object.entries(input.mcpServers ?? {})) {
-    servers[name] = { command: server.command, args: server.args, ...(Object.keys(server.env).length > 0 ? { env: server.env } : {}) };
+    servers[name] = { command: server.command, args: server.args, ...(Object.keys(server.env).length > 0 ? { env: resolvePathEnvironment(server.env) } : {}) };
     serverTools.push(...(server.enabledTools ? server.enabledTools.map((tool) => `mcp__${name}__${tool}`) : [`mcp__${name}`]));
   }
   const args = [
@@ -140,24 +141,34 @@ export function sandboxArguments(options: {
   /** The session bus of the service user, hidden too; resolved from the uid when absent. */
   sessionBus?: string;
 }): string[] {
-  const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
-  if (options.serviceHome) {
+  const workspace = resolveFilesystemPath(options.workspace);
+  const configDir = resolveFilesystemPath(options.configDir);
+  const home = resolveFilesystemPath(options.home);
+  const serviceHome = options.serviceHome ? resolveFilesystemPath(options.serviceHome) : undefined;
+  const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", resolveFilesystemPath("/tmp")];
+  if (serviceHome) {
     for (const relative of HIDDEN) {
-      const hidden = path.join(options.serviceHome, relative);
-      if (existsSync(hidden)) args.push("--tmpfs", hidden);
+      const hidden = path.join(serviceHome, relative);
+      if (existsSync(hidden)) args.push("--tmpfs", resolveFilesystemPath(hidden));
     }
   }
   const bus = options.sessionBus ?? (typeof process.getuid === "function" ? `/run/user/${process.getuid()}/bus` : null);
   // Resolved first: /var/run is a symlink to /run, and bwrap binds a real path once.
-  const sockets = new Set([...HIDDEN_SOCKETS, ...(bus ? [bus] : [])].filter((socket) => existsSync(socket)).map((socket) => realpathSync(socket)));
+  const sockets = new Set([...HIDDEN_SOCKETS, ...(bus ? [bus] : [])].filter((socket) => existsSync(socket)).map(resolveFilesystemPath));
   for (const socket of sockets) args.push("--ro-bind", "/dev/null", socket);
   for (const directory of options.writable ?? []) {
-    if (existsSync(directory)) args.push("--bind", directory, directory);
+    if (existsSync(directory)) {
+      const resolved = resolveFilesystemPath(directory);
+      args.push("--bind", resolved, resolved);
+    }
   }
-  args.push("--bind", options.configDir, options.configDir);
-  const legacyConfig = `${options.configDir}.json`;
-  if (existsSync(legacyConfig)) args.push("--bind", legacyConfig, legacyConfig);
-  args.push("--bind", options.home, options.home, "--chdir", options.workspace, "--die-with-parent", "--");
+  args.push("--bind", configDir, configDir);
+  const legacyConfig = `${configDir}.json`;
+  if (existsSync(legacyConfig)) {
+    const resolved = resolveFilesystemPath(legacyConfig);
+    args.push("--bind", resolved, resolved);
+  }
+  args.push("--bind", home, home, "--chdir", workspace, "--die-with-parent", "--");
   return args;
 }
 
@@ -169,35 +180,39 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     throw new ClaudeCodeRunnerError("Claude Code agents do not support network egress isolation yet", "process", null, "");
   }
   await mkdir(input.artifactsDirectory, { recursive: true });
+  const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
+  const workspace = resolveFilesystemPath(input.workspace);
   assertNoHostTmpWritableRoots(input.writableRoots);
+  const writableRoots = (input.writableRoots ?? []).filter(existsSync).map(resolveFilesystemPath);
   const scratch = await acquireScratch(input.temporaryDirectory);
   const startedAt = performance.now();
   try {
     const environment = await prepareAgentEnvironment({
-      artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env,
+      artifactsDirectory, workspace, overrides: input.env,
       controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     });
-    const serviceHome = process.env.HOME;
+    const serviceHome = process.env.HOME ? resolveFilesystemPath(process.env.HOME) : undefined;
     const configDir = environment.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
     if (!configDir) {
       throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
     }
-    environment.CLAUDE_CONFIG_DIR = configDir;
-    environment.TMPDIR = scratch.path;
     await mkdir(configDir, { recursive: true });
+    environment.CLAUDE_CONFIG_DIR = resolveFilesystemPath(configDir);
+    environment.TMPDIR = scratch.path;
+    const resolvedEnvironment = resolvePathEnvironment(environment);
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
     const argv = [
       "bwrap", ...sandboxArguments({
-        workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,
+        workspace, configDir: resolvedEnvironment.CLAUDE_CONFIG_DIR!, home: resolvedEnvironment.HOME!, serviceHome,
         // Claude itself needs private temporary storage even when its workspace is read-only.
         writable: [
-          ...(input.sandbox === "workspace-write" ? [input.workspace, ...(input.writableRoots ?? [])] : []),
+          ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
           scratch.path,
         ],
       }),
       input.command, ...claudeArguments(input, schema),
     ];
-    const child = Bun.spawn(argv, { cwd: input.workspace, env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(argv, { cwd: workspace, env: resolvedEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     child.stdin.write(input.prompt);
     child.stdin.end();
 

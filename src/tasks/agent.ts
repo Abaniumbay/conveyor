@@ -19,6 +19,7 @@ import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
 import { assertNoHostTmpWritableRoots } from "../isolation/scratch";
+import { resolveFilesystemPath } from "../core/paths";
 import type { RunEnvelope } from "../runner/result";
 import {
   AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, failedEnvelope, finishRun,
@@ -381,7 +382,7 @@ async function codexAccess(
   // host /tmp writes. Validate roots only when they will be handed to a write-capable runner.
   if (agent.workspaceAccess !== "read-only") assertNoHostTmpWritableRoots(agent.writableRoots);
   const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), workspaceScratchPath(workspace), ...(agent.writableRoots ?? [])];
-  const writableRoots = [...new Set(roots)].filter((root) => existsSync(root));
+  const writableRoots = [...new Set(roots)].filter((root) => existsSync(root)).map(resolveFilesystemPath);
   return { ...(agent.network ? { network: true as const } : {}), ...(writableRoots.length > 0 ? { writableRoots } : {}) };
 }
 

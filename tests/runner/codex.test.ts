@@ -175,7 +175,10 @@ describe("runCodex", () => {
       mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
-    const access = { network: true, writableRoots: ["/repo/.git/worktrees/w", "/home/u/.bun/install/cache"] };
+    const worktreeRoot = path.join(files.directory, "writable-worktree");
+    const cacheRoot = path.join(files.directory, "writable-cache");
+    await Promise.all([mkdir(worktreeRoot), mkdir(cacheRoot)]);
+    const access = { network: true, writableRoots: [worktreeRoot, cacheRoot] };
     // The run's own home and temp directory follow the configured roots.
     const roots = async () => JSON.parse((await args()).find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
     const expected = [
@@ -189,7 +192,7 @@ describe("runCodex", () => {
       const got = await args();
       for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
       const [git, cache, home, tmp, ...rest] = await roots();
-      expect([git, cache, home, rest]).toEqual(["/repo/.git/worktrees/w", "/home/u/.bun/install/cache", path.join(files.artifacts, "home"), []]);
+      expect([git, cache, home, rest]).toEqual([worktreeRoot, cacheRoot, path.join(files.artifacts, "home"), []]);
       expect(path.basename(tmp!)).toStartWith("conveyor-run-");
     }
 

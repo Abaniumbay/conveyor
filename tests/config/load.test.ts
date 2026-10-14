@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfigError, loadConfig } from "../../src/config/load";
 import { configSchema, type StageConfig } from "../../src/config/schema";
+import { resolveFilesystemPath } from "../../src/core/paths";
 
 const temporaryDirectories: string[] = [];
 
@@ -137,6 +138,64 @@ sources:
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  test("canonicalizes every configured run path through symbolic links", async () => {
+    const directory = await temporaryDirectory();
+    const target = path.join(directory, "target");
+    const link = path.join(directory, "link");
+    await mkdir(path.join(target, "state"), { recursive: true });
+    await mkdir(path.join(target, "repository"));
+    await mkdir(path.join(target, "cache"));
+    await writeFile(path.join(target, "state", "database-target.sqlite"), "database");
+    await symlink("database-target.sqlite", path.join(target, "state", "conveyor.sqlite"));
+    await symlink(target, link);
+    await writeFile(path.join(directory, "conveyor.yml"), `
+settings:
+  database: ${link}/state/conveyor.sqlite
+  logs: ${link}/state/logs
+  workspaces: ${link}/state/workspaces
+  artifacts: ${link}/state/artifacts
+labels:
+  stageTemplate: "conveyor:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+runners: { codex: { type: codex, command: codex } }
+agents:
+  worker:
+    runner: codex
+    instructions: ${link}/instructions.md
+    writableRoots: [${link}/cache]
+    env: { CACHE_DIR: ${link}/cache, LOG_LEVEL: info }
+    mcpServers:
+      helper:
+        command: helper
+        env: { HELPER_CACHE: ${link}/cache }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages: [{ id: work, run: { agent: worker }, concurrency: 1 }]
+repositories:
+  sample: { source: github, address: owner/sample, folder: ${link}/repository, pipeline: default }
+`);
+
+    const config = await loadConfig(directory);
+
+    expect(config.settings).toMatchObject({
+      database: path.join(target, "state", "database-target.sqlite"),
+      logs: path.join(target, "state", "logs"),
+      workspaces: path.join(target, "state", "workspaces"),
+      artifacts: path.join(target, "state", "artifacts"),
+    });
+    expect(config.repositories.sample?.folder).toBe(path.join(target, "repository"));
+    expect(config.agents.worker).toMatchObject({
+      instructions: path.join(target, "instructions.md"),
+      writableRoots: [path.join(target, "cache")],
+      env: { CACHE_DIR: path.join(target, "cache"), LOG_LEVEL: "info" },
+      mcpServers: { helper: { env: { HELPER_CACHE: path.join(target, "cache") } } },
+    });
+  });
+
   test("derives the no-split label from enrollment and honors an explicit override", () => {
     const base = {
       settings: { database: "/d", logs: "/l", workspaces: "/w", artifacts: "/a" },
@@ -230,7 +289,7 @@ repositories:
     test("network defaults off; writable roots accept absolute and ~/ paths", async () => {
       expect((await load("")).agents.worker).toMatchObject({ network: false, writableRoots: [] });
       const config = await load("    network: true\n    writableRoots: [/var/cache/x, ~/.bun/install/cache]");
-      expect(config.agents.worker).toMatchObject({ network: true, writableRoots: ["/var/cache/x", path.join(homedir(), ".bun/install/cache")] });
+      expect(config.agents.worker).toMatchObject({ network: true, writableRoots: ["/var/cache/x", resolveFilesystemPath(path.join(homedir(), ".bun/install/cache"))] });
     });
     test("codexConfig and mcpServers default empty; server env values and ~/ are expanded", async () => {
       expect((await load("")).agents.worker).toMatchObject({ codexConfig: {}, mcpServers: {} });
@@ -250,7 +309,7 @@ repositories:
         mcpServers: {
           serena: {
             command: "serena", args: ["start-mcp-server", "--project-from-cwd"],
-            env: { SERENA_HOME: path.join(homedir(), ".serena") }, startupTimeoutSec: 60, enabledTools: ["find_symbol"], gitExclude: [".serena/"],
+            env: { SERENA_HOME: resolveFilesystemPath(path.join(homedir(), ".serena")) }, startupTimeoutSec: 60, enabledTools: ["find_symbol"], gitExclude: [".serena/"],
           },
         },
       });
@@ -264,7 +323,7 @@ repositories:
     test("env defaults empty, expands ~/ values and rejects invalid variable names", async () => {
       expect((await load("")).agents.worker).toMatchObject({ env: {} });
       const config = await load("    env: { NUGET_PACKAGES: ~/.nuget/packages, DOTNET_NOLOGO: '1' }");
-      expect(config.agents.worker!.env).toEqual({ NUGET_PACKAGES: path.join(homedir(), ".nuget/packages"), DOTNET_NOLOGO: "1" });
+      expect(config.agents.worker!.env).toEqual({ NUGET_PACKAGES: resolveFilesystemPath(path.join(homedir(), ".nuget/packages")), DOTNET_NOLOGO: "1" });
       await expect(load("    env: { BAD-NAME: x }")).rejects.toThrow("env");
     });
     test("a relative writable root is a config error", async () => {
