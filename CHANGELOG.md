@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+This release redesigns the board. Stages are Jira-style columns with compact headings, an emoji and an information dialog (description, team and usage). Each open parent is a foldable row holding its children in their stages, and dependencies show their state, what each item blocks, and can be traced along their whole chain. On a phone the board lists its stages top to bottom.
+
 ### Added
 
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
