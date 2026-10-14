@@ -966,17 +966,23 @@ export const dashboardClient = String.raw`(() => {
     const stored = JSON.parse(localStorage.getItem('conveyor-folded-rows') || '[]');
     if (Array.isArray(stored)) for (const id of stored) if (typeof id === 'string') foldedRows.add(id);
   } catch {}
+  // A folded row's body collapses (CSS animates its height); its cards leave the tab order and the
+  // accessibility tree at once through inert.
+  const setRowFolded = (button, folded) => {
+    const cells = document.getElementById(button.getAttribute('aria-controls') || '');
+    const rowBody = cells ? cells.closest('.row-body') : null;
+    if (rowBody) rowBody.toggleAttribute('data-folded', folded);
+    if (cells) cells.inert = folded;
+    button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    button.setAttribute('aria-label', (folded ? 'Unfold ' : 'Fold ') + (button.getAttribute('data-fold-label') || 'this row'));
+  };
   const applyRowFolds = () => {
-    for (const button of document.querySelectorAll('[data-row-fold]')) {
-      const folded = foldedRows.has(button.getAttribute('data-row-fold') || '');
-      const cells = document.getElementById(button.getAttribute('aria-controls') || '');
-      if (cells) cells.hidden = folded;
-      button.setAttribute('aria-expanded', folded ? 'false' : 'true');
-      button.setAttribute('aria-label', (folded ? 'Unfold ' : 'Fold ') + (button.getAttribute('data-fold-label') || 'this row'));
-    }
+    for (const button of document.querySelectorAll('[data-row-fold]')) setRowFolded(button, foldedRows.has(button.getAttribute('data-row-fold') || ''));
   };
   applyRowFolds();
   document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
+  // Rows animate only once the page has painted its first state, so loading the page does not replay a fold.
+  requestAnimationFrame(() => requestAnimationFrame(() => body.classList.add('board-motion')));
 
   // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
   // A parent waits on its unfinished parts, so whatever waits on a parent is held up by them too.
@@ -1032,8 +1038,7 @@ export const dashboardClient = String.raw`(() => {
     applyRowFolds();
     if (traceFocus !== null) {
       for (const button of document.querySelectorAll('[data-row-fold]')) {
-        const cells = document.getElementById(button.getAttribute('aria-controls') || '');
-        if (cells && button.closest('.board-row')?.querySelector('[data-trace-role]')) cells.hidden = false;
+        if (button.closest('.board-row')?.querySelector('[data-trace-role]')) setRowFolded(button, false);
       }
     }
     const banner = document.querySelector('[data-trace-banner]');

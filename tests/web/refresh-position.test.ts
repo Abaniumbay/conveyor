@@ -331,7 +331,7 @@ describe("dashboard live refresh position", () => {
       const state = () => page.evaluate(() => ({
         rowCards: [...document.querySelectorAll('[data-family-row="family"] article.issue')].map((card) => card.getAttribute("data-issue-id")),
         otherCards: [...document.querySelectorAll('[data-station-cell] article.issue')].map((card) => card.getAttribute("data-issue-id")),
-        cellsHidden: (document.getElementById("family-family-cells") as HTMLElement).hidden,
+        cellsHidden: ((cells) => cells.inert && cells.getBoundingClientRect().height === 0)(document.getElementById("family-family-cells") as HTMLElement & { inert: boolean }),
         expanded: document.querySelector('[data-row-fold="family-family"]')?.getAttribute("aria-expanded"),
         label: document.querySelector('[data-row-fold="family-family"]')?.getAttribute("aria-label"),
         parentIsCard: document.querySelector('article.issue[data-issue-id="family"]') !== null,
@@ -364,14 +364,40 @@ describe("dashboard live refresh position", () => {
       await page.locator('[data-row-fold="family-family"]').click();
       expect(await state()).toMatchObject({ cellsHidden: false, expanded: "true", label: "Fold the #10 family" });
 
-      // On a phone, where a family row lists its cards in one column, folding hides them too.
+      // Folding animates like an accordion where motion is allowed: the row's height passes through the
+      // middle on its way to closed, and back.
+      const animated = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "no-preference" });
+      await signIn(animated, server.port);
+      await animated.waitForFunction(() => document.body.classList.contains("board-motion"));
+      const cellsHeight = () => animated.evaluate(() => document.getElementById("family-family-cells")!.getBoundingClientRect().height);
+      const open = await cellsHeight();
+      await animated.locator('[data-row-fold="family-family"]').click();
+      await animated.waitForTimeout(80);
+      const midway = await cellsHeight();
+      await animated.waitForTimeout(400);
+      expect(open).toBeGreaterThan(50);
+      expect(midway).toBeGreaterThan(0);
+      expect(midway).toBeLessThan(open);
+      expect(await cellsHeight()).toBe(0);
+      await animated.locator('[data-row-fold="family-family"]').click();
+      await animated.waitForTimeout(400);
+      expect(await cellsHeight()).toBe(open);
+
+      // On a phone a family's cards are indented under the parent band, the bottom row's are not, and
+      // folding closes the row too.
       const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(phone, server.port);
+      const left = (selector: string) => phone.evaluate((target) => document.querySelector(target)!.getBoundingClientRect().left, selector);
+      const bandLeft = await left('[data-family-row="family"] .family-head');
+      expect((await left('[data-family-row="family"] article.issue')) - bandLeft).toBeGreaterThanOrEqual(20);
+      expect(Math.abs((await left('[data-station-cell] article.issue[data-issue-id="stranger"]')) - (await left('.other-row [data-station-cell="reader"] .board-cell-label')))).toBeLessThanOrEqual(2);
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
       await phone.locator('[data-row-fold="family-family"]').click();
       expect(await phone.evaluate(() => ({
-        display: getComputedStyle(document.getElementById("family-family-cells")!).display,
-        cardVisible: (document.querySelector('[data-family-row="family"] article.issue') as HTMLElement).getBoundingClientRect().height > 0,
-      }))).toEqual({ display: "none", cardVisible: false });
+        inert: (document.getElementById("family-family-cells") as HTMLElement & { inert: boolean }).inert,
+        // The cards keep their size inside a body that has closed to nothing.
+        height: document.getElementById("family-family-cells")!.getBoundingClientRect().height,
+      }))).toEqual({ inert: true, height: 0 });
     } finally {
       server.stop(true);
     }
@@ -401,7 +427,7 @@ describe("dashboard live refresh position", () => {
         roles: Object.fromEntries([...document.querySelectorAll("[data-trace-role]")].map((element) => [element.getAttribute("data-family-row") || element.getAttribute("data-issue-id"), element.getAttribute("data-trace-role")])),
         tags: [...document.querySelectorAll(".trace-role")].map((tag) => tag.textContent),
         banner: (document.querySelector("[data-trace-banner]") as HTMLElement).hidden ? null : document.querySelector("[data-trace-text]")?.textContent,
-        familyCellsHidden: (document.getElementById("family-family-cells") as HTMLElement).hidden,
+        familyCellsHidden: ((cells) => cells.inert && cells.getBoundingClientRect().height === 0)(document.getElementById("family-family-cells") as HTMLElement & { inert: boolean }),
         strangerOpacity: getComputedStyle(document.querySelector('article.issue[data-issue-id="stranger"]')!).opacity,
         pressed: [...document.querySelectorAll("[data-trace][aria-pressed=true]")].map((chip) => chip.getAttribute("data-trace")),
       }));

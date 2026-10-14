@@ -8,6 +8,12 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+### Changed
+
+- Folding and unfolding a board row animates like an accordion (an ease-out height and fade); with
+  reduced motion it stays instant. A folded row's cards leave the tab order and the accessibility tree.
+- On a phone, a family's cards are indented under the parent's band, so they read as its children.
+
 ## [0.7.0] - 2026-10-14
 
 This release redesigns the board. Stages are Jira-style columns with compact headings, an emoji and an information dialog (description, team and usage). Each open parent is a foldable row holding its children in their stages, and dependencies show their state, what each item blocks, and can be traced along their whole chain. On a phone the board lists its stages top to bottom.
