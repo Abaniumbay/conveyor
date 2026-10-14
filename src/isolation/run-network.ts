@@ -4,7 +4,7 @@ import path from "node:path";
 import type net from "node:net";
 
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
-import { PROXY_VARIABLES, sandboxCommand, type SandboxedCommand } from "./sandbox";
+import { privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type SandboxedCommand } from "./sandbox";
 
 export interface AgentNetworkPolicy {
   /** Hosts commands run by the agent may reach on 443 (the repository's `agentEgress.httpsHosts`). */
@@ -98,10 +98,14 @@ export async function codexLaunch(options: {
   environment: Record<string, string>;
   artifactsDirectory: string;
   egress: EgressInput | undefined;
+  /** Full-access Codex must still receive a private /tmp when it has no egress sandbox. */
+  privateTmp?: boolean;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
   if (!options.egress) {
-    return { argv: [options.command, ...options.buildArguments([])], env: options.environment, network: null };
+    const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
+    const launch = options.privateTmp ? privateTmpCommand(plain) : { ...plain, dataEnv: {} };
+    return { argv: launch.argv, env: launch.env, network: null };
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });

@@ -872,6 +872,27 @@ export class ConveyorStore {
     };
   }
 
+  listActiveWorkspaces(): StoredWorkspace[] {
+    const rows = this.#database
+      .query(
+        `SELECT w.*, e.issue_id, e.generation
+         FROM workspaces w
+         JOIN enrollments e ON e.id = w.enrollment_id
+         WHERE e.status = 'active' AND w.status = 'active'
+         ORDER BY e.generation DESC`,
+      )
+      .all() as Record<string, SQLQueryBindings>[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      enrollmentId: String(row.enrollment_id),
+      issueId: String(row.issue_id),
+      generation: Number(row.generation),
+      path: String(row.path),
+      branch: String(row.branch),
+      status: String(row.status),
+    }));
+  }
+
   markWorkspaceRemoved(workspaceId: string): void {
     this.#database
       .query(

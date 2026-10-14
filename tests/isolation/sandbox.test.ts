@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { homedir } from "node:os";
@@ -7,12 +8,19 @@ import path from "node:path";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
-import { sandboxCommand } from "../../src/isolation/sandbox";
+import { privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { bwrapUnavailableReason } from "../support/bwrap";
 
 const unavailable = bwrapUnavailableReason();
 const describeSandbox = unavailable ? describe.skip : describe;
 if (unavailable) console.warn(`SKIPPED sandbox tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
+
+test("private-tmp command mounts an isolated /tmp", () => {
+  const launch = privateTmpCommand({ argv: ["codex", "exec"], env: { PATH: "/usr/bin" } });
+  expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
+  expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
+  expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
 
 const SCRATCH = path.join(homedir(), ".cache", "conveyor-test");
 const TOKEN = "per-run-token-1234";
@@ -169,6 +177,16 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     } finally {
       await rm(runTmp, { recursive: true, force: true });
     }
+  });
+
+  test("a private-tmp launch cannot persist a host /tmp write", async () => {
+    const marker = `/tmp/conveyor-private-tmp-${process.pid}-${Date.now()}`;
+    const sandboxed = privateTmpCommand({
+      argv: ["sh", "-c", `test ! -e ${marker}; echo private > ${marker}; test -e ${marker}`],
+      env: { PATH: process.env.PATH ?? "" },
+    });
+    expect(await Bun.spawn(sandboxed.argv, { env: sandboxed.env }).exited).toBe(0);
+    expect(existsSync(marker)).toBe(false);
   });
 
   test.each(["read-only", "workspace-write"] as const)(

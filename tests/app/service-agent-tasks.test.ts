@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,7 +15,7 @@ import type { HarnessResumeInput } from "../../src/tasks/context";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 
 const directories: string[] = [];
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -126,17 +126,19 @@ repositories:
   const enrollment = store.activateEnrollment("issue");
   const workspace = path.join(root, "ws");
   const created: Array<Record<string, unknown>> = [];
-  if (options.noWorkspace) {
-    Object.assign(service as object, {
-      workspaceManager: {
-        create: async (input: Record<string, unknown>) => { created.push(input); await mkdir(workspace, { recursive: true }); return { path: workspace, branch: "conveyor/1-issue" }; },
-        restore: async () => {}, remove: async () => {},
-      },
-    });
-  } else {
+  if (!options.noWorkspace) {
     await mkdir(workspace);
     store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/1", status: "active" });
   }
+  // These fixtures use a workspace outside the configured worktree root, so model the lifecycle
+  // manager instead of asking the real manager to validate an intentionally synthetic path.
+  Object.assign(service as object, {
+    workspaceManager: {
+      create: async (input: Record<string, unknown>) => { created.push(input); await mkdir(workspace, { recursive: true }); await mkdir(`${workspace}.tmp`, { recursive: true }); return { path: workspace, branch: "conveyor/1-issue" }; },
+      ensureScratch: async (workspacePath: string) => { await mkdir(`${workspacePath}.tmp`, { recursive: true }); },
+      restore: async () => {}, remove: async () => {},
+    },
+  });
 
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);

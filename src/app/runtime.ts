@@ -38,6 +38,7 @@ import {
 } from "../tasks/agent-support";
 import { scriptCommand } from "../self";
 import { ExternalWaitError, type SourceActionOutcome } from "./ci-gate";
+import { workspaceScratchPath } from "../workspace/manager";
 
 export interface RuntimeRepository {
   id: string;
@@ -278,6 +279,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           result = await this.#codex({
             command: runner.command,
             workspace,
+            temporaryDirectory: workspaceScratchPath(workspace),
             artifactsDirectory: path.join(this.config.settings.artifacts, runId),
             prompt: prompt(
               {
@@ -401,6 +403,7 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
       const result = await this.#codexCheck({
         command: runner.command,
         workspace,
+        ...(this.context.workspace ? { temporaryDirectory: workspaceScratchPath(this.context.workspace.path) } : {}),
         artifactsDirectory: path.join(this.config.settings.artifacts, runId),
         prompt: prompt(
           {

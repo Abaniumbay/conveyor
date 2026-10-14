@@ -18,6 +18,7 @@ import type { StoredQuestion } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
+import { assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import type { RunEnvelope } from "../runner/result";
 import {
   AGENT_STOP_STATUSES, agentActor, agentMessage, conversationForPrompt, conveyorMessage, failedEnvelope, finishRun,
@@ -28,6 +29,7 @@ import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, t
 import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
+import { workspaceScratchPath } from "../workspace/manager";
 import { questionConfigurationError } from "../questions";
 
 type Deps = TaskDeps;
@@ -215,6 +217,7 @@ async function runAgent(
               automaticApprovals: runner.automaticApprovals,
               ...egressFor(deps, runner),
               ...(await codexAccess(agent, workspace.path)),
+              temporaryDirectory: workspaceScratchPath(workspace.path),
               ...(await codexExtensions(agent, workspace.path)),
             }
           : {
@@ -222,6 +225,7 @@ async function runAgent(
               automaticApprovals: false,
               ...(runner.configDir ? { env: { ...(agent.env ?? {}), CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
               ...(await codexAccess(agent, workspace.path)),
+              temporaryDirectory: workspaceScratchPath(workspace.path),
               ...withoutCodexConfig(await codexExtensions(agent, workspace.path)),
             }),
         mcp: lease.configuration,
@@ -373,7 +377,10 @@ async function codexAccess(
   agent: { workspaceAccess: string; network?: boolean; writableRoots?: string[] },
   workspace: string,
 ): Promise<{ network?: true; writableRoots?: string[] }> {
-  const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), ...(agent.writableRoots ?? [])];
+  // Read-only agents never receive configured writable roots, so those paths cannot reopen
+  // host /tmp writes. Validate roots only when they will be handed to a write-capable runner.
+  if (agent.workspaceAccess !== "read-only") assertNoHostTmpWritableRoots(agent.writableRoots);
+  const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), workspaceScratchPath(workspace), ...(agent.writableRoots ?? [])];
   const writableRoots = [...new Set(roots)].filter((root) => existsSync(root));
   return { ...(agent.network ? { network: true as const } : {}), ...(writableRoots.length > 0 ? { writableRoots } : {}) };
 }

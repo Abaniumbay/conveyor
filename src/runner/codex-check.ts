@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
 import { prepareCodexEnvironment } from "../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   CodexRunnerError,
@@ -31,6 +32,9 @@ export interface CodexCheckInput {
   onEvent?: (event: unknown) => void;
   /** Network isolation policy; absent keeps the legacy (environment-only) behaviour. */
   egress?: EgressInput;
+  writableRoots?: string[];
+  /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
+  temporaryDirectory?: string;
 }
 
 export interface CodexCheckRunResult extends CheckResult {
@@ -155,6 +159,10 @@ function buildArguments(input: CodexCheckInput, outputFile: string, schemaFile: 
   if (input.automaticApprovals && input.sandbox === "workspace-write") {
     args.push("--approve-for-me");
   }
+  if (input.sandbox === "workspace-write") {
+    args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
+    if (input.writableRoots?.length) args.push("-c", `sandbox_workspace_write.writable_roots=${tomlArray(input.writableRoots)}`);
+  }
   if (input.model) args.push("--model", input.model);
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
@@ -182,21 +190,42 @@ export async function runCodexCheck(
   input: CodexCheckInput,
 ): Promise<CodexCheckRunResult> {
   await mkdir(input.artifactsDirectory, { recursive: true });
+  assertNoHostTmpWritableRoots(input.writableRoots);
+  const scratch = await acquireScratch(input.temporaryDirectory);
   const outputFile = path.join(
     input.artifactsDirectory,
     `codex-check-${randomUUID()}.json`,
   );
-  const schemaFile = await writeOutputSchema(input.artifactsDirectory, "check");
   const startedAt = performance.now();
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   let network: RunNetwork | null = null;
+  let schemaFile: string;
   try {
+    schemaFile = await writeOutputSchema(input.artifactsDirectory, "check");
+    const environment = await prepareCodexEnvironment({
+      artifactsDirectory: input.artifactsDirectory,
+      workspace: input.workspace,
+      overrides: input.env,
+    });
+    environment.TMPDIR = scratch.path;
+    const run =
+      input.sandbox === "workspace-write"
+        ? {
+            ...input,
+            writableRoots: [
+              ...(input.writableRoots ?? []),
+              environment.HOME!,
+              scratch.path,
+            ],
+          }
+        : input;
     const launch = await codexLaunch({
       command: input.command,
-      environment: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
+      environment,
       artifactsDirectory: input.artifactsDirectory,
       egress: input.egress,
-      buildArguments: (extra) => buildArguments(input, outputFile, schemaFile, extra),
+      privateTmp: input.sandbox === "danger-full-access",
+      buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
     child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -204,6 +233,7 @@ export async function runCodexCheck(
     void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();
+    await scratch.cleanup();
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -261,6 +291,7 @@ export async function runCodexCheck(
     exitCode = await child.exited;
   } finally {
     await network?.close();
+    await scratch.cleanup();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

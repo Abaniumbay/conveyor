@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -143,6 +144,32 @@ describe("runCodexCheck", () => {
     );
   });
 
+  test("gives write-capable checks their item scratch directory", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      await Bun.write(process.env.TMPDIR + "/check-marker", "preserved");
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, tmpdir: process.env.TMPDIR }));
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, decision: "pass", status: "done", reason: null, evidence: [], requiredFixes: [], criteria: []
+      }));
+    `);
+    const scratch = path.join(files.directory, "workspace.tmp");
+    await mkdir(scratch);
+
+    await runCodexCheck({
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+      prompt: "Review", sandbox: "workspace-write", automaticApprovals: true,
+      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture }, temporaryDirectory: scratch,
+    });
+
+    const captured = JSON.parse(await readFile(files.capture, "utf8")) as { args: string[]; tmpdir: string };
+    expect(captured.tmpdir).toBe(scratch);
+    expect(await readFile(path.join(scratch, "check-marker"), "utf8")).toBe("preserved");
+    expect(captured.args).toContain("sandbox_workspace_write.exclude_slash_tmp=true");
+    const roots = JSON.parse(captured.args.find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
+    expect(roots).toContain(scratch);
+  });
+
   test("classifies usage-limit failures", async () => {
     const files = await fixture(`
       console.error("You have hit your usage limit. Try again later.");
@@ -200,6 +227,37 @@ describe("runCodexCheck", () => {
     const interrupted = runCodexCheck({ ...input, signal: controller.signal });
     setTimeout(() => controller.abort(), 20);
     await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
+  });
+
+  test("cleans disposable scratch after failure, timeout, and interruption", async () => {
+    const failed = await fixture(`
+      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      process.exit(2);
+    `);
+    const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+      prompt: "Check", sandbox: "read-only" as const, automaticApprovals: false,
+      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture },
+    });
+    await expect(runCodexCheck(base(failed))).rejects.toMatchObject({ kind: "process" });
+    expect(existsSync((await readFile(failed.capture, "utf8")).trim())).toBe(false);
+
+    const slow = await fixture(`
+      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      await Bun.sleep(2_000);
+    `);
+    await expect(runCodexCheck({ ...base(slow), timeoutMs: 20 })).rejects.toMatchObject({ kind: "timeout" });
+    expect(existsSync((await readFile(slow.capture, "utf8")).trim())).toBe(false);
+
+    const interrupted = await fixture(`
+      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      await Bun.sleep(2_000);
+    `);
+    const controller = new AbortController();
+    const run = runCodexCheck({ ...base(interrupted), signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+    await expect(run).rejects.toMatchObject({ kind: "interrupted" });
+    expect(existsSync((await readFile(interrupted.capture, "utf8")).trim())).toBe(false);
   });
 
   test("rejects invalid verifier protocol output", async () => {

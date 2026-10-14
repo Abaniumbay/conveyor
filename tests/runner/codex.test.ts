@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -178,7 +178,11 @@ describe("runCodex", () => {
     const access = { network: true, writableRoots: ["/repo/.git/worktrees/w", "/home/u/.bun/install/cache"] };
     // The run's own home and temp directory follow the configured roots.
     const roots = async () => JSON.parse((await args()).find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
-    const expected = ['web_search="live"', "sandbox_workspace_write.network_access=true"];
+    const expected = [
+      'web_search="live"',
+      "sandbox_workspace_write.network_access=true",
+      "sandbox_workspace_write.exclude_slash_tmp=true",
+    ];
 
     for (const input of [{ ...base, ...access }, { ...base, ...access, resumeSessionId: "sess-1" }]) {
       await runCodex(input);
@@ -198,6 +202,39 @@ describe("runCodex", () => {
     const plain = await args();
     expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write.network_access"))).toBe(false);
     expect((await roots())[0]).toBe(path.join(files.artifacts, "home"));
+  });
+
+  test("reuses an item scratch directory and rejects host temporary writable roots, including symlinks", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      await Bun.write(process.env.TMPDIR + "/from-agent", "available later");
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, tmpdir: process.env.TMPDIR }));
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: []
+      }));
+    `);
+    const scratch = path.join(files.directory, "workspace.tmp");
+    await mkdir(scratch);
+    const input = {
+      command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+      prompt: "p", sandbox: "workspace-write" as const, automaticApprovals: true,
+      mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
+      temporaryDirectory: scratch,
+    };
+
+    await runCodex(input);
+    const captured = JSON.parse(await readFile(files.capture, "utf8")) as { args: string[]; tmpdir: string };
+    expect(captured.tmpdir).toBe(scratch);
+    expect(await readFile(path.join(scratch, "from-agent"), "utf8")).toBe("available later");
+    const roots = JSON.parse(captured.args.find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
+    expect(roots).toContain(scratch);
+
+    await expect(runCodex({ ...input, writableRoots: ["/tmp"] })).rejects.toThrow("host /tmp");
+
+    const hostTmpAlias = path.join(files.directory, "host-tmp");
+    await symlink("/tmp", hostTmpAlias);
+    await expect(runCodex({ ...input, writableRoots: [hostTmpAlias] })).rejects.toThrow("host /tmp");
+    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).rejects.toThrow("host /tmp");
   });
 
   test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {

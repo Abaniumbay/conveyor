@@ -52,6 +52,12 @@ This release redesigns the board. Stages are Jira-style columns with compact hea
 - Stopped items that have not yet received a stage label remain visible in the dashboard backlog
   instead of appearing as label problems.
 
+### Changed
+
+- Each active item now keeps its agent scratch directory beside its worktree rather than in the
+  host temporary directory. Scratch persists between that item's agent runs and is removed with
+  the workspace; workspace-free runs still clean their private scratch when they finish.
+
 ## [0.6.6] - 2026-10-13
 
 This release stops the dashboard from jumping during live updates. An update used to download the whole page and swap it in, which moved whatever you were reading. The browser now tells the server which cards it already holds, the server sends only the cards that changed, and the page is patched in place, so an unchanged card never moves. Updates also wait while you are touching or scrolling, and scrolling while one loads is no longer undone.

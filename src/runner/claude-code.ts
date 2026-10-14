@@ -14,6 +14,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { prepareAgentEnvironment } from "../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type RunEnvelope } from "./result";
 import type { HarnessRunInput } from "../harness/types";
 import { OUTPUT_SCHEMAS } from "./output-schemas";
@@ -168,93 +169,108 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     throw new ClaudeCodeRunnerError("Claude Code agents do not support network egress isolation yet", "process", null, "");
   }
   await mkdir(input.artifactsDirectory, { recursive: true });
+  assertNoHostTmpWritableRoots(input.writableRoots);
+  const scratch = await acquireScratch(input.temporaryDirectory);
   const startedAt = performance.now();
-  const environment = await prepareAgentEnvironment({
-    artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env,
-    controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-  });
-  const serviceHome = process.env.HOME;
-  const configDir = environment.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
-  if (!configDir) throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
-  environment.CLAUDE_CONFIG_DIR = configDir;
-  await mkdir(configDir, { recursive: true });
-  const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
-  const argv = [
-    "bwrap", ...sandboxArguments({
-      workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,
-      ...(input.sandbox === "workspace-write" ? { writable: [input.workspace, ...(input.writableRoots ?? [])] } : {}),
-    }),
-    input.command, ...claudeArguments(input, schema),
-  ];
-  const child = Bun.spawn(argv, { cwd: input.workspace, env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  child.stdin.write(input.prompt);
-  child.stdin.end();
-
-  let sessionId: string | null = null;
-  let result: ClaudeEvent | null = null;
-  const stdoutPromise = consumeJsonLines(child.stdout, (event) => {
-    input.onEvent?.(event);
-    if (event.session_id) sessionId = event.session_id;
-    if (event.type === "result") result = event;
-  });
-  const stderrPromise = new Response(child.stderr).text();
-
-  let timedOut = false;
-  let interrupted = false;
-  let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-  const stop = (): void => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    forceKillTimer = setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), input.interruptGraceMs ?? 10_000);
-  };
-  const timeoutTimer = input.timeoutMs ? setTimeout(() => { timedOut = true; stop(); }, input.timeoutMs) : undefined;
-  const onAbort = (): void => { interrupted = true; stop(); };
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-
-  let exitCode: number;
   try {
-    exitCode = await child.exited;
-  } finally {
-    if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (forceKillTimer) clearTimeout(forceKillTimer);
-    input.signal?.removeEventListener("abort", onAbort);
-  }
-  const [{ raw, invalidLine }, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-  const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
-  const final = result as ClaudeEvent | null;
-  const detail = [stderr.trim(), final?.is_error ? final.result ?? "" : ""].filter(Boolean).join("\n");
+    const environment = await prepareAgentEnvironment({
+      artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env,
+      controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+    });
+    const serviceHome = process.env.HOME;
+    const configDir = environment.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
+    if (!configDir) {
+      throw new ClaudeCodeRunnerError("cannot locate the Claude Code config directory: set CLAUDE_CONFIG_DIR or HOME", "process", null, "");
+    }
+    environment.CLAUDE_CONFIG_DIR = configDir;
+    environment.TMPDIR = scratch.path;
+    await mkdir(configDir, { recursive: true });
+    const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
+    const argv = [
+      "bwrap", ...sandboxArguments({
+        workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,
+        // Claude itself needs private temporary storage even when its workspace is read-only.
+        writable: [
+          ...(input.sandbox === "workspace-write" ? [input.workspace, ...(input.writableRoots ?? [])] : []),
+          scratch.path,
+        ],
+      }),
+      input.command, ...claudeArguments(input, schema),
+    ];
+    const child = Bun.spawn(argv, { cwd: input.workspace, env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child.stdin.write(input.prompt);
+    child.stdin.end();
 
-  if (timedOut) throw new ClaudeCodeRunnerError(`Claude Code timed out after ${input.timeoutMs}ms${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr);
-  if (interrupted) throw new ClaudeCodeRunnerError(`Claude Code was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
-  if (exitCode !== 0 || final?.is_error) {
-    const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw.slice(-4_000)}`) ? "usage-limit" : "process";
-    throw new ClaudeCodeRunnerError(`Claude Code exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
-  }
-  if (invalidLine) throw new ClaudeCodeRunnerError(`Claude Code emitted invalid JSONL: ${invalidLine}`, "protocol", exitCode, stderr);
-  if (!final) throw new ClaudeCodeRunnerError("Claude Code finished without a result event", "protocol", exitCode, stderr);
+    let sessionId: string | null = null;
+    let result: ClaudeEvent | null = null;
+    const stdoutPromise = consumeJsonLines(child.stdout, (event) => {
+      input.onEvent?.(event);
+      if (event.session_id) sessionId = event.session_id;
+      if (event.type === "result") result = event;
+    });
+    const stderrPromise = new Response(child.stderr).text();
 
-  const parsed = producerResultSchema.safeParse(final.structured_output);
-  if (!parsed.success) {
-    throw new ClaudeCodeRunnerError(
-      `Claude Code structured output failed validation: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`).join("; ")}`,
-      "protocol", exitCode, stderr,
-    );
+    let timedOut = false;
+    let interrupted = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (): void => {
+      if (child.exitCode !== null) return;
+      child.kill("SIGTERM");
+      forceKillTimer = setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), input.interruptGraceMs ?? 10_000);
+    };
+    const timeoutTimer = input.timeoutMs ? setTimeout(() => { timedOut = true; stop(); }, input.timeoutMs) : undefined;
+    const onAbort = (): void => { interrupted = true; stop(); };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+
+    let exitCode: number;
+    try {
+      exitCode = await child.exited;
+    } finally {
+      await scratch.cleanup();
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      input.signal?.removeEventListener("abort", onAbort);
+    }
+    const [{ raw, invalidLine }, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+    const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+    const final = result as ClaudeEvent | null;
+    const detail = [stderr.trim(), final?.is_error ? final.result ?? "" : ""].filter(Boolean).join("\n");
+
+    if (timedOut) throw new ClaudeCodeRunnerError(`Claude Code timed out after ${input.timeoutMs}ms${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr);
+    if (interrupted) throw new ClaudeCodeRunnerError(`Claude Code was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
+    if (exitCode !== 0 || final?.is_error) {
+      const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw.slice(-4_000)}`) ? "usage-limit" : "process";
+      throw new ClaudeCodeRunnerError(`Claude Code exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
+    }
+    if (invalidLine) throw new ClaudeCodeRunnerError(`Claude Code emitted invalid JSONL: ${invalidLine}`, "protocol", exitCode, stderr);
+    if (!final) throw new ClaudeCodeRunnerError("Claude Code finished without a result event", "protocol", exitCode, stderr);
+
+    const parsed = producerResultSchema.safeParse(final.structured_output);
+    if (!parsed.success) {
+      throw new ClaudeCodeRunnerError(
+        `Claude Code structured output failed validation: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`).join("; ")}`,
+        "protocol", exitCode, stderr,
+      );
+    }
+    const usage = { ...EMPTY_USAGE };
+    const reported = final.usage ?? {};
+    // Input counts everything sent, as Codex reports it; cached is the part served from the prompt cache.
+    usage.cachedTokens = reported.cache_read_input_tokens ?? 0;
+    usage.inputTokens = (reported.input_tokens ?? 0) + (reported.cache_creation_input_tokens ?? 0) + usage.cachedTokens;
+    usage.outputTokens = reported.output_tokens ?? 0;
+    const value = parsed.data;
+    return {
+      stageResult: { outcome: value.outcome, status: value.status, summary: value.summary, reason: value.reason, metrics: value.metrics },
+      sessionId,
+      usage,
+      cost: { ...UNAVAILABLE_COST },
+      durationMs,
+      exitCode,
+      artifacts: value.artifacts,
+      stderr,
+    };
+  } catch (error) {
+    await scratch.cleanup();
+    throw error;
   }
-  const usage = { ...EMPTY_USAGE };
-  const reported = final.usage ?? {};
-  // Input counts everything sent, as Codex reports it; cached is the part served from the prompt cache.
-  usage.cachedTokens = reported.cache_read_input_tokens ?? 0;
-  usage.inputTokens = (reported.input_tokens ?? 0) + (reported.cache_creation_input_tokens ?? 0) + usage.cachedTokens;
-  usage.outputTokens = reported.output_tokens ?? 0;
-  const value = parsed.data;
-  return {
-    stageResult: { outcome: value.outcome, status: value.status, summary: value.summary, reason: value.reason, metrics: value.metrics },
-    sessionId,
-    usage,
-    cost: { ...UNAVAILABLE_COST },
-    durationMs,
-    exitCode,
-    artifacts: value.artifacts,
-    stderr,
-  };
 }

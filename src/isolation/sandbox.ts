@@ -31,6 +31,15 @@ export interface SandboxedCommand {
   dataEnv: Record<string, string>;
 }
 
+/** Runs locally with a private /tmp while preserving ordinary host networking. */
+export function privateTmpCommand(options: { argv: readonly string[]; env: Record<string, string> }): SandboxedCommand {
+  return {
+    argv: ["bwrap", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...options.argv],
+    env: options.env,
+    dataEnv: {},
+  };
+}
+
 
 function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
   const noProxy = mcp ? "127.0.0.1" : "";

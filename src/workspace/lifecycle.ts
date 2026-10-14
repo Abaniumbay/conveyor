@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import type { ConveyorStore, StoredIssue, StoredWorkspace } from "../db/store";
 import type { WorkspaceManager } from "./manager";
 
-export type WorkspaceLifecycleManager = Pick<WorkspaceManager, "create" | "remove" | "restore">;
+export type WorkspaceLifecycleManager = Pick<WorkspaceManager, "create" | "ensureScratch" | "remove" | "restore">;
 
 export interface WorkspaceRepository {
   id: string;
@@ -55,7 +55,7 @@ export async function createWorkspace(input: {
 /** The item's active workspace: created when none is recorded, re-attached to its branch when the directory went missing. */
 export async function ensureWorkspace(input: {
   store: ConveyorStore;
-  manager: Pick<WorkspaceManager, "create" | "restore">;
+  manager: Pick<WorkspaceManager, "create" | "ensureScratch" | "restore">;
   issueId: string;
   repository: WorkspaceRepository;
 }): Promise<StoredWorkspace> {
@@ -71,6 +71,7 @@ export async function ensureWorkspace(input: {
         baseBranch: repository.baseBranch,
       });
     }
+    await manager.ensureScratch(existing.path);
     return existing;
   }
   const issue = store.getIssue(issueId);

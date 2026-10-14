@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -92,6 +92,7 @@ describe("claude code runner", () => {
     const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-test-"));
     directories.push(root);
     const workspace = path.join(root, "ws");
+    await mkdir(workspace, { recursive: true });
     await Bun.write(path.join(workspace, "file.txt"), "keep");
     const fake = path.join(root, "claude");
     await writeFile(fake, `#!/bin/sh
@@ -115,6 +116,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-9
     const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-test-"));
     directories.push(root);
     const workspace = path.join(root, "ws");
+    await mkdir(workspace, { recursive: true });
     await Bun.write(path.join(workspace, "file.txt"), "keep");
     await Bun.write(path.join(root, "beside.txt"), "keep");
     const fake = path.join(root, "claude");
@@ -132,5 +134,29 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
     expect(result.stageResult).toMatchObject({ status: "done" });
     expect(await readFile(path.join(workspace, "file.txt"), "utf8")).toBe("changed\n");
     expect(await readFile(path.join(root, "beside.txt"), "utf8")).toBe("keep");
+  });
+
+  test.skipIf(bwrapUnavailable !== null)("gives a read-only agent writable private scratch", async () => {
+    const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-test-"));
+    directories.push(root);
+    const workspace = path.join(root, "ws");
+    const scratch = path.join(root, "scratch");
+    const fake = path.join(root, "claude");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(fake, `#!/bin/sh
+set -e
+cat > /dev/null
+echo temporary > "$TMPDIR/from-agent"
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"success","status":"done","summary":"Done","reason":null,"metrics":{},"artifacts":[]}}'
+`);
+    await chmod(fake, 0o755);
+
+    const result = await runClaudeCode({
+      ...base, command: fake, workspace, artifactsDirectory: path.join(root, "artifacts", "run-1"), temporaryDirectory: scratch,
+      env: { CLAUDE_CONFIG_DIR: path.join(root, "config") },
+    });
+
+    expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });
+    expect(await readFile(path.join(scratch, "from-agent"), "utf8")).toBe("temporary\n");
   });
 });

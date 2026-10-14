@@ -1,4 +1,6 @@
 import { prepareCodexEnvironment } from "../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
+import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
 import { EMPTY_USAGE } from "./result";
 
@@ -18,6 +20,10 @@ export interface CodexSteeringInput {
   interruptGraceMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: unknown) => void;
+  egress?: EgressInput;
+  writableRoots?: string[];
+  /** Omit for disposable workspace-free scratch. */
+  temporaryDirectory?: string;
 }
 
 export interface CodexSteeringResult {
@@ -45,7 +51,7 @@ interface CodexEvent {
 }
 
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|too many requests|\b429\b|quota/i;
-function argumentsFor(input: CodexSteeringInput): string[] {
+function argumentsFor(input: CodexSteeringInput, extra: string[] = []): string[] {
   const args = [
     "exec",
     "--json",
@@ -65,6 +71,10 @@ function argumentsFor(input: CodexSteeringInput): string[] {
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
   }
+  if (input.sandbox === "workspace-write") {
+    args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
+    if (input.writableRoots?.length) args.push("-c", `sandbox_workspace_write.writable_roots=[${input.writableRoots.map((root) => JSON.stringify(root)).join(",")}]`);
+  }
   if (input.mcp) {
     args.push(
       "-c",
@@ -77,7 +87,7 @@ function argumentsFor(input: CodexSteeringInput): string[] {
       'mcp_servers.conveyor.default_tools_approval_mode="approve"',
     );
   }
-  args.push("-");
+  args.push(...extra, "-");
   return args;
 }
 
@@ -118,13 +128,39 @@ export async function runCodexSteering(
   input: CodexSteeringInput,
 ): Promise<CodexSteeringResult> {
   const started = performance.now();
-  const child = Bun.spawn([input.command, ...argumentsFor(input)], {
-    cwd: input.workspace,
-    env: await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env }),
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  assertNoHostTmpWritableRoots(input.writableRoots);
+  const scratch = await acquireScratch(input.temporaryDirectory);
+  let network: RunNetwork | null = null;
+  let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  try {
+    const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    environment.TMPDIR = scratch.path;
+    const run = input.sandbox === "workspace-write"
+      ? {
+          ...input,
+          writableRoots: [
+            ...(input.writableRoots ?? []),
+            environment.HOME!,
+            scratch.path,
+          ],
+        }
+      : input;
+    const launch = await codexLaunch({
+      command: input.command,
+      environment,
+      artifactsDirectory: input.artifactsDirectory,
+      egress: input.egress,
+      privateTmp: input.sandbox === "danger-full-access",
+      buildArguments: (extra) => argumentsFor(run, extra),
+    });
+    network = launch.network;
+    child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    void child.exited.finally(() => network?.close());
+  } catch (error) {
+    await network?.close();
+    await scratch.cleanup();
+    throw error;
+  }
   child.stdin.write(input.prompt);
   child.stdin.end();
 
@@ -174,6 +210,8 @@ export async function runCodexSteering(
   try {
     exitCode = await child.exited;
   } finally {
+    await network?.close();
+    await scratch.cleanup();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

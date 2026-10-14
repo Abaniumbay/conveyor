@@ -45,13 +45,17 @@ async function world(gitState: Parameters<typeof gitFake>[0] = {}) {
   });
   const fake = gitFake(gitState);
   const manager = {
-    created: [] as unknown[], removed: [] as unknown[], restored: [] as unknown[],
+    created: [] as unknown[], removed: [] as unknown[], restored: [] as unknown[], scratch: [] as string[],
     async restore(input: unknown) { this.restored.push(input); },
     async create(input: unknown) {
       this.created.push(input);
       const p = path.join(root, "ws", "created");
       await mkdir(p, { recursive: true });
       return { path: p, branch: "conveyor/7-r1-fix-the-thing", baseRevision: "base" };
+    },
+    async ensureScratch(workspacePath: string) {
+      this.scratch.push(workspacePath);
+      await mkdir(`${workspacePath}.tmp`, { recursive: true });
     },
     async remove(input: unknown) { this.removed.push(input); },
   };

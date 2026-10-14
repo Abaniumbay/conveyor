@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../../src/config/load";
@@ -15,7 +15,7 @@ import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 
 const directories: string[] = [];
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -52,6 +52,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
       return { path: created, branch: "conveyor/7-fix-it" };
     },
     restore: async (input: Record<string, unknown>) => { managerCalls.push({ op: "restore", input }); await mkdir(input.workspacePath as string, { recursive: true }); },
+    ensureScratch: async (workspacePath: string) => { await mkdir(`${workspacePath}.tmp`, { recursive: true }); },
     remove: async () => {},
   };
   const instructions = path.join(root, "kaveh.md");
@@ -267,12 +268,17 @@ describe("agent.run", () => {
     await mkdir(workspace, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
     Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
-    const cache = path.join(w.root, "cache");
-    await mkdir(cache);
-    Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(w.root, "missing")] });
+    await mkdir(path.join(homedir(), ".cache"), { recursive: true });
+    const cache = await mkdtemp(path.join(homedir(), ".cache/conveyor-agent-"));
+    directories.push(cache);
+    Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(homedir(), ".cache", "conveyor-agent-missing")] });
     expect((await w.run(false)).status).toBe("pass");
     const git = path.join(workspace, ".git");
-    expect(w.calls[0]).toMatchObject({ network: true, writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache] });
+    expect(w.calls[0]).toMatchObject({
+      network: true,
+      temporaryDirectory: `${workspace}.tmp`,
+      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), `${workspace}.tmp`, cache],
+    });
   });
 
   test("an agent's codexConfig and MCP servers reach the harness, and their files are git-excluded first", async () => {
@@ -306,8 +312,9 @@ describe("agent.run", () => {
     await mkdir(workspace, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
     Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
-    const cache = path.join(w.root, "cache");
-    await mkdir(cache);
+    await mkdir(path.join(homedir(), ".cache"), { recursive: true });
+    const cache = await mkdtemp(path.join(homedir(), ".cache/conveyor-agent-"));
+    directories.push(cache);
     const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
     config.runners.claude = { type: "claude-code", command: "claude" };
     config.agents.jamshid = {
@@ -321,7 +328,8 @@ describe("agent.run", () => {
     const git = path.join(workspace, ".git");
     expect(w.calls[0]).toMatchObject({
       command: "claude", sandbox: "workspace-write", automaticApprovals: false, network: true,
-      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache],
+      temporaryDirectory: `${workspace}.tmp`,
+      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), `${workspace}.tmp`, cache],
       mcpServers: { serena: { command: "serena", args: ["--project", workspace], env: {}, enabledTools: ["find_symbol"] } },
     });
     expect(w.calls[0]!.config).toBeUndefined();
