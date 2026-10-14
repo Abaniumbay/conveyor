@@ -90,11 +90,7 @@ export async function prepareSanitizedHome(options: { root: string; runId: strin
 
 /** Removes only the private home belonging to one completed run. Symbolic links are unlinked, not followed. */
 export async function cleanupSanitizedHome(artifactsDirectory: string): Promise<void> {
-  const artifacts = path.resolve(artifactsDirectory);
-  const home = path.join(artifacts, "home");
-  if (path.relative(artifacts, home) !== "home") {
-    throw new Error(`refusing to remove home outside run artifacts: ${home}`);
-  }
+  const home = path.join(path.resolve(artifactsDirectory), "home");
   await rm(home, { recursive: true, force: true });
 }
 
