@@ -375,4 +375,68 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+  test("tracing a stopped item lights its chain through a family, opens a folded row, survives a live update, and clears", async () => {
+    const relation = (id: string, number: number, extra: object = {}) => ({ id, repository: "sample", number, title: `Item ${number}`, url: null, satisfied: false, ...extra });
+    const stuck = { ...issue("stuck", 50, "Stuck"), tone: "danger" as const, state: "blocked" };
+    const partA = { ...issue("part-a", 11, "Part A"), parent: relation("family", 10), parentProgress: { done: 0, total: 2 }, dependencies: [relation("stuck", 50, { signal: "stop", state: "Blocked" })] };
+    const partB = { ...issue("part-b", 12, "Part B"), parent: relation("family", 10), parentProgress: { done: 0, total: 2 } };
+    const family = { ...issue("family", 10, "Family parent"), children: [
+      relation("part-a", 11, { station: { index: 2, count: 5, name: "Reader" }, signal: "wait" }),
+      relation("part-b", 12, { station: { index: 3, count: 5, name: "After" }, signal: "wait" }),
+    ] };
+    const waitsOnFamily = { ...issue("downstream", 60, "Waits on the family"), dependencies: [relation("family", 10)] };
+    let revision = "revision-1";
+    const build = (extra: IssueCardViewModel[] = []) => {
+      const base = dashboard(revision, [family, partA, stuck, waitsOnFamily, issue("stranger", 30, "Stranger"), ...extra], [issue("before-card", 1)]);
+      return { ...base, stages: base.stages.map((column) => column.id === "after" ? stage("after", "After", [partB]) : column) };
+    };
+    let currentDashboard = build();
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      const state = () => page.evaluate(() => ({
+        roles: Object.fromEntries([...document.querySelectorAll("[data-trace-role]")].map((element) => [element.getAttribute("data-family-row") || element.getAttribute("data-issue-id"), element.getAttribute("data-trace-role")])),
+        tags: [...document.querySelectorAll(".trace-role")].map((tag) => tag.textContent),
+        banner: (document.querySelector("[data-trace-banner]") as HTMLElement).hidden ? null : document.querySelector("[data-trace-text]")?.textContent,
+        familyCellsHidden: (document.getElementById("family-family-cells") as HTMLElement).hidden,
+        strangerOpacity: getComputedStyle(document.querySelector('article.issue[data-issue-id="stranger"]')!).opacity,
+        pressed: [...document.querySelectorAll("[data-trace][aria-pressed=true]")].map((chip) => chip.getAttribute("data-trace")),
+      }));
+
+      // The family's row is folded; tracing the stuck item opens it, because part of the chain is inside.
+      await page.locator('[data-row-fold="family-family"]').click();
+      expect((await state()).familyCellsHidden).toBe(true);
+      await page.locator('article.issue[data-issue-id="stuck"] .dep-chip--blocks').click();
+      const result = await state();
+      expect(result).toMatchObject({
+        roles: { family: "down", "part-a": "down", stuck: "focus", downstream: "down" },
+        familyCellsHidden: false, strangerOpacity: "0.25", pressed: ["stuck", "stuck"],
+      });
+      expect(result.banner).toBe("#50 (blocked): 1 waits on it directly (#11), 3 in all. It waits on nothing.");
+      expect(result.tags.sort()).toEqual(["Traced", "Waiting on it", "Waiting on it", "Waiting on it"]);
+
+      // Tracing from the other end: the item waiting on the family is held up by the family, its part, and the stuck item.
+      await page.locator('article.issue[data-issue-id="downstream"] [data-trace="family"]').click();
+      expect((await state()).roles).toEqual({ family: "focus", "part-a": "up", "part-b": "up", stuck: "up", downstream: "down" });
+
+      // A live update keeps the trace.
+      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      revision = "revision-2";
+      currentDashboard = { ...build([issue("newcomer", 40, "Newcomer")]), revision };
+      await refresh;
+      await page.locator('article.issue[data-issue-id="newcomer"]').waitFor();
+      await page.waitForFunction(() => document.querySelector('[data-family-row="family"]')?.getAttribute("data-trace-role") === "focus");
+
+      // The banner clears it, and the folded row folds again; Escape clears a new trace too.
+      await page.locator("[data-trace-clear]").click();
+      expect(await state()).toMatchObject({ roles: {}, tags: [], banner: null, familyCellsHidden: true, strangerOpacity: "1", pressed: [] });
+      await page.locator('article.issue[data-issue-id="stuck"] .dep-chip--blocks').click();
+      await page.keyboard.press("Escape");
+      expect((await state()).roles).toEqual({});
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
 });

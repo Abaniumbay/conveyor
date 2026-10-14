@@ -978,6 +978,83 @@ export const dashboardClient = String.raw`(() => {
   applyRowFolds();
   document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
 
+  // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
+  // A parent waits on its unfinished parts, so whatever waits on a parent is held up by them too.
+  let traceFocus = null;
+  const applyTrace = () => {
+    const nodes = new Map();
+    for (const element of document.querySelectorAll('main.dashboard .board article.issue[data-issue-id], main.dashboard .board [data-family-row]')) {
+      const id = element.getAttribute('data-family-row') || element.getAttribute('data-issue-id');
+      const ids = (name) => (element.getAttribute(name) || '').split(' ').filter(Boolean);
+      // A parent waits on its unfinished parts as well as on its dependencies; the chain runs through both.
+      if (id && !nodes.has(id)) nodes.set(id, { element, waits: ids('data-waits'), parts: ids('data-parts') });
+    }
+    if (traceFocus !== null && !nodes.has(traceFocus)) traceFocus = null;
+    const upstream = new Set();
+    const downstream = new Set();
+    if (traceFocus !== null) {
+      const dependents = new Map();
+      for (const [id, node] of nodes) for (const wait of [...node.waits, ...node.parts]) dependents.set(wait, [...(dependents.get(wait) || []), id]);
+      const walk = (next, seen) => {
+        const stack = [...next(traceFocus)];
+        while (stack.length > 0) {
+          const id = stack.pop();
+          if (id === traceFocus || seen.has(id) || !nodes.has(id)) continue;
+          seen.add(id);
+          stack.push(...next(id));
+        }
+      };
+      walk((id) => nodes.has(id) ? [...nodes.get(id).waits, ...nodes.get(id).parts] : [], upstream);
+      walk((id) => dependents.get(id) || [], downstream);
+    }
+    body.classList.toggle('tracing', traceFocus !== null);
+    for (const [id, node] of nodes) {
+      const role = traceFocus === null ? null : id === traceFocus ? 'focus' : upstream.has(id) ? 'up' : downstream.has(id) ? 'down' : null;
+      const holder = node.element.matches('[data-family-row]') ? node.element.querySelector('.family-head') : node.element.querySelector('.issue-kicker');
+      let tag = holder ? holder.querySelector(':scope > .trace-role') : null;
+      if (!role) {
+        node.element.removeAttribute('data-trace-role');
+        if (tag) tag.remove();
+        continue;
+      }
+      node.element.setAttribute('data-trace-role', role);
+      if (!tag && holder) {
+        tag = document.createElement('span');
+        holder.append(tag);
+      }
+      if (tag) {
+        tag.className = 'trace-role trace-role--' + role;
+        tag.textContent = role === 'focus' ? 'Traced' : role === 'up' ? 'Holding it up' : 'Waiting on it';
+      }
+    }
+    for (const chip of document.querySelectorAll('[data-trace]')) chip.setAttribute('aria-pressed', traceFocus !== null && chip.getAttribute('data-trace') === traceFocus ? 'true' : 'false');
+    // A folded row that holds part of the chain opens while it is traced.
+    applyRowFolds();
+    if (traceFocus !== null) {
+      for (const button of document.querySelectorAll('[data-row-fold]')) {
+        const cells = document.getElementById(button.getAttribute('aria-controls') || '');
+        if (cells && button.closest('.board-row')?.querySelector('[data-trace-role]')) cells.hidden = false;
+      }
+    }
+    const banner = document.querySelector('[data-trace-banner]');
+    if (!(banner instanceof HTMLElement)) return;
+    banner.hidden = traceFocus === null;
+    const text = banner.querySelector('[data-trace-text]');
+    if (!text || traceFocus === null) return;
+    // The direct links are listed; the whole chain is counted, since it can run to dozens of items.
+    const numbers = (ids) => [...ids].map((id) => Number(nodes.get(id)?.element.getAttribute('data-number')) || 0).sort((a, b) => a - b).map((number) => '#' + number).join(', ');
+    const focusNode = nodes.get(traceFocus);
+    const directDown = [...nodes].filter(([, node]) => node.waits.includes(traceFocus)).map(([id]) => id);
+    const directUp = [...focusNode.waits, ...focusNode.parts].filter((id) => nodes.has(id));
+    const state = (focusNode.element.getAttribute('data-state-word') || '').toLowerCase();
+    const side = (direct, all, verb) => direct.length === 0 ? '' : direct.length + ' ' + verb + ' directly (' + numbers(direct) + ')' + (all.size > direct.length ? ', ' + all.size + ' in all' : '');
+    const held = side(directDown, downstream, directDown.length === 1 ? 'waits on it' : 'wait on it');
+    const holding = directUp.length === 0 ? 'It waits on nothing.' : 'It waits on ' + numbers(directUp) + (upstream.size > directUp.length ? ', ' + upstream.size + ' in all.' : '.');
+    text.textContent = '#' + (focusNode.element.getAttribute('data-number') || '') + (state ? ' (' + state + ')' : '') + ': ' +
+      (held ? held + '. ' : 'Nothing waits on it. ') + holding;
+  };
+  document.addEventListener('conveyor:dashboard-rendered', applyTrace);
+
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
@@ -985,6 +1062,18 @@ export const dashboardClient = String.raw`(() => {
     const clickedDetails = event.target.closest('.dashboard-header details');
     closeHeaderPopovers(clickedDetails);
 
+    const traceChip = event.target.closest('[data-trace]');
+    if (traceChip instanceof HTMLButtonElement) {
+      const id = traceChip.getAttribute('data-trace');
+      traceFocus = id && traceFocus !== id ? id : null;
+      applyTrace();
+      return;
+    }
+    if (event.target.closest('[data-trace-clear]')) {
+      traceFocus = null;
+      applyTrace();
+      return;
+    }
     const rowFold = event.target.closest('[data-row-fold]');
     if (rowFold instanceof HTMLButtonElement) {
       const row = rowFold.getAttribute('data-row-fold');
@@ -993,6 +1082,7 @@ export const dashboardClient = String.raw`(() => {
         else foldedRows.add(row);
         try { localStorage.setItem('conveyor-folded-rows', JSON.stringify([...foldedRows])); } catch {}
         applyRowFolds();
+        if (traceFocus !== null) applyTrace();
       }
       return;
     }
@@ -1087,6 +1177,9 @@ export const dashboardClient = String.raw`(() => {
       if (inspector instanceof HTMLDialogElement) {
         event.preventDefault();
         inspector.close();
+      } else if (traceFocus !== null) {
+        traceFocus = null;
+        applyTrace();
       }
       return;
     }
