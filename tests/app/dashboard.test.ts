@@ -403,6 +403,8 @@ describe("ConveyorService dashboard", () => {
       store.setStageState({ issueId: item.id, stageId: item.stage, status: "ready", feedbackCycle: 0, configHash: config.hash });
     }
     ["working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
+    // "unrelated" waits on a stopped item and on a finished one.
+    store.replaceRelationships("unrelated", null, ["stopped", "finished"]);
 
     const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
     const cards = [...model.stages.flatMap((column) => column.issues), ...model.done.issues];
@@ -420,6 +422,11 @@ describe("ConveyorService dashboard", () => {
     expect(model.stages.map((column) => [column.id, column.description])).toEqual([["stage:refinement", null], ["stage:implementation", "Writes the change."], ["stage:review", null]]);
     expect(model.stages.map((column) => column.icon)).toEqual([null, "🛠️", null]);
     expect(card("unrelated").parentProgress).toBeNull();
+    // A dependency that is not finished says whether it is moving, and its state in words.
+    expect(card("unrelated").dependencies.map(({ id, satisfied, signal, state }) => ({ id, satisfied, signal, state })).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "finished", satisfied: true, signal: undefined, state: undefined },
+      { id: "stopped", satisfied: false, signal: "stop", state: "Blocked" },
+    ]);
     store.close();
   });
 

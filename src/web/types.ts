@@ -7,9 +7,11 @@ export interface IssueRelationViewModel {
   title: string;
   url: string | null;
   satisfied: boolean;
-  /** A parent's child only: its station on the line (Backlog, each stage, Done) and its andon signal. */
+  /** A parent's child only: its station on the line (Backlog, each stage, Done). */
   station?: { index: number; count: number; name: string };
+  /** A child or a dependency that is not finished: its andon signal, and its state in words ("Blocked"). */
   signal?: "run" | "wait" | "stop";
+  state?: string;
 }
 
 export interface IssueWaitingViewModel {

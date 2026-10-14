@@ -763,6 +763,28 @@ describe("renderDashboard", () => {
     expect(dialog("backlog")).toContain("Not a stage agents work in.");
   });
 
+  test("shows dependencies as chips with their state, what each item blocks, and what the page script traces", () => {
+    const dependency = (id: string, number: number, extra: object = {}) => ({ id, repository: "sample", number, title: `Item ${number}`, url: null, satisfied: false, ...extra });
+    const blocker: IssueCardViewModel = { ...backlogIssue, id: "blocker", number: 245, title: "Stuck item", tone: "danger", state: "blocked", dependencies: [] };
+    const waiting: IssueCardViewModel = { ...backlogIssue, id: "waiting", number: 246, title: "Waiting item",
+      dependencies: [dependency("blocker", 245, { signal: "stop", state: "Blocked" }), dependency("moving", 260, { signal: "wait", state: "Active" }), dependency("off-board", 39), { ...dependency("finished", 1), satisfied: true }] };
+    const moving: IssueCardViewModel = { ...backlogIssue, id: "moving", number: 260, title: "Moving item", dependencies: [] };
+    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [blocker, waiting, moving] }] });
+    const card = (id: string) => html.slice(html.indexOf(`data-issue-id="${id}" data-dialog-open`), html.indexOf("<dialog", html.indexOf(`data-issue-id="${id}" data-dialog-open`)));
+
+    // A stopped blocker is a red chip naming its state; one on the board traces in place; one off it links; a finished one is gone.
+    expect(card("waiting")).toContain('<button type="button" class="dep-chip dep-chip--stop" data-trace="blocker" aria-pressed="false" aria-label="Trace #245, blocked" title="Item 245">#245 · Blocked</button>');
+    expect(card("waiting")).toContain('<button type="button" class="dep-chip" data-trace="moving" aria-pressed="false" aria-label="Trace #260, active" title="Item 260">#260</button>');
+    expect(card("waiting")).toContain('<a class="dep-chip" href="/issues/sample/39" title="Item 39">#39</a>');
+    expect(card("waiting")).not.toContain("#1<");
+    expect(card("waiting")).toContain('data-waits="blocker moving off-board"');
+    // What an item blocks.
+    expect(card("blocker")).toContain('<button type="button" class="dep-chip dep-chip--blocks" data-trace="blocker" aria-pressed="false" aria-label="#245 blocks 1: trace them">Blocks 1</button>');
+    expect(card("blocker")).toContain('data-number="245" data-state-word="Blocked"><p class="issue-kicker">');
+    expect(card("moving")).toContain(">Blocks 1</button>");
+    expect(html).toContain('<p class="trace-banner" data-trace-banner="true" role="status" hidden>');
+  });
+
   test("renders one horizontal board column per configured stage with card status styling", () => {
     const html = renderDashboard(dashboard);
 
@@ -800,7 +822,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('aria-label="1 waiting"');
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
-    expect(html).toContain('Waiting on <a href="/issues/foundation/39">#39</a>');
+    expect(html).toContain('<span class="relation-group relation-group--blocked">Waiting on</span><a class="dep-chip" href="/issues/foundation/39" title="Open foundation">#39</a>');
     expect(html).toContain('class="relation-link--satisfied"');
     expect(html).toContain("Issue relationships for #41");
     expect(html).toContain(">Working</strong>");

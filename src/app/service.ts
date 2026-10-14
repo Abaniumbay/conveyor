@@ -2497,12 +2497,17 @@ export class ConveyorService {
       const index = base.satisfied
         ? names.length - 1
         : backlogIds.has(child.id) || stageIndex < 0 ? 0 : stageIndex + 1;
-      const state = child.projectedState ?? child.sourceState;
-      const signal = activeIssueIds.has(child.id)
-        ? "run"
-        : questionIssueIds.has(child.id) || STOPPED_ISSUE_STATES.has(state) ? "stop" : "wait";
       const station = { index, count: names.length, name: names[index]! };
-      return base.satisfied ? { ...base, station } : { ...base, station, signal };
+      return { ...withProgress(child, base), station };
+    };
+    // An unfinished child or dependency also says whether it is moving, and its state in words.
+    const withProgress = (item: StoredIssue, base: IssueRelationViewModel): IssueRelationViewModel => {
+      if (base.satisfied) return base;
+      const state = item.projectedState ?? item.sourceState;
+      const signal = activeIssueIds.has(item.id)
+        ? "run"
+        : questionIssueIds.has(item.id) || STOPPED_ISSUE_STATES.has(state) ? "stop" : "wait";
+      return { ...base, signal, state: displayName(state) };
     };
     const tone = (state: string): IssueTone => {
       if (state === "done" || state === "completed") return "success";
@@ -2537,7 +2542,7 @@ export class ConveyorService {
       const dependencies = this.store.listDependencies(issue.id)
         .flatMap((issueId) => {
           const dependency = byId.get(issueId) ?? this.store.getIssue(issueId);
-          return dependency ? [relation(dependency)] : [];
+          return dependency ? [withProgress(dependency, relation(dependency))] : [];
         });
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;

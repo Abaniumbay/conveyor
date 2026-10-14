@@ -19,6 +19,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   fold to their header, and each browser remembers which are folded. A finished family shows
   only its parent, in Done. On a phone, a family row lists its cards in stage order, with the
   stage on each card.
+- Dependencies show what they are waiting on and what they hold up. A card's unfinished
+  dependencies are chips, and one whose blocker is stopped turns red and names the state
+  (`#245 · Blocked`). A card, or a family row, that unfinished items wait on gets a **Blocks N**
+  chip. Tapping a chip traces the chain both ways across the rows, through parents too: what it
+  waits on is outlined in red, what waits on it in blue, the rest dims, and folded rows holding
+  part of the chain open. A banner lists the direct links and counts the whole chain. **Show
+  everything**, the chip again, or Escape clears it.
 
 ### Changed
 

@@ -98,16 +98,55 @@ function Relationships({ issue }: { issue: IssueCardViewModel }) {
   );
 }
 
+/**
+ * What the board holds while it renders: which items are on it (a chip for one of them traces it in
+ * place; any other links to it), and how many unfinished items wait on each.
+ */
+let boardLinks: { onBoard: ReadonlySet<string>; dependents: ReadonlyMap<string, number> } | null = null;
+
+function boardLinksOf(model: DashboardViewModel): NonNullable<typeof boardLinks> {
+  const cards = [...model.backlog, ...model.stages.flatMap((column) => column.issues), ...model.done.issues];
+  const dependents = new Map<string, number>();
+  for (const card of cards) {
+    if (card.tone === "success" || card.tone === "muted") continue;
+    for (const dependency of card.dependencies) {
+      if (!dependency.satisfied) dependents.set(dependency.id, (dependents.get(dependency.id) ?? 0) + 1);
+    }
+  }
+  return { onBoard: new Set(cards.map((card) => card.id)), dependents };
+}
+
+/** The ids an item waits on, for the page script's trace: its unfinished dependencies (and, for a parent, its unfinished parts). */
+function waitsOn(issue: IssueCardViewModel, parts = false): string | undefined {
+  const ids = [
+    ...issue.dependencies.filter((dependency) => !dependency.satisfied).map((dependency) => dependency.id),
+    ...(parts ? issue.children.filter((child) => !child.satisfied).map((child) => child.id) : []),
+  ];
+  return ids.length > 0 ? ids.join(" ") : undefined;
+}
+
+function BlocksChip({ issue }: { issue: IssueCardViewModel }) {
+  const count = boardLinks?.dependents.get(issue.id) ?? 0;
+  if (count === 0) return null;
+  return <button type="button" class="dep-chip dep-chip--blocks" data-trace={issue.id} aria-pressed="false" aria-label={`#${issue.number} blocks ${count}: trace them`}>Blocks {count}</button>;
+}
+
+/** Unfinished dependencies as chips (a stopped one in red, with its state), and what this item blocks. */
 function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
   const waiting = issue.dependencies.filter((dependency) => !dependency.satisfied);
-  if (waiting.length === 0) return null;
+  const blocks = (boardLinks?.dependents.get(issue.id) ?? 0) > 0;
+  if (waiting.length === 0 && !blocks) return null;
   return (
     <div class="relation-summary" aria-label={`Relationship summary for #${issue.number}`}>
-      <span class="relation-group relation-group--blocked">
-        Waiting on {waiting.map((dependency, index) => (
-          <Fragment key={dependency.number}>{index > 0 && ", "}<a href={issueHref(dependency.repository, dependency.number)}>#{dependency.number}</a></Fragment>
-        ))}
-      </span>
+      {waiting.length > 0 && <span class="relation-group relation-group--blocked">Waiting on</span>}
+      {waiting.map((dependency) => {
+        const stopped = dependency.signal === "stop";
+        const label = `#${dependency.number}${stopped && dependency.state ? ` · ${dependency.state}` : ""}`;
+        return boardLinks?.onBoard.has(dependency.id)
+          ? <button type="button" class={`dep-chip${stopped ? " dep-chip--stop" : ""}`} data-trace={dependency.id} aria-pressed="false" aria-label={`Trace #${dependency.number}${dependency.state ? `, ${dependency.state.toLowerCase()}` : ""}`} title={dependency.title} key={dependency.id}>{label}</button>
+          : <a class={`dep-chip${stopped ? " dep-chip--stop" : ""}`} href={issueHref(dependency.repository, dependency.number)} title={dependency.title} key={dependency.id}>{label}</a>;
+      })}
+      <BlocksChip issue={issue} />
     </div>
   );
 }
@@ -360,7 +399,8 @@ let heldCards: ReadonlySet<string> | null = null;
 
 /** Changes whenever anything the card shows does. */
 function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean, stageLabel: string | null, thread: boolean): string {
-  return Bun.hash(JSON.stringify([issue, actors, canManage, stageLabel, thread])).toString(36);
+  const links = boardLinks && [boardLinks.dependents.get(issue.id) ?? 0, issue.dependencies.map((dependency) => boardLinks!.onBoard.has(dependency.id))];
+  return Bun.hash(JSON.stringify([issue, actors, canManage, stageLabel, thread, links])).toString(36);
 }
 
 /**
@@ -388,6 +428,9 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
       data-card-revision={revision}
+      data-number={issue.number}
+      data-state-word={issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}
+      data-waits={waitsOn(issue)}
     >
       <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span>{stageLabel && <span class="issue-stage">{stageLabel}</span>}</p>
       {thread && <FamilyThread issue={issue} />}
@@ -537,7 +580,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   const doneIds = new Set(done.map((child) => child.id));
   const stopped = parent.needsAttention || parent.tone === "danger";
   return (
-    <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} aria-label={`#${parent.number} ${parent.title}`}>
+    <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={waitsOn(parent, true)} aria-label={`#${parent.number} ${parent.title}`}>
       <div class="row-band">
       <div class="family-head" data-dialog-open={dialogId}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />
@@ -547,6 +590,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         <FamilySquares parent={parent} />
         <span class="family-progress"><strong>{done.length}/{parent.children.length}</strong> done</span>
         {stopped && <span class="family-stop" title={parent.reason ?? undefined}><i class="andon andon--stop" aria-hidden="true" />{stateWords(parent)}</span>}
+        <BlocksChip issue={parent} />
         <button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>
         <DetailsDialog issue={parent} id={dialogId} canManage={canManage} />
       </div>
@@ -623,6 +667,11 @@ function Board({ model }: { model: DashboardViewModel }) {
   const columns = (wide: string, narrow: string) => stations.map((station) => narrowStation(station) ? narrow : wide).join(" ");
   const style = `--board-columns:${columns("min(20rem,86vw)", "4.5rem")};--board-columns-phone:${columns("calc(100vw - 1.5rem)", "3.25rem")}`;
   return (
+    <>
+    <p class="trace-banner" data-trace-banner role="status" hidden>
+      <span data-trace-text />
+      <button type="button" class="trace-clear" data-trace-clear>Show everything</button>
+    </p>
     <section class="board board--rows" aria-label="Delivery board">
       <div class="board-track" style={style}>
         <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
@@ -666,6 +715,7 @@ function Board({ model }: { model: DashboardViewModel }) {
       </div>
       {stations.map((station) => <StationDialog station={station} key={station.id} />)}
     </section>
+    </>
   );
 }
 
@@ -1128,10 +1178,12 @@ function Page({ model }: { model: DashboardViewModel }) {
 
 export function renderDashboard(model: DashboardViewModel, held: ReadonlySet<string> | null = null): string {
   heldCards = held;
+  boardLinks = boardLinksOf(model);
   try {
     return `<!doctype html>${renderToString(<Page model={model} />)}`;
   } finally {
     heldCards = null;
+    boardLinks = null;
   }
 }
 
