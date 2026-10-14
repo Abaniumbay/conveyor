@@ -112,9 +112,9 @@ function startDashboard(state: { dashboard: (selection: DashboardPageSelection) 
   const handler = createWebHandler({
     auth,
     username: "operator",
-    getDashboard: async (_csrfToken, selection) => {
+    getDashboard: async (csrfToken, selection) => {
       if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      return state.dashboard(selection);
+      return { ...state.dashboard(selection), csrfToken };
     },
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
