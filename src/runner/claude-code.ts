@@ -189,7 +189,11 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     const argv = [
       "bwrap", ...sandboxArguments({
         workspace: input.workspace, configDir, home: environment.HOME!, serviceHome,
-        ...(input.sandbox === "workspace-write" ? { writable: [input.workspace, ...(input.writableRoots ?? []), scratch.path] } : {}),
+        // Claude itself needs private temporary storage even when its workspace is read-only.
+        writable: [
+          ...(input.sandbox === "workspace-write" ? [input.workspace, ...(input.writableRoots ?? [])] : []),
+          scratch.path,
+        ],
       }),
       input.command, ...claudeArguments(input, schema),
     ];

@@ -377,7 +377,9 @@ async function codexAccess(
   agent: { workspaceAccess: string; network?: boolean; writableRoots?: string[] },
   workspace: string,
 ): Promise<{ network?: true; writableRoots?: string[] }> {
-  assertNoHostTmpWritableRoots(agent.writableRoots);
+  // Read-only agents never receive configured writable roots, so those paths cannot reopen
+  // host /tmp writes. Validate roots only when they will be handed to a write-capable runner.
+  if (agent.workspaceAccess !== "read-only") assertNoHostTmpWritableRoots(agent.writableRoots);
   const roots = agent.workspaceAccess === "read-only" ? [] : [...await worktreeGitPaths(workspace), workspaceScratchPath(workspace), ...(agent.writableRoots ?? [])];
   const writableRoots = [...new Set(roots)].filter((root) => existsSync(root));
   return { ...(agent.network ? { network: true as const } : {}), ...(writableRoots.length > 0 ? { writableRoots } : {}) };

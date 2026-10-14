@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ConveyorConfig } from "../../src/config/load";
@@ -15,7 +15,7 @@ import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 
 const directories: string[] = [];
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -268,8 +268,9 @@ describe("agent.run", () => {
     await mkdir(workspace, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
     Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
-    const cache = path.join(w.root, "cache");
-    await mkdir(cache);
+    await mkdir(path.join(homedir(), ".cache"), { recursive: true });
+    const cache = await mkdtemp(path.join(homedir(), ".cache/conveyor-agent-"));
+    directories.push(cache);
     Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(w.root, "missing")] });
     expect((await w.run(false)).status).toBe("pass");
     const git = path.join(workspace, ".git");
@@ -311,8 +312,9 @@ describe("agent.run", () => {
     await mkdir(workspace, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
     Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
-    const cache = path.join(w.root, "cache");
-    await mkdir(cache);
+    await mkdir(path.join(homedir(), ".cache"), { recursive: true });
+    const cache = await mkdtemp(path.join(homedir(), ".cache/conveyor-agent-"));
+    directories.push(cache);
     const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
     config.runners.claude = { type: "claude-code", command: "claude" };
     config.agents.jamshid = {
