@@ -165,8 +165,12 @@ export class StageExecutor {
     const next = run.input.pipeline.stages[run.input.pipeline.stages.findIndex((s) => s.id === run.stage.id) + 1];
     if (!next) engineState(run.context).returns = 0;
     this.#persist(run, tasks.at(-1)?.id ?? run.stage.id);
-    journal.clearCursor(run.input.issueId, run.epoch);
+    // Keep the cursor until the final awaited status update has completed. A board
+    // request that makes this gate manual uses the live cursor to fence this epoch;
+    // clearing it first would leave an unfenced window before IssueExecutor records
+    // the stage transition.
     await this.#o.setStatus(null);
+    journal.clearCursor(run.input.issueId, run.epoch);
     return {
       kind: "advance", stageId: run.stage.id, nextStageId: next?.id ?? null, result: run.context.legacy ?? null,
       feedbackCycles: run.cursor.attempt - 1,

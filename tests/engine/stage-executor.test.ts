@@ -186,11 +186,12 @@ async function harness(options: { maxReturns?: number } = {}) {
   const statuses: Array<string | null> = [];
   let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; configured: boolean }) =>
     ({ required: false, approved: false, message: "" });
+  let onStatus: (message: string | null) => void | Promise<void> = () => {};
   const executorFor = (j: ExecutionStore = journal) =>
     new StageExecutor({
       registry, journal: j, clock,
       notify: (m) => { notes.push(m); },
-      setStatus: (m) => { statuses.push(m); },
+      setStatus: async (m) => { statuses.push(m); await onStatus(m); },
       manualGate: (input) => manualGate(input),
       settings: { maxReturns: options.maxReturns ?? 5 },
     });
@@ -199,6 +200,7 @@ async function harness(options: { maxReturns?: number } = {}) {
   return {
     store, journal, world, registry, notes, statuses, executorFor, run,
     setManualGate: (next: typeof manualGate) => { manualGate = next; },
+    setStatusHook: (next: typeof onStatus) => { onStatus = next; },
     advance: (ms: number) => { now += ms; },
     now: () => new Date(now),
     activate: () => journal.bumpStageEpoch("issue-1"),
@@ -253,6 +255,27 @@ describe("happy path", () => {
     expect(h.journal.wakeNow("issue-1")).toBe(true);
     expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
     expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
+  });
+
+  test("keeps the exit-gate cursor live through the final status clear", async () => {
+    const h = await harness();
+    h.activate();
+    let fenced = false;
+    h.setStatusHook((message) => {
+      if (message !== null || fenced) return;
+      fenced = true;
+      expect(h.journal.getCursor("issue-1")).toMatchObject({
+        stage: "implementation", list: "exit-gate", taskInstanceId: "gate",
+      });
+      // This is the epoch fence setManualGateRequirement applies when a board
+      // operator makes the live gate manual while it is deciding to advance.
+      h.journal.onStageChange("issue-1");
+    });
+
+    expect(await h.run(simple(h), "implementation")).toEqual({
+      kind: "parked", stageId: "implementation", reason: "superseded", wakeAt: null,
+    });
+    expect(fenced).toBe(true);
   });
 
   test("acts see the instance id, key, resumed flag and the rewritten run context", async () => {
