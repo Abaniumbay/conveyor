@@ -103,7 +103,7 @@ async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>)
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
-function startDashboard(state: { dashboard: (selection: DashboardPageSelection) => DashboardViewModel; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
+function startDashboard(state: { dashboard: (selection: DashboardPageSelection) => DashboardViewModel | Promise<DashboardViewModel>; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -114,7 +114,7 @@ function startDashboard(state: { dashboard: (selection: DashboardPageSelection) 
     username: "operator",
     getDashboard: async (csrfToken, selection) => {
       if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      return { ...state.dashboard(selection), csrfToken };
+      return { ...await state.dashboard(selection), csrfToken };
     },
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
@@ -311,9 +311,14 @@ describe("dashboard live refresh position", () => {
   test("filters board cards in the browser, keeps filters through a live update, and collapses them on a phone", async () => {
     const alpha = {
       ...issue("alpha-card", 245, "Find the alpha item"), repository: "alpha", labels: ["backend"],
-      issueType: "Feature", issueFields: [{ name: "Effort", value: "Large" }], needsAttention: true, tone: "danger" as const,
+      issueType: "Feature", issueFields: [{ name: "Effort", value: "Large" }], searchActors: [{ type: "agent" as const, name: "Ada Lovelace", title: null }],
+      acceptanceCriteria: [{ id: "private-criterion", text: "Private criterion text", approved: false }], needsAttention: true, tone: "danger" as const,
     };
     const beta = { ...issue("beta-card", 246, "Keep the beta item"), repository: "beta", working: true };
+    const family = {
+      ...issue("family-card", 249, "Running family"), repository: "alpha", working: true,
+      children: [{ id: "family-done", repository: "alpha", number: 250, title: "Completed family child", url: null, satisfied: true, station: { index: 4, count: 4, name: "Done" } }],
+    };
     const closed = [
       { ...issue("done-alpha", 247, "Find the completed alpha item"), repository: "alpha", state: "closed", tone: "success" as const },
       { ...issue("done-beta", 248, "Completed beta item"), repository: "beta", state: "closed", tone: "success" as const },
@@ -325,17 +330,23 @@ describe("dashboard live refresh position", () => {
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     });
     let revision = "filters-1";
-    const board = (selection: DashboardPageSelection) => {
+    const doneQueries: string[] = [];
+    const board = async (selection: DashboardPageSelection) => {
+      const query = selection.q ?? "";
+      doneQueries.push(query);
+      if (query === "Find") await Bun.sleep(500);
       const repositories = new Set(selection.repositoryIds ?? []);
       const words = (selection.q ?? "").toLowerCase().trim().split(/\s+/).filter(Boolean);
       const matchesDone = (card: IssueCardViewModel) =>
         (repositories.size === 0 || repositories.has(card.repository)) &&
         words.every((word) => [card.title, card.number, `#${card.number}`, card.repository, ...card.labels, card.issueType ?? "", ...card.issueFields.map((field) => field.value)].join(" ").toLowerCase().includes(word));
-      const base = dashboard(revision, [alpha, beta]);
+      const base = dashboard(revision, [alpha, beta, family]);
       return {
         ...base,
         revision,
         done: stage("done", "Done", closed.filter(matchesDone)),
+        counts: { ...base.counts, attention: 1 },
+        needsYou: [alpha],
         repositories: [repository("alpha", 1), repository("beta", 2)],
         boardFilters: { repositories: [...repositories], q: selection.q ?? "", state: selection.state ?? null },
       };
@@ -345,6 +356,7 @@ describe("dashboard live refresh position", () => {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
       await signIn(page, server.port);
+      doneQueries.length = 0;
 
       await page.locator('.repository-filter label').filter({ hasText: "alpha" }).click();
       await page.waitForFunction(() => location.search === "?repo=alpha");
@@ -352,18 +364,50 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
       expect(await page.locator('a[aria-label="Open alpha"]').getAttribute("href")).toBe("/repositories/alpha");
 
+      await page.locator('[data-filter-clear]').click();
+      await page.locator('[data-filter-search]').fill("F");
+      await page.locator('[data-filter-search]').fill("Fi");
+      const firstDoneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "Find");
+      await page.locator('[data-filter-search]').fill("Find");
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      await firstDoneRequest;
       const doneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "#245");
       await page.locator('[data-filter-search]').fill("#245");
       await doneRequest;
+      await page.waitForFunction(() => document.querySelector('.board')?.getAttribute('data-done-total') === '0');
+      await Bun.sleep(550);
+      expect(doneQueries).toEqual(["Find", "#245"]);
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      expect(await page.locator('[data-board-station-count="reader"]').first().textContent()).toBe("1 of 3");
+      expect(await page.locator('[data-board-line-count="reader"]').first().textContent()).toBe("1 of 3");
+      expect(await page.locator('[data-board-signal-count="stop"] small').first().textContent()).toBe("1 of 1");
+      expect(await page.locator('[data-board-station-count="done"]').first().textContent()).toBe("0 of 2");
+      expect(await page.locator('[data-filter-summary]').textContent()).toContain("Showing 1 of 5 active board items");
       await page.locator('article.issue[data-issue-id="alpha-card"] .card-open').click();
-      expect(new URL(page.url()).search).toBe("?repo=alpha&q=%23245");
+      expect(new URL(page.url()).search).toBe("?q=%23245");
       await page.getByRole("button", { name: "Close" }).click();
       await page.locator('[data-filter-clear]').click();
       await page.waitForFunction(() => location.search === "");
       expect(await page.locator('[data-filter-search]').inputValue()).toBe("");
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isVisible()).toBe(true);
+
+      await page.locator('[data-filter-search]').fill("BACKEND Feature Large Ada");
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      await page.locator('[data-filter-search]').fill("Private criterion");
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isHidden()).toBe(true);
+      expect(await page.locator('[data-filter-summary]').textContent()).toContain("Showing 0 of 5 active board items");
+      expect(await page.locator('.needs-you').isVisible()).toBe(true);
+      expect(await page.locator('.needs-you-link').textContent()).toContain("1 needs you");
+      await page.locator('[data-filter-clear]').click();
+      await page.waitForFunction(() => location.search === "");
+      await page.evaluate(() => {
+        history.replaceState({ conveyorPage: true }, "", "/board");
+        const search = document.querySelector('[data-filter-search]');
+        if (search instanceof HTMLInputElement) search.value = "";
+        document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
+      });
 
       const firstDoneResponse = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).searchParams.get("q") === "#245");
       await page.locator('[data-filter-search]').fill("#245");
@@ -385,10 +429,18 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => location.search === "?state=needs-you");
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      expect(await page.locator('[data-family-row="family-card"] .family-head').isHidden()).toBe(true);
+      expect(await page.locator('[data-family-row="family-card"] .issue--compact').isHidden()).toBe(true);
+      expect(await page.locator('[data-board-station-count="done"]').first().textContent()).toBe("0 of 2");
       revision = "filters-2";
       await waitForReplacement(page);
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+
+      await page.locator('[data-filter-clear]').click();
+      await page.locator('[data-filter-search]').fill("Running family");
+      expect(await page.locator('[data-family-row="family-card"] .family-head').isVisible()).toBe(true);
+      expect(await page.locator('[data-family-row="family-card"] .issue--compact').isHidden()).toBe(true);
 
       const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(phone, server.port);
@@ -400,10 +452,20 @@ describe("dashboard live refresh position", () => {
       expect(collapsed).toBeLessThanOrEqual(2);
       await phone.getByRole("button", { name: "Filters (0)" }).click();
       expect(await phone.locator('.repository-filter label').filter({ hasText: "alpha" }).isVisible()).toBe(true);
+
+      const noScript = await browser.newPage({ javaScriptEnabled: false });
+      await signIn(noScript, server.port);
+      await noScript.locator('[data-filter-repository="alpha"]').check({ force: true });
+      await noScript.locator('[data-filter-search]').fill("#245");
+      await noScript.getByRole("radio", { name: "Waiting / Queued" }).check({ force: true });
+      await Promise.all([
+        noScript.waitForURL((url) => url.pathname === "/board" && url.searchParams.get("repo") === "alpha" && url.searchParams.get("q") === "#245" && url.searchParams.get("state") === "waiting"),
+        noScript.getByRole("button", { name: "Apply filters" }).click(),
+      ]);
     } finally {
       server.stop(true);
     }
-  }, 30_000);
+  }, 60_000);
 
   test("a family row folds to its header, stays folded across a reload and a live update, and unfolds", async () => {
     const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };

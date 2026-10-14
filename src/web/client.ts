@@ -1004,6 +1004,8 @@ export const dashboardClient = String.raw`(() => {
   const boardFilterStates = new Set(['needs-you', 'running', 'waiting']);
   let doneRequestVersion = 0;
   let loadedDoneFilter = null;
+  let doneRequestController = null;
+  let doneRequestTimer = null;
   const boardFilterValues = () => {
     const params = new URLSearchParams(location.search);
     const repositories = [...new Set(params.getAll('repo').filter(Boolean))];
@@ -1103,14 +1105,13 @@ export const dashboardClient = String.raw`(() => {
     const clear = filter.querySelector('[data-filter-clear]');
     if (clear) clear.hidden = !active;
   };
-  const loadFilteredDone = async (filters) => {
+  const loadFilteredDone = async (filters, version, controller) => {
     const requested = doneFilterKey(filters);
     if (requested === loadedDoneFilter) return;
-    const version = ++doneRequestVersion;
     const target = new URL(location.href);
     target.searchParams.delete('state');
     try {
-      const response = await fetch(target.pathname + target.search, { headers: { accept: 'text/html' }, cache: 'no-store' });
+      const response = await fetch(target.pathname + target.search, { headers: { accept: 'text/html' }, cache: 'no-store', signal: controller.signal });
       if (!response.ok) throw new Error('Done filter request failed');
       const next = new DOMParser().parseFromString(await response.text(), 'text/html');
       if (version !== doneRequestVersion || requested !== doneFilterKey(boardFilterValues())) return;
@@ -1126,6 +1127,20 @@ export const dashboardClient = String.raw`(() => {
     } catch {
       // Open cards are already filtered, so a transient Done request never blocks the board.
     }
+  };
+  const scheduleFilteredDone = (filters) => {
+    const requested = doneFilterKey(filters);
+    ++doneRequestVersion;
+    doneRequestController?.abort();
+    if (doneRequestTimer !== null) clearTimeout(doneRequestTimer);
+    if (requested === loadedDoneFilter) return;
+    const version = doneRequestVersion;
+    doneRequestTimer = setTimeout(() => {
+      doneRequestTimer = null;
+      const controller = new AbortController();
+      doneRequestController = controller;
+      void loadFilteredDone(filters, version, controller);
+    }, 250);
   };
   const writeBoardFilters = (next) => {
     const filters = {
@@ -1144,7 +1159,7 @@ export const dashboardClient = String.raw`(() => {
     const search = document.querySelector('[data-filter-search]');
     if (search instanceof HTMLInputElement) search.value = filters.q;
     applyBoardFilters();
-    void loadFilteredDone(filters);
+    scheduleFilteredDone(filters);
   };
   const bindBoardFilters = () => {
     const filter = document.querySelector('[data-board-filters]');
