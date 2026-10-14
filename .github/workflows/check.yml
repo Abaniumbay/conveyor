@@ -95,13 +95,13 @@ jobs:
         run: |
           test "$(cat "$RUNNER_TEMP/conveyor-existing-home/sentinel")" = 'must remain unchanged'
           test ! -e "$RUNNER_TEMP/conveyor-existing-home/state/conveyor.sqlite"
-          for image in board item reports operator team repositories repository; do
+          for image in board board-scrolled board-phone board-phone-scrolled item reports operator team repositories repository; do
             test -s "docs/screenshots/$image.png"
             grep -Fq "docs/screenshots/$image.png" README.md
             grep -Fq "screenshots/$image.png" docs/dashboard.md
           done
       - name: Capture checksums
-        run: sha256sum docs/screenshots/{board,item,reports,operator,team,repositories,repository}.png > "$RUNNER_TEMP/screenshot-checksums"
+        run: sha256sum docs/screenshots/{board,board-scrolled,board-phone,board-phone-scrolled,item,reports,operator,team,repositories,repository}.png > "$RUNNER_TEMP/screenshot-checksums"
       - name: Regenerate for repeatability
         run: bun run docs:screenshots
       - name: Verify pixel-identical repeatability

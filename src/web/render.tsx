@@ -8,7 +8,7 @@ import { IndicatorChips, IndicatorDetails } from "./indicators";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
-import { dashboardCss, quotaHeaderCss } from "./styles";
+import { dashboardCss, quotaHeaderCss, stickyNavigationCss, stickyNavigationOverridesCss } from "./styles";
 import type {
   DashboardView,
   DashboardViewModel,
@@ -573,6 +573,7 @@ function StationHeading({ station }: { station: Station }) {
       <header class="stage-heading">
         {station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon}</span>}
         <h2 id={headingId}>{station.name}</h2>
+        {station.actors.length > 0 && <span class="stage-head-actors" aria-label={`${station.actors.map((actor) => actor.name).join(", ")} work in ${station.name}`}>{station.actors.slice(0, 2).map((actor) => <AgentAvatar name={actor.name} script={actor.type === "script"} key={`${actor.type}:${actor.name}`} />)}</span>}
         <StationInfoButton station={station} />
         <span class="count" data-board-station-count={station.id} data-board-total={station.count} aria-label={`${station.count} issues`}>{station.count}</span>
       </header>
@@ -829,11 +830,10 @@ function Board({ model }: { model: DashboardViewModel }) {
 function NeedsYou({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   const { stopped, total } = needsYouItems(model);
-  if (total === 0) return null;
   return (
     <section class="needs-you" aria-labelledby="needs-you-heading">
       <header><h2 id="needs-you-heading">Needs you <span>({total})</span></h2></header>
-      <ol>
+      {total === 0 ? <p class="needs-you-empty">No items need your attention right now.</p> : <ol>
         {stopped.map((issue) => (
           <li class={`needs-you-item repo-color-${issue.repositoryColor}`} key={issue.id}>
             <span class="andon andon--stop" aria-hidden="true" />
@@ -870,7 +870,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
             </form>}
           </li>
         ))}
-      </ol>
+      </ol>}
     </section>
   );
 }
@@ -890,7 +890,6 @@ function Navigation({ model }: { model: DashboardViewModel }) {
     { view: "agent", label: "Operator", count: null },
   ];
   if (model.counts.attention > 0 || model.view === "attention") tabs.splice(1, 0, { view: "attention", label: "Label problems", count: model.counts.attention });
-  const needsYou = needsYouItems(model);
   return (
     <nav class="tabs" aria-label="Dashboard views">
       {tabs.map((tab) => (
@@ -898,9 +897,19 @@ function Navigation({ model }: { model: DashboardViewModel }) {
           {tab.label}{tab.count !== null && <span class="tab-count">{tab.count}</span>}
         </a>
       ))}
-      {needsYou.total > 0 && <a href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true" /><span><strong>{needsYou.total}</strong> {needsYou.total === 1 ? "needs" : "need"} you</span></a>}
     </nav>
   );
+}
+
+function StickyFilterSummary({ model }: { model: DashboardViewModel }) {
+  const filters = model.boardFilters;
+  const labels = [
+    ...(filters?.repositories ?? []),
+    ...(filters?.q ? [`“${filters.q}”`] : []),
+    ...(filters?.state ? [filters.state.replaceAll("-", " ")] : []),
+  ];
+  const text = `Filters: ${labels.join(", ")}`;
+  return <span class="sticky-filter-summary" data-sticky-filter-summary data-filter-count={labels.length} title={text} hidden={labels.length === 0}>{text}</span>;
 }
 
 function repositoryHref(id: string): string {
@@ -1193,16 +1202,34 @@ function ThemeControl() {
       <summary><span class="sr-only">Colour theme: </span><strong data-theme-label>System</strong></summary>
       <div class="header-popover theme-popover">
         <h2>Theme</h2>
-        <div class="theme-options">
-          {(["system", "light", "dark"] as const).map((theme) => (
-            <button type="button" data-theme-choice={theme} aria-pressed={theme === "system" ? "true" : "false"} key={theme}>
-              {theme[0]!.toUpperCase()}{theme.slice(1)}
-            </button>
-          ))}
-        </div>
+        <ThemeOptions />
       </div>
     </details>
   );
+}
+
+function ThemeOptions() {
+  return <div class="theme-options">
+    {(["system", "light", "dark"] as const).map((theme) => (
+      <button type="button" data-theme-choice={theme} aria-pressed={theme === "system" ? "true" : "false"} key={theme}>
+        {theme[0]!.toUpperCase()}{theme.slice(1)}
+      </button>
+    ))}
+  </div>;
+}
+
+function MobileSystemControls({ model }: { model: DashboardViewModel }) {
+  const { runnerCount, runnerCapacity } = model.activeWork;
+  return <div class="mobile-system-controls" data-theme-control>
+    <p><strong>{runnerCount} of {runnerCapacity}</strong> runners</p>
+    <HarnessUsage model={model} />
+    <p class="mobile-total-usage" title={model.totalUsage}>{model.totalUsage}</p>
+    <a class="header-link" href="/settings/notifications">Notifications</a>
+    <section class="mobile-theme-options" aria-label="Theme">
+      <h3>Theme</h3>
+      <ThemeOptions />
+    </section>
+  </div>;
 }
 
 /** Names the view in the document title, so tabs, history entries and screen readers tell the pages apart. */
@@ -1255,29 +1282,33 @@ function Page({ model }: { model: DashboardViewModel }) {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{pageTitle(model)} · {model.title}</title>
         <script src="/assets/theme.js" />
-        <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss }} />
+        <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss + stickyNavigationCss + stickyNavigationOverridesCss }} />
         <script src="/assets/dashboard.js" defer />
         <script src="/assets/notifications.js" defer />
       </head>
       <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-view-title={`${viewTitle(model)} · ${model.title}`} data-csrf-token={model.csrfToken}>
         <a class="skip-link" href="#content">Skip to content</a>
         <main class="dashboard">
-          <header class="dashboard-header">
-            <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
-            <details class="server-status" data-server-status>
-              <summary><span class="server-dot" aria-hidden="true" /><strong data-connection-state>Connecting</strong></summary>
+          <div class="dashboard-sticky">
+            <header class="dashboard-header">
+              <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
+              <details class="server-status" data-server-status>
+                <summary aria-label="Connection state: Connecting"><span class="server-dot" aria-hidden="true" /><strong class="connection-state" data-connection-state>Connecting</strong></summary>
               <div class="header-popover server-popover">
-                <h2>Server status</h2>
+                <h2>System</h2>
                 <p data-server-metrics>Waiting for server status…</p>
                 <p class="updated"><span>Dashboard updated</span> <LocalTime value={model.updatedAt} /></p>
+                <MobileSystemControls model={model} />
               </div>
-            </details>
-            <RunnerStatus model={model} />
-            <HarnessUsage model={model} />
-            <span class="total-usage" title={model.totalUsage}>{model.totalUsage}</span>
-            <ThemeControl />
-            <a class={model.view === "notifications" ? "header-link header-link--active" : "header-link"} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
-            <details class="account-menu">
+              </details>
+              <a href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true" /><span><strong>{needsYouItems(model).total}</strong> {needsYouItems(model).total === 1 ? "needs" : "need"} you</span></a>
+              <StickyFilterSummary model={model} />
+              <span class="header-desktop-control"><RunnerStatus model={model} /></span>
+              <span class="header-desktop-control"><HarnessUsage model={model} /></span>
+              <span class="total-usage header-desktop-control" title={model.totalUsage}>{model.totalUsage}</span>
+              <span class="header-desktop-control"><ThemeControl /></span>
+              <a class={`header-link header-desktop-control${model.view === "notifications" ? " header-link--active" : ""}`} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
+              <details class="account-menu">
               <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
               <div class="header-popover account-popover">
                 <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
@@ -1285,10 +1316,11 @@ function Page({ model }: { model: DashboardViewModel }) {
                 <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
                 <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
               </div>
-            </details>
-          </header>
+              </details>
+            </header>
+            <Navigation model={model} />
+          </div>
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
-          <Navigation model={model} />
           <div class="content-anchor" id="content" tabIndex={-1} />
           {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><BoardFilters model={model} /><NeedsYou model={model} /></>}
           {content}

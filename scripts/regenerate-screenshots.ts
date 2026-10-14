@@ -325,6 +325,9 @@ async function seedDemo(home: string): Promise<void> {
       repositoryId: PHONE_OVERFLOW_REPOSITORY,
     };
     issues.push(phoneOverflowIssue);
+    for (let number = 7; number <= 42; number += 1) {
+      issues.push(issue(number, `Keep the long implementation board card ${number}`, "implementation"));
+    }
     for (const entry of issues) store.upsertIssue(entry);
     // A CI chip carries visually hidden text. In a stage scrolled out of view at phone widths it
     // must not widen the document, which verifyPhoneLayouts checks.
@@ -374,6 +377,13 @@ async function seedDemo(home: string): Promise<void> {
       state: "active",
       warning: null,
     });
+    for (let number = 7; number <= 42; number += 1) {
+      store.setIssueProjection(`demo#${number}`, {
+        stage: "implementation",
+        state: "active",
+        warning: null,
+      });
+    }
     for (const [id, stage, status] of [
       ["demo#1", "implementation", "completed"],
       ["demo#2", "review", "completed"],
@@ -389,6 +399,15 @@ async function seedDemo(home: string): Promise<void> {
         feedbackCycle: 0,
         configHash: "demo-config",
       });
+    for (let number = 7; number <= 42; number += 1) {
+      store.setStageState({
+        issueId: `demo#${number}`,
+        stageId: "implementation",
+        status: "completed",
+        feedbackCycle: 0,
+        configHash: "demo-config",
+      });
+    }
 
     store.createRun({
       id: "demo-implementation-run",
@@ -533,10 +552,16 @@ async function stabilize(page: Page): Promise<void> {
 }
 
 async function expectText(page: Page, text: string): Promise<void> {
-  const element = page
-    .getByText(text, { exact: false })
-    .first();
-  await element.waitFor({ state: "visible", timeout: 10_000 });
+  const candidates = page.getByText(text, { exact: false });
+  let element: Locator | null = null;
+  for (let index = 0; index < await candidates.count(); index += 1) {
+    const candidate = candidates.nth(index);
+    if (await candidate.isVisible()) {
+      element = candidate;
+      break;
+    }
+  }
+  if (!element) throw new Error(`Visible text was not found: ${text}`);
   const bounds = await element.evaluate((node) => {
     const { bottom, top } = node.getBoundingClientRect();
     return { bottom, top, viewportHeight: window.innerHeight };
@@ -660,6 +685,145 @@ async function expectLastChildReachable(
       `${name} is not reachable through its horizontal scroller: ${JSON.stringify(result)}`,
     );
   }
+}
+
+async function expectStickyDashboard(page: Page, maximumHeight?: number): Promise<void> {
+  const bounds = await page.locator(".dashboard-sticky").evaluate((sticky) => {
+    const tabs = sticky.querySelector<HTMLElement>(".tabs");
+    const needsYou = sticky.querySelector<HTMLElement>(".needs-you-link");
+    const box = sticky.getBoundingClientRect();
+    const tabBox = tabs?.getBoundingClientRect();
+    const needsYouBox = needsYou?.getBoundingClientRect();
+    return {
+      bottom: box.bottom,
+      height: box.height,
+      needsYouVisible: !!needsYouBox && needsYouBox.top >= 0 && needsYouBox.bottom <= innerHeight,
+      tabsVisible: !!tabBox && tabBox.top >= 0 && tabBox.bottom <= innerHeight,
+      top: box.top,
+      viewportHeight: innerHeight,
+    };
+  });
+  if (bounds.top < -1 || bounds.top > 12 || !bounds.tabsVisible || !bounds.needsYouVisible || (maximumHeight !== undefined && bounds.height > maximumHeight)) {
+    throw new Error(`Dashboard navigation is not sticky and compact: ${JSON.stringify(bounds)}`);
+  }
+}
+
+async function verifyStickyThemeBackgrounds(page: Page): Promise<void> {
+  const backgrounds: string[] = [];
+  for (const theme of ["light", "dark"] as const) {
+    const background = await page.locator(".dashboard-sticky").evaluate((sticky, currentTheme) => {
+      document.documentElement.dataset.theme = currentTheme;
+      localStorage.setItem("conveyor-theme", currentTheme);
+      return getComputedStyle(sticky).backgroundColor;
+    }, theme);
+    if (background === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(background))
+      throw new Error(`Sticky navigation has a transparent ${theme} theme background: ${background}`);
+    backgrounds.push(background);
+  }
+  if (backgrounds[0] === backgrounds[1])
+    throw new Error(`Sticky navigation did not apply distinct light and dark backgrounds: ${backgrounds[0]}`);
+  await page.locator(".dashboard-sticky").evaluate(() => {
+    document.documentElement.dataset.theme = "light";
+    localStorage.setItem("conveyor-theme", "light");
+  });
+}
+
+async function scrollBoardAndExpectSticky(page: Page): Promise<void> {
+  const scroll = await page.locator(".board.board--rows").evaluate((board) => {
+    board.scrollTop = 2_000;
+    return { maximum: board.scrollHeight - board.clientHeight, top: board.scrollTop };
+  });
+  if (scroll.maximum < 2_000 || scroll.top < 1_900)
+    throw new Error(`The populated board did not scroll about 2000px: ${JSON.stringify(scroll)}`);
+  await expectStickyDashboard(page);
+  const stage = await page.locator(".board-head").evaluate((head) => {
+    const bounds = head.getBoundingClientRect();
+    return { bottom: bounds.bottom, top: bounds.top };
+  });
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+  if (stage.top < 0 || stage.bottom > viewportHeight)
+    throw new Error(`The scrolled board stage header is not visible: ${JSON.stringify(stage)}`);
+}
+
+async function scrollPhoneBoardAndExpectSticky(page: Page): Promise<void> {
+  const scroll = await page.evaluate(() => {
+    window.scrollTo(0, 2_000);
+    return {
+      maximum: document.documentElement.scrollHeight - window.innerHeight,
+      top: window.scrollY,
+    };
+  });
+  if (scroll.maximum < 2_000 || scroll.top < 1_900)
+    throw new Error(`The populated phone board did not scroll about 2000px: ${JSON.stringify(scroll)}`);
+  await expectStickyDashboard(page, 100);
+}
+
+async function verifyPhoneStickyNavigation(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+  await stabilize(page);
+  await expectStickyDashboard(page, 100);
+  const headerHeight = await page.locator(".dashboard-header").evaluate((header) => header.getBoundingClientRect().height);
+  if (headerHeight > 56)
+    throw new Error(`Phone dashboard header is taller than 56px: ${headerHeight}px`);
+
+  await page.locator(".server-status > summary").click();
+  await expectReachableElement(page.locator(".server-popover"), "System popover");
+  await expectReachableText(page, "runners");
+  await expectReachableText(page, "Notifications");
+  await page.getByRole("button", { name: "Dark" }).waitFor({ state: "visible" });
+  await page.locator(".server-status > summary").click();
+
+  await page.locator(".account-menu > summary").click();
+  await expectReachableElement(page.locator(".account-popover"), "Account popover");
+  await page.locator(".account-menu > summary").click();
+
+  await page.locator('.tabs a[href="/operator"]').click();
+  await page.locator('.tabs a[aria-current="page"]').filter({ hasText: "Operator" }).waitFor({ state: "visible" });
+  const activeTab = await page.locator('.tabs a[aria-current="page"]').evaluate((tab) => {
+    const tabBounds = tab.getBoundingClientRect();
+    const tabsBounds = tab.parentElement!.getBoundingClientRect();
+    return { left: tabBounds.left, right: tabBounds.right, tabsLeft: tabsBounds.left, tabsRight: tabsBounds.right };
+  });
+  if (activeTab.left < activeTab.tabsLeft || activeTab.right > activeTab.tabsRight)
+    throw new Error(`Active phone tab is outside its scroller: ${JSON.stringify(activeTab)}`);
+
+  await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+  await stabilize(page);
+}
+
+async function verifyAnchorOffset(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}/board#needs-you-heading`, { waitUntil: "networkidle" });
+  await page.locator("#needs-you-heading").waitFor({ state: "visible", timeout: 10_000 });
+  const needsYou = await page.locator("#needs-you-heading").evaluate((heading) => {
+    const sticky = document.querySelector<HTMLElement>(".dashboard-sticky")!;
+    return { headingTop: heading.getBoundingClientRect().top, stickyBottom: sticky.getBoundingClientRect().bottom };
+  });
+  if (needsYou.headingTop < needsYou.stickyBottom)
+    throw new Error(`Needs you anchor landed beneath sticky navigation: ${JSON.stringify(needsYou)}`);
+
+  await page.locator(".skip-link").focus();
+  await page.locator(".skip-link").click();
+  const content = await page.locator("#content").evaluate((target) => {
+    const sticky = document.querySelector<HTMLElement>(".dashboard-sticky")!;
+    return { targetTop: target.getBoundingClientRect().top, stickyBottom: sticky.getBoundingClientRect().bottom };
+  });
+  if (content.targetTop < content.stickyBottom)
+    throw new Error(`Skip link landed beneath sticky navigation: ${JSON.stringify(content)}`);
+
+  await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+  await stabilize(page);
+  const stationLink = page.locator("[data-station-link]").first();
+  const stationTarget = await stationLink.getAttribute("href");
+  if (!stationTarget?.startsWith("#"))
+    throw new Error("Expected the board to provide a line-station anchor link.");
+  await stationLink.focus();
+  await page.keyboard.press("Enter");
+  const station = await page.locator(stationTarget).evaluate((target) => {
+    const sticky = document.querySelector<HTMLElement>(".dashboard-sticky")!;
+    return { targetTop: target.getBoundingClientRect().top, stickyBottom: sticky.getBoundingClientRect().bottom };
+  });
+  if (station.targetTop < station.stickyBottom)
+    throw new Error(`Station anchor landed beneath sticky navigation: ${JSON.stringify(station)}`);
 }
 
 async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
@@ -821,12 +985,19 @@ async function main(): Promise<void> {
       "Show all",
       PHONE_OVERFLOW_REPOSITORY,
     ]);
+    await verifyStickyThemeBackgrounds(page);
+    await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+    await stabilize(page);
+    await scrollBoardAndExpectSticky(page);
+    await page.screenshot({ path: path.join(OUTPUT_DIRECTORY, "board-scrolled.png") });
+    await verifyAnchorOffset(page, baseUrl);
     await capture(page, baseUrl, "board-filtered", "/board?repo=demo&q=dashboard", [
       "Search board",
       "Clear filters",
       "Showing 1 of",
       "Ship a reliable dashboard overview",
     ]);
+    await expectReachableElement(page.locator("[data-sticky-filter-summary]"), "Sticky filter summary");
     await capture(page, baseUrl, "repositories", "/repositories", [
       "Repositories",
       PHONE_OVERFLOW_REPOSITORY,
@@ -867,6 +1038,11 @@ async function main(): Promise<void> {
     const phone = await phoneContext.newPage();
     await phone.addInitScript(() => localStorage.setItem("conveyor-theme", "light"));
     await capture(phone, baseUrl, "board-phone", "/board", ["Search board", "Filters"]);
+    await phone.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+    await stabilize(phone);
+    await scrollPhoneBoardAndExpectSticky(phone);
+    await phone.screenshot({ path: path.join(OUTPUT_DIRECTORY, "board-phone-scrolled.png") });
+    await verifyPhoneStickyNavigation(phone, baseUrl);
     const collapsedRows = await phone.locator("[data-filter-form]").evaluate((form) => {
       const rows = new Set(
         [...form.children]
@@ -882,6 +1058,7 @@ async function main(): Promise<void> {
       "Filters 2",
       "Clear filters",
     ]);
+    await expectReachableElement(phone.locator("[data-sticky-filter-summary]"), "Phone sticky filter summary");
     await phoneContext.close();
     await page.goto(`${baseUrl}/issues/demo/1/journey`, {
       waitUntil: "networkidle",

@@ -354,7 +354,7 @@ describe("renderDashboard", () => {
     const totalUsage = "19M in (13M cached) · 1.1M out · 48 runs";
     const html = renderDashboard({ ...dashboard, totalUsage });
 
-    expect(html).toContain(`<span class="total-usage" title="${totalUsage}">${totalUsage}</span>`);
+    expect(html).toContain(`<span class="total-usage header-desktop-control" title="${totalUsage}">${totalUsage}</span>`);
     expect(html).toContain('<a href="/board">Conveyor</a>');
     expect(html).toMatch(/data-connection-state(?:="true")?>Connecting/);
     expect(html).toContain('1 of 4</strong> runners');
@@ -714,9 +714,9 @@ describe("renderDashboard", () => {
       needsYou: [...dashboard.needsYou, backlogIssue],
     });
 
-    expect(secondary.indexOf('class="app-header"')).toBeLessThan(secondary.indexOf('class="system-warnings"'));
-    expect(secondary.indexOf('class="system-warnings"')).toBeLessThan(secondary.indexOf('class="tabs"'));
-    expect(secondary.indexOf('class="tabs"')).toBeLessThan(secondary.indexOf('class="team"'));
+    expect(secondary.indexOf('class="dashboard-sticky"')).toBeLessThan(secondary.indexOf('class="system-warnings"'));
+    expect(secondary.indexOf('class="tabs"')).toBeLessThan(secondary.indexOf('class="system-warnings"'));
+    expect(secondary.indexOf('class="system-warnings"')).toBeLessThan(secondary.indexOf('class="team"'));
     expect(secondary).not.toContain('id="line-heading"');
     expect(secondary).not.toContain('id="needs-you-heading"');
     expect(secondary).toContain('href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true"></i><span><strong>2</strong> need you</span></a>');
@@ -727,10 +727,21 @@ describe("renderDashboard", () => {
     expect(secondary).not.toContain('href="/accounts" class="account-menu-item"');
     expect(secondary).toContain('>About Conveyor</a>');
     expect(questionAndStopped).toContain('href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true"></i><span><strong>2</strong> need you</span></a>');
-    expect(empty).not.toContain('/board#needs-you-heading');
+    expect(empty).toContain('href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true"></i><span><strong>0</strong> need you</span></a>');
     expect(empty).not.toContain('href="/attention"');
     expect(attention).toContain('href="/attention" class="tab tab--active" aria-current="page">Label problems<span class="tab-count">0</span>');
     expect(renderDashboard(dashboard).indexOf('class="tabs"')).toBeLessThan(renderDashboard(dashboard).indexOf('id="line-heading"'));
+  });
+
+  test("keeps the dashboard navigation visible and gives an empty Needs you link a target", () => {
+    const emptyBoard = renderDashboard({ ...dashboard, questions: [], needsYou: [] });
+
+    expect(emptyBoard).toContain('class="dashboard-sticky"');
+    expect(emptyBoard).toContain('id="needs-you-heading">Needs you <span>(0)</span>');
+    expect(emptyBoard).toContain('No items need your attention right now.');
+    expect(emptyBoard).toContain('aria-label="Connection state: Connecting"');
+    expect(dashboardCss).toContain('.dashboard-sticky{position:sticky;top:0;z-index:20;background:var(--concrete)');
+    expect(dashboardCss).toContain('#content,#needs-you-heading,[id^="station-"]{scroll-margin-top:calc(var(--dashboard-sticky-height) + .5rem)}');
   });
 
   test("shows each open parent as a foldable row of its children, and a finished family as its parent alone", () => {
@@ -1093,7 +1104,7 @@ describe("renderDashboard", () => {
       notifications: { questions: true, stopped: false, done: true },
     });
     expect(html).toContain('data-dashboard-view="notifications"');
-    expect(html).toContain('class="header-link header-link--active" href="/settings/notifications" aria-current="page"');
+    expect(html).toContain('class="header-link header-desktop-control header-link--active" href="/settings/notifications" aria-current="page"');
     expect(html).toContain('id="notification-settings" class="settings-form notification-form"');
     expect(html).toContain('name="questions" checked');
     expect(html).toContain('name="done" checked');
