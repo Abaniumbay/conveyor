@@ -978,29 +978,6 @@ export const dashboardClient = String.raw`(() => {
   applyRowFolds();
   document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
 
-  const currentBoard = () => document.querySelector('main.dashboard .board.board--rows');
-
-  // The stage headings stay at the top of the window while the board scrolls under them. The board scrolls
-  // sideways, which makes it the headings' scroll container, so CSS sticky cannot pin them to the window;
-  // they are moved down instead, never past the board's last row.
-  const pinStageHeadings = () => {
-    const current = currentBoard();
-    const headings = current ? current.querySelector('.board-head') : null;
-    if (!(headings instanceof HTMLElement)) return;
-    if (window.matchMedia('(max-width: 760px)').matches) {
-      headings.style.transform = '';
-      headings.classList.remove('board-head--pinned');
-      return;
-    }
-    const track = headings.parentElement;
-    const offset = Math.max(0, Math.min(-track.getBoundingClientRect().top, track.offsetHeight - headings.offsetHeight));
-    headings.style.transform = offset > 0 ? 'translateY(' + offset + 'px)' : '';
-    headings.classList.toggle('board-head--pinned', offset > 0);
-  };
-  window.addEventListener('scroll', pinStageHeadings, { passive: true });
-  window.addEventListener('resize', pinStageHeadings);
-  document.addEventListener('conveyor:dashboard-rendered', pinStageHeadings);
-  pinStageHeadings();
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
@@ -1621,6 +1598,7 @@ export const dashboardClient = String.raw`(() => {
     const stage = (issue && issue.closest('[data-station-cell]')) || stages[0]?.stage;
     return {
       scrollX: board ? board.scrollLeft : 0,
+      boardY: board ? board.scrollTop : 0,
       scrollY: window.scrollY,
       issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
       stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
@@ -1629,13 +1607,18 @@ export const dashboardClient = String.raw`(() => {
   const restoreDashboardPosition = (position) => {
     window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
     if (board) {
+      board.scrollTop = clampScrollOffset(position.boardY || 0, board.scrollHeight - board.clientHeight);
       board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
       const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
       if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
     }
     if (position.issue?.id) {
       const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
-      if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + issue.getBoundingClientRect().top - position.issue.top, documentScrollMaximum()));
+      const shift = issue ? issue.getBoundingClientRect().top - position.issue.top : 0;
+      // On wide screens the board scrolls vertically inside itself; on phones the page does.
+      if (issue && board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
+        board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
+      } else if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
     }
   };
   const interactionInProgress = () => {
