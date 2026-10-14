@@ -413,6 +413,8 @@ const taskEntrySchema = z
   .object({
     id: identifierSchema.optional(),
     task: identifierSchema,
+    /** A native exit gate that requires an operator approval after its automatic check passes. */
+    manual: z.boolean().optional(),
     when: z.enum(["ci.enabled", "ci.required", "ci.advisory"]).optional(),
   })
   .extend(taskOverrideSchema.shape)

@@ -184,17 +184,21 @@ async function harness(options: { maxReturns?: number } = {}) {
   const registry = buildRegistry(world);
   const notes: string[] = [];
   const statuses: Array<string | null> = [];
+  let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; configured: boolean }) =>
+    ({ required: false, approved: false, message: "" });
   const executorFor = (j: ExecutionStore = journal) =>
     new StageExecutor({
       registry, journal: j, clock,
       notify: (m) => { notes.push(m); },
       setStatus: (m) => { statuses.push(m); },
+      manualGate: (input) => manualGate(input),
       settings: { maxReturns: options.maxReturns ?? 5 },
     });
   const run = (plan: CompiledPipeline, stageId: string, exec = executorFor()): Promise<StageOutcome> =>
     exec.execute({ issueId: "issue-1", pipeline: plan, stageId, baseContext: baseContext(), deps: { tag: "deps" } });
   return {
     store, journal, world, registry, notes, statuses, executorFor, run,
+    setManualGate: (next: typeof manualGate) => { manualGate = next; },
     advance: (ms: number) => { now += ms; },
     now: () => new Date(now),
     activate: () => journal.bumpStageEpoch("issue-1"),
@@ -231,6 +235,24 @@ describe("happy path", () => {
     h.activate();
     const outcome = await h.run(simple(h), "review");
     expect(outcome).toMatchObject({ kind: "advance", stageId: "review", nextStageId: null });
+  });
+
+  test("waits for a fresh human approval after automatic gate checks pass", async () => {
+    const h = await harness();
+    h.activate();
+    let approved = false;
+    h.setManualGate(({ configured }) => ({ required: configured, approved, message: "Waiting for board approval of implementation / human." }));
+    const plan = simple(h, [ct(h.registry, "human", "test.check", { manual: true })]);
+
+    expect(await h.run(plan, "implementation")).toEqual({ kind: "parked", stageId: "implementation", reason: "pending", wakeAt: null });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "exit-gate", taskInstanceId: "human", state: "pending", wakeAt: null });
+    expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
+    expect(h.statuses.at(-1)).toContain("board approval");
+
+    approved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
+    expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
   });
 
   test("acts see the instance id, key, resumed flag and the rewritten run context", async () => {

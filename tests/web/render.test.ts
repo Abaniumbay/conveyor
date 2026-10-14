@@ -302,6 +302,32 @@ describe("renderDashboard", () => {
     expect(html).toContain("Keyboard usable");
   });
 
+  test("renders configured and item-specific manual gate approvals only for superusers", () => {
+    const selectedIssue = {
+      ...parent,
+      csrfToken: "csrf-token",
+      manualGates: [
+        { stageId: "implementation", gateId: "ciGate", configured: true, itemSpecific: true, waiting: true, approvedBy: "admin", approvedAt: "2026-10-14T12:00:00Z" },
+      ],
+    } satisfies IssueCardViewModel;
+    const base = { ...dashboard, selectedIssue };
+
+    const reader = renderDashboard({ ...base, account: { id: "reader", username: "reader", role: "user", avatar: "🦊" } });
+    expect(reader).toContain("Manual gate approvals");
+    expect(reader).toContain("implementation · ciGate");
+    expect(reader).toContain("Configured requirement · Item-specific requirement");
+    expect(reader).toContain("Waiting for board approval.");
+    expect(reader).toContain("Approved by admin");
+    expect(reader).not.toContain("/manual-gates/requirement");
+
+    const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
+    expect(superuser).toContain('action="/manual-gates/requirement"');
+    expect(superuser).toContain('action="/manual-gates/approve"');
+    expect(superuser).toContain('name="csrf" value="csrf-token"');
+    expect(superuser).toContain("Remove item requirement");
+    expect(superuser).toContain("Approve gate");
+  });
+
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
     const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
 

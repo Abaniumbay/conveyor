@@ -22,7 +22,7 @@ const run = (name: string, state: CiRun["state"], over: Partial<CiRun> = {}): Ci
   id: `id-${name}`, name, state, url: `https://ci/${name}`, canRerun: false, hasLog: false, startedAt: "2026-01-01T00:00:00Z", completedAt: null, ...over,
 });
 
-async function setup(ci = "") {
+async function setup(ci = "", manual = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-ci-indicator-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -50,7 +50,7 @@ pipelines:
         concurrency: 1
         actions: []
         exit-gate:
-          - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 } }
+          - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 }${manual ? ", manual: true" : ""} }
 repositories:
   repo: { source: github, address: owner/repo, folder: ${repositoryPath}, pipeline: default${ci} }
 `);
@@ -135,6 +135,49 @@ function parkCiGate(store: ConveyorStore, wakeAt: string) {
     taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt, deadlineAt: null,
   }, epoch);
 }
+
+function parkManualGate(store: ConveyorStore) {
+  const journal = store.executions();
+  const epoch = journal.stageEpoch("issue");
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
+  }, epoch);
+}
+
+test("a configured manual gate records a fresh superuser approval and wakes only its current visit", async () => {
+  const w = await setup("", true);
+  parkManualGate(w.store);
+  const firstEpoch = w.store.executions().stageEpoch("issue");
+
+  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
+    stageId: "implementation", gateId: "ciGate", configured: true, itemSpecific: false, waiting: true,
+  }]);
+  expect(dashboard().needsYou).toEqual(expect.arrayContaining([expect.objectContaining({ id: "issue" })]));
+
+  w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
+  expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
+    gateId: "ciGate", waiting: false, approvedBy: "admin", approvedAt: expect.any(String),
+  }]);
+  expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({ actorType: "user", actorId: "admin-1", message: 'Approved manual gate "ciGate".' });
+  expect(w.store.executions().getCursor("issue")?.wakeAt).toEqual(expect.any(String));
+
+  expect(() => w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-2", username: "other" })).not.toThrow();
+  expect(() => w.service.approveManualGate("issue", "implementation", "missing", { id: "admin-1", username: "admin" })).toThrow("native stage exit gates");
+
+  const nextEpoch = w.store.executions().onStageChange("issue");
+  w.store.executions().saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: nextEpoch, attempt: 2, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
+  }, nextEpoch);
+  expect(dashboard().selectedIssue?.manualGates?.[0]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
+  w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
+  const receipts = w.store.sqlite().query("SELECT stage_epoch FROM manual_gate_approvals WHERE issue_id = 'issue' ORDER BY stage_epoch").all() as Array<{ stage_epoch: number }>;
+  expect(receipts).toEqual([{ stage_epoch: firstEpoch }, { stage_epoch: nextEpoch }]);
+
+  await w.service.close();
+});
 
 test("existing changes acquire a current-head indicator on reconcile, shown on the card without a provider call", async () => {
   const w = await setup();

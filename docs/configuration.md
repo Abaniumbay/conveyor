@@ -389,6 +389,17 @@ repositories:
 
 Task entries take `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when it occurs once in the list and is required for duplicates; overrides, execution records, script results and idempotency keys use the instance id. `when` is a guard from a closed vocabulary (`ci.enabled`, `ci.required`, `ci.advisory`) evaluated at load time from the repository's CI mode; there are no expressions, variables or loops. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires; the default comes from the task, else `settings.taskDefaults.wait`). A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`); naming something that does not exist is an error. `settings.maxReturns` (default 5) bounds `return` loops between stages. `agent.run` takes `agent: <id>` or `agents: [<id>, ...]` in order of preference: when an agent's harness cannot run (a usage limit, a login failure, a crash), the next one takes the same step and the item's conversation says so; a result the agent returned, of any status, is never retried on another agent. An answered question goes back to the agent that asked it first.
 
+### Manual exit-gate approval
+
+Set `manual: true` on a named **native** `exit-gate` task to require a board approval after that task's automatic check passes. `manual` is invalid on an action and is not available on legacy stages. For example, this keeps the normal CI result as a prerequisite while adding a human decision:
+
+```yaml
+exit-gate:
+  - { id: ciGate, task: ci.passed, manual: true }
+```
+
+On the board, a signed-in superuser can also require or remove an item-specific approval for a current or future native exit gate. Repository configuration and the item choice combine with OR semantics: removing the item choice never removes a configured requirement. The board labels the source of a waiting requirement and offers the approval button only to superusers; the action is CSRF protected. An approval records the account and time in the item history, then wakes the item to re-evaluate the gate without repeating its completed actions. It is valid only for that item, gate, and visit to the stage: a retry, return, or plan restart needs a fresh approval. Removing a requirement before the gate advances takes effect immediately.
+
 Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` section are not part of the native shape.
 
 ### Legacy configuration (deprecated, still supported)

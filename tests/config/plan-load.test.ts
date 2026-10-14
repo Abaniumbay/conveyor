@@ -93,6 +93,27 @@ describe("plan compilation at load", () => {
     const config = await loadConfig(await write(LEGACY), registry());
     expect(config.plans.map((plan) => [plan.repositoryId, plan.stages[0]?.legacy])).toEqual([["sample", true]]);
   });
+
+  test("keeps a configured manual native exit gate in the compiled plan", async () => {
+    const config = await loadConfig(await write(`
+    stages:
+      - id: build
+        concurrency: 1
+        actions: [{ task: demo.act }]
+        exit-gate: [{ id: operator, task: demo.gate, manual: true }]
+`), registry());
+    expect(config.plans[0]?.stages[0]?.exitGate[0]).toMatchObject({ id: "operator", manual: true });
+  });
+
+  test("rejects manual requirements outside native exit gates", async () => {
+    await expect(loadConfig(await write(`
+    stages:
+      - id: build
+        concurrency: 1
+        actions: [{ task: demo.act, manual: true }]
+        exit-gate: [{ task: demo.gate }]
+`), registry())).rejects.toThrow(/manual is valid only on a native exit-gate task/);
+  });
 });
 
 describe("check-config", () => {

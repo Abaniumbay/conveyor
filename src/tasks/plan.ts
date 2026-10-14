@@ -14,6 +14,8 @@ export interface CompiledTask {
   id: string;
   task: string;
   kind: TaskKind;
+  /** True when this native exit gate also needs an operator approval. */
+  manual?: boolean;
   with: Record<string, unknown>;
   /** Short human description shown by renderPlan in place of `with` (legacy tasks). */
   label?: string;
@@ -225,6 +227,9 @@ function compileTask(
     errors.push(`${path}: task "${definition.name}" is a ${definition.kind}; ${why}`);
     return undefined;
   }
+  if (entry.config.manual && list !== "exit-gate") {
+    errors.push(`${path}: manual is valid only on a native exit-gate task`);
+  }
 
   const withValue = (override?.with ?? entry.config.with ?? {}) as Record<string, unknown>;
   if (definition.config) {
@@ -255,6 +260,7 @@ function compileTask(
     id: entry.id,
     task: definition.name,
     kind: definition.kind,
+    manual: entry.config.manual === true,
     with: withValue,
     wait,
     onFail,

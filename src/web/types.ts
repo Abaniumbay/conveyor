@@ -39,6 +39,17 @@ export interface IssueCriterionViewModel {
   approved: boolean;
 }
 
+/** A native exit gate that a superuser may require or approve for this item. */
+export interface ManualGateViewModel {
+  stageId: string;
+  gateId: string;
+  configured: boolean;
+  itemSpecific: boolean;
+  waiting: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+}
+
 export type { IndicatorViewModel } from "../app/indicators";
 import type { IndicatorViewModel } from "../app/indicators";
 
@@ -57,6 +68,10 @@ export interface IssueCardViewModel {
   /** The repository-configured organization issue-field values that are set, in configuration order. */
   issueFields: ReadonlyArray<{ name: string; value: string }>;
   acceptanceCriteria: readonly IssueCriterionViewModel[];
+  /** Current and future native exit gates; absent on older API payloads. */
+  manualGates?: readonly ManualGateViewModel[];
+  /** Request token copied into superuser forms rendered from this card. */
+  csrfToken?: string;
   /** The implementer's todo list, kept by Conveyor; null until one is written. */
   todos: IssueTodosViewModel | null;
   /** The stage the item is in; card todo progress is shown only in the stage that owns the list. */

@@ -241,6 +241,36 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         </dl>
         <Relationships issue={issue} />
         <IndicatorDetails issue={issue} />
+        {issue.manualGates && issue.manualGates.length > 0 && (
+          <section class="criteria" aria-label="Manual gate approvals">
+            <h3>Manual gate approvals</h3>
+            <ul class="criteria-list">{issue.manualGates.map((gate) => (
+              <li key={`${gate.stageId}:${gate.gateId}`}>
+                <strong>{gate.stageId} · {gate.gateId}</strong>{" "}
+                <span>{gate.configured ? "Configured requirement" : "Not configured"}{gate.itemSpecific ? " · Item-specific requirement" : ""}</span>
+                {gate.waiting && <p>Waiting for board approval.</p>}
+                {gate.approvedBy && <p>Approved by {gate.approvedBy}{gate.approvedAt ? ` at ${new Date(gate.approvedAt).toLocaleString()}` : ""}.</p>}
+                {canManage && <div>
+                  <form method="post" action="/manual-gates/requirement">
+                    <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
+                    <input type="hidden" name="issueId" value={issue.id} />
+                    <input type="hidden" name="stageId" value={gate.stageId} />
+                    <input type="hidden" name="gateId" value={gate.gateId} />
+                    <input type="hidden" name="required" value={gate.itemSpecific ? "false" : "true"} />
+                    <button type="submit">{gate.itemSpecific ? "Remove item requirement" : "Require board approval"}</button>
+                  </form>
+                  {gate.waiting && <form method="post" action="/manual-gates/approve">
+                    <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
+                    <input type="hidden" name="issueId" value={issue.id} />
+                    <input type="hidden" name="stageId" value={gate.stageId} />
+                    <input type="hidden" name="gateId" value={gate.gateId} />
+                    <button type="submit">Approve gate</button>
+                  </form>}
+                </div>}
+              </li>
+            ))}</ul>
+          </section>
+        )}
         <TodoChecklist issue={issue} />
         <section class="criteria" aria-label="Acceptance criteria">
           <h3>Acceptance criteria</h3>
@@ -1165,6 +1195,7 @@ function Page({ model }: { model: DashboardViewModel }) {
               issue={model.selectedIssue}
               id={`selected-issue-${model.selectedIssue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${model.selectedIssue.number}`}
               selected
+              canManage={canManageDashboard(model)}
             />
           )}
           <div class="page-loader" role="status" aria-live="polite"><span />Loading…</div>

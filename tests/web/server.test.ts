@@ -62,6 +62,8 @@ interface CallLog {
   messages: unknown[][];
   retries: unknown[][];
   dismissals: unknown[][];
+  manualRequirements: unknown[][];
+  manualApprovals: unknown[][];
 }
 
 function setup(overrides: Record<string, unknown> = {}) {
@@ -70,7 +72,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [], manualRequirements: [], manualApprovals: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -167,6 +169,8 @@ function setup(overrides: Record<string, unknown> = {}) {
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
+    setManualGateRequirement: async (...args: unknown[]) => { calls.manualRequirements.push(args); },
+    approveManualGate: async (...args: unknown[]) => { calls.manualApprovals.push(args); },
     ...overrides,
   };
   return { handler: createWebHandler(dependencies as never), auth, calls };
@@ -616,6 +620,39 @@ describe("createWebHandler", () => {
     }));
     expect(scripted.status).toBe(200);
     expect(await scripted.json()).toEqual({ ok: true });
+  });
+
+  test("limits manual gate requirements and approvals to superuser CSRF requests", async () => {
+    type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+    const admin: Account = { id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader: Account = { id: "reader-id", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    const accounts = new Map([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const { handler, calls } = setup({ auth });
+    const adminSession = auth.createSession(admin)!;
+    const readerSession = auth.createSession(reader)!;
+    const adminCookie = adminSession.cookie.split(";", 1)[0]!;
+    const readerCookie = readerSession.cookie.split(";", 1)[0]!;
+    const post = (path: string, fields: Record<string, string>, cookie = adminCookie) => handler(new Request(`http://localhost${path}`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields),
+    }));
+
+    const requirement = { issueId: "issue-1", stageId: "implementation", gateId: "human", required: "true" };
+    expect((await post("/manual-gates/requirement", requirement, "")).status).toBe(401);
+    expect((await post("/manual-gates/requirement", requirement, readerCookie)).status).toBe(403);
+    expect((await post("/manual-gates/requirement", requirement)).status).toBe(403);
+    expect((await post("/manual-gates/requirement", { ...requirement, csrf: adminSession.csrfToken })).status).toBe(303);
+    expect(calls.manualRequirements).toEqual([["issue-1", "implementation", "human", true]]);
+
+    expect((await post("/manual-gates/approve", { issueId: "issue-1", stageId: "implementation", gateId: "human", csrf: adminSession.csrfToken })).status).toBe(303);
+    expect(calls.manualApprovals).toHaveLength(1);
+    expect(calls.manualApprovals[0]?.slice(0, 3)).toEqual(["issue-1", "implementation", "human"]);
+    expect(calls.manualApprovals[0]?.[3]).toMatchObject({ id: "admin-id", username: "admin" });
   });
 
   test("returns actionable validation errors for blank or rejected question answers", async () => {
