@@ -507,6 +507,9 @@ describe("renderDashboard", () => {
     expect(themeScript).toBeLessThan(stylesheet);
     expect(themeInitScript).toContain('localStorage.getItem("conveyor-theme")');
     expect(themeInitScript).toContain('document.documentElement.dataset.theme');
+    // The line's open or closed choice is restored before the page draws, like the theme.
+    expect(themeInitScript).toContain('localStorage.getItem("conveyor-line")');
+    expect(themeInitScript).toContain("document.documentElement.dataset.line");
     expect(html).toContain('<meta name="color-scheme" content="light dark"');
     expect(html).toContain('class="theme-control"');
     expect(html).toContain('data-theme-choice="system"');
@@ -540,7 +543,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('--repo-5:#66C7F0');
   });
 
-  test("renders the ordered Board strip and repository list without a horizontal phone layout", () => {
+  test("lists repositories on the Repositories tab only, ordered, without a horizontal phone layout", () => {
     const summary = (id: string, health: "healthy" | "degraded", items: DashboardViewModel["repositories"][number]["items"], errorSummary: string | null = null) => ({
       id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
       addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
@@ -558,22 +561,21 @@ describe("renderDashboard", () => {
       summary("extra", "healthy", []),
       summary("space/name", "healthy", []),
     ];
+    // The board does not repeat the repositories: the Repositories tab lists them, and each card names its own.
     const board = renderDashboard({ ...dashboard, repositories });
-
-    expect(board).toContain('<h2 id="repositories-heading"><a href="/repositories">Repositories</a></h2>');
-    expect(board).toContain('href="/repositories/space%2Fname"');
-    expect(board).toContain('Webhook is unavailable');
-    expect(board).toContain('1 in progress · 1 needs you');
-    expect(board).toContain('Show all 7');
-    expect(board.indexOf('href="/repositories/broken"')).toBeLessThan(board.indexOf('href="/repositories/owner"'));
-    expect(board.indexOf('href="/repositories/owner"')).toBeLessThan(board.indexOf('href="/repositories/active"'));
-    expect(dashboardCss).toContain('.repository-grid{grid-template-columns:minmax(0,1fr)}');
+    expect(board).not.toContain('id="repositories-heading"');
+    expect(board).not.toContain(`class="repository-card`);
 
     const list = renderDashboard({ ...dashboard, view: "repositories", repositories });
     expect(list).toContain('class="tab tab--active" aria-current="page">Repositories</a>');
+    expect(list).toContain('href="/repositories/space%2Fname"');
     expect(list).toContain('owner/space/name');
-    expect(list).not.toContain('Show all 7');
-    expect(renderDashboard({ ...dashboard, repositories: [] })).toContain("No repositories are configured.");
+    expect(list).toContain('Webhook is unavailable');
+    expect(list).toContain('1 in progress · 1 needs you');
+    expect(list.indexOf('href="/repositories/broken"')).toBeLessThan(list.indexOf('href="/repositories/owner"'));
+    expect(list.indexOf('href="/repositories/owner"')).toBeLessThan(list.indexOf('href="/repositories/active"'));
+    expect(dashboardCss).toContain('.repository-grid{grid-template-columns:minmax(0,1fr)}');
+    expect(renderDashboard({ ...dashboard, view: "repositories", repositories: [] })).toContain("No repositories are configured.");
   });
 
   test("renders repository detail sections and redacts restricted setup for non-superusers", () => {

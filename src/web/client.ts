@@ -984,6 +984,21 @@ export const dashboardClient = String.raw`(() => {
   // Rows animate only once the page has painted its first state, so loading the page does not replay a fold.
   requestAnimationFrame(() => requestAnimationFrame(() => body.classList.add('board-motion')));
 
+  // The line folds too: open on wide screens and closed on phones until the reader chooses (the theme
+  // script restores the choice before the page draws, so CSS shows the right state at once).
+  const lineOpen = () => document.documentElement.dataset.line === 'open' ||
+    (document.documentElement.dataset.line !== 'closed' && !window.matchMedia('(max-width: 760px)').matches);
+  const applyLineFold = () => {
+    const open = lineOpen();
+    const toggle = document.querySelector('[data-line-toggle]');
+    if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const stations = document.getElementById('line-stations');
+    if (stations) stations.inert = !open;
+  };
+  applyLineFold();
+  document.addEventListener('conveyor:dashboard-rendered', applyLineFold);
+  window.matchMedia('(max-width: 760px)').addEventListener('change', applyLineFold);
+
   // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
   // A parent waits on its unfinished parts, so whatever waits on a parent is held up by them too.
   let traceFocus = null;
@@ -1077,6 +1092,13 @@ export const dashboardClient = String.raw`(() => {
     if (event.target.closest('[data-trace-clear]')) {
       traceFocus = null;
       applyTrace();
+      return;
+    }
+    if (event.target.closest('[data-line-toggle]')) {
+      const open = !lineOpen();
+      document.documentElement.dataset.line = open ? 'open' : 'closed';
+      try { localStorage.setItem('conveyor-line', open ? 'open' : 'closed'); } catch {}
+      applyLineFold();
       return;
     }
     const rowFold = event.target.closest('[data-row-fold]');
