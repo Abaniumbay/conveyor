@@ -15,7 +15,7 @@ The board shows backlog, configured stages, completed work, active runner capaci
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.
 
-Parent items and their children appear as families. A child card says which parent it is part of, with a link to the parent and the family's done/total. A parent card places each child as a dot on a miniature of the line (Backlog, each stage, Done), coloured by its state, with a tally underneath. In a stage column, a parent is followed by its children in the same column, joined by a rail. **Show family on the board** (or the done/total button on a child) outlines the parent and every child across the board and dims the rest; **Show everything**, pressing the button again, or Escape clears it.
+Parent items and their children appear as families. A child card says which parent it is part of, with a link to the parent and the family's done/total. A parent card places each child as a dot on a miniature of the line (Backlog, each stage, Done), coloured by its state, with a tally underneath. In a stage column, a parent is followed by its children in the same column, joined by a rail. **Show family on the board** (or the done/total button on a child) outlines the parent and every child across the board and dims the rest; **Show everything**, pressing the button again, or Escape clears it. **Hide N** on a parent folds away the children listed under it in that column (each browser remembers which families are folded); **Show N** brings them back.
 
 ### Todos
 

@@ -703,8 +703,12 @@ describe("renderDashboard", () => {
     // Each parent is followed by its children in the same column, joined by a rail.
     const order = ["Unrelated work", "Accounts and sessions", "Sign in by code", "Guest sign-in"].map((title) => html.indexOf(`>${title}</button>`));
     expect(order.every((position, index) => position > 0 && (index === 0 || position > order[index - 1]!))).toBe(true);
-    expect(html).toContain('<li class="family-child">');
-    expect(html).toContain('<li class="family-child family-child--last">');
+    expect(html).toContain('<li class="family-child" data-family-child-of="family">');
+    expect(html).toContain('<li class="family-child family-child--last" data-family-child-of="family">');
+    // The parent can fold away the two children listed under it; the one in Done is not counted.
+    expect(html).toContain('data-family-collapse="family" data-family-nested="2" aria-expanded="true" aria-label="Hide the 2 parts listed under #172"');
+    expect(html).toContain('<span data-family-collapse-label="true">Hide 2</span>');
+    expect(html.match(/data-family-collapse=/g)?.length).toBe(1);
     // Children carry a thread to their parent, in a stage column and in Done.
     expect(html.match(/class="family-thread"/g)?.length).toBe(3);
     expect(html).toContain('href="/issues/sample/172" title="#172 Accounts and sessions">#172 Accounts and sessions</a>');

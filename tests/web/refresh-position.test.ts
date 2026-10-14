@@ -305,7 +305,7 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
-  test("a family lights up across the board, survives a live update, and clears", async () => {
+  test("a family lights up across the board, survives a live update, clears, and folds its children away", async () => {
     const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };
     const child = (id: string, number: number) => ({ ...issue(id, number, `Child ${number}`), parent: parentRelation, parentProgress: { done: 0, total: 2 } });
     const family = {
@@ -356,6 +356,20 @@ describe("dashboard live refresh position", () => {
       expect(await parentButton.textContent()).toBe("Showing this family");
       await parentButton.click();
       expect(await state()).toMatchObject({ focused: false, members: [] });
+
+      // Collapsing hides the child listed under the parent, not the one in another column, and is remembered.
+      const visibility = () => page.evaluate(() => ({
+        underParent: (document.querySelector('li[data-family-child-of="family"]') as HTMLElement).hidden,
+        otherColumn: (document.querySelector('article.issue[data-issue-id="child-b"]') as HTMLElement).offsetParent !== null,
+        label: document.querySelector("[data-family-collapse-label]")?.textContent,
+        expanded: document.querySelector("[data-family-collapse]")?.getAttribute("aria-expanded"),
+      }));
+      await page.locator("[data-family-collapse]").click();
+      expect(await visibility()).toEqual({ underParent: true, otherColumn: true, label: "Show 1", expanded: "false" });
+      await page.reload();
+      expect(await visibility()).toEqual({ underParent: true, otherColumn: true, label: "Show 1", expanded: "false" });
+      await page.locator("[data-family-collapse]").click();
+      expect(await visibility()).toEqual({ underParent: false, otherColumn: true, label: "Hide 1", expanded: "true" });
     } finally {
       server.stop(true);
     }

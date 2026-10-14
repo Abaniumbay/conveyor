@@ -17,7 +17,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   as dots on a miniature of the line, plus a tally (done, running, waiting, stopped). In a stage
   column, a parent is followed by its children, joined by a rail. "Show family on the board"
   outlines the whole family across every column, Done included, and dims everything else until
-  cleared.
+  cleared. A parent's **Hide N** button folds away the children listed under it in its column;
+  each browser remembers which families are folded.
 
 ### Changed
 

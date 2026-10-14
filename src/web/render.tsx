@@ -153,12 +153,30 @@ const FAMILY_SIGNALS = [
   { signal: "stop", word: "stopped" },
 ] as const;
 
+/** Folds the children listed under a parent in its column; the page script remembers the choice. */
+function FamilyCollapse({ issue, nested }: { issue: IssueCardViewModel; nested: number }) {
+  if (nested === 0) return null;
+  return (
+    <button
+      type="button"
+      class="family-collapse"
+      data-family-collapse={issue.id}
+      data-family-nested={nested}
+      aria-expanded="true"
+      aria-label={`Hide the ${nested} ${nested === 1 ? "part" : "parts"} listed under #${issue.number}`}
+    >
+      <svg class="family-collapse-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+      <span data-family-collapse-label>Hide {nested}</span>
+    </button>
+  );
+}
+
 /** A parent's children on a miniature of the line: one dot per child at its station. */
-function FamilyParts({ issue }: { issue: IssueCardViewModel }) {
+function FamilyParts({ issue, nested }: { issue: IssueCardViewModel; nested: number }) {
   const children = issue.children;
   const count = children.find((child) => child.station)?.station?.count ?? 0;
   const done = children.filter((child) => child.satisfied).length;
-  if (count < 2) return <p class="rollup-summary">Roll-up · {children.length} {children.length === 1 ? "child" : "children"}, {done} done</p>;
+  if (count < 2) return <p class="rollup-summary">Roll-up · {children.length} {children.length === 1 ? "child" : "children"}, {done} done<FamilyCollapse issue={issue} nested={nested} /></p>;
   const signalOf = (child: IssueRelationViewModel) => child.satisfied ? "done" : child.signal ?? "wait";
   const position = (index: number) => (index / (count - 1)) * 100;
   const stacked = new Map<number, number>();
@@ -187,6 +205,7 @@ function FamilyParts({ issue }: { issue: IssueCardViewModel }) {
       </div>
       <p class="family-tally">
         {tally.map((entry) => <span key={entry.signal}><i class={`andon andon--${entry.signal === "done" ? "run" : entry.signal}`} aria-hidden="true" /><strong>{entry.count}</strong> {entry.word}</span>)}
+        <FamilyCollapse issue={issue} nested={nested} />
       </p>
       <button
         type="button"
@@ -407,12 +426,13 @@ function stateWords(issue: IssueCardViewModel): string {
 let heldCards: ReadonlySet<string> | null = null;
 
 /** Changes whenever anything the card shows does. */
-function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean): string {
-  return Bun.hash(JSON.stringify([issue, actors, canManage])).toString(36);
+function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean, nested: number): string {
+  return Bun.hash(JSON.stringify([issue, actors, canManage, nested])).toString(36);
 }
 
-function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean }) {
-  const revision = cardRevision(issue, actors, canManage);
+/** `nested`: how many of a parent's children are listed under it in its column (they can be collapsed). */
+function IssueCard({ issue, actors = [], canManage = false, nested = 0 }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean; nested?: number }) {
+  const revision = cardRevision(issue, actors, canManage, nested);
   if (heldCards?.has(revision)) return <article class="issue" data-issue-id={issue.id} data-card-revision={revision} data-keep />;
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
@@ -448,7 +468,7 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       <RelationshipSummary issue={issue} />
       <IndicatorChips issue={issue} />
       <TodoProgress issue={issue} />
-      {rollup && <FamilyParts issue={issue} />}
+      {rollup && <FamilyParts issue={issue} nested={nested} />}
       <DetailsDialog issue={issue} id={dialogId} canManage={canManage} />
     </article>
   );
@@ -474,20 +494,20 @@ function Pagination({ column, view }: { column: StageColumnViewModel; view: Dash
 }
 
 /** The column's cards in order, each parent followed by its children in the same column. */
-function familyRows(issues: readonly IssueCardViewModel[]): Array<{ issue: IssueCardViewModel; child: boolean; last: boolean }> {
+function familyRows(issues: readonly IssueCardViewModel[]): Array<{ issue: IssueCardViewModel; child: boolean; last: boolean; nested: number }> {
   const inColumn = new Map(issues.map((issue) => [issue.id, issue]));
   const placed = new Set<string>();
-  const rows: Array<{ issue: IssueCardViewModel; child: boolean; last: boolean }> = [];
+  const rows: Array<{ issue: IssueCardViewModel; child: boolean; last: boolean; nested: number }> = [];
   for (const issue of issues) {
     if (placed.has(issue.id) || (issue.parent && inColumn.has(issue.parent.id))) continue;
-    rows.push({ issue, child: false, last: false });
     placed.add(issue.id);
     const children = issue.children.flatMap((relation) => {
       const child = inColumn.get(relation.id);
       return child && !placed.has(child.id) ? [child] : [];
     });
+    rows.push({ issue, child: false, last: false, nested: children.length });
     children.forEach((child, index) => {
-      rows.push({ issue: child, child: true, last: index === children.length - 1 });
+      rows.push({ issue: child, child: true, last: index === children.length - 1, nested: 0 });
       placed.add(child.id);
     });
   }
@@ -517,9 +537,9 @@ function StageColumn({ column, canManage = false }: { column: StageColumnViewMod
         </div>
       </header>
       {rows.length > 0
-        ? <ol class="issue-list">{rows.map(({ issue, child, last }) => (
-            <li class={child ? `family-child${last ? " family-child--last" : ""}` : undefined} key={issue.id}>
-              <IssueCard issue={issue} actors={column.actors} canManage={canManage} />
+        ? <ol class="issue-list">{rows.map(({ issue, child, last, nested }) => (
+            <li class={child ? `family-child${last ? " family-child--last" : ""}` : undefined} data-family-child-of={child ? issue.parent?.id : undefined} key={issue.id}>
+              <IssueCard issue={issue} actors={column.actors} canManage={canManage} nested={nested} />
             </li>
           ))}</ol>
         : <p class="empty">No issues in this stage</p>}

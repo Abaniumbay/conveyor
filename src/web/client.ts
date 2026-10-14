@@ -989,6 +989,33 @@ export const dashboardClient = String.raw`(() => {
   };
   document.addEventListener('conveyor:dashboard-rendered', applyFamilyFocus);
 
+  // A parent's children listed under it can be folded away; each browser remembers which.
+  const collapsedFamilies = new Set();
+  try {
+    const stored = JSON.parse(localStorage.getItem('conveyor-collapsed-families') || '[]');
+    if (Array.isArray(stored)) for (const id of stored) if (typeof id === 'string') collapsedFamilies.add(id);
+  } catch {}
+  const applyFamilyCollapse = () => {
+    for (const button of document.querySelectorAll('[data-family-collapse]')) {
+      const family = button.getAttribute('data-family-collapse') || '';
+      const collapsed = collapsedFamilies.has(family);
+      const nested = Number(button.getAttribute('data-family-nested')) || 0;
+      const parts = nested === 1 ? 'part' : 'parts';
+      const number = button.closest('article.issue')?.querySelector('.issue-number')?.textContent || '';
+      button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      button.setAttribute('aria-label', (collapsed ? 'Show the ' : 'Hide the ') + nested + ' ' + parts + ' listed under ' + number);
+      const label = button.querySelector('[data-family-collapse-label]');
+      if (label) label.textContent = (collapsed ? 'Show ' : 'Hide ') + nested;
+      const list = button.closest('ol');
+      if (!list) continue;
+      for (const row of list.querySelectorAll('li[data-family-child-of]')) {
+        if (row.getAttribute('data-family-child-of') === family) row.hidden = collapsed;
+      }
+    }
+  };
+  applyFamilyCollapse();
+  document.addEventListener('conveyor:dashboard-rendered', applyFamilyCollapse);
+
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
 
@@ -1000,6 +1027,17 @@ export const dashboardClient = String.raw`(() => {
       const family = familyToggle.getAttribute('data-family-toggle');
       familyFocus = family && familyFocus !== family ? family : null;
       applyFamilyFocus();
+      return;
+    }
+    const familyCollapse = event.target.closest('[data-family-collapse]');
+    if (familyCollapse instanceof HTMLButtonElement) {
+      const family = familyCollapse.getAttribute('data-family-collapse');
+      if (family) {
+        if (collapsedFamilies.has(family)) collapsedFamilies.delete(family);
+        else collapsedFamilies.add(family);
+        try { localStorage.setItem('conveyor-collapsed-families', JSON.stringify([...collapsedFamilies])); } catch {}
+        applyFamilyCollapse();
+      }
       return;
     }
     if (event.target.closest('[data-family-clear]')) {
