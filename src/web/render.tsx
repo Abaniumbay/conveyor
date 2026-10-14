@@ -606,13 +606,12 @@ function Board({ model }: { model: DashboardViewModel }) {
     !openIds.has(issue.id) && !inFamilyRow(issue) && !(station.kind === "done" && issue.parent && doneIds.has(issue.parent.id)));
   const thread = (issue: IssueCardViewModel) => Boolean(issue.parent);
   const columns = (wide: string, narrow: string) => stations.map((station) => narrowStation(station) ? narrow : wide).join(" ");
-  const style = `--board-columns:${columns("min(20rem,86vw)", "3.5rem")};--board-columns-phone:${columns("calc(100vw - 1.5rem)", "3.25rem")}`;
+  const style = `--board-columns:${columns("min(20rem,86vw)", "4.5rem")};--board-columns-phone:${columns("calc(100vw - 1.5rem)", "3.25rem")}`;
   return (
     <section class="board board--rows" aria-label="Delivery board">
       <div class="board-track" style={style}>
         <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
-        <div class="board-columns board-columns--front">{stations.map((station) => narrowStation(station) ? <StationHeading station={station} key={station.id} /> : <span key={station.id} />)}</div>
-        <div class="board-head">{stations.map((station) => narrowStation(station) ? <span class="stage-placeholder" key={station.id} /> : <StationHeading station={station} key={station.id} />)}</div>
+        <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
         {openParents.map((parent) => <FamilyRow parent={parent} stations={stations} canManage={canManage} key={parent.id} />)}
         <section class={`board-row other-row${openParents.length === 0 ? " other-row--alone" : ""}`} aria-label="Items without a parent">
           {openParents.length > 0 && (

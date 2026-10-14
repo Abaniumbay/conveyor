@@ -725,10 +725,10 @@ describe("renderDashboard", () => {
     expect(familyRow).not.toContain("family-thread");
     expect(familyRow).not.toContain(">Store sign-in data</button>");
     expect(familyRow.match(/<span class="issue-title">Store sign-in data<\/span>/g)?.length).toBe(1);
-    // An empty stage is a narrow box in front of the rows, its heading inside; the strip keeps a placeholder.
+    // An empty stage is a narrow column with its heading in the strip like any other.
     const withEmpty = renderDashboard({ ...dashboard });
-    expect(withEmpty).toContain('<div class="board-columns board-columns--front"><span></span><span></span><section class="stage stage--empty" id="station-stage-review"');
-    expect(withEmpty).toContain('<span class="stage-placeholder"></span>');
+    expect(withEmpty).toContain('<section class="stage stage--empty" id="station-stage-review"');
+    expect(withEmpty).toContain(' 4.5rem ');
     // Everything else is in the bottom row; a child of an off-board parent links to it.
     expect(otherRow).toContain('data-row-fold="board-other"');
     expect(otherRow).toContain(">Unrelated work</button>");
@@ -745,7 +745,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="board-track" style="--board-columns:min(20rem,86vw) min(20rem,86vw) min(20rem,86vw);--board-columns-phone:calc(100vw - 1.5rem) calc(100vw - 1.5rem) calc(100vw - 1.5rem)"');
     // An empty stage in the middle is a narrow column; an empty Backlog (or Done) keeps its width.
     const empty = renderDashboard({ ...dashboard, backlog: [] });
-    expect(empty).toContain('style="--board-columns:min(20rem,86vw) min(20rem,86vw) 3.5rem min(20rem,86vw);');
+    expect(empty).toContain('style="--board-columns:min(20rem,86vw) min(20rem,86vw) 4.5rem min(20rem,86vw);');
     expect(empty).toContain('class="stage stage--empty" id="station-stage-review"');
     expect(empty).toContain('class="stage stage--backlog" id="station-backlog"');
     expect(html).toContain('data-station-cell="stage:build"');
