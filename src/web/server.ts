@@ -46,6 +46,9 @@ export interface WebHandlerDependencies {
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   answerQuestion: (questionId: string, answer: string, username: string) => void | Promise<void>;
+  /** Superuser-only board controls for native manual exit gates. */
+  setManualGateRequirement?: (issueId: string, stageId: string, gateId: string, required: boolean) => void | Promise<void>;
+  approveManualGate?: (issueId: string, stageId: string, gateId: string, account: { id: string; username: string }) => void | Promise<void>;
   reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
   moveBacklogIssue: (issueId: string, beforeIssueId: string | null) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -1155,6 +1158,37 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return redirect("/board");
       } catch (error) {
         return text(error instanceof Error ? error.message : "Unable to record answer", 409);
+      }
+    }
+
+    if (path === "/manual-gates/requirement" || path === "/manual-gates/approve") {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const issueId = oneValue(form, "issueId");
+      const stageId = oneValue(form, "stageId");
+      const gateId = oneValue(form, "gateId");
+      if (!issueId || !stageId || !gateId || issueId.length > 200 || stageId.length > 200 || gateId.length > 200) {
+        return text("Invalid manual gate request", 400);
+      }
+      try {
+        if (path === "/manual-gates/requirement") {
+          const required = oneValue(form, "required");
+          if (required !== "true" && required !== "false") return text("Invalid manual gate request", 400);
+          if (!dependencies.setManualGateRequirement) return text("Manual gate controls are unavailable", 503);
+          await dependencies.setManualGateRequirement(issueId, stageId, gateId, required === "true");
+        } else {
+          if (!dependencies.approveManualGate) return text("Manual gate controls are unavailable", 503);
+          await dependencies.approveManualGate(issueId, stageId, gateId, currentSession.account);
+        }
+        return redirect("/board");
+      } catch (error) {
+        return text(error instanceof Error ? error.message : "Unable to update manual gate", 409);
       }
     }
 

@@ -32,8 +32,25 @@ export interface StageExecutorOptions {
   notify: (message: string) => void | Promise<void>;
   /** Sets (or clears with null) the board status line. */
   setStatus: (message: string | null) => void | Promise<void>;
+  /** Reads the human-approval state after an exit check has passed. */
+  manualGate?: ManualGateResolver;
   settings: { maxReturns: number };
 }
+
+export interface ManualGateState {
+  required: boolean;
+  approved: boolean;
+  message: string;
+}
+
+export type ManualGateResolver = (input: {
+  issueId: string;
+  stageId: string;
+  gateId: string;
+  stageEpoch: number;
+  attempt: number;
+  configured: boolean;
+}) => ManualGateState;
 
 export interface ExecuteInput {
   issueId: string;
@@ -134,6 +151,11 @@ export class StageExecutor {
       if (step.kind === "aborted") return { kind: "parked", stageId: run.stage.id, reason: "aborted", wakeAt: null };
       if (step.kind === "pending") return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: step.wakeAt };
       if (step.kind === "fail") return this.#route(run, task, "exit-gate", step);
+      const manual = this.#o.manualGate?.({
+        issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch,
+        attempt: run.cursor.attempt, configured: task.manual === true,
+      });
+      if (manual?.required && !manual.approved) return this.#waitForApproval(run, task.id, manual.message);
     }
     const at = this.#o.clock().toISOString();
     for (const task of tasks) {
@@ -143,12 +165,26 @@ export class StageExecutor {
     const next = run.input.pipeline.stages[run.input.pipeline.stages.findIndex((s) => s.id === run.stage.id) + 1];
     if (!next) engineState(run.context).returns = 0;
     this.#persist(run, tasks.at(-1)?.id ?? run.stage.id);
-    journal.clearCursor(run.input.issueId, run.epoch);
+    // Keep the cursor until the final awaited status update has completed. A board
+    // request that makes this gate manual uses the live cursor to fence this epoch;
+    // clearing it first would leave an unfenced window before IssueExecutor records
+    // the stage transition.
     await this.#o.setStatus(null);
+    journal.clearCursor(run.input.issueId, run.epoch);
     return {
       kind: "advance", stageId: run.stage.id, nextStageId: next?.id ?? null, result: run.context.legacy ?? null,
       feedbackCycles: run.cursor.attempt - 1,
     };
+  }
+
+  async #waitForApproval(run: Run, taskId: string, message: string): Promise<StageOutcome> {
+    const now = this.#o.clock().toISOString();
+    await this.#save(run, {
+      list: "exit-gate", taskInstanceId: taskId, state: "pending", pendingSince: now, wakeAt: null, deadlineAt: null,
+    });
+    this.#persist(run, taskId);
+    await this.#o.setStatus(message);
+    return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: null };
   }
 
   async #runTask(run: Run, task: CompiledTask, list: List): Promise<Step> {

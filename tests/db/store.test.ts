@@ -42,7 +42,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(18);
+    expect(store.schemaVersion()).toBe(20);
 
     store.close();
   });
@@ -288,7 +288,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE harness_quota_events; DROP TABLE item_indicators; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18);");
+    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20);");
     store.close();
 
     store = await ConveyorStore.open(database);

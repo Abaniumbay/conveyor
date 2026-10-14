@@ -656,4 +656,57 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX run_events_created_idx ON run_events(created_at);
     `,
   },
+  {
+    version: 19,
+    sql: `
+      -- A manual exit-gate choice belongs to one item and one native stage/gate pair.
+      CREATE TABLE item_manual_gate_requirements (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        gate_id TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, stage_id, gate_id)
+      );
+      -- Receipts are intentionally keyed by the stage epoch, so an earlier visit cannot
+      -- approve a return, restart, or later attempt of the same stage.
+      CREATE TABLE manual_gate_approvals (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        gate_id TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        account_id TEXT NOT NULL,
+        account_name TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, stage_id, gate_id, stage_epoch)
+      );
+      CREATE INDEX manual_gate_approvals_issue_idx
+        ON manual_gate_approvals(issue_id, stage_id, stage_epoch);
+    `,
+  },
+  {
+    version: 20,
+    sql: `
+      -- A retry remains in the same stage epoch, but needs its own human approval.
+      ALTER TABLE manual_gate_approvals RENAME TO manual_gate_approvals_before_attempt;
+      CREATE TABLE manual_gate_approvals (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        gate_id TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        account_id TEXT NOT NULL,
+        account_name TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, stage_id, gate_id, stage_epoch, attempt)
+      );
+      -- Existing receipts can only have been recorded for the initial attempt.
+      INSERT INTO manual_gate_approvals(
+        issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at
+      ) SELECT issue_id, stage_id, gate_id, stage_epoch, 1, account_id, account_name, approved_at
+        FROM manual_gate_approvals_before_attempt;
+      DROP TABLE manual_gate_approvals_before_attempt;
+      CREATE INDEX manual_gate_approvals_issue_idx
+        ON manual_gate_approvals(issue_id, stage_id, stage_epoch, attempt);
+    `,
+  },
 ];

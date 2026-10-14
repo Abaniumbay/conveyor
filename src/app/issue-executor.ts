@@ -5,7 +5,7 @@ import { isNativeStage } from "../config/schema";
 import type { PipelineDependencies } from "../core/pipeline";
 import { applyStageTransition, type TransitionSource } from "../core/transition";
 import type { ConveyorStore, StoredIssue } from "../db/store";
-import { StageExecutor, type StageOutcome } from "../engine/stage-executor";
+import { StageExecutor, type ManualGateResolver, type StageOutcome } from "../engine/stage-executor";
 import { CONTEXT_SCHEMA_VERSION, type TaskContext } from "../tasks/context";
 import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps } from "../tasks/deps";
@@ -36,6 +36,8 @@ export interface IssueExecutorDependencies {
     issue: StoredIssue,
     repository: { id: string; address: string; folder: string; baseBranch: string },
   ) => TaskDeps;
+  /** Resolves the durable human-approval state for native exit gates. */
+  manualGate?: ManualGateResolver;
   signal?: AbortSignal;
 }
 
@@ -159,6 +161,7 @@ export class IssueExecutor {
             warning: message,
           });
         },
+        ...(this.dependencies.manualGate ? { manualGate: this.dependencies.manualGate } : {}),
         settings: { maxReturns: config.settings.maxReturns },
       });
       const result = await executor.execute({
