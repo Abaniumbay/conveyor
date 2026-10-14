@@ -602,7 +602,10 @@ export class GitHubAdapter {
     const projectLabels = issue.labels
       .map(labelName)
       .filter((label) => !this.isConveyorLabel(label) || preserve.has(label));
-    const labels = [...new Set([...projectLabels, ...conveyorLabels])].sort((left, right) =>
+    const labels = [...new Set([
+      ...projectLabels,
+      ...conveyorLabels.filter((label) => !preserve.has(label)),
+    ])].sort((left, right) =>
       left.localeCompare(right),
     );
     await this.transport.request<unknown>({

@@ -281,6 +281,34 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  test("does not restore a preserved label removed from the live issue", async () => {
+    const transport = new FakeTransport(
+      {
+        labels: [
+          { name: "backend" },
+          { name: "conveyor" },
+          { name: "conveyor:refinement" },
+        ],
+      },
+      {},
+    );
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.replaceConveyorLabels("owner/repo", 7, [
+      "conveyor",
+      "conveyor:implementation",
+      "conveyor:no-split",
+    ], ["conveyor:no-split"]);
+
+    expect(transport.requests[1]).toEqual({
+      method: "PUT",
+      path: "repos/owner/repo/issues/7/labels",
+      body: {
+        labels: ["backend", "conveyor", "conveyor:implementation"],
+      },
+    });
+  });
+
   test("sets the issue title without touching its body or labels", async () => {
     const transport = new FakeTransport({});
     const adapter = new GitHubAdapter(transport, "conveyor");
