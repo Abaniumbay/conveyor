@@ -8,6 +8,21 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-14
+
+Stage exit gates can wait for a human approval on the board, configured per pipeline or set per item. Answering an agent's question resumes it instead of restarting the stage, and the answer returns at once. The board's rows and the line fold with an animation, and the line starts closed on phones; a repository that cannot sync is called out on the board.
+
+### Added
+
+- A native stage exit gate can require a human approval: set `manual: true` on its `exit-gate`
+  task, or, as a superuser, require it for one item from the board. The item waits in Needs you
+  until a superuser approves it; the approval is recorded in the item's history, never bypasses a
+  failing automatic check, and is needed again on a retry, a return to the stage, or a plan restart.
+- A configurable `labels.metadata.noSplit` label (defaulting to `<enrollment>:no-split`) keeps an
+  issue whole during refinement. Conveyor preserves this human-managed label, refuses child
+  creation while it is present, explains the constraint to refiners, and marks the dashboard card
+  and details.
+
 ### Changed
 
 - Folding and unfolding a board row animates like an accordion (an ease-out height and fade); with
@@ -19,6 +34,9 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   shows "Answering…" while it sends, and the board refreshes in place afterwards.
 - The line folds: its heading has a fold arrow, it is open on wide screens and closed on phones
   until you choose, and the choice is remembered in the browser.
+- Each active item now keeps its agent scratch directory beside its worktree rather than in the
+  host temporary directory. Scratch persists between that item's agent runs and is removed with
+  the workspace; workspace-free runs still clean their private scratch when they finish.
 
 ### Removed
 
@@ -38,10 +56,6 @@ This release redesigns the board. Stages are Jira-style columns with compact hea
 
 ### Added
 
-- A configurable `labels.metadata.noSplit` label (defaulting to `<enrollment>:no-split`) keeps an
-  issue whole during refinement. Conveyor preserves this human-managed label, refuses child
-  creation while it is present, explains the constraint to refiners, and marks the dashboard card
-  and details.
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
 - The board shows each open parent as a row. The stations stay across the top. Each parent's row
@@ -75,12 +89,6 @@ This release redesigns the board. Stages are Jira-style columns with compact hea
 
 - Stopped items that have not yet received a stage label remain visible in the dashboard backlog
   instead of appearing as label problems.
-
-### Changed
-
-- Each active item now keeps its agent scratch directory beside its worktree rather than in the
-  host temporary directory. Scratch persists between that item's agent runs and is removed with
-  the workspace; workspace-free runs still clean their private scratch when they finish.
 
 ## [0.6.6] - 2026-10-13
 
