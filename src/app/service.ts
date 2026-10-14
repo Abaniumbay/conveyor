@@ -3020,7 +3020,7 @@ export class ConveyorService {
     }
 
     if (question) {
-      await this.answerQuestion(question.id, answer!);
+      await this.answerQuestion(question.id, answer!, username);
     } else {
       const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
       const metadata = issue.labels.filter((label) =>

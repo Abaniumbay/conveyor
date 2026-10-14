@@ -589,7 +589,11 @@ describe("ConveyorService dashboard", () => {
 
     await service.postIssueMessage("issue", "Use the compact layout.", "operator");
 
-    expect(store.getQuestion(question.id)).toMatchObject({ status: "answered", answer: { answer: "Use the compact layout." } });
+    expect(store.getQuestion(question.id)).toMatchObject({
+      status: "answered",
+      answer: { answer: "Use the compact layout." },
+      answerSource: "operator",
+    });
     expect(comments[0]).toContain("Use the compact layout.");
     expect(store.listConversationMessages("issue")[0]).toMatchObject({ actorType: "user", message: "Use the compact layout." });
     await service.close();
