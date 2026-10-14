@@ -2,7 +2,7 @@
 
 The dashboard is where you watch and steer delivery: the board, each item's story, the agents, reports and the operator. It is served by `conveyor serve` (default `http://127.0.0.1:7788`) and needs a signed-in account (`conveyor init` creates the first).
 
-The shared header is followed by the view navigation: **Board**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
+The shared header is followed by the view navigation: **Board**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
 
 ## Screenshots
 
@@ -38,8 +38,6 @@ Every view has its own page title, and a **Skip to content** link is the first t
 A live update does not reload the page. The event stream (`/events/dashboard`) says only that something changed; the browser then asks for the page it is showing with an `x-conveyor-cards` header listing the revision of every card it holds (`data-card-revision`, a digest of everything the card shows). The server answers with the same page, in which each card the browser already holds is an empty placeholder (`data-keep`), and the browser patches the difference into the page in place. A card that did not change is never removed from the page, so what you are reading stays where it is; a card that changed, moved to another stage, appeared or disappeared is the only thing touched. An update waits while a finger is on the screen or a scroll is still coasting, and the request needs the same session as the page. If the page no longer holds a card the answer kept, the browser asks again for every card. Navigation between views loads a whole page as before.
 
 ## Repositories
-
-The Board includes a **Repositories** strip for the configured delivery sources. Each card shows its repository id and address, current health, and active work; select a card to open its read-only detail view. The strip keeps the same health signals as the dedicated pages, including degraded repositories when a provider cannot be reached.
 
 **Repositories** (`/repositories`) lists every configured repository with its id, address, health, and current work. Select one to open `/repositories/<id>`, which provides its current delivery status, recent work, and **Setup**. Setup shows the provider configuration to every signed-in user, but only superusers see the local folder and agent egress hosts.
 

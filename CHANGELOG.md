@@ -17,6 +17,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   cleared and the agent resumed, while mirroring the answer as a comment, re-syncing the repository
   and the status comment follow in the background (the comment is retried). The Answer button
   shows "Answering…" while it sends, and the board refreshes in place afterwards.
+- The line folds: its heading has a fold arrow, it is open on wide screens and closed on phones
+  until you choose, and the choice is remembered in the browser.
+
+### Removed
+
+- The Board's Repositories strip. The Repositories tab lists every repository, and each card
+  already names its repository.
 
 ### Fixed
 

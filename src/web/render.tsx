@@ -868,16 +868,14 @@ function RepositoryEmpty() {
   return <p class="repository-empty">No repositories are configured.</p>;
 }
 
-function Repositories({ model, limited = false }: { model: DashboardViewModel; limited?: boolean }) {
+function Repositories({ model }: { model: DashboardViewModel }) {
   const repositories = [...model.repositories].sort(repositoryOrder);
-  const visible = limited ? repositories.slice(0, 6) : repositories;
   return (
-    <section class={limited ? "repositories repositories--strip" : "repositories"} aria-labelledby="repositories-heading">
+    <section class="repositories" aria-labelledby="repositories-heading">
       <header class="section-heading repositories-heading">
-        <div><h2 id="repositories-heading">{limited ? <a href="/repositories">Repositories</a> : "Repositories"}</h2><p>{limited ? "Configured delivery sources" : "Every configured delivery source"}</p></div>
+        <div><h2 id="repositories-heading">Repositories</h2><p>Every configured delivery source</p></div>
       </header>
-      {visible.length === 0 ? <RepositoryEmpty /> : <ol class="repository-grid">{visible.map((repository) => <li key={repository.id}><RepositoryCard repository={repository} /></li>)}</ol>}
-      {limited && repositories.length > visible.length && <a class="repositories-show-all" href="/repositories">Show all {repositories.length}</a>}
+      {repositories.length === 0 ? <RepositoryEmpty /> : <ol class="repository-grid">{repositories.map((repository) => <li key={repository.id}><RepositoryCard repository={repository} /></li>)}</ol>}
     </section>
   );
 }
@@ -1005,8 +1003,14 @@ function Line({ model }: { model: DashboardViewModel }) {
   ];
   return (
     <nav class="line" aria-labelledby="line-heading">
-      <h2 id="line-heading">The line</h2>
-      <ol>
+      <h2 id="line-heading">
+        <button type="button" class="line-toggle" data-line-toggle aria-expanded="true" aria-controls="line-stations">
+          The line
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+      </h2>
+      <div class="line-body">
+      <ol id="line-stations">
         {stations.map((station) => {
           const signalCounts = station.issues.reduce<Record<"run" | "wait" | "stop", number>>((counts, issue) => {
             counts[issueSignal(issue)] += 1;
@@ -1032,6 +1036,7 @@ function Line({ model }: { model: DashboardViewModel }) {
           );
         })}
       </ol>
+      </div>
     </nav>
   );
 }
@@ -1193,7 +1198,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Navigation model={model} />
           <div class="content-anchor" id="content" tabIndex={-1} />
-          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /><Repositories model={model} limited /></>}
+          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /></>}
           {content}
           {model.selectedIssue && (
             <DetailsDialog

@@ -493,4 +493,31 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+  test("the line is open on a wide screen and closed on a phone until the reader folds or opens it", async () => {
+    const server = startDashboard({ dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]), revision: () => "revision-1", delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const lineState = (page: Awaited<ReturnType<Browser["newPage"]>>) => page.evaluate(() => ({
+        expanded: document.querySelector("[data-line-toggle]")?.getAttribute("aria-expanded"),
+        height: document.getElementById("line-stations")!.getBoundingClientRect().height,
+        inert: (document.getElementById("line-stations") as HTMLElement & { inert: boolean }).inert,
+      }));
+      const desktop = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
+      await signIn(desktop, server.port);
+      expect(await lineState(desktop)).toMatchObject({ expanded: "true", inert: false });
+      expect((await lineState(desktop)).height).toBeGreaterThan(20);
+
+      const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(phone, server.port);
+      expect(await lineState(phone)).toEqual({ expanded: "false", height: 0, inert: true });
+      await phone.locator("[data-line-toggle]").click();
+      expect(await lineState(phone)).toMatchObject({ expanded: "true", inert: false });
+      // The choice is remembered: after a reload the phone keeps the line open.
+      await phone.reload();
+      expect(await lineState(phone)).toMatchObject({ expanded: "true", inert: false });
+      expect((await lineState(phone)).height).toBeGreaterThan(20);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
 });
