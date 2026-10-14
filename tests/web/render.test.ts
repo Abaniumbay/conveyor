@@ -737,9 +737,11 @@ describe("renderDashboard", () => {
     expect(html).not.toContain('data-family-row="finished"');
     // The columns line up: one grid template for the header strip and every row.
     expect(html).toContain('class="board-track" style="--board-columns:min(20rem,86vw) min(20rem,86vw) min(20rem,86vw);--board-columns-phone:calc(100vw - 1.5rem) calc(100vw - 1.5rem) calc(100vw - 1.5rem)"');
-    // An empty station is a narrow column in the strip and in every row.
+    // An empty stage in the middle is a narrow column; an empty Backlog (or Done) keeps its width.
     const empty = renderDashboard({ ...dashboard, backlog: [] });
-    expect(empty).toContain('style="--board-columns:3.5rem ');
+    expect(empty).toContain('style="--board-columns:min(20rem,86vw) min(20rem,86vw) 3.5rem min(20rem,86vw);');
+    expect(empty).toContain('class="stage stage--empty" id="station-stage-review"');
+    expect(empty).toContain('class="stage stage--backlog" id="station-backlog"');
     expect(html).toContain('data-station-cell="stage:build"');
   });
 
