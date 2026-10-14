@@ -88,6 +88,16 @@ export async function prepareSanitizedHome(options: { root: string; runId: strin
   return resolveFilesystemPath(home);
 }
 
+/** Removes only the private home belonging to one completed run. Symbolic links are unlinked, not followed. */
+export async function cleanupSanitizedHome(artifactsDirectory: string): Promise<void> {
+  const artifacts = path.resolve(artifactsDirectory);
+  const home = path.join(artifacts, "home");
+  if (path.relative(artifacts, home) !== "home") {
+    throw new Error(`refusing to remove home outside run artifacts: ${home}`);
+  }
+  await rm(home, { recursive: true, force: true });
+}
+
 async function gitValue(cwd: string, key: string, env: Environment): Promise<string | undefined> {
   try {
     const clean = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));

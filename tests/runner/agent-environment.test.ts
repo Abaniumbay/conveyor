@@ -43,6 +43,7 @@ async function fixture() {
     await new Response(Bun.stdin.stream()).text();
     await Bun.write(process.env.ENV_CAPTURE, JSON.stringify({ ...process.env, TMP_EXISTED: String(require("node:fs").existsSync(process.env.TMPDIR)), RUN_ARGS: JSON.stringify(args), RUN_CWD: process.cwd() }));
     if (process.env.KIND === "fail") process.exit(3);
+    if (process.env.KIND === "wait") await Bun.sleep(2_000);
     const output = args[args.indexOf("-o") + 1];
     if (output && process.env.KIND === "run") await Bun.write(output, JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "s", reason: null, metrics: {}, artifacts: [] }));
     if (output && process.env.KIND === "check") await Bun.write(output, JSON.stringify({ version: 1, decision: "pass", status: "done", reason: "ok", evidence: [], requiredFixes: [], criteria: [] }));
@@ -62,7 +63,7 @@ async function expectCredentialFree(files: Awaited<ReturnType<typeof fixture>>):
   expect(env.HOME).toBe(path.join(files.artifacts, "home"));
   expect(env.CODEX_HOME).toBe(resolveFilesystemPath(path.join(saved.HOME!, ".codex")));
   expect(env.ENV_CAPTURE).toBe(files.capture);
-  expect(await readdir(env.HOME!)).toEqual([".gitconfig"]);
+  expect(existsSync(env.HOME!)).toBe(false);
 }
 
 const common = {
@@ -99,7 +100,24 @@ describe("agent environment", () => {
       expect(path.basename(env.TMPDIR!)).toStartWith("conveyor-run-");
       expect(env.TMP_EXISTED).toBe("true");
       expect(existsSync(env.TMPDIR!)).toBe(false);
+      expect(existsSync(env.HOME!)).toBe(false);
     }
+  });
+
+  test("keeps an active run home until an interrupted process exits", async () => {
+    const files = await fixture();
+    const controller = new AbortController();
+    const run = runCodex({
+      ...common, command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
+      env: { ENV_CAPTURE: files.capture, KIND: "wait" }, signal: controller.signal, interruptGraceMs: 20,
+    });
+    for (let attempts = 0; !existsSync(files.capture) && attempts < 20; attempts += 1) await Bun.sleep(10);
+    const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
+    expect(existsSync(env.HOME!)).toBe(true);
+
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ kind: "interrupted" });
+    expect(existsSync(env.HOME!)).toBe(false);
   });
 
   test("runCodexCheck spawns with a sanitized environment", async () => {

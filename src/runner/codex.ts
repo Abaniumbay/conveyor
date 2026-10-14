@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { prepareCodexEnvironment } from "../isolation/environment";
+import { cleanupSanitizedHome, prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
@@ -274,6 +274,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   } catch (error) {
     await network?.close();
     await scratch.cleanup();
+    await cleanupSanitizedHome(input.artifactsDirectory);
     throw error;
   }
   child.stdin.write(input.prompt);
@@ -325,6 +326,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   } finally {
     await network?.close();
     await scratch.cleanup();
+    await cleanupSanitizedHome(input.artifactsDirectory);
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

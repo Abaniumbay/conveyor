@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { prepareCodexEnvironment } from "../isolation/environment";
+import { cleanupSanitizedHome, prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
@@ -245,6 +245,7 @@ export async function runCodexCheck(
   } catch (error) {
     await network?.close();
     await scratch.cleanup();
+    await cleanupSanitizedHome(input.artifactsDirectory);
     throw new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -303,6 +304,7 @@ export async function runCodexCheck(
   } finally {
     await network?.close();
     await scratch.cleanup();
+    await cleanupSanitizedHome(input.artifactsDirectory);
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);

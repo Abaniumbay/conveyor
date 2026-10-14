@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -106,6 +106,9 @@ describe("runCodex", () => {
     });
     expect(result.cost.source).toBe("unavailable");
     expect(events).toHaveLength(3);
+    const resultFile = (await readdir(files.artifacts)).find((entry) => entry.startsWith("codex-result-"));
+    expect(resultFile).toBeDefined();
+    expect(JSON.parse(await readFile(path.join(files.artifacts, resultFile!), "utf8"))).toMatchObject({ summary: "implemented" });
 
     const invocation = JSON.parse(await readFile(files.capture, "utf8")) as {
       args: string[];
