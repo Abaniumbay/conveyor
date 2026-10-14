@@ -505,6 +505,8 @@ describe("dashboard live refresh position", () => {
       const desktop = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
       await signIn(desktop, server.port);
       expect(await lineState(desktop)).toMatchObject({ expanded: "true", inert: false });
+      // Folding animates once the first state has painted.
+      await desktop.waitForFunction(() => document.body.classList.contains("board-motion"));
       expect((await lineState(desktop)).height).toBeGreaterThan(20);
 
       const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });

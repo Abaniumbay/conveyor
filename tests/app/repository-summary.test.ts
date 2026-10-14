@@ -259,7 +259,8 @@ describe("buildRepositorySummaries", () => {
     await service.reconcileAll();
     expect(await dependencies.getDashboardRevision()).not.toBe(degraded.revision);
     expect(degraded.systemWarnings).toEqual([]);
-    const degradedHtml = renderDashboard(degraded);
+    // The board no longer lists repositories; their health is on the Repositories page.
+    const degradedHtml = renderDashboard(service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null }));
     expect(degradedHtml).toContain("provider access is forbidden");
     expect(degradedHtml).not.toContain("System attention");
   });
