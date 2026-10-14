@@ -760,6 +760,11 @@ describe("renderDashboard", () => {
     expect(html).toContain('<button type="button" class="stage-info card-open" data-dialog-open="stage-info-stage-build" aria-haspopup="dialog" aria-label="About Build">');
     expect(html).toContain('<dialog class="stage-dialog" id="stage-info-stage-build" aria-labelledby="stage-info-stage-build-title">');
     expect(html).toContain('<p class="stage-dialog-description">Enrolled items waiting for their first stage, in the order they will start.</p>');
+    // Each heading has an emoji: the configured one, else the usual one for its id (none for an unknown stage).
+    expect(html).toContain('<span class="stage-emoji" aria-hidden="true">📥</span><h2 id="stage-backlog">Backlog</h2>');
+    expect(html).toContain('<span class="stage-emoji" aria-hidden="true">🏁</span><h2 id="stage-done">Done</h2>');
+    expect(html).not.toContain('<span class="stage-emoji" aria-hidden="true"></span>');
+    expect(renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, icon: "🧪" }] })).toContain('<span class="stage-emoji" aria-hidden="true">🧪</span><h2 id="stage-stage-build">Build</h2>');
     expect(html).toContain('<section class="stage-dialog-team" aria-label="Who works in Build"><h3>Team</h3>');
     expect(html).toContain(">Build</h2>");
     expect(html).toContain(">Review</h2>");

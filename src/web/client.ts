@@ -1017,6 +1017,28 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('conveyor:dashboard-rendered', updatePinnedScrollbar);
   updatePinnedScrollbar();
 
+  // The stage headings stay at the top of the window while the board scrolls under them. The board scrolls
+  // sideways, which makes it the headings' scroll container, so CSS sticky cannot pin them to the window;
+  // they are moved down instead, never past the board's last row.
+  const pinStageHeadings = () => {
+    const current = currentBoard();
+    const headings = current ? current.querySelector('.board-head') : null;
+    if (!(headings instanceof HTMLElement)) return;
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      headings.style.transform = '';
+      headings.classList.remove('board-head--pinned');
+      return;
+    }
+    const track = headings.parentElement;
+    const offset = Math.max(0, Math.min(-track.getBoundingClientRect().top, track.offsetHeight - headings.offsetHeight));
+    headings.style.transform = offset > 0 ? 'translateY(' + offset + 'px)' : '';
+    headings.classList.toggle('board-head--pinned', offset > 0);
+  };
+  window.addEventListener('scroll', pinStageHeadings, { passive: true });
+  window.addEventListener('resize', pinStageHeadings);
+  document.addEventListener('conveyor:dashboard-rendered', pinStageHeadings);
+  pinStageHeadings();
+
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
 

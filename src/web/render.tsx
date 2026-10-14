@@ -437,6 +437,7 @@ interface Station {
   id: string;
   name: string;
   description: string | null;
+  icon: string | null;
   count: number;
   actors: StageColumnViewModel["actors"];
   cost: string | null;
@@ -445,11 +446,21 @@ interface Station {
   kind: "backlog" | "stage" | "done";
 }
 
+/** The emoji of a stage with none configured, by its usual id; any other stage shows none. */
+const DEFAULT_STAGE_ICONS: Record<string, string> = {
+  backlog: "📥", refinement: "🧭", implementation: "🛠️", review: "🔍", merge: "🔀",
+  deploy: "🚀", verify: "✅", cleanup: "🧹", done: "🏁",
+};
+
+function stageIcon(id: string, configured: string | null | undefined): string | null {
+  return configured ?? DEFAULT_STAGE_ICONS[id.replace(/^stage:/, "")] ?? null;
+}
+
 function boardStations(model: DashboardViewModel): Station[] {
   return [
-    { id: "backlog", name: "Backlog", description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
-    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
-    { id: "done", name: "Done", description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
+    { id: "backlog", name: "Backlog", icon: stageIcon("backlog", null), description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
+    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, icon: stageIcon(column.id, column.icon), description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
+    { id: "done", name: "Done", icon: stageIcon("done", null), description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
   ];
 }
 
@@ -471,6 +482,7 @@ function StationHeading({ station }: { station: Station }) {
   return (
     <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrow ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={`stage-info-${stationSlug(station)}`}>
       <header class="stage-heading">
+        {station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon}</span>}
         <h2 id={headingId}>{station.name}</h2>
         <StationInfoButton station={station} />
         <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
@@ -485,7 +497,7 @@ function StationDialog({ station }: { station: Station }) {
   return (
     <dialog class="stage-dialog" id={dialogId} aria-labelledby={`${dialogId}-title`}>
       <header class="stage-dialog-header">
-        <h2 id={`${dialogId}-title`}>{station.name}</h2>
+        <h2 id={`${dialogId}-title`}>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</h2>
         <form method="dialog"><button type="submit" class="stage-dialog-close" aria-label="Close">×</button></form>
       </header>
       {station.description && <p class="stage-dialog-description">{station.description}</p>}
@@ -631,7 +643,7 @@ function Board({ model }: { model: DashboardViewModel }) {
               const increment = Math.min(20, remaining);
               return (
                 <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} aria-label={station.name} key={station.id}>
-                  <p class="board-cell-label"><span>{station.name}</span><StationInfoButton station={station} /><span class="count">{station.count}</span></p>
+                  <p class="board-cell-label"><span>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</span><StationInfoButton station={station} /><span class="count">{station.count}</span></p>
                   {station.kind === "backlog"
                     ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
                     : issues.length > 0 && <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>}

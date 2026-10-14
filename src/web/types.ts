@@ -185,6 +185,8 @@ export interface StageColumnViewModel {
   name: string;
   /** The stage's configured description, shown in its information dialog. */
   description?: string | null;
+  /** The stage's configured emoji, shown beside its name. */
+  icon?: string | null;
   actors: readonly StageActorViewModel[];
   cost: string | null;
   totalIssues: number;

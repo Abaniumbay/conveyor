@@ -385,7 +385,7 @@ describe("ConveyorService dashboard", () => {
       settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
       web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
       labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
-      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [stage("refinement"), { ...stage("implementation"), description: "Writes the change." }, stage("review")] } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [stage("refinement"), { ...stage("implementation"), description: "Writes the change.", icon: "🛠️" }, stage("review")] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
       agents: {},
     } as unknown as ConveyorConfig;
@@ -418,6 +418,7 @@ describe("ConveyorService dashboard", () => {
     expect(card("parent").parentProgress).toBeNull();
     // A stage's configured description reaches its column, for the information dialog.
     expect(model.stages.map((column) => [column.id, column.description])).toEqual([["stage:refinement", null], ["stage:implementation", "Writes the change."], ["stage:review", null]]);
+    expect(model.stages.map((column) => column.icon)).toEqual([null, "🛠️", null]);
     expect(card("unrelated").parentProgress).toBeNull();
     store.close();
   });

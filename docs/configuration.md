@@ -315,6 +315,8 @@ pipelines:
   default:
     stages:
       - id: refinement
+        description: "Turns an item into a clear, testable plan."   # optional: shown in the stage's dashboard dialog
+        icon: "🧭"                                                  # optional: an emoji beside the stage's name
         concurrency: 3
         retries: 2
         childrenStartAt: next
