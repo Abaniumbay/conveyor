@@ -509,7 +509,7 @@ export class ConveyorService {
     }
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#tickRunning || this.#advisoryPolling) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#tickRunning || this.#advisoryPolling) {
       await Bun.sleep(25);
     }
     this.store.close();
@@ -2190,33 +2190,9 @@ export class ConveyorService {
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
-    const mirrorKey = `question-answer:${question.id}`;
-    if (this.#answerMirrorsInFlight.has(mirrorKey)) {
-      throw new Error("This answer is already being recorded. Please retry shortly.");
-    }
-    const mirror = this.store.beginSourceMutation({
-      idempotencyKey: mirrorKey,
-      source: repository.source,
-      operation: "issue.comment.answer",
-      request: { issueId: issue.id, questionId: question.id, answer: response },
-    });
-    if (mirror.status !== "succeeded") {
-      this.#answerMirrorsInFlight.add(mirrorKey);
-      try {
-        const marker = `<!-- conveyor:answer:${question.id} -->`;
-        const sourceHasAnswer = typeof this.github.hasCommentWithMarker === "function" &&
-          await this.github.hasCommentWithMarker(repository.address, issue.sourceNumber, marker);
-        if (!sourceHasAnswer) {
-          await this.github.addComment(repository.address, issue.sourceNumber, `${marker}\n**Conveyor answer:** ${response}`);
-        }
-        this.store.completeSourceMutation(mirror.id, { questionId: question.id });
-      } catch (error) {
-        this.store.failSourceMutation(mirror.id, error instanceof Error ? error.message : String(error));
-        throw new Error("Your answer was saved but could not be mirrored. Submit the same answer to retry.");
-      } finally {
-        this.#answerMirrorsInFlight.delete(mirrorKey);
-      }
-    }
+    // Before replying, only what resuming needs: the source's needs-input label goes first (a sync
+    // that still saw it would stop the item again), then the parked agent wakes. Mirroring the answer
+    // as a comment, re-syncing the repository and the status comment follow in the background.
     const needsInput = this.config.labels.states["needs-input"];
     const hadNeedsInput = Boolean(needsInput && issue.labels.includes(needsInput));
     if (hadNeedsInput) {
@@ -2239,35 +2215,82 @@ export class ConveyorService {
     const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
     const resumedStage = runStage ?? issue.projectedStage;
     if (resumedStage) {
-      // A native agent can park without first writing needs-input to the
-      // source. Clear its local projection before scheduling even if a
-      // transient reconcile outage follows.
+      // A native agent can park without first writing needs-input to the source. Clear its local
+      // projection before scheduling; with the step parked this keeps it (see setIssueProjection).
       this.store.setIssueProjection(issue.id, { stage: resumedStage, state: "active", warning: null });
     }
-    try {
-      // Reconciliation is needed after every answer, not only when the stale
-      // source snapshot happened to include the needs-input label.
-      await this.reconcileRepository(issue.repositoryId);
-    } catch (error) {
-      log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issue.id), error);
-    }
-    if (parkedAgentWoken) {
-      await this.updateStatusComment(issue.id);
-      this.schedule();
-      return;
-    }
-    const stage = issue.projectedStage;
-    if (stage) {
+    if (!parkedAgentWoken && issue.projectedStage) {
       const metadata = metadataLabels(issue.labels, this.config);
       await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
         this.config.labels.enrollment,
-        this.config.labels.stageTemplate.replace("{stage}", stage),
+        this.config.labels.stageTemplate.replace("{stage}", issue.projectedStage),
         ...metadata,
       ], [this.config.labels.metadata.noSplit]);
-      await this.updateStatusComment(issue.id);
-      this.schedule();
     }
+    this.schedule();
+    this.#trackAnswerFollowUp(this.#answerFollowUp(issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source));
   }
+
+  /** Background work after an answer: settled before the service closes, and awaitable in tests. */
+  readonly #answerFollowUps = new Set<Promise<void>>();
+
+  #trackAnswerFollowUp(work: Promise<void>): void {
+    const tracked = work.catch((error: unknown) => log.warn("Answer follow-up failed", {}, error)).finally(() => this.#answerFollowUps.delete(tracked));
+    this.#answerFollowUps.add(tracked);
+  }
+
+  /** Resolves once every answer's background work (comment, re-sync, status) has finished. */
+  async answerFollowUpsSettled(): Promise<void> {
+    while (this.#answerFollowUps.size > 0) await Promise.all([...this.#answerFollowUps]);
+  }
+
+  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string): Promise<void> {
+    // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
+    const mirrorKey = `question-answer:${questionId}`;
+    if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
+      this.#answerMirrorsInFlight.add(mirrorKey);
+      try {
+        for (const [attempt, delayMs] of [0, 2_000, 10_000].entries()) {
+          if (delayMs > 0) await Bun.sleep(this.answerRetryDelayMs ?? delayMs);
+          if (this.#shuttingDown && attempt > 0) break;
+          const mirror = this.store.beginSourceMutation({
+            idempotencyKey: mirrorKey,
+            source,
+            operation: "issue.comment.answer",
+            request: { issueId, questionId, answer: response },
+          });
+          if (mirror.status === "succeeded") break;
+          try {
+            const marker = `<!-- conveyor:answer:${questionId} -->`;
+            const sourceHasAnswer = typeof this.github.hasCommentWithMarker === "function" &&
+              await this.github.hasCommentWithMarker(address, sourceNumber, marker);
+            if (!sourceHasAnswer) await this.github.addComment(address, sourceNumber, `${marker}\n**Conveyor answer:** ${response}`);
+            this.store.completeSourceMutation(mirror.id, { questionId });
+            break;
+          } catch (error) {
+            this.store.failSourceMutation(mirror.id, error instanceof Error ? error.message : String(error));
+            log.warn("Could not mirror an answer to the source; retrying", { ...this.itemFields(issueId), attempt: attempt + 1 }, error);
+          }
+        }
+      } finally {
+        this.#answerMirrorsInFlight.delete(mirrorKey);
+      }
+    }
+    try {
+      // Reconciliation is needed after every answer, not only when the stale source snapshot happened
+      // to include the needs-input label.
+      const repositoryId = this.store.getIssue(issueId)?.repositoryId;
+      if (repositoryId) await this.reconcileRepository(repositoryId);
+    } catch (error) {
+      log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issueId), error);
+    }
+    await this.updateStatusComment(issueId);
+    this.schedule();
+  }
+
+  /** Tests shorten the pauses between answer-mirror retries. */
+  answerRetryDelayMs: number | null = null;
+
 
   async startSteering(prompt: string): Promise<string> {
     const request = prompt.trim();

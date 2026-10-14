@@ -13,6 +13,16 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - Folding and unfolding a board row animates like an accordion (an ease-out height and fade); with
   reduced motion it stays instant. A folded row's cards leave the tab order and the accessibility tree.
 - On a phone, a family's cards are indented under the parent's band, so they read as its children.
+- Answering a question returns at once: the answer is recorded, the source's needs-input label
+  cleared and the agent resumed, while mirroring the answer as a comment, re-syncing the repository
+  and the status comment follow in the background (the comment is retried). The Answer button
+  shows "Answering…" while it sends, and the board refreshes in place afterwards.
+
+### Fixed
+
+- Answering an agent's question resumes the agent with the answer again. Since 2026-10-10 the
+  item's switch to needs-input (and back) restarted its stage, dropping the step that waited for
+  the answer, so the agent started over and asked the same question again.
 
 ## [0.7.0] - 2026-10-14
 

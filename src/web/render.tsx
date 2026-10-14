@@ -777,7 +777,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <h3><RepositoryBadge repository={question.repository} /> · #{question.issueNumber} {question.prompt}</h3>
               <p>{question.reason}</p>
             </div>
-            {canManage && question.answerError ? <p role="alert">{question.answerError}</p> : canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`}>
+            {canManage && question.answerError ? <p role="alert">{question.answerError}</p> : canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`} data-answer-form>
               <input type="hidden" name="csrf" value={model.csrfToken} />
               {question.allowFreeText ? (
                 <Fragment>
@@ -792,6 +792,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
                 </label>
               ))}
               <button class="answer-button" type="submit">Answer</button>
+              <p class="answer-status" role="status" data-answer-status />
             </form>}
           </li>
         ))}
