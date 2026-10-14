@@ -1,7 +1,7 @@
 /** A stable, friendly monogram avatar without external image assets. */
 export function AgentAvatar({ name, script = false }: { name: string; script?: boolean }) {
   const initials = script
-    ? "{}"
+    ? "⚙"
     : name
         .split(/\s+/)
         .filter(Boolean)

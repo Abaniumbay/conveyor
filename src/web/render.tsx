@@ -513,7 +513,10 @@ function StationDialog({ station }: { station: Station }) {
           ))}</ul>
         </section>
       )}
-      {station.cost && <p class="stage-dialog-usage"><span>Usage</span> {station.cost}</p>}
+      <p class="stage-dialog-usage"><span>Usage</span> {station.cost
+        ?? (station.actors.length > 0 && station.actors.every((actor) => actor.type === "script")
+          ? "Runs without an agent, so it uses no tokens."
+          : station.kind === "stage" ? "No agent usage recorded yet." : "Not a stage agents work in.")}</p>
     </dialog>
   );
 }
