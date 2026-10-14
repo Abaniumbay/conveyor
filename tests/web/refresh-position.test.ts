@@ -361,6 +361,15 @@ describe("dashboard live refresh position", () => {
 
       await page.locator('[data-row-fold="family-family"]').click();
       expect(await state()).toMatchObject({ cellsHidden: false, expanded: "true", label: "Fold the #10 family" });
+
+      // On a phone, where a family row lists its cards in one column, folding hides them too.
+      const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(phone, server.port);
+      await phone.locator('[data-row-fold="family-family"]').click();
+      expect(await phone.evaluate(() => ({
+        display: getComputedStyle(document.getElementById("family-family-cells")!).display,
+        cardVisible: (document.querySelector('[data-family-row="family"] article.issue') as HTMLElement).getBoundingClientRect().height > 0,
+      }))).toEqual({ display: "none", cardVisible: false });
     } finally {
       server.stop(true);
     }

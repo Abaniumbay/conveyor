@@ -488,6 +488,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   const stopped = parent.needsAttention || parent.tone === "danger";
   return (
     <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} aria-label={`#${parent.number} ${parent.title}`}>
+      <div class="row-band">
       <div class="family-head" data-dialog-open={dialogId}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />
         <RepositoryBadge repository={parent.repository} />
@@ -498,6 +499,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         {stopped && <span class="family-stop" title={parent.reason ?? undefined}><i class="andon andon--stop" aria-hidden="true" />{stateWords(parent)}</span>}
         <button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>
         <DetailsDialog issue={parent} id={dialogId} canManage={canManage} />
+      </div>
       </div>
       <div class="board-cells" id={`${rowId}-cells`}>
         {stations.map((station) => {
@@ -522,7 +524,6 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
 }
 
 function BacklogCell({ issues, model, canManage, thread }: { issues: readonly IssueCardViewModel[]; model: DashboardViewModel; canManage: boolean; thread: (issue: IssueCardViewModel) => boolean }) {
-  if (issues.length === 0) return <p class="empty">No issues waiting to start</p>;
   return (
     <ol class="issue-list" data-backlog-list>
       {issues.map((issue, index) => (
@@ -571,13 +572,16 @@ function Board({ model }: { model: DashboardViewModel }) {
   return (
     <section class="board board--rows" aria-label="Delivery board">
       <div class="board-track" style={style}>
+        <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${station.count === 0 ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
         <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
         {openParents.map((parent) => <FamilyRow parent={parent} stations={stations} canManage={canManage} key={parent.id} />)}
         <section class={`board-row other-row${openParents.length === 0 ? " other-row--alone" : ""}`} aria-label="Items without a parent">
           {openParents.length > 0 && (
-            <div class="family-head other-head">
-              <FoldButton target="board-other" label="items without a parent" />
-              <strong class="family-title">Items without a parent</strong>
+            <div class="row-band">
+              <div class="family-head other-head">
+                <FoldButton target="board-other" label="items without a parent" />
+                <strong class="family-title">Items without a parent</strong>
+              </div>
             </div>
           )}
           <div class="board-cells" id="board-other-cells">
@@ -591,10 +595,8 @@ function Board({ model }: { model: DashboardViewModel }) {
                 <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} aria-label={station.name} key={station.id}>
                   <p class="board-cell-label"><span>{station.name}</span><span class="count">{station.count}</span></p>
                   {station.kind === "backlog"
-                    ? (issues.length > 0 || !narrow) && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
-                    : issues.length > 0
-                      ? <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>
-                      : !narrow && <p class="empty">{station.kind === "done" ? "No closed issues" : "No issues in this stage"}</p>}
+                    ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
+                    : issues.length > 0 && <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>}
                   {station.kind === "stage" && station.column && <Pagination column={station.column} view="board" />}
                   {done && remaining > 0 && (
                     <form class="load-more" method="get" action="/board">
