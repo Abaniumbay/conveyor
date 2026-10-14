@@ -4,6 +4,7 @@ export interface LabelConfiguration {
   states: Record<string, string>;
   metadata: {
     closable: string;
+    noSplit: string;
     orderTemplate: string;
   };
 }
@@ -42,8 +43,9 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
   const sourceLabels = new Set(input.sourceLabels);
   const relevantLabels = input.sourceLabels.filter(
     (label) =>
-      label === input.labels.enrollment ||
-      label.startsWith(`${input.labels.enrollment}:`),
+      (label === input.labels.enrollment ||
+        label.startsWith(`${input.labels.enrollment}:`)) &&
+      label !== input.labels.metadata.noSplit,
   );
 
   if (relevantLabels.length === 0) {
@@ -84,6 +86,7 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
     ...stageLabels.keys(),
     ...Object.values(input.labels.states),
     input.labels.metadata.closable,
+    input.labels.metadata.noSplit,
   ]);
   const orderPattern = templatePattern(input.labels.metadata.orderTemplate, "number");
   const stagePattern = templatePattern(input.labels.stageTemplate, "stage");

@@ -15,6 +15,7 @@ const labels = {
   },
   metadata: {
     closable: "conveyor:closable",
+    noSplit: "conveyor:no-split",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -39,6 +40,18 @@ describe("evaluateIssueState", () => {
       state: null,
       warnings: [],
     });
+  });
+
+  test("does not onboard an issue carrying only the no-split metadata label", () => {
+    expect(
+      evaluateIssueState({
+        sourceState: "open",
+        sourceLabels: ["conveyor:no-split"],
+        labels,
+        stages,
+        expectedPostMergeClosure: false,
+      }),
+    ).toMatchObject({ mode: "offboarded", visible: false, eligible: false });
   });
 
   test("shows a labeled issue without the base label as paused", () => {

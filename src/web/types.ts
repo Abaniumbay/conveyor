@@ -72,6 +72,7 @@ export interface IssueCardViewModel {
   blocked: boolean;
   inconsistent: boolean;
   closable: boolean;
+  noSplit: boolean;
   tone: IssueTone;
   parent: IssueRelationViewModel | null;
   /** A child only: how many of its parent's children are done. */

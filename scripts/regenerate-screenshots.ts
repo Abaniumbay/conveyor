@@ -37,7 +37,7 @@ const DEMO_SOURCE_ISSUES = [
     body: "Deterministic demo item used only to regenerate documentation screenshots.",
     state: "open",
     state_reason: null,
-    labels: ["conveyor", "conveyor:implementation"],
+    labels: ["conveyor", "conveyor:implementation", "conveyor:no-split"],
     updated_at: DEMO_TIME,
   },
   {
@@ -304,7 +304,10 @@ async function seedDemo(home: string): Promise<void> {
       configHash: "demo-config",
     });
     const issues = [
-      issue(1, "Ship a reliable dashboard overview", "implementation"),
+      {
+        ...issue(1, "Ship a reliable dashboard overview", "implementation"),
+        labels: ["conveyor", "conveyor:implementation", "conveyor:no-split"],
+      },
       issue(2, "Review accessible status indicators", "review"),
       issue(3, "Plan release communications", "refinement"),
       {
@@ -801,6 +804,7 @@ async function main(): Promise<void> {
       "Needs you",
       "Which migration path should the team use?",
       "Ship a reliable dashboard overview",
+      "No split",
       "Repositories",
       PHONE_OVERFLOW_REPOSITORY,
       PHONE_OVERFLOW_ADDRESS,

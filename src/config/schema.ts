@@ -596,10 +596,18 @@ const labelsSchema = z
       .object({
         closable: identifierSchema,
         orderTemplate: z.string().includes("{number}"),
+        noSplit: identifierSchema.optional(),
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .transform((labels) => ({
+    ...labels,
+    metadata: {
+      ...labels.metadata,
+      noSplit: labels.metadata.noSplit ?? `${labels.enrollment}:no-split`,
+    },
+  }));
 
 export const configSchema = z
   .object({

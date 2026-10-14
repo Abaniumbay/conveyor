@@ -157,6 +157,7 @@ async function world(options: {
   failTitleWriteOnce?: boolean;
   failDependencyWriteOnce?: boolean;
   failDependencySectionWriteOnce?: boolean;
+  noSplitLabel?: string;
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
   directories.push(root);
@@ -182,7 +183,10 @@ async function world(options: {
     sources.set(number, { ...source(number), ...extra });
   };
   const config = {
-    labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" } },
+    labels: {
+      enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" },
+      metadata: { closable: "conveyor:closable", noSplit: options.noSplitLabel ?? "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+    },
     repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
     pipelines: { default: { stages: [{ id: "refinement" }, { id: "implementation" }] } },
   } as unknown as ConveyorConfig;
@@ -291,6 +295,21 @@ describe("item.load", () => {
       refinement: { type: null, typesAvailable: false, fields: {}, definedFields: [], section: false },
     });
   });
+
+  test("tells agents when a labelled item must remain whole", async () => {
+    const w = await world({ noSplitLabel: "workflow:keep-whole" });
+    w.add("i1", 1, { labels: ["conveyor", "workflow:keep-whole"] });
+
+    const labelled = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(labelled.noSplit).toEqual({
+      label: "workflow:keep-whole",
+      instruction: expect.stringMatching(/must remain one item.*whole scope.*needs-input.*do not create children/i),
+    });
+
+    w.add("plain", 2, { labels: ["conveyor"] });
+    const plain = (await run("item.load", { context: {}, deps: w.deps("plain") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(plain).not.toHaveProperty("noSplit");
+  });
 });
 
 describe("item.load refinement outputs", () => {
@@ -330,9 +349,14 @@ describe("item tools", () => {
   });
 
   test("get and guidance read", async () => {
-    const w = await world(); w.add("i1", 5, { body: "B" });
-    expect((await tool("item.get", w.deps(), {})).output).toMatchObject({ body: "B" });
+    const w = await world({ noSplitLabel: "workflow:keep-whole" }); w.add("i1", 5, { body: "B", labels: ["conveyor", "workflow:keep-whole"] });
+    expect((await tool("item.get", w.deps(), {})).output).toMatchObject({
+      body: "B",
+      noSplit: { label: "workflow:keep-whole", instruction: expect.stringMatching(/must remain one item/i) },
+    });
     expect(w.calls[0]).toEqual(["getIssue", ["o/r", 5]]);
+    w.add("plain", 6, { labels: ["conveyor"] });
+    expect((await tool("item.get", w.deps("plain"), {})).output).not.toHaveProperty("noSplit");
     expect((await tool("item.guidance", w.deps(), {})).output).toBe("GUIDE");
   });
 
@@ -471,7 +495,21 @@ describe("item tools", () => {
       address: "o/r", parentNumber: 5, title: "Kid",
       labels: ["conveyor", "conveyor:implementation", "area:api"],
     });
+    expect((w.calls[0]![1] as { labels: string[] }).labels).not.toContain("conveyor:no-split");
     expect((w.calls[0]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
+  });
+
+  test("createChild refuses a no-split parent before any mutation and keeps existing children", async () => {
+    const w = await world({ noSplitLabel: "workflow:keep-whole" });
+    w.add("i1", 5, { labels: ["conveyor", "workflow:keep-whole"] });
+    w.add("existing", 7);
+    w.store.replaceRelationships("existing", { parentId: "i1", siblingOrder: 1 }, []);
+
+    await expect(tool("item.createChild", w.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }],
+    })).rejects.toThrow(/workflow:keep-whole.*whole item.*needs-input/i);
+    expect(w.calls).toEqual([]);
+    expect(w.store.listChildren("i1")).toEqual([{ issueId: "existing", siblingOrder: 1 }]);
   });
 
   test("createChild records sibling and cross-parent dependencies and waits for all of them", async () => {

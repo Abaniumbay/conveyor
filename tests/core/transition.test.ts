@@ -30,7 +30,7 @@ async function setup(): Promise<ConveyorStore> {
     title: "Feature",
     body: "",
     sourceState: "open",
-    labels: ["conveyor", "conveyor:implementation", "conveyor:order:2", "backend"],
+    labels: ["conveyor", "conveyor:implementation", "conveyor:no-split", "conveyor:order:2", "backend"],
     sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
   return store;
@@ -50,6 +50,7 @@ const labelConfig = {
   },
   metadata: {
     closable: "conveyor:closable",
+    noSplit: "conveyor:no-split",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -80,7 +81,7 @@ describe("applyStageTransition", () => {
       },
     });
 
-    expect(calls).toEqual([["conveyor", "conveyor:order:2", "conveyor:review"]]);
+    expect(calls).toEqual([["conveyor", "conveyor:no-split", "conveyor:order:2", "conveyor:review"]]);
     expect(store.getStageState("issue")).toMatchObject({
       stageId: "review",
       status: "awaiting-source",
@@ -378,9 +379,10 @@ describe("applyStageTransition", () => {
     store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "hash" });
     const before = journal.stageEpoch("issue");
 
+    const calls: string[][] = [];
     await applyRollupTransition({
       store,
-      source: { async replaceConveyorLabels() {} },
+      source: { async replaceConveyorLabels(_address, _number, labels) { calls.push([...labels]); } },
       sourceName: "github",
       address: "owner/repo",
       configHash: "hash",
@@ -392,6 +394,7 @@ describe("applyStageTransition", () => {
     });
 
     expect(journal.stageEpoch("issue")).toBe(before + 1);
+    expect(calls).toEqual([["conveyor", "conveyor:no-split", "conveyor:order:2", "conveyor:review"]]);
     store.close();
   });
 });

@@ -31,6 +31,7 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
     blocked: false,
     inconsistent: false,
     closable: false,
+    noSplit: false,
     tone: "active",
     parent: null,
     children: [],

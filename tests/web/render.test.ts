@@ -30,6 +30,7 @@ const parent: IssueCardViewModel = {
   blocked: true,
   inconsistent: false,
   closable: true,
+  noSplit: true,
   tone: "warning",
   parent: null,
   children: [],
@@ -65,6 +66,7 @@ const backlogIssue: IssueCardViewModel = {
   blocked: false,
   inconsistent: false,
   closable: false,
+  noSplit: false,
   tone: "active",
   parent: null,
   children: [],
@@ -284,6 +286,14 @@ describe("issue type and fields", () => {
 });
 
 describe("renderDashboard", () => {
+  test("shows a no-split marker on the card and details only while the item carries the label", () => {
+    const labelled = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [parent] }], backlog: [backlogIssue] });
+    const unlabelled = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, noSplit: false }] }], backlog: [backlogIssue] });
+
+    expect(labelled.match(/No split/g)).toHaveLength(2);
+    expect(unlabelled).not.toContain("No split");
+  });
+
   test("renders visible approved and unapproved criterion states", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 

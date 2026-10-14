@@ -20,12 +20,12 @@ async function git(cwd: string, ...args: string[]) {
   return { out: out.trim(), code };
 }
 
-async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string; ignoreChecks?: string[] } = {}) {
+async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string; ignoreChecks?: string[]; noSplit?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-handover-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "o/r", folder: "/f", configHash: "h" });
-  store.upsertIssue({ id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "T", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+  store.upsertIssue({ id: "i1", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://x/7", title: "T", body: "", sourceState: "open", labels: options.noSplit ? ["workflow:keep-whole"] : [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
   store.activateEnrollment("i1");
   if (options.changeHead !== undefined) store.upsertPullRequest({ issueId: "i1", id: "github:o/r#5", number: 5, url: "https://x/pull/5", state: "open" });
   const workspace = path.join(root, "ws");
@@ -35,7 +35,7 @@ async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: stri
   const artifacts: Array<Record<string, unknown>> = [];
   const deps = {
     store, git: {} as never,
-    config: { repositories: { repo: { ci: { ignoreChecks: options.ignoreChecks ?? [] } } }, agents: { kaveh: { name: "Kaveh", title: "Implementer" }, jamshid: { name: "Jamshid", title: "Implementer" } } },
+    config: { labels: { metadata: { noSplit: "workflow:keep-whole" } }, repositories: { repo: { ci: { ignoreChecks: options.ignoreChecks ?? [] } } }, agents: { kaveh: { name: "Kaveh", title: "Implementer" }, jamshid: { name: "Jamshid", title: "Implementer" } } },
     repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" },
     issueId: "i1",
     codeHost: options.changeHead === undefined ? null : {
@@ -72,6 +72,18 @@ describe("handover", () => {
     expect(h.change).toMatchObject({ exists: false });
     expect(h.previousRun).toMatchObject({ present: false });
     expect(h.worktree).toMatchObject({ branch: "unavailable", headSha: "unavailable", clean: "unavailable", gitOperation: "unavailable" });
+  });
+
+  test("states that a labelled item must remain whole", async () => {
+    const labelled = await setup({ noSplit: true, ci: "none" });
+    expect(await labelled.build()).toMatchObject({
+      noSplit: {
+        label: "workflow:keep-whole",
+        instruction: expect.stringMatching(/must remain one item.*whole scope.*needs-input.*do not create children/i),
+      },
+    });
+    const plain = await setup({ ci: "none" });
+    expect(await plain.build()).not.toHaveProperty("noSplit");
   });
 
   test("shows todos, only open findings, the change and CI for the current head", async () => {

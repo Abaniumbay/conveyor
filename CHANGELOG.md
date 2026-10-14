@@ -14,6 +14,10 @@ This release redesigns the board. Stages are Jira-style columns with compact hea
 
 ### Added
 
+- A configurable `labels.metadata.noSplit` label (defaulting to `<enrollment>:no-split`) keeps an
+  issue whole during refinement. Conveyor preserves this human-managed label, refuses child
+  creation while it is present, explains the constraint to refiners, and marks the dashboard card
+  and details.
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
 - The board shows each open parent as a row. The stations stay across the top. Each parent's row
