@@ -28,8 +28,15 @@ This release redesigns the board. Stages are Jira-style columns with compact hea
   (`#245 · Blocked`). A card, or a family row, that unfinished items wait on gets a **Blocks N**
   chip. Tapping a chip traces the chain both ways across the rows, through parents too: what it
   waits on is outlined in red, what waits on it in blue, the rest dims, and folded rows holding
-  part of the chain open. A banner lists the direct links and counts the whole chain. **Show
-  everything**, the chip again, or Escape clears it.
+  part of the chain open. A floating bar lists the direct links and counts the whole chain.
+  **Show everything**, the chip again, or Escape clears it.
+- Stage columns look like a Jira board: soft filled columns without borders, every heading the
+  same height with an emoji, the name, an information button and the count. On wide screens the
+  board is its own scroll area, so its sideways scrollbar is always on screen and the headings
+  stay at its top. The information button opens a dialog with the stage's description, who works
+  there and its usage. Pipelines can set a stage's `description` and `icon` (an emoji) in YAML; the
+  reference pipelines set both, and the usual stage ids get an emoji by default.
+- On a phone the board lists its stages top to bottom, with no sideways scrolling.
 
 ### Changed
 
