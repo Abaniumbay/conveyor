@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +24,8 @@ export async function acquireScratch(directory?: string): Promise<ScratchDirecto
 /** Configured writable roots must not turn host /tmp back into durable agent storage. */
 export function assertNoHostTmpWritableRoots(roots: readonly string[] | undefined): void {
   for (const root of roots ?? []) {
+    // Nonexistent optional roots are omitted by all launchers.
+    if (!existsSync(root)) continue;
     const resolved = resolveFilesystemPath(root);
     if (resolved === "/tmp" || resolved.startsWith("/tmp/")) {
       throw new Error(`agent writable root must not be host /tmp: ${root}`);

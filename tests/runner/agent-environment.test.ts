@@ -130,13 +130,14 @@ describe("agent environment", () => {
     for (const kind of ["run", "check", "steer"] as const) {
       const files = await fixture();
       const link = path.join(files.directory, "link");
-      await mkdir(path.join(files.directory, "cache"));
+      const allowedRoot = path.join(files.directory, "allowed-root");
       await symlink(files.directory, link);
+      await symlink(path.join(process.cwd(), "src"), allowedRoot);
       const linked = {
         workspace: path.join(link, "workspace"),
         artifactsDirectory: path.join(link, "artifacts", "run-1"),
         temporaryDirectory: path.join(link, "scratch"),
-        writableRoots: [path.join(link, "cache"), path.join(link, "missing")],
+        writableRoots: [allowedRoot, path.join(link, "missing")],
         env: { ENV_CAPTURE: path.join(link, "env.json"), KIND: kind },
       };
       if (kind === "run") await runCodex({ ...common, command: files.executable, ...linked });
@@ -148,7 +149,9 @@ describe("agent environment", () => {
       expect(env.HOME).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
       expect(env.TMPDIR).toBe(resolveFilesystemPath(path.join(files.directory, "scratch")));
       expect(env.ENV_CAPTURE).toBe(resolveFilesystemPath(files.capture));
-      expect(JSON.parse(env.RUN_ARGS ?? "[]")).not.toContain(link);
+      expect(env.RUN_ARGS).not.toContain(link);
+      expect(env.RUN_ARGS).not.toContain(allowedRoot);
+      expect(env.RUN_ARGS).toContain(resolveFilesystemPath(allowedRoot));
     }
   });
 });

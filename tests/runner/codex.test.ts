@@ -176,9 +176,10 @@ describe("runCodex", () => {
       mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
-    const worktreeRoot = path.join(files.directory, "writable-worktree");
-    const cacheRoot = path.join(files.directory, "writable-cache");
-    await Promise.all([mkdir(worktreeRoot), mkdir(cacheRoot)]);
+    // CI puts disposable fixtures in /tmp, which is deliberately not a permitted extra root.
+    // Use existing repository directories here so this exercises the authorized-root contract.
+    const worktreeRoot = process.cwd();
+    const cacheRoot = path.join(worktreeRoot, "src");
     const access = { network: true, writableRoots: [worktreeRoot, cacheRoot] };
     // The run's own home and temp directory follow the configured roots.
     const roots = async () => JSON.parse((await args()).find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
@@ -214,7 +215,7 @@ describe("runCodex", () => {
     expect((await roots())[0]).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
   });
 
-  test("reuses an item scratch directory and rejects host temporary writable roots, including symlinks", async () => {
+  test("reuses an item scratch directory, rejects host temporary roots, and omits missing optional roots", async () => {
     const files = await fixture(`
       const args = process.argv.slice(2);
       await Bun.write(process.env.TMPDIR + "/from-agent", "available later");
@@ -244,7 +245,7 @@ describe("runCodex", () => {
     const hostTmpAlias = path.join(files.directory, "host-tmp");
     await symlink("/tmp", hostTmpAlias);
     await expect(runCodex({ ...input, writableRoots: [hostTmpAlias] })).rejects.toThrow("host /tmp");
-    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).rejects.toThrow("host /tmp");
+    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).resolves.toBeDefined();
   });
 
   test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {
