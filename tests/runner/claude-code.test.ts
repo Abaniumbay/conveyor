@@ -159,6 +159,47 @@ echo '${successfulResult}'
     expect(await readFile(artifact, "utf8")).toBe("artifact\n");
   });
 
+  test("preserves a declared artifact created in private home", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+printf 'private artifact\\n' > "$HOME/result.txt"
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"success","status":"done","summary":"Done","reason":null,"metrics":{},"artifacts":[{"name":"result","path":"'"$HOME"'/result.txt"}]}}'
+`);
+
+    const result = await run.run();
+    const artifact = result.artifacts[0];
+
+    expect(artifact).toBeDefined();
+    expect(artifact?.path).not.toStartWith(path.join(run.artifactsDirectory, "home"));
+    await expect(readFile(artifact!.path, "utf8")).resolves.toBe("private artifact\n");
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+  });
+
+  test("clears the private home when Claude setup fails before the process starts", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo '${successfulResult}'
+`);
+    const configFile = path.join(run.root, "not-a-directory");
+    await writeFile(configFile, "config");
+
+    await expect(run.run({ CLAUDE_CONFIG_DIR: configFile })).rejects.toThrow();
+
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+  });
+
+  test("accepts an already-removed private home after a successful run", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+rm "$HOME/.gitconfig"
+rmdir "$HOME"
+echo '${successfulResult}'
+`);
+
+    await expect(run.run()).resolves.toMatchObject({ stageResult: { status: "done" } });
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+  });
+
   test("clears the private home after a failed run without touching other run homes or shared caches", async () => {
     const run = await runnable(`#!/bin/sh
 cat > /dev/null

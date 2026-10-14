@@ -10,13 +10,13 @@
 // acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
 
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
-import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type RunEnvelope } from "./result";
+import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
 import type { HarnessRunInput } from "../harness/types";
 import { OUTPUT_SCHEMAS } from "./output-schemas";
 
@@ -172,15 +172,50 @@ export function sandboxArguments(options: {
   return args;
 }
 
+function isInside(directory: string, candidate: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** Moves declared files out of private home so teardown cannot leave dangling artifact references. */
+export async function preserveClaudeCodeHomeArtifacts(artifactsDirectory: string, home: string, declared: Artifact[]): Promise<Artifact[]> {
+  const artifacts = resolveFilesystemPath(artifactsDirectory);
+  const privateHome = resolveFilesystemPath(home);
+  if (!isInside(artifacts, privateHome)) {
+    throw new Error(`private home ${privateHome} is outside run artifacts ${artifacts}`);
+  }
+  const moved = new Map<string, string>();
+  const preserved: Artifact[] = [];
+  for (const [index, artifact] of declared.entries()) {
+    if (!existsSync(artifact.path)) {
+      preserved.push(artifact);
+      continue;
+    }
+    const source = resolveFilesystemPath(artifact.path);
+    if (!isInside(privateHome, source)) {
+      preserved.push(artifact);
+      continue;
+    }
+    let destination = moved.get(source);
+    if (!destination) {
+      destination = path.join(artifacts, "declared", `${index}-${path.basename(source)}`);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await rename(source, destination);
+      moved.set(source, destination);
+    }
+    preserved.push({ ...artifact, path: destination });
+  }
+  return preserved;
+}
+
 /** Removes a finished run's resolved private home, never a sibling artifact or an escaped link target. */
 export async function clearClaudeCodeHome(artifactsDirectory: string, home: string): Promise<void> {
   const artifacts = resolveFilesystemPath(artifactsDirectory);
   const privateHome = resolveFilesystemPath(home);
-  const relative = path.relative(artifacts, privateHome);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  if (!isInside(artifacts, privateHome)) {
     throw new Error(`private home ${privateHome} is outside run artifacts ${artifacts}`);
   }
-  await rm(privateHome, { recursive: true, force: false });
+  await rm(privateHome, { recursive: true, force: true });
 }
 
 export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvelope> {
@@ -214,6 +249,9 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       artifactsDirectory, workspace, overrides: input.env,
       controlPlane: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     });
+    // prepareAgentEnvironment creates this home before config setup, so record it for early-failure teardown.
+    const preparedHome = resolveFilesystemPath(environment.HOME!);
+    privateHome = preparedHome;
     const serviceHome = process.env.HOME ? resolveFilesystemPath(process.env.HOME) : undefined;
     const configDir = environment.CLAUDE_CONFIG_DIR ?? (serviceHome ? path.join(serviceHome, ".claude") : undefined);
     if (!configDir) {
@@ -223,7 +261,6 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.CLAUDE_CONFIG_DIR = resolveFilesystemPath(configDir);
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
-    privateHome = resolvedEnvironment.HOME;
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
     const argv = [
       "bwrap", ...sandboxArguments({
@@ -270,7 +307,6 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       if (forceKillTimer) clearTimeout(forceKillTimer);
       input.signal?.removeEventListener("abort", onAbort);
     }
-    await clearPrivateHome();
     const [{ raw, invalidLine }, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
     const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
     const final = result as ClaudeEvent | null;
@@ -299,6 +335,8 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     usage.inputTokens = (reported.input_tokens ?? 0) + (reported.cache_creation_input_tokens ?? 0) + usage.cachedTokens;
     usage.outputTokens = reported.output_tokens ?? 0;
     const value = parsed.data;
+    const artifacts = await preserveClaudeCodeHomeArtifacts(artifactsDirectory, preparedHome, value.artifacts);
+    await clearPrivateHome();
     return {
       stageResult: { outcome: value.outcome, status: value.status, summary: value.summary, reason: value.reason, metrics: value.metrics },
       sessionId,
@@ -306,7 +344,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       cost: { ...UNAVAILABLE_COST },
       durationMs,
       exitCode,
-      artifacts: value.artifacts,
+      artifacts,
       stderr,
     };
   } catch (error) {
