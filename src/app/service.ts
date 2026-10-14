@@ -349,6 +349,7 @@ export class ConveyorService {
         log.info("Stage queued after restart", { ...service.itemFields(stage.issueId), stage: stage.stageId });
       }
     }
+    await service.recoverWorkspaceScratch();
     await service.onboardRepositories();
     await service.reconcileAll();
     return service;
@@ -457,6 +458,17 @@ export class ConveyorService {
       const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
       prune();
       this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
+    }
+  }
+
+  private async recoverWorkspaceScratch(): Promise<void> {
+    try {
+      const removed = await this.workspaceManager.removeOrphanedScratch(
+        this.store.listActiveWorkspaces().map((workspace) => workspace.path),
+      );
+      if (removed > 0) log.info("Removed orphaned item scratch directories", { directories: removed });
+    } catch (error) {
+      log.error("Workspace scratch recovery failed", {}, error);
     }
   }
 

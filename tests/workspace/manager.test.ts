@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { WorkspaceError, WorkspaceManager } from "../../src/workspace/manager";
+import { workspaceScratchPath, WorkspaceError, WorkspaceManager } from "../../src/workspace/manager";
 
 const temporaryDirectories: string[] = [];
 
@@ -62,6 +63,11 @@ describe("WorkspaceManager", () => {
     expect(await command(fixture.checkout, "git", "branch", "--show-current")).toBe("main");
     expect(await command(fixture.checkout, "git", "rev-parse", "HEAD")).toBe(originalHead);
     expect(await command(fixture.checkout, "git", "status", "--porcelain")).toBe("");
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(true);
+    expect(workspaceScratchPath(workspace.path)).not.toStartWith(workspace.path + path.sep);
+    await rm(workspaceScratchPath(workspace.path), { recursive: true, force: true });
+    await manager.ensureScratch(workspace.path);
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(true);
   });
 
   test("keeps worktree edits isolated and removes only managed paths", async () => {
@@ -93,6 +99,7 @@ describe("WorkspaceManager", () => {
     expect(await command(fixture.checkout, "git", "branch", "--list", workspace.branch)).toBe("");
     expect(await command(fixture.checkout, "git", "branch", "-r", "--list", `origin/${workspace.branch}`)).toBe("");
     expect(await readFile(path.join(fixture.checkout, "README.md"), "utf8")).toBe("base\n");
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
   });
 
   test("rejects a configured folder that is not a Git checkout", async () => {
@@ -141,6 +148,7 @@ describe("WorkspaceManager.restore", () => {
     expect(await command(created.path, "git", "rev-parse", "HEAD")).toBe(head);
     expect(await command(created.path, "git", "branch", "--show-current")).toBe(created.branch);
     expect(await readFile(path.join(created.path, "work.txt"), "utf8")).toBe("w\n");
+    expect(existsSync(workspaceScratchPath(created.path))).toBe(true);
   });
 
   test("creates the branch fresh from the base branch when it no longer exists", async () => {
@@ -153,5 +161,35 @@ describe("WorkspaceManager.restore", () => {
 
     expect(await command(created.path, "git", "branch", "--show-current")).toBe(created.branch);
     expect(await command(created.path, "git", "rev-parse", "HEAD")).toBe(created.baseRevision);
+  });
+});
+
+describe("WorkspaceManager scratch recovery", () => {
+  test("removes inactive scratch while preserving the active workspace's sibling directory", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const active = await manager.create({
+      repositoryPath: fixture.checkout, repositoryId: "repo", issueNumber: 1, enrollment: 1, slug: "active", baseBranch: "main",
+    });
+    const orphan = path.join(fixture.workspaces, "repo", "issue-2-r1.tmp");
+    await mkdir(orphan, { recursive: true });
+    await writeFile(path.join(orphan, "leftover"), "x");
+
+    expect(await manager.removeOrphanedScratch([active.path])).toBe(1);
+    expect(existsSync(workspaceScratchPath(active.path))).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test("removes scratch when the worktree was already absent", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const workspace = await manager.create({
+      repositoryPath: fixture.checkout, repositoryId: "repo", issueNumber: 4, enrollment: 1, slug: "gone", baseBranch: "main",
+    });
+    await rm(workspace.path, { recursive: true, force: true });
+
+    await manager.remove({ repositoryPath: fixture.checkout, workspacePath: workspace.path, branch: workspace.branch, deleteBranch: true });
+
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
   });
 });

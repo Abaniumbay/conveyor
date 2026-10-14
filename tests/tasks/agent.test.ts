@@ -52,6 +52,7 @@ async function world(options: { sessionResume?: boolean; noWorkspace?: boolean }
       return { path: created, branch: "conveyor/7-fix-it" };
     },
     restore: async (input: Record<string, unknown>) => { managerCalls.push({ op: "restore", input }); await mkdir(input.workspacePath as string, { recursive: true }); },
+    ensureScratch: async (workspacePath: string) => { await mkdir(`${workspacePath}.tmp`, { recursive: true }); },
     remove: async () => {},
   };
   const instructions = path.join(root, "kaveh.md");
@@ -272,7 +273,11 @@ describe("agent.run", () => {
     Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(w.root, "missing")] });
     expect((await w.run(false)).status).toBe("pass");
     const git = path.join(workspace, ".git");
-    expect(w.calls[0]).toMatchObject({ network: true, writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache] });
+    expect(w.calls[0]).toMatchObject({
+      network: true,
+      temporaryDirectory: `${workspace}.tmp`,
+      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), `${workspace}.tmp`, cache],
+    });
   });
 
   test("an agent's codexConfig and MCP servers reach the harness, and their files are git-excluded first", async () => {
@@ -321,7 +326,8 @@ describe("agent.run", () => {
     const git = path.join(workspace, ".git");
     expect(w.calls[0]).toMatchObject({
       command: "claude", sandbox: "workspace-write", automaticApprovals: false, network: true,
-      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), cache],
+      temporaryDirectory: `${workspace}.tmp`,
+      writableRoots: [git, ...["objects", "refs", "logs"].map((d) => path.join(git, d)), `${workspace}.tmp`, cache],
       mcpServers: { serena: { command: "serena", args: ["--project", workspace], env: {}, enabledTools: ["find_symbol"] } },
     });
     expect(w.calls[0]!.config).toBeUndefined();

@@ -1,4 +1,5 @@
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, readdir, realpath, rm } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 
 export interface CreateWorkspaceInput {
@@ -21,6 +22,11 @@ export interface RemoveWorkspaceInput {
   workspacePath: string;
   branch: string;
   deleteBranch: boolean;
+}
+
+/** The persistent scratch directory paired with a managed worktree. */
+export function workspaceScratchPath(workspacePath: string): string {
+  return `${path.resolve(workspacePath)}.tmp`;
 }
 
 export class WorkspaceError extends Error {
@@ -108,6 +114,8 @@ export class WorkspaceManager {
       );
     }
 
+    await this.ensureScratch(workspacePath);
+
     return { path: workspacePath, branch, baseRevision: revision };
   }
 
@@ -136,6 +144,14 @@ export class WorkspaceManager {
     if (added.exitCode !== 0) {
       throw new WorkspaceError(`cannot restore worktree ${workspacePath}: ${added.stderr || "unknown Git error"}`);
     }
+    await this.ensureScratch(workspacePath);
+  }
+
+  /** Ensure the persistent, sibling scratch directory remains available for an active workspace. */
+  async ensureScratch(workspacePath: string): Promise<void> {
+    const resolved = path.resolve(workspacePath);
+    this.assertManagedPath(resolved);
+    await mkdir(workspaceScratchPath(resolved), { recursive: true });
   }
 
   private async resolveBase(repositoryPath: string, baseBranch: string): Promise<string> {
@@ -188,6 +204,7 @@ export class WorkspaceManager {
       );
     }
     await git(repositoryPath, ["worktree", "prune"]);
+    await rm(workspaceScratchPath(workspacePath), { recursive: true, force: true });
 
     if (input.deleteBranch) {
       const deleted = await git(repositoryPath, ["branch", "-D", input.branch]);
@@ -199,6 +216,32 @@ export class WorkspaceManager {
       // The stale remote-tracking ref goes too (absent is fine); the remote branch itself is the code host's.
       await git(repositoryPath, ["update-ref", "-d", `refs/remotes/origin/${input.branch}`]);
     }
+  }
+
+  /** Remove scratch directories whose workspaces are no longer active after a service restart. */
+  async removeOrphanedScratch(activeWorkspacePaths: readonly string[]): Promise<number> {
+    const active = new Set(activeWorkspacePaths.map(workspaceScratchPath));
+    let repositories: Dirent<string>[];
+    try {
+      repositories = await readdir(this.#root, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let removed = 0;
+    for (const repository of repositories) {
+      if (!repository.isDirectory()) continue;
+      const repositoryPath = path.join(this.#root, repository.name);
+      for (const entry of await readdir(repositoryPath, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.endsWith(".tmp")) continue;
+        const scratch = path.join(repositoryPath, entry.name);
+        this.assertManagedPath(scratch.slice(0, -".tmp".length));
+        if (active.has(scratch)) continue;
+        await rm(scratch, { recursive: true, force: true });
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   private async validateRepository(repositoryPath: string): Promise<string> {

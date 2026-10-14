@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { prepareCodexEnvironment } from "../isolation/environment";
+import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   EMPTY_USAGE,
@@ -46,6 +46,8 @@ export interface CodexRunInput {
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
   writableRoots?: string[];
+  /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
+  temporaryDirectory?: string;
   /** Extra Codex settings, each passed as `-c key=value`. */
   config?: Record<string, CodexConfigValue>;
   /** MCP servers beside Conveyor's own. They are optional: one that fails to start does not fail the run. */
@@ -154,12 +156,16 @@ function accessArguments(input: CodexRunInput): string[] {
   const args: string[] = [];
   if (input.network) args.push("-c", `web_search=${tomlString("live")}`);
   if (input.sandbox !== "workspace-write") return args;
+  args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
   if (input.network) args.push("-c", "sandbox_workspace_write.network_access=true");
   if (input.writableRoots?.length) args.push("-c", `sandbox_workspace_write.writable_roots=${tomlArray(input.writableRoots)}`);
   return args;
 }
 
 function configArguments(input: CodexRunInput): string[] {
+  if (Object.hasOwn(input.config ?? {}, "sandbox_workspace_write.writable_roots")) {
+    throw new Error("sandbox_workspace_write.writable_roots must be configured through agent writable roots");
+  }
   return Object.entries(input.config ?? {}).flatMap(([key, value]) => ["-c", `${key}=${tomlValue(value)}`]);
 }
 
@@ -195,7 +201,8 @@ function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: st
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
-  args.push(...accessArguments(input), ...configArguments(input), ...extra, ...mcpArguments(input), sessionId, "-");
+  // Access settings follow user configuration so a config entry cannot reopen host /tmp.
+  args.push(...configArguments(input), ...accessArguments(input), ...extra, ...mcpArguments(input), sessionId, "-");
   return args;
 }
 
@@ -213,7 +220,8 @@ function buildArguments(input: CodexRunInput, outputFile: string, schemaFile: st
   if (input.effort) {
     args.push("-c", `model_reasoning_effort=${tomlString(input.effort)}`);
   }
-  args.push(...accessArguments(input), ...configArguments(input), ...extra, ...mcpArguments(input), "-");
+  // Access settings follow user configuration so a config entry cannot reopen host /tmp.
+  args.push(...configArguments(input), ...accessArguments(input), ...extra, ...mcpArguments(input), "-");
   return args;
 }
 
@@ -231,20 +239,21 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   const startedAt = performance.now();
   let network: RunNetwork | null = null;
   let child: ReturnType<typeof spawnPiped>;
-  // The run's own scratch space, beside the service's other temporary files and gone when it ends.
-  const runTmp = await mkdtemp(path.join(tmpdir(), "conveyor-run-"));
+  assertNoHostTmpWritableRoots(input.writableRoots);
+  const scratch = await acquireScratch(input.temporaryDirectory);
   try {
     const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
-    environment.TMPDIR = runTmp;
+    environment.TMPDIR = scratch.path;
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
     const run = input.sandbox === "workspace-write"
-      ? { ...input, writableRoots: [...(input.writableRoots ?? []), environment.HOME!, runTmp] }
+      ? { ...input, writableRoots: [...(input.writableRoots ?? []), environment.HOME!, scratch.path] }
       : input;
     const launch = await codexLaunch({
       command: input.command,
       environment,
       artifactsDirectory: input.artifactsDirectory,
       egress: input.egress,
+      privateTmp: input.sandbox === "danger-full-access",
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
@@ -253,7 +262,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();
-    await rm(runTmp, { recursive: true, force: true });
+    await scratch.cleanup();
     throw error;
   }
   child.stdin.write(input.prompt);
@@ -304,7 +313,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     exitCode = await child.exited;
   } finally {
     await network?.close();
-    await rm(runTmp, { recursive: true, force: true });
+    await scratch.cleanup();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
