@@ -49,6 +49,12 @@ Stage exit gates can wait for a human approval on the board, configured per pipe
 - Answering an agent's question resumes the agent with the answer again. Since 2026-10-10 the
   item's switch to needs-input (and back) restarted its stage, dropping the step that waited for
   the answer, so the agent started over and asked the same question again.
+### Added
+
+- The Board now replaces its repository-card strip with compact repository, text, and state
+  filters. Open cards filter immediately in the browser, share their state in the URL, and retain
+  every open item; Done searches remain server-backed. The filter controls show filtered counts,
+  preserve the full Needs you list, and collapse to a phone-friendly search and filter control.
 
 ### Fixed
 

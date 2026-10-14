@@ -999,6 +999,203 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('conveyor:dashboard-rendered', applyLineFold);
   window.matchMedia('(max-width: 760px)').addEventListener('change', applyLineFold);
 
+  // Board filters deliberately work on the cards already in the document. This keeps the open
+  // part of the board instant; only the limited Done column needs a fresh server result.
+  const boardFilterStates = new Set(['needs-you', 'running', 'waiting']);
+  let doneRequestVersion = 0;
+  let loadedDoneFilter = null;
+  const boardFilterValues = () => {
+    const params = new URLSearchParams(location.search);
+    const repositories = [...new Set(params.getAll('repo').filter(Boolean))];
+    const q = params.getAll('q').length === 1 ? params.get('q') || '' : '';
+    const states = params.getAll('state');
+    const state = states.length === 1 && boardFilterStates.has(states[0]) ? states[0] : null;
+    return { repositories, q, state };
+  };
+  const doneFilterKey = (filters) => JSON.stringify([filters.repositories, filters.q.trim().toLocaleLowerCase()]);
+  const stationForCard = (card) => card.getAttribute('data-board-station') || card.closest('[data-board-filter-station]')?.getAttribute('data-board-filter-station') || null;
+  const applyBoardFilters = () => {
+    const filter = document.querySelector('[data-board-filters]');
+    const currentBoard = document.querySelector('.board');
+    if (!filter || !currentBoard) return;
+    const values = boardFilterValues();
+    const repositories = new Set(values.repositories);
+    const words = values.q.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const cards = [...currentBoard.querySelectorAll('[data-filter-card]')];
+    const openCards = cards.filter((card) => stationForCard(card) !== 'done');
+    const matches = (card) => {
+      const repository = card.getAttribute('data-board-repository') || '';
+      const search = card.getAttribute('data-board-search') || '';
+      const state = card.getAttribute('data-board-state') || '';
+      return (repositories.size === 0 || repositories.has(repository)) &&
+        words.every((word) => search.includes(word)) &&
+        (values.state === null || state === values.state);
+    };
+    for (const card of cards) {
+      const visible = matches(card) && !(values.state !== null && stationForCard(card) === 'done');
+      card.hidden = !visible;
+      const item = card.closest('li');
+      if (item) item.hidden = !visible;
+    }
+    for (const row of currentBoard.querySelectorAll('[data-family-row]')) {
+      const rowCards = [...row.querySelectorAll('[data-filter-card]')];
+      row.hidden = rowCards.length > 0 && rowCards.every((card) => card.hidden);
+    }
+    const visibleOpen = openCards.filter((card) => !card.hidden);
+    const byStation = new Map();
+    const bySignal = new Map();
+    for (const card of visibleOpen) {
+      const station = stationForCard(card);
+      if (station) byStation.set(station, (byStation.get(station) || 0) + 1);
+      const signal = card.getAttribute('data-board-state') === 'needs-you' ? 'stop'
+        : card.getAttribute('data-board-state') === 'running' ? 'run' : 'wait';
+      const key = station + ':' + signal;
+      bySignal.set(key, (bySignal.get(key) || 0) + 1);
+    }
+    const active = values.repositories.length > 0 || words.length > 0 || values.state !== null;
+    const doneTotal = values.state ? 0 : Number(currentBoard.getAttribute('data-done-total') || 0);
+    for (const count of document.querySelectorAll('[data-board-station-count]')) {
+      const station = count.getAttribute('data-board-station-count');
+      const total = Number(count.getAttribute('data-board-total') || 0);
+      const value = station === 'done' ? doneTotal : (byStation.get(station) || 0);
+      count.textContent = active ? value + ' of ' + total : String(total);
+      count.setAttribute('aria-label', (active ? value + ' of ' + total : total) + ' issues');
+    }
+    for (const count of document.querySelectorAll('[data-board-line-count]')) {
+      const station = count.getAttribute('data-board-line-count');
+      const total = Number(count.getAttribute('data-board-total') || 0);
+      const value = station === 'done' ? doneTotal : (byStation.get(station) || 0);
+      count.textContent = active ? value + ' of ' + total : String(total);
+    }
+    for (const count of document.querySelectorAll('[data-board-signal-count]')) {
+      const station = count.getAttribute('data-board-station') || '';
+      const signal = count.getAttribute('data-board-signal-count') || '';
+      const total = Number(count.getAttribute('data-board-total') || 0);
+      const value = bySignal.get(station + ':' + signal) || 0;
+      const label = signal === 'run' ? 'running' : signal === 'wait' ? 'waiting' : 'stopped';
+      count.querySelector('small').textContent = active ? value + ' of ' + total : String(total);
+      count.setAttribute('aria-label', (active ? value + ' of ' + total : total) + ' ' + label);
+    }
+    for (const input of filter.querySelectorAll('[data-filter-repository]')) {
+      input.checked = repositories.has(input.value);
+      input.setAttribute('aria-pressed', input.checked ? 'true' : 'false');
+    }
+    for (const choice of filter.querySelectorAll('[data-filter-state]')) {
+      const input = choice.querySelector('input');
+      if (!input) continue;
+      input.checked = input.value === values.state;
+      choice.setAttribute('aria-pressed', input.checked ? 'true' : 'false');
+    }
+    const selectedCount = values.repositories.length + (words.length > 0 ? 1 : 0) + (values.state ? 1 : 0);
+    const more = filter.querySelector('[data-filter-more]');
+    if (more) {
+      const count = more.querySelector('[data-filter-count]');
+      if (count) count.textContent = String(selectedCount);
+      more.setAttribute('aria-label', 'Filters (' + selectedCount + ')');
+    }
+    const activeLabels = [
+      ...values.repositories.map((repository) => [...filter.querySelectorAll('[data-filter-repository]')].find((input) => input.value === repository)?.closest('label')?.textContent?.trim() || repository),
+      ...(words.length > 0 ? ['“' + values.q.trim() + '”'] : []),
+      ...(values.state ? [filter.querySelector('[data-filter-state="' + values.state + '"]')?.textContent?.trim() || values.state] : []),
+    ];
+    const summary = filter.querySelector('[data-filter-summary]');
+    if (summary) summary.textContent = 'Showing ' + visibleOpen.length + ' of ' + openCards.length + ' active board items' + (activeLabels.length ? ' · ' + activeLabels.join(', ') : '');
+    const clear = filter.querySelector('[data-filter-clear]');
+    if (clear) clear.hidden = !active;
+  };
+  const loadFilteredDone = async (filters) => {
+    const requested = doneFilterKey(filters);
+    if (requested === loadedDoneFilter) return;
+    const version = ++doneRequestVersion;
+    const target = new URL(location.href);
+    target.searchParams.delete('state');
+    try {
+      const response = await fetch(target.pathname + target.search, { headers: { accept: 'text/html' }, cache: 'no-store' });
+      if (!response.ok) throw new Error('Done filter request failed');
+      const next = new DOMParser().parseFromString(await response.text(), 'text/html');
+      if (version !== doneRequestVersion || requested !== doneFilterKey(boardFilterValues())) return;
+      const currentBoard = document.querySelector('.board');
+      const nextBoard = next.querySelector('.board');
+      const currentCells = currentBoard ? [...currentBoard.querySelectorAll('[data-station-cell="done"]')] : [];
+      const nextCells = nextBoard ? [...nextBoard.querySelectorAll('[data-station-cell="done"]')] : [];
+      if (!currentBoard || currentCells.length !== nextCells.length) return;
+      currentCells.forEach((cell, index) => cell.replaceWith(document.importNode(nextCells[index], true)));
+      currentBoard.setAttribute('data-done-total', nextBoard.getAttribute('data-done-total') || '0');
+      loadedDoneFilter = requested;
+      applyBoardFilters();
+    } catch {
+      // Open cards are already filtered, so a transient Done request never blocks the board.
+    }
+  };
+  const writeBoardFilters = (next) => {
+    const filters = {
+      repositories: [...new Set(next.repositories.filter(Boolean))],
+      q: next.q || '',
+      state: boardFilterStates.has(next.state) ? next.state : null,
+    };
+    const target = new URL(location.href);
+    target.searchParams.delete('repo');
+    target.searchParams.delete('q');
+    target.searchParams.delete('state');
+    for (const repository of filters.repositories) target.searchParams.append('repo', repository);
+    if (filters.q) target.searchParams.set('q', filters.q);
+    if (filters.state) target.searchParams.set('state', filters.state);
+    history.replaceState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
+    applyBoardFilters();
+    void loadFilteredDone(filters);
+  };
+  const bindBoardFilters = () => {
+    const filter = document.querySelector('[data-board-filters]');
+    if (!filter) return;
+    filter.dataset.enhanced = 'true';
+    const values = boardFilterValues();
+    if (loadedDoneFilter === null) loadedDoneFilter = doneFilterKey(values);
+    applyBoardFilters();
+    if (filter.dataset.filterBound === 'true') return;
+    filter.dataset.filterBound = 'true';
+    const form = filter.querySelector('[data-filter-form]');
+    const search = filter.querySelector('[data-filter-search]');
+    const current = () => {
+      const currentValues = boardFilterValues();
+      return { ...currentValues, q: search ? search.value : currentValues.q };
+    };
+    search?.addEventListener('input', () => writeBoardFilters(current()));
+    filter.addEventListener('change', (event) => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      const next = current();
+      if (input.matches('[data-filter-repository]')) {
+        next.repositories = [...filter.querySelectorAll('[data-filter-repository]:checked')].map((choice) => choice.value);
+      } else if (input.name === 'state') {
+        // Clicking the selected state chip again clears it, while radios keep the fallback form simple.
+        next.state = input.value === boardFilterValues().state ? null : input.value;
+      } else return;
+      writeBoardFilters(next);
+    });
+    for (const choice of filter.querySelectorAll('[data-filter-state]')) {
+      choice.addEventListener('click', (event) => {
+        const input = choice.querySelector('input');
+        if (input && input.checked) {
+          event.preventDefault();
+          writeBoardFilters({ ...current(), state: null });
+        }
+      });
+    }
+    filter.querySelector('[data-filter-clear]')?.addEventListener('click', () => writeBoardFilters({ repositories: [], q: '', state: null }));
+    filter.querySelector('[data-filter-more]')?.addEventListener('click', (event) => {
+      const button = event.currentTarget;
+      const expanded = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      filter.toggleAttribute('data-filters-open', !expanded);
+    });
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      writeBoardFilters(current());
+    });
+  };
+  bindBoardFilters();
+  document.addEventListener('conveyor:dashboard-rendered', bindBoardFilters);
+
   // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
   // A parent waits on its unfinished parts, so whatever waits on a parent is held up by them too.
   let traceFocus = null;

@@ -222,6 +222,10 @@ export interface DashboardPageSelection {
   doneLimit: number;
   runId: string | null;
   issueId: string | null;
+  /** Board-only client filters, also understood by the server for the Done column and no-JS form. */
+  repositoryIds?: readonly string[];
+  q?: string;
+  state?: string | null;
 }
 
 export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
@@ -325,6 +329,7 @@ export interface DashboardViewModel {
   revision: string;
   view: DashboardView;
   repositoryId: string | null;
+  boardFilters?: { repositories: readonly string[]; q: string; state: string | null };
   counts: { board: number; attention: number };
   activeWork: {
     runnerCount: number;

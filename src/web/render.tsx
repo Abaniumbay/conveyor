@@ -15,6 +15,7 @@ import type {
   IssueCardViewModel,
   IssueRelationViewModel,
   RepositoryDashboardSummary,
+  StageActorViewModel,
   StageColumnViewModel,
 } from "./types";
 import { TODO_OWNING_STAGE } from "../engine/todos";
@@ -435,6 +436,16 @@ function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["a
  * `stageLabel`: the card's station, shown on phones where a family row lists its cards in one column.
  * `thread`: the card is outside its family's row, so it links to its parent.
  */
+function boardSearchText(issue: IssueCardViewModel, actors: readonly StageActorViewModel[] = []): string {
+  return [issue.title, issue.number, `#${issue.number}`, issue.repository, ...issue.labels,
+    issue.issueType ?? "", ...issue.issueFields.flatMap((field) => [field.name, field.value]),
+    ...actors.map((actor) => actor.name)].join(" ").toLocaleLowerCase();
+}
+
+function boardFilterState(issue: IssueCardViewModel): "needs-you" | "running" | "waiting" {
+  return issue.needsAttention ? "needs-you" : issue.working ? "running" : "waiting";
+}
+
 function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, thread = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean; stageLabel?: string | null; thread?: boolean }) {
   const revision = cardRevision(issue, actors, canManage, stageLabel, thread);
   if (heldCards?.has(revision)) return <article class="issue" data-issue-id={issue.id} data-card-revision={revision} data-keep />;
@@ -450,6 +461,8 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
     : (issue.tone === "danger" || issue.tone === "warning")
       ? issue.reason ?? issue.activity
       : null;
+  const search = boardSearchText(issue, actors);
+  const filterState = boardFilterState(issue);
   return (
     <article
       class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
@@ -459,6 +472,10 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       data-number={issue.number}
       data-state-word={issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}
       data-waits={idList(issue.dependencies)}
+      data-filter-card
+      data-board-search={search}
+      data-board-repository={issue.repository}
+      data-board-state={filterState}
     >
       <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span>{stageLabel && <span class="issue-stage">{stageLabel}</span>}</p>
       {thread && <FamilyThread issue={issue} />}
@@ -557,7 +574,7 @@ function StationHeading({ station }: { station: Station }) {
         {station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon}</span>}
         <h2 id={headingId}>{station.name}</h2>
         <StationInfoButton station={station} />
-        <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
+        <span class="count" data-board-station-count={station.id} data-board-total={station.count} aria-label={`${station.count} issues`}>{station.count}</span>
       </header>
     </section>
   );
@@ -608,10 +625,12 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   const done = parent.children.filter((child) => child.satisfied);
   const doneIds = new Set(done.map((child) => child.id));
   const stopped = parent.needsAttention || parent.tone === "danger";
+  const parentStation = stations.find((station) => station.issues.some((issue) => issue.id === parent.id));
+  const parentActors = parentStation?.actors ?? [];
   return (
     <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={idList(parent.dependencies)} data-parts={idList(parent.children)} aria-label={`#${parent.number} ${parent.title}`}>
       <div class="row-band">
-      <div class="family-head" data-dialog-open={dialogId}>
+      <div class="family-head" data-dialog-open={dialogId} data-filter-card data-board-search={boardSearchText(parent, parentActors)} data-board-repository={parent.repository} data-board-state={boardFilterState(parent)} data-board-station={parentStation?.id ?? "backlog"}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />
         <RepositoryBadge repository={parent.repository} />
         <span class="family-number">#{parent.number}</span>
@@ -629,7 +648,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         {stations.map((station) => {
           const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id && !doneIds.has(issue.id));
           return (
-            <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} key={station.id}>
+          <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} data-board-filter-station={station.id} key={station.id}>
               {cards.length > 0 && <ol class="issue-list">{cards.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} stageLabel={station.name} /></li>)}</ol>}
               {station.kind === "done" && done.length > 0 && (
                 <ol class="issue-list">{done.map((child) => (
@@ -676,6 +695,58 @@ function BacklogCell({ issues, model, canManage, thread }: { issues: readonly Is
   );
 }
 
+/** Compact browser-first filters. The form remains a useful GET fallback when JavaScript is absent. */
+function BoardFilters({ model }: { model: DashboardViewModel }) {
+  const active = [
+    ...model.backlog,
+    ...model.stages.flatMap((stage) => stage.issues),
+  ];
+  const byRepository = new Map<string, { count: number; needsYou: number }>();
+  for (const issue of active) {
+    const entry = byRepository.get(issue.repository) ?? { count: 0, needsYou: 0 };
+    entry.count++;
+    if (issue.needsAttention) entry.needsYou++;
+    byRepository.set(issue.repository, entry);
+  }
+  const selected = new Set(model.boardFilters?.repositories ?? []);
+  const q = model.boardFilters?.q ?? "";
+  const state = model.boardFilters?.state ?? null;
+  const repositories = model.repositories.filter((repository) => byRepository.has(repository.id) || repository.health === "degraded");
+  return (
+    <section class="board-filters" data-board-filters aria-label="Board filters">
+      <form method="get" action="/board" data-filter-form>
+        <label class="board-filter-search">Search board
+          <input type="search" name="q" value={q} placeholder="Search items" data-filter-search />
+        </label>
+        <button type="button" class="board-filter-more" data-filter-more aria-expanded="false">Filters <span data-filter-count>0</span></button>
+        <div class="board-filter-choices" data-filter-choices>
+          <fieldset><legend>Repositories</legend>
+            {repositories.map((repository) => {
+              const counts = byRepository.get(repository.id) ?? { count: 0, needsYou: 0 };
+              const pressed = selected.has(repository.id);
+              return <span class="repository-filter" key={repository.id}>
+                <label>
+                  <input type="checkbox" name="repo" value={repository.id} data-filter-repository={repository.id} checked={pressed} />
+                  <i class={`repository-dot repo-color-${repository.color}`} aria-hidden="true" />{repository.id} <b>{counts.count}</b>{counts.needsYou > 0 && <em>{counts.needsYou} needs you</em>}{repository.health === "degraded" && <strong aria-label="Degraded">!</strong>}
+                </label>
+                <a href={`/repositories/${encodeURIComponent(repository.id)}`} class="repository-filter-open" aria-label={`Open ${repository.id}`}>↗</a>
+              </span>;
+            })}
+            <a href="/repositories" class="repository-filter-all">Show all</a>
+          </fieldset>
+          <fieldset><legend>State</legend>
+            {[['needs-you', 'Needs you'], ['running', 'Running'], ['waiting', 'Waiting / Queued']].map(([value, label]) =>
+              <label data-filter-state={value} key={value}><input type="radio" name="state" value={value} checked={state === value} />{label}</label>)}
+          </fieldset>
+        </div>
+        <button type="submit" class="board-filter-submit">Apply filters</button>
+        <button type="button" class="board-filter-clear" data-filter-clear hidden>Clear filters</button>
+        <p class="board-filter-summary" data-filter-summary aria-live="polite">Showing {active.length} of {active.length} active board items</p>
+      </form>
+    </section>
+  );
+}
+
 /**
  * The delivery board: the stations across the top, one foldable row per open parent with its children
  * in their stations, then a row for everything else. A finished family shows only its parent, in Done.
@@ -703,7 +774,7 @@ function Board({ model }: { model: DashboardViewModel }) {
       <span data-trace-text />
       <button type="button" class="trace-clear" data-trace-clear>Show everything</button>
     </p>
-    <section class="board board--rows" aria-label="Delivery board">
+    <section class="board board--rows" aria-label="Delivery board" data-done-total={model.done.totalIssues}>
       <div class="board-track" style={style}>
         <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
         <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
@@ -726,14 +797,17 @@ function Board({ model }: { model: DashboardViewModel }) {
               const remaining = done ? done.totalIssues - done.issues.length : 0;
               const increment = Math.min(20, remaining);
               return (
-                <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} aria-label={station.name} key={station.id}>
-                  <p class="board-cell-label"><span>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</span><StationInfoButton station={station} /><span class="count">{station.count}</span></p>
+                <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} data-board-filter-station={station.id} aria-label={station.name} key={station.id}>
+                  <p class="board-cell-label"><span>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</span><StationInfoButton station={station} /><span class="count" data-board-station-count={station.id} data-board-total={station.count}>{station.count}</span></p>
                   {station.kind === "backlog"
                     ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
                     : issues.length > 0 && <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>}
                   {station.kind === "stage" && station.column && <Pagination column={station.column} view="board" />}
                   {done && remaining > 0 && (
                     <form class="load-more" method="get" action="/board">
+                      {model.boardFilters?.repositories.map((repository) => <input type="hidden" name="repo" value={repository} />)}
+                      {model.boardFilters?.q && <input type="hidden" name="q" value={model.boardFilters.q} />}
+                      {model.boardFilters?.state && <input type="hidden" name="state" value={model.boardFilters.state} />}
                       <input type="hidden" name="doneLimit" value={done.issues.length + increment} />
                       <button type="submit">Load {increment} more</button>
                       <span>{done.issues.length} of {done.totalIssues}</span>
@@ -1005,6 +1079,7 @@ function Attention({ model }: { model: DashboardViewModel }) {
 }
 
 function issueSignal(issue: IssueCardViewModel): "run" | "wait" | "stop" {
+  if (issue.needsAttention) return "stop";
   if (issue.working) return "run";
   if (issue.waiting) return "wait";
   if (issue.tone === "success" || issue.tone === "muted") return "run";
@@ -1040,11 +1115,11 @@ function Line({ model }: { model: DashboardViewModel }) {
               <a href={`#${stationId(station.id)}`} data-station-link={station.id}>
                 <span class="line-station-name">{station.name}</span>
                 <span class="line-station-state">
-                  <strong>{station.count}</strong>
+                  <strong data-board-line-count={station.id} data-board-total={station.count}>{station.count}</strong>
                   <span class="andon-signals" aria-label={`${station.name} state signals`}>
                     {signals.map((signal) => {
                       const label = signal === "run" ? "running" : signal === "wait" ? "waiting" : "stopped";
-                      return <span class="andon-count" aria-label={`${signalCounts[signal]} ${label}`} key={signal}><i class={`andon andon--${signal}`} aria-hidden="true" /><small>{signalCounts[signal]}</small></span>;
+                      return <span class="andon-count" data-board-signal-count={signal} data-board-station={station.id} data-board-total={signalCounts[signal]} aria-label={`${signalCounts[signal]} ${label}`} key={signal}><i class={`andon andon--${signal}`} aria-hidden="true" /><small>{signalCounts[signal]}</small></span>;
                     })}
                   </span>
                 </span>
@@ -1215,7 +1290,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Navigation model={model} />
           <div class="content-anchor" id="content" tabIndex={-1} />
-          {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><NeedsYou model={model} /></>}
+          {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><BoardFilters model={model} /><NeedsYou model={model} /></>}
           {content}
           {model.selectedIssue && (
             <DetailsDialog

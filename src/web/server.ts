@@ -316,6 +316,13 @@ function dashboardPage(
   runId: string | null = null,
   issueId: string | null = null,
 ): DashboardPageSelection {
+  // Board filters are intentionally permissive: an unknown repository simply matches no cards
+  // in the browser, and an unknown state has no special meaning.
+  const repositoryIds = [...new Set(url.searchParams.getAll("repo").filter((id) => id.length > 0 && id.length <= 200))];
+  const rawQuery = url.searchParams.getAll("q");
+  const q = rawQuery.length === 1 ? rawQuery[0]!.slice(0, 500) : "";
+  const rawState = url.searchParams.getAll("state");
+  const state = rawState.length === 1 && ["needs-you", "running", "waiting"].includes(rawState[0]!) ? rawState[0]! : null;
   const requestedDoneLimits = url.searchParams.getAll("doneLimit");
   const rawDoneLimit = requestedDoneLimits.length === 1 ? requestedDoneLimits[0] : null;
   const parsedDoneLimit = rawDoneLimit && /^[1-9]\d*$/.test(rawDoneLimit)
@@ -327,24 +334,28 @@ function dashboardPage(
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
   if (columns.length !== 1 || pages.length !== 1) {
-    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
   }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, repositoryId, column, page: parsedPage, doneLimit, runId, issueId }
-    : { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId };
+    ? { view, repositoryId, column, page: parsedPage, doneLimit, runId, issueId, repositoryIds, q, state }
+    : { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
 }
 
 function paginationSuffix(url: URL): string {
   const pagination = new URLSearchParams();
-  for (const key of ["doneLimit", "column", "page"]) {
+  for (const key of ["repo", "q", "state", "doneLimit", "column", "page"]) {
     const values = url.searchParams.getAll(key);
-    if (values.length === 1) pagination.set(key, values[0]!);
+    if (key === "repo") {
+      for (const value of [...new Set(values)]) pagination.append(key, value);
+    } else if (values.length === 1) {
+      pagination.set(key, values[0]!);
+    }
   }
   const query = pagination.toString();
   return query ? `?${query}` : "";

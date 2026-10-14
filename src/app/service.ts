@@ -2621,6 +2621,9 @@ export class ConveyorService {
       doneLimit: 20,
       runId: null,
       issueId: null,
+      repositoryIds: [],
+      q: "",
+      state: null,
     },
   ): DashboardViewModel {
     const agentRunner = new Map(Object.entries(this.config.agents ?? {}).map(([agentId, agent]) => [agentId, agent.runner]));
@@ -2806,7 +2809,7 @@ export class ConveyorService {
       }
     }
     const stages = [...stageNames.keys()];
-    const actorsForStage = (stageId: string): StageActorViewModel[] => {
+    const actorsForStage = (stageId: string, pipelineId?: string): StageActorViewModel[] => {
       const actors: StageActorViewModel[] = [];
       const addAgent = (agentId: string) => {
         const agent = this.config.agents[agentId];
@@ -2816,7 +2819,8 @@ export class ConveyorService {
           title: agent?.title ?? "AI agent",
         });
       };
-      for (const pipeline of Object.values(this.config.pipelines)) {
+      for (const [id, pipeline] of Object.entries(this.config.pipelines)) {
+        if (pipelineId && id !== pipelineId) continue;
         const stage = pipeline.stages.find((candidate) => candidate.id === stageId);
         if (!stage) continue;
         if (isNativeStage(stage)) {
@@ -2865,10 +2869,33 @@ export class ConveyorService {
       .filter((issue) => ["done", "completed"].includes(issue.projectedState ?? ""))
       .filter((issue) => this.store.listChildren(issue.id).length > 0)
       .map((issue) => issue.id));
+    const filterRepositories = new Set(pagination.repositoryIds ?? []);
+    const filterWords = (pagination.q ?? "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    /** Deliberately excludes long issue bodies and acceptance criteria. */
+    const matchesBoardText = (issue: StoredIssue): boolean => {
+      if (filterWords.length === 0) return true;
+      const assignedAgents = issue.projectedStage
+        ? actorsForStage(issue.projectedStage, this.config.repositories[issue.repositoryId]?.pipeline)
+        : [];
+      const haystack = [
+        issue.title,
+        String(issue.sourceNumber),
+        `#${issue.sourceNumber}`,
+        issue.repositoryId,
+        ...issue.labels,
+        issue.metadata.type ?? "",
+        ...this.issueFieldValues(issue).flatMap((field) => [field.name, field.value]),
+        ...assignedAgents.flatMap((agent) => [agent.name, agent.title ?? ""]),
+      ].join(" ").toLocaleLowerCase();
+      return filterWords.every((word) => haystack.includes(word));
+    };
+    const matchesDoneFilter = (issue: StoredIssue): boolean =>
+      (filterRepositories.size === 0 || filterRepositories.has(issue.repositoryId)) && matchesBoardText(issue);
     const closedIssues = issues
       .filter((issue) =>
         (issue.sourceState === "closed" && !remainsInWorkflow(issue)) || finishedRollupIds.has(issue.id)
       )
+      .filter(matchesDoneFilter)
       .sort((left, right) =>
         right.sourceUpdatedAt.localeCompare(left.sourceUpdatedAt) ||
         left.repositoryId.localeCompare(right.repositoryId) ||
@@ -2913,8 +2940,9 @@ export class ConveyorService {
       cost: string | null,
       issueCard: (issue: StoredIssue) => IssueCardViewModel = (issue) => card(issue),
       actors: readonly StageActorViewModel[] = [],
+      complete = false,
     ): StageColumnViewModel => {
-      const totalPages = Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
+      const totalPages = complete ? 1 : Math.max(1, Math.ceil(columnIssues.length / DASHBOARD_PAGE_SIZE));
       const requestedPage = pagination.column === id ? pagination.page : 1;
       const page = Math.min(Math.max(1, requestedPage), totalPages);
       const offset = (page - 1) * DASHBOARD_PAGE_SIZE;
@@ -2926,7 +2954,7 @@ export class ConveyorService {
         totalIssues: columnIssues.length,
         page,
         totalPages,
-        issues: columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE).map(issueCard),
+        issues: (complete ? columnIssues : columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE)).map(issueCard),
       };
     };
     // Needs you lists only what the owner can act on now: a closed or paused (unenrolled) item's
@@ -2984,6 +3012,11 @@ export class ConveyorService {
       revision: this.dashboardRevision(repositorySummaries),
       view: pagination.view,
       repositoryId: pagination.repositoryId ?? null,
+      boardFilters: {
+        repositories: [...filterRepositories],
+        q: pagination.q ?? "",
+        state: pagination.state ?? null,
+      },
       counts: {
         board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,
@@ -3001,6 +3034,7 @@ export class ConveyorService {
           formatUsage(this.store.costSummary({ stageId: stage })),
           (issue) => card(issue),
           actorsForStage(stage),
+          true,
         ),
         description: stageDescriptions.get(stage) ?? null,
         icon: stageIcons.get(stage) ?? null,

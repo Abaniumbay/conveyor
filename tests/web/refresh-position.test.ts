@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardViewModel, IssueCardViewModel, StageColumnViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, StageColumnViewModel } from "../../src/web/types";
 
 const password = "correct horse";
 let browser: Browser | null = null;
@@ -103,7 +103,7 @@ async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>)
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
-function startDashboard(state: { dashboard: () => DashboardViewModel; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
+function startDashboard(state: { dashboard: (selection: DashboardPageSelection) => DashboardViewModel; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -112,9 +112,9 @@ function startDashboard(state: { dashboard: () => DashboardViewModel; revision: 
   const handler = createWebHandler({
     auth,
     username: "operator",
-    getDashboard: async (csrfToken: string) => {
+    getDashboard: async (_csrfToken, selection) => {
       if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      return { ...state.dashboard(), csrfToken };
+      return state.dashboard(selection);
     },
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
@@ -307,6 +307,83 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+
+  test("filters board cards in the browser, keeps filters through a live update, and collapses them on a phone", async () => {
+    const alpha = {
+      ...issue("alpha-card", 245, "Find the alpha item"), repository: "alpha", labels: ["backend"],
+      issueType: "Feature", issueFields: [{ name: "Effort", value: "Large" }], needsAttention: true, tone: "danger" as const,
+    };
+    const beta = { ...issue("beta-card", 246, "Keep the beta item"), repository: "beta", working: true };
+    const closed = [
+      { ...issue("done-alpha", 247, "Find the completed alpha item"), repository: "alpha", state: "closed", tone: "success" as const },
+      { ...issue("done-beta", 248, "Completed beta item"), repository: "beta", state: "closed", tone: "success" as const },
+    ];
+    const repository = (id: string, color: number) => ({
+      id, address: `owner/${id}`, addressUrl: null, color, health: "healthy" as const, error: null, errorSummary: null,
+      lastReconciledAt: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [], capacity: { busy: 0, slots: 1 },
+      setup: { pipeline: "default", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+    });
+    let revision = "filters-1";
+    const board = (selection: DashboardPageSelection) => {
+      const repositories = new Set(selection.repositoryIds ?? []);
+      const words = (selection.q ?? "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const matchesDone = (card: IssueCardViewModel) =>
+        (repositories.size === 0 || repositories.has(card.repository)) &&
+        words.every((word) => [card.title, card.number, `#${card.number}`, card.repository, ...card.labels, card.issueType ?? "", ...card.issueFields.map((field) => field.value)].join(" ").toLowerCase().includes(word));
+      const base = dashboard(revision, [alpha, beta]);
+      return {
+        ...base,
+        revision,
+        done: stage("done", "Done", closed.filter(matchesDone)),
+        repositories: [repository("alpha", 1), repository("beta", 2)],
+        boardFilters: { repositories: [...repositories], q: selection.q ?? "", state: selection.state ?? null },
+      };
+    };
+    const server = startDashboard({ dashboard: board, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+
+      await page.locator('.repository-filter label').filter({ hasText: "alpha" }).click();
+      await page.waitForFunction(() => location.search === "?repo=alpha");
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      expect(await page.locator('a[aria-label="Open alpha"]').getAttribute("href")).toBe("/repositories/alpha");
+
+      const doneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "#245");
+      await page.locator('[data-filter-search]').fill("#245");
+      await doneRequest;
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      await page.locator('[data-filter-clear]').click();
+      await page.waitForFunction(() => location.search === "");
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isVisible()).toBe(true);
+
+      await page.locator('[data-filter-state="needs-you"]').click();
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      revision = "filters-2";
+      await waitForReplacement(page);
+      expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+
+      const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(phone, server.port);
+      const collapsed = await phone.evaluate(() => {
+        const form = document.querySelector('[data-filter-form]')!;
+        const visible = [...form.children].filter((child) => getComputedStyle(child).display !== "none");
+        return new Set(visible.map((child) => Math.round(child.getBoundingClientRect().bottom))).size;
+      });
+      expect(collapsed).toBeLessThanOrEqual(2);
+      await phone.getByRole("button", { name: "Filters (0)" }).click();
+      expect(await phone.locator('.repository-filter label').filter({ hasText: "alpha" }).isVisible()).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("a family row folds to its header, stays folded across a reload and a live update, and unfolds", async () => {
     const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };
     const child = (id: string, number: number) => ({ ...issue(id, number, `Child ${number}`), parent: parentRelation, parentProgress: { done: 0, total: 2 } });

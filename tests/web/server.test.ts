@@ -465,6 +465,9 @@ describe("createWebHandler", () => {
       runId: null,
       issueId: "github:owner/repo#1",
       repositoryId: null,
+      repositoryIds: [],
+      q: "",
+      state: null,
     }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
