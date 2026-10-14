@@ -92,6 +92,7 @@ repositories:
     applyCiWebhook(repositoryId: string, eventType: string, payload: unknown): Promise<void>;
     backfillCiIndicators(id: string): Promise<void>;
     updateStatusComment(id: string): Promise<void>;
+    wakeupReached(issueId: string): boolean;
   };
   internals.ciProvider = () => provider;
   internals.codeHostFor = () => ({ async getChange() { return { headSha: state.head }; } }) as unknown as CodeHost;
@@ -149,6 +150,7 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   const w = await setup("", true);
   parkManualGate(w.store);
   const firstEpoch = w.store.executions().stageEpoch("issue");
+  expect(w.internals.wakeupReached("issue")).toBe(false);
 
   const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
   expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
@@ -166,6 +168,13 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   expect(() => w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-2", username: "other" })).not.toThrow();
   expect(() => w.service.approveManualGate("issue", "implementation", "missing", { id: "admin-1", username: "admin" })).toThrow("native stage exit gates");
 
+  w.store.executions().saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: firstEpoch, attempt: 2, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
+  }, firstEpoch);
+  expect(dashboard().selectedIssue?.manualGates?.[0]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
+  w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
+
   const nextEpoch = w.store.executions().onStageChange("issue");
   w.store.executions().saveCursor({
     issueId: "issue", stage: "implementation", stageEpoch: nextEpoch, attempt: 2, returns: 0, list: "exit-gate",
@@ -173,9 +182,32 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   }, nextEpoch);
   expect(dashboard().selectedIssue?.manualGates?.[0]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
   w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
-  const receipts = w.store.sqlite().query("SELECT stage_epoch FROM manual_gate_approvals WHERE issue_id = 'issue' ORDER BY stage_epoch").all() as Array<{ stage_epoch: number }>;
-  expect(receipts).toEqual([{ stage_epoch: firstEpoch }, { stage_epoch: nextEpoch }]);
+  const receipts = w.store.sqlite().query("SELECT stage_epoch, attempt FROM manual_gate_approvals WHERE issue_id = 'issue' ORDER BY stage_epoch, attempt").all() as Array<{ stage_epoch: number; attempt: number }>;
+  expect(receipts).toEqual([{ stage_epoch: firstEpoch, attempt: 1 }, { stage_epoch: firstEpoch, attempt: 2 }, { stage_epoch: nextEpoch, attempt: 2 }]);
 
+  await w.service.close();
+});
+
+test("adding a manual requirement fences an active gate and rejects a gate already advancing", async () => {
+  const w = await setup();
+  const journal = w.store.executions();
+  const epoch = journal.stageEpoch("issue");
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "running", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
+  }, epoch);
+
+  w.service.setManualGateRequirement("issue", "implementation", "ciGate", true);
+  expect(journal.stageEpoch("issue")).toBeGreaterThan(epoch);
+  expect(journal.getCursor("issue")).toBeNull();
+
+  w.service.setManualGateRequirement("issue", "implementation", "ciGate", false);
+  w.store.beginStageTransition({
+    id: "advancing", issueId: "issue", fromStage: "implementation", toStage: "done", kind: "advance", sourceMutationId: null,
+    detail: { reason: "Completed implementation", requiredFixes: [], resultStatus: null },
+  });
+  expect(() => w.service.setManualGateRequirement("issue", "implementation", "ciGate", true))
+    .toThrow("current stage is advancing");
   await w.service.close();
 });
 

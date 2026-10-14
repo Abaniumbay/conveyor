@@ -184,7 +184,7 @@ async function harness(options: { maxReturns?: number } = {}) {
   const registry = buildRegistry(world);
   const notes: string[] = [];
   const statuses: Array<string | null> = [];
-  let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; configured: boolean }) =>
+  let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; configured: boolean }) =>
     ({ required: false, approved: false, message: "" });
   const executorFor = (j: ExecutionStore = journal) =>
     new StageExecutor({

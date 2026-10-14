@@ -803,8 +803,12 @@ export class ConveyorService {
 
   /** A parked item is schedulable only once its persisted wake-up time has passed. */
   private wakeupReached(issueId: string): boolean {
-    const wakeAt = this.store.executions().wakeAt(issueId);
-    return wakeAt === null || Date.parse(wakeAt) <= Date.now();
+    const cursor = this.store.executions().getCursor(issueId);
+    // A pending cursor without a due time is a manual-gate wait. It must be
+    // woken explicitly after the human receipt is recorded.
+    if (!cursor) return true;
+    if (cursor.state === "pending" && cursor.list === "exit-gate" && cursor.wakeAt === null) return false;
+    return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
   }
 
   /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
@@ -882,9 +886,9 @@ export class ConveyorService {
     return { stageId, gateId, configured: task.manual === true };
   }
 
-  private readonly manualGateStatus: ManualGateResolver = ({ issueId, stageId, gateId, stageEpoch, configured }) => {
+  private readonly manualGateStatus: ManualGateResolver = ({ issueId, stageId, gateId, stageEpoch, attempt, configured }) => {
     const itemSpecific = this.#manualGateApprovals.hasItemRequirement(issueId, stageId, gateId);
-    const approval = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch);
+    const approval = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, attempt);
     const source = configured && itemSpecific ? "configured and item-specific" : configured ? "configured" : "item-specific";
     return {
       required: configured || itemSpecific,
@@ -902,7 +906,9 @@ export class ConveyorService {
       const cursor = this.store.executions().getCursor(issue.id);
       const epoch = this.store.executions().stageEpoch(issue.id);
       return plan.stages.slice(current).flatMap((stage) => stage.legacy ? [] : stage.exitGate.map((task) => {
-        const approval = this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch);
+        const approval = cursor?.stage === stage.id && cursor.stageEpoch === epoch
+          ? this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch, cursor.attempt)
+          : null;
         return {
           stageId: stage.id,
           gateId: task.id,
@@ -924,10 +930,23 @@ export class ConveyorService {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
     this.manualGateCandidate(issue, stageId, gateId);
+    const journal = this.store.executions();
+    const cursor = journal.getCursor(issueId);
+    const wasRequired = this.#manualGateApprovals.hasItemRequirement(issueId, stageId, gateId);
+    if (required && !wasRequired && stageId === issue.projectedStage &&
+      this.store.listStageTransitions(issueId).some((transition) => transition.fromStage === stageId && transition.status === "pending")) {
+      throw new Error("manual approval cannot be changed while the current stage is advancing");
+    }
     this.#manualGateApprovals.setRequirement({ issueId, stageId, gateId, required, changedAt: new Date().toISOString() });
-    const cursor = this.store.executions().getCursor(issueId);
+    // A gate may have read its requirement immediately before this board action.
+    // Starting a new epoch makes that in-flight decision stale before it can advance.
+    if (required && !wasRequired && stageId === issue.projectedStage && cursor?.stage === stageId && cursor.list === "exit-gate") {
+      journal.onStageChange(issueId);
+      this.schedule();
+      return;
+    }
     if (cursor?.stage === stageId && cursor.list === "exit-gate" && cursor.taskInstanceId === gateId && cursor.state === "pending" &&
-      this.store.executions().wakeNow(issueId)) this.schedule();
+      journal.wakeNow(issueId)) this.schedule();
   }
 
   /** Records a human receipt only for the current manual gate visit, then wakes that item. */
@@ -942,16 +961,16 @@ export class ConveyorService {
       cursor.taskInstanceId !== gateId || cursor.state !== "pending") {
       throw new Error("manual gate is not waiting for approval");
     }
-    const status = this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, configured: gate.configured });
+    const status = this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, configured: gate.configured });
     if (!status.required) throw new Error("manual approval is not required for this gate");
-    const existing = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch);
+    const existing = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, cursor.attempt);
     // A retry after the first request woke the item is a harmless no-op.  A
     // different pending gate, however, must not receive a late approval.
     if (existing) return;
     if (cursor.wakeAt !== null) throw new Error("manual gate is not waiting for approval");
     const approvedAt = new Date().toISOString();
     const recorded = this.#manualGateApprovals.approve({
-      issueId, stageId, gateId, stageEpoch, accountId: account.id, accountName: account.username, approvedAt,
+      issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, accountId: account.id, accountName: account.username, approvedAt,
     });
     if (recorded) {
       this.store.appendConversationMessage({

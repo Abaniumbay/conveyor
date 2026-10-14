@@ -12,13 +12,14 @@ export interface ManualGateApproval {
   stageId: string;
   gateId: string;
   stageEpoch: number;
+  attempt: number;
   accountId: string;
   accountName: string;
   approvedAt: string;
 }
 
 interface RequirementRow { issue_id: string; stage_id: string; gate_id: string; changed_at: string }
-interface ApprovalRow extends RequirementRow { stage_epoch: number; account_id: string; account_name: string; approved_at: string }
+interface ApprovalRow extends RequirementRow { stage_epoch: number; attempt: number; account_id: string; account_name: string; approved_at: string }
 
 /** Durable item-specific requirements and the append-only stage-visit approval receipts. */
 export class ManualGateApprovals {
@@ -54,19 +55,19 @@ export class ManualGateApprovals {
   /** Returns false for a harmless duplicate receipt. */
   approve(input: ManualGateApproval): boolean {
     const result = this.database.query(
-      `INSERT INTO manual_gate_approvals(issue_id, stage_id, gate_id, stage_epoch, account_id, account_name, approved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id, stage_id, gate_id, stage_epoch) DO NOTHING`,
-    ).run(input.issueId, input.stageId, input.gateId, input.stageEpoch, input.accountId, input.accountName, input.approvedAt);
+      `INSERT INTO manual_gate_approvals(issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id, stage_id, gate_id, stage_epoch, attempt) DO NOTHING`,
+    ).run(input.issueId, input.stageId, input.gateId, input.stageEpoch, input.attempt, input.accountId, input.accountName, input.approvedAt);
     return result.changes > 0;
   }
 
-  getApproval(issueId: string, stageId: string, gateId: string, stageEpoch: number): ManualGateApproval | null {
+  getApproval(issueId: string, stageId: string, gateId: string, stageEpoch: number, attempt: number): ManualGateApproval | null {
     const row = this.database.query(
-      `SELECT issue_id, stage_id, gate_id, stage_epoch, account_id, account_name, approved_at
-       FROM manual_gate_approvals WHERE issue_id = ? AND stage_id = ? AND gate_id = ? AND stage_epoch = ?`,
-    ).get(issueId, stageId, gateId, stageEpoch) as ApprovalRow | null;
+      `SELECT issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at
+       FROM manual_gate_approvals WHERE issue_id = ? AND stage_id = ? AND gate_id = ? AND stage_epoch = ? AND attempt = ?`,
+    ).get(issueId, stageId, gateId, stageEpoch, attempt) as ApprovalRow | null;
     return row === null ? null : {
-      issueId: row.issue_id, stageId: row.stage_id, gateId: row.gate_id, stageEpoch: row.stage_epoch,
+      issueId: row.issue_id, stageId: row.stage_id, gateId: row.gate_id, stageEpoch: row.stage_epoch, attempt: row.attempt,
       accountId: row.account_id, accountName: row.account_name, approvedAt: row.approved_at,
     };
   }

@@ -48,6 +48,7 @@ export type ManualGateResolver = (input: {
   stageId: string;
   gateId: string;
   stageEpoch: number;
+  attempt: number;
   configured: boolean;
 }) => ManualGateState;
 
@@ -151,7 +152,8 @@ export class StageExecutor {
       if (step.kind === "pending") return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: step.wakeAt };
       if (step.kind === "fail") return this.#route(run, task, "exit-gate", step);
       const manual = this.#o.manualGate?.({
-        issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch, configured: task.manual === true,
+        issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch,
+        attempt: run.cursor.attempt, configured: task.manual === true,
       });
       if (manual?.required && !manual.approved) return this.#waitForApproval(run, task.id, manual.message);
     }
