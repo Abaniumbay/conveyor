@@ -1597,6 +1597,8 @@ export const dashboardClient = String.raw`(() => {
     })[0];
     return {
       scrollX: board ? board.scrollLeft : 0,
+      // On wide screens the board scrolls vertically inside its own area.
+      boardY: board ? board.scrollTop : 0,
       scrollY: window.scrollY,
       issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
       stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
@@ -1605,13 +1607,17 @@ export const dashboardClient = String.raw`(() => {
   const restoreDashboardPosition = (position) => {
     window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
     if (board) {
+      board.scrollTop = clampScrollOffset(position.boardY || 0, Math.max(0, board.scrollHeight - board.clientHeight));
       board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
       const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
       if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
     }
     if (position.issue?.id) {
       const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
-      if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + issue.getBoundingClientRect().top - position.issue.top, documentScrollMaximum()));
+      const shift = issue ? issue.getBoundingClientRect().top - position.issue.top : 0;
+      if (issue && board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
+        board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
+      } else if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
     }
   };
   const interactionInProgress = () => {

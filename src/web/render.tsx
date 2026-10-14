@@ -436,6 +436,7 @@ function narrowStation(station: { kind: "backlog" | "stage" | "done"; count: num
 interface Station {
   id: string;
   name: string;
+  description: string | null;
   count: number;
   actors: StageColumnViewModel["actors"];
   cost: string | null;
@@ -446,33 +447,46 @@ interface Station {
 
 function boardStations(model: DashboardViewModel): Station[] {
   return [
-    { id: "backlog", name: "Backlog", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
-    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
-    { id: "done", name: "Done", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
+    { id: "backlog", name: "Backlog", description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
+    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
+    { id: "done", name: "Done", description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
   ];
 }
 
+/** A stage's heading on the board: its name, its count, and an information button for the rest. */
 function StationHeading({ station }: { station: Station }) {
-  const headingId = `stage-${station.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const slug = station.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+  const headingId = `stage-${slug}`;
+  const dialogId = `stage-info-${slug}`;
   return (
-    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrowStation(station) ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId}>
-      <header class={`stage-heading${station.kind === "stage" ? "" : " stage-heading--simple"}`}>
-        <div class="stage-identity">
-          <h2 id={headingId}>{station.name}</h2>
-          {station.actors.length > 0 && (
-            <div class="stage-actors">{station.actors.map((actor) => (
-              <span class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
+    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrowStation(station) ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={dialogId}>
+      <header class="stage-heading">
+        <h2 id={headingId}>{station.name}</h2>
+        <button type="button" class="stage-info card-open" aria-haspopup="dialog" aria-label={`About ${station.name}`}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M8 7.2v4" /><path d="M8 4.8v.01" /></svg>
+        </button>
+        <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
+      </header>
+      <dialog class="stage-dialog" id={dialogId} aria-labelledby={`${dialogId}-title`}>
+        <header class="stage-dialog-header">
+          <h2 id={`${dialogId}-title`}>{station.name}</h2>
+          <form method="dialog"><button type="submit" class="stage-dialog-close" aria-label="Close">×</button></form>
+        </header>
+        {station.description && <p class="stage-dialog-description">{station.description}</p>}
+        <p class="stage-dialog-count"><strong>{station.count}</strong> {station.count === 1 ? "item" : "items"}</p>
+        {station.actors.length > 0 && (
+          <section class="stage-dialog-team" aria-label={`Who works in ${station.name}`}>
+            <h3>Team</h3>
+            <ul>{station.actors.map((actor) => (
+              <li class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
                 <AgentAvatar name={actor.name} script={actor.type === "script"} />
                 <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
-              </span>
-            ))}</div>
-          )}
-        </div>
-        <div class="stage-summary">
-          {station.cost && <span class="stage-cost">{station.cost}</span>}
-          <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
-        </div>
-      </header>
+              </li>
+            ))}</ul>
+          </section>
+        )}
+        {station.cost && <p class="stage-dialog-usage"><span>Usage</span> {station.cost}</p>}
+      </dialog>
     </section>
   );
 }
@@ -513,12 +527,15 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
             <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} key={station.id}>
               {cards.length > 0 && <ol class="issue-list">{cards.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} stageLabel={station.name} /></li>)}</ol>}
               {station.kind === "done" && done.length > 0 && (
-                <ul class="family-done">{done.map((child) => (
+                <ol class="issue-list">{done.map((child) => (
                   <li key={child.id}>
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" /></svg>
-                    <a href={issueHref(child.repository, child.number)}>#{child.number} {child.title}</a>
+                    <a class={`issue issue--compact issue--success repo-color-${parent.repositoryColor}`} href={issueHref(child.repository, child.number)}>
+                      <span class="issue-kicker"><span class="issue-number">#{child.number}</span>{station && <span class="issue-stage">{station.name}</span>}</span>
+                      <span class="issue-title">{child.title}</span>
+                      <span class="issue-status"><span class="andon andon--run" aria-hidden="true" /><strong>Done</strong></span>
+                    </a>
                   </li>
-                ))}</ul>
+                ))}</ol>
               )}
             </div>
           );

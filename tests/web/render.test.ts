@@ -720,8 +720,8 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain(">Sign in by code</button>");
     expect(familyRow).toContain(">Guest sign-in</button>");
     expect(familyRow).toContain('<span class="issue-stage">Build</span>');
-    expect(familyRow).toContain('<ul class="family-done"><li>');
-    expect(familyRow).toContain('<a href="/issues/sample/244">#244 Store sign-in data</a>');
+    expect(familyRow).toContain('<a class="issue issue--compact issue--success repo-color-1" href="/issues/sample/244"><span class="issue-kicker"><span class="issue-number">#244</span>');
+    expect(familyRow).toContain('<span class="issue-title">Store sign-in data</span><span class="issue-status"><span class="andon andon--run" aria-hidden="true"></span><strong>Done</strong></span>');
     expect(familyRow).not.toContain("family-thread");
     // Everything else is in the bottom row; a child of an off-board parent links to it.
     expect(otherRow).toContain('data-row-fold="board-other"');
@@ -750,7 +750,11 @@ describe("renderDashboard", () => {
 
     expect(html).toContain("Delivery board");
     expect(html).toContain(">Backlog</h2>");
-    expect(html).toContain('class="stage-heading stage-heading--simple"');
+    // A heading is the name, an information button and the count; the rest is in its dialog.
+    expect(html).toContain('<button type="button" class="stage-info card-open" aria-haspopup="dialog" aria-label="About Build">');
+    expect(html).toContain('<dialog class="stage-dialog" id="stage-info-stage-build" aria-labelledby="stage-info-stage-build-title">');
+    expect(html).toContain('<p class="stage-dialog-description">Enrolled items waiting for their first stage, in the order they will start.</p>');
+    expect(html).toContain('<section class="stage-dialog-team" aria-label="Who works in Build"><h3>Team</h3>');
     expect(html).toContain(">Build</h2>");
     expect(html).toContain(">Review</h2>");
     expect(html).toContain("Implementer");

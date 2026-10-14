@@ -183,6 +183,8 @@ export interface StageActorViewModel {
 export interface StageColumnViewModel {
   id: string;
   name: string;
+  /** The stage's configured description, shown in its information dialog. */
+  description?: string | null;
   actors: readonly StageActorViewModel[];
   cost: string | null;
   totalIssues: number;

@@ -2618,9 +2618,11 @@ export class ConveyorService {
       return first ? [first] : [];
     }));
     const stageNames = new Map<string, string>();
+    const stageDescriptions = new Map<string, string>();
     for (const pipeline of Object.values(this.config.pipelines)) {
       for (const stage of pipeline.stages) {
         if (!stageNames.has(stage.id)) stageNames.set(stage.id, stage.name ?? displayName(stage.id));
+        if (stage.description && !stageDescriptions.has(stage.id)) stageDescriptions.set(stage.id, stage.description);
       }
     }
     const stages = [...stageNames.keys()];
@@ -2803,14 +2805,17 @@ export class ConveyorService {
         runnerCapacity: this.config.settings.runners,
         runs: activeRuns,
       },
-      stages: stages.map((stage) => column(
+      stages: stages.map((stage) => ({
+        ...column(
           `stage:${stage}`,
           stageNames.get(stage) ?? displayName(stage),
           stagedIssues.filter((issue) => issue.projectedStage === stage),
           formatUsage(this.store.costSummary({ stageId: stage })),
           (issue) => card(issue),
           actorsForStage(stage),
-        )),
+        ),
+        description: stageDescriptions.get(stage) ?? null,
+      })),
       backlog: backlogIssues.map((issue) => card(issue)),
       done: {
         id: "done",

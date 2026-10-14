@@ -364,6 +364,8 @@ const stageSchema = z
   .object({
     id: identifierSchema,
     name: identifierSchema.optional(),
+    /** A short sentence the dashboard shows in the stage's information dialog. */
+    description: z.string().trim().min(1).max(280).optional(),
     run: stageRunSchema,
     concurrency: z.number().int().positive(),
     enterCheck: identifierSchema.optional(),
@@ -418,6 +420,8 @@ const nativeStageSchema = z
   .object({
     id: identifierSchema,
     name: identifierSchema.optional(),
+    /** A short sentence the dashboard shows in the stage's information dialog. */
+    description: z.string().trim().min(1).max(280).optional(),
     concurrency: z.number().int().positive(),
     retries: z.number().int().nonnegative().default(2),
     childrenStartAt: identifierSchema.optional(),
