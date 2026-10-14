@@ -2675,12 +2675,12 @@ export class ConveyorService {
       if (issue.parentId || !issue.labels.includes(this.config.labels.enrollment)) return false;
       if (
         sourceStages(issue).length !== 0 ||
-        !["active", "needs-input", "needs-intervention", "blocked", "error", "rejected"].includes(issue.projectedState ?? "")
+        (issue.projectedState !== "active" && !STOPPED_ISSUE_STATES.has(issue.projectedState ?? ""))
       ) return false;
       const stageState = this.store.getStageState(issue.id);
       return firstStages.has(issue.projectedStage ?? "") &&
         stageState?.status === "ready" &&
-        !this.store.getActiveWorkspace(issue.id);
+        (issue.projectedState !== "active" || !this.store.getActiveWorkspace(issue.id));
     });
     const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
     const stagedIssues = workflowIssues.filter((issue) =>

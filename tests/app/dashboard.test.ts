@@ -1314,6 +1314,14 @@ describe("ConveyorService dashboard", () => {
       });
       store.setIssueProjection(id, { stage: "refinement", state, warning: null });
       store.setStageState({ issueId: id, stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+      const enrollment = store.activateEnrollment(id);
+      store.recordWorkspace({
+        id: `workspace-${state}`,
+        enrollmentId: enrollment.id,
+        path: path.join(root, `workspace-${state}`),
+        branch: `conveyor/${index + 1}-stopped-${state}`,
+        status: "active",
+      });
     }
     store.openQuestion({
       issueId: "stopped-needs-input", runId: null, prompt: "Which scope?", reason: "A decision is needed", options: [], allowFreeText: true,
