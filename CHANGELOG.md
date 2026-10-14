@@ -13,6 +13,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
 
+### Fixed
+
+- Stopped items that have not yet received a stage label remain visible in the dashboard backlog
+  instead of appearing as label problems.
+
 ## [0.6.6] - 2026-10-13
 
 This release stops the dashboard from jumping during live updates. An update used to download the whole page and swap it in, which moved whatever you were reading. The browser now tells the server which cards it already holds, the server sends only the cards that changed, and the page is patched in place, so an unchanged card never moves. Updates also wait while you are touching or scrolling, and scrolling while one loads is no longer undone.

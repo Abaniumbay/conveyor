@@ -2673,7 +2673,10 @@ export class ConveyorService {
     const backlogIssues = workflowIssues.filter((issue) => {
       if (issue.sourceState === "closed") return false;
       if (issue.parentId || !issue.labels.includes(this.config.labels.enrollment)) return false;
-      if (sourceStages(issue).length !== 0 || issue.projectedState !== "active") return false;
+      if (
+        sourceStages(issue).length !== 0 ||
+        !["active", "needs-input", "needs-intervention", "blocked", "error", "rejected"].includes(issue.projectedState ?? "")
+      ) return false;
       const stageState = this.store.getStageState(issue.id);
       return firstStages.has(issue.projectedStage ?? "") &&
         stageState?.status === "ready" &&
