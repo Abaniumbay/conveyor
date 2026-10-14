@@ -751,12 +751,12 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-station-cell="stage:build"');
   });
 
-  test("a stage's dialog says what a script stage runs, and always has a usage line", () => {
-    const scripted = { ...dashboard.stages[0]!, id: "stage:deploy", name: "Deploy", cost: null, actors: [{ type: "script" as const, name: "Script", title: "./stages/deploy.ts" }] };
+  test("a stage's dialog marks a script stage, and always has a usage line", () => {
+    const scripted = { ...dashboard.stages[0]!, id: "stage:deploy", name: "Deploy", cost: null, actors: [{ type: "script" as const, name: "Script", title: null }] };
     const quiet = { ...dashboard.stages[0]!, id: "stage:review", name: "Review", cost: null };
     const html = renderDashboard({ ...dashboard, stages: [scripted, quiet] });
     const dialog = (id: string) => html.slice(html.indexOf(`id="stage-info-${id}"`), html.indexOf("</dialog>", html.indexOf(`id="stage-info-${id}"`)));
-    expect(dialog("stage-deploy")).toContain("<strong>Script</strong><small>./stages/deploy.ts</small>");
+    expect(dialog("stage-deploy")).toContain("<strong>Script</strong></span>");
     expect(dialog("stage-deploy")).toContain("⚙");
     expect(dialog("stage-deploy")).toContain("Runs without an agent, so it uses no tokens.");
     expect(dialog("stage-review")).toContain("No agent usage recorded yet.");
