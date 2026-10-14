@@ -880,6 +880,23 @@ function Repositories({ model }: { model: DashboardViewModel }) {
   );
 }
 
+// The board does not list repositories, so a repository that cannot sync says so here: its items may be stale.
+function RepositoryWarnings({ model }: { model: DashboardViewModel }) {
+  const degraded = [...model.repositories].filter((repository) => repository.health === "degraded").sort(repositoryOrder);
+  if (degraded.length === 0) return null;
+  return (
+    <section class="repository-warnings" aria-label="Repositories that cannot sync">
+      <ul>{degraded.map((repository) => (
+        <li key={repository.id} class={`repo-color-${repository.color}`}>
+          <span class="repository-warning-mark" aria-hidden="true">!</span>
+          <span class="repository-warning-text"><strong>{repository.id}</strong> is not syncing{repository.errorSummary ? <>: {repository.errorSummary}</> : null}. Its items may be out of date.</span>
+          <a href={repositoryHref(repository.id)}>Details</a>
+        </li>
+      ))}</ul>
+    </section>
+  );
+}
+
 function RepositoryDetail({ model }: { model: DashboardViewModel }) {
   const repository = model.repositories.find((candidate) => candidate.id === model.repositoryId);
   if (!repository) return <section class="repository-detail"><h2>Repository not found</h2><p>The requested repository is not configured.</p></section>;
@@ -1198,7 +1215,7 @@ function Page({ model }: { model: DashboardViewModel }) {
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
           <Navigation model={model} />
           <div class="content-anchor" id="content" tabIndex={-1} />
-          {model.view === "board" && <><Line model={model} /><NeedsYou model={model} /></>}
+          {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><NeedsYou model={model} /></>}
           {content}
           {model.selectedIssue && (
             <DetailsDialog

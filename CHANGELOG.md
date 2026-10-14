@@ -23,7 +23,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 ### Removed
 
 - The Board's Repositories strip. The Repositories tab lists every repository, and each card
-  already names its repository.
+  already names its repository. A repository that cannot sync is still called out on the Board:
+  a notice above the line names it, gives the error, and links to its page.
 
 ### Fixed
 

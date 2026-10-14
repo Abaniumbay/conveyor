@@ -259,7 +259,12 @@ describe("buildRepositorySummaries", () => {
     await service.reconcileAll();
     expect(await dependencies.getDashboardRevision()).not.toBe(degraded.revision);
     expect(degraded.systemWarnings).toEqual([]);
-    // The board no longer lists repositories; their health is on the Repositories page.
+    // The board no longer lists repositories, but a repository that cannot sync is called out there.
+    const degradedBoard = renderDashboard(degraded);
+    expect(degradedBoard).toContain('class="repository-warnings"');
+    expect(degradedBoard).toContain("provider access is forbidden");
+    expect(degradedBoard).toContain('href="/repositories/alpha"');
+    expect(boardHtml).not.toContain('class="repository-warnings"');
     const degradedHtml = renderDashboard(service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null }));
     expect(degradedHtml).toContain("provider access is forbidden");
     expect(degradedHtml).not.toContain("System attention");

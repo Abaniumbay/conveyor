@@ -39,7 +39,7 @@ A live update does not reload the page. The event stream (`/events/dashboard`) s
 
 ## Repositories
 
-**Repositories** (`/repositories`) lists every configured repository with its id, address, health, and current work. Select one to open `/repositories/<id>`, which provides its current delivery status, recent work, and **Setup**. Setup shows the provider configuration to every signed-in user, but only superusers see the local folder and agent egress hosts.
+**Repositories** (`/repositories`) lists every configured repository with its id, address, health, and current work. The Board does not list repositories, but when one cannot sync, a notice above the line names it, gives the error, and links to its page, since its items may be out of date. Select one to open `/repositories/<id>`, which provides its current delivery status, recent work, and **Setup**. Setup shows the provider configuration to every signed-in user, but only superusers see the local folder and agent egress hosts.
 
 ![Configured repositories](screenshots/repositories.png)
 
