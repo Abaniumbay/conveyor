@@ -32,7 +32,7 @@ const parent: IssueCardViewModel = {
   closable: true,
   tone: "warning",
   parent: null,
-  children: [{ id: "child", repository: "sample", number: 42, title: "Nested task", url: "https://github.com/sample/repo/issues/42", satisfied: false }],
+  children: [],
   dependencies: [
     { id: "dependency", repository: "foundation", number: 40, title: "Required foundation", url: "https://github.com/sample/repo/issues/40", satisfied: true },
     { id: "dependency-open", repository: "foundation", number: 39, title: "Open foundation", url: "https://github.com/sample/repo/issues/39", satisfied: false },
@@ -486,7 +486,7 @@ describe("renderDashboard", () => {
   test("uses the configured repository colour for cards, inspector headers, and needs-you rows", () => {
     const html = renderDashboard(dashboard);
 
-    expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention issue--rollup repo-color-1"');
+    expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention repo-color-1"');
     expect(html).toContain('class="repository-badge" href="/repositories/sample" title="sample"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></a><span class="issue-number">#41</span>');
     expect(html).toContain('class="details-kicker repo-color-1"><a class="repository-badge" href="/repositories/sample" title="sample">');
     expect(html).toContain('class="needs-you-item repo-color-1"');
@@ -675,7 +675,7 @@ describe("renderDashboard", () => {
     expect(renderDashboard(dashboard).indexOf('class="tabs"')).toBeLessThan(renderDashboard(dashboard).indexOf('id="line-heading"'));
   });
 
-  test("shows parents and children as families: threads, a parts track and grouped columns", () => {
+  test("shows each open parent as a foldable row of its children, and a finished family as its parent alone", () => {
     const station = (index: number, name: string) => ({ index, count: 4, name });
     const family: IssueCardViewModel = {
       ...parent,
@@ -684,46 +684,63 @@ describe("renderDashboard", () => {
       title: "Accounts and sessions",
       waiting: null,
       children: [
-        { id: "done-part", repository: "sample", number: 244, title: "Store sign-in data", url: null, satisfied: true, station: station(3, "Done") },
         { id: "running-part", repository: "sample", number: 246, title: "Sign in by code", url: null, satisfied: false, station: station(1, "Build"), signal: "run" },
         { id: "stopped-part", repository: "sample", number: 247, title: "Guest sign-in", url: null, satisfied: false, station: station(1, "Build"), signal: "stop" },
+        { id: "done-part", repository: "sample", number: 244, title: "Store sign-in data", url: null, satisfied: true, station: station(3, "Done") },
       ],
     };
-    const relation = { id: "family", repository: "sample", number: 172, title: "Accounts and sessions", url: null, satisfied: false };
-    const child = (id: string, number: number, title: string): IssueCardViewModel => ({
-      ...backlogIssue, id, number, title, parent: relation, parentProgress: { done: 1, total: 3 }, children: [],
+    const relation = (id: string, number: number, title: string) => ({ id, repository: "sample", number, title, url: null, satisfied: false });
+    const child = (id: string, number: number, title: string, parentId = "family", parentNumber = 172): IssueCardViewModel => ({
+      ...backlogIssue, id, number, title, parent: relation(parentId, parentNumber, "Accounts and sessions"), parentProgress: { done: 1, total: 3 }, children: [],
     });
     const unrelated = { ...backlogIssue, id: "unrelated", number: 300, title: "Unrelated work" };
+    const orphan = child("orphan", 310, "Child of an off-board parent", "elsewhere", 900);
+    const finished: IssueCardViewModel = { ...completedIssue, id: "finished", number: 500, title: "Finished parent",
+      children: [{ ...relation("old-part", 501, "Old part"), satisfied: true }] };
     const html = renderDashboard({
       ...dashboard,
-      stages: [{ ...dashboard.stages[0]!, issues: [child("running-part", 246, "Sign in by code"), unrelated, family, child("stopped-part", 247, "Guest sign-in")] }],
-      done: { ...dashboard.done, issues: [child("done-part", 244, "Store sign-in data")] },
+      stages: [{ ...dashboard.stages[0]!, issues: [child("running-part", 246, "Sign in by code"), unrelated, family, child("stopped-part", 247, "Guest sign-in"), orphan] }],
+      done: { ...dashboard.done, issues: [child("done-part", 244, "Store sign-in data"), finished, child("old-part", 501, "Old part", "finished", 500)] },
     });
+    const familyRow = html.slice(html.indexOf('data-family-row="family"'), html.indexOf('class="board-row other-row'));
+    const otherRow = html.slice(html.indexOf('class="board-row other-row'));
 
-    // Each parent is followed by its children in the same column, joined by a rail.
-    const order = ["Unrelated work", "Accounts and sessions", "Sign in by code", "Guest sign-in"].map((title) => html.indexOf(`>${title}</button>`));
-    expect(order.every((position, index) => position > 0 && (index === 0 || position > order[index - 1]!))).toBe(true);
-    expect(html).toContain('<li class="family-child" data-family-child-of="family">');
-    expect(html).toContain('<li class="family-child family-child--last" data-family-child-of="family">');
-    // The parent can fold away the two children listed under it; the one in Done is not counted.
-    expect(html).toContain('data-family-collapse="family" data-family-nested="2" aria-expanded="true" aria-label="Hide the 2 parts listed under #172"');
-    expect(html).toContain('<span data-family-collapse-label="true">Hide 2</span>');
-    expect(html.match(/data-family-collapse=/g)?.length).toBe(1);
-    // Children carry a thread to their parent, in a stage column and in Done.
-    expect(html.match(/class="family-thread"/g)?.length).toBe(3);
-    expect(html).toContain('href="/issues/sample/172" title="#172 Accounts and sessions">#172 Accounts and sessions</a>');
-    expect(html).toContain('data-family-toggle="family" data-family-number="172" data-family-done="1" data-family-total="3" aria-pressed="false" aria-label="Show the #172 family on the board, 1 of 3 parts done">1/3</button>');
-    expect(html.match(/data-family="family"/g)?.length).toBe(4);
-    // The parent shows its parts on the line instead of the roll-up sentence.
-    expect(html).toContain('<span class="issue-parts">3 parts</span>');
-    expect(html).toContain('role="img" aria-label="3 parts: 1 done, 1 running, 1 stopped"');
-    expect(html).toContain('class="family-part family-part--done" style="left:100%;"');
-    expect(html).toContain('class="family-part family-part--stop" style="left:calc(33.33333333333333% + 0.85rem);"');
-    expect(html).toContain('<span data-family-label="true">Show family on the board</span>');
-    expect(html).not.toContain("Roll-up · 3 children");
-    // The highlight banner is rendered hidden, for the page script to fill.
-    expect(html).toContain('<p class="family-banner" data-family-banner="true" role="status" hidden>');
-    expect(html).toContain("body.family-focus .board article.issue:not(.issue--family-member){opacity:.3}");
+    // The parent is the row's header, not a card: number, title, a square per child, progress, its own stop, Details.
+    expect(html).not.toContain('data-issue-id="family" data-dialog-open');
+    expect(familyRow).toContain('data-row-fold="family-family" aria-controls="family-family-cells" aria-expanded="true" aria-label="Fold the #172 family"');
+    expect(familyRow).toContain('<span class="family-number">#172</span><strong class="family-title" title="Accounts and sessions">Accounts and sessions</strong>');
+    expect(familyRow).toContain('<span class="family-squares" role="img" aria-label="1 done, 1 running, 1 stopped"><span class="family-square family-square--done"');
+    expect(familyRow.indexOf("family-square--run")).toBeLessThan(familyRow.indexOf("family-square--stop"));
+    expect(familyRow).toContain('<span class="family-progress"><strong>1/3</strong> done</span>');
+    expect(familyRow).toContain('class="family-stop"');
+    expect(familyRow).toContain('<button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>');
+    expect(familyRow).toContain('id="issue-family-172-family"');
+    // Its children are cards in their stations, labelled with the station for phones; its done parts are listed.
+    expect(familyRow).toContain('id="family-family-cells"');
+    expect(familyRow).toContain(">Sign in by code</button>");
+    expect(familyRow).toContain(">Guest sign-in</button>");
+    expect(familyRow).toContain('<span class="issue-stage">Build</span>');
+    expect(familyRow).toContain('<ul class="family-done"><li>');
+    expect(familyRow).toContain('<a href="/issues/sample/244">#244 Store sign-in data</a>');
+    expect(familyRow).not.toContain("family-thread");
+    // Everything else is in the bottom row; a child of an off-board parent links to it.
+    expect(otherRow).toContain('data-row-fold="board-other"');
+    expect(otherRow).toContain(">Unrelated work</button>");
+    expect(otherRow).not.toContain(">Sign in by code</button>");
+    expect(otherRow).not.toContain('data-issue-id="done-part"');
+    expect(otherRow).toContain('<p class="family-thread">');
+    expect(otherRow).toContain('href="/issues/sample/900" title="#900 Accounts and sessions">#900 Accounts and sessions</a><span class="family-thread-progress">1/3</span>');
+    // A finished family is its parent alone, in Done.
+    expect(otherRow).toContain(">Finished parent</button>");
+    expect(otherRow).toContain('<p class="rollup-summary">All 1 part done</p>');
+    expect(otherRow).not.toContain('data-issue-id="old-part"');
+    expect(html).not.toContain('data-family-row="finished"');
+    // The columns line up: one grid template for the header strip and every row.
+    expect(html).toContain('class="board-track" style="--board-columns:min(20rem,86vw) min(20rem,86vw) min(20rem,86vw);--board-columns-phone:calc(100vw - 1.5rem) calc(100vw - 1.5rem) calc(100vw - 1.5rem)"');
+    // An empty station is a narrow column in the strip and in every row.
+    const empty = renderDashboard({ ...dashboard, backlog: [] });
+    expect(empty).toContain('style="--board-columns:3.5rem ');
+    expect(html).toContain('data-station-cell="stage:build"');
   });
 
   test("renders one horizontal board column per configured stage with card status styling", () => {
@@ -744,7 +761,6 @@ describe("renderDashboard", () => {
     expect(html).toContain("/board?column=stage%3Abuild&amp;page=1");
     expect(html).toContain("/board?column=stage%3Abuild&amp;page=3");
     expect(html).toContain("issue--warning");
-    expect(html).toContain("issue--rollup");
     expect(html).not.toContain("stage-group");
     expect(html).not.toContain(">Roll-up parents</h3>");
     expect(html).toContain("Executable child");
@@ -753,7 +769,6 @@ describe("renderDashboard", () => {
     expect(html).toContain("gives up");
     expect(html).toContain('data-local-clock="true"');
     expect(html).toContain('aria-label="1 waiting"');
-    expect(html).toContain("Nested task");
     expect(html).toContain("Blocked by");
     expect(html).toContain("Required foundation");
     expect(html).toContain('Waiting on <a href="/issues/foundation/39">#39</a>');
@@ -787,7 +802,6 @@ describe("renderDashboard", () => {
     expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain('href="/issues/sample/41"');
     expect(html).toContain('<span class="repository-name">sample</span></a><span class="issue-number">#41</span>');
-    expect(html).toContain('href="/issues/sample/42"');
     expect(html).toContain('href="/issues/foundation/40"');
     expect(html).not.toContain('href="https://github.com/sample/repo/issues/42"');
     expect(html).not.toContain(">Permalink</a>");
@@ -822,7 +836,6 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="line-station line-station--running"');
     expect(html).toContain("andon--run");
     expect(html).toContain('<time datetime="2026-09-29T11:30:00Z" data-relative-time="true">recently</time>');
-    expect(html).toContain("Roll-up · 1 child, 0 done");
     expect(html).toContain('class="stage stage--empty" id="station-stage-review"');
     expect(html).toContain(".stage--empty .stage-heading h2{writing-mode:vertical-rl");
     const parentCardStart = html.indexOf('data-issue-id="parent" data-dialog-open');

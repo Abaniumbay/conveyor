@@ -84,7 +84,7 @@ function dashboard(
 function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   return page.evaluate(() => {
     const card = document.querySelector('article.issue[data-issue-id="target"]');
-    const stage = document.getElementById("station-reader");
+    const stage = document.querySelector('[data-station-cell="reader"]');
     const board = document.querySelector<HTMLElement>(".board");
     return {
       cardTop: card?.getBoundingClientRect().top ?? null,
@@ -286,8 +286,8 @@ describe("dashboard live refresh position", () => {
         dashboardKept: (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true,
         unchangedKept: (document.querySelector('[data-issue-id="card-1"]') as unknown as { untouched?: boolean }).untouched === true,
         removedGone: document.querySelector('[data-issue-id="card-5"]') === null,
-        order: [...document.querySelectorAll("#station-reader article.issue")].map((card) => card.getAttribute("data-issue-id")),
-        titles: [...document.querySelectorAll("#station-reader article.issue .issue-title")].map((title) => title.textContent),
+        order: [...document.querySelectorAll('[data-station-cell="reader"] article.issue')].map((card) => card.getAttribute("data-issue-id")),
+        titles: [...document.querySelectorAll('[data-station-cell="reader"] article.issue .issue-title')].map((title) => title.textContent),
         placeholders: document.querySelectorAll("[data-keep]").length,
       }));
       expect(after).toEqual({
@@ -298,78 +298,69 @@ describe("dashboard live refresh position", () => {
       });
 
       // A freshly loaded page is the same as the live-updated one.
-      const live = await page.locator("#station-reader").innerHTML();
+      const live = await page.locator('[data-station-cell="reader"]').innerHTML();
       await page.reload();
-      expect(await page.locator("#station-reader").innerHTML()).toBe(live);
+      expect(await page.locator('[data-station-cell="reader"]').innerHTML()).toBe(live);
     } finally {
       server.stop(true);
     }
   }, 30_000);
-  test("a family lights up across the board, survives a live update, clears, and folds its children away", async () => {
+  test("a family row folds to its header, stays folded across a reload and a live update, and unfolds", async () => {
     const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };
     const child = (id: string, number: number) => ({ ...issue(id, number, `Child ${number}`), parent: parentRelation, parentProgress: { done: 0, total: 2 } });
     const family = {
       ...issue("family", 10, "Family parent"),
       children: [
-        { ...parentRelation, id: "child-a", number: 11, title: "Child 11", station: { index: 1, count: 4, name: "Reader" }, signal: "wait" as const },
-        { ...parentRelation, id: "child-b", number: 12, title: "Child 12", station: { index: 2, count: 4, name: "After" }, signal: "wait" as const },
+        { ...parentRelation, id: "child-a", number: 11, title: "Child 11", station: { index: 2, count: 5, name: "Reader" }, signal: "wait" as const },
+        { ...parentRelation, id: "child-b", number: 12, title: "Child 12", station: { index: 3, count: 5, name: "After" }, signal: "wait" as const },
       ],
     };
     let revision = "revision-1";
-    let currentDashboard = dashboard(revision, [family, child("child-a", 11), issue("stranger", 30, "Stranger")], [issue("before-card", 1)]);
-    currentDashboard = { ...currentDashboard, stages: currentDashboard.stages.map((column) => column.id === "after" ? stage("after", "After", [child("child-b", 12)]) : column) };
+    const build = (extra: IssueCardViewModel[] = []) => {
+      const base = dashboard(revision, [family, child("child-a", 11), issue("stranger", 30, "Stranger"), ...extra], [issue("before-card", 1)]);
+      return { ...base, stages: base.stages.map((column) => column.id === "after" ? stage("after", "After", [child("child-b", 12), issue("after-card", 99)]) : column) };
+    };
+    let currentDashboard = build();
     const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
       await signIn(page, server.port);
       const state = () => page.evaluate(() => ({
-        focused: document.body.classList.contains("family-focus"),
-        members: [...document.querySelectorAll("article.issue.issue--family-member")].map((card) => card.getAttribute("data-issue-id")),
-        banner: (document.querySelector("[data-family-banner]") as HTMLElement).hidden ? null : document.querySelector("[data-family-banner-text]")?.textContent,
-        pressed: [...document.querySelectorAll("[data-family-toggle][aria-pressed=true]")].length,
-        strangerOpacity: getComputedStyle(document.querySelector('article.issue[data-issue-id="stranger"]')!).opacity,
-        dialogOpen: document.querySelector("dialog[open]") !== null,
+        rowCards: [...document.querySelectorAll('[data-family-row="family"] article.issue')].map((card) => card.getAttribute("data-issue-id")),
+        otherCards: [...document.querySelectorAll('[data-station-cell] article.issue')].map((card) => card.getAttribute("data-issue-id")),
+        cellsHidden: (document.getElementById("family-family-cells") as HTMLElement).hidden,
+        expanded: document.querySelector('[data-row-fold="family-family"]')?.getAttribute("aria-expanded"),
+        label: document.querySelector('[data-row-fold="family-family"]')?.getAttribute("aria-label"),
+        parentIsCard: document.querySelector('article.issue[data-issue-id="family"]') !== null,
       }));
 
-      // The child's family button lights up the parent and both children, in two columns.
-      await page.locator('article.issue[data-issue-id="child-b"] [data-family-toggle]').click();
+      // The children sit in the family's row, in their own stations; the parent is the row's header.
       expect(await state()).toEqual({
-        focused: true, members: ["family", "child-a", "child-b"], banner: "Showing the #10 family: 2 parts, 0 done.",
-        pressed: 3, strangerOpacity: "0.3", dialogOpen: false,
+        rowCards: ["child-a", "child-b"], otherCards: ["before-card", "stranger", "after-card"],
+        cellsHidden: false, expanded: "true", label: "Fold the #10 family", parentIsCard: false,
       });
 
-      // A live update patches the cards and keeps the family lit.
+      await page.locator('[data-row-fold="family-family"]').click();
+      expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false", label: "Unfold the #10 family" });
+      await page.reload();
+      expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false" });
+
+      // A live update keeps the row folded.
       const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
-      currentDashboard = { ...currentDashboard, revision: "revision-2", stages: currentDashboard.stages.map((column) => column.id === "reader" ? { ...column, issues: [...column.issues, issue("newcomer", 40, "Newcomer")] } : column) };
       revision = "revision-2";
+      currentDashboard = { ...build([issue("newcomer", 40, "Newcomer")]), revision };
       await refresh;
       await page.locator('article.issue[data-issue-id="newcomer"]').waitFor();
-      await page.waitForFunction(() => document.querySelector('[data-issue-id="family"]')?.classList.contains("issue--family-member"));
-      expect((await state()).members).toEqual(["family", "child-a", "child-b"]);
+      expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false" });
 
-      // The banner clears it; pressing the parent's button twice turns it on and off.
-      await page.locator("[data-family-clear]").click();
-      expect(await state()).toMatchObject({ focused: false, members: [], banner: null, pressed: 0, strangerOpacity: "1" });
-      const parentButton = page.locator('article.issue[data-issue-id="family"] [data-family-toggle]');
-      await parentButton.click();
-      expect(await parentButton.textContent()).toBe("Showing this family");
-      await parentButton.click();
-      expect(await state()).toMatchObject({ focused: false, members: [] });
+      // The header's Details opens the parent's details.
+      await page.locator('[data-family-row="family"] .family-details').click();
+      await page.waitForFunction(() => document.querySelector("dialog[open]") !== null);
+      await page.keyboard.press("Escape");
 
-      // Collapsing hides the child listed under the parent, not the one in another column, and is remembered.
-      const visibility = () => page.evaluate(() => ({
-        underParent: (document.querySelector('li[data-family-child-of="family"]') as HTMLElement).hidden,
-        otherColumn: (document.querySelector('article.issue[data-issue-id="child-b"]') as HTMLElement).offsetParent !== null,
-        label: document.querySelector("[data-family-collapse-label]")?.textContent,
-        expanded: document.querySelector("[data-family-collapse]")?.getAttribute("aria-expanded"),
-      }));
-      await page.locator("[data-family-collapse]").click();
-      expect(await visibility()).toEqual({ underParent: true, otherColumn: true, label: "Show 1", expanded: "false" });
-      await page.reload();
-      expect(await visibility()).toEqual({ underParent: true, otherColumn: true, label: "Show 1", expanded: "false" });
-      await page.locator("[data-family-collapse]").click();
-      expect(await visibility()).toEqual({ underParent: false, otherColumn: true, label: "Hide 1", expanded: "true" });
+      await page.locator('[data-row-fold="family-family"]').click();
+      expect(await state()).toMatchObject({ cellsHidden: false, expanded: "true", label: "Fold the #10 family" });
     } finally {
       server.stop(true);
     }

@@ -960,61 +960,23 @@ export const dashboardClient = String.raw`(() => {
     showDialog(dialog);
   };
 
-  // One family (a parent and its children) can be lit up across the board; the rest is dimmed.
-  // The choice lives in the page, so it survives live updates and clears on navigation.
-  let familyFocus = null;
-  const applyFamilyFocus = () => {
-    const cards = [...document.querySelectorAll('main.dashboard .board article.issue')];
-    const members = familyFocus ? cards.filter((card) => card.getAttribute('data-family') === familyFocus) : [];
-    if (members.length === 0) familyFocus = null;
-    body.classList.toggle('family-focus', familyFocus !== null);
-    for (const card of cards) card.classList.toggle('issue--family-member', members.includes(card));
-    let source = null;
-    for (const button of document.querySelectorAll('[data-family-toggle]')) {
-      const pressed = familyFocus !== null && button.getAttribute('data-family-toggle') === familyFocus;
-      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
-      const label = button.querySelector('[data-family-label]');
-      if (label) label.textContent = pressed ? 'Showing this family' : 'Show family on the board';
-      if (pressed && (!source || button.hasAttribute('data-family-label'))) source = button;
-    }
-    const banner = document.querySelector('[data-family-banner]');
-    if (!(banner instanceof HTMLElement)) return;
-    banner.hidden = familyFocus === null;
-    const text = banner.querySelector('[data-family-banner-text]');
-    if (text && source) {
-      const total = Number(source.getAttribute('data-family-total')) || 0;
-      text.textContent = 'Showing the #' + (source.getAttribute('data-family-number') || '') + ' family: ' +
-        total + (total === 1 ? ' part, ' : ' parts, ') + (source.getAttribute('data-family-done') || '0') + ' done.';
-    }
-  };
-  document.addEventListener('conveyor:dashboard-rendered', applyFamilyFocus);
-
-  // A parent's children listed under it can be folded away; each browser remembers which.
-  const collapsedFamilies = new Set();
+  // A board row (a family, or the items without a parent) can be folded to its header; each browser remembers which.
+  const foldedRows = new Set();
   try {
-    const stored = JSON.parse(localStorage.getItem('conveyor-collapsed-families') || '[]');
-    if (Array.isArray(stored)) for (const id of stored) if (typeof id === 'string') collapsedFamilies.add(id);
+    const stored = JSON.parse(localStorage.getItem('conveyor-folded-rows') || '[]');
+    if (Array.isArray(stored)) for (const id of stored) if (typeof id === 'string') foldedRows.add(id);
   } catch {}
-  const applyFamilyCollapse = () => {
-    for (const button of document.querySelectorAll('[data-family-collapse]')) {
-      const family = button.getAttribute('data-family-collapse') || '';
-      const collapsed = collapsedFamilies.has(family);
-      const nested = Number(button.getAttribute('data-family-nested')) || 0;
-      const parts = nested === 1 ? 'part' : 'parts';
-      const number = button.closest('article.issue')?.querySelector('.issue-number')?.textContent || '';
-      button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-      button.setAttribute('aria-label', (collapsed ? 'Show the ' : 'Hide the ') + nested + ' ' + parts + ' listed under ' + number);
-      const label = button.querySelector('[data-family-collapse-label]');
-      if (label) label.textContent = (collapsed ? 'Show ' : 'Hide ') + nested;
-      const list = button.closest('ol');
-      if (!list) continue;
-      for (const row of list.querySelectorAll('li[data-family-child-of]')) {
-        if (row.getAttribute('data-family-child-of') === family) row.hidden = collapsed;
-      }
+  const applyRowFolds = () => {
+    for (const button of document.querySelectorAll('[data-row-fold]')) {
+      const folded = foldedRows.has(button.getAttribute('data-row-fold') || '');
+      const cells = document.getElementById(button.getAttribute('aria-controls') || '');
+      if (cells) cells.hidden = folded;
+      button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      button.setAttribute('aria-label', (folded ? 'Unfold ' : 'Fold ') + (button.getAttribute('data-fold-label') || 'this row'));
     }
   };
-  applyFamilyCollapse();
-  document.addEventListener('conveyor:dashboard-rendered', applyFamilyCollapse);
+  applyRowFolds();
+  document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
 
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
@@ -1022,27 +984,15 @@ export const dashboardClient = String.raw`(() => {
     const clickedDetails = event.target.closest('.dashboard-header details');
     closeHeaderPopovers(clickedDetails);
 
-    const familyToggle = event.target.closest('[data-family-toggle]');
-    if (familyToggle instanceof HTMLButtonElement) {
-      const family = familyToggle.getAttribute('data-family-toggle');
-      familyFocus = family && familyFocus !== family ? family : null;
-      applyFamilyFocus();
-      return;
-    }
-    const familyCollapse = event.target.closest('[data-family-collapse]');
-    if (familyCollapse instanceof HTMLButtonElement) {
-      const family = familyCollapse.getAttribute('data-family-collapse');
-      if (family) {
-        if (collapsedFamilies.has(family)) collapsedFamilies.delete(family);
-        else collapsedFamilies.add(family);
-        try { localStorage.setItem('conveyor-collapsed-families', JSON.stringify([...collapsedFamilies])); } catch {}
-        applyFamilyCollapse();
+    const rowFold = event.target.closest('[data-row-fold]');
+    if (rowFold instanceof HTMLButtonElement) {
+      const row = rowFold.getAttribute('data-row-fold');
+      if (row) {
+        if (foldedRows.has(row)) foldedRows.delete(row);
+        else foldedRows.add(row);
+        try { localStorage.setItem('conveyor-folded-rows', JSON.stringify([...foldedRows])); } catch {}
+        applyRowFolds();
       }
-      return;
-    }
-    if (event.target.closest('[data-family-clear]')) {
-      familyFocus = null;
-      applyFamilyFocus();
       return;
     }
 
@@ -1136,9 +1086,6 @@ export const dashboardClient = String.raw`(() => {
       if (inspector instanceof HTMLDialogElement) {
         event.preventDefault();
         inspector.close();
-      } else if (familyFocus !== null) {
-        familyFocus = null;
-        applyFamilyFocus();
       }
       return;
     }
@@ -1633,15 +1580,16 @@ export const dashboardClient = String.raw`(() => {
   const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
   const boardScrollMaximum = () => board ? Math.max(0, board.scrollWidth - board.clientWidth) : 0;
   const captureDashboardPosition = () => {
-    const stages = board ? [...board.querySelectorAll('.stage[id]')].map((stage) => {
+    const stages = board ? [...board.querySelectorAll('[data-station-cell]')].map((stage) => {
       const bounds = stage.getBoundingClientRect();
       const boardBounds = board.getBoundingClientRect();
       return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
     }).sort((left, right) => right.overlap - left.overlap) : [];
     const stage = stages[0]?.stage;
-    const visibleIssues = [...(stage || document).querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
+    // Cards of the reader's station, and of any family row, are what the reader may be looking at.
+    const visibleIssues = [...(board || document).querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
       const bounds = issue.getBoundingClientRect();
-      return bounds.bottom > 0 && bounds.top < window.innerHeight;
+      return bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth && (!stage || !issue.closest('[data-station-cell]') || stage.contains(issue));
     });
     const issue = visibleIssues.sort((left, right) => {
       const target = window.innerHeight / 2;
@@ -1651,14 +1599,14 @@ export const dashboardClient = String.raw`(() => {
       scrollX: board ? board.scrollLeft : 0,
       scrollY: window.scrollY,
       issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
-      stage: stage ? { id: stage.id, left: stage.getBoundingClientRect().left } : null,
+      stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
     };
   };
   const restoreDashboardPosition = (position) => {
     window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
     if (board) {
       board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
-      const stage = position.stage && document.getElementById(position.stage.id);
+      const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
       if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
     }
     if (position.issue?.id) {

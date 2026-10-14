@@ -12,18 +12,18 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
-- The board shows parent items and their children as families. Each child card has a "Part of
-  #N" line linking to its parent, with the family's done/total. A parent card shows its children
-  as dots on a miniature of the line, plus a tally (done, running, waiting, stopped). In a stage
-  column, a parent is followed by its children, joined by a rail. "Show family on the board"
-  outlines the whole family across every column, Done included, and dims everything else until
-  cleared. A parent's **Hide N** button folds away the children listed under it in its column;
-  each browser remembers which families are folded.
+- The board shows each open parent as a row. The stations stay across the top. Each parent's row
+  holds its children as cards in their stations, and its header shows the parent's number and
+  title, one square per child (done, running, waiting, stopped), `done/total`, the parent's own
+  stop when it has one, and **Details**. Items without a parent share a row at the bottom. Rows
+  fold to their header, and each browser remembers which are folded. A finished family shows
+  only its parent, in Done. On a phone, a family row lists its cards in stage order, with the
+  stage on each card.
 
 ### Changed
 
-- Stage columns no longer split cards into separate "Roll-up parents" and "Issues" groups: each
-  parent sits with its children.
+- Stage columns no longer pull parents into a separate "Roll-up parents" group, and a parent is
+  no longer a card in its column: it heads its family's row.
 
 ## [0.6.6] - 2026-10-13
 

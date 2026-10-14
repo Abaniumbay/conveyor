@@ -691,10 +691,11 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await expectReachableHealth(page, "Degraded");
       }
       if (name === "board") {
+        // On a phone the station headings are hidden: the bottom row's station cells carry the board.
         await expectLastChildReachable(
           page,
           ".board",
-          ".stage",
+          "[data-station-cell]",
           "Board's last stage",
           true,
         );
