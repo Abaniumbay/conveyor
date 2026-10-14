@@ -2018,7 +2018,7 @@ export class ConveyorService {
     return stage !== undefined && !stage.legacy && task?.task === "agent.run" && journal.wakeNow(question.issueId);
   }
 
-  async answerQuestion(questionId: string, answer: string): Promise<void> {
+  async answerQuestion(questionId: string, answer: string, source = "web"): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
     const issue = this.store.getIssue(question.issueId);
@@ -2033,7 +2033,7 @@ export class ConveyorService {
         : question.answer;
       if (prior !== response) throw new Error("This question already has a pending answer; retry the same answer.");
     } else {
-      this.store.recordQuestionAnswer(questionId, "web", { answer: response });
+      this.store.recordQuestionAnswer(questionId, source, { answer: response });
     }
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
@@ -3306,6 +3306,7 @@ export class ConveyorService {
       }, push),
       createAccount: (name, passwordHash) => this.store.createDashboardUser(name, passwordHash),
       changePassword: (id, passwordHash) => this.store.changeDashboardPassword(id, passwordHash),
+      deleteAccount: (id) => this.store.deleteDashboardAccount(id),
       changeAvatar: (id, avatar) => this.store.changeDashboardAvatar(id, avatar),
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getDashboardRevision: () => this.dashboardRevision(),
@@ -3314,7 +3315,7 @@ export class ConveyorService {
       getSystemStatus: () => this.systemStatus(),
       isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
-      answerQuestion: (id, answer) => this.answerQuestion(id, answer),
+      answerQuestion: (id, answer, username) => this.answerQuestion(id, answer, username),
       reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
       moveBacklogIssue: (id, beforeId) => this.moveBacklogIssue(id, beforeId),
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),

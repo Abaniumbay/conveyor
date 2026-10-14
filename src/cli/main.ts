@@ -1,7 +1,7 @@
 import { BUILD, versionLine } from "../version";
 import { CliError, EXIT, parseArgs, type ExitCode, type OptionSpecs } from "./args";
 import { GLOBAL_OPTIONS, printJson, type Command, type CommandContext } from "./command";
-import { adminResetPassword } from "./commands/admin";
+import { adminDeleteAccount, adminResetPassword } from "./commands/admin";
 import { cleanup } from "./commands/cleanup";
 import { diagnosticsExport } from "./commands/diagnostics";
 import { configBuiltin, configCheck, configCompare, configMigrate, configShow } from "./commands/config";
@@ -70,6 +70,7 @@ export const COMMANDS: Command[] = [
   rollback,
   cleanup,
   diagnosticsExport,
+  adminDeleteAccount,
   adminResetPassword,
   checkConfigAlias,
 ];

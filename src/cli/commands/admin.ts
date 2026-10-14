@@ -44,3 +44,22 @@ export const adminResetPassword: Command = {
     else context.out(`Password changed for ${changed.username}; their existing sessions are signed out.`);
   },
 };
+
+export const adminDeleteAccount: Command = {
+  name: "admin delete-account",
+  usage: "<username>",
+  summary: "delete a regular dashboard account and sign out its sessions",
+  details: "Works whether or not the service is running: it uses the same account store the dashboard does. Superuser accounts cannot be deleted.",
+  async run(context) {
+    const username = validUsername(positional(context, 0, "username"));
+    const deleted = await withStore(context, (store) => {
+      const account = store.dashboardAccountByUsername(username);
+      if (!account) return "not_found" as const;
+      return store.deleteDashboardAccount(account.id);
+    });
+    if (deleted === "not_found") throw new CliError(`no dashboard account is named ${username}`, EXIT.failure);
+    if (deleted === "superuser") throw new CliError("superuser accounts cannot be deleted", EXIT.failure);
+    if (context.json) printJson(context, { username, deleted: true });
+    else context.out(`Deleted ${username}; their existing sessions are signed out.`);
+  },
+};

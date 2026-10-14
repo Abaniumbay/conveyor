@@ -600,7 +600,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ answer: "yes", csrf }),
     }));
     expect(answer.status).toBe(303);
-    expect(calls.answers).toEqual([["q-1", "yes"]]);
+    expect(calls.answers).toEqual([["q-1", "yes", "operator"]]);
 
     const reorder = await handler(new Request("http://localhost/backlog/reorder", {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -961,6 +961,62 @@ describe("createWebHandler", () => {
     expect(accounts).toHaveLength(1);
     expect((await create("reader")).status).toBe(409);
     expect(accounts).toHaveLength(1);
+  });
+
+  test("superusers reset and delete regular accounts with CSRF, session, and deletion safeguards", async () => {
+    type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+    let accounts = new Map<string, Account>();
+    const admin = { id: "admin-id", username: "admin", role: "superuser" as const, avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    accounts = new Map<string, Account>([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const { handler } = setup({
+      auth,
+      maxBodyBytes: 4096,
+      listAccounts: () => [...accounts.values()],
+      getAccount: (id: string) => accounts.get(id) ?? null,
+      changePassword: (id: string, passwordHash: string) => {
+        const account = accounts.get(id)!;
+        accounts.set(id, { ...account, passwordHash, sessionVersion: account.sessionVersion + 1 });
+      },
+      deleteAccount: (id: string) => accounts.delete(id) ? "deleted" : "not_found",
+    });
+    const adminSession = auth.createSession(admin)!;
+    const adminCookie = adminSession.cookie.split(";", 1)[0]!;
+    const post = (path: string, fields: Record<string, string>, cookie = adminCookie) => handler(new Request(`http://localhost${path}`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields),
+    }));
+
+    expect((await post(`/api/accounts/${reader.id}/password`, { password: "replacement password" }, "")).status).toBe(401);
+    const readerSession = auth.createSession(reader)!;
+    const readerCookie = readerSession.cookie.split(";", 1)[0]!;
+    expect((await post(`/api/accounts/${admin.id}/password`, { csrf: readerSession.csrfToken, password: "replacement password" }, readerCookie)).status).toBe(403);
+    expect((await post(`/api/accounts/${reader.id}/delete`, { csrf: readerSession.csrfToken, confirmation: "reader" }, readerCookie)).status).toBe(403);
+    expect((await post(`/api/accounts/${reader.id}/password`, { password: "replacement password" })).status).toBe(403);
+    expect((await post(`/api/accounts/${reader.id}/delete`, { confirmation: "reader" })).status).toBe(403);
+    expect((await post("/api/accounts/missing/password", { csrf: adminSession.csrfToken, password: "replacement password" })).status).toBe(404);
+    expect((await post(`/api/accounts/${reader.id}/password`, { csrf: adminSession.csrfToken, password: "short" })).status).toBe(400);
+    expect((await post(`/api/accounts/${reader.id}/password`, { csrf: adminSession.csrfToken, password: "replacement password" })).status).toBe(200);
+    expect(auth.authenticate("reader", "reader password")).toBe(false);
+    expect(auth.authenticate("reader", "replacement password")).toBe(true);
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie: readerCookie } }))).status).toBe(303);
+
+    const ownReset = await post(`/api/accounts/${admin.id}/password`, { csrf: adminSession.csrfToken, password: "another admin password" });
+    expect(ownReset.status).toBe(303);
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie: adminCookie } }))).status).toBe(303);
+    const renewedAdmin = auth.createSession(accounts.get(admin.id)!)!;
+    const renewedCookie = renewedAdmin.cookie.split(";", 1)[0]!;
+    expect((await post(`/api/accounts/${admin.id}/delete`, { csrf: renewedAdmin.csrfToken, confirmation: "admin" }, renewedCookie)).status).toBe(400);
+    expect((await post(`/api/accounts/${reader.id}/delete`, { csrf: renewedAdmin.csrfToken, confirmation: "nope" }, renewedCookie)).status).toBe(400);
+    expect((await post("/api/accounts/missing/delete", { csrf: renewedAdmin.csrfToken, confirmation: "missing" }, renewedCookie)).status).toBe(404);
+    expect((await post(`/api/accounts/${reader.id}/delete`, { csrf: renewedAdmin.csrfToken, confirmation: "reader" }, renewedCookie)).status).toBe(200);
+    expect(accounts.has(reader.id)).toBe(false);
+    expect((await handler(new Request("http://localhost/board", { headers: { cookie: readerCookie } }))).status).toBe(303);
   });
 
   test("users can change only their own avatar and password, and password changes revoke old sessions", async () => {

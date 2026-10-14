@@ -33,6 +33,7 @@ export interface WebHandlerDependencies {
   dispatchPushEvents?: () => void | Promise<void>;
   createAccount?: (username: string, passwordHash: string) => WebAccountIdentity;
   changePassword?: (id: string, passwordHash: string) => void;
+  deleteAccount?: (id: string) => "deleted" | "not_found" | "superuser";
   changeAvatar?: (id: string, avatar: string) => void;
   getDashboard: (
     csrfToken: string,
@@ -44,7 +45,7 @@ export interface WebHandlerDependencies {
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
-  answerQuestion: (questionId: string, answer: string) => void | Promise<void>;
+  answerQuestion: (questionId: string, answer: string, username: string) => void | Promise<void>;
   reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
   moveBacklogIssue: (issueId: string, beforeIssueId: string | null) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -641,6 +642,41 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       return json({ registered: true }, 201);
     }
 
+    const accountAction = /^\/api\/accounts\/([^/]+)\/(password|delete)$/.exec(path);
+    if (accountAction) {
+      const denied = requireSuperuser(request);
+      if (denied) return denied;
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      let accountId: string;
+      try { accountId = decodeURIComponent(accountAction[1]!); } catch { return json({ error: "Invalid account." }, 400); }
+      if (!accountId) return json({ error: "Invalid account." }, 400);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const target = dependencies.getAccount?.(accountId);
+      if (!target) return json({ error: "Account not found." }, 404);
+      const current = session(request)!;
+
+      if (accountAction[2] === "password") {
+        const password = oneValue(form, "password");
+        if (!password || password.length < 12 || password.length > 1024) return json({ error: "Password must be 12 to 1024 characters." }, 400);
+        if (!dependencies.changePassword) return json({ error: "Account management is unavailable" }, 503);
+        await dependencies.changePassword(target.id, hashPassword(password));
+        if (target.id === current.account.id) return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
+        return json({ passwordChanged: true });
+      }
+
+      if (target.id === current.account.id) return json({ error: "You cannot delete your own account." }, 400);
+      if (target.role === "superuser") return json({ error: "Superuser accounts cannot be deleted." }, 400);
+      if (oneValue(form, "confirmation") !== target.username) return json({ error: `Type ${target.username} to confirm deletion.` }, 400);
+      if (!dependencies.deleteAccount) return json({ error: "Account management is unavailable" }, 503);
+      const deleted = await dependencies.deleteAccount(target.id);
+      if (deleted === "not_found") return json({ error: "Account not found." }, 404);
+      if (deleted === "superuser") return json({ error: "Superuser accounts cannot be deleted." }, 400);
+      return json({ deleted: true });
+    }
+
     if (path === "/api/accounts") {
       const denied = requireSuperuser(request);
       if (denied) return denied;
@@ -1115,7 +1151,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const answer = oneValue(form, "answer");
       if (answer === null || answer.trim().length === 0) return text("An answer is required", 400);
       try {
-        await dependencies.answerQuestion(questionId, answer);
+        await dependencies.answerQuestion(questionId, answer, currentSession.account.username);
         return redirect("/board");
       } catch (error) {
         return text(error instanceof Error ? error.message : "Unable to record answer", 409);

@@ -57,6 +57,8 @@ export interface DashboardAccount {
   sessionVersion: number;
 }
 
+export type DashboardAccountDeletion = "deleted" | "not_found" | "superuser";
+
 export interface PushPreferences {
   questions: boolean;
   stopped: boolean;
@@ -194,6 +196,8 @@ export interface StoredQuestion {
   createdAt: string;
   answeredAt: string | null;
   answer: unknown | null;
+  /** Immutable actor label, retained even when their dashboard account is deleted. */
+  answerSource: string | null;
 }
 
 export interface StoredConversationMessage {
@@ -425,6 +429,16 @@ export class ConveyorStore {
 
   changeDashboardPassword(id: string, passwordHash: string): void {
     this.#database.query("UPDATE dashboard_accounts SET password_hash = ?, session_version = session_version + 1 WHERE id = ?").run(passwordHash, id);
+  }
+
+  deleteDashboardAccount(id: string): DashboardAccountDeletion {
+    return this.#database.transaction(() => {
+      const account = this.dashboardAccountById(id);
+      if (!account) return "not_found";
+      if (account.role === "superuser") return "superuser";
+      this.#database.query("DELETE FROM dashboard_accounts WHERE id = ?").run(id);
+      return "deleted";
+    })();
   }
 
   changeDashboardAvatar(id: string, avatar: string): void {
@@ -1882,7 +1896,7 @@ export class ConveyorStore {
   getQuestion(questionId: string): StoredQuestion | null {
     const row = this.#database
       .query(
-        `SELECT q.*, a.answer_json
+        `SELECT q.*, a.answer_json, a.source AS answer_source
          FROM questions q LEFT JOIN answers a ON a.question_id = q.id
          WHERE q.id = ?`,
       )
@@ -1894,7 +1908,7 @@ export class ConveyorStore {
   getQuestionForRun(runId: string): StoredQuestion | null {
     const row = this.#database
       .query(
-        `SELECT q.*, a.answer_json
+        `SELECT q.*, a.answer_json, a.source AS answer_source
          FROM questions q LEFT JOIN answers a ON a.question_id = q.id
          WHERE q.run_id = ? ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1`,
       )
@@ -1905,7 +1919,7 @@ export class ConveyorStore {
   listOpenQuestions(): StoredQuestion[] {
     const rows = this.#database
       .query(
-        `SELECT q.*, a.answer_json FROM questions q LEFT JOIN answers a ON a.question_id = q.id
+        `SELECT q.*, a.answer_json, a.source AS answer_source FROM questions q LEFT JOIN answers a ON a.question_id = q.id
          WHERE q.status = 'open' ORDER BY q.created_at, q.id`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
@@ -1934,6 +1948,7 @@ export class ConveyorStore {
       answeredAt: row.answered_at === null ? null : String(row.answered_at),
       answer:
         row.answer_json === null ? null : parseJson(String(row.answer_json)),
+      answerSource: row.answer_source === null ? null : String(row.answer_source),
     };
   }
 

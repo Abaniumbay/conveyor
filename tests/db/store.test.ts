@@ -943,6 +943,21 @@ describe("ConveyorStore", () => {
     expect(store.getQuestion(question.id)).toMatchObject({
       status: "answered",
       answer: { selections: ["compact"] },
+      answerSource: "web",
+    });
+    const reader = store.createDashboardUser("reader", "hash");
+    const attributedQuestion = store.openQuestion({
+      issueId: "issue-1",
+      runId: null,
+      prompt: "Who should approve this?",
+      reason: "An owner decision is required",
+      options: [{ id: "reader", label: "Reader" }],
+    });
+    store.answerQuestion(attributedQuestion.id, reader.username, { selections: ["reader"] });
+    expect(store.deleteDashboardAccount(reader.id)).toBe("deleted");
+    expect(store.getQuestion(attributedQuestion.id)).toMatchObject({
+      answer: { selections: ["reader"] },
+      answerSource: "reader",
     });
     store.close();
   });
@@ -1001,6 +1016,27 @@ describe("ConveyorStore", () => {
     store.setPushPreferences(first.id, { questions: false, stopped: false, done: false });
     expect(store.listPushSubscriptions(first.id)).toHaveLength(0);
     expect(store.listPushSubscriptions(second.id)).toHaveLength(1);
+    store.close();
+  });
+
+  test("deletes regular accounts with their push data while protecting superusers", async () => {
+    const store = await openStore();
+    store.seedDashboardSuperuser("admin", "hash");
+    const admin = store.dashboardAccountByUsername("admin")!;
+    const user = store.createDashboardUser("reader", "hash");
+    const other = store.createDashboardUser("other", "hash");
+    store.setPushPreferences(user.id, { questions: true, stopped: false, done: false });
+    store.putPushSubscription(user.id, "https://push.example/reader", { p256dh: "key", auth: "secret" });
+    store.recordPushEvent({ id: "reader-question", category: "questions", target: "issue-1" });
+
+    expect(store.deleteDashboardAccount(admin.id)).toBe("superuser");
+    expect(store.dashboardAccountById(admin.id)).not.toBeNull();
+    expect(store.deleteDashboardAccount("missing")).toBe("not_found");
+    expect(store.deleteDashboardAccount(user.id)).toBe("deleted");
+    expect(store.dashboardAccountById(user.id)).toBeNull();
+    expect(store.listPushSubscriptions(user.id)).toEqual([]);
+    expect(store.pushEventSubscriptions("reader-question")).toEqual([]);
+    expect(store.dashboardAccountById(other.id)).not.toBeNull();
     store.close();
   });
 

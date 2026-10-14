@@ -25,13 +25,35 @@ export function Accounts({ accounts, csrfToken }: { accounts: readonly Dashboard
       <section class="settings-section" aria-labelledby="account-list-heading">
         <h3 id="account-list-heading">People with access</h3>
         <div class="report-table-wrap">
+          <p class="sr-only" role="status" aria-live="polite" data-account-list-status />
           <table class="report-table account-table">
-            <thead><tr><th scope="col">Account</th><th scope="col">Role</th></tr></thead>
+            <thead><tr><th scope="col">Account</th><th scope="col">Role</th><th scope="col">Actions</th></tr></thead>
             <tbody data-account-list>
               {accounts.map((account) => (
                 <tr key={account.id}>
                   <th scope="row"><span class="account-row-avatar" aria-hidden="true">{account.avatar}</span>{account.username}</th>
                   <td>{account.role === "superuser" ? "Superuser" : "User"}</td>
+                  <td class="account-actions">
+                    <form class="account-action-form" method="post" action={`/api/accounts/${encodeURIComponent(account.id)}/password`} data-account-action-form data-account-username={account.username}>
+                      <input type="hidden" name="csrf" value={csrfToken} />
+                      <label for={`account-password-${account.id}`} class="sr-only">New password for {account.username}</label>
+                      <input id={`account-password-${account.id}`} name="password" type="password" minLength={12} maxLength={1024} autoComplete="new-password" placeholder="New password" required />
+                      <button type="submit">Reset password</button>
+                      <span role="status" aria-live="polite" data-form-status />
+                    </form>
+                    {account.role === "user" && (
+                      <details class="account-delete">
+                        <summary>Delete</summary>
+                        <form class="account-action-form" method="post" action={`/api/accounts/${encodeURIComponent(account.id)}/delete`} data-account-action-form data-account-delete data-account-username={account.username}>
+                          <input type="hidden" name="csrf" value={csrfToken} />
+                          <label for={`account-delete-${account.id}`}>Type {account.username} to confirm deletion</label>
+                          <input id={`account-delete-${account.id}`} name="confirmation" autoComplete="off" required />
+                          <div class="account-action-buttons"><button type="submit">Delete account</button><button type="button" data-account-delete-cancel>Cancel</button></div>
+                          <span role="status" aria-live="polite" data-form-status />
+                        </form>
+                      </details>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
