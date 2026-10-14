@@ -1619,25 +1619,23 @@ export const dashboardClient = String.raw`(() => {
   const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
   const boardScrollMaximum = () => board ? Math.max(0, board.scrollWidth - board.clientWidth) : 0;
   const captureDashboardPosition = () => {
+    // The card nearest the middle of the screen is what the reader is looking at; its station is
+    // the one to keep in place sideways (or, with no card in view, the station most in view).
+    const inView = (element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth;
+    };
+    const target = window.innerHeight / 2;
+    const issue = [...(board || document).querySelectorAll('article.issue[data-issue-id]')].filter(inView)
+      .sort((left, right) => Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target))[0];
     const stages = board ? [...board.querySelectorAll('[data-station-cell]')].map((stage) => {
       const bounds = stage.getBoundingClientRect();
       const boardBounds = board.getBoundingClientRect();
       return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
     }).sort((left, right) => right.overlap - left.overlap) : [];
-    const stage = stages[0]?.stage;
-    // Cards of the reader's station, and of any family row, are what the reader may be looking at.
-    const visibleIssues = [...(board || document).querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
-      const bounds = issue.getBoundingClientRect();
-      return bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth && (!stage || !issue.closest('[data-station-cell]') || stage.contains(issue));
-    });
-    const issue = visibleIssues.sort((left, right) => {
-      const target = window.innerHeight / 2;
-      return Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target);
-    })[0];
+    const stage = (issue && issue.closest('[data-station-cell]')) || stages[0]?.stage;
     return {
       scrollX: board ? board.scrollLeft : 0,
-      // On wide screens the board scrolls vertically inside its own area.
-      boardY: board ? board.scrollTop : 0,
       scrollY: window.scrollY,
       issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
       stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
@@ -1646,17 +1644,13 @@ export const dashboardClient = String.raw`(() => {
   const restoreDashboardPosition = (position) => {
     window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
     if (board) {
-      board.scrollTop = clampScrollOffset(position.boardY || 0, Math.max(0, board.scrollHeight - board.clientHeight));
       board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
       const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
       if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
     }
     if (position.issue?.id) {
       const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
-      const shift = issue ? issue.getBoundingClientRect().top - position.issue.top : 0;
-      if (issue && board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
-        board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
-      } else if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
+      if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + issue.getBoundingClientRect().top - position.issue.top, documentScrollMaximum()));
     }
   };
   const interactionInProgress = () => {
