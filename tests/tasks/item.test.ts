@@ -491,12 +491,12 @@ describe("item tools", () => {
       title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], systemLabels: ["area:api", "bogus"],
     });
     expect(out.output).toMatchObject({ id: "c", number: 99 });
-    expect(w.calls[0]![1]).toMatchObject({
+    expect(w.calls[1]![1]).toMatchObject({
       address: "o/r", parentNumber: 5, title: "Kid",
       labels: ["conveyor", "conveyor:implementation", "area:api"],
     });
-    expect((w.calls[0]![1] as { labels: string[] }).labels).not.toContain("conveyor:no-split");
-    expect((w.calls[0]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
+    expect((w.calls[1]![1] as { labels: string[] }).labels).not.toContain("conveyor:no-split");
+    expect((w.calls[1]![1] as { body: string }).body).toContain("- [ ] Do <!-- conveyor:criterion:a -->");
   });
 
   test("createChild refuses a no-split parent before any mutation and keeps existing children", async () => {
@@ -508,8 +508,20 @@ describe("item tools", () => {
     await expect(tool("item.createChild", w.deps(), {
       title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }],
     })).rejects.toThrow(/workflow:keep-whole.*whole item.*needs-input/i);
-    expect(w.calls).toEqual([]);
+    expect(w.calls).toEqual([["getIssue", ["o/r", 5]]]);
     expect(w.store.listChildren("i1")).toEqual([{ issueId: "existing", siblingOrder: 1 }]);
+  });
+
+  test("createChild refuses when the no-split label was added after the item was loaded", async () => {
+    const w = await world({ noSplitLabel: "workflow:keep-whole" });
+    w.add("i1", 5);
+    w.updateLiveSource(5, { labels: ["conveyor", "workflow:keep-whole"] });
+
+    await expect(tool("item.createChild", w.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }],
+    })).rejects.toThrow(/workflow:keep-whole.*whole item.*needs-input/i);
+    expect(w.calls).toEqual([["getIssue", ["o/r", 5]]]);
+    expect(w.store.listChildren("i1")).toEqual([]);
   });
 
   test("createChild records sibling and cross-parent dependencies and waits for all of them", async () => {
@@ -520,11 +532,11 @@ describe("item tools", () => {
     });
 
     expect(out.output).toMatchObject({ id: "c", number: 99, dependsOn: [7, 8] });
-    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
-    expect(w.calls[2]![1]).toMatchObject({ labels: [] });
-    expect(w.calls[3]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
-    expect(w.calls[5]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
-    expect(w.calls[6]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"]]);
+    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "getIssue", "createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
+    expect(w.calls[3]![1]).toMatchObject({ labels: [] });
+    expect(w.calls[4]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
+    expect(w.calls[6]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls[7]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"], ["conveyor:no-split"]]);
 
     expect(w.store.getIssue("c")).toMatchObject({
       labels: ["conveyor", "conveyor:implementation"],
@@ -624,8 +636,8 @@ describe("item tools", () => {
     const w = await world({ failDependencyWriteOnce: true }); w.add("i1", 5); w.add("blocker", 7);
     const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7] };
     await expect(tool("item.createChild", w.deps(), input)).rejects.toThrow("temporary dependency failure");
-    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "createChildIssue", "setDependencies"]);
-    expect(w.calls[1]![1]).toMatchObject({ labels: [] });
+    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "createChildIssue", "setDependencies"]);
+    expect(w.calls[2]![1]).toMatchObject({ labels: [] });
     await expect(tool("item.createChild", w.deps(), input)).resolves.toMatchObject({ output: { id: "c", number: 99, dependsOn: [7] } });
     const creates = w.calls.filter(([name]) => name === "createChildIssue");
     expect(creates).toHaveLength(2);
@@ -652,7 +664,7 @@ describe("item tools", () => {
       const input = { title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }] };
       const out = await tool("item.createChild", w.deps(), dependsOn === undefined ? input : { ...input, dependsOn });
       expect(out.output).toMatchObject({ id: "c", number: 99 });
-      expect(w.calls.map(([name]) => name)).toEqual(["createChildIssue"]);
+      expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "createChildIssue"]);
       expect(w.store.listChildren("i1").map((child) => child.issueId)).toEqual(["c"]);
       expect(w.store.getIssue("c")).toMatchObject({
         labels: ["conveyor", "conveyor:implementation"],
@@ -755,7 +767,7 @@ describe("item tools", () => {
       fields: [{ name: "Effort", value: "Medium" }], refinement: { summary: "Small slice." },
     });
     expect(out.output).toMatchObject({ id: "c", number: 99, type: "Feature", fields: { Effort: "Medium" } });
-    const created = w.calls[0]![1] as { body: string; type: string; fields: unknown[] };
+    const created = w.calls[1]![1] as { body: string; type: string; fields: unknown[] };
     expect(created.type).toBe("Feature");
     expect(created.fields).toEqual([{ fieldId: 11, name: "Effort", value: "Medium" }]);
     expect(created.body).toContain("## Acceptance Criteria");
@@ -775,7 +787,7 @@ describe("item tools", () => {
     const w = await world({ refinement: REFINEMENT, types: null }); w.add("i1", 5);
     const out = await tool("item.createChild", w.deps(), { title: "Kid", body: "B", acceptanceCriteria: [{ id: "a", text: "Do" }], type: "Task" });
     expect(out.output).toMatchObject({ id: "c", number: 99, unavailable: ["issue types are not available for o"] });
-    expect(w.calls[0]![1]).not.toHaveProperty("type");
+    expect(w.calls[1]![1]).not.toHaveProperty("type");
   });
 
   test("tool input is validated", async () => {

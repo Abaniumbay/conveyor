@@ -622,11 +622,6 @@ const createChild = tool("item.createChild",
   createChildInput, true,
   async ({ deps, input, instance }, issue) => {
     const noSplitLabel = deps.config.labels.metadata.noSplit;
-    if (issue.labels.includes(noSplitLabel)) {
-      throw new ToolRequestError(
-        `This item carries the ${noSplitLabel} label and must remain one item. Give the whole item acceptance criteria, or report needs-input with a concrete reason if it cannot remain whole.`,
-      );
-    }
     const repository = deps.config.repositories[deps.repository.id]!;
     const stages = deps.config.pipelines[repository.pipeline]!.stages;
     const currentIndex = stages.findIndex((stage) => stage.id === instance.stage);
@@ -651,6 +646,12 @@ const createChild = tool("item.createChild",
       deps.config.labels.enrollment,
       ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
     ];
+    const liveParent = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
+    if (liveParent.labels.includes(noSplitLabel)) {
+      throw new ToolRequestError(
+        `This item carries the ${noSplitLabel} label and must remain one item. Give the whole item acceptance criteria, or report needs-input with a concrete reason if it cannot remain whole.`,
+      );
+    }
     const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
@@ -679,7 +680,12 @@ const createChild = tool("item.createChild",
         markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
         expectedRevision: deps.items.managedRevision(current.body),
       });
-      await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+      await deps.items.replaceConveyorLabels(
+        deps.repository.address,
+        child.number,
+        enrollmentLabels,
+        [noSplitLabel],
+      );
       sourceChild = await deps.items.getIssue(deps.repository.address, child.number);
     }
     const storedChild = persistSourceIssue(deps, sourceChild);

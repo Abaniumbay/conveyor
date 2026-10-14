@@ -1283,7 +1283,7 @@ export class ConveyorService {
             this.config.labels.stageTemplate.replace("{stage}", stage),
             needsInput,
             ...metadata,
-          ]);
+          ], [this.config.labels.metadata.noSplit]);
         }
         continue;
       }
@@ -1366,7 +1366,7 @@ export class ConveyorService {
           doneLabel,
           this.config.labels.metadata.closable,
           ...metadata,
-        ]);
+        ], [this.config.labels.metadata.noSplit]);
         log.info("Parent roll-up completed", {
           ...this.itemFields(parent.id),
           sourceStage: parent.projectedStage,
@@ -2082,7 +2082,7 @@ export class ConveyorService {
           this.config.labels.enrollment,
           ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
           ...metadata,
-        ]);
+        ], [this.config.labels.metadata.noSplit]);
       } catch {
         throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
       }
@@ -2117,7 +2117,7 @@ export class ConveyorService {
         this.config.labels.enrollment,
         this.config.labels.stageTemplate.replace("{stage}", stage),
         ...metadata,
-      ]);
+      ], [this.config.labels.metadata.noSplit]);
       await this.updateStatusComment(issue.id);
       this.schedule();
     }
@@ -3084,6 +3084,7 @@ export class ConveyorService {
             repository.address,
             issue.sourceNumber,
             labels,
+            [this.config.labels.metadata.noSplit],
           );
           this.store.completeSourceMutation(mutation.id, { labels });
         } catch (error) {
@@ -3170,7 +3171,12 @@ export class ConveyorService {
         label !== this.config.labels.states[evaluated.state!],
       );
       try {
-        await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, conveyorLabels);
+        await this.github.replaceConveyorLabels(
+          repository.address,
+          issue.sourceNumber,
+          conveyorLabels,
+          [this.config.labels.metadata.noSplit],
+        );
         this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
       } catch (error) {
         this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
@@ -3300,7 +3306,12 @@ export class ConveyorService {
       request: { issueId: issue.id, issueNumber: issue.sourceNumber, labels },
     });
     try {
-      await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, labels);
+      await this.github.replaceConveyorLabels(
+        repository.address,
+        issue.sourceNumber,
+        labels,
+        [this.config.labels.metadata.noSplit],
+      );
       this.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));

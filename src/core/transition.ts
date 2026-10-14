@@ -8,6 +8,7 @@ export interface TransitionSource {
     address: string,
     issueNumber: number,
     labels: readonly string[],
+    preserveLabels?: readonly string[],
   ): Promise<void>;
 }
 
@@ -180,6 +181,7 @@ export async function applyStageTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
+        [input.labels.metadata.noSplit],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
@@ -252,6 +254,7 @@ export async function applyRollupTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
+        [input.labels.metadata.noSplit],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {

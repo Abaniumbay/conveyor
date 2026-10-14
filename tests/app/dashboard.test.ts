@@ -822,6 +822,19 @@ describe("ConveyorService dashboard", () => {
       labels: readonly string[];
     } | null = null;
     const github = {
+      async getIssue(_address: string, issueNumber: number) {
+        return {
+          id: "parent",
+          number: issueNumber,
+          url: "https://github.com/owner/repo/issues/1",
+          title: "Parent",
+          body: "Parent body",
+          state: "open" as const,
+          stateReason: null,
+          labels: ["conveyor", "conveyor:refinement"],
+          updatedAt: "2026-09-29T00:00:00Z",
+        };
+      },
       async createChildIssue(input: NonNullable<typeof createInput>) {
         createInput = input;
         return {

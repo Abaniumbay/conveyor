@@ -96,6 +96,62 @@ describe("applyStageTransition", () => {
     store.close();
   });
 
+  test("asks the source adapter to preserve the live no-split label", async () => {
+    const store = await setup();
+    let preserved: readonly string[] = [];
+
+    await applyStageTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, _labels, preserveLabels) {
+          preserved = preserveLabels ?? [];
+        },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-live-no-split",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: {
+        kind: "advance",
+        stageId: "implementation",
+        nextStageId: "review",
+        result: {} as never,
+        feedbackCycles: 0,
+      },
+    });
+
+    expect(preserved).toEqual(["conveyor:no-split"]);
+    store.close();
+  });
+
+  test("asks the source adapter to preserve the live no-split label during roll-up", async () => {
+    const store = await setup();
+    let preserved: readonly string[] = [];
+
+    await applyRollupTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, _labels, preserveLabels) {
+          preserved = preserveLabels ?? [];
+        },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "rollup-live-no-split",
+      issue: store.getIssue("issue")!,
+      targetStageId: "review",
+      reason: "children advanced",
+      labels: labelConfig,
+    });
+
+    expect(preserved).toEqual(["conveyor:no-split"]);
+    store.close();
+  });
+
   test("closes implementation todos only after its source advance succeeds and preserves the closeout on replay", async () => {
     const store = await setup();
     const todos = new ItemTodos(store.sqlite());
