@@ -10,7 +10,7 @@
 // acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
 
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -172,6 +172,17 @@ export function sandboxArguments(options: {
   return args;
 }
 
+/** Removes a finished run's resolved private home, never a sibling artifact or an escaped link target. */
+export async function clearClaudeCodeHome(artifactsDirectory: string, home: string): Promise<void> {
+  const artifacts = resolveFilesystemPath(artifactsDirectory);
+  const privateHome = resolveFilesystemPath(home);
+  const relative = path.relative(artifacts, privateHome);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`private home ${privateHome} is outside run artifacts ${artifacts}`);
+  }
+  await rm(privateHome, { recursive: true, force: false });
+}
+
 export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvelope> {
   if (input.sandbox === "danger-full-access") {
     throw new ClaudeCodeRunnerError("Claude Code agents run read-only or workspace-write, never with full access", "process", null, "");
@@ -186,6 +197,18 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   const writableRoots = (input.writableRoots ?? []).filter(existsSync).map(resolveFilesystemPath);
   const scratch = await acquireScratch(input.temporaryDirectory);
   const startedAt = performance.now();
+  let privateHome: string | undefined;
+  let privateHomeClearAttempted = false;
+  const clearPrivateHome = async (): Promise<void> => {
+    if (!privateHome || privateHomeClearAttempted) return;
+    privateHomeClearAttempted = true;
+    try {
+      await clearClaudeCodeHome(artifactsDirectory, privateHome);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ClaudeCodeRunnerError(`could not clear Claude Code private home after the process stopped: ${detail}`, "process", null, "");
+    }
+  };
   try {
     const environment = await prepareAgentEnvironment({
       artifactsDirectory, workspace, overrides: input.env,
@@ -200,6 +223,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.CLAUDE_CONFIG_DIR = resolveFilesystemPath(configDir);
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
+    privateHome = resolvedEnvironment.HOME;
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
     const argv = [
       "bwrap", ...sandboxArguments({
@@ -246,6 +270,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       if (forceKillTimer) clearTimeout(forceKillTimer);
       input.signal?.removeEventListener("abort", onAbort);
     }
+    await clearPrivateHome();
     const [{ raw, invalidLine }, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
     const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
     const final = result as ClaudeEvent | null;
@@ -286,6 +311,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     };
   } catch (error) {
     await scratch.cleanup();
+    await clearPrivateHome();
     throw error;
   }
 }

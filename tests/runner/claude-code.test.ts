@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { claudeArguments, claudeSchema, runClaudeCode, sandboxArguments } from "../../src/runner/claude-code";
+import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, sandboxArguments, type ClaudeCodeRunInput } from "../../src/runner/claude-code";
 import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
@@ -16,6 +17,33 @@ const base = {
   command: "claude", workspace: "/w", artifactsDirectory: "/a", prompt: "p",
   sandbox: "read-only" as const, automaticApprovals: false, mcp: { command: "bun", args: ["mcp"] },
 };
+
+async function runnable(script: string) {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-cleanup-"));
+  directories.push(root);
+  const workspace = path.join(root, "workspace");
+  const artifactsDirectory = path.join(root, "artifacts", "run-1");
+  const bin = path.join(root, "bin");
+  const command = path.join(bin, "claude");
+  await mkdir(workspace, { recursive: true });
+  await mkdir(bin);
+  await writeFile(path.join(bin, "bwrap"), `#!/bin/sh
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`);
+  await writeFile(command, script);
+  await Promise.all([chmod(path.join(bin, "bwrap"), 0o755), chmod(command, 0o755)]);
+  return {
+    root, workspace, artifactsDirectory, command,
+    run: (env: Record<string, string> = {}, options: Partial<ClaudeCodeRunInput> = {}) => runClaudeCode({
+      ...base, ...options, command, workspace, artifactsDirectory,
+      env: { CLAUDE_CONFIG_DIR: path.join(root, "config"), PATH: `${bin}:${process.env.PATH}`, ...env },
+    }),
+  };
+}
+
+const successfulResult = '{"type":"result","subtype":"success","is_error":false,"session_id":"s","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"success","status":"done","summary":"Done","reason":null,"metrics":{},"artifacts":[]}}';
 
 describe("claude code runner", () => {
   test("runs isolated from personal settings, with read tools, Bash and the Conveyor MCP only", () => {
@@ -114,6 +142,121 @@ describe("claude code runner", () => {
     expect(args).toContain(`--ro-bind /dev/null ${bus}`);
     expect(args).toContain(`--bind ${cache} ${cache}`);
     expect(args).not.toContain("missing");
+  });
+
+  test("clears the private home after a successful run without removing recorded artifacts", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo cache > "$HOME/tool-state"
+echo artifact > "$DECLARED_ARTIFACT"
+echo '${successfulResult}'
+`);
+    const artifact = path.join(run.artifactsDirectory, "result.txt");
+
+    await run.run({ DECLARED_ARTIFACT: artifact });
+
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+    expect(await readFile(artifact, "utf8")).toBe("artifact\n");
+  });
+
+  test("clears the private home after a failed run without touching other run homes or shared caches", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo cache > "$HOME/tool-state"
+echo failure > "$DECLARED_ARTIFACT"
+exit 3
+`);
+    const otherHome = path.join(run.root, "artifacts", "run-2", "home");
+    const sharedCache = path.join(run.root, "shared-cache");
+    const artifact = path.join(run.artifactsDirectory, "failure.txt");
+    await Promise.all([mkdir(otherHome, { recursive: true }), mkdir(sharedCache, { recursive: true })]);
+    await Promise.all([writeFile(path.join(otherHome, "keep"), "other"), writeFile(path.join(sharedCache, "keep"), "shared")]);
+
+    await expect(run.run({ DECLARED_ARTIFACT: artifact })).rejects.toThrow("exited with code 3");
+
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+    expect(await readFile(artifact, "utf8")).toBe("failure\n");
+    expect(await readFile(path.join(otherHome, "keep"), "utf8")).toBe("other");
+    expect(await readFile(path.join(sharedCache, "keep"), "utf8")).toBe("shared");
+  });
+
+  test("keeps an active private home and clears it after interruption", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo cache > "$HOME/tool-state"
+echo ready > "$READY"
+exec tail -f /dev/null
+`);
+    const controller = new AbortController();
+    const ready = path.join(run.root, "ready");
+    const execution = run.run({ READY: ready }, { signal: controller.signal, interruptGraceMs: 20 });
+    for (let attempt = 0; attempt < 100 && !existsSync(ready); attempt++) await Bun.sleep(5);
+    expect(existsSync(path.join(run.artifactsDirectory, "home", "tool-state"))).toBe(true);
+
+    controller.abort();
+    await expect(execution).rejects.toThrow("was interrupted");
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+  });
+
+  test("clears the private home after a timeout", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo cache > "$HOME/tool-state"
+exec tail -f /dev/null
+`);
+
+    await expect(run.run({}, { timeoutMs: 20, interruptGraceMs: 20 })).rejects.toThrow("timed out");
+
+    expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
+  });
+
+  test("clears only the resolved run home through symbolic links and refuses an escaped home", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-cleanup-paths-"));
+    directories.push(root);
+    const target = path.join(root, "target");
+    const artifactsLink = path.join(root, "artifacts");
+    const artifacts = path.join(target, "runs", "run-1");
+    const privateHome = path.join(artifacts, "private-home");
+    const homeLink = path.join(artifacts, "home");
+    await mkdir(privateHome, { recursive: true });
+    await writeFile(path.join(privateHome, "cache"), "private");
+    await writeFile(path.join(artifacts, "result.json"), "result");
+    await symlink(path.join(target, "runs"), artifactsLink);
+    await symlink(privateHome, homeLink);
+
+    await clearClaudeCodeHome(path.join(artifactsLink, "run-1"), path.join(artifactsLink, "run-1", "home"));
+
+    expect(existsSync(privateHome)).toBe(false);
+    expect(await readFile(path.join(artifacts, "result.json"), "utf8")).toBe("result");
+
+    const outside = path.join(root, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "keep"), "outside");
+    await rm(homeLink, { force: true });
+    await symlink(outside, homeLink);
+
+    await expect(clearClaudeCodeHome(artifacts, homeLink)).rejects.toThrow("outside run artifacts");
+    expect(await readFile(path.join(outside, "keep"), "utf8")).toBe("outside");
+    expect(await readFile(path.join(artifacts, "result.json"), "utf8")).toBe("result");
+  });
+
+  test("reports a failed cleanup without deleting a home symlink target outside the run", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+      rm "$HOME/.gitconfig"
+      rmdir "$HOME"
+ln -s "$OUTSIDE" "$HOME"
+echo '${successfulResult}'
+`);
+    const outside = path.join(run.root, "outside");
+    const artifact = path.join(run.artifactsDirectory, "result.json");
+    await Promise.all([mkdir(outside), mkdir(run.artifactsDirectory, { recursive: true })]);
+    await Promise.all([writeFile(path.join(outside, "keep"), "outside"), writeFile(artifact, "result")]);
+
+    await expect(run.run({ OUTSIDE: outside })).rejects.toThrow("could not clear Claude Code private home");
+
+    expect(await readFile(path.join(outside, "keep"), "utf8")).toBe("outside");
+    expect(await readFile(artifact, "utf8")).toBe("result");
   });
 
   test.skipIf(bwrapUnavailable !== null)("parses the result, usage and session, and cannot write the workspace", async () => {
