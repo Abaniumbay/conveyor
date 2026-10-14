@@ -960,11 +960,53 @@ export const dashboardClient = String.raw`(() => {
     showDialog(dialog);
   };
 
+  // One family (a parent and its children) can be lit up across the board; the rest is dimmed.
+  // The choice lives in the page, so it survives live updates and clears on navigation.
+  let familyFocus = null;
+  const applyFamilyFocus = () => {
+    const cards = [...document.querySelectorAll('main.dashboard .board article.issue')];
+    const members = familyFocus ? cards.filter((card) => card.getAttribute('data-family') === familyFocus) : [];
+    if (members.length === 0) familyFocus = null;
+    body.classList.toggle('family-focus', familyFocus !== null);
+    for (const card of cards) card.classList.toggle('issue--family-member', members.includes(card));
+    let source = null;
+    for (const button of document.querySelectorAll('[data-family-toggle]')) {
+      const pressed = familyFocus !== null && button.getAttribute('data-family-toggle') === familyFocus;
+      button.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+      const label = button.querySelector('[data-family-label]');
+      if (label) label.textContent = pressed ? 'Showing this family' : 'Show family on the board';
+      if (pressed && (!source || button.hasAttribute('data-family-label'))) source = button;
+    }
+    const banner = document.querySelector('[data-family-banner]');
+    if (!(banner instanceof HTMLElement)) return;
+    banner.hidden = familyFocus === null;
+    const text = banner.querySelector('[data-family-banner-text]');
+    if (text && source) {
+      const total = Number(source.getAttribute('data-family-total')) || 0;
+      text.textContent = 'Showing the #' + (source.getAttribute('data-family-number') || '') + ' family: ' +
+        total + (total === 1 ? ' part, ' : ' parts, ') + (source.getAttribute('data-family-done') || '0') + ' done.';
+    }
+  };
+  document.addEventListener('conveyor:dashboard-rendered', applyFamilyFocus);
+
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
 
     const clickedDetails = event.target.closest('.dashboard-header details');
     closeHeaderPopovers(clickedDetails);
+
+    const familyToggle = event.target.closest('[data-family-toggle]');
+    if (familyToggle instanceof HTMLButtonElement) {
+      const family = familyToggle.getAttribute('data-family-toggle');
+      familyFocus = family && familyFocus !== family ? family : null;
+      applyFamilyFocus();
+      return;
+    }
+    if (event.target.closest('[data-family-clear]')) {
+      familyFocus = null;
+      applyFamilyFocus();
+      return;
+    }
 
     const retryCard = event.target.closest('[data-retry-card]');
     if (retryCard instanceof HTMLButtonElement) {
@@ -1056,6 +1098,9 @@ export const dashboardClient = String.raw`(() => {
       if (inspector instanceof HTMLDialogElement) {
         event.preventDefault();
         inspector.close();
+      } else if (familyFocus !== null) {
+        familyFocus = null;
+        applyFamilyFocus();
       }
       return;
     }

@@ -375,6 +375,51 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("a parent's children carry their station and signal, and each child its parent's progress", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-families-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const stage = (id: string) => ({ id, run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] });
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [stage("refinement"), stage("implementation"), stage("review")] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    for (const item of [
+      { id: "parent", number: 1, stage: "implementation", state: "active", sourceState: "open" as const },
+      { id: "working", number: 2, stage: "implementation", state: "active", sourceState: "open" as const },
+      { id: "stopped", number: 3, stage: "review", state: "blocked", sourceState: "open" as const },
+      { id: "finished", number: 4, stage: "review", state: "done", sourceState: "closed" as const },
+      { id: "unrelated", number: 5, stage: "implementation", state: "active", sourceState: "open" as const },
+    ]) {
+      store.upsertIssue({ id: item.id, repositoryId: "repo", sourceNumber: item.number, sourceUrl: `https://github.com/owner/repo/issues/${item.number}`, title: item.id, body: "", sourceState: item.sourceState, sourceStateReason: item.sourceState === "closed" ? "completed" : null, labels: ["conveyor", `conveyor:${item.stage}`], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+      store.setQueueRank(item.id, item.number);
+      store.setIssueProjection(item.id, { stage: item.stage, state: item.state, warning: null });
+      store.setStageState({ issueId: item.id, stageId: item.stage, status: "ready", feedbackCycle: 0, configHash: config.hash });
+    }
+    ["working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
+
+    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    const cards = [...model.stages.flatMap((column) => column.issues), ...model.done.issues];
+    const card = (id: string) => cards.find((candidate) => candidate.id === id)!;
+    // Backlog, the three stages, then Done: five stations.
+    expect(card("parent").children.map(({ id, satisfied, station, signal }) => ({ id, satisfied, station, signal }))).toEqual([
+      { id: "working", satisfied: false, station: { index: 2, count: 5, name: "Implementation" }, signal: "wait" },
+      { id: "stopped", satisfied: false, station: { index: 3, count: 5, name: "Review" }, signal: "stop" },
+      { id: "finished", satisfied: true, station: { index: 4, count: 5, name: "Done" }, signal: undefined },
+    ]);
+    expect(card("working").parentProgress).toEqual({ done: 1, total: 3 });
+    expect(card("stopped").parent).toMatchObject({ id: "parent", number: 1 });
+    expect(card("parent").parentProgress).toBeNull();
+    expect(card("unrelated").parentProgress).toBeNull();
+    store.close();
+  });
+
   test("a user conversation message clears a recoverable stop and queues the current stage", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-resume-"));
     temporaryDirectories.push(root);

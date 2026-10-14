@@ -12,6 +12,17 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
+- The board shows parent items and their children as families. Each child card has a "Part of
+  #N" line linking to its parent, with the family's done/total. A parent card shows its children
+  as dots on a miniature of the line, plus a tally (done, running, waiting, stopped). In a stage
+  column, a parent is followed by its children, joined by a rail. "Show family on the board"
+  outlines the whole family across every column, Done included, and dims everything else until
+  cleared.
+
+### Changed
+
+- Stage columns no longer split cards into separate "Roll-up parents" and "Issues" groups: each
+  parent sits with its children.
 
 ## [0.6.6] - 2026-10-13
 

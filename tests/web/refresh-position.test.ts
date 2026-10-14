@@ -305,4 +305,59 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+  test("a family lights up across the board, survives a live update, and clears", async () => {
+    const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };
+    const child = (id: string, number: number) => ({ ...issue(id, number, `Child ${number}`), parent: parentRelation, parentProgress: { done: 0, total: 2 } });
+    const family = {
+      ...issue("family", 10, "Family parent"),
+      children: [
+        { ...parentRelation, id: "child-a", number: 11, title: "Child 11", station: { index: 1, count: 4, name: "Reader" }, signal: "wait" as const },
+        { ...parentRelation, id: "child-b", number: 12, title: "Child 12", station: { index: 2, count: 4, name: "After" }, signal: "wait" as const },
+      ],
+    };
+    let revision = "revision-1";
+    let currentDashboard = dashboard(revision, [family, child("child-a", 11), issue("stranger", 30, "Stranger")], [issue("before-card", 1)]);
+    currentDashboard = { ...currentDashboard, stages: currentDashboard.stages.map((column) => column.id === "after" ? stage("after", "After", [child("child-b", 12)]) : column) };
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      const state = () => page.evaluate(() => ({
+        focused: document.body.classList.contains("family-focus"),
+        members: [...document.querySelectorAll("article.issue.issue--family-member")].map((card) => card.getAttribute("data-issue-id")),
+        banner: (document.querySelector("[data-family-banner]") as HTMLElement).hidden ? null : document.querySelector("[data-family-banner-text]")?.textContent,
+        pressed: [...document.querySelectorAll("[data-family-toggle][aria-pressed=true]")].length,
+        strangerOpacity: getComputedStyle(document.querySelector('article.issue[data-issue-id="stranger"]')!).opacity,
+        dialogOpen: document.querySelector("dialog[open]") !== null,
+      }));
+
+      // The child's family button lights up the parent and both children, in two columns.
+      await page.locator('article.issue[data-issue-id="child-b"] [data-family-toggle]').click();
+      expect(await state()).toEqual({
+        focused: true, members: ["family", "child-a", "child-b"], banner: "Showing the #10 family: 2 parts, 0 done.",
+        pressed: 3, strangerOpacity: "0.3", dialogOpen: false,
+      });
+
+      // A live update patches the cards and keeps the family lit.
+      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      currentDashboard = { ...currentDashboard, revision: "revision-2", stages: currentDashboard.stages.map((column) => column.id === "reader" ? { ...column, issues: [...column.issues, issue("newcomer", 40, "Newcomer")] } : column) };
+      revision = "revision-2";
+      await refresh;
+      await page.locator('article.issue[data-issue-id="newcomer"]').waitFor();
+      await page.waitForFunction(() => document.querySelector('[data-issue-id="family"]')?.classList.contains("issue--family-member"));
+      expect((await state()).members).toEqual(["family", "child-a", "child-b"]);
+
+      // The banner clears it; pressing the parent's button twice turns it on and off.
+      await page.locator("[data-family-clear]").click();
+      expect(await state()).toMatchObject({ focused: false, members: [], banner: null, pressed: 0, strangerOpacity: "1" });
+      const parentButton = page.locator('article.issue[data-issue-id="family"] [data-family-toggle]');
+      await parentButton.click();
+      expect(await parentButton.textContent()).toBe("Showing this family");
+      await parentButton.click();
+      expect(await state()).toMatchObject({ focused: false, members: [] });
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
 });

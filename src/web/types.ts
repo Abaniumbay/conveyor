@@ -7,6 +7,9 @@ export interface IssueRelationViewModel {
   title: string;
   url: string | null;
   satisfied: boolean;
+  /** A parent's child only: its station on the line (Backlog, each stage, Done) and its andon signal. */
+  station?: { index: number; count: number; name: string };
+  signal?: "run" | "wait" | "stop";
 }
 
 export interface IssueWaitingViewModel {
@@ -69,6 +72,8 @@ export interface IssueCardViewModel {
   closable: boolean;
   tone: IssueTone;
   parent: IssueRelationViewModel | null;
+  /** A child only: how many of its parent's children are done. */
+  parentProgress?: { done: number; total: number } | null;
   children: readonly IssueRelationViewModel[];
   dependencies: readonly IssueRelationViewModel[];
   working: boolean;

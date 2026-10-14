@@ -15,6 +15,8 @@ The board shows backlog, configured stages, completed work, active runner capaci
 - **Journey** — stage transitions, corrections, stops, and their reasons.
 - **Technical logs** — paginated raw run events for debugging.
 
+Parent items and their children appear as families. A child card says which parent it is part of, with a link to the parent and the family's done/total. A parent card places each child as a dot on a miniature of the line (Backlog, each stage, Done), coloured by its state, with a tally underneath. In a stage column, a parent is followed by its children in the same column, joined by a rail. **Show family on the board** (or the done/total button on a child) outlines the parent and every child across the board and dims the rest; **Show everything**, pressing the button again, or Escape clears it.
+
 ### Todos
 
 The implementer keeps a working todo list (`todo.set`, `todo.update`). When the implementation stage passes its exit gate and the item advances, Conveyor closes the list out: every `pending` or `in_progress` entry becomes `skipped` with a system note, and `done` entries are untouched. The skipped status is Conveyor-owned; agents cannot set or change it. If the item returns to implementation (a review finding or a failed gate), skipped entries remain as history and the implementer adds new todos under new ids. Cards show todo progress (`finished/total`, where finished counts done and skipped) only while the item is in the implementation stage; cards in later stages and in done show none. The item details always keep the full list, with skipped entries labelled and the skipped count shown.
