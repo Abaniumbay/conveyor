@@ -156,7 +156,7 @@ afterEach(async () => {
 });
 
 describe("dashboard live refresh position", () => {
-  test("keeps a phone reader's card and stage in place, then bounds offsets when the card disappears", async () => {
+  test("keeps a phone reader's card in place, then bounds offsets when the card disappears", async () => {
     const original = Array.from({ length: 8 }, (_, index) => issue(`above-${index}`, index + 2));
     const target = issue("target", 20, "Target card");
     const below = Array.from({ length: 8 }, (_, index) => issue(`below-${index}`, index + 30));
@@ -178,7 +178,8 @@ describe("dashboard live refresh position", () => {
       const before = await cardPositions(page);
       expect(before.cardTop).not.toBeNull();
       expect(before.stageLeft).not.toBeNull();
-      expect(before.scrollX).toBeGreaterThan(0);
+      // On a phone the board lists its stages top to bottom: nothing scrolls sideways.
+      expect(before.scrollX).toBe(0);
 
       const inserted = Array.from({ length: 5 }, (_, index) => issue(`inserted-${index}`, index + 60));
       currentDashboard = dashboard(
@@ -211,7 +212,7 @@ describe("dashboard live refresh position", () => {
         };
       });
       expect(afterRemoval.scrollY).toBeGreaterThan(0);
-      expect(afterRemoval.scrollX).toBeGreaterThan(0);
+      expect(afterRemoval.scrollX).toBe(0);
       expect(afterRemoval.scrollY).toBeLessThanOrEqual(Math.max(0, afterRemoval.maxScrollY));
       expect(afterRemoval.scrollX).toBeLessThanOrEqual(Math.max(0, afterRemoval.maxScrollX));
       expect(Math.abs(afterRemoval.scrollY - Math.min(priorOffsets.scrollY, Math.max(0, afterRemoval.maxScrollY)))).toBeLessThanOrEqual(24);
