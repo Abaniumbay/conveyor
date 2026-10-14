@@ -16,6 +16,7 @@ import path from "node:path";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
+import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
 import type { HarnessRunInput } from "../harness/types";
 import { OUTPUT_SCHEMAS } from "./output-schemas";
@@ -29,6 +30,8 @@ export type ClaudeCodeErrorKind = "usage-limit" | "process" | "protocol" | "time
 
 export class ClaudeCodeRunnerError extends Error {
   override readonly name = "ClaudeCodeRunnerError";
+  /** A non-fatal teardown failure that occurred after the Claude Code process stopped. */
+  cleanupError?: string;
 
   constructor(
     message: string,
@@ -38,6 +41,17 @@ export class ClaudeCodeRunnerError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Keeps the primary run failure intact while exposing a secondary teardown failure. */
+function withCleanupError<T>(error: T, cleanupError: string | undefined): T {
+  if (!cleanupError || !error || (typeof error !== "object" && typeof error !== "function")) return error;
+  try {
+    Object.assign(error as object, { cleanupError });
+  } catch {
+    // A frozen third-party error still has its cleanup failure recorded in the service log.
+  }
+  return error;
 }
 
 interface ClaudeEvent {
@@ -179,6 +193,7 @@ function isInside(directory: string, candidate: string): boolean {
 
 /** Moves declared files out of private home so teardown cannot leave dangling artifact references. */
 export async function preserveClaudeCodeHomeArtifacts(artifactsDirectory: string, home: string, declared: Artifact[]): Promise<Artifact[]> {
+  if (declared.length === 0) return declared;
   const artifacts = resolveFilesystemPath(artifactsDirectory);
   const privateHome = resolveFilesystemPath(home);
   if (!isInside(artifacts, privateHome)) {
@@ -234,15 +249,18 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   const startedAt = performance.now();
   let privateHome: string | undefined;
   let privateHomeClearAttempted = false;
-  const clearPrivateHome = async (): Promise<void> => {
-    if (!privateHome || privateHomeClearAttempted) return;
+  const clearPrivateHome = async (): Promise<string | undefined> => {
+    if (!privateHome || privateHomeClearAttempted) return undefined;
     privateHomeClearAttempted = true;
     try {
       await clearClaudeCodeHome(artifactsDirectory, privateHome);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new ClaudeCodeRunnerError(`could not clear Claude Code private home after the process stopped: ${detail}`, "process", null, "");
+      const cleanupError = `could not clear Claude Code private home after the process stopped: ${detail}`;
+      log.error("Claude Code run cleanup failed", { artifactsDirectory, cleanupError });
+      return cleanupError;
     }
+    return undefined;
   };
   try {
     const environment = await prepareAgentEnvironment({
@@ -336,7 +354,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     usage.outputTokens = reported.output_tokens ?? 0;
     const value = parsed.data;
     const artifacts = await preserveClaudeCodeHomeArtifacts(artifactsDirectory, preparedHome, value.artifacts);
-    await clearPrivateHome();
+    const cleanupError = await clearPrivateHome();
     return {
       stageResult: { outcome: value.outcome, status: value.status, summary: value.summary, reason: value.reason, metrics: value.metrics },
       sessionId,
@@ -346,10 +364,11 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       exitCode,
       artifacts,
       stderr,
+      ...(cleanupError ? { cleanupError } : {}),
     };
   } catch (error) {
     await scratch.cleanup();
-    await clearPrivateHome();
-    throw error;
+    const cleanupError = await clearPrivateHome();
+    throw withCleanupError(error, cleanupError);
   }
 }

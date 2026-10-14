@@ -281,7 +281,7 @@ exec tail -f /dev/null
     expect(await readFile(path.join(artifacts, "result.json"), "utf8")).toBe("result");
   });
 
-  test("reports a failed cleanup without deleting a home symlink target outside the run", async () => {
+  test("returns a successful result while reporting a failed cleanup without deleting a home symlink target outside the run", async () => {
     const run = await runnable(`#!/bin/sh
 cat > /dev/null
       rm "$HOME/.gitconfig"
@@ -294,10 +294,37 @@ echo '${successfulResult}'
     await Promise.all([mkdir(outside), mkdir(run.artifactsDirectory, { recursive: true })]);
     await Promise.all([writeFile(path.join(outside, "keep"), "outside"), writeFile(artifact, "result")]);
 
-    await expect(run.run({ OUTSIDE: outside })).rejects.toThrow("could not clear Claude Code private home");
+    await expect(run.run({ OUTSIDE: outside })).resolves.toMatchObject({
+      stageResult: { status: "done" },
+      cleanupError: expect.stringContaining("could not clear Claude Code private home"),
+    });
 
     expect(await readFile(path.join(outside, "keep"), "utf8")).toBe("outside");
     expect(await readFile(artifact, "utf8")).toBe("result");
+  });
+
+  test("preserves an interruption error when private-home cleanup fails", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+rm "$HOME/.gitconfig"
+rmdir "$HOME"
+ln -s "$OUTSIDE" "$HOME"
+echo ready > "$READY"
+exec tail -f /dev/null
+`);
+    const outside = path.join(run.root, "outside");
+    const ready = path.join(run.root, "ready");
+    const controller = new AbortController();
+    await mkdir(outside);
+
+    const execution = run.run({ OUTSIDE: outside, READY: ready }, { signal: controller.signal, interruptGraceMs: 20 });
+    for (let attempt = 0; attempt < 100 && !existsSync(ready); attempt++) await Bun.sleep(5);
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({
+      kind: "interrupted",
+      cleanupError: expect.stringContaining("could not clear Claude Code private home"),
+    });
   });
 
   test.skipIf(bwrapUnavailable !== null)("parses the result, usage and session, and cannot write the workspace", async () => {
