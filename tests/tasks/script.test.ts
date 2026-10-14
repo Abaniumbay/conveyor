@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { captureOutput } from "../../src/engine/stage-context";
+import { resolveFilesystemPath } from "../../src/core/paths";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ScriptContext, TaskContext } from "../../src/tasks/context";
 import { runTask, TaskConfigError, type TaskResult } from "../../src/tasks/contract";
@@ -94,6 +95,64 @@ describe("script.run", () => {
       instance: { id: "deploy", stage: "deploy", idempotencyKey: "key-9", resumed: false },
     });
     expect(output(result)).toMatchObject({ passed: true, summary: "python apply key-9" });
+  });
+
+  test("uses canonical launch paths and context from a symlinked repository and workspace", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-script-paths-"));
+    directories.push(root);
+    const repositoryTarget = path.join(root, "repository-target");
+    const workspaceTarget = path.join(root, "workspace-target");
+    const repository = path.join(root, "repository");
+    const workspace = path.join(root, "workspace");
+    await Promise.all([mkdir(repositoryTarget), mkdir(workspaceTarget)]);
+    await Promise.all([symlink(repositoryTarget, repository), symlink(workspaceTarget, workspace)]);
+    const script = path.join(repositoryTarget, "capture.ts");
+    const capture = path.join(workspace, "capture.json");
+    await writeFile(script, `
+import { writeFile } from "node:fs/promises";
+const input = JSON.parse(await new Response(Bun.stdin.stream()).text());
+await writeFile(process.env.SCRIPT_CAPTURE, JSON.stringify({
+  cwd: process.cwd(),
+  capture: process.env.SCRIPT_CAPTURE,
+  input,
+}));
+console.log(JSON.stringify({ outcome: "success", summary: "captured" }));
+`);
+    const deps = {
+      store: {
+        getIssue: () => ({ id: "i1", sourceNumber: 7 }),
+        getActiveWorkspace: () => ({ path: workspace }),
+      },
+      config: { settings: { interruptGraceMs: 100 } },
+      repository: { id: "repo", address: "o/r", folder: repository, baseBranch: "main" },
+      issueId: "i1",
+    } as unknown as TaskDeps;
+    const originalCapture = process.env.SCRIPT_CAPTURE;
+    process.env.SCRIPT_CAPTURE = capture;
+    try {
+      const result = await runTask(registry.require("script.run"), {
+        context: {
+          repository: { ...deps.repository, ciMode: "disabled", systemLabels: [] },
+          run: { stage: "deploy", attempt: 1, taskInstanceId: "deploy", feedback: null },
+        } as unknown as Partial<TaskContext>,
+        deps,
+        config: { script, recovery: "replay-safe" },
+        instance: { id: "deploy", stage: "deploy", idempotencyKey: "key-path", resumed: false },
+      });
+      expect(output(result)).toMatchObject({ passed: true, summary: "captured" });
+      const captured = JSON.parse(await readFile(resolveFilesystemPath(capture), "utf8"));
+      expect(captured).toMatchObject({
+        cwd: resolveFilesystemPath(workspace),
+        capture: resolveFilesystemPath(capture),
+        input: {
+          workspace: resolveFilesystemPath(workspace),
+          repository: { folder: resolveFilesystemPath(repository) },
+        },
+      });
+    } finally {
+      if (originalCapture === undefined) delete process.env.SCRIPT_CAPTURE;
+      else process.env.SCRIPT_CAPTURE = originalCapture;
+    }
   });
 
   test("reconcile applies on the first run without observing", async () => {
