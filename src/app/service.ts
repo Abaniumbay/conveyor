@@ -2653,7 +2653,8 @@ export class ConveyorService {
           });
           if (agentIds.length === 0) {
             // A stage without an agent says what it runs: its scripts, else its built-in steps.
-            const scripts = stage.actions.flatMap((task) => task.task === "script.run" && typeof task.with?.script === "string" ? [task.with.script] : []);
+            // Only the file name: a packaged default script runs from a copy deep inside the home.
+            const scripts = stage.actions.flatMap((task) => task.task === "script.run" && typeof task.with?.script === "string" ? [path.basename(task.with.script)] : []);
             actors.push(scripts.length > 0
               ? { type: "script", name: "Script", title: scripts.join(", ") }
               : { type: "script", name: "Conveyor", title: stage.actions.map((task) => task.task).join(", ") || null });
