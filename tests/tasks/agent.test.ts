@@ -271,7 +271,7 @@ describe("agent.run", () => {
     await mkdir(path.join(homedir(), ".cache"), { recursive: true });
     const cache = await mkdtemp(path.join(homedir(), ".cache/conveyor-agent-"));
     directories.push(cache);
-    Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(w.root, "missing")] });
+    Object.assign(w.deps.config.agents.kaveh!, { network: true, writableRoots: [cache, path.join(homedir(), ".cache", "conveyor-agent-missing")] });
     expect((await w.run(false)).status).toBe("pass");
     const git = path.join(workspace, ".git");
     expect(w.calls[0]).toMatchObject({

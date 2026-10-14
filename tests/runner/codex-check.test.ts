@@ -237,7 +237,7 @@ describe("runCodexCheck", () => {
     const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
       command: files.executable, workspace: files.workspace, artifactsDirectory: files.artifacts,
       prompt: "Check", sandbox: "read-only" as const, automaticApprovals: false,
-      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture }, timeoutMs: 20,
+      mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture },
     });
     await expect(runCodexCheck(base(failed))).rejects.toMatchObject({ kind: "process" });
     expect(existsSync((await readFile(failed.capture, "utf8")).trim())).toBe(false);
@@ -246,7 +246,7 @@ describe("runCodexCheck", () => {
       await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
       await Bun.sleep(2_000);
     `);
-    await expect(runCodexCheck(base(slow))).rejects.toMatchObject({ kind: "timeout" });
+    await expect(runCodexCheck({ ...base(slow), timeoutMs: 20 })).rejects.toMatchObject({ kind: "timeout" });
     expect(existsSync((await readFile(slow.capture, "utf8")).trim())).toBe(false);
 
     const interrupted = await fixture(`
@@ -254,8 +254,7 @@ describe("runCodexCheck", () => {
       await Bun.sleep(2_000);
     `);
     const controller = new AbortController();
-    const { timeoutMs: _timeoutMs, ...interruptedInput } = base(interrupted);
-    const run = runCodexCheck({ ...interruptedInput, signal: controller.signal });
+    const run = runCodexCheck({ ...base(interrupted), signal: controller.signal });
     setTimeout(() => controller.abort(), 100);
     await expect(run).rejects.toMatchObject({ kind: "interrupted" });
     expect(existsSync((await readFile(interrupted.capture, "utf8")).trim())).toBe(false);
