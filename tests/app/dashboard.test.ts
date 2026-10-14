@@ -1269,6 +1269,142 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("keeps stopped first-stage backlog items on the board", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-stopped-backlog-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: {
+          blocked: "conveyor:blocked",
+          error: "conveyor:error",
+          "needs-input": "conveyor:needs-input",
+          "needs-intervention": "conveyor:needs-intervention",
+          rejected: "conveyor:rejected",
+        },
+        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          stages: [
+            { id: "refinement", run: { type: "agent", agent: "refiner" } },
+            { id: "implementation", run: { type: "agent", agent: "implementer" } },
+          ],
+        },
+        alternate: {
+          stages: [
+            { id: "triage", run: { type: "agent", agent: "triager" } },
+            { id: "refinement", run: { type: "agent", agent: "refiner" } },
+          ],
+        },
+      },
+      repositories: {
+        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+        alternate: { source: "github", address: "owner/alternate", folder: root, pipeline: "alternate" },
+      },
+      sources: {},
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({
+      id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash,
+    });
+    store.upsertRepository({
+      id: "alternate", configName: "alternate", source: "github", address: "owner/alternate", folder: root, configHash: config.hash,
+    });
+
+    const stoppedStates = ["needs-input", "needs-intervention", "blocked", "error", "rejected"] as const;
+    for (const [index, state] of stoppedStates.entries()) {
+      const id = `stopped-${state}`;
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: index + 1, sourceUrl: `https://github.com/owner/repo/issues/${index + 1}`,
+        title: `Stopped ${state}`, body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+      });
+      store.setIssueProjection(id, { stage: "refinement", state, warning: null });
+      store.setStageState({
+        issueId: id,
+        stageId: "refinement",
+        status: state === "needs-input" ? "ready" : state,
+        feedbackCycle: 0,
+        configHash: config.hash,
+      });
+      const enrollment = store.activateEnrollment(id);
+      store.recordWorkspace({
+        id: `workspace-${state}`,
+        enrollmentId: enrollment.id,
+        path: path.join(root, `workspace-${state}`),
+        branch: `conveyor/${index + 1}-stopped-${state}`,
+        status: "active",
+      });
+    }
+    store.openQuestion({
+      issueId: "stopped-needs-input", runId: null, prompt: "Which scope?", reason: "A decision is needed", options: [], allowFreeText: true,
+    });
+
+    store.upsertIssue({
+      id: "conflicting", repositoryId: "repo", sourceNumber: 6, sourceUrl: "https://github.com/owner/repo/issues/6",
+      title: "Conflicting labels", body: "", sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement", "conveyor:implementation"], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("conflicting", { stage: "refinement", state: "blocked", warning: null });
+    store.setStageState({ issueId: "conflicting", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.upsertIssue({
+      id: "closed", repositoryId: "repo", sourceNumber: 7, sourceUrl: "https://github.com/owner/repo/issues/7",
+      title: "Closed", body: "", sourceState: "closed", labels: ["conveyor"], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("closed", { stage: "refinement", state: "blocked", warning: null });
+    store.setStageState({ issueId: "closed", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.upsertIssue({
+      id: "unenrolled", repositoryId: "repo", sourceNumber: 8, sourceUrl: "https://github.com/owner/repo/issues/8",
+      title: "Unenrolled", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("unenrolled", { stage: "refinement", state: "blocked", warning: null });
+    store.setStageState({ issueId: "unenrolled", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.upsertIssue({
+      id: "wrong-first-stage", repositoryId: "alternate", sourceNumber: 9, sourceUrl: "https://github.com/owner/alternate/issues/9",
+      title: "Stopped at a non-first stage", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("wrong-first-stage", { stage: "refinement", state: "needs-input", warning: null });
+    store.setStageState({ issueId: "wrong-first-stage", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    const alternateEnrollment = store.activateEnrollment("wrong-first-stage");
+    store.recordWorkspace({
+      id: "workspace-wrong-first-stage", enrollmentId: alternateEnrollment.id, path: path.join(root, "workspace-wrong-first-stage"),
+      branch: "conveyor/9-wrong-first-stage", status: "active",
+    });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const dashboard = service.dashboard("csrf");
+    const reloaded = service.dashboard("csrf");
+    const boardCards = [...dashboard.backlog, ...dashboard.stages.flatMap((stage) => stage.issues)];
+
+    expect(dashboard.backlog.map((issue) => issue.id)).toEqual(stoppedStates.map((state) => `stopped-${state}`));
+    expect(boardCards).toHaveLength(stoppedStates.length);
+    expect(dashboard.attention.issues.map((issue) => issue.id)).toEqual(["wrong-first-stage", "conflicting", "unenrolled"]);
+    expect(dashboard.needsYou).toEqual(expect.arrayContaining(stoppedStates.map((state) => expect.objectContaining({
+      id: `stopped-${state}`, state,
+    }))));
+    expect(dashboard.needsYou.filter((issue) => issue.id === "stopped-needs-input")).toHaveLength(1);
+    expect(boardCards).toEqual(expect.arrayContaining(stoppedStates.map((state) => expect.objectContaining({
+      id: `stopped-${state}`, state, needsAttention: true,
+    }))));
+    expect(dashboard.questions).toEqual([expect.objectContaining({ issueId: "stopped-needs-input", prompt: "Which scope?" })]);
+    expect(dashboard.counts).toEqual({ board: stoppedStates.length, attention: dashboard.attention.totalIssues });
+    expect(dashboard.counts.board).toBe(dashboard.backlog.length + dashboard.stages.reduce(
+      (total, stage) => total + stage.totalIssues,
+      0,
+    ));
+    expect(dashboard.counts.attention).toBe(dashboard.attention.totalIssues);
+    expect(reloaded.backlog.map((issue) => issue.id)).toEqual(dashboard.backlog.map((issue) => issue.id));
+    expect(store.getIssue("stopped-needs-input")).toMatchObject({
+      labels: ["conveyor"], projectedStage: "refinement", projectedState: "needs-input",
+    });
+    store.close();
+  });
+
   test("places untouched, staged, closed, and invalid issues in distinct lanes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-"));
     temporaryDirectories.push(root);

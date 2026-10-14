@@ -2588,10 +2588,6 @@ export class ConveyorService {
         retryable,
       };
     };
-    const firstStages = new Set(Object.values(this.config.repositories).flatMap((repository) => {
-      const first = this.config.pipelines[repository.pipeline]?.stages[0]?.id;
-      return first ? [first] : [];
-    }));
     const stageNames = new Map<string, string>();
     for (const pipeline of Object.values(this.config.pipelines)) {
       for (const stage of pipeline.stages) {
@@ -2673,11 +2669,19 @@ export class ConveyorService {
     const backlogIssues = workflowIssues.filter((issue) => {
       if (issue.sourceState === "closed") return false;
       if (issue.parentId || !issue.labels.includes(this.config.labels.enrollment)) return false;
-      if (sourceStages(issue).length !== 0 || issue.projectedState !== "active") return false;
+      if (
+        sourceStages(issue).length !== 0 ||
+        (issue.projectedState !== "active" && !STOPPED_ISSUE_STATES.has(issue.projectedState ?? ""))
+      ) return false;
       const stageState = this.store.getStageState(issue.id);
-      return firstStages.has(issue.projectedStage ?? "") &&
-        stageState?.status === "ready" &&
-        !this.store.getActiveWorkspace(issue.id);
+      const repository = this.config.repositories[issue.repositoryId];
+      const firstStage = repository ? this.config.pipelines[repository.pipeline]?.stages[0]?.id : undefined;
+      if (issue.projectedStage !== firstStage) return false;
+      if (issue.projectedState === "active") {
+        return stageState?.status === "ready" && !this.store.getActiveWorkspace(issue.id);
+      }
+      return stageState?.status === issue.projectedState ||
+        (issue.projectedState === "needs-input" && stageState?.status === "ready");
     });
     const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
     const stagedIssues = workflowIssues.filter((issue) =>
