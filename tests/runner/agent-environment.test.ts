@@ -144,10 +144,10 @@ describe("agent environment", () => {
       else await runCodexSteering({ ...common, command: files.executable, ...linked });
 
       const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
-      expect(env.RUN_CWD).toBe(files.workspace);
-      expect(env.HOME).toBe(path.join(files.artifacts, "home"));
-      expect(env.TMPDIR).toBe(path.join(files.directory, "scratch"));
-      expect(env.ENV_CAPTURE).toBe(files.capture);
+      expect(env.RUN_CWD).toBe(resolveFilesystemPath(files.workspace));
+      expect(env.HOME).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
+      expect(env.TMPDIR).toBe(resolveFilesystemPath(path.join(files.directory, "scratch")));
+      expect(env.ENV_CAPTURE).toBe(resolveFilesystemPath(files.capture));
       expect(JSON.parse(env.RUN_ARGS ?? "[]")).not.toContain(link);
     }
   });

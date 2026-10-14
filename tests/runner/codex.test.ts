@@ -3,6 +3,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { resolveFilesystemPath } from "../../src/core/paths";
 import { CodexRunnerError, runCodex } from "../../src/runner/codex";
 
 const temporaryDirectories: string[] = [];
@@ -192,7 +193,12 @@ describe("runCodex", () => {
       const got = await args();
       for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
       const [git, cache, home, tmp, ...rest] = await roots();
-      expect([git, cache, home, rest]).toEqual([worktreeRoot, cacheRoot, path.join(files.artifacts, "home"), []]);
+      expect([git, cache, home, rest]).toEqual([
+        resolveFilesystemPath(worktreeRoot),
+        resolveFilesystemPath(cacheRoot),
+        resolveFilesystemPath(path.join(files.artifacts, "home")),
+        [],
+      ]);
       expect(path.basename(tmp!)).toStartWith("conveyor-run-");
     }
 
@@ -204,7 +210,7 @@ describe("runCodex", () => {
     await runCodex(base);
     const plain = await args();
     expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write.network_access"))).toBe(false);
-    expect((await roots())[0]).toBe(path.join(files.artifacts, "home"));
+    expect((await roots())[0]).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
   });
 
   test("reuses an item scratch directory and rejects host temporary writable roots, including symlinks", async () => {

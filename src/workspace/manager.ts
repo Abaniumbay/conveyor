@@ -151,7 +151,7 @@ export class WorkspaceManager {
 
   /** Ensure the persistent, sibling scratch directory remains available for an active workspace. */
   async ensureScratch(workspacePath: string): Promise<void> {
-    const resolved = path.resolve(workspacePath);
+    const resolved = resolveFilesystemPath(workspacePath);
     this.assertManagedPath(resolved);
     await mkdir(workspaceScratchPath(resolved), { recursive: true });
   }
@@ -186,7 +186,7 @@ export class WorkspaceManager {
 
   async remove(input: RemoveWorkspaceInput): Promise<void> {
     const repositoryPath = await this.validateRepository(input.repositoryPath);
-    const workspacePath = path.resolve(input.workspacePath);
+    const workspacePath = resolveFilesystemPath(input.workspacePath);
     this.assertManagedPath(workspacePath);
     if (!input.branch.startsWith("conveyor/")) {
       throw new WorkspaceError(
@@ -269,7 +269,8 @@ export class WorkspaceManager {
   }
 
   private assertManagedPath(candidate: string): void {
-    const relative = path.relative(this.#root, path.resolve(candidate));
+    const resolved = resolveFilesystemPath(candidate);
+    const relative = path.relative(this.#root, resolved);
     if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new WorkspaceError(`path is outside the workspace root: ${candidate}`);
     }
