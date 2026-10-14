@@ -248,6 +248,35 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
+  test("a question's needs-input state keeps the parked step, so the answer resumes the same session", async () => {
+    const w = await setup({ needsInput: true });
+    await w.execute();
+    const journal = w.store.executions();
+    const parked = journal.getCursor("issue");
+    expect(parked).toMatchObject({ stage: "refinement", state: "pending" });
+    // As in production: the source's needs-input label projects the item to needs-input while it waits.
+    w.store.setIssueProjection("issue", { stage: "refinement", state: "needs-input", warning: "Waiting for an answer: Which database?" });
+    expect(journal.getCursor("issue")).toMatchObject({ stage: "refinement", state: "pending", stageEpoch: parked!.stageEpoch });
+
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    expect(journal.getCursor("issue")).toMatchObject({ state: "pending", stageEpoch: parked!.stageEpoch });
+    await w.execute();
+    expect(w.calls).toHaveLength(2);
+    expect(w.calls[1]).toMatchObject({ resumeSessionId: "sess-1", answeredQuestion: { question: "Which database?", answer: "PostgreSQL" } });
+    await w.service.close();
+  });
+
+  test("a stopping state applied while no question is pending still fences the item", async () => {
+    const w = await setup();
+    await w.execute();
+    const journal = w.store.executions();
+    // Answering resumes the step; a later owner stop (blocked) must still fence it.
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    w.store.setIssueProjection("issue", { stage: "refinement", state: "blocked", warning: "Stopped by the owner" });
+    expect(journal.getCursor("issue")).toBeNull();
+    await w.service.close();
+  });
+
   test("an owner message answers the open question and wakes the parked item", async () => {
     const w = await setup();
     await w.execute();
@@ -275,16 +304,19 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("keeps a saved answer retryable until its source mirror succeeds", async () => {
+  test("an answer returns before its source mirror, and a failed mirror is retried in the background", async () => {
     const w = await setup();
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
+    w.service.answerRetryDelayMs = 1;
     w.failNextComment();
-    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("saved but could not be mirrored");
-    expect(w.store.getQuestion(question.id)).toMatchObject({ status: "open", answer: { answer: "PostgreSQL" } });
+    // The owner is not kept waiting on the source: the answer is recorded and the item resumes at once.
     await w.service.answerQuestion(question.id, "PostgreSQL");
     expect(w.store.getQuestion(question.id)?.status).toBe("answered");
+    expect(Date.parse(w.store.executions().wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
+    await w.service.answerFollowUpsSettled();
     expect(w.comments).toHaveLength(1);
+    expect(w.comments[0]).toContain("PostgreSQL");
     await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already been answered");
     await w.service.close();
   });
@@ -327,7 +359,7 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("keeps a live answer mirror single-flight while allowing stale mutations to recover", async () => {
+  test("mirrors an answer once even while an earlier mirror of it is still in flight", async () => {
     const w = await setup();
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
@@ -343,11 +375,12 @@ describe("agent.run through the service", () => {
       },
     });
 
-    const first = w.service.answerQuestion(question.id, "PostgreSQL");
+    await w.service.answerQuestion(question.id, "PostgreSQL");
     await commentStarted;
-    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already being recorded");
+    // Answering again is refused, and does not start a second mirror.
+    await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already been answered");
     releaseComment?.();
-    await first;
+    await w.service.answerFollowUpsSettled();
 
     expect(w.store.getQuestion(question.id)?.status).toBe("answered");
     expect(w.comments).toHaveLength(1);

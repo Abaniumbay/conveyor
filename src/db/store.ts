@@ -630,15 +630,22 @@ export class ConveyorStore {
         .query("SELECT projected_stage, projected_state FROM issues WHERE id = ?")
         .get(issueId) as { projected_stage: string | null; projected_state: string | null } | null;
       this.writeIssueProjection(issueId, projection);
-      if (
-        before &&
-        (before.projected_stage !== projection.stage || before.projected_state !== projection.state)
-      ) {
+      const changed = before !== null &&
+        (before.projected_stage !== projection.stage || before.projected_state !== projection.state);
+      // Waiting for an answer and resuming after it is not a stage change: while the item's step is
+      // parked on a question, moving between active and needs-input in the same stage keeps the
+      // step, so the answer resumes it. Any other change fences the item.
+      const cursor = changed ? this.#executions.getCursor(issueId) : null;
+      const questionPause = changed && before!.projected_stage === projection.stage &&
+        new Set([before!.projected_state, projection.state]).size === 2 &&
+        [before!.projected_state, projection.state].every((state) => state === "active" || state === "needs-input") &&
+        cursor?.state === "pending" && cursor.stage === projection.stage;
+      if (changed && !questionPause) {
         this.#executions.onStageChange(issueId);
         const state = projection.state;
-        if (state === "done" && before.projected_state !== "done") {
+        if (state === "done" && before!.projected_state !== "done") {
           this.recordPushEvent({ id: randomUUID(), category: "done", target: issueId });
-        } else if (["blocked", "error", "needs-intervention", "rejected"].includes(state ?? "") && before.projected_state !== state) {
+        } else if (["blocked", "error", "needs-intervention", "rejected"].includes(state ?? "") && before!.projected_state !== state) {
           this.recordPushEvent({ id: randomUUID(), category: "stopped", target: issueId });
         }
       }

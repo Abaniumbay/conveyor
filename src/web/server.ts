@@ -1155,9 +1155,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (answer === null || answer.trim().length === 0) return text("An answer is required", 400);
       try {
         await dependencies.answerQuestion(questionId, answer, currentSession.account.username);
+        if (wantsJson(request)) return json({ ok: true });
         return redirect("/board");
       } catch (error) {
-        return text(error instanceof Error ? error.message : "Unable to record answer", 409);
+        const message = error instanceof Error ? error.message : "Unable to record answer";
+        return wantsJson(request) ? json({ error: message }, 409) : text(message, 409);
       }
     }
 

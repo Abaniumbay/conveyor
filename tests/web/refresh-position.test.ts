@@ -103,7 +103,7 @@ async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>)
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
-function startDashboard(state: { dashboard: () => DashboardViewModel; revision: () => string; delayMs: () => number }) {
+function startDashboard(state: { dashboard: () => DashboardViewModel; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -112,9 +112,9 @@ function startDashboard(state: { dashboard: () => DashboardViewModel; revision: 
   const handler = createWebHandler({
     auth,
     username: "operator",
-    getDashboard: async () => {
+    getDashboard: async (csrfToken: string) => {
       if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      return state.dashboard();
+      return { ...state.dashboard(), csrfToken };
     },
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
@@ -122,7 +122,7 @@ function startDashboard(state: { dashboard: () => DashboardViewModel; revision: 
     getSystemStatus: () => ({ memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 }, disk: { usedBytes: 1, totalBytes: 2, availableBytes: 1 }, uptimeSeconds: 1 }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
-    answerQuestion: () => {},
+    answerQuestion: () => state.answerQuestion?.(),
     reorderBacklog: () => {},
     moveBacklogIssue: () => {},
     handleWebhook: () => ({}),
@@ -462,6 +462,33 @@ describe("dashboard live refresh position", () => {
       await page.locator('article.issue[data-issue-id="stuck"] .dep-chip--blocks').click();
       await page.keyboard.press("Escape");
       expect((await state()).roles).toEqual({});
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+  test("an answer shows that it is sending, then the board refreshes in place", async () => {
+    let finishAnswer: (() => void) | undefined;
+    let revision = "revision-1";
+    let answered = false;
+    const question = { id: "q-1", issueId: "card-1", repository: "sample", repositoryColor: 1, issueNumber: 3, issueTitle: "Card", prompt: "Which database?", reason: "It decides the schema.", options: [{ id: "postgres", label: "PostgreSQL" }], allowFreeText: false };
+    const build = () => ({ ...dashboard(revision, [issue("card-1", 3, "Card")]), questions: answered ? [] : [question] });
+    const server = startDashboard({
+      dashboard: build, revision: () => revision, delayMs: () => 0,
+      answerQuestion: () => new Promise<void>((resolve) => { finishAnswer = () => { answered = true; revision = "revision-2"; resolve(); }; }),
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await signIn(page, server.port);
+      await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
+      await page.locator('input[name="answer"][value="postgres"]').check();
+      await page.locator(".answer-button").click();
+      await page.waitForFunction(() => document.querySelector(".answer-button")?.textContent === "Answering…");
+      expect(await page.locator(".answer-button").isDisabled()).toBe(true);
+      finishAnswer?.();
+      await page.waitForFunction(() => !document.querySelector(".needs-you-item--question"));
+      // Patched in place: the page was not reloaded.
+      expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
     } finally {
       server.stop(true);
     }

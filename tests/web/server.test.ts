@@ -672,6 +672,27 @@ describe("createWebHandler", () => {
     const rejected = await post("not-an-option");
     expect(rejected.status).toBe(409);
     expect(await rejected.text()).toBe("Choose one of the available answers.");
+
+    // The page script sends answers in the background and reads JSON back.
+    const scripted = await handler(new Request("http://localhost/questions/q-1/answer", {
+      method: "POST", headers: { cookie, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ answer: "not-an-option", csrf }),
+    }));
+    expect(scripted.status).toBe(409);
+    expect(await scripted.json()).toEqual({ error: "Choose one of the available answers." });
+  });
+
+  test("answers a question for the page script with JSON instead of a redirect", async () => {
+    const { handler, auth, calls } = setup();
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const answer = await handler(new Request("http://localhost/questions/q-1/answer", {
+      method: "POST", headers: { cookie, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ answer: "yes", csrf }),
+    }));
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({ ok: true });
+    expect(calls.answers).toEqual([["q-1", "yes", "operator"]]);
   });
 
   test("moves a backlog issue in place for drag and drop, with CSRF", async () => {

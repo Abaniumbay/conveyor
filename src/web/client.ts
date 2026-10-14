@@ -1230,6 +1230,40 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('submit', async (event) => {
     const form = event.target;
+    // An answer is sent in the background: the button says so at once, and the board refreshes in place.
+    if (form instanceof HTMLFormElement && form.matches('[data-answer-form]')) {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      const status = form.querySelector('[data-answer-status]');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+      const label = button.textContent;
+      const fields = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) if (typeof value === 'string') fields.append(name, value);
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Answering…';
+      form.setAttribute('data-answering', '');
+      if (status instanceof HTMLElement) status.textContent = '';
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+          body: fields,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'Your answer could not be recorded. Try again.');
+        button.textContent = 'Answered';
+        if (status instanceof HTMLElement) status.textContent = 'Answer recorded. The agent continues.';
+        void replaceDashboard(new URL(location.href), { preservePosition: true });
+      } catch (error) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = label;
+        form.removeAttribute('data-answering');
+        if (status instanceof HTMLElement) status.textContent = error instanceof Error ? error.message : 'Your answer could not be recorded. Try again.';
+      }
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('.logout-form')) {
       event.preventDefault();
       const button = form.querySelector('button[type="submit"]');
