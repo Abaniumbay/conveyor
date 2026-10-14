@@ -1,9 +1,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { z } from "zod";
 
 import type { CheckResult } from "../core/pipeline";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
@@ -190,10 +192,18 @@ export async function runCodexCheck(
   input: CodexCheckInput,
 ): Promise<CodexCheckRunResult> {
   await mkdir(input.artifactsDirectory, { recursive: true });
+  const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
+  const workspace = resolveFilesystemPath(input.workspace);
   assertNoHostTmpWritableRoots(input.writableRoots);
+  const runInput = {
+    ...input,
+    artifactsDirectory,
+    workspace,
+    writableRoots: (input.writableRoots ?? []).filter(existsSync).map(resolveFilesystemPath),
+  };
   const scratch = await acquireScratch(input.temporaryDirectory);
   const outputFile = path.join(
-    input.artifactsDirectory,
+    artifactsDirectory,
     `codex-check-${randomUUID()}.json`,
   );
   const startedAt = performance.now();
@@ -201,34 +211,35 @@ export async function runCodexCheck(
   let network: RunNetwork | null = null;
   let schemaFile: string;
   try {
-    schemaFile = await writeOutputSchema(input.artifactsDirectory, "check");
+    schemaFile = await writeOutputSchema(artifactsDirectory, "check");
     const environment = await prepareCodexEnvironment({
-      artifactsDirectory: input.artifactsDirectory,
-      workspace: input.workspace,
+      artifactsDirectory,
+      workspace,
       overrides: input.env,
     });
     environment.TMPDIR = scratch.path;
+    const resolvedEnvironment = resolvePathEnvironment(environment);
     const run =
-      input.sandbox === "workspace-write"
+      runInput.sandbox === "workspace-write"
         ? {
-            ...input,
+            ...runInput,
             writableRoots: [
-              ...(input.writableRoots ?? []),
-              environment.HOME!,
+              ...runInput.writableRoots,
+              resolvedEnvironment.HOME!,
               scratch.path,
             ],
           }
-        : input;
+        : runInput;
     const launch = await codexLaunch({
       command: input.command,
-      environment,
-      artifactsDirectory: input.artifactsDirectory,
-      egress: input.egress,
-      privateTmp: input.sandbox === "danger-full-access",
+      environment: resolvedEnvironment,
+      artifactsDirectory,
+      egress: runInput.egress,
+      privateTmp: runInput.sandbox === "danger-full-access",
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
-    child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {

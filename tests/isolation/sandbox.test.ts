@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -20,6 +20,27 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
   expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
+
+test("network isolation resolves a symlinked run temporary directory before binding it", async () => {
+  const root = await mkdtemp("/tmp/conveyor-isolation-paths-");
+  const target = path.join(root, "target");
+  const link = path.join(root, "link");
+  const runTmp = path.join(target, "run-tmp");
+  try {
+    await mkdir(runTmp, { recursive: true });
+    await symlink(target, link);
+    const launch = sandboxCommand({
+      argv: ["echo", "x"],
+      env: { TMPDIR: path.join(link, "run-tmp") },
+      dataProxySocket: "/tmp/conveyor-proxy.sock",
+    });
+    expect(launch.argv.join(" ")).toContain(`--bind ${runTmp} ${runTmp}`);
+    expect(launch.argv.join(" ")).not.toContain(link);
+    expect(launch.env.TMPDIR).toBe(runTmp);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 const SCRATCH = path.join(homedir(), ".cache", "conveyor-test");

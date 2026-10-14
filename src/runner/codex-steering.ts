@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
@@ -128,33 +131,42 @@ export async function runCodexSteering(
   input: CodexSteeringInput,
 ): Promise<CodexSteeringResult> {
   const started = performance.now();
+  const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
+  const workspace = resolveFilesystemPath(input.workspace);
   assertNoHostTmpWritableRoots(input.writableRoots);
+  const runInput = {
+    ...input,
+    artifactsDirectory,
+    workspace,
+    writableRoots: (input.writableRoots ?? []).filter(existsSync).map(resolveFilesystemPath),
+  };
   const scratch = await acquireScratch(input.temporaryDirectory);
   let network: RunNetwork | null = null;
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env });
     environment.TMPDIR = scratch.path;
-    const run = input.sandbox === "workspace-write"
+    const resolvedEnvironment = resolvePathEnvironment(environment);
+    const run = runInput.sandbox === "workspace-write"
       ? {
-          ...input,
+          ...runInput,
           writableRoots: [
-            ...(input.writableRoots ?? []),
-            environment.HOME!,
+            ...runInput.writableRoots,
+            resolvedEnvironment.HOME!,
             scratch.path,
           ],
         }
-      : input;
+      : runInput;
     const launch = await codexLaunch({
       command: input.command,
-      environment,
-      artifactsDirectory: input.artifactsDirectory,
-      egress: input.egress,
-      privateTmp: input.sandbox === "danger-full-access",
+      environment: resolvedEnvironment,
+      artifactsDirectory,
+      egress: runInput.egress,
+      privateTmp: runInput.sandbox === "danger-full-access",
       buildArguments: (extra) => argumentsFor(run, extra),
     });
     network = launch.network;
-    child = Bun.spawn(launch.argv, { cwd: input.workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
     await network?.close();

@@ -1,6 +1,7 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { INTERNAL, selfCommand } from "../self";
 
 export const PROXY_VARIABLES = [
@@ -35,7 +36,7 @@ export interface SandboxedCommand {
 export function privateTmpCommand(options: { argv: readonly string[]; env: Record<string, string> }): SandboxedCommand {
   return {
     argv: ["bwrap", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...options.argv],
-    env: options.env,
+    env: resolvePathEnvironment(options.env),
     dataEnv: {},
   };
 }
@@ -56,15 +57,16 @@ function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
  * /run/user/<uid> (user bus, ssh/gpg agents), and the Docker socket. Other path sockets stay reachable.
  */
 function isolationMounts(runTmp: string | undefined): string[] {
-  const mounts = ["--proc", "/proc", "--tmpfs", "/tmp"];
+  const mounts = ["--proc", "/proc", "--tmpfs", resolveFilesystemPath("/tmp")];
   // The run's own temporary directory would vanish behind the private /tmp.
-  if (runTmp?.startsWith("/tmp/") && existsSync(runTmp)) mounts.push("--bind", runTmp, runTmp);
+  const resolvedTmp = runTmp ? resolveFilesystemPath(runTmp) : undefined;
+  if (resolvedTmp?.startsWith("/tmp/") && existsSync(resolvedTmp)) mounts.push("--bind", resolvedTmp, resolvedTmp);
   const runtime = `/run/user/${process.getuid?.() ?? 0}`;
-  if (existsSync(runtime)) mounts.push("--tmpfs", runtime);
+  if (existsSync(runtime)) mounts.push("--tmpfs", resolveFilesystemPath(runtime));
   // /var/run is usually a symlink to /run; bwrap cannot mount through it, so mask resolved paths once.
   const sockets = new Set<string>();
   for (const socket of ["/var/run/docker.sock", "/run/docker.sock"]) {
-    if (existsSync(socket)) sockets.add(realpathSync(socket));
+    if (existsSync(socket)) sockets.add(resolveFilesystemPath(socket));
   }
   for (const socket of sockets) mounts.push("--ro-bind", "/dev/null", socket);
   return mounts;
@@ -103,7 +105,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   const spec = JSON.stringify({ forwards, command: options.argv });
   return {
     argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...selfCommand(INTERNAL.bridge, spec)],
-    env: { ...options.env, ...commandEnv },
+    env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
     dataEnv,
   };
 }

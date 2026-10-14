@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { resolveFilesystemPath } from "../../src/core/paths";
 import { runCodex } from "../../src/runner/codex";
 import { runCodexCheck } from "../../src/runner/codex-check";
 import { runCodexSteering } from "../../src/runner/codex-steering";
@@ -40,7 +41,7 @@ async function fixture() {
   await writeFile(executable, `#!/usr/bin/env bun
     const args = process.argv.slice(2);
     await new Response(Bun.stdin.stream()).text();
-    await Bun.write(process.env.ENV_CAPTURE, JSON.stringify({ ...process.env, TMP_EXISTED: String(require("node:fs").existsSync(process.env.TMPDIR)) }));
+    await Bun.write(process.env.ENV_CAPTURE, JSON.stringify({ ...process.env, TMP_EXISTED: String(require("node:fs").existsSync(process.env.TMPDIR)), RUN_ARGS: JSON.stringify(args), RUN_CWD: process.cwd() }));
     if (process.env.KIND === "fail") process.exit(3);
     const output = args[args.indexOf("-o") + 1];
     if (output && process.env.KIND === "run") await Bun.write(output, JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "s", reason: null, metrics: {}, artifacts: [] }));
@@ -48,7 +49,7 @@ async function fixture() {
     console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }));
   `);
   await chmod(executable, 0o755);
-  return { workspace, artifacts, executable, capture };
+  return { directory, workspace, artifacts, executable, capture };
 }
 
 type Captured = Record<string, string | undefined>;
@@ -59,7 +60,7 @@ async function expectCredentialFree(files: Awaited<ReturnType<typeof fixture>>):
     expect(env[name]).toBeUndefined();
   }
   expect(env.HOME).toBe(path.join(files.artifacts, "home"));
-  expect(env.CODEX_HOME).toBe(path.join(saved.HOME!, ".codex"));
+  expect(env.CODEX_HOME).toBe(resolveFilesystemPath(path.join(saved.HOME!, ".codex")));
   expect(env.ENV_CAPTURE).toBe(files.capture);
   expect(await readdir(env.HOME!)).toEqual([".gitconfig"]);
 }
@@ -123,5 +124,34 @@ describe("agent environment", () => {
       env: { ENV_CAPTURE: files.capture, KIND: "steer", LEAK_TOKEN: "x" },
     });
     await expectCredentialFree(files);
+  });
+
+  test("Codex producer, check, and steering consume only resolved launch paths", async () => {
+    for (const kind of ["run", "check", "steer"] as const) {
+      const files = await fixture();
+      const link = path.join(files.directory, "link");
+      const allowedRoot = path.join(files.directory, "allowed-root");
+      await symlink(files.directory, link);
+      await symlink(path.join(process.cwd(), "src"), allowedRoot);
+      const linked = {
+        workspace: path.join(link, "workspace"),
+        artifactsDirectory: path.join(link, "artifacts", "run-1"),
+        temporaryDirectory: path.join(link, "scratch"),
+        writableRoots: [allowedRoot, path.join(link, "missing")],
+        env: { ENV_CAPTURE: path.join(link, "env.json"), KIND: kind },
+      };
+      if (kind === "run") await runCodex({ ...common, command: files.executable, ...linked });
+      else if (kind === "check") await runCodexCheck({ ...common, command: files.executable, ...linked });
+      else await runCodexSteering({ ...common, command: files.executable, ...linked });
+
+      const env = JSON.parse(await readFile(files.capture, "utf8")) as Captured;
+      expect(env.RUN_CWD).toBe(resolveFilesystemPath(files.workspace));
+      expect(env.HOME).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
+      expect(env.TMPDIR).toBe(resolveFilesystemPath(path.join(files.directory, "scratch")));
+      expect(env.ENV_CAPTURE).toBe(resolveFilesystemPath(files.capture));
+      expect(env.RUN_ARGS).not.toContain(link);
+      expect(env.RUN_ARGS).not.toContain(allowedRoot);
+      expect(env.RUN_ARGS).toContain(resolveFilesystemPath(allowedRoot));
+    }
   });
 });

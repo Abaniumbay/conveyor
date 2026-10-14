@@ -50,6 +50,12 @@ Stage exit gates can wait for a human approval on the board, configured per pipe
   item's switch to needs-input (and back) restarted its stage, dropping the step that waited for
   the answer, so the agent started over and asked the same question again.
 
+### Fixed
+
+- Agent and script launches now use one resolved filesystem path for their configuration,
+  workspaces, artifacts, writable roots, and derived run directories, so symlinked data roots no
+  longer break sandbox mounts or split a run's access boundary.
+
 ## [0.7.0] - 2026-10-14
 
 This release redesigns the board. Stages are Jira-style columns with compact headings, an emoji and an information dialog (description, team and usage). Each open parent is a foldable row holding its children in their stages, and dependencies show their state, what each item blocks, and can be traced along their whole chain. On a phone the board lists its stages top to bottom.

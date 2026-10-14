@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -99,6 +99,34 @@ describe("WorkspaceManager", () => {
     expect(await command(fixture.checkout, "git", "branch", "--list", workspace.branch)).toBe("");
     expect(await command(fixture.checkout, "git", "branch", "-r", "--list", `origin/${workspace.branch}`)).toBe("");
     expect(await readFile(path.join(fixture.checkout, "README.md"), "utf8")).toBe("base\n");
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
+  });
+
+  test("accepts legacy symlink-spelled workspace records", async () => {
+    const fixture = await repository();
+    await mkdir(fixture.workspaces);
+    const legacyRoot = path.join(fixture.root, "legacy-workspaces");
+    await symlink(fixture.workspaces, legacyRoot);
+    const manager = new WorkspaceManager(legacyRoot);
+    const workspace = await manager.create({
+      repositoryPath: fixture.checkout,
+      repositoryId: "owner-repository",
+      issueNumber: 10,
+      enrollment: 1,
+      slug: "legacy",
+      baseBranch: "main",
+    });
+    const legacyPath = path.join(legacyRoot, "owner-repository", "issue-10-r1");
+
+    await manager.ensureScratch(legacyPath);
+    await manager.remove({
+      repositoryPath: fixture.checkout,
+      workspacePath: legacyPath,
+      branch: workspace.branch,
+      deleteBranch: true,
+    });
+
+    expect(existsSync(workspace.path)).toBe(false);
     expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
   });
 

@@ -1,6 +1,8 @@
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
+
 export type Environment = Record<string, string | undefined>;
 
 export interface GitUser {
@@ -65,7 +67,7 @@ export function sanitizedAgentEnvironment(
     env.CODEX_HOME = path.join(base.HOME, ".codex");
   }
   env.HOME = options.home;
-  return env;
+  return resolvePathEnvironment(env);
 }
 
 function gitconfigValue(value: string): string {
@@ -83,7 +85,7 @@ export async function prepareSanitizedHome(options: { root: string; runId: strin
   if (options.gitUser.name) lines.push(`\tname = ${gitconfigValue(options.gitUser.name)}`);
   if (options.gitUser.email) lines.push(`\temail = ${gitconfigValue(options.gitUser.email)}`);
   await writeFile(path.join(home, ".gitconfig"), lines.length ? `[user]\n${lines.join("\n")}\n` : "");
-  return home;
+  return resolveFilesystemPath(home);
 }
 
 async function gitValue(cwd: string, key: string, env: Environment): Promise<string | undefined> {
@@ -100,7 +102,8 @@ async function gitValue(cwd: string, key: string, env: Environment): Promise<str
 
 /** Reads only user.name and user.email (local config first, then global); nothing else is copied. */
 export async function readGitUser(workspace: string, env: Environment = process.env): Promise<GitUser> {
-  const [name, email] = await Promise.all([gitValue(workspace, "user.name", env), gitValue(workspace, "user.email", env)]);
+  const cwd = resolveFilesystemPath(workspace);
+  const [name, email] = await Promise.all([gitValue(cwd, "user.name", env), gitValue(cwd, "user.email", env)]);
   return { ...(name ? { name } : {}), ...(email ? { email } : {}) };
 }
 
@@ -126,14 +129,16 @@ export async function prepareAgentEnvironment(options: {
   parent?: Environment;
   controlPlane: readonly string[];
 }): Promise<Record<string, string>> {
+  const artifactsDirectory = resolveFilesystemPath(options.artifactsDirectory);
+  const workspace = resolveFilesystemPath(options.workspace);
   const parent = options.parent ?? process.env;
   const base: Environment = {};
   for (const name of [...INHERITED, ...options.controlPlane]) base[name] = parent[name];
   Object.assign(base, options.overrides);
   const home = await prepareSanitizedHome({
-    root: path.dirname(options.artifactsDirectory),
-    runId: path.basename(options.artifactsDirectory),
-    gitUser: await readGitUser(options.workspace, parent),
+    root: path.dirname(artifactsDirectory),
+    runId: path.basename(artifactsDirectory),
+    gitUser: await readGitUser(workspace, parent),
   });
   return sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: options.controlPlane });
 }

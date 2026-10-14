@@ -4,6 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
+import { resolveFilesystemPath } from "../core/paths";
+
 import type { ConveyorStore, StoredIssue, StoredWorkspace } from "../db/store";
 import type { WorkspaceManager } from "./manager";
 
@@ -72,7 +74,7 @@ export async function ensureWorkspace(input: {
       });
     }
     await manager.ensureScratch(existing.path);
-    return existing;
+    return { ...existing, path: resolveFilesystemPath(existing.path) };
   }
   const issue = store.getIssue(issueId);
   if (!issue) throw new Error(`issue ${issueId} is not stored`);

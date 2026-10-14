@@ -8,6 +8,7 @@ import type { ZodIssue } from "zod";
 import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskRegistry } from "../tasks/contract";
 import { compileRepositories, PlanError, type CompiledPipeline } from "../tasks/plan";
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 
 import { builtinResolver } from "./builtin";
 import { composeConfig, originOf, type ConfigOrigin } from "./compose";
@@ -68,11 +69,37 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function resolvePath(value: unknown, baseDirectory: string): unknown {
-  if (typeof value !== "string" || value.length === 0 || path.isAbsolute(value)) {
+  if (typeof value !== "string" || value.length === 0) {
     return value;
   }
-  if (value === "~" || value.startsWith("~/")) return path.join(homedir(), value.slice(1));
-  return path.resolve(baseDirectory, value);
+  const expanded = value === "~" || value.startsWith("~/")
+    ? path.join(homedir(), value.slice(1))
+    : path.isAbsolute(value) ? value : path.resolve(baseDirectory, value);
+  return resolveFilesystemPath(expanded);
+}
+
+/** Applies the run-facing path contract after defaults and home expansion have been parsed. */
+function normalizeRunPaths(config: ConveyorConfigData): ConveyorConfigData {
+  for (const name of ["database", "logs", "workspaces", "artifacts"] as const) {
+    config.settings[name] = resolveFilesystemPath(config.settings[name]);
+  }
+  if (config.web.steering?.workspace) {
+    config.web.steering.workspace = resolveFilesystemPath(config.web.steering.workspace);
+  }
+  for (const runner of Object.values(config.runners)) {
+    if (runner.type === "claude-code" && runner.configDir) runner.configDir = resolveFilesystemPath(runner.configDir);
+  }
+  for (const agent of Object.values(config.agents)) {
+    agent.instructions = resolveFilesystemPath(agent.instructions);
+    agent.writableRoots = agent.writableRoots.map(resolveFilesystemPath);
+    agent.env = resolvePathEnvironment(agent.env);
+    for (const server of Object.values(agent.mcpServers)) server.env = resolvePathEnvironment(server.env);
+  }
+  for (const check of Object.values(config.checks)) {
+    if (check.script) check.script = resolveFilesystemPath(check.script);
+  }
+  for (const repository of Object.values(config.repositories)) repository.folder = resolveFilesystemPath(repository.folder);
+  return config;
 }
 
 /** The directory relative paths resolve against, for a value at the given key path. */
@@ -585,7 +612,8 @@ export async function loadConfig(
     throw new ConfigError(formatErrors("configuration is invalid:", zodErrors(parsed.error.issues), locate));
   }
 
-  const referenceErrors = crossReferenceErrors(parsed.data);
+  const data = normalizeRunPaths(parsed.data);
+  const referenceErrors = crossReferenceErrors(data);
   if (referenceErrors.length > 0) {
     throw new ConfigError(formatErrors("configuration references are invalid:", referenceErrors, locate));
   }
@@ -593,7 +621,7 @@ export async function loadConfig(
   let plans: CompiledPipeline[] = [];
   if (registry) {
     try {
-      plans = compileRepositories(parsed.data, registry);
+      plans = compileRepositories(data, registry);
     } catch (error) {
       if (error instanceof PlanError) throw new ConfigError(error.message);
       throw error;
@@ -601,8 +629,8 @@ export async function loadConfig(
   }
 
   return {
-    ...parsed.data,
-    hash: configurationHash(parsed.data, resolvedImport?.sha),
+    ...data,
+    hash: configurationHash(data, resolvedImport?.sha),
     root,
     plans,
     mode,

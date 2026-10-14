@@ -1,7 +1,9 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 
+import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
@@ -183,7 +185,7 @@ function mcpArguments(input: CodexRunInput): string[] {
   for (const [name, server] of Object.entries(input.mcpServers ?? {})) {
     const key = `mcp_servers.${name}`;
     args.push("-c", `${key}.command=${tomlString(server.command)}`, "-c", `${key}.args=${tomlArray(server.args)}`);
-    if (Object.keys(server.env).length > 0) args.push("-c", `${key}.env=${tomlInlineTable(server.env)}`);
+    if (Object.keys(server.env).length > 0) args.push("-c", `${key}.env=${tomlInlineTable(resolvePathEnvironment(server.env))}`);
     if (server.startupTimeoutSec !== undefined) args.push("-c", `${key}.startup_timeout_sec=${server.startupTimeoutSec}`);
     if (server.enabledTools) args.push("-c", `${key}.enabled_tools=${tomlArray(server.enabledTools)}`);
     args.push("-c", `${key}.default_tools_approval_mode="approve"`);
@@ -231,33 +233,42 @@ function spawnPiped(argv: string[], cwd: string, env: Record<string, string>) {
 
 export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   await mkdir(input.artifactsDirectory, { recursive: true });
+  const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
+  const workspace = resolveFilesystemPath(input.workspace);
+  assertNoHostTmpWritableRoots(input.writableRoots);
+  const runInput = {
+    ...input,
+    artifactsDirectory,
+    workspace,
+    writableRoots: (input.writableRoots ?? []).filter(existsSync).map(resolveFilesystemPath),
+  };
   const outputFile = path.join(
-    input.artifactsDirectory,
+    artifactsDirectory,
     `codex-result-${randomUUID()}.json`,
   );
-  const schemaFile = await writeOutputSchema(input.artifactsDirectory, "producer");
+  const schemaFile = await writeOutputSchema(artifactsDirectory, "producer");
   const startedAt = performance.now();
   let network: RunNetwork | null = null;
   let child: ReturnType<typeof spawnPiped>;
-  assertNoHostTmpWritableRoots(input.writableRoots);
   const scratch = await acquireScratch(input.temporaryDirectory);
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory: input.artifactsDirectory, workspace: input.workspace, overrides: input.env });
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env });
     environment.TMPDIR = scratch.path;
+    const resolvedEnvironment = resolvePathEnvironment(environment);
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
-    const run = input.sandbox === "workspace-write"
-      ? { ...input, writableRoots: [...(input.writableRoots ?? []), environment.HOME!, scratch.path] }
-      : input;
+    const run = runInput.sandbox === "workspace-write"
+      ? { ...runInput, writableRoots: [...runInput.writableRoots, resolvedEnvironment.HOME!, scratch.path] }
+      : runInput;
     const launch = await codexLaunch({
       command: input.command,
-      environment,
-      artifactsDirectory: input.artifactsDirectory,
-      egress: input.egress,
-      privateTmp: input.sandbox === "danger-full-access",
+      environment: resolvedEnvironment,
+      artifactsDirectory,
+      egress: runInput.egress,
+      privateTmp: runInput.sandbox === "danger-full-access",
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
-    child = spawnPiped(launch.argv, input.workspace, launch.env);
+    child = spawnPiped(launch.argv, workspace, launch.env);
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {

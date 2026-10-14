@@ -20,7 +20,7 @@ import {
   type CodexCheckInput,
   type CodexCheckRunResult,
 } from "../runner/codex-check";
-import { runJsonProcess } from "../runner/json-process";
+import { runJsonProcess, runProcess } from "../runner/json-process";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../runner/result";
 import {
   agentActor,
@@ -114,25 +114,11 @@ async function evidenceScript(
   cwd: string,
   input: unknown,
 ): Promise<unknown> {
-  const child = Bun.spawn(scriptCommand(script, interpreter), {
+  const { stdout } = await runProcess({
+    command: scriptCommand(script, interpreter),
     cwd,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: process.env,
+    input,
   });
-  child.stdin.write(JSON.stringify(input));
-  child.stdin.end();
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `evidence script ${script} exited with ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
-    );
-  }
   try {
     return JSON.parse(stdout) as unknown;
   } catch (error) {
@@ -381,6 +367,8 @@ export class ConfiguredStageRuntime implements PipelineDependencies {
           stageId: context.stageId,
           issue,
           producerResult: context.producerResult,
+          workspace,
+          repository: this.context.repository,
         });
       } catch (error) {
         this.conveyorMessage(issue.id, context.stageId, null, `${displayName(context.stageId)} check script failed: ${error instanceof Error ? error.message : String(error)}`);

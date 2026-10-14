@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -39,6 +39,34 @@ describe("claude code runner", () => {
     expect(args).toContain("--bind /h /h");
     expect(args).toContain("--chdir /w --die-with-parent --");
     expect(args).not.toContain("--bind /w");
+  });
+
+  test("uses resolved paths for every mount behind a symbolic link", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-paths-"));
+    directories.push(root);
+    const target = path.join(root, "target");
+    const link = path.join(root, "link");
+    for (const name of ["workspace", "config", "home", "service", "cache"]) {
+      await mkdir(path.join(target, name), { recursive: true });
+    }
+    await writeFile(path.join(target, "config.json"), "{}");
+    await symlink(target, link);
+
+    const args = sandboxArguments({
+      workspace: path.join(link, "workspace"),
+      configDir: path.join(link, "config"),
+      home: path.join(link, "home"),
+      serviceHome: path.join(link, "service"),
+      writable: [path.join(link, "cache"), path.join(link, "missing")],
+    });
+
+    expect(args.join(" ")).not.toContain(link);
+    expect(args).toContain(path.join(target, "workspace"));
+    expect(args).toContain(path.join(target, "config"));
+    expect(args).toContain(path.join(target, "config.json"));
+    expect(args).toContain(path.join(target, "home"));
+    expect(args).toContain(path.join(target, "cache"));
+    expect(args.join(" ")).not.toContain("missing");
   });
 
   test("passes the result schema without the $schema reference Claude Code rejects", async () => {
@@ -158,5 +186,34 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
 
     expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });
     expect(await readFile(path.join(scratch, "from-agent"), "utf8")).toBe("temporary\n");
+  });
+
+  test.skipIf(bwrapUnavailable !== null)("starts with symlinked run paths and can write its resolved home", async () => {
+    const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-paths-"));
+    directories.push(root);
+    const target = path.join(root, "target");
+    const link = path.join(root, "link");
+    await mkdir(path.join(target, "workspace"), { recursive: true });
+    await symlink(target, link);
+    const fake = path.join(root, "claude");
+    await writeFile(fake, `#!/bin/sh
+set -e
+cat > /dev/null
+echo home > "$HOME/from-agent"
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"success","status":"done","summary":"Done","reason":null,"metrics":{},"artifacts":[]}}'
+`);
+    await chmod(fake, 0o755);
+
+    const result = await runClaudeCode({
+      ...base,
+      command: fake,
+      workspace: path.join(link, "workspace"),
+      artifactsDirectory: path.join(link, "artifacts", "run-1"),
+      temporaryDirectory: path.join(link, "scratch"),
+      env: { CLAUDE_CONFIG_DIR: path.join(link, "config") },
+    });
+
+    expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });
+    expect(await readFile(path.join(target, "artifacts", "run-1", "home", "from-agent"), "utf8")).toBe("home\n");
   });
 });

@@ -3,6 +3,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { resolveFilesystemPath } from "../../src/core/paths";
 import { CodexRunnerError, runCodex } from "../../src/runner/codex";
 
 const temporaryDirectories: string[] = [];
@@ -175,7 +176,11 @@ describe("runCodex", () => {
       mcp: { command: "bun", args: ["mcp.ts"] }, env: { CAPTURE: files.capture },
     };
     const args = async () => (JSON.parse(await readFile(files.capture, "utf8")) as { args: string[] }).args;
-    const access = { network: true, writableRoots: ["/repo/.git/worktrees/w", "/home/u/.bun/install/cache"] };
+    // CI puts disposable fixtures in /tmp, which is deliberately not a permitted extra root.
+    // Use existing repository directories here so this exercises the authorized-root contract.
+    const worktreeRoot = process.cwd();
+    const cacheRoot = path.join(worktreeRoot, "src");
+    const access = { network: true, writableRoots: [worktreeRoot, cacheRoot] };
     // The run's own home and temp directory follow the configured roots.
     const roots = async () => JSON.parse((await args()).find((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))!.split("=")[1]!) as string[];
     const expected = [
@@ -189,7 +194,13 @@ describe("runCodex", () => {
       const got = await args();
       for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
       const [git, cache, home, tmp, ...rest] = await roots();
-      expect([git, cache, home, rest]).toEqual(["/repo/.git/worktrees/w", "/home/u/.bun/install/cache", path.join(files.artifacts, "home"), []]);
+      expect([git, cache, home, tmp, rest]).toEqual([
+        resolveFilesystemPath(worktreeRoot),
+        resolveFilesystemPath(cacheRoot),
+        resolveFilesystemPath(path.join(files.artifacts, "home")),
+        resolveFilesystemPath(tmp!),
+        [],
+      ]);
       expect(path.basename(tmp!)).toStartWith("conveyor-run-");
     }
 
@@ -201,10 +212,10 @@ describe("runCodex", () => {
     await runCodex(base);
     const plain = await args();
     expect(plain.some((arg) => arg.startsWith("web_search") || arg.startsWith("sandbox_workspace_write.network_access"))).toBe(false);
-    expect((await roots())[0]).toBe(path.join(files.artifacts, "home"));
+    expect((await roots())[0]).toBe(resolveFilesystemPath(path.join(files.artifacts, "home")));
   });
 
-  test("reuses an item scratch directory and rejects host temporary writable roots, including symlinks", async () => {
+  test("reuses an item scratch directory, rejects host temporary roots, and omits missing optional roots", async () => {
     const files = await fixture(`
       const args = process.argv.slice(2);
       await Bun.write(process.env.TMPDIR + "/from-agent", "available later");
@@ -234,7 +245,7 @@ describe("runCodex", () => {
     const hostTmpAlias = path.join(files.directory, "host-tmp");
     await symlink("/tmp", hostTmpAlias);
     await expect(runCodex({ ...input, writableRoots: [hostTmpAlias] })).rejects.toThrow("host /tmp");
-    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).rejects.toThrow("host /tmp");
+    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).resolves.toBeDefined();
   });
 
   test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {

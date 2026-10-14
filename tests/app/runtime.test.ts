@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfiguredStageRuntime } from "../../src/app/runtime";
 import { loadConfig } from "../../src/config/load";
 import type { StageConfig } from "../../src/config/schema";
+import { resolveFilesystemPath } from "../../src/core/paths";
 import { ConveyorStore } from "../../src/db/store";
 import type { RunEnvelope } from "../../src/runner/result";
 
@@ -19,9 +20,20 @@ describe("ConfiguredStageRuntime", () => {
   test("runs configured producer and independent verifier with scoped MCP and journals usage", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-runtime-"));
     directories.push(root);
+    const repositoryTarget = path.join(root, "repository-target");
     const repository = path.join(root, "repository");
-    await mkdir(repository);
+    await mkdir(repositoryTarget);
+    await symlink(repositoryTarget, repository);
     await writeFile(path.join(root, "check.ts"), `
+import { writeFile } from "node:fs/promises";
+const input = JSON.parse(await new Response(Bun.stdin.stream()).text());
+if (process.env.EVIDENCE_CAPTURE) {
+  await writeFile(process.env.EVIDENCE_CAPTURE, JSON.stringify({
+    cwd: process.cwd(),
+    capture: process.env.EVIDENCE_CAPTURE,
+    input,
+  }));
+}
 console.log(JSON.stringify({
   passed: false,
   commands: [
@@ -201,10 +213,27 @@ repositories:
     };
 
     expect(await runtime.runProducer(stage, context)).toEqual(producerResult);
-    expect(await runtime.runCheck("verify", "exit", { ...context, producerResult })).toMatchObject({
-      decision: "fail",
-      sessionId: "check-thread",
-    });
+    const originalEvidenceCapture = process.env.EVIDENCE_CAPTURE;
+    const evidenceCapture = path.join(repository, "evidence.json");
+    process.env.EVIDENCE_CAPTURE = evidenceCapture;
+    try {
+      expect(await runtime.runCheck("verify", "exit", { ...context, producerResult })).toMatchObject({
+        decision: "fail",
+        sessionId: "check-thread",
+      });
+      const evidence = JSON.parse(await readFile(resolveFilesystemPath(evidenceCapture), "utf8"));
+      expect(evidence).toMatchObject({
+        cwd: resolveFilesystemPath(repository),
+        capture: resolveFilesystemPath(evidenceCapture),
+        input: {
+          workspace: resolveFilesystemPath(repository),
+          repository: { folder: resolveFilesystemPath(repository) },
+        },
+      });
+    } finally {
+      if (originalEvidenceCapture === undefined) delete process.env.EVIDENCE_CAPTURE;
+      else process.env.EVIDENCE_CAPTURE = originalEvidenceCapture;
+    }
     expect(await runtime.runProducer(config.pipelines.default!.stages[1]! as StageConfig, {
       ...context,
       stageId: "deploy",
