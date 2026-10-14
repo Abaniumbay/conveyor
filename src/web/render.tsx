@@ -439,7 +439,7 @@ function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["a
 function boardSearchText(issue: IssueCardViewModel, actors: readonly StageActorViewModel[] = []): string {
   return [issue.title, issue.number, `#${issue.number}`, issue.repository, ...issue.labels,
     issue.issueType ?? "", ...issue.issueFields.flatMap((field) => [field.name, field.value]),
-    ...actors.map((actor) => actor.name)].join(" ").toLocaleLowerCase();
+    ...(issue.searchActors ?? actors).map((actor) => actor.name)].join(" ").toLocaleLowerCase();
 }
 
 function boardFilterState(issue: IssueCardViewModel): "needs-you" | "running" | "waiting" {
@@ -653,7 +653,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
               {station.kind === "done" && done.length > 0 && (
                 <ol class="issue-list">{done.map((child) => (
                   <li key={child.id}>
-                    <a class={`issue issue--compact issue--success repo-color-${parent.repositoryColor}`} href={issueHref(child.repository, child.number)}>
+                    <a class={`issue issue--compact issue--success repo-color-${parent.repositoryColor}`} href={issueHref(child.repository, child.number)} data-filter-card data-board-search={`${child.title} ${child.number} #${child.number} ${child.repository}`.toLocaleLowerCase()} data-board-repository={child.repository} data-board-state="waiting">
                       <span class="issue-kicker"><span class="issue-number">#{child.number}</span>{station && <span class="issue-stage">{station.name}</span>}</span>
                       <span class="issue-title">{child.title}</span>
                       <span class="issue-status"><span class="andon andon--run" aria-hidden="true" /><strong>Done</strong></span>

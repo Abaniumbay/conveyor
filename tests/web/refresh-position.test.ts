@@ -357,11 +357,32 @@ describe("dashboard live refresh position", () => {
       await doneRequest;
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      await page.locator('article.issue[data-issue-id="alpha-card"] .card-open').click();
+      expect(new URL(page.url()).search).toBe("?repo=alpha&q=%23245");
+      await page.getByRole("button", { name: "Close" }).click();
       await page.locator('[data-filter-clear]').click();
       await page.waitForFunction(() => location.search === "");
+      expect(await page.locator('[data-filter-search]').inputValue()).toBe("");
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isVisible()).toBe(true);
 
-      await page.locator('[data-filter-state="needs-you"]').click();
+      const firstDoneResponse = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).searchParams.get("q") === "#245");
+      await page.locator('[data-filter-search]').fill("#245");
+      await firstDoneResponse;
+      await page.evaluate(() => {
+        history.replaceState({ conveyorPage: true }, "", "/board");
+        const search = document.querySelector('[data-filter-search]');
+        if (search instanceof HTMLInputElement) search.value = "";
+        document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
+      });
+      const repeatedDoneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "#245");
+      await page.locator('[data-filter-search]').fill("#245");
+      await repeatedDoneRequest;
+      await page.locator('[data-filter-clear]').click();
+
+      const needsYou = page.getByRole("radio", { name: "Needs you" });
+      await needsYou.focus();
+      await needsYou.press(" ");
+      await page.waitForFunction(() => location.search === "?state=needs-you");
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
       revision = "filters-2";

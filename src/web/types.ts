@@ -76,6 +76,8 @@ export interface IssueCardViewModel {
   todos: IssueTodosViewModel | null;
   /** The stage the item is in; card todo progress is shown only in the stage that owns the list. */
   stage?: string | null;
+  /** Agents configured for this item's own pipeline stage, for board search metadata. */
+  searchActors?: readonly StageActorViewModel[];
   /** Stored status indicators (CI first); rendered by one shared component on the card and in the details. */
   indicators: readonly IndicatorViewModel[];
   activity: string | null;

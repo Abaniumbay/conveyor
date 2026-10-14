@@ -840,7 +840,7 @@ export const dashboardClient = String.raw`(() => {
   const paginationSearch = () => {
     const current = new URL(location.href);
     const kept = new URLSearchParams();
-    for (const key of ['doneLimit', 'column', 'page']) {
+    for (const key of ['doneLimit', 'column', 'page', 'repo', 'q', 'state']) {
       const values = current.searchParams.getAll(key);
       if (values.length === 1) kept.set(key, values[0]);
     }
@@ -1141,6 +1141,8 @@ export const dashboardClient = String.raw`(() => {
     if (filters.q) target.searchParams.set('q', filters.q);
     if (filters.state) target.searchParams.set('state', filters.state);
     history.replaceState({ conveyorPage: true }, '', target.pathname + target.search + target.hash);
+    const search = document.querySelector('[data-filter-search]');
+    if (search instanceof HTMLInputElement) search.value = filters.q;
     applyBoardFilters();
     void loadFilteredDone(filters);
   };
@@ -1149,7 +1151,9 @@ export const dashboardClient = String.raw`(() => {
     if (!filter) return;
     filter.dataset.enhanced = 'true';
     const values = boardFilterValues();
-    if (loadedDoneFilter === null) loadedDoneFilter = doneFilterKey(values);
+    // A server-rendered board has already loaded Done for its URL. Forgetting the old key here
+    // would suppress a later request after SPA navigation back to this board.
+    loadedDoneFilter = doneFilterKey(values);
     applyBoardFilters();
     if (filter.dataset.filterBound === 'true') return;
     filter.dataset.filterBound = 'true';
@@ -1173,10 +1177,31 @@ export const dashboardClient = String.raw`(() => {
       writeBoardFilters(next);
     });
     for (const choice of filter.querySelectorAll('[data-filter-state]')) {
-      choice.addEventListener('click', (event) => {
-        const input = choice.querySelector('input');
-        if (input && input.checked) {
+      const input = choice.querySelector('input');
+      if (!(input instanceof HTMLInputElement)) continue;
+      let wasSelectedOnPointerDown = false;
+      input.addEventListener('pointerdown', () => {
+        wasSelectedOnPointerDown = input.checked;
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === ' ' && input.checked) {
           event.preventDefault();
+          writeBoardFilters({ ...current(), state: null });
+        }
+      });
+      input.addEventListener('click', (event) => {
+        const clear = wasSelectedOnPointerDown && input.checked;
+        wasSelectedOnPointerDown = false;
+        if (!clear) return;
+        event.preventDefault();
+        writeBoardFilters({ ...current(), state: null });
+      });
+      choice.addEventListener('click', (event) => {
+        // A label activation forwards a second click to its radio after this listener. Let that
+        // forwarded click select an unchecked radio; only an already-selected label clears.
+        if (event.target !== input && input.checked) {
+          event.preventDefault();
+          wasSelectedOnPointerDown = false;
           writeBoardFilters({ ...current(), state: null });
         }
       });

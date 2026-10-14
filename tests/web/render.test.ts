@@ -587,6 +587,17 @@ describe("renderDashboard", () => {
     expect(renderDashboard({ ...dashboard, view: "repositories", repositories: [] })).toContain("No repositories are configured.");
   });
 
+  test("uses each card's pipeline actors in board search data", () => {
+    const alpha = { ...backlogIssue, id: "alpha", repository: "alpha", number: 101, title: "Alpha work", searchActors: [{ type: "agent" as const, name: "Alice", title: null }] };
+    const beta = { ...backlogIssue, id: "beta", repository: "beta", number: 102, title: "Beta work", searchActors: [{ type: "agent" as const, name: "Beatrice", title: null }] };
+    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, actors: [{ type: "agent", name: "Shared", title: null }], issues: [alpha, beta] }] });
+    const alphaCard = html.slice(html.indexOf('data-issue-id="alpha"'), html.indexOf('data-issue-id="beta"'));
+    const betaCard = html.slice(html.indexOf('data-issue-id="beta"'));
+
+    expect(alphaCard).toContain('data-board-search="alpha work 101 #101 alpha  alice"');
+    expect(betaCard).toContain('data-board-search="beta work 102 #102 beta  beatrice"');
+  });
+
   test("renders repository detail sections and redacts restricted setup for non-superusers", () => {
     const repository = {
       id: "space/name", address: "owner/space-name", color: 2, health: "degraded" as const,
@@ -769,7 +780,7 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain(">Sign in by code</button>");
     expect(familyRow).toContain(">Guest sign-in</button>");
     expect(familyRow).toContain('<span class="issue-stage">Build</span>');
-    expect(familyRow).toContain('<a class="issue issue--compact issue--success repo-color-1" href="/issues/sample/244"><span class="issue-kicker"><span class="issue-number">#244</span>');
+    expect(familyRow).toContain('href="/issues/sample/244" data-filter-card="true" data-board-search="store sign-in data 244 #244 sample" data-board-repository="sample" data-board-state="waiting"');
     expect(familyRow).toContain('<span class="issue-title">Store sign-in data</span><span class="issue-status"><span class="andon andon--run" aria-hidden="true"></span><strong>Done</strong></span>');
     expect(familyRow).not.toContain("family-thread");
     expect(familyRow).not.toContain(">Store sign-in data</button>");

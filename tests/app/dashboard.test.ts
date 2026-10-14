@@ -1848,11 +1848,14 @@ describe("ConveyorService dashboard", () => {
       settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1 },
       labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
       sources: { github: { type: "github" } }, runners: { codex: { type: "codex" } },
-      agents: { worker: { name: "Alice", title: "Backend agent", runner: "codex" } },
-      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "worker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      agents: { worker: { name: "Alice", title: "Backend agent", runner: "codex" }, betaWorker: { name: "Beatrice", title: "Beta agent", runner: "codex" } },
+      pipelines: {
+        default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "worker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] },
+        beta: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "betaWorker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] },
+      },
       repositories: {
         alpha: { source: "github", address: "owner/alpha", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], refinement: { fields: ["Effort"] } },
-        beta: { source: "github", address: "owner/beta", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], refinement: { fields: ["Effort"] } },
+        beta: { source: "github", address: "owner/beta", folder: root, baseBranch: "main", pipeline: "beta", concurrency: 1, systemLabels: [], refinement: { fields: ["Effort"] } },
       },
     } as unknown as ConveyorConfig;
     for (const id of ["alpha", "beta"]) store.upsertRepository({ id, configName: id, source: "github", address: `owner/${id}`, folder: root, configHash: config.hash });
@@ -1869,6 +1872,8 @@ describe("ConveyorService dashboard", () => {
     const all = service.dashboard("csrf");
     expect(all.stages[0]?.issues).toHaveLength(21);
     expect(all.stages[0]?.totalPages).toBe(1);
+    expect((all.stages[0]?.issues.find((issue) => issue.repository === "alpha")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Alice"]);
+    expect((all.stages[0]?.issues.find((issue) => issue.repository === "beta")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Beatrice"]);
     expect(all.done.issues.map((issue) => issue.id)).not.toContain("target");
     const filters = (q: string, repositoryIds: string[]) => ({ view: "board" as const, repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null, q, repositoryIds, state: null });
     const byNumber = service.dashboard("csrf", filters("#245", []));

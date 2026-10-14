@@ -2767,6 +2767,9 @@ export class ConveyorService {
         csrfToken,
         todos: todosView(todos.get(issue.id)?.items ?? []),
         stage: issue.projectedStage,
+        searchActors: issue.projectedStage
+          ? actorsForStage(issue.projectedStage, this.config.repositories[issue.repositoryId]?.pipeline)
+          : [],
         indicators: indicators.get(issue.id) ?? [],
         activity: cursor?.state === "pending"
           ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}`
