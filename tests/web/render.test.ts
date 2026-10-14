@@ -699,7 +699,7 @@ describe("renderDashboard", () => {
       children: [{ ...relation("old-part", 501, "Old part"), satisfied: true }] };
     const html = renderDashboard({
       ...dashboard,
-      stages: [{ ...dashboard.stages[0]!, issues: [child("running-part", 246, "Sign in by code"), unrelated, family, child("stopped-part", 247, "Guest sign-in"), orphan] }],
+      stages: [{ ...dashboard.stages[0]!, issues: [child("running-part", 246, "Sign in by code"), unrelated, family, child("stopped-part", 247, "Guest sign-in"), orphan, child("done-part", 244, "Store sign-in data")] }],
       done: { ...dashboard.done, issues: [child("done-part", 244, "Store sign-in data"), finished, child("old-part", 501, "Old part", "finished", 500)] },
     });
     const familyRow = html.slice(html.indexOf('data-family-row="family"'), html.indexOf('class="board-row other-row'));
@@ -723,6 +723,12 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain('<a class="issue issue--compact issue--success repo-color-1" href="/issues/sample/244"><span class="issue-kicker"><span class="issue-number">#244</span>');
     expect(familyRow).toContain('<span class="issue-title">Store sign-in data</span><span class="issue-status"><span class="andon andon--run" aria-hidden="true"></span><strong>Done</strong></span>');
     expect(familyRow).not.toContain("family-thread");
+    expect(familyRow).not.toContain(">Store sign-in data</button>");
+    expect(familyRow.match(/<span class="issue-title">Store sign-in data<\/span>/g)?.length).toBe(1);
+    // An empty stage is a narrow box in front of the rows, its heading inside; the strip keeps a placeholder.
+    const withEmpty = renderDashboard({ ...dashboard });
+    expect(withEmpty).toContain('<div class="board-columns board-columns--front"><span></span><span></span><section class="stage stage--empty" id="station-stage-review"');
+    expect(withEmpty).toContain('<span class="stage-placeholder"></span>');
     // Everything else is in the bottom row; a child of an off-board parent links to it.
     expect(otherRow).toContain('data-row-fold="board-other"');
     expect(otherRow).toContain(">Unrelated work</button>");
@@ -751,7 +757,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Delivery board");
     expect(html).toContain(">Backlog</h2>");
     // A heading is the name, an information button and the count; the rest is in its dialog.
-    expect(html).toContain('<button type="button" class="stage-info card-open" aria-haspopup="dialog" aria-label="About Build">');
+    expect(html).toContain('<button type="button" class="stage-info card-open" data-dialog-open="stage-info-stage-build" aria-haspopup="dialog" aria-label="About Build">');
     expect(html).toContain('<dialog class="stage-dialog" id="stage-info-stage-build" aria-labelledby="stage-info-stage-build-title">');
     expect(html).toContain('<p class="stage-dialog-description">Enrolled items waiting for their first stage, in the order they will start.</p>');
     expect(html).toContain('<section class="stage-dialog-team" aria-label="Who works in Build"><h3>Team</h3>');

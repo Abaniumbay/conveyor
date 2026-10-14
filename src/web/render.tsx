@@ -453,41 +453,56 @@ function boardStations(model: DashboardViewModel): Station[] {
   ];
 }
 
-/** A stage's heading on the board: its name, its count, and an information button for the rest. */
+const infoIcon = <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M8 7.2v4" /><path d="M8 4.8v.01" /></svg>;
+
+function stationSlug(station: Station): string {
+  return station.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+/** Opens the stage's information dialog; usable from its heading and, on a phone, from its label in a row. */
+function StationInfoButton({ station }: { station: Station }) {
+  return <button type="button" class="stage-info card-open" data-dialog-open={`stage-info-${stationSlug(station)}`} aria-haspopup="dialog" aria-label={`About ${station.name}`}>{infoIcon}</button>;
+}
+
+/** A stage's heading on the board: its name, an information button and its count. */
 function StationHeading({ station }: { station: Station }) {
-  const slug = station.id.replace(/[^a-zA-Z0-9_-]/g, "-");
-  const headingId = `stage-${slug}`;
-  const dialogId = `stage-info-${slug}`;
+  const headingId = `stage-${stationSlug(station)}`;
+  const narrow = narrowStation(station);
   return (
-    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrowStation(station) ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={dialogId}>
+    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrow ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={`stage-info-${stationSlug(station)}`}>
       <header class="stage-heading">
         <h2 id={headingId}>{station.name}</h2>
-        <button type="button" class="stage-info card-open" aria-haspopup="dialog" aria-label={`About ${station.name}`}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M8 7.2v4" /><path d="M8 4.8v.01" /></svg>
-        </button>
+        <StationInfoButton station={station} />
         <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
       </header>
-      <dialog class="stage-dialog" id={dialogId} aria-labelledby={`${dialogId}-title`}>
-        <header class="stage-dialog-header">
-          <h2 id={`${dialogId}-title`}>{station.name}</h2>
-          <form method="dialog"><button type="submit" class="stage-dialog-close" aria-label="Close">×</button></form>
-        </header>
-        {station.description && <p class="stage-dialog-description">{station.description}</p>}
-        <p class="stage-dialog-count"><strong>{station.count}</strong> {station.count === 1 ? "item" : "items"}</p>
-        {station.actors.length > 0 && (
-          <section class="stage-dialog-team" aria-label={`Who works in ${station.name}`}>
-            <h3>Team</h3>
-            <ul>{station.actors.map((actor) => (
-              <li class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
-                <AgentAvatar name={actor.name} script={actor.type === "script"} />
-                <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
-              </li>
-            ))}</ul>
-          </section>
-        )}
-        {station.cost && <p class="stage-dialog-usage"><span>Usage</span> {station.cost}</p>}
-      </dialog>
     </section>
+  );
+}
+
+/** What a stage is for, who works there and what it has used. */
+function StationDialog({ station }: { station: Station }) {
+  const dialogId = `stage-info-${stationSlug(station)}`;
+  return (
+    <dialog class="stage-dialog" id={dialogId} aria-labelledby={`${dialogId}-title`}>
+      <header class="stage-dialog-header">
+        <h2 id={`${dialogId}-title`}>{station.name}</h2>
+        <form method="dialog"><button type="submit" class="stage-dialog-close" aria-label="Close">×</button></form>
+      </header>
+      {station.description && <p class="stage-dialog-description">{station.description}</p>}
+      <p class="stage-dialog-count"><strong>{station.count}</strong> {station.count === 1 ? "item" : "items"}</p>
+      {station.actors.length > 0 && (
+        <section class="stage-dialog-team" aria-label={`Who works in ${station.name}`}>
+          <h3>Team</h3>
+          <ul>{station.actors.map((actor) => (
+            <li class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
+              <AgentAvatar name={actor.name} script={actor.type === "script"} />
+              <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
+            </li>
+          ))}</ul>
+        </section>
+      )}
+      {station.cost && <p class="stage-dialog-usage"><span>Usage</span> {station.cost}</p>}
+    </dialog>
   );
 }
 
@@ -504,6 +519,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   const rowId = `family-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const dialogId = `issue-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${parent.number}-family`;
   const done = parent.children.filter((child) => child.satisfied);
+  const doneIds = new Set(done.map((child) => child.id));
   const stopped = parent.needsAttention || parent.tone === "danger";
   return (
     <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} aria-label={`#${parent.number} ${parent.title}`}>
@@ -522,7 +538,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
       </div>
       <div class="board-cells" id={`${rowId}-cells`}>
         {stations.map((station) => {
-          const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id);
+          const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id && !doneIds.has(issue.id));
           return (
             <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} key={station.id}>
               {cards.length > 0 && <ol class="issue-list">{cards.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} stageLabel={station.name} /></li>)}</ol>}
@@ -595,7 +611,8 @@ function Board({ model }: { model: DashboardViewModel }) {
     <section class="board board--rows" aria-label="Delivery board">
       <div class="board-track" style={style}>
         <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
-        <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
+        <div class="board-columns board-columns--front">{stations.map((station) => narrowStation(station) ? <StationHeading station={station} key={station.id} /> : <span key={station.id} />)}</div>
+        <div class="board-head">{stations.map((station) => narrowStation(station) ? <span class="stage-placeholder" key={station.id} /> : <StationHeading station={station} key={station.id} />)}</div>
         {openParents.map((parent) => <FamilyRow parent={parent} stations={stations} canManage={canManage} key={parent.id} />)}
         <section class={`board-row other-row${openParents.length === 0 ? " other-row--alone" : ""}`} aria-label="Items without a parent">
           {openParents.length > 0 && (
@@ -615,7 +632,7 @@ function Board({ model }: { model: DashboardViewModel }) {
               const increment = Math.min(20, remaining);
               return (
                 <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} aria-label={station.name} key={station.id}>
-                  <p class="board-cell-label"><span>{station.name}</span><span class="count">{station.count}</span></p>
+                  <p class="board-cell-label"><span>{station.name}</span><StationInfoButton station={station} /><span class="count">{station.count}</span></p>
                   {station.kind === "backlog"
                     ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
                     : issues.length > 0 && <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>}
@@ -633,6 +650,7 @@ function Board({ model }: { model: DashboardViewModel }) {
           </div>
         </section>
       </div>
+      {stations.map((station) => <StationDialog station={station} key={station.id} />)}
     </section>
   );
 }

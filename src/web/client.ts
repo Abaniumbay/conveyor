@@ -978,6 +978,45 @@ export const dashboardClient = String.raw`(() => {
   applyRowFolds();
   document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
 
+  // A board wider than the window gets a scrollbar pinned to the bottom of the window while the board
+  // is on screen and its own scrollbar is not, so it can always be scrolled sideways.
+  const pinnedScrollbar = document.createElement('div');
+  pinnedScrollbar.className = 'board-scrollbar';
+  pinnedScrollbar.hidden = true;
+  pinnedScrollbar.setAttribute('aria-hidden', 'true');
+  pinnedScrollbar.append(document.createElement('div'));
+  document.body.append(pinnedScrollbar);
+  let syncingPinnedScroll = false;
+  const currentBoard = () => document.querySelector('main.dashboard .board.board--rows');
+  const updatePinnedScrollbar = () => {
+    const current = currentBoard();
+    const bounds = current ? current.getBoundingClientRect() : null;
+    pinnedScrollbar.hidden = !current || current.scrollWidth <= current.clientWidth + 1 ||
+      bounds.bottom <= window.innerHeight || bounds.top >= window.innerHeight - 40;
+    if (pinnedScrollbar.hidden) return;
+    pinnedScrollbar.style.left = Math.max(0, bounds.left) + 'px';
+    pinnedScrollbar.style.right = Math.max(0, window.innerWidth - bounds.right) + 'px';
+    pinnedScrollbar.firstElementChild.style.width = current.scrollWidth + 'px';
+    if (Math.abs(pinnedScrollbar.scrollLeft - current.scrollLeft) > 1) {
+      syncingPinnedScroll = true;
+      pinnedScrollbar.scrollLeft = current.scrollLeft;
+    }
+  };
+  pinnedScrollbar.addEventListener('scroll', () => {
+    if (syncingPinnedScroll) {
+      syncingPinnedScroll = false;
+      return;
+    }
+    const current = currentBoard();
+    if (current) current.scrollLeft = pinnedScrollbar.scrollLeft;
+  });
+  document.addEventListener('scroll', (event) => {
+    if (event.target === document || (event.target instanceof Element && event.target.matches('.board'))) updatePinnedScrollbar();
+  }, { capture: true, passive: true });
+  window.addEventListener('resize', updatePinnedScrollbar);
+  document.addEventListener('conveyor:dashboard-rendered', updatePinnedScrollbar);
+  updatePinnedScrollbar();
+
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
 
