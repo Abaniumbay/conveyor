@@ -2488,6 +2488,22 @@ export class ConveyorService {
         issue.projectedState === "done" ||
         issue.projectedState === "completed",
     });
+    // A parent card places each child on the line: Backlog, each configured stage, then Done.
+    // Called only while cards are built, after the stages and the backlog below are known.
+    const childRelation = (child: StoredIssue): IssueRelationViewModel => {
+      const base = relation(child);
+      const names = ["Backlog", ...stages.map((stage) => stageNames.get(stage) ?? displayName(stage)), "Done"];
+      const stageIndex = child.projectedStage ? stages.indexOf(child.projectedStage) : -1;
+      const index = base.satisfied
+        ? names.length - 1
+        : backlogIds.has(child.id) || stageIndex < 0 ? 0 : stageIndex + 1;
+      const state = child.projectedState ?? child.sourceState;
+      const signal = activeIssueIds.has(child.id)
+        ? "run"
+        : questionIssueIds.has(child.id) || STOPPED_ISSUE_STATES.has(state) ? "stop" : "wait";
+      const station = { index, count: names.length, name: names[index]! };
+      return base.satisfied ? { ...base, station } : { ...base, station, signal };
+    };
     const tone = (state: string): IssueTone => {
       if (state === "done" || state === "completed") return "success";
       if (["blocked", "error", "rejected", "needs-intervention", "inconsistent"].includes(state)) {
@@ -2516,7 +2532,7 @@ export class ConveyorService {
       const children = this.store.listChildren(issue.id)
         .flatMap(({ issueId }) => {
           const child = byId.get(issueId);
-          return child ? [relation(child)] : [];
+          return child ? [childRelation(child)] : [];
         });
       const dependencies = this.store.listDependencies(issue.id)
         .flatMap((issueId) => {
@@ -2525,6 +2541,12 @@ export class ConveyorService {
         });
       const projectedState = options.state ?? issue.projectedState ?? issue.sourceState;
       const parent = issue.parentId ? byId.get(issue.parentId) : null;
+      const siblings = parent
+        ? this.store.listChildren(parent.id).flatMap(({ issueId }) => {
+            const sibling = byId.get(issueId);
+            return sibling ? [relation(sibling)] : [];
+          })
+        : [];
       const cursor = this.store.executions().getCursor(issue.id);
       const parked = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue, schedulerQueue) : null;
       const retry = !activeIssueIds.has(issue.id)
@@ -2579,6 +2601,9 @@ export class ConveyorService {
         closable: issue.labels.includes(this.config.labels.metadata.closable),
         tone: tone(projectedState),
         parent: parent ? relation(parent) : null,
+        parentProgress: parent && siblings.length > 0
+          ? { done: siblings.filter((sibling) => sibling.satisfied).length, total: siblings.length }
+          : null,
         children,
         dependencies,
         working: activeIssueIds.has(issue.id),
@@ -2589,9 +2614,13 @@ export class ConveyorService {
       };
     };
     const stageNames = new Map<string, string>();
+    const stageDescriptions = new Map<string, string>();
+    const stageIcons = new Map<string, string>();
     for (const pipeline of Object.values(this.config.pipelines)) {
       for (const stage of pipeline.stages) {
         if (!stageNames.has(stage.id)) stageNames.set(stage.id, stage.name ?? displayName(stage.id));
+        if (stage.description && !stageDescriptions.has(stage.id)) stageDescriptions.set(stage.id, stage.description);
+        if (stage.icon && !stageIcons.has(stage.id)) stageIcons.set(stage.id, stage.icon);
       }
     }
     const stages = [...stageNames.keys()];
@@ -2782,14 +2811,18 @@ export class ConveyorService {
         runnerCapacity: this.config.settings.runners,
         runs: activeRuns,
       },
-      stages: stages.map((stage) => column(
+      stages: stages.map((stage) => ({
+        ...column(
           `stage:${stage}`,
           stageNames.get(stage) ?? displayName(stage),
           stagedIssues.filter((issue) => issue.projectedStage === stage),
           formatUsage(this.store.costSummary({ stageId: stage })),
           (issue) => card(issue),
           actorsForStage(stage),
-        )),
+        ),
+        description: stageDescriptions.get(stage) ?? null,
+        icon: stageIcons.get(stage) ?? null,
+      })),
       backlog: backlogIssues.map((issue) => card(issue)),
       done: {
         id: "done",

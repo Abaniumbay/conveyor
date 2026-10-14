@@ -12,6 +12,18 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Superusers can reset dashboard account passwords or delete regular accounts from Accounts, and
   `conveyor admin delete-account <username>` provides the same protected deletion from the shell.
+- The board shows each open parent as a row. The stations stay across the top. Each parent's row
+  holds its children as cards in their stations, and its header shows the parent's number and
+  title, one square per child (done, running, waiting, stopped), `done/total`, the parent's own
+  stop when it has one, and **Details**. Items without a parent share a row at the bottom. Rows
+  fold to their header, and each browser remembers which are folded. A finished family shows
+  only its parent, in Done. On a phone, a family row lists its cards in stage order, with the
+  stage on each card.
+
+### Changed
+
+- Stage columns no longer pull parents into a separate "Roll-up parents" group, and a parent is
+  no longer a card in its column: it heads its family's row.
 
 ### Fixed
 

@@ -112,6 +112,47 @@ function RelationshipSummary({ issue }: { issue: IssueCardViewModel }) {
   );
 }
 
+/** A child shown outside its family's row (its parent is not on the board): a link to the parent. */
+function FamilyThread({ issue }: { issue: IssueCardViewModel }) {
+  const parent = issue.parent;
+  if (!parent) return null;
+  const progress = issue.parentProgress;
+  return (
+    <p class="family-thread">
+      <svg class="family-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v6.5A2.5 2.5 0 0 0 5.5 11H13" /><path d="M10 8l3 3-3 3" /></svg>
+      <span class="family-thread-label">Part of</span>
+      <a href={issueHref(parent.repository, parent.number)} title={`#${parent.number} ${parent.title}`}>#{parent.number} {parent.title}</a>
+      {progress && <span class="family-thread-progress">{progress.done}/{progress.total}</span>}
+    </p>
+  );
+}
+
+function partsSummary(parent: IssueCardViewModel): string {
+  const total = parent.children.length;
+  const done = parent.children.filter((child) => child.satisfied).length;
+  const parts = total === 1 ? "part" : "parts";
+  return done === total ? `All ${total} ${parts} done` : `${done} of ${total} ${parts} done`;
+}
+
+const FAMILY_SIGNAL_WORDS = { done: "done", run: "running", wait: "waiting", stop: "stopped" } as const;
+
+/** One square per child, done first, then the furthest along: no connecting line, so it never reads as a strike-through. */
+function FamilySquares({ parent }: { parent: IssueCardViewModel }) {
+  const signalOf = (child: IssueRelationViewModel) => child.satisfied ? "done" : child.signal ?? "wait";
+  const children = [...parent.children].sort((left, right) =>
+    Number(right.satisfied) - Number(left.satisfied) || (right.station?.index ?? 0) - (left.station?.index ?? 0));
+  const counts = (Object.keys(FAMILY_SIGNAL_WORDS) as Array<keyof typeof FAMILY_SIGNAL_WORDS>)
+    .map((signal) => ({ signal, count: children.filter((child) => signalOf(child) === signal).length }))
+    .filter((entry) => entry.count > 0);
+  return (
+    <span class="family-squares" role="img" aria-label={counts.map((entry) => `${entry.count} ${FAMILY_SIGNAL_WORDS[entry.signal]}`).join(", ")}>
+      {children.map((child) => (
+        <span class={`family-square family-square--${signalOf(child)}`} title={`#${child.number} ${child.title}${child.station ? ` · ${child.station.name}` : ""}`} key={child.id} />
+      ))}
+    </span>
+  );
+}
+
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const url = safeUrl(issue.url);
   const summaryId = `${id}-summary`;
@@ -318,16 +359,19 @@ function stateWords(issue: IssueCardViewModel): string {
 let heldCards: ReadonlySet<string> | null = null;
 
 /** Changes whenever anything the card shows does. */
-function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean): string {
-  return Bun.hash(JSON.stringify([issue, actors, canManage])).toString(36);
+function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean, stageLabel: string | null, thread: boolean): string {
+  return Bun.hash(JSON.stringify([issue, actors, canManage, stageLabel, thread])).toString(36);
 }
 
-function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean }) {
-  const revision = cardRevision(issue, actors, canManage);
+/**
+ * `stageLabel`: the card's station, shown on phones where a family row lists its cards in one column.
+ * `thread`: the card is outside its family's row, so it links to its parent.
+ */
+function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, thread = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean; stageLabel?: string | null; thread?: boolean }) {
+  const revision = cardRevision(issue, actors, canManage, stageLabel, thread);
   if (heldCards?.has(revision)) return <article class="issue" data-issue-id={issue.id} data-card-revision={revision} data-keep />;
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
-  const completedChildren = issue.children.filter((child) => child.satisfied).length;
   const glowClass = issue.needsAttention
     ? " issue--glow-attention"
     : issue.working ? " issue--glow-running" : "";
@@ -345,7 +389,8 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       data-dialog-open={dialogId}
       data-card-revision={revision}
     >
-      <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
+      <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span>{stageLabel && <span class="issue-stage">{stageLabel}</span>}</p>
+      {thread && <FamilyThread issue={issue} />}
       <h3 class="issue-title"><button type="button" class="card-open" aria-haspopup="dialog">{issue.title}</button></h3>
       <p class="issue-status">
         <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
@@ -358,7 +403,7 @@ function IssueCard({ issue, actors = [], canManage = false }: { issue: IssueCard
       <RelationshipSummary issue={issue} />
       <IndicatorChips issue={issue} />
       <TodoProgress issue={issue} />
-      {rollup && <p class="rollup-summary">Roll-up · {issue.children.length} {issue.children.length === 1 ? "child" : "children"}, {completedChildren} done</p>}
+      {rollup && <p class="rollup-summary">{partsSummary(issue)}</p>}
       <DetailsDialog issue={issue} id={dialogId} canManage={canManage} />
     </article>
   );
@@ -383,49 +428,243 @@ function Pagination({ column, view }: { column: StageColumnViewModel; view: Dash
   );
 }
 
-function StageColumn({ column, canManage = false }: { column: StageColumnViewModel; canManage?: boolean }) {
-  const headingId = `stage-${column.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const rollupParents = column.issues.filter((issue) => issue.children.length > 0);
-  const regularIssues = column.issues.filter((issue) => issue.children.length === 0);
-  const issueList = (issues: readonly IssueCardViewModel[]) => (
-    <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={column.actors} canManage={canManage} /></li>)}</ol>
-  );
+/** An empty stage in the middle of the line collapses to a narrow heading; Backlog and Done never do. */
+function narrowStation(station: { kind: "backlog" | "stage" | "done"; count: number }): boolean {
+  return station.kind === "stage" && station.count === 0;
+}
+
+interface Station {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  count: number;
+  actors: StageColumnViewModel["actors"];
+  cost: string | null;
+  issues: readonly IssueCardViewModel[];
+  column: StageColumnViewModel | null;
+  kind: "backlog" | "stage" | "done";
+}
+
+/** The emoji of a stage with none configured, by its usual id; any other stage shows none. */
+const DEFAULT_STAGE_ICONS: Record<string, string> = {
+  backlog: "📥", refinement: "🧭", implementation: "🛠️", review: "🔍", merge: "🔀",
+  deploy: "🚀", verify: "✅", cleanup: "🧹", done: "🏁",
+};
+
+function stageIcon(id: string, configured: string | null | undefined): string | null {
+  return configured ?? DEFAULT_STAGE_ICONS[id.replace(/^stage:/, "")] ?? null;
+}
+
+function boardStations(model: DashboardViewModel): Station[] {
+  return [
+    { id: "backlog", name: "Backlog", icon: stageIcon("backlog", null), description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
+    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, icon: stageIcon(column.id, column.icon), description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
+    { id: "done", name: "Done", icon: stageIcon("done", null), description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
+  ];
+}
+
+const infoIcon = <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M8 7.2v4" /><path d="M8 4.8v.01" /></svg>;
+
+function stationSlug(station: Station): string {
+  return station.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+/** Opens the stage's information dialog; usable from its heading and, on a phone, from its label in a row. */
+function StationInfoButton({ station }: { station: Station }) {
+  return <button type="button" class="stage-info card-open" data-dialog-open={`stage-info-${stationSlug(station)}`} aria-haspopup="dialog" aria-label={`About ${station.name}`}>{infoIcon}</button>;
+}
+
+/** A stage's heading on the board: its name, an information button and its count. */
+function StationHeading({ station }: { station: Station }) {
+  const headingId = `stage-${stationSlug(station)}`;
+  const narrow = narrowStation(station);
   return (
-    <section class={`stage${column.issues.length === 0 ? " stage--empty" : ""}`} id={stationId(column.id)} aria-labelledby={headingId}>
+    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrow ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={`stage-info-${stationSlug(station)}`}>
       <header class="stage-heading">
-        <div class="stage-identity">
-          <h2 id={headingId}>{column.name}</h2>
-          {column.actors.length > 0 && (
-            <div class="stage-actors">{column.actors.map((actor) => (
-              <span class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
-                <AgentAvatar name={actor.name} script={actor.type === "script"} />
-                <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
-              </span>
-            ))}</div>
-          )}
-        </div>
-        <div class="stage-summary">
-          {column.cost && <span class="stage-cost">{column.cost}</span>}
-          <span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span>
-        </div>
+        {station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon}</span>}
+        <h2 id={headingId}>{station.name}</h2>
+        <StationInfoButton station={station} />
+        <span class="count" aria-label={`${station.count} issues`}>{station.count}</span>
       </header>
-      {column.issues.length > 0
-        ? rollupParents.length > 0
-          ? <Fragment>
-              <section class="stage-group stage-group--rollups" aria-label="Roll-up parents">
-                <h3>Roll-up parents</h3>
-                {issueList(rollupParents)}
-              </section>
-              {regularIssues.length > 0 && (
-                <section class="stage-group" aria-label="Issues">
-                  <h3>Issues</h3>
-                  {issueList(regularIssues)}
-                </section>
+    </section>
+  );
+}
+
+/** What a stage is for, who works there and what it has used. */
+function StationDialog({ station }: { station: Station }) {
+  const dialogId = `stage-info-${stationSlug(station)}`;
+  return (
+    <dialog class="stage-dialog" id={dialogId} aria-labelledby={`${dialogId}-title`}>
+      <header class="stage-dialog-header">
+        <h2 id={`${dialogId}-title`}>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</h2>
+        <form method="dialog"><button type="submit" class="stage-dialog-close" aria-label="Close">×</button></form>
+      </header>
+      {station.description && <p class="stage-dialog-description">{station.description}</p>}
+      <p class="stage-dialog-count"><strong>{station.count}</strong> {station.count === 1 ? "item" : "items"}</p>
+      {station.actors.length > 0 && (
+        <section class="stage-dialog-team" aria-label={`Who works in ${station.name}`}>
+          <h3>Team</h3>
+          <ul>{station.actors.map((actor) => (
+            <li class="stage-actor" key={`${actor.type}:${actor.name}:${actor.title ?? ""}`}>
+              <AgentAvatar name={actor.name} script={actor.type === "script"} />
+              <span><strong>{actor.name}</strong>{actor.title && <small>{actor.title}</small>}</span>
+            </li>
+          ))}</ul>
+        </section>
+      )}
+      <p class="stage-dialog-usage"><span>Usage</span> {station.cost
+        ?? (station.actors.length > 0 && station.actors.every((actor) => actor.type === "script")
+          ? "Runs without an agent, so it uses no tokens."
+          : station.kind === "stage" ? "No agent usage recorded yet." : "Not a stage agents work in.")}</p>
+    </dialog>
+  );
+}
+
+function FoldButton({ target, label }: { target: string; label: string }) {
+  return (
+    <button type="button" class="row-fold" data-row-fold={target} aria-controls={`${target}-cells`} aria-expanded="true" aria-label={`Fold ${label}`} data-fold-label={label}>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+    </button>
+  );
+}
+
+/** One open parent: its header (the parent itself) and its children, each in its own station's column. */
+function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel; stations: readonly Station[]; canManage: boolean }) {
+  const rowId = `family-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const dialogId = `issue-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${parent.number}-family`;
+  const done = parent.children.filter((child) => child.satisfied);
+  const doneIds = new Set(done.map((child) => child.id));
+  const stopped = parent.needsAttention || parent.tone === "danger";
+  return (
+    <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} aria-label={`#${parent.number} ${parent.title}`}>
+      <div class="row-band">
+      <div class="family-head" data-dialog-open={dialogId}>
+        <FoldButton target={rowId} label={`the #${parent.number} family`} />
+        <RepositoryBadge repository={parent.repository} />
+        <span class="family-number">#{parent.number}</span>
+        <strong class="family-title" title={parent.title}>{parent.title}</strong>
+        <FamilySquares parent={parent} />
+        <span class="family-progress"><strong>{done.length}/{parent.children.length}</strong> done</span>
+        {stopped && <span class="family-stop" title={parent.reason ?? undefined}><i class="andon andon--stop" aria-hidden="true" />{stateWords(parent)}</span>}
+        <button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>
+        <DetailsDialog issue={parent} id={dialogId} canManage={canManage} />
+      </div>
+      </div>
+      <div class="board-cells" id={`${rowId}-cells`}>
+        {stations.map((station) => {
+          const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id && !doneIds.has(issue.id));
+          return (
+            <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} key={station.id}>
+              {cards.length > 0 && <ol class="issue-list">{cards.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} stageLabel={station.name} /></li>)}</ol>}
+              {station.kind === "done" && done.length > 0 && (
+                <ol class="issue-list">{done.map((child) => (
+                  <li key={child.id}>
+                    <a class={`issue issue--compact issue--success repo-color-${parent.repositoryColor}`} href={issueHref(child.repository, child.number)}>
+                      <span class="issue-kicker"><span class="issue-number">#{child.number}</span>{station && <span class="issue-stage">{station.name}</span>}</span>
+                      <span class="issue-title">{child.title}</span>
+                      <span class="issue-status"><span class="andon andon--run" aria-hidden="true" /><strong>Done</strong></span>
+                    </a>
+                  </li>
+                ))}</ol>
               )}
-            </Fragment>
-          : issueList(regularIssues)
-        : <p class="empty">No issues in this stage</p>}
-      <Pagination column={column} view="board" />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function BacklogCell({ issues, model, canManage, thread }: { issues: readonly IssueCardViewModel[]; model: DashboardViewModel; canManage: boolean; thread: (issue: IssueCardViewModel) => boolean }) {
+  return (
+    <ol class="issue-list" data-backlog-list>
+      {issues.map((issue, index) => (
+        <li class="backlog-row" key={issue.id} data-backlog-id={issue.id} draggable>
+          <IssueCard issue={issue} canManage={canManage} thread={thread(issue)} />
+          {canManage && <div class="reorder" role="group" aria-label={`Reorder issue #${issue.number}`}>
+            {(["up", "down"] as const).map((direction) => {
+              const disabled = direction === "up" ? index === 0 : index === issues.length - 1;
+              return (
+                <form method="post" action="/backlog/reorder" key={direction}>
+                  <input type="hidden" name="csrf" value={model.csrfToken} />
+                  <input type="hidden" name="issueId" value={issue.id} />
+                  <input type="hidden" name="direction" value={direction} />
+                  <button type="submit" aria-label={`Move #${issue.number} ${direction}`} disabled={disabled}>{direction === "up" ? "↑" : "↓"}</button>
+                </form>
+              );
+            })}
+          </div>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * The delivery board: the stations across the top, one foldable row per open parent with its children
+ * in their stations, then a row for everything else. A finished family shows only its parent, in Done.
+ */
+function Board({ model }: { model: DashboardViewModel }) {
+  const canManage = canManageDashboard(model);
+  const stations = boardStations(model);
+  const openParents: IssueCardViewModel[] = [];
+  for (const station of stations) {
+    if (station.kind === "done") continue;
+    for (const issue of station.issues) if (issue.children.length > 0) openParents.push(issue);
+  }
+  const openIds = new Set(openParents.map((parent) => parent.id));
+  const doneIds = new Set(model.done.issues.map((issue) => issue.id));
+  const inFamilyRow = (issue: IssueCardViewModel) => Boolean(issue.parent && openIds.has(issue.parent.id));
+  // Outside a family row: not an open parent, not in one of their rows, and not a finished family's child.
+  const elsewhere = (station: Station) => station.issues.filter((issue) =>
+    !openIds.has(issue.id) && !inFamilyRow(issue) && !(station.kind === "done" && issue.parent && doneIds.has(issue.parent.id)));
+  const thread = (issue: IssueCardViewModel) => Boolean(issue.parent);
+  const columns = (wide: string, narrow: string) => stations.map((station) => narrowStation(station) ? narrow : wide).join(" ");
+  const style = `--board-columns:${columns("min(20rem,86vw)", "4.5rem")};--board-columns-phone:${columns("calc(100vw - 1.5rem)", "3.25rem")}`;
+  return (
+    <section class="board board--rows" aria-label="Delivery board">
+      <div class="board-track" style={style}>
+        <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
+        <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
+        {openParents.map((parent) => <FamilyRow parent={parent} stations={stations} canManage={canManage} key={parent.id} />)}
+        <section class={`board-row other-row${openParents.length === 0 ? " other-row--alone" : ""}`} aria-label="Items without a parent">
+          {openParents.length > 0 && (
+            <div class="row-band">
+              <div class="family-head other-head">
+                <FoldButton target="board-other" label="items without a parent" />
+                <strong class="family-title">Items without a parent</strong>
+              </div>
+            </div>
+          )}
+          <div class="board-cells" id="board-other-cells">
+            {stations.map((station) => {
+              const issues = elsewhere(station);
+              const narrow = narrowStation(station);
+              const done = station.kind === "done" ? model.done : null;
+              const remaining = done ? done.totalIssues - done.issues.length : 0;
+              const increment = Math.min(20, remaining);
+              return (
+                <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} aria-label={station.name} key={station.id}>
+                  <p class="board-cell-label"><span>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</span><StationInfoButton station={station} /><span class="count">{station.count}</span></p>
+                  {station.kind === "backlog"
+                    ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
+                    : issues.length > 0 && <ol class="issue-list">{issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} thread={thread(issue)} /></li>)}</ol>}
+                  {station.kind === "stage" && station.column && <Pagination column={station.column} view="board" />}
+                  {done && remaining > 0 && (
+                    <form class="load-more" method="get" action="/board">
+                      <input type="hidden" name="doneLimit" value={done.issues.length + increment} />
+                      <button type="submit">Load {increment} more</button>
+                      <span>{done.issues.length} of {done.totalIssues}</span>
+                    </form>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+      {stations.map((station) => <StationDialog station={station} key={station.id} />)}
     </section>
   );
 }
@@ -653,58 +892,6 @@ function About() {
   );
 }
 
-function BacklogColumn({ model }: { model: DashboardViewModel }) {
-  const canManage = canManageDashboard(model);
-  return (
-    <section class={`stage stage--backlog${model.backlog.length === 0 ? " stage--empty" : ""}`} id={stationId("backlog")} aria-labelledby="backlog-heading">
-      <header class="stage-heading stage-heading--simple"><h2 id="backlog-heading">Backlog</h2><span class="count" aria-label={`${model.backlog.length} issues`}>{model.backlog.length}</span></header>
-      {model.backlog.length > 0 ? (
-        <ol class="issue-list" data-backlog-list>
-          {model.backlog.map((issue, index) => (
-            <li class="backlog-row" key={issue.id} data-backlog-id={issue.id} draggable>
-              <IssueCard issue={issue} canManage={canManage} />
-              {canManage && <div class="reorder" role="group" aria-label={`Reorder issue #${issue.number}`}>
-                {(["up", "down"] as const).map((direction) => {
-                  const disabled = direction === "up" ? index === 0 : index === model.backlog.length - 1;
-                  return (
-                    <form method="post" action="/backlog/reorder" key={direction}>
-                      <input type="hidden" name="csrf" value={model.csrfToken} />
-                      <input type="hidden" name="issueId" value={issue.id} />
-                      <input type="hidden" name="direction" value={direction} />
-                      <button type="submit" aria-label={`Move #${issue.number} ${direction}`} disabled={disabled}>{direction === "up" ? "↑" : "↓"}</button>
-                    </form>
-                  );
-                })}
-              </div>}
-            </li>
-          ))}
-        </ol>
-      ) : <p class="empty">No issues waiting to start</p>}
-    </section>
-  );
-}
-
-function DoneColumn({ model }: { model: DashboardViewModel }) {
-  const column = model.done;
-  const remaining = column.totalIssues - column.issues.length;
-  const increment = Math.min(20, remaining);
-  return (
-    <section class={`stage stage--done${column.issues.length === 0 ? " stage--empty" : ""}`} id={stationId("done")} aria-labelledby="done-heading">
-      <header class="stage-heading stage-heading--simple"><h2 id="done-heading">Done</h2><span class="count" aria-label={`${column.totalIssues} issues`}>{column.totalIssues}</span></header>
-      {column.issues.length > 0
-        ? <ol class="issue-list">{column.issues.map((issue) => <li key={issue.id}><IssueCard issue={issue} canManage={canManageDashboard(model)} /></li>)}</ol>
-        : <p class="empty">No closed issues</p>}
-      {remaining > 0 && (
-        <form class="load-more" method="get" action="/board">
-          <input type="hidden" name="doneLimit" value={column.issues.length + increment} />
-          <button type="submit">Load {increment} more</button>
-          <span>{column.issues.length} of {column.totalIssues}</span>
-        </form>
-      )}
-    </section>
-  );
-}
-
 function Attention({ model }: { model: DashboardViewModel }) {
   const column = model.attention;
   return (
@@ -874,13 +1061,7 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
   else if (model.view === "notifications" && model.notifications) content = <Notifications preferences={model.notifications} csrfToken={model.csrfToken} />;
-  else content = (
-    <section class="board" aria-label="Delivery board">
-      <BacklogColumn model={model} />
-      {model.stages.map((stage) => <StageColumn column={stage} key={stage.id} canManage={canManage} />)}
-      <DoneColumn model={model} />
-    </section>
-  );
+  else content = <Board model={model} />;
 
   return (
     <html lang="en">

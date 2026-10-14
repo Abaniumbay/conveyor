@@ -5,6 +5,8 @@ delivery:
   stages:
     - &refinement
       id: refinement
+      description: "Turns an item into a clear, testable plan: acceptance criteria, labels, and children or dependencies when it is too big."
+      icon: "🧭"
       concurrency: 3
       retries: 2
       childrenStartAt: next
@@ -20,6 +22,8 @@ delivery:
           wait: { timeout: unlimited, poll: 5m }
 
     - id: implementation
+      description: "Writes the change on its own branch, opens a pull request, and waits for CI to pass."
+      icon: "🛠️"
       concurrency: 2
       retries: 3
       actions:
@@ -43,6 +47,8 @@ delivery:
 
     - &review
       id: review
+      description: "Reviews the change against its acceptance criteria and sends findings back to implementation."
+      icon: "🔍"
       concurrency: 1
       actions:
         - { id: review, task: agent.run, with: { agents: [shaghayegh, shirin] } }
@@ -57,6 +63,8 @@ delivery:
 
     - &merge
       id: merge
+      description: "Merges the reviewed pull request."
+      icon: "🔀"
       concurrency: 1
       actions:
         - { id: mergeReviewedHead, task: change.merge, with: { method: squash } }
@@ -66,6 +74,8 @@ delivery:
     # Repositories replace the two script paths through stable-ID overrides.
     - &deploy
       id: deploy
+      description: "Runs the repository's deploy script for the merged change."
+      icon: "🚀"
       concurrency: 1
       actions:
         - { id: deployScript, task: script.run, with: { script: ./stages/deploy.ts, recovery: reconcile } }
@@ -74,6 +84,8 @@ delivery:
 
     - &verify
       id: verify
+      description: "Runs the repository's verify script against the deployed change."
+      icon: "✅"
       concurrency: 1
       actions:
         - { id: verifyScript, task: script.run, with: { script: ./stages/verify.ts, recovery: replay-safe } }
@@ -82,6 +94,8 @@ delivery:
 
     - &cleanup
       id: cleanup
+      description: "Removes the item's workspace once it is delivered."
+      icon: "🧹"
       concurrency: 4
       actions:
         - { id: removeWorkspace, task: workspace.cleanup }

@@ -691,13 +691,16 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await expectReachableHealth(page, "Degraded");
       }
       if (name === "board") {
-        await expectLastChildReachable(
-          page,
-          ".board",
-          ".stage",
-          "Board's last stage",
-          true,
-        );
+        // On a phone the board lists its stages top to bottom: nothing scrolls sideways, and every stage
+        // with items is on the page.
+        const phoneBoard = await page.locator(".board").evaluate((board) => ({
+          sideways: board.scrollWidth > board.clientWidth + 1,
+          hidden: [...board.querySelectorAll<HTMLElement>("[data-station-cell]")]
+            .filter((cell) => cell.querySelector("article.issue") && cell.getBoundingClientRect().width === 0)
+            .map((cell) => cell.dataset.stationCell),
+        }));
+        if (phoneBoard.sideways || phoneBoard.hidden.length > 0)
+          throw new Error(`Board on a phone scrolls sideways or hides stages: ${JSON.stringify(phoneBoard)}`);
         await expectLastChildReachable(page, ".tabs", ".tab", "Navigation tabs");
       }
       if (name === "reports")

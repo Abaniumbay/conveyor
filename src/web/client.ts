@@ -960,11 +960,42 @@ export const dashboardClient = String.raw`(() => {
     showDialog(dialog);
   };
 
+  // A board row (a family, or the items without a parent) can be folded to its header; each browser remembers which.
+  const foldedRows = new Set();
+  try {
+    const stored = JSON.parse(localStorage.getItem('conveyor-folded-rows') || '[]');
+    if (Array.isArray(stored)) for (const id of stored) if (typeof id === 'string') foldedRows.add(id);
+  } catch {}
+  const applyRowFolds = () => {
+    for (const button of document.querySelectorAll('[data-row-fold]')) {
+      const folded = foldedRows.has(button.getAttribute('data-row-fold') || '');
+      const cells = document.getElementById(button.getAttribute('aria-controls') || '');
+      if (cells) cells.hidden = folded;
+      button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      button.setAttribute('aria-label', (folded ? 'Unfold ' : 'Fold ') + (button.getAttribute('data-fold-label') || 'this row'));
+    }
+  };
+  applyRowFolds();
+  document.addEventListener('conveyor:dashboard-rendered', applyRowFolds);
+
+
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element)) return;
 
     const clickedDetails = event.target.closest('.dashboard-header details');
     closeHeaderPopovers(clickedDetails);
+
+    const rowFold = event.target.closest('[data-row-fold]');
+    if (rowFold instanceof HTMLButtonElement) {
+      const row = rowFold.getAttribute('data-row-fold');
+      if (row) {
+        if (foldedRows.has(row)) foldedRows.delete(row);
+        else foldedRows.add(row);
+        try { localStorage.setItem('conveyor-folded-rows', JSON.stringify([...foldedRows])); } catch {}
+        applyRowFolds();
+      }
+      return;
+    }
 
     const retryCard = event.target.closest('[data-retry-card]');
     if (retryCard instanceof HTMLButtonElement) {
@@ -1550,37 +1581,44 @@ export const dashboardClient = String.raw`(() => {
   const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
   const boardScrollMaximum = () => board ? Math.max(0, board.scrollWidth - board.clientWidth) : 0;
   const captureDashboardPosition = () => {
-    const stages = board ? [...board.querySelectorAll('.stage[id]')].map((stage) => {
+    // The card nearest the middle of the screen is what the reader is looking at; its station is
+    // the one to keep in place sideways (or, with no card in view, the station most in view).
+    const inView = (element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth;
+    };
+    const target = window.innerHeight / 2;
+    const issue = [...(board || document).querySelectorAll('article.issue[data-issue-id]')].filter(inView)
+      .sort((left, right) => Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target))[0];
+    const stages = board ? [...board.querySelectorAll('[data-station-cell]')].map((stage) => {
       const bounds = stage.getBoundingClientRect();
       const boardBounds = board.getBoundingClientRect();
       return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
     }).sort((left, right) => right.overlap - left.overlap) : [];
-    const stage = stages[0]?.stage;
-    const visibleIssues = [...(stage || document).querySelectorAll('article.issue[data-issue-id]')].filter((issue) => {
-      const bounds = issue.getBoundingClientRect();
-      return bounds.bottom > 0 && bounds.top < window.innerHeight;
-    });
-    const issue = visibleIssues.sort((left, right) => {
-      const target = window.innerHeight / 2;
-      return Math.abs(left.getBoundingClientRect().top - target) - Math.abs(right.getBoundingClientRect().top - target);
-    })[0];
+    const stage = (issue && issue.closest('[data-station-cell]')) || stages[0]?.stage;
     return {
       scrollX: board ? board.scrollLeft : 0,
+      boardY: board ? board.scrollTop : 0,
       scrollY: window.scrollY,
       issue: issue ? { id: issue.dataset.issueId, top: issue.getBoundingClientRect().top } : null,
-      stage: stage ? { id: stage.id, left: stage.getBoundingClientRect().left } : null,
+      stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
     };
   };
   const restoreDashboardPosition = (position) => {
     window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
     if (board) {
+      board.scrollTop = clampScrollOffset(position.boardY || 0, board.scrollHeight - board.clientHeight);
       board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
-      const stage = position.stage && document.getElementById(position.stage.id);
+      const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
       if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
     }
     if (position.issue?.id) {
       const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
-      if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + issue.getBoundingClientRect().top - position.issue.top, documentScrollMaximum()));
+      const shift = issue ? issue.getBoundingClientRect().top - position.issue.top : 0;
+      // On wide screens the board scrolls vertically inside itself; on phones the page does.
+      if (issue && board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
+        board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
+      } else if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
     }
   };
   const interactionInProgress = () => {
