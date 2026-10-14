@@ -193,10 +193,11 @@ describe("runCodex", () => {
       const got = await args();
       for (const override of expected) expect(got[got.indexOf(override) - 1]).toBe("-c");
       const [git, cache, home, tmp, ...rest] = await roots();
-      expect([git, cache, home, rest]).toEqual([
+      expect([git, cache, home, tmp, rest]).toEqual([
         resolveFilesystemPath(worktreeRoot),
         resolveFilesystemPath(cacheRoot),
         resolveFilesystemPath(path.join(files.artifacts, "home")),
+        resolveFilesystemPath(tmp!),
         [],
       ]);
       expect(path.basename(tmp!)).toStartWith("conveyor-run-");
