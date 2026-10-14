@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -204,7 +204,7 @@ describe("runCodex", () => {
     expect((await roots())[0]).toBe(path.join(files.artifacts, "home"));
   });
 
-  test("reuses an item scratch directory and rejects host temporary writable roots", async () => {
+  test("reuses an item scratch directory and rejects host temporary writable roots, including symlinks", async () => {
     const files = await fixture(`
       const args = process.argv.slice(2);
       await Bun.write(process.env.TMPDIR + "/from-agent", "available later");
@@ -230,6 +230,11 @@ describe("runCodex", () => {
     expect(roots).toContain(scratch);
 
     await expect(runCodex({ ...input, writableRoots: ["/tmp"] })).rejects.toThrow("host /tmp");
+
+    const hostTmpAlias = path.join(files.directory, "host-tmp");
+    await symlink("/tmp", hostTmpAlias);
+    await expect(runCodex({ ...input, writableRoots: [hostTmpAlias] })).rejects.toThrow("host /tmp");
+    await expect(runCodex({ ...input, writableRoots: [path.join(hostTmpAlias, "missing")] })).rejects.toThrow("host /tmp");
   });
 
   test("extra Codex settings and MCP servers become overrides on new and resumed runs; extra servers are optional", async () => {
