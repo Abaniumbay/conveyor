@@ -689,6 +689,9 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
           "Repositories navigation",
         );
         await expectReachableText(page, PHONE_OVERFLOW_REPOSITORY);
+      }
+      // The board names repositories only on cards; their address and health are on the Repositories pages.
+      if (name === "repositories" || name === "repository detail") {
         await expectReachableText(page, PHONE_OVERFLOW_ADDRESS);
         await expectReachableText(page, DEGRADED_STATUS);
         await expectReachableHealth(page, "Degraded");
@@ -807,9 +810,7 @@ async function main(): Promise<void> {
       "No split",
       "Repositories",
       PHONE_OVERFLOW_REPOSITORY,
-      PHONE_OVERFLOW_ADDRESS,
-      DEGRADED_STATUS,
-    ], ["Healthy", "Degraded"]);
+    ]);
     await capture(page, baseUrl, "repositories", "/repositories", [
       "Repositories",
       PHONE_OVERFLOW_REPOSITORY,
