@@ -624,6 +624,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         <DetailsDialog issue={parent} id={dialogId} canManage={canManage} />
       </div>
       </div>
+      <div class="row-body">
       <div class="board-cells" id={`${rowId}-cells`}>
         {stations.map((station) => {
           const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id && !doneIds.has(issue.id));
@@ -644,6 +645,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
             </div>
           );
         })}
+      </div>
       </div>
     </section>
   );
@@ -715,6 +717,7 @@ function Board({ model }: { model: DashboardViewModel }) {
               </div>
             </div>
           )}
+          <div class="row-body">
           <div class="board-cells" id="board-other-cells">
             {stations.map((station) => {
               const issues = elsewhere(station);
@@ -739,6 +742,7 @@ function Board({ model }: { model: DashboardViewModel }) {
                 </div>
               );
             })}
+          </div>
           </div>
         </section>
       </div>
