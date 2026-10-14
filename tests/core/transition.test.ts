@@ -30,7 +30,7 @@ async function setup(): Promise<ConveyorStore> {
     title: "Feature",
     body: "",
     sourceState: "open",
-    labels: ["conveyor", "conveyor:implementation", "conveyor:order:2", "backend"],
+    labels: ["conveyor", "conveyor:implementation", "conveyor:no-split", "conveyor:order:2", "backend"],
     sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
   return store;
@@ -50,6 +50,7 @@ const labelConfig = {
   },
   metadata: {
     closable: "conveyor:closable",
+    noSplit: "conveyor:no-split",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -80,7 +81,7 @@ describe("applyStageTransition", () => {
       },
     });
 
-    expect(calls).toEqual([["conveyor", "conveyor:order:2", "conveyor:review"]]);
+    expect(calls).toEqual([["conveyor", "conveyor:no-split", "conveyor:order:2", "conveyor:review"]]);
     expect(store.getStageState("issue")).toMatchObject({
       stageId: "review",
       status: "awaiting-source",
@@ -92,6 +93,62 @@ describe("applyStageTransition", () => {
       kind: "advance",
       status: "completed",
     }]);
+    store.close();
+  });
+
+  test("asks the source adapter to preserve the live no-split label", async () => {
+    const store = await setup();
+    let preserved: readonly string[] = [];
+
+    await applyStageTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, _labels, preserveLabels) {
+          preserved = preserveLabels ?? [];
+        },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-live-no-split",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: {
+        kind: "advance",
+        stageId: "implementation",
+        nextStageId: "review",
+        result: {} as never,
+        feedbackCycles: 0,
+      },
+    });
+
+    expect(preserved).toEqual(["conveyor:no-split"]);
+    store.close();
+  });
+
+  test("asks the source adapter to preserve the live no-split label during roll-up", async () => {
+    const store = await setup();
+    let preserved: readonly string[] = [];
+
+    await applyRollupTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, _labels, preserveLabels) {
+          preserved = preserveLabels ?? [];
+        },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "rollup-live-no-split",
+      issue: store.getIssue("issue")!,
+      targetStageId: "review",
+      reason: "children advanced",
+      labels: labelConfig,
+    });
+
+    expect(preserved).toEqual(["conveyor:no-split"]);
     store.close();
   });
 
@@ -378,9 +435,10 @@ describe("applyStageTransition", () => {
     store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "hash" });
     const before = journal.stageEpoch("issue");
 
+    const calls: string[][] = [];
     await applyRollupTransition({
       store,
-      source: { async replaceConveyorLabels() {} },
+      source: { async replaceConveyorLabels(_address, _number, labels) { calls.push([...labels]); } },
       sourceName: "github",
       address: "owner/repo",
       configHash: "hash",
@@ -392,6 +450,7 @@ describe("applyStageTransition", () => {
     });
 
     expect(journal.stageEpoch("issue")).toBe(before + 1);
+    expect(calls).toEqual([["conveyor", "conveyor:no-split", "conveyor:order:2", "conveyor:review"]]);
     store.close();
   });
 });

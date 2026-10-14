@@ -91,6 +91,19 @@ describe("native stages with item tasks through the service", () => {
     await w.service.close();
   });
 
+  test("a no-split item with criteria advances through refinement as one item", async () => {
+    const w = await setup();
+    const enrolled = w.enroll("whole", 3, CRITERIA);
+    w.store.upsertIssue({ ...enrolled, labels: [...enrolled.labels, "conveyor:no-split"] });
+
+    await w.execute(w.store.getIssue("whole")!);
+
+    expect(w.labelWrites.at(-1)).toEqual(expect.arrayContaining(["conveyor:implementation", "conveyor:no-split"]));
+    expect(w.store.listChildren("whole")).toEqual([]);
+    expect(w.store.getStageState("whole")?.status).not.toBe("error");
+    await w.service.close();
+  });
+
   test("a missing criterion stops the stage and the conversation says what is missing", async () => {
     const w = await setup();
     await w.execute(w.enroll("bare", 2, "no criteria here"));

@@ -8,6 +8,7 @@ export interface TransitionSource {
     address: string,
     issueNumber: number,
     labels: readonly string[],
+    preserveLabels?: readonly string[],
   ): Promise<void>;
 }
 
@@ -51,6 +52,7 @@ function metadataLabels(
   return sourceLabels.filter(
     (label) =>
       label === labels.metadata.closable ||
+      label === labels.metadata.noSplit ||
       matchesTemplate(label, labels.metadata.orderTemplate, "number"),
   );
 }
@@ -179,6 +181,7 @@ export async function applyStageTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
+        [input.labels.metadata.noSplit],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
@@ -215,12 +218,10 @@ export async function applyRollupTransition(
   // evaluateIssueState(), so a roll-up must never overwrite one.
   const stopLabels = Object.values(input.labels.states);
   if (input.issue.labels.some((label) => stopLabels.includes(label))) return false;
-  const orderLabels = input.issue.labels.filter((label) =>
-    matchesTemplate(label, input.labels.metadata.orderTemplate, "number")
-  );
+  const retained = metadataLabels(input.issue.labels, input.labels);
   const labels = [...new Set([
     input.labels.enrollment,
-    ...orderLabels,
+    ...retained,
     input.labels.stageTemplate.replace("{stage}", input.targetStageId),
   ])].sort((left, right) => left.localeCompare(right));
   const mutation = input.store.beginSourceMutation({
@@ -253,6 +254,7 @@ export async function applyRollupTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
+        [input.labels.metadata.noSplit],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {

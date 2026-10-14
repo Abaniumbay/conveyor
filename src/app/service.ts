@@ -206,6 +206,7 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
       description: `Conveyor state: ${state}`,
     })),
     { name: config.labels.metadata.closable, color: "8b5cf6", description: "Conveyor considers this issue closable" },
+    { name: config.labels.metadata.noSplit, color: "0f766e", description: "Conveyor will not split this issue" },
     ...repository.systemLabels.map((name) => ({
       name,
       color: "64748b",
@@ -213,6 +214,15 @@ function labelDefinitions(config: ConveyorConfig, repositoryId: string) {
     })),
   ];
   return [...new Map(labels.map((label) => [label.name, label])).values()];
+}
+
+function metadataLabels(sourceLabels: readonly string[], config: ConveyorConfig): string[] {
+  const orderPrefix = config.labels.metadata.orderTemplate.split("{number}")[0]!;
+  return sourceLabels.filter((label) =>
+    label === config.labels.metadata.closable ||
+    label === config.labels.metadata.noSplit ||
+    label.startsWith(orderPrefix),
+  );
 }
 
 /** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
@@ -1267,16 +1277,13 @@ export class ConveyorService {
           warning: openQuestion.reason,
         });
         if (needsInput && !parent.labels.includes(needsInput)) {
-          const metadata = parent.labels.filter((label) =>
-            label === this.config.labels.metadata.closable ||
-            label.startsWith(this.config.labels.metadata.orderTemplate.split("{number}")[0]!),
-          );
+          const metadata = metadataLabels(parent.labels, this.config);
           await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
             this.config.labels.enrollment,
             this.config.labels.stageTemplate.replace("{stage}", stage),
             needsInput,
             ...metadata,
-          ]);
+          ], [this.config.labels.metadata.noSplit]);
         }
         continue;
       }
@@ -1300,17 +1307,17 @@ export class ConveyorService {
       const allChildrenSatisfied = children.every((child) => satisfied(child.issueId));
       const targetStage = rollupStage(parent.id);
       if (!allChildrenSatisfied && targetStage) {
-        const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
         const desiredLabels = [
           this.config.labels.enrollment,
           this.config.labels.stageTemplate.replace("{stage}", targetStage),
-          ...parent.labels.filter((label) => label.startsWith(orderPrefix)),
+          ...metadataLabels(parent.labels, this.config),
         ].sort((left, right) => left.localeCompare(right));
         const currentLabels = parent.labels
           .filter(
             (label) =>
               label === this.config.labels.enrollment ||
-              label.startsWith(`${this.config.labels.enrollment}:`),
+              label.startsWith(`${this.config.labels.enrollment}:`) ||
+              label === this.config.labels.metadata.noSplit,
           )
           .sort((left, right) => left.localeCompare(right));
         if (
@@ -1349,8 +1356,7 @@ export class ConveyorService {
         (!parent.labels.includes(doneLabel) ||
           !parent.labels.includes(this.config.labels.metadata.closable))
       ) {
-        const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
-        const metadata = parent.labels.filter((label) => label.startsWith(orderPrefix));
+        const metadata = metadataLabels(parent.labels, this.config);
         const stageLabel = parent.projectedStage
           ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
           : [];
@@ -1360,7 +1366,7 @@ export class ConveyorService {
           doneLabel,
           this.config.labels.metadata.closable,
           ...metadata,
-        ]);
+        ], [this.config.labels.metadata.noSplit]);
         log.info("Parent roll-up completed", {
           ...this.itemFields(parent.id),
           sourceStage: parent.projectedStage,
@@ -2070,16 +2076,13 @@ export class ConveyorService {
     if (hadNeedsInput) {
       const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
       const stage = runStage ?? issue.projectedStage;
-      const metadata = issue.labels.filter((label) =>
-        label === this.config.labels.metadata.closable ||
-        label.startsWith(this.config.labels.metadata.orderTemplate.split("{number}")[0]!),
-      );
+      const metadata = metadataLabels(issue.labels, this.config);
       try {
         await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
           this.config.labels.enrollment,
           ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
           ...metadata,
-        ]);
+        ], [this.config.labels.metadata.noSplit]);
       } catch {
         throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
       }
@@ -2109,15 +2112,12 @@ export class ConveyorService {
     }
     const stage = issue.projectedStage;
     if (stage) {
-      const metadata = issue.labels.filter((label) =>
-        label === this.config.labels.metadata.closable ||
-        label.startsWith(this.config.labels.metadata.orderTemplate.split("{number}")[0]!),
-      );
+      const metadata = metadataLabels(issue.labels, this.config);
       await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
         this.config.labels.enrollment,
         this.config.labels.stageTemplate.replace("{stage}", stage),
         ...metadata,
-      ]);
+      ], [this.config.labels.metadata.noSplit]);
       await this.updateStatusComment(issue.id);
       this.schedule();
     }
@@ -2605,6 +2605,7 @@ export class ConveyorService {
         blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(projectedState),
         inconsistent: issue.projectedState === "inconsistent",
         closable: issue.labels.includes(this.config.labels.metadata.closable),
+        noSplit: issue.labels.includes(this.config.labels.metadata.noSplit),
         tone: tone(projectedState),
         parent: parent ? relation(parent) : null,
         parentProgress: parent && siblings.length > 0
@@ -3065,10 +3066,7 @@ export class ConveyorService {
     if (question) {
       await this.answerQuestion(question.id, answer!, username);
     } else {
-      const orderPrefix = this.config.labels.metadata.orderTemplate.split("{number}")[0]!;
-      const metadata = issue.labels.filter((label) =>
-        label === this.config.labels.metadata.closable || label.startsWith(orderPrefix),
-      );
+      const metadata = metadataLabels(issue.labels, this.config);
       const labels = [
         this.config.labels.enrollment,
         this.config.labels.stageTemplate.replace("{stage}", stageId),
@@ -3086,6 +3084,7 @@ export class ConveyorService {
             repository.address,
             issue.sourceNumber,
             labels,
+            [this.config.labels.metadata.noSplit],
           );
           this.store.completeSourceMutation(mutation.id, { labels });
         } catch (error) {
@@ -3166,11 +3165,18 @@ export class ConveyorService {
         request: { issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state, stageId },
       });
       const conveyorLabels = live.labels.filter((label) =>
-        (label === this.config.settings.labelPrefix || label.startsWith(`${this.config.settings.labelPrefix}:`)) &&
+        (label === this.config.settings.labelPrefix ||
+          label.startsWith(`${this.config.settings.labelPrefix}:`) ||
+          label === this.config.labels.metadata.noSplit) &&
         label !== this.config.labels.states[evaluated.state!],
       );
       try {
-        await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, conveyorLabels);
+        await this.github.replaceConveyorLabels(
+          repository.address,
+          issue.sourceNumber,
+          conveyorLabels,
+          [this.config.labels.metadata.noSplit],
+        );
         this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
       } catch (error) {
         this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
@@ -3287,7 +3293,9 @@ export class ConveyorService {
 
   private conveyorLabels(labels: readonly string[]): string[] {
     const prefix = this.config.settings.labelPrefix;
-    return labels.filter((label) => label === prefix || label.startsWith(`${prefix}:`));
+    return labels.filter((label) =>
+      label === prefix || label.startsWith(`${prefix}:`) || label === this.config.labels.metadata.noSplit,
+    );
   }
 
   private async replaceLabelsRecorded(issue: StoredIssue, repository: ConveyorConfig["repositories"][string], operation: string, labels: string[]): Promise<void> {
@@ -3298,7 +3306,12 @@ export class ConveyorService {
       request: { issueId: issue.id, issueNumber: issue.sourceNumber, labels },
     });
     try {
-      await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, labels);
+      await this.github.replaceConveyorLabels(
+        repository.address,
+        issue.sourceNumber,
+        labels,
+        [this.config.labels.metadata.noSplit],
+      );
       this.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));

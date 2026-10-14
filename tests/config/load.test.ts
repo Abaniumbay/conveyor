@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConfigError, loadConfig } from "../../src/config/load";
-import type { StageConfig } from "../../src/config/schema";
+import { configSchema, type StageConfig } from "../../src/config/schema";
 
 const temporaryDirectories: string[] = [];
 
@@ -109,6 +109,7 @@ sources:
     const config = await loadConfig(directory);
 
     expect(config.settings.runners).toBe(3);
+    expect(config.labels.metadata.noSplit).toBe("conveyor:no-split");
     expect(config.settings.reconcileIntervalMs).toBe(300_000);
     expect(config.settings.database).toBe(
       path.join(directory, "state/conveyor.sqlite"),
@@ -134,6 +135,27 @@ sources:
       path.resolve(directory, "../sample"),
     );
     expect(config.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("derives the no-split label from enrollment and honors an explicit override", () => {
+    const base = {
+      settings: { database: "/d", logs: "/l", workspaces: "/w", artifacts: "/a" },
+      labels: {
+        enrollment: "delivery",
+        stageTemplate: "delivery:{stage}",
+        states: { done: "delivery:done" },
+        metadata: { closable: "delivery:closable", orderTemplate: "delivery:order:{number}" },
+      },
+    };
+
+    expect(configSchema.parse(base).labels.metadata.noSplit).toBe("delivery:no-split");
+    expect(configSchema.parse({
+      ...base,
+      labels: {
+        ...base.labels,
+        metadata: { ...base.labels.metadata, noSplit: "workflow:keep-whole" },
+      },
+    }).labels.metadata.noSplit).toBe("workflow:keep-whole");
   });
 
   test("rejects the removed allowedHumanLogins provider setting", async () => {

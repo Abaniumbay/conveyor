@@ -218,6 +218,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
           {issue.children.length > 0 && <span>· Roll-up</span>}
           {issue.closable && <span>· Closable</span>}
+          {issue.noSplit && <span>· No split</span>}
         </div>
         {canManage && issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
           <label for={`${id}-retry-note`}>Optional note for the next attempt</label>
@@ -437,6 +438,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
         <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
         {statusContext && <> · <span class="issue-status-context" title={statusContext}>{statusContext}</span></>}
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
+        {issue.noSplit && <> · <span>No split</span></>}
       </p>
       {canManage && issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}

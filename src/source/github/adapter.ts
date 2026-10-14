@@ -592,15 +592,20 @@ export class GitHubAdapter {
     address: string,
     issueNumber: number,
     conveyorLabels: readonly string[],
+    preserveLabels: readonly string[] = [],
   ): Promise<void> {
+    const preserve = new Set(preserveLabels);
     const issue = await this.transport.request<Pick<GitHubIssue, "labels">>({
       method: "GET",
       path: `repos/${address}/issues/${issueNumber}`,
     });
     const projectLabels = issue.labels
       .map(labelName)
-      .filter((label) => !this.isConveyorLabel(label));
-    const labels = [...new Set([...projectLabels, ...conveyorLabels])].sort((left, right) =>
+      .filter((label) => !this.isConveyorLabel(label) || preserve.has(label));
+    const labels = [...new Set([
+      ...projectLabels,
+      ...conveyorLabels.filter((label) => !preserve.has(label)),
+    ])].sort((left, right) =>
       left.localeCompare(right),
     );
     await this.transport.request<unknown>({

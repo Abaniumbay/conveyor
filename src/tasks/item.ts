@@ -113,6 +113,13 @@ export function criteriaFromBody(body: string): string[] {
 type Deps = TaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
 
+function noSplitContext(label: string) {
+  return {
+    label,
+    instruction: "This item must remain one item. Give its whole scope acceptance criteria; if it cannot remain whole, report needs-input with a concrete reason. Do not create children.",
+  };
+}
+
 function issueOf(deps: Deps) {
   const issue = deps.store.getIssue(deps.issueId);
   if (!issue) throw new Error(`issue ${deps.issueId} is not stored`);
@@ -234,6 +241,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       children,
       dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
       systemLabels: issue.labels.filter((label) => systemLabels.includes(label)),
+      ...(issue.labels.includes(config.labels.metadata.noSplit) ? { noSplit: noSplitContext(config.labels.metadata.noSplit) } : {}),
       refinement: await loadRefinement(deps, issue),
     };
     return pass(item);
@@ -340,8 +348,13 @@ const normalise = (criterion: z.infer<typeof acceptanceCriterionInput>) => ({
   id: criterion.id, text: criterion.text, completed: criterion.completed === true,
 });
 
-const get = tool("item.get", "Read the latest source state of the current issue.", emptyInput, false,
-  ({ deps }, issue) => deps.items.getIssue(deps.repository.address, issue.sourceNumber));
+const get = tool("item.get", "Read the latest source state of the current issue, including whether it must remain one item.", emptyInput, false,
+  async ({ deps }, issue) => {
+    const source = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
+    return issue.labels.includes(deps.config.labels.metadata.noSplit)
+      ? { ...source, noSplit: noSplitContext(deps.config.labels.metadata.noSplit) }
+      : source;
+  });
 
 const guidance = tool("item.guidance", "Read source-specific agent guidance.", emptyInput, false,
   async ({ deps }) => deps.sourceGuidance);
@@ -605,9 +618,10 @@ const setRefinement = tool("item.setRefinement",
   });
 
 const createChild = tool("item.createChild",
-  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first.",
+  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first.",
   createChildInput, true,
   async ({ deps, input, instance }, issue) => {
+    const noSplitLabel = deps.config.labels.metadata.noSplit;
     const repository = deps.config.repositories[deps.repository.id]!;
     const stages = deps.config.pipelines[repository.pipeline]!.stages;
     const currentIndex = stages.findIndex((stage) => stage.id === instance.stage);
@@ -632,6 +646,12 @@ const createChild = tool("item.createChild",
       deps.config.labels.enrollment,
       ...(nextStage ? [deps.config.labels.stageTemplate.replace("{stage}", nextStage)] : []),
     ];
+    const liveParent = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
+    if (liveParent.labels.includes(noSplitLabel)) {
+      throw new ToolRequestError(
+        `This item carries the ${noSplitLabel} label and must remain one item. Give the whole item acceptance criteria, or report needs-input with a concrete reason if it cannot remain whole.`,
+      );
+    }
     const child = await deps.items.createChildIssue({
       address: deps.repository.address,
       parentNumber: issue.sourceNumber,
@@ -660,7 +680,12 @@ const createChild = tool("item.createChild",
         markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
         expectedRevision: deps.items.managedRevision(current.body),
       });
-      await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+      await deps.items.replaceConveyorLabels(
+        deps.repository.address,
+        child.number,
+        enrollmentLabels,
+        [noSplitLabel],
+      );
       sourceChild = await deps.items.getIssue(deps.repository.address, child.number);
     }
     const storedChild = persistSourceIssue(deps, sourceChild);

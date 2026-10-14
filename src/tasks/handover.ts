@@ -144,8 +144,16 @@ export async function buildHandover(
   deps: TaskDeps,
   input: { runId: string; stageId: string; agentId: string; kind: string; workspace: { path: string; branch: string } },
 ) {
+  const issue = deps.store.getIssue(deps.issueId);
+  const noSplitLabel = deps.config.labels?.metadata?.noSplit;
   return {
     note: "Current state of this item, assembled by Conveyor when this run started. Refresh it during the run with todo.get, change.listFindings, change.get and workspace.get; a part marked truncated names the tool that returns the rest.",
+    ...(noSplitLabel && issue?.labels.includes(noSplitLabel) ? {
+      noSplit: {
+        label: noSplitLabel,
+        instruction: "This item must remain one item. Give its whole scope acceptance criteria; if it cannot remain whole, report needs-input with a concrete reason. Do not create children.",
+      },
+    } : {}),
     todos: todosPart(deps),
     openFindings: await findingsPart(deps),
     change: await changePart(deps),

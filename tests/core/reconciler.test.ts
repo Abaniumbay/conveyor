@@ -31,6 +31,7 @@ const labels = {
   states: { done: "conveyor:done", blocked: "conveyor:blocked" },
   metadata: {
     closable: "conveyor:closable",
+    noSplit: "conveyor:no-split",
     orderTemplate: "conveyor:order:{number}",
   },
 };

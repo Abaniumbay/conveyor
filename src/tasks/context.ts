@@ -39,6 +39,11 @@ export interface ItemContext {
   children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean; hasChildren: boolean }>;
   dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
   systemLabels: string[];
+  /** Present only when the item carries the configured metadata label that prevents decomposition. */
+  noSplit?: {
+    label: string;
+    instruction: string;
+  };
   /** The issue type, field values and Refinement section as stored, and what the organization offers. */
   refinement?: {
     type: string | null;

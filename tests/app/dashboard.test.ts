@@ -109,7 +109,7 @@ describe("ConveyorService dashboard", () => {
       labels: {
         enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
-        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "review", run: { type: "agent", agent: "reviewer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }, { id: "deploy", run: { type: "agent", agent: "deployer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
@@ -202,7 +202,7 @@ describe("ConveyorService dashboard", () => {
       labels: {
         enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention", "needs-input": "conveyor:needs-input", rejected: "conveyor:rejected" },
-        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["refinement", "implementation", "review"].map((id) => ({ id, run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] })) } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
@@ -822,6 +822,19 @@ describe("ConveyorService dashboard", () => {
       labels: readonly string[];
     } | null = null;
     const github = {
+      async getIssue(_address: string, issueNumber: number) {
+        return {
+          id: "parent",
+          number: issueNumber,
+          url: "https://github.com/owner/repo/issues/1",
+          title: "Parent",
+          body: "Parent body",
+          state: "open" as const,
+          stateReason: null,
+          labels: ["conveyor", "conveyor:refinement"],
+          updatedAt: "2026-09-29T00:00:00Z",
+        };
+      },
       async createChildIssue(input: NonNullable<typeof createInput>) {
         createInput = input;
         return {
@@ -898,7 +911,7 @@ describe("ConveyorService dashboard", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked" },
-        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: {
         default: {
@@ -922,7 +935,7 @@ describe("ConveyorService dashboard", () => {
       configHash: config.hash,
     });
     for (const issue of [
-      { id: "parent", number: 1, stage: "refinement", state: "active", labels: ["conveyor", "conveyor:refinement", "conveyor:order:4"] },
+      { id: "parent", number: 1, stage: "refinement", state: "active", labels: ["conveyor", "conveyor:refinement", "conveyor:no-split", "conveyor:order:4"] },
       { id: "child", number: 2, stage: "implementation", state: "blocked", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"] },
       { id: "later-child", number: 3, stage: "review", state: "active", labels: ["conveyor", "conveyor:review"] },
       { id: "done-child", number: 4, stage: "refinement", state: "done", labels: ["conveyor", "conveyor:refinement", "conveyor:done"] },
@@ -1006,7 +1019,7 @@ describe("ConveyorService dashboard", () => {
     expect(store.listDependencies("parent")).toEqual(["child"]);
     expect(replaced).toEqual([{
       number: 1,
-      labels: ["conveyor", "conveyor:implementation", "conveyor:order:4"],
+      labels: ["conveyor", "conveyor:implementation", "conveyor:no-split", "conveyor:order:4"],
     }]);
     expect(store.getStageState("parent")).toMatchObject({
       stageId: "implementation",
@@ -1476,7 +1489,7 @@ describe("ConveyorService dashboard", () => {
         enrollment: "conveyor",
         stageTemplate: "conveyor:{stage}",
         states: { done: "conveyor:done", blocked: "conveyor:blocked" },
-        metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
       },
       pipelines: {
         default: {
@@ -1654,7 +1667,7 @@ describe("ConveyorService dashboard", () => {
       title: "Finished roll-up parent",
       body: "",
       sourceState: "open",
-      labels: ["conveyor", "conveyor:implementation", "conveyor:done"],
+      labels: ["conveyor", "conveyor:implementation", "conveyor:done", "conveyor:no-split"],
       sourceUpdatedAt: "2026-09-29T02:00:00Z",
     });
     store.setIssueProjection("github:owner/repo#30", {
@@ -1804,6 +1817,7 @@ describe("ConveyorService dashboard", () => {
       state: "done",
       tone: "success",
       inconsistent: false,
+      noSplit: true,
       children: [{ number: 27 }],
     });
     expect(dashboard.attention).toMatchObject({ name: "Label problems", totalIssues: 1 });
