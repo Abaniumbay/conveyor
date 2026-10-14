@@ -8,6 +8,10 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-14
+
+Stage exit gates can wait for a human approval on the board, configured per pipeline or set per item. Answering an agent's question resumes it instead of restarting the stage, and the answer returns at once. The board's rows and the line fold with an animation, and the line starts closed on phones; a repository that cannot sync is called out on the board.
+
 ### Changed
 
 - Folding and unfolding a board row animates like an accordion (an ease-out height and fade); with
