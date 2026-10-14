@@ -1838,4 +1838,51 @@ describe("ConveyorService dashboard", () => {
     expect(expanded.done.issues).toHaveLength(26);
     store.close();
   });
+
+  test("keeps every open card while filtering Done text and repositories before its limit", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-board-filters-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "filters", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1 },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
+      sources: { github: { type: "github" } }, runners: { codex: { type: "codex" } },
+      agents: { worker: { name: "Alice", title: "Backend agent", runner: "codex" }, betaWorker: { name: "Beatrice", title: "Beta agent", runner: "codex" } },
+      pipelines: {
+        default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "worker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] },
+        beta: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "betaWorker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] },
+      },
+      repositories: {
+        alpha: { source: "github", address: "owner/alpha", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], refinement: { fields: ["Effort"] } },
+        beta: { source: "github", address: "owner/beta", folder: root, baseBranch: "main", pipeline: "beta", concurrency: 1, systemLabels: [], refinement: { fields: ["Effort"] } },
+      },
+    } as unknown as ConveyorConfig;
+    for (const id of ["alpha", "beta"]) store.upsertRepository({ id, configName: id, source: "github", address: `owner/${id}`, folder: root, configHash: config.hash });
+    const add = (id: string, repositoryId: "alpha" | "beta", number: number, state: "open" | "closed", title: string, updatedAt: string) => {
+      store.upsertIssue({ id, repositoryId, sourceNumber: number, sourceUrl: `https://github.com/owner/${repositoryId}/issues/${number}`, title, body: "private body phrase", sourceState: state, sourceStateReason: state === "closed" ? "done" : null, labels: ["conveyor", "conveyor:implementation", "backend"], sourceUpdatedAt: updatedAt, issueType: "Feature" });
+      store.setIssueMetadata(id, { fields: { Effort: "Large" } });
+      store.setIssueProjection(id, { stage: "implementation", state: state === "closed" ? "done" : "active", warning: null });
+      store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    };
+    for (let index = 1; index <= 21; index += 1) add(`open-${index}`, index % 2 ? "alpha" : "beta", index, "open", `Open ${index}`, "2026-10-01T00:00:00Z");
+    add("target", "alpha", 245, "closed", "Needle title", "2026-09-01T00:00:00Z");
+    for (let index = 1; index <= 21; index += 1) add(`done-${index}`, "beta", 300 + index, "closed", `Recent ${index}`, `2026-10-${String(index).padStart(2, "0")}T00:00:00Z`);
+    const service = new ConveyorService(config, store, {} as never);
+    const all = service.dashboard("csrf");
+    expect(all.stages[0]?.issues).toHaveLength(21);
+    expect(all.stages[0]?.totalPages).toBe(1);
+    expect((all.stages[0]?.issues.find((issue) => issue.repository === "alpha")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Alice"]);
+    expect((all.stages[0]?.issues.find((issue) => issue.repository === "beta")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Beatrice"]);
+    expect(all.done.issues.map((issue) => issue.id)).not.toContain("target");
+    const filters = (q: string, repositoryIds: string[]) => ({ view: "board" as const, repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null, q, repositoryIds, state: null });
+    const byNumber = service.dashboard("csrf", filters("#245", []));
+    expect(byNumber.done.issues.map((issue) => issue.id)).toEqual(["target"]);
+    const byFieldsAndAgent = service.dashboard("csrf", filters("BACKEND feature large alice", ["alpha"]));
+    expect(byFieldsAndAgent.done.issues.map((issue) => issue.id)).toEqual(["target"]);
+    expect(service.dashboard("csrf", filters("private body phrase", [])).done.totalIssues).toBe(0);
+    // Owner-action work belongs to its panel, not the board filter model.
+    expect(byNumber.needsYou).toEqual(all.needsYou);
+    store.close();
+  });
 });

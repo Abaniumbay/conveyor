@@ -76,6 +76,8 @@ export interface IssueCardViewModel {
   todos: IssueTodosViewModel | null;
   /** The stage the item is in; card todo progress is shown only in the stage that owns the list. */
   stage?: string | null;
+  /** Agents configured for this item's own pipeline stage, for board search metadata. */
+  searchActors?: readonly StageActorViewModel[];
   /** Stored status indicators (CI first); rendered by one shared component on the card and in the details. */
   indicators: readonly IndicatorViewModel[];
   activity: string | null;
@@ -222,6 +224,10 @@ export interface DashboardPageSelection {
   doneLimit: number;
   runId: string | null;
   issueId: string | null;
+  /** Board-only client filters, also understood by the server for the Done column and no-JS form. */
+  repositoryIds?: readonly string[];
+  q?: string;
+  state?: string | null;
 }
 
 export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
@@ -325,6 +331,7 @@ export interface DashboardViewModel {
   revision: string;
   view: DashboardView;
   repositoryId: string | null;
+  boardFilters?: { repositories: readonly string[]; q: string; state: string | null };
   counts: { board: number; attention: number };
   activeWork: {
     runnerCount: number;

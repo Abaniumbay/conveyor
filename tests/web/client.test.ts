@@ -236,6 +236,11 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("Retry accepted. A fresh attempt is queued.");
     expect(dashboardClient).toContain("Retry failed: ");
     expect(dashboardClient).toContain("button.disabled = true");
+    expect(dashboardClient).toContain("history.replaceState");
+    expect(dashboardClient).toContain("data-filter-repository");
+    expect(dashboardClient).toContain("data-board-search");
+    expect(dashboardClient).toContain("doneRequestVersion");
+    expect(dashboardClient).toContain("conveyor:dashboard-rendered', bindBoardFilters");
   });
 
   test("updates the browser quota element countdown and stale accessibility state", () => {

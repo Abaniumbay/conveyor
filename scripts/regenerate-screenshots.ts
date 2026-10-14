@@ -683,7 +683,16 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await page.locator(".issue-inspector[open]").waitFor({ state: "visible" });
       await expectDocumentToFitPhoneViewport(page, name, width);
       await expectNonScrollerContentToFitPhoneViewport(page, name, width);
-      if (name === "board" || name === "repositories" || name === "repository detail") {
+      if (name === "board") {
+        await page.getByRole("button", { name: /^Filters/ }).click();
+        await expectReachableElement(
+          page.locator('.tabs a[href="/repositories"]'),
+          "Repositories navigation",
+        );
+        await expectReachableText(page, PHONE_OVERFLOW_REPOSITORY);
+        await page.getByLabel("Degraded").first().waitFor({ state: "visible", timeout: 10_000 });
+      }
+      if (name === "repositories" || name === "repository detail") {
         await expectReachableElement(
           page.locator('.tabs a[href="/repositories"]'),
           "Repositories navigation",
@@ -721,7 +730,7 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await expectLastChildReachable(page, ".details-tabs", "[role=tab]", "Issue detail tabs");
     }
   }
-  await page.setViewportSize({ width: 1440, height: 1024 });
+  await page.setViewportSize({ width: 1440, height: 900 });
 }
 
 async function capture(
@@ -785,7 +794,7 @@ async function main(): Promise<void> {
       ],
     });
     const context = await browser.newContext({
-      viewport: { width: 1440, height: 1024 },
+      viewport: { width: 1440, height: 900 },
       deviceScaleFactor: 1,
       colorScheme: "light",
       reducedMotion: "reduce",
@@ -808,8 +817,15 @@ async function main(): Promise<void> {
       "Which migration path should the team use?",
       "Ship a reliable dashboard overview",
       "No split",
-      "Repositories",
+      "Search board",
+      "Show all",
       PHONE_OVERFLOW_REPOSITORY,
+    ]);
+    await capture(page, baseUrl, "board-filtered", "/board?repo=demo&q=dashboard", [
+      "Search board",
+      "Clear filters",
+      "Showing 1 of",
+      "Ship a reliable dashboard overview",
     ]);
     await capture(page, baseUrl, "repositories", "/repositories", [
       "Repositories",
@@ -838,6 +854,35 @@ async function main(): Promise<void> {
       "The dashboard overview is implemented",
     ]);
     await verifyPhoneLayouts(page, baseUrl);
+
+    const phoneContext = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 1,
+      isMobile: true,
+      hasTouch: true,
+      colorScheme: "light",
+      reducedMotion: "reduce",
+      storageState: await context.storageState(),
+    });
+    const phone = await phoneContext.newPage();
+    await phone.addInitScript(() => localStorage.setItem("conveyor-theme", "light"));
+    await capture(phone, baseUrl, "board-phone", "/board", ["Search board", "Filters"]);
+    const collapsedRows = await phone.locator("[data-filter-form]").evaluate((form) => {
+      const rows = new Set(
+        [...form.children]
+          .filter((child) => getComputedStyle(child).display !== "none" && child.getBoundingClientRect().height > 0)
+          .map((child) => Math.round(child.getBoundingClientRect().bottom)),
+      );
+      return rows.size;
+    });
+    if (collapsedRows > 2)
+      throw new Error(`Collapsed phone filter bar uses ${collapsedRows} rows`);
+    await capture(phone, baseUrl, "board-phone-filtered", "/board?repo=demo&q=dashboard", [
+      "Search board",
+      "Filters 2",
+      "Clear filters",
+    ]);
+    await phoneContext.close();
     await page.goto(`${baseUrl}/issues/demo/1/journey`, {
       waitUntil: "networkidle",
     });

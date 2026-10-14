@@ -543,7 +543,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('--repo-5:#66C7F0');
   });
 
-  test("lists repositories on the Repositories tab only, ordered, without a horizontal phone layout", () => {
+  test("replaces the Board repository strip with filter controls while keeping the repository list", () => {
     const summary = (id: string, health: "healthy" | "degraded", items: DashboardViewModel["repositories"][number]["items"], errorSummary: string | null = null) => ({
       id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
       addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
@@ -561,10 +561,18 @@ describe("renderDashboard", () => {
       summary("extra", "healthy", []),
       summary("space/name", "healthy", []),
     ];
-    // The board does not repeat the repositories: the Repositories tab lists them, and each card names its own.
-    const board = renderDashboard({ ...dashboard, repositories });
-    expect(board).not.toContain('id="repositories-heading"');
-    expect(board).not.toContain(`class="repository-card`);
+    const board = renderDashboard({ ...dashboard, repositories, backlog: [{ ...backlogIssue, repository: "active" }] });
+
+    expect(board).not.toContain('<h2 id="repositories-heading"><a href="/repositories">Repositories</a></h2>');
+    expect(board).toContain('data-board-filters');
+    expect(board).toContain('name="repo" value="active"');
+    expect(board).toContain('aria-label="Open active"');
+    expect(board).toContain('name="q"');
+    expect(board).toContain('data-filter-state="needs-you"');
+    expect(board).toContain('href="/repositories" class="repository-filter-all">Show all</a>');
+    expect(board).toContain('name="repo" value="broken"');
+    expect(board).not.toContain('name="repo" value="z-idle"');
+    expect(board).not.toContain('name="repo" value="alpha-idle"');
 
     const list = renderDashboard({ ...dashboard, view: "repositories", repositories });
     expect(list).toContain('class="tab tab--active" aria-current="page">Repositories</a>');
@@ -575,7 +583,19 @@ describe("renderDashboard", () => {
     expect(list.indexOf('href="/repositories/broken"')).toBeLessThan(list.indexOf('href="/repositories/owner"'));
     expect(list.indexOf('href="/repositories/owner"')).toBeLessThan(list.indexOf('href="/repositories/active"'));
     expect(dashboardCss).toContain('.repository-grid{grid-template-columns:minmax(0,1fr)}');
+    expect(list).not.toContain('Show all 7');
     expect(renderDashboard({ ...dashboard, view: "repositories", repositories: [] })).toContain("No repositories are configured.");
+  });
+
+  test("uses each card's pipeline actors in board search data", () => {
+    const alpha = { ...backlogIssue, id: "alpha", repository: "alpha", number: 101, title: "Alpha work", searchActors: [{ type: "agent" as const, name: "Alice", title: null }] };
+    const beta = { ...backlogIssue, id: "beta", repository: "beta", number: 102, title: "Beta work", searchActors: [{ type: "agent" as const, name: "Beatrice", title: null }] };
+    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, actors: [{ type: "agent", name: "Shared", title: null }], issues: [alpha, beta] }] });
+    const alphaCard = html.slice(html.indexOf('data-issue-id="alpha"'), html.indexOf('data-issue-id="beta"'));
+    const betaCard = html.slice(html.indexOf('data-issue-id="beta"'));
+
+    expect(alphaCard).toContain('data-board-search="alpha work 101 #101 alpha  alice"');
+    expect(betaCard).toContain('data-board-search="beta work 102 #102 beta  beatrice"');
   });
 
   test("renders repository detail sections and redacts restricted setup for non-superusers", () => {
@@ -760,7 +780,7 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain(">Sign in by code</button>");
     expect(familyRow).toContain(">Guest sign-in</button>");
     expect(familyRow).toContain('<span class="issue-stage">Build</span>');
-    expect(familyRow).toContain('<a class="issue issue--compact issue--success repo-color-1" href="/issues/sample/244"><span class="issue-kicker"><span class="issue-number">#244</span>');
+    expect(familyRow).toContain('href="/issues/sample/244" data-filter-card="true" data-board-search="store sign-in data 244 #244 sample" data-board-repository="sample" data-board-state="waiting"');
     expect(familyRow).toContain('<span class="issue-title">Store sign-in data</span><span class="issue-status"><span class="andon andon--run" aria-hidden="true"></span><strong>Done</strong></span>');
     expect(familyRow).not.toContain("family-thread");
     expect(familyRow).not.toContain(">Store sign-in data</button>");
@@ -820,7 +840,7 @@ describe("renderDashboard", () => {
     expect(card("waiting")).toContain('data-waits="blocker moving off-board"');
     // What an item blocks.
     expect(card("blocker")).toContain('<button type="button" class="dep-chip dep-chip--blocks" data-trace="blocker" aria-pressed="false" aria-label="#245 blocks 1: trace them">Blocks 1</button>');
-    expect(card("blocker")).toContain('data-number="245" data-state-word="Blocked"><p class="issue-kicker">');
+    expect(card("blocker")).toContain('data-number="245" data-state-word="Blocked" data-filter-card="true"');
     expect(card("moving")).toContain(">Blocks 1</button>");
     expect(html).toContain('<p class="trace-banner" data-trace-banner="true" role="status" hidden>');
   });
