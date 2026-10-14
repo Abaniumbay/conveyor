@@ -355,6 +355,23 @@ describe("conveyor admin reset-password", () => {
   });
 });
 
+describe("conveyor admin delete-account", () => {
+  test("deletes a regular account while refusing superusers and unknown accounts", async () => {
+    const home = await initialisedHome();
+    const store = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
+    const reader = store.createDashboardUser("reader", "hash");
+    store.close();
+
+    const result = await cli("admin", "delete-account", "reader", "--home", home);
+    expect(result.code).toBe(EXIT.ok);
+    const updated = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
+    expect(updated.dashboardAccountById(reader.id)).toBeNull();
+    updated.close();
+    expect((await cli("admin", "delete-account", "admin", "--home", home)).err).toContain("superuser accounts cannot be deleted");
+    expect((await cli("admin", "delete-account", "nobody", "--home", home)).err).toContain("no dashboard account is named nobody");
+  });
+});
+
 describe("conveyor serve", () => {
   test("keeps TCP and Unix agent control transports open through service shutdown", async () => {
     const calls: string[] = [];

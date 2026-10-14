@@ -895,6 +895,10 @@ describe("renderDashboard", () => {
     expect(accountsHtml).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
     expect(accountsHtml).toContain('data-account-list="true"');
     expect(accountsHtml).toContain('data-account-create-form="true"');
+    expect(accountsHtml).toContain('action="/api/accounts/admin/password"');
+    expect(accountsHtml).toContain('action="/api/accounts/reader/delete"');
+    expect(accountsHtml).toContain('Type reader &lt;safe> to confirm deletion');
+    expect(accountsHtml).not.toContain('action="/api/accounts/admin/delete"');
     expect(accountsHtml).toContain('reader &lt;safe>');
     expect(accountsHtml).not.toContain('reader <safe>');
     expect(accountsHtml).not.toContain('class="account-page"');

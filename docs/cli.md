@@ -254,6 +254,12 @@ Write a redacted diagnostics bundle for a bug report, with a manifest of what it
 | --- | --- |
 | `--output <file.tar.gz>` | where to write it (default: ./conveyor-diagnostics-&lt;time>.tar.gz) |
 
+### `conveyor admin delete-account <username>`
+
+Delete a regular dashboard account and sign out its sessions.
+
+Works whether or not the service is running: it uses the same account store the dashboard does. Superuser accounts cannot be deleted.
+
 ### `conveyor admin reset-password <username>`
 
 Set a dashboard account's password and sign out its sessions.

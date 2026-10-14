@@ -1000,6 +1000,17 @@ export const dashboardClient = String.raw`(() => {
       return;
     }
 
+    const deleteCancel = event.target.closest('[data-account-delete-cancel]');
+    if (deleteCancel instanceof HTMLButtonElement) {
+      const details = deleteCancel.closest('details');
+      if (details instanceof HTMLDetailsElement) {
+        details.open = false;
+        const summary = details.querySelector('summary');
+        if (summary instanceof HTMLElement) summary.focus();
+      }
+      return;
+    }
+
     const containingDialog = event.target.closest('dialog');
     if (containingDialog instanceof HTMLDialogElement) {
       const tab = event.target.closest('[data-detail-tab]');
@@ -1103,6 +1114,51 @@ export const dashboardClient = String.raw`(() => {
       form.submit();
       return;
     }
+    if (form instanceof HTMLFormElement && form.matches('[data-account-action-form]')) {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      const status = form.querySelector('[data-form-status]');
+      const fields = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) {
+        if (typeof value === 'string') fields.append(name, value);
+      }
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+      if (status instanceof HTMLElement) {
+        status.textContent = '';
+        status.dataset.error = 'false';
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+          body: fields,
+        });
+        if (response.redirected) {
+          window.location.assign(response.url);
+          return;
+        }
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'The account could not be updated.');
+        const username = form.dataset.accountUsername ?? 'the account';
+        if (form.hasAttribute('data-account-delete')) {
+          const row = form.closest('tr');
+          row?.remove();
+          const listStatus = document.querySelector('[data-account-list-status]');
+          if (listStatus instanceof HTMLElement) listStatus.textContent = 'Account ' + username + ' deleted.';
+        } else {
+          form.reset();
+          if (status instanceof HTMLElement) status.textContent = 'Password reset for ' + username + '.';
+        }
+      } catch (error) {
+        if (status instanceof HTMLElement) {
+          status.textContent = error instanceof Error ? error.message : 'The account could not be updated.';
+          status.dataset.error = 'true';
+        }
+      } finally {
+        if (button instanceof HTMLButtonElement) button.disabled = false;
+      }
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('[data-profile-avatar-form], [data-account-create-form]')) {
       event.preventDefault();
       const isAvatar = form.matches('[data-profile-avatar-form]');
@@ -1131,24 +1187,11 @@ export const dashboardClient = String.raw`(() => {
           if (status instanceof HTMLElement) status.textContent = 'Saved.';
         } else {
           const account = payload && payload.account;
-          const list = document.querySelector('[data-account-list]');
-          if (!account || typeof account.username !== 'string' || typeof account.avatar !== 'string' || !(list instanceof HTMLTableSectionElement)) {
+          if (!account || typeof account.username !== 'string') {
             throw new Error('The server returned an invalid account.');
           }
-          const row = document.createElement('tr');
-          const name = document.createElement('th');
-          const avatar = document.createElement('span');
-          const role = document.createElement('td');
-          name.scope = 'row';
-          avatar.className = 'account-row-avatar';
-          avatar.setAttribute('aria-hidden', 'true');
-          avatar.textContent = account.avatar;
-          name.append(avatar, document.createTextNode(account.username));
-          role.textContent = account.role === 'superuser' ? 'Superuser' : 'User';
-          row.append(name, role);
-          list.append(row);
-          form.reset();
-          if (status instanceof HTMLElement) status.textContent = 'Account ' + account.username + ' created.';
+          window.location.assign('/accounts');
+          return;
         }
       } catch (error) {
         if (status instanceof HTMLElement) {
