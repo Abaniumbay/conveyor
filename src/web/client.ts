@@ -985,14 +985,16 @@ export const dashboardClient = String.raw`(() => {
     const nodes = new Map();
     for (const element of document.querySelectorAll('main.dashboard .board article.issue[data-issue-id], main.dashboard .board [data-family-row]')) {
       const id = element.getAttribute('data-family-row') || element.getAttribute('data-issue-id');
-      if (id && !nodes.has(id)) nodes.set(id, { element, waits: (element.getAttribute('data-waits') || '').split(' ').filter(Boolean) });
+      const ids = (name) => (element.getAttribute(name) || '').split(' ').filter(Boolean);
+      // A parent waits on its unfinished parts as well as on its dependencies; the chain runs through both.
+      if (id && !nodes.has(id)) nodes.set(id, { element, waits: ids('data-waits'), parts: ids('data-parts') });
     }
     if (traceFocus !== null && !nodes.has(traceFocus)) traceFocus = null;
     const upstream = new Set();
     const downstream = new Set();
     if (traceFocus !== null) {
       const dependents = new Map();
-      for (const [id, node] of nodes) for (const wait of node.waits) dependents.set(wait, [...(dependents.get(wait) || []), id]);
+      for (const [id, node] of nodes) for (const wait of [...node.waits, ...node.parts]) dependents.set(wait, [...(dependents.get(wait) || []), id]);
       const walk = (next, seen) => {
         const stack = [...next(traceFocus)];
         while (stack.length > 0) {
@@ -1002,7 +1004,7 @@ export const dashboardClient = String.raw`(() => {
           stack.push(...next(id));
         }
       };
-      walk((id) => nodes.get(id)?.waits || [], upstream);
+      walk((id) => nodes.has(id) ? [...nodes.get(id).waits, ...nodes.get(id).parts] : [], upstream);
       walk((id) => dependents.get(id) || [], downstream);
     }
     body.classList.toggle('tracing', traceFocus !== null);
@@ -1043,7 +1045,7 @@ export const dashboardClient = String.raw`(() => {
     const numbers = (ids) => [...ids].map((id) => Number(nodes.get(id)?.element.getAttribute('data-number')) || 0).sort((a, b) => a - b).map((number) => '#' + number).join(', ');
     const focusNode = nodes.get(traceFocus);
     const directDown = [...nodes].filter(([, node]) => node.waits.includes(traceFocus)).map(([id]) => id);
-    const directUp = focusNode.waits.filter((id) => nodes.has(id));
+    const directUp = [...focusNode.waits, ...focusNode.parts].filter((id) => nodes.has(id));
     const state = (focusNode.element.getAttribute('data-state-word') || '').toLowerCase();
     const side = (direct, all, verb) => direct.length === 0 ? '' : direct.length + ' ' + verb + ' directly (' + numbers(direct) + ')' + (all.size > direct.length ? ', ' + all.size + ' in all' : '');
     const held = side(directDown, downstream, directDown.length === 1 ? 'waits on it' : 'wait on it');

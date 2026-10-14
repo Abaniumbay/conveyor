@@ -116,12 +116,9 @@ function boardLinksOf(model: DashboardViewModel): NonNullable<typeof boardLinks>
   return { onBoard: new Set(cards.map((card) => card.id)), dependents };
 }
 
-/** The ids an item waits on, for the page script's trace: its unfinished dependencies (and, for a parent, its unfinished parts). */
-function waitsOn(issue: IssueCardViewModel, parts = false): string | undefined {
-  const ids = [
-    ...issue.dependencies.filter((dependency) => !dependency.satisfied).map((dependency) => dependency.id),
-    ...(parts ? issue.children.filter((child) => !child.satisfied).map((child) => child.id) : []),
-  ];
+/** For the page script's trace: the ids of an item's unfinished dependencies, or of a parent's unfinished parts. */
+function idList(relations: readonly IssueRelationViewModel[]): string | undefined {
+  const ids = relations.filter((relation) => !relation.satisfied).map((relation) => relation.id);
   return ids.length > 0 ? ids.join(" ") : undefined;
 }
 
@@ -430,7 +427,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       data-card-revision={revision}
       data-number={issue.number}
       data-state-word={issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}
-      data-waits={waitsOn(issue)}
+      data-waits={idList(issue.dependencies)}
     >
       <p class="issue-kicker"><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span>{stageLabel && <span class="issue-stage">{stageLabel}</span>}</p>
       {thread && <FamilyThread issue={issue} />}
@@ -580,7 +577,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   const doneIds = new Set(done.map((child) => child.id));
   const stopped = parent.needsAttention || parent.tone === "danger";
   return (
-    <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={waitsOn(parent, true)} aria-label={`#${parent.number} ${parent.title}`}>
+    <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={idList(parent.dependencies)} data-parts={idList(parent.children)} aria-label={`#${parent.number} ${parent.title}`}>
       <div class="row-band">
       <div class="family-head" data-dialog-open={dialogId}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />

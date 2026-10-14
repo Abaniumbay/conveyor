@@ -717,6 +717,8 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain('id="issue-family-172-family"');
     // Its children are cards in their stations, labelled with the station for phones; its done parts are listed.
     expect(familyRow).toContain('id="family-family-cells"');
+    // The page script's trace walks from the parent through its unfinished parts, kept apart from its dependencies.
+    expect(familyRow).toContain('data-parts="running-part stopped-part"');
     expect(familyRow).toContain(">Sign in by code</button>");
     expect(familyRow).toContain(">Guest sign-in</button>");
     expect(familyRow).toContain('<span class="issue-stage">Build</span>');

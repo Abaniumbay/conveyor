@@ -396,6 +396,7 @@ describe("ConveyorService dashboard", () => {
       { id: "stopped", number: 3, stage: "review", state: "blocked", sourceState: "open" as const },
       { id: "finished", number: 4, stage: "review", state: "done", sourceState: "closed" as const },
       { id: "unrelated", number: 5, stage: "implementation", state: "active", sourceState: "open" as const },
+      { id: "mislabelled", number: 6, stage: "implementation", state: "inconsistent", sourceState: "open" as const },
     ]) {
       store.upsertIssue({ id: item.id, repositoryId: "repo", sourceNumber: item.number, sourceUrl: `https://github.com/owner/repo/issues/${item.number}`, title: item.id, body: "", sourceState: item.sourceState, sourceStateReason: item.sourceState === "closed" ? "completed" : null, labels: ["conveyor", `conveyor:${item.stage}`], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
       store.setQueueRank(item.id, item.number);
@@ -404,7 +405,7 @@ describe("ConveyorService dashboard", () => {
     }
     ["working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
     // "unrelated" waits on a stopped item and on a finished one.
-    store.replaceRelationships("unrelated", null, ["stopped", "finished"]);
+    store.replaceRelationships("unrelated", null, ["stopped", "finished", "mislabelled"]);
 
     const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
     const cards = [...model.stages.flatMap((column) => column.issues), ...model.done.issues];
@@ -425,6 +426,8 @@ describe("ConveyorService dashboard", () => {
     // A dependency that is not finished says whether it is moving, and its state in words.
     expect(card("unrelated").dependencies.map(({ id, satisfied, signal, state }) => ({ id, satisfied, signal, state })).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
       { id: "finished", satisfied: true, signal: undefined, state: undefined },
+      // Inconsistent labels hold an item until someone repairs them: stopped, like a blocked one.
+      { id: "mislabelled", satisfied: false, signal: "stop", state: "Inconsistent" },
       { id: "stopped", satisfied: false, signal: "stop", state: "Blocked" },
     ]);
     store.close();

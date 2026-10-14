@@ -2506,7 +2506,8 @@ export class ConveyorService {
       const state = item.projectedState ?? item.sourceState;
       const signal = activeIssueIds.has(item.id)
         ? "run"
-        : questionIssueIds.has(item.id) || STOPPED_ISSUE_STATES.has(state) ? "stop" : "wait";
+        // An item with inconsistent labels cannot move until someone repairs them: it is stopped too.
+        : questionIssueIds.has(item.id) || STOPPED_ISSUE_STATES.has(state) || state === "inconsistent" ? "stop" : "wait";
       return { ...base, signal, state: displayName(state) };
     };
     const tone = (state: string): IssueTone => {
