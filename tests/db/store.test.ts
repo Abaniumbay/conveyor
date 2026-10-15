@@ -600,10 +600,10 @@ describe("ConveyorStore", () => {
   test("releases only the fenced execution that still owns a running stage", async () => {
     const store = await openStore();
     store.upsertRepository({
-      id: "repo-1", configName: "sample", source: "github", address: "owner/sample", folder: "/srv/sample", configHash: "config-hash",
+      id: "repo-1", configName: "sample", source: "github", address: "owner/my-app", folder: "/srv/sample", configHash: "config-hash",
     });
     store.upsertIssue({
-      id: "issue-1", repositoryId: "repo-1", sourceNumber: 12, sourceUrl: "https://example.test/issues/12", title: "Fenced run", body: "",
+      id: "issue-1", repositoryId: "repo-1", sourceNumber: 12, sourceUrl: "https://example.com/issues/12", title: "Fenced run", body: "",
       sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
     });
     store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });

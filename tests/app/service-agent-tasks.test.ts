@@ -23,7 +23,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; completeAfterRelease?: boolean; fenceAfterQuestion?: boolean; reconcile?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; waitAfterQuestion?: boolean; completeAfterRelease?: boolean; fenceAfterQuestion?: boolean; reconcile?: boolean; scheduling?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -145,6 +145,10 @@ repositories:
           stage: "refinement", state: "needs-input", warning: "Waiting for an answer: Which database?",
         });
       }
+      if (options.waitAfterQuestion) {
+        started!();
+        await released;
+      }
       return {
         stageResult: first && !options.completeAfterRelease
           ? { outcome: "failure", status: "needs-input", summary: "Asked", reason: "Which database?", metrics: {} }
@@ -155,7 +159,10 @@ repositories:
   };
   const service = new ConveyorService(config, store, github as never, { harnesses: { codex: harness } });
   Object.assign(service as object, {
-    ...(options.reconcile ? {} : { reconcileRepository: async () => {}, schedule: () => {} }),
+    ...(options.reconcile ? {} : {
+      reconcileRepository: async () => {},
+      ...(options.scheduling ? {} : { schedule: () => {} }),
+    }),
     updateStatusComment: async () => {},
   });
 
@@ -423,20 +430,19 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("a projection change during a question releases a fenced executor for a fresh answer run", async () => {
-    const w = await setup({ needsInput: true, fenceAfterQuestion: true });
+  test("a projection change during a question releases a fenced executor for an automatically scheduled fresh answer run", async () => {
+    const w = await setup({ needsInput: true, fenceAfterQuestion: true, waitAfterQuestion: true, scheduling: true });
 
-    await w.execute();
+    w.schedule();
+    await w.running;
 
-    expect(w.store.getStageState("issue")).toMatchObject({ stageId: "refinement", status: "ready" });
-    expect(w.store.listActiveIssueRuns()).toEqual([]);
-    expect(w.store.executions().getCursor("issue")).toBeNull();
+    expect(w.service.activeWork().items).toMatchObject([{ issueId: "issue", stageId: "refinement" }]);
 
     await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
     expect(w.store.getIssue("issue")).toMatchObject({ projectedStage: "refinement", projectedState: "active" });
-    expect(w.store.getStageState("issue")).toMatchObject({ status: "ready" });
+    expect(w.calls).toHaveLength(1);
 
-    w.schedule();
+    w.release();
     while (w.calls.length < 2) await Bun.sleep(5);
     expect(w.calls[1]).not.toHaveProperty("resumeSessionId");
     while (w.service.activeWork().items.length > 0) await Bun.sleep(5);

@@ -625,11 +625,17 @@ export class ConveyorService {
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      void this.execute(issue, active.controller.signal).finally(() => {
+      let rescheduleAfterRelease = false;
+      void this.execute(issue, active.controller.signal).then((reschedule) => {
+        rescheduleAfterRelease = reschedule;
+      }).finally(() => {
         this.#active.delete(issue.id);
         if (this.#drain && !active.interrupted) {
           log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
         }
+        // execute() schedules while this run still occupies the item. A fenced executor must
+        // schedule again after releasing it so a newly ready projection cannot remain idle.
+        if (rescheduleAfterRelease) this.schedule();
       });
     }
     const selectedIds = startedIds;
@@ -1051,9 +1057,9 @@ export class ConveyorService {
     else log.debug("Stage parked", { ...fields, reason: outcome.reason, wakeAt: outcome.wakeAt });
   }
 
-  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
+  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<boolean> {
     const repository = this.config.repositories[issue.repositoryId];
-    if (!repository) return;
+    if (!repository) return false;
     const executor = new IssueExecutor({
       config: this.config,
       store: this.store,
@@ -1077,9 +1083,11 @@ export class ConveyorService {
         signal,
       ),
     });
+    let rescheduleAfterRelease = false;
     try {
       const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
       const outcome = await executor.execute(issue);
+      rescheduleAfterRelease = outcome.kind === "parked" && outcome.reason === "superseded";
       this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
         // A parked poll changes nothing at the source: no reconcile, just the status line.
@@ -1091,11 +1099,12 @@ export class ConveyorService {
       }
       this.schedule();
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) return false;
       await this.handleInfrastructureFailure(issue, error);
-      return;
+      return false;
     }
     this.#infrastructureFailures.delete(issue.id);
+    return rescheduleAfterRelease;
   }
 
   /**
