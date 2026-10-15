@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,8 +11,9 @@ import type { ItemContext, TaskContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { ToolRequestError } from "../../src/tasks/errors";
+import { renderBreakdownPlan, type BreakdownPlan } from "../../src/tasks/breakdown";
 import { criteriaFromBody } from "../../src/tasks/item";
-import { parseManagedSections, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
+import { parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -21,6 +23,8 @@ afterEach(async () => {
 const registry = createTaskRegistry();
 const run = (name: string, args: Record<string, unknown>) =>
   runTask(registry.require(name), { config: {}, instance: { id: name, stage: "impl", idempotencyKey: "k", resumed: false }, ...args } as never);
+const runAt = (name: string, stage: string, args: Record<string, unknown>) =>
+  runTask(registry.require(name), { config: {}, instance: { id: name, stage, idempotencyKey: "k", resumed: false }, ...args } as never);
 
 const criteriaBody = (...lines: string[]) =>
   `Intro\n\n<!-- conveyor:acceptance-criteria:start -->\n${lines.join("\n")}\n<!-- conveyor:acceptance-criteria:end -->\n`;
@@ -157,6 +161,8 @@ async function world(options: {
   failTitleWriteOnce?: boolean;
   failDependencyWriteOnce?: boolean;
   failDependencySectionWriteOnce?: boolean;
+  breakdownFailAfterCreates?: number;
+  pipelineStages?: string[];
   noSplitLabel?: string;
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
@@ -188,9 +194,11 @@ async function world(options: {
       metadata: { closable: "conveyor:closable", noSplit: options.noSplitLabel ?? "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
     },
     repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
-    pipelines: { default: { stages: [{ id: "refinement" }, { id: "implementation" }] } },
+    pipelines: { default: { stages: (options.pipelineStages ?? ["refinement", "implementation"]).map((id) => ({ id })) } },
   } as unknown as ConveyorConfig;
   const calls: Array<[string, unknown]> = [];
+  let nextBreakdownChild = 100;
+  let breakdownFailureRaised = false;
   const items = {
     getIssue: async (...a: unknown[]) => { calls.push(["getIssue", a]); return source(a[1] as number); },
     addComment: async (...a: unknown[]) => { calls.push(["addComment", a]); return 42; },
@@ -230,6 +238,19 @@ async function world(options: {
     createChildIssue: async (i: unknown) => {
       calls.push(["createChildIssue", i]);
       const input = i as { title: string; body: string; labels: string[]; type?: string };
+      if (options.breakdownFailAfterCreates !== undefined) {
+        const marker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
+        const existing = marker ? [...sources.values()].find((candidate) => candidate.body.includes(marker)) : undefined;
+        if (existing) return existing;
+        if (!breakdownFailureRaised && nextBreakdownChild - 100 >= options.breakdownFailAfterCreates) {
+          breakdownFailureRaised = true;
+          throw new Error("interrupted child creation");
+        }
+        const number = nextBreakdownChild++;
+        const child = { id: `child-${number}`, number, url: `https://x/${number}`, title: input.title, body: input.body, state: "open" as const, labels: input.labels, updatedAt: "2026-01-01T00:00:00Z", ...(input.type !== undefined ? { type: input.type } : {}) };
+        sources.set(child.number, child);
+        return child;
+      }
       const child = { id: "c", number: 99, url: "https://x/99", title: input.title, body: input.body, state: "open" as const, labels: input.labels, updatedAt: "2026-01-01T00:00:00Z", ...(input.type !== undefined ? { type: input.type } : {}) };
       sources.set(child.number, child);
       return child;
@@ -254,7 +275,7 @@ async function world(options: {
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
     git: {} as TaskDeps["git"], workspaces: {} as TaskDeps["workspaces"],
   });
-  return { store, add, updateLiveSource, deps, calls };
+  return { store, add, updateLiveSource, source, deps, calls };
 }
 
 describe("item.load", () => {
@@ -283,8 +304,8 @@ describe("item.load", () => {
         { id: "criterion-3", text: "Bare", manual: false },
       ],
       children: [
-        { id: "kid", number: 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false },
-        { id: "kid2", number: 3, state: "closed", enrolled: false, hasCriteria: false, hasChildren: false },
+        { id: "kid", number: 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false, title: "Issue 2", body: criteriaBody("- [ ] k"), labels: ["conveyor"], dependsOn: [] },
+        { id: "kid2", number: 3, state: "closed", enrolled: false, hasCriteria: false, hasChildren: false, title: "Issue 3", body: "", labels: [], dependsOn: [] },
       ],
       dependencies: [
         { id: "dep-closed", number: 5, satisfied: true },
@@ -797,5 +818,96 @@ describe("item tools", () => {
     await expect(tool("item.setTitle", w.deps(), { title: "   " })).rejects.toThrow();
     await expect(tool("item.setTitle", w.deps(), { title: "x".repeat(257) })).rejects.toThrow();
     expect(w.calls).toEqual([]);
+  });
+});
+
+describe("work breakdown tasks", () => {
+  type PlannedEntry = {
+    id: string;
+    title: string;
+    scope: string;
+    acceptanceCriteria: Array<{ id: string; text: string }>;
+    dependsOn: string[];
+    covers: string[];
+    systemLabels: string[];
+  };
+  type SplitPlan = { decision: "split"; review: "proposed" | "approved" | "rejected"; reason?: string; entries: PlannedEntry[] };
+  const splitPlan = (review: SplitPlan["review"] = "approved"): SplitPlan => ({
+    decision: "split",
+    review,
+    entries: [
+      { id: "api", title: "API child", scope: "Add the API.", acceptanceCriteria: [{ id: "api-criterion", text: "The API works." }], dependsOn: [], covers: ["parent-api"], systemLabels: ["area:api"] },
+      { id: "ui", title: "UI child", scope: "Add the UI.", acceptanceCriteria: [{ id: "ui-criterion", text: "The UI works." }], dependsOn: ["api"], covers: ["parent-ui"], systemLabels: ["area:ui"] },
+    ],
+  });
+  const storedPlanBody = (plan: BreakdownPlan) => {
+    const parent = criteriaBody("- [ ] Parent API <!-- conveyor:criterion:parent-api -->", "- [ ] Parent UI <!-- conveyor:criterion:parent-ui -->");
+    return upsertManagedSection(parent, "breakdown", renderBreakdownPlan(plan), parseManagedSections(parent).revision);
+  };
+  const childBody = (entry: PlannedEntry) => {
+    let body = upsertManagedSection("", "description", `## Scope\n\n${entry.scope}`, parseManagedSections("").revision);
+    body = upsertManagedSection(body, "acceptance-criteria", renderAcceptanceCriteriaSection(entry.acceptanceCriteria), parseManagedSections(body).revision);
+    const marker = createHash("sha256").update(`breakdown:i1:${entry.id}`).digest("hex");
+    return `${body.trimEnd()}\n\n<!-- conveyor:breakdown-entry:${entry.id} -->\n<!-- conveyor:child-create:${marker} -->\n`;
+  };
+
+  test("returns incomplete and rejected plans to refinement with their actionable reason", async () => {
+    const incomplete = { ...splitPlan(), entries: [{ ...splitPlan().entries[0]!, covers: ["missing"] }] };
+    const incompleteResult = await run("breakdown.planComplete", {
+      context: ctx({ criteria: [{ id: "parent-api", text: "A", manual: false }], breakdown: renderBreakdownPlan(incomplete) }, { systemLabels: ["area:api", "area:ui"] }),
+    });
+    expect(incompleteResult).toMatchObject({ status: "fail", message: expect.stringContaining("covers unknown parent criterion missing") });
+
+    const rejectedResult = await run("breakdown.reviewed", {
+      context: ctx({ criteria: [{ id: "parent-api", text: "A", manual: false }, { id: "parent-ui", text: "U", manual: false }], breakdown: renderBreakdownPlan({ ...splitPlan(), review: "rejected", reason: "Separate the API contract from the UI scope." }) }, { systemLabels: ["area:api", "area:ui"] }),
+    });
+    expect(rejectedResult).toEqual({ status: "fail", message: "Work breakdown plan was rejected: Separate the API contract from the UI scope." });
+  });
+
+  test("detects missing and mismatched children, uncovered criteria, and invalid dependency references", async () => {
+    const plan = splitPlan();
+    const validChildren = plan.entries.map((entry, index) => ({
+      id: `child-${entry.id}`, number: index + 2, state: "open", enrolled: true, hasCriteria: true, hasChildren: false,
+      title: entry.title, body: childBody(entry), labels: ["conveyor", ...entry.systemLabels], dependsOn: index === 0 ? [] : [2],
+    }));
+    const context = (children: ItemContext["children"], breakdown: BreakdownPlan = plan) => ctx({
+      criteria: [{ id: "parent-api", text: "A", manual: false }, { id: "parent-ui", text: "U", manual: false }],
+      breakdown: renderBreakdownPlan(breakdown), children,
+    }, { systemLabels: ["area:api", "area:ui"] });
+
+    expect((await run("breakdown.complete", { context: context(validChildren) })).status).toBe("pass");
+    expect(await run("breakdown.complete", { context: context(validChildren.slice(0, 1)) })).toMatchObject({ status: "fail", message: expect.stringContaining("entry ui has no created child") });
+    expect(await run("breakdown.complete", { context: context([{ ...validChildren[0]!, title: "Wrong title" }, validChildren[1]!] ) })).toMatchObject({ status: "fail", message: expect.stringContaining("entry api child title does not match") });
+
+    const uncovered = { ...splitPlan(), entries: [{ ...splitPlan().entries[0]!, covers: ["parent-api"] }] };
+    expect(await run("breakdown.complete", { context: context([], uncovered) })).toMatchObject({ status: "fail", message: expect.stringContaining("parent criterion parent-ui is not covered") });
+    const invalidDependency = { ...splitPlan(), entries: [{ ...splitPlan().entries[0]!, dependsOn: ["unknown"] }, splitPlan().entries[1]!] };
+    expect(await run("breakdown.complete", { context: context([], invalidDependency) })).toMatchObject({ status: "fail", message: expect.stringContaining("depends on unknown entry unknown") });
+  });
+
+  test("reuses marked children after an interrupted creation and starts them at implementation", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"], breakdownFailAfterCreates: 1 });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()) });
+
+    await expect(runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" })).rejects.toThrow("interrupted child creation");
+    const rerun = await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" }) as Extract<TaskResult, { status: "pass" }>;
+
+    expect(rerun.output).toEqual({ decision: "split", children: [{ entryId: "api", number: 100 }, { entryId: "ui", number: 101 }] });
+    expect(w.calls.filter(([name]) => name === "createChildIssue")).toHaveLength(4);
+    expect(w.source(100).labels).toContain("conveyor:implementation");
+    const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
+  });
+
+  test("passes a reviewed no-split plan without creating a child", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"] });
+    const parent = criteriaBody("- [ ] Keep it whole <!-- conveyor:criterion:whole -->");
+    w.add("i1", 1, { body: upsertManagedSection(parent, "breakdown", renderBreakdownPlan({ decision: "no-split", review: "approved" }), parseManagedSections(parent).revision) });
+
+    const created = await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" }) as Extract<TaskResult, { status: "pass" }>;
+    expect(created.output).toEqual({ decision: "no-split", children: [] });
+    expect(w.calls.some(([name]) => name === "createChildIssue")).toBe(false);
+    const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
   });
 });

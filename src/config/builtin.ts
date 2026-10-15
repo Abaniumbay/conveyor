@@ -8,10 +8,12 @@ import path from "node:path";
 
 import agents from "../../examples/config/agents.yaml" with { type: "text" };
 import harnesses from "../../examples/config/harnesses.yaml" with { type: "text" };
+import breakdownReviewer from "../../examples/config/instructions/breakdown-reviewer.md" with { type: "text" };
 import darya from "../../examples/config/instructions/darya.md" with { type: "text" };
 import kaveh from "../../examples/config/instructions/kaveh.md" with { type: "text" };
 import omid from "../../examples/config/instructions/omid.md" with { type: "text" };
 import reviewer from "../../examples/config/instructions/reviewer.md" with { type: "text" };
+import workBreakdown from "../../examples/config/instructions/work-breakdown.md" with { type: "text" };
 import pipelines from "../../examples/config/pipelines.yaml" with { type: "text" };
 import providers from "../../examples/config/providers.yaml" with { type: "text" };
 
@@ -20,10 +22,12 @@ import { ConfigError } from "./errors";
 export const BUILTIN_FILES: Readonly<Record<string, string>> = {
   "agents.yaml": agents,
   "harnesses.yaml": harnesses,
+  "instructions/breakdown-reviewer.md": breakdownReviewer,
   "instructions/darya.md": darya,
   "instructions/kaveh.md": kaveh,
   "instructions/omid.md": omid,
   "instructions/reviewer.md": reviewer,
+  "instructions/work-breakdown.md": workBreakdown,
   "pipelines.yaml": pipelines,
   "providers.yaml": providers,
 };

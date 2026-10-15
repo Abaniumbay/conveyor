@@ -731,7 +731,7 @@ Refinement must produce:
 - Configured project/system labels such as backend, web, mobile, or infrastructure.
 - A decision such as ready, already done, infeasible, rejected, or needing input.
 - Dependencies and sibling order.
-- Parent/child decomposition when required.
+- A complete proposed child breakdown, or an explicit no-split decision, when the configured pipeline uses work breakdown.
 - A concise rationale visible in the issue.
 
 Acceptance criteria live in a managed issue-body section while all content outside that section remains untouched:
@@ -749,10 +749,13 @@ Stable hidden IDs keep approvals and evidence connected when criteria are reorde
 
 The reviewer checks every criterion against the current issue and implementation. Conveyor never marks criteria complete merely because a producer claims success: a criterion is approved only by the reviewer's `change.checkCriterion` call for the current head, recorded in Conveyor, and the pull request checklist is rendered from those approvals. In the legacy shape the configured verifier supplies the decision and the engine applies validated checkbox updates.
 
-When refinement decomposes an issue:
+When a pipeline uses reviewed work breakdown:
 
-- It creates native GitHub subissues.
-- Each child is fully refined, labeled, and starts at the stage selected by the producer stage's `childrenStartAt` configuration, normally the following stage; preceding results are recorded as skipped.
+- Refinement records either a no-split decision or a plan whose stable entry IDs specify every child's title, scope, managed acceptance criteria, dependencies, labels, and covered parent-criterion IDs. Refinement does not create the children.
+- A review stage approves the plan or returns it to refinement with an actionable rejection reason before any child is created.
+- The work-breakdown stage creates only approved entries. Each child carries its stable entry marker, is fully refined and labeled, and starts at the stage selected by that stage's `childrenStartAt` configuration, normally the following implementation stage; preceding results are recorded as skipped.
+- Creation is idempotent: after an interruption it finds existing children by their entry markers and creates only the missing entries. Its deterministic exit gate rejects missing or mismatched children, invalid plan references, and uncovered parent criteria.
+- A no-split plan creates no children and proceeds to implementation as an ordinary item.
 - The original becomes a roll-up parent. Current child links prevent new parent runs in every stage, but a run already active when the links appear may finish or resume an answer it asked.
 - The parent's temporary refinement worktree is removed after decomposition succeeds; each child receives a clean worktree and unique branch from the then-current configured base branch.
 - Children are independently releasable, each with its own worktree, branch, and PR.
@@ -833,6 +836,7 @@ An explicit **Steer** action is different from an ordinary issue edit: it mirror
 Every agent receives a scoped MCP server for exactly one repository, issue, stage, and run, plus its worktree when that stage has one. Cleanup and source-only stages may intentionally have no worktree. The tools are the registry's `tool` tasks, exposed by task name; the registry owns each tool's schema, implementation and description, and there is no parallel MCP layer. Names are camelCase:
 
 - `item.*`: `get`, `guidance`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setType`, `setFields`, `setRefinement`, `setParent`, `setDependencies`, `createChild`: read the issue and manage its title, allowed labels, comments, acceptance criteria, GitHub issue type, organization issue-field values (only fields the repository configures), the managed Refinement section, hierarchy and dependencies. The `item.refinementComplete` gate requires the outputs a repository lists under `refinement.require`, ignoring a type or field the owner does not define.
+- `breakdown.*`: `setPlan`, `reviewPlan`, `createChildren`: record a validated breakdown plan, approve or reject it, and idempotently create only its approved child entries. The plan and completion gates remain deterministic.
 - `agent.*`: `reportProgress`, `reportRationale`, `reportBlocker`, `reportResult`, `reportMilestone`, `recordArtifact`, `askQuestion`.
 - `workspace.*`: `get`, `fetch`, `push`: workspace/base/branch metadata and scoped fetch and push.
 - `change.*`: `get`, `setMetadata`, `comment`, `resolveFinding`, `listFindings`, `checkCriterion`, `uncheckCriterion` (and `dismissFinding`, which is never grantable).

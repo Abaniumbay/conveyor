@@ -176,7 +176,7 @@ describe("refinement section and legacy criteria", () => {
     const second = write(first, "refinement", "## Refinement\n\nChanged.");
     expect(parseManagedSections(second).sections.refinement).toBe("## Refinement\n\nChanged.");
     expect(second.replace("Changed.", "One release.")).not.toBe(first);
-    const { refinement: _gone, ...others } = parseManagedSections(second).sections;
+    const { refinement: _gone, breakdown: _noBreakdown, ...others } = parseManagedSections(second).sections;
     expect(others).toEqual({ "acceptance-criteria": "- [ ] A <!-- conveyor:criterion:a -->", dependencies: "- #1", description: undefined });
     expect(second.startsWith("Intro\n<!-- conveyor:acceptance-criteria:start -->")).toBe(true);
     expect(second.endsWith("Footer\n\n<!-- conveyor:refinement:start -->\n## Refinement\n\nChanged.\n<!-- conveyor:refinement:end -->\n")).toBe(true);

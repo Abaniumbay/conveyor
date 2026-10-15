@@ -24,7 +24,27 @@ darya:
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
           item.setSystemLabels, item.setType, item.setFields, item.setRefinement, item.setParent,
-          item.setDependencies, item.createChild]
+          item.setDependencies, breakdown.setPlan]
+parisa:
+  name: Parisa
+  title: Work Breakdown Reviewer
+  harness: codex
+  model: gpt-6-luna
+  effort: medium
+  instructions: ./instructions/breakdown-reviewer.md
+  access: read-only
+  tasks: [item.get, item.guidance, conversation.get, agent.reportProgress, agent.reportRationale,
+          agent.reportBlocker, agent.reportResult, agent.reportMilestone, breakdown.reviewPlan]
+roya:
+  name: Roya
+  title: Work Breakdown Coordinator
+  harness: codex
+  model: gpt-6-luna
+  effort: medium
+  instructions: ./instructions/work-breakdown.md
+  access: read-only
+  tasks: [item.get, item.guidance, conversation.get, agent.reportProgress, agent.reportRationale,
+          agent.reportBlocker, agent.reportResult, agent.reportMilestone, breakdown.createChildren]
 kaveh:
   name: Kaveh
   title: Senior Developer

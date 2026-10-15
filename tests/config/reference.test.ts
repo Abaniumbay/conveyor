@@ -25,13 +25,13 @@ describe("reference configuration", () => {
     const config = await loadReference();
     expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["service"]);
     expect(config.plans[0]!.id).toBe("delivery");
-    for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
+    for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
   });
 
   test("has no AI verifier, no checks and no legacy stages", async () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});
-    expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "shaghayegh", "shirin"]);
+    expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin"]);
     for (const pipeline of Object.values(config.pipelines)) for (const stage of pipeline.stages) expect("run" in stage).toBe(false);
     for (const plan of config.plans) {
       for (const stage of plan.stages) {
@@ -41,6 +41,32 @@ describe("reference configuration", () => {
         }
       }
     }
+  });
+
+  test("reviews a refinement plan before the built-in pipeline creates its children", async () => {
+    const config = await loadReference();
+    const stages = config.pipelines.delivery!.stages;
+    const refinement = stages.find((stage) => stage.id === "refinement")!;
+    const review = stages.find((stage) => stage.id === "refinement-review")!;
+    const breakdown = stages.find((stage) => stage.id === "work-breakdown")!;
+
+    if (!("exitGate" in refinement)) throw new Error("The built-in refinement stage must use native tasks.");
+    expect("childrenStartAt" in refinement).toBe(false);
+    expect(refinement.exitGate.map((gate) => gate.task)).toEqual(expect.arrayContaining([
+      "item.criteriaDefined", "item.labelsValid", "item.refinementComplete", "breakdown.planComplete",
+    ]));
+    expect(review).toMatchObject({
+      actions: [{ task: "agent.run", with: { agent: "parisa" } }],
+      exitGate: [{ task: "breakdown.reviewed", onFail: { return: "refinement" } }],
+    });
+    expect(breakdown).toMatchObject({
+      childrenStartAt: "next",
+      actions: [{ task: "agent.run", with: { agent: "roya" } }],
+      exitGate: [{ task: "breakdown.complete", onFail: { return: "refinement" } }],
+    });
+    expect(config.agents.darya!.tasks).not.toContain("item.createChild");
+    expect(config.agents.parisa!.tasks).toEqual(expect.arrayContaining(["breakdown.reviewPlan"]));
+    expect(config.agents.roya!.tasks).toEqual(expect.arrayContaining(["breakdown.createChildren"]));
   });
 
   test("Omid receives the allowlisted Operator skill and no broader board controls", async () => {
@@ -193,7 +219,9 @@ describe("reference configuration", () => {
         expect(config.agents[agent]!.tasks).toContain(name);
       }
     };
-    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "item.createChild", "item.setType", "item.setFields", "item.setRefinement"]);
+    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "breakdown.setPlan", "item.setType", "item.setFields", "item.setRefinement"]);
+    await mentions("parisa", ["breakdown.reviewPlan"]);
+    await mentions("roya", ["breakdown.createChildren"]);
     const darya = await read("darya");
     expect(darya).toMatch(/`Bug` when the issue reports wrong existing behavior, `Feature` for a new capability, `Task` otherwise/);
     expect(darya).toMatch(/`Effort`[^\n]*refined scope/);
