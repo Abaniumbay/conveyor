@@ -64,6 +64,35 @@ function priorRun(store: ConveyorStore, id: string, agentId: string, result: Rec
 }
 
 describe("handover", () => {
+  test("keeps the newest answered questions and bounds their text", async () => {
+    const w = await setup({ ci: "none" });
+    for (let index = 0; index < HANDOVER_LIMITS.answeredQuestions + 1; index += 1) {
+      const runId = `prior-${index}`;
+      w.store.createRun({ id: runId, issueId: "i1", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: "c", startedAt: "2026-01-01T00:00:00Z" });
+      const prompt = index === HANDOVER_LIMITS.answeredQuestions
+        ? `latest prompt ${"p".repeat(HANDOVER_LIMITS.answeredQuestionText + 1)}`
+        : `prompt-${index}`;
+      const question = w.store.openQuestion({ issueId: "i1", runId, prompt, reason: "r", options: [] });
+      w.store.answerQuestion(question.id, "owner", { answer: index === HANDOVER_LIMITS.answeredQuestions ? `latest answer ${"a".repeat(HANDOVER_LIMITS.answeredQuestionText + 1)}` : `answer-${index}` });
+      w.store.sqlite().query("UPDATE questions SET answered_at = ? WHERE id = ?").run("2026-01-01T00:00:00Z", question.id);
+    }
+
+    const handover = await w.build();
+    const answered = handover.answeredQuestions;
+    const latest = answered.items.find((item) => item.prompt.startsWith("latest prompt"));
+
+    expect(answered.count).toBe(HANDOVER_LIMITS.answeredQuestions + 1);
+    expect(answered.items).toHaveLength(HANDOVER_LIMITS.answeredQuestions);
+    expect(answered.items[0]).toMatchObject({ prompt: "prompt-1", answer: "answer-1" });
+    expect(latest?.prompt).toHaveLength(HANDOVER_LIMITS.answeredQuestionText);
+    expect(latest?.answer).toHaveLength(HANDOVER_LIMITS.answeredQuestionText);
+    expect(latest?.prompt.endsWith("…")).toBe(true);
+    expect(latest?.answer.endsWith("…")).toBe(true);
+    expect(answered.truncated).toMatchObject({ fullState: "conversation.get" });
+    expect(answered.truncated?.omitted).toContain("showing the most recent");
+    expect(answered.truncated?.omitted).toContain("values beyond");
+  });
+
   test("states absence explicitly", async () => {
     const w = await setup({ ci: "none" });
     const h = await w.build();

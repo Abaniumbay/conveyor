@@ -2108,7 +2108,7 @@ export class ConveyorStore {
          JOIN runs r ON r.id = q.run_id
          JOIN answers a ON a.question_id = q.id
          WHERE q.issue_id = ? AND r.stage_id = ?
-         ORDER BY q.answered_at, q.id`,
+         ORDER BY q.answered_at, a.rowid`,
       )
       .all(issueId, stageId) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapQuestion(row));

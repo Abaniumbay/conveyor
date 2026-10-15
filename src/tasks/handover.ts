@@ -11,7 +11,15 @@ import { agentActor, concise } from "./agent-support";
 import type { StoredQuestion } from "../db/store";
 import type { TaskDeps } from "./deps";
 
-export const HANDOVER_LIMITS = { todos: 40, findings: 20, findingText: 600, checks: 30, summary: 1_500, answeredQuestions: 20 } as const;
+export const HANDOVER_LIMITS = {
+  todos: 40,
+  findings: 20,
+  findingText: 600,
+  checks: 30,
+  summary: 1_500,
+  answeredQuestions: 20,
+  answeredQuestionText: 1_500,
+} as const;
 
 interface Truncation { omitted: string; fullState: string }
 
@@ -56,12 +64,26 @@ function answerText(question: StoredQuestion): string {
 function answeredQuestionsPart(deps: TaskDeps, stageId: string) {
   const questions = deps.store.listAnsweredQuestionsForStage(deps.issueId, stageId);
   if (questions.length === 0) return { count: 0, note: `No earlier answered questions are stored for the ${stageId} stage.`, items: [], truncated: null };
-  const { shown, truncated } = bounded(questions, HANDOVER_LIMITS.answeredQuestions, "answered questions", "conversation.get");
+  const shown = questions.slice(-HANDOVER_LIMITS.answeredQuestions);
+  const textCut: string[] = [];
+  const truncated = questions.length > shown.length
+    ? { omitted: `${questions.length - shown.length} more answered questions (showing the most recent ${HANDOVER_LIMITS.answeredQuestions})`, fullState: "conversation.get" }
+    : null;
+  const items = shown.map((question) => ({
+    prompt: clip(question.prompt, HANDOVER_LIMITS.answeredQuestionText, textCut),
+    answer: clip(answerText(question), HANDOVER_LIMITS.answeredQuestionText, textCut),
+    actor: question.answerSource ?? "unknown",
+  }));
+  const textTruncated = textCut.length > 0
+    ? `${textCut.length} answered-question text value${textCut.length === 1 ? "" : "s"} beyond ${HANDOVER_LIMITS.answeredQuestionText} characters`
+    : null;
   return {
     count: questions.length,
     note: "Earlier answers are decisions for this stage; do not ask them again unless new information requires it.",
-    items: shown.map((question) => ({ prompt: question.prompt, answer: answerText(question), actor: question.answerSource ?? "unknown" })),
-    truncated,
+    items,
+    truncated: textTruncated
+      ? { omitted: [truncated?.omitted, textTruncated].filter(Boolean).join("; "), fullState: "conversation.get" }
+      : truncated,
   };
 }
 
