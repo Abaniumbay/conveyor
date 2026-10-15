@@ -21,6 +21,7 @@ import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
 import { criteriaOf } from "../../src/tasks/item";
 
@@ -195,15 +196,20 @@ export async function deliveryWorld(options: { requireDescription?: boolean } = 
     id: "fake",
     capabilities: { sessionResume: false },
     async run(input: HarnessRunInput): Promise<RunEnvelope> {
-      const stage = /"stageId": "(\w+)"/.exec(input.prompt)?.[1] ?? "unknown";
+      const stage = /"stageId": "([\w-]+)"/.exec(input.prompt)?.[1] ?? "unknown";
       agentRuns.push(stage);
       if (stage === "refinement") {
         // darya: criteria, a system label, the type, Effort and the Refinement section, as the item.set* tools would write them.
         const issue = store.getIssue("issue")!;
-        const body = `${CRITERIA_BODY}\n<!-- conveyor:refinement:start -->\n## Refinement\n\nA small feature.\n<!-- conveyor:refinement:end -->\n`;
+        let body = `${CRITERIA_BODY}\n<!-- conveyor:refinement:start -->\n## Refinement\n\nA small feature.\n<!-- conveyor:refinement:end -->\n`;
+        body = upsertManagedSection(body, "breakdown", renderBreakdownPlan({ decision: "no-split", review: "proposed" }), parseManagedSections(body).revision);
         store.upsertIssue({ ...issue, body, labels: [...issue.labels, "backend"], sourceUpdatedAt: new Date().toISOString() });
         // item.setType / item.setFields keep the type and Effort in the store as well as on GitHub.
         store.setIssueMetadata(issue.id, { type: "Feature", fields: { Effort: "Low" } });
+      } else if (stage === "refinement-review") {
+        const issue = store.getIssue("issue")!;
+        const body = upsertManagedSection(issue.body, "breakdown", renderBreakdownPlan({ decision: "no-split", review: "approved" }), parseManagedSections(issue.body).revision);
+        store.upsertIssue({ ...issue, body, sourceUpdatedAt: new Date().toISOString() });
       } else if (stage === "implementation") {
         implementationRuns += 1;
         if (implementationRuns === 1) {

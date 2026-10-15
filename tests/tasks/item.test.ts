@@ -11,7 +11,7 @@ import type { ItemContext, TaskContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { ToolRequestError } from "../../src/tasks/errors";
-import { renderBreakdownPlan, type BreakdownPlan } from "../../src/tasks/breakdown";
+import { parseBreakdownPlan, renderBreakdownPlan, type BreakdownPlan } from "../../src/tasks/breakdown";
 import { criteriaFromBody } from "../../src/tasks/item";
 import { parseManagedSections, renderAcceptanceCriteriaSection, upsertManagedSection, type ManagedSectionName } from "../../src/source/github/managed-sections";
 
@@ -163,6 +163,7 @@ async function world(options: {
   failDependencySectionWriteOnce?: boolean;
   breakdownFailAfterCreates?: number;
   pipelineStages?: string[];
+  childrenStartAt?: string;
   noSplitLabel?: string;
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-item-"));
@@ -194,7 +195,10 @@ async function world(options: {
       metadata: { closable: "conveyor:closable", noSplit: options.noSplitLabel ?? "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
     },
     repositories: { repo: { pipeline: "default", systemLabels: options.systemLabels ?? ["area:api", "area:ui"], address: "o/r", ...(options.refinement ? { refinement: options.refinement } : {}) } },
-    pipelines: { default: { stages: (options.pipelineStages ?? ["refinement", "implementation"]).map((id) => ({ id })) } },
+    pipelines: { default: { stages: (options.pipelineStages ?? ["refinement", "implementation"]).map((id) => ({
+      id,
+      ...(id === "work-breakdown" && options.childrenStartAt ? { childrenStartAt: options.childrenStartAt } : {}),
+    })) } },
   } as unknown as ConveyorConfig;
   const calls: Array<[string, unknown]> = [];
   let nextBreakdownChild = 100;
@@ -864,6 +868,17 @@ describe("work breakdown tasks", () => {
     expect(rejectedResult).toEqual({ status: "fail", message: "Work breakdown plan was rejected: Separate the API contract from the UI scope." });
   });
 
+  test("rejects duplicate dependency and system-label values before review", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"] });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()) });
+    const duplicated = splitPlan();
+    duplicated.entries[1] = { ...duplicated.entries[1]!, dependsOn: ["api", "api"], systemLabels: ["area:ui", "area:ui"] };
+
+    await expect(runAt("breakdown.setPlan", "refinement", {
+      context: {}, deps: w.deps(), input: { decision: "split", entries: duplicated.entries }, actor: "agent",
+    })).rejects.toThrow("entry ui has duplicate dependency IDs; entry ui has duplicate system labels");
+  });
+
   test("detects missing and mismatched children, uncovered criteria, and invalid dependency references", async () => {
     const plan = splitPlan();
     const validChildren = plan.entries.map((entry, index) => ({
@@ -897,6 +912,46 @@ describe("work breakdown tasks", () => {
     expect(w.source(100).labels).toContain("conveyor:implementation");
     const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
     expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
+  });
+
+  test("returns a split plan to refinement when the live parent becomes no-split", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"] });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()), labels: ["conveyor", "conveyor:no-split"] });
+
+    const result = await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" }) as Extract<TaskResult, { status: "pass" }>;
+
+    expect(result.output).toEqual({ decision: "split", returnedToRefinement: true, reason: "This item carries the conveyor:no-split label and must remain one item." });
+    expect(w.calls.some(([name]) => name === "createChildIssue")).toBe(false);
+    expect(parseBreakdownPlan(w.source(1).body)).toMatchObject({ review: "rejected", reason: expect.stringContaining("must remain one item") });
+  });
+
+  test("records dependency links before enrolling any created child", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"], breakdownFailAfterCreates: 99 });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()) });
+
+    await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" });
+
+    const callNames = w.calls.map(([name]) => name);
+    expect(callNames.indexOf("replaceConveyorLabels")).toBeGreaterThan(callNames.lastIndexOf("setDependencies"));
+    const created = w.calls.filter(([name]) => name === "createChildIssue").map(([, input]) => input as { labels: string[] });
+    expect(created).toEqual([
+      expect.objectContaining({ labels: ["area:api"] }),
+      expect.objectContaining({ labels: ["area:ui"] }),
+    ]);
+  });
+
+  test("uses a configured child start stage instead of the adjacent stage", async () => {
+    const w = await world({
+      pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation", "verify"],
+      childrenStartAt: "verify",
+      breakdownFailAfterCreates: 99,
+    });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()) });
+
+    await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" });
+
+    expect(w.source(100).labels).toContain("conveyor:verify");
+    expect(w.source(100).labels).not.toContain("conveyor:implementation");
   });
 
   test("passes a reviewed no-split plan without creating a child", async () => {

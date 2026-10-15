@@ -84,6 +84,8 @@ function validationErrors(plan: BreakdownPlan | PlanInput, parentCriteria: reado
   for (const candidate of entries) {
     const criterionIds = new Set(candidate.acceptanceCriteria.map((acceptanceCriterion) => acceptanceCriterion.id));
     if (criterionIds.size !== candidate.acceptanceCriteria.length) errors.push(`entry ${candidate.id} has duplicate acceptance-criterion IDs`);
+    if (new Set(candidate.dependsOn).size !== candidate.dependsOn.length) errors.push(`entry ${candidate.id} has duplicate dependency IDs`);
+    if (new Set(candidate.systemLabels).size !== candidate.systemLabels.length) errors.push(`entry ${candidate.id} has duplicate system labels`);
     for (const label of candidate.systemLabels) if (allowedSystemLabels && !allowedSystemLabels.includes(label)) errors.push(`entry ${candidate.id} uses unknown system label ${label}`);
     for (const dependency of candidate.dependsOn) {
       if (!ids.has(dependency)) errors.push(`entry ${candidate.id} depends on unknown entry ${dependency}`);
@@ -141,8 +143,12 @@ async function updateSection(deps: Deps, number: number, section: "description" 
 function nextStage(deps: Deps, stage: string): string {
   const repository = deps.config.repositories[deps.repository.id]!;
   const stages = deps.config.pipelines[repository.pipeline]!.stages;
-  const result = stages[stages.findIndex((candidate) => candidate.id === stage) + 1]?.id;
-  if (!result) throw new ToolRequestError(`The ${stage} stage has no following stage for planned children.`);
+  const currentIndex = stages.findIndex((candidate) => candidate.id === stage);
+  const childrenStartAt = stages[currentIndex]?.childrenStartAt ?? "next";
+  const result = childrenStartAt === "next"
+    ? stages[currentIndex + 1]?.id
+    : stages.find((candidate) => candidate.id === childrenStartAt)?.id;
+  if (!result) throw new ToolRequestError(`The ${stage} stage has no valid child start stage.`);
   return result;
 }
 
@@ -249,17 +255,21 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
   }
   if (plan.decision === "no-split") return { decision: "no-split", children: [] };
   const repository = deps.config.repositories[deps.repository.id]!;
+  if (current.labels.includes(deps.config.labels.metadata.noSplit)) {
+    const reason = `This item carries the ${deps.config.labels.metadata.noSplit} label and must remain one item.`;
+    await savePlan(deps, issue, current, reviewedPlan(plan, "rejected", reason));
+    return { decision: "split", returnedToRefinement: true, reason };
+  }
   const stage = nextStage(deps, instance.stage);
   const enrollmentLabels = [deps.config.labels.enrollment, deps.config.labels.stageTemplate.replace("{stage}", stage)];
   const created = new Map<string, SourceIssue>();
   for (const candidate of plan.entries) {
-    const source = await deps.items.createChildIssue({ address: deps.repository.address, parentNumber: issue.sourceNumber, title: candidate.title, body: childBody(issue.id, candidate), labels: [...enrollmentLabels, ...candidate.systemLabels] });
+    const source = await deps.items.createChildIssue({ address: deps.repository.address, parentNumber: issue.sourceNumber, title: candidate.title, body: childBody(issue.id, candidate), labels: candidate.systemLabels });
     persist(deps, source);
     await deps.items.setTitle(deps.repository.address, source.number, candidate.title);
     await updateSection(deps, source.number, "description", scopeSection(candidate.scope));
     await updateSection(deps, source.number, "acceptance-criteria", renderAcceptanceCriteriaSection(candidate.acceptanceCriteria));
     await deps.items.replaceManagedProjectLabels(deps.repository.address, source.number, repository.systemLabels, candidate.systemLabels);
-    await deps.items.replaceConveyorLabels(deps.repository.address, source.number, enrollmentLabels);
     const refreshed = await deps.items.getIssue(deps.repository.address, source.number);
     const stored = persist(deps, refreshed);
     deps.store.replaceRelationships(stored.id, { parentId: issue.id, siblingOrder: null }, deps.store.listDependencies(stored.id));
@@ -277,6 +287,13 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
       return persist(deps, blocker).id;
     });
     deps.store.replaceRelationships(stored.id, { parentId: issue.id, siblingOrder: null }, blockers);
+  }
+  for (const candidate of plan.entries) {
+    const child = created.get(candidate.id)!;
+    await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+    const refreshed = await deps.items.getIssue(deps.repository.address, child.number);
+    persist(deps, refreshed);
+    created.set(candidate.id, refreshed);
   }
   return { decision: "split", children: plan.entries.map((candidate) => ({ entryId: candidate.id, number: created.get(candidate.id)!.number })) };
 });
