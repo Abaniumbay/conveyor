@@ -90,6 +90,8 @@ interface ServiceImplementations {
 type StatfsReader = (location: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
 type StatReader = (location: string) => Promise<{ dev: number }>;
 
+const recentActivityCandidateLimit = 500;
+
 export async function collectSystemStatus(options: {
   database: string;
   artifacts: string;
@@ -3206,17 +3208,28 @@ export class ConveyorService {
       : defaultTypes;
     const selectedTypes = new Set(types);
     const selectedRepositories = new Set(pagination.repositoryIds ?? []);
+    const configuredRepositories = [...selectedRepositories].filter((repositoryId) => this.config.repositories[repositoryId] !== undefined);
     const rangeStartedAt = pagination.recentCursor
       ? null
       : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    if (selectedRepositories.size > 0 && configuredRepositories.length === 0) {
+      return { types, repositoryIds: [...selectedRepositories], events: [], nextCursor: null, rangeStartedAt };
+    }
     const events: RecentActivityEventViewModel[] = [];
     let cursor = pagination.recentCursor ?? null;
     let nextCursor: { occurredAt: string; id: string } | null = null;
     let exhausted = false;
-    while (!exhausted && events.length < 50) {
+    let inspected = 0;
+    while (!exhausted && events.length < 50 && inspected < recentActivityCandidateLimit) {
       // Fetch one extra source record so the cursor never claims that another page exists
       // merely because the current batch happened to end on its size boundary.
-      const candidates = this.store.listRecentActivity({ from: rangeStartedAt, before: cursor, limit: 101 });
+      const candidateLimit = Math.min(101, recentActivityCandidateLimit - inspected);
+      const candidates = this.store.listRecentActivity({
+        from: rangeStartedAt,
+        before: cursor,
+        limit: candidateLimit,
+        repositoryIds: configuredRepositories,
+      });
       if (candidates.length === 0) {
         exhausted = true;
         break;
@@ -3230,10 +3243,11 @@ export class ConveyorService {
         events.push(classified);
         if (events.length === 50) break;
       }
+      inspected += processed;
       const last = candidates[processed - 1]!;
       cursor = { occurredAt: last.occurredAt, id: last.id };
       nextCursor = cursor;
-      exhausted = processed === candidates.length && candidates.length < 101;
+      exhausted = processed === candidates.length && candidates.length < candidateLimit;
     }
     return { types, repositoryIds: [...selectedRepositories], events, nextCursor: exhausted ? null : nextCursor, rangeStartedAt };
   }

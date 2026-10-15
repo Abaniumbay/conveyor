@@ -42,7 +42,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(22);
+    expect(store.schemaVersion()).toBe(24);
 
     store.close();
   });
@@ -80,6 +80,7 @@ describe("ConveyorStore", () => {
     expect(events.find((event) => event.id === "transition:transition-a")).toMatchObject({ kind: "advance", reason: "Reason for transition-a", fromStage: "review", toStage: "cleanup" });
     expect(events.filter((event) => event.issueId === "recorded")).toHaveLength(1);
     expect(events.find((event) => event.id === "done:fallback:legacy")).toMatchObject({ source: "done-fallback", occurredAt: "2026-10-15T12:01:00.000Z" });
+    expect(store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before: null, limit: 10, repositoryIds: ["repo-a"] }).map((event) => event.repositoryId)).toEqual(["repo-a", "repo-a"]);
     const paged: string[] = [];
     let before: { occurredAt: string; id: string } | null = null;
     for (let page = 0; page < events.length; page += 1) {
@@ -92,6 +93,10 @@ describe("ConveyorStore", () => {
     expect(store.listRecentActivity({ from: "2026-10-15T12:03:00.000Z", before: null, limit: 10 }).map((event) => event.id)).toEqual(["transition:transition-b", "transition:transition-a"]);
     const plan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM stage_transitions INDEXED BY stage_transitions_created_at_idx WHERE status = 'completed' AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
     expect(plan).toContain("stage_transitions_created_at_idx");
+    const donePlan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM push_events INDEXED BY push_events_done_created_at_idx WHERE category = 'done' AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(donePlan).toContain("push_events_done_created_at_idx");
+    const fallbackPlan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM pull_requests INDEXED BY pull_requests_merged_at_idx WHERE merged_at >= ? ORDER BY merged_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(fallbackPlan).toContain("pull_requests_merged_at_idx");
     store.close();
   });
 
@@ -336,7 +341,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);");
+    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);");
     store.close();
 
     store = await ConveyorStore.open(database);
