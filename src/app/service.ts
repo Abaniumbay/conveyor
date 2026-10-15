@@ -846,6 +846,16 @@ export class ConveyorService {
     return this.store.executions().getCursor(issueId) !== null;
   }
 
+  /** Whether an unanswered question can still resume this item's parked execution. */
+  private hasParkedQuestionExecution(issueId: string): boolean {
+    const cursor = this.store.executions().getCursor(issueId);
+    if (!cursor || cursor.state !== "pending") return false;
+    return this.store.listOpenQuestions().some((question) =>
+      question.issueId === issueId &&
+      question.runId !== null &&
+      this.store.getRun(question.runId)?.stageId === cursor.stage);
+  }
+
   /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
   private armWakeTimer(): void {
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
@@ -1444,6 +1454,9 @@ export class ConveyorService {
       // A live parent run owns its outcome, including any question it asks.
       // Child roll-up must not fence that run or replace its source state.
       if (runningIssueIds.has(parent.id)) continue;
+      // A parked question has already finished its producer run, but its cursor
+      // still belongs to that run and must survive until the answer resumes it.
+      if (this.hasParkedQuestionExecution(parent.id)) continue;
       // A stage that passed earlier may subsequently be stopped. Never let a
       // roll-up erase that stop while its source state still says to park it.
       if (this.hasRollupStopLabel(parent)) continue;
