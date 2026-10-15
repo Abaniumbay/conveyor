@@ -410,6 +410,62 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("builds direct Done details with the same relations and presentation as its board card", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-direct-done-details-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const add = (id: string, number: number, sourceState: "open" | "closed", sourceStateReason: string | null, state: string) => {
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`,
+        title: id, body: "", sourceState, sourceStateReason, labels: ["conveyor", "conveyor:implementation"],
+        sourceUpdatedAt: "2026-10-01T00:00:00Z",
+      });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage: "implementation", state, warning: null });
+      store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    };
+    add("done-parent", 1, "closed", "not_planned", "done");
+    add("completed-child", 2, "closed", "completed", "done");
+    add("offboarded-blocker", 3, "closed", "completed", "offboarded");
+    add("ancestor", 4, "open", null, "active");
+    store.replaceRelationships("completed-child", { parentId: "done-parent", siblingOrder: 1 }, []);
+    store.replaceRelationships("done-parent", { parentId: "ancestor", siblingOrder: 1 }, ["offboarded-blocker"]);
+    new ItemTodos(store.sqlite()).set("done-parent", [
+      { id: "t1", text: "Keep this detail", status: "in_progress" },
+    ], null, "2026-10-01T00:00:00Z");
+    store.saveIndicator("done-parent", "head", {
+      id: "quality", label: "Quality", state: "passing", detail: "Checks passed", progress: "1/1", url: null,
+      observedAt: "2026-10-01T00:00:00Z", entries: [{ name: "Check", state: "passed", url: null, startedAt: "2026-10-01T00:00:00Z", completedAt: "2026-10-01T00:01:00Z" }], reference: null,
+    }, true);
+    store.openQuestion({ issueId: "done-parent", runId: null, prompt: "Confirm release?", reason: "Owner confirmation", options: [], allowFreeText: true });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const boardCard = service.dashboard("csrf").done.issues.find((card) => card.id === "done-parent");
+    expect(boardCard).toBeDefined();
+    expect(service.issueDetails("csrf", "done-parent")).toEqual(boardCard!);
+    expect(boardCard).toMatchObject({
+      state: "done",
+      reason: "GitHub close reason: not planned.",
+      parent: { id: "ancestor" },
+      children: [{ id: "completed-child" }],
+      dependencies: [{ id: "offboarded-blocker" }],
+      todos: { current: "Keep this detail" },
+      indicators: [{ id: "quality", detail: "Checks passed" }],
+      needsAttention: true,
+    });
+    store.close();
+  });
+
   test("a parent's children carry their station and signal, and each child its parent's progress", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-families-"));
     temporaryDirectories.push(root);
@@ -1932,6 +1988,17 @@ describe("ConveyorService dashboard", () => {
     const byFieldsAndAgent = service.dashboard("csrf", filters("BACKEND feature large alice", ["alpha"]));
     expect(byFieldsAndAgent.done.issues.map((issue) => issue.id)).toEqual(["target"]);
     expect(service.dashboard("csrf", filters("private body phrase", [])).done.totalIssues).toBe(0);
+    // The database count uses the same literal search and enrollment predicates as the rendered
+    // Done cards. In particular, closed offboarded relationship stubs are not board items, and
+    // SQLite LIKE metacharacters in a user query are ordinary text for the board filter.
+    store.upsertIssue({ id: "offboarded", repositoryId: "beta", sourceNumber: 900, sourceUrl: "https://github.com/owner/beta/issues/900", title: "Offboarded history", body: "", sourceState: "closed", sourceStateReason: "done", labels: ["conveyor"], sourceUpdatedAt: "2026-10-03T00:00:00Z" });
+    store.setIssueProjection("offboarded", { stage: "implementation", state: "offboarded", warning: null });
+    add("literal-query", "beta", 901, "closed", "Literal _% query", "2026-10-03T00:00:00Z");
+    add("wildcard-only", "beta", 902, "closed", "Literal AX query", "2026-10-03T00:00:00Z");
+    expect(service.dashboard("csrf").done.totalIssues).toBe(afterHistory.done.totalIssues + 2);
+    const literalSearch = service.dashboard("csrf", filters("literal _%", []));
+    expect(literalSearch.done.totalIssues).toBe(1);
+    expect(literalSearch.done.issues.map((issue) => issue.id)).toEqual(["literal-query"]);
     // Owner-action work belongs to its panel, not the board filter model.
     expect(byNumber.needsYou).toEqual(all.needsYou);
     store.close();

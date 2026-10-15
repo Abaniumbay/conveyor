@@ -3186,9 +3186,15 @@ export class ConveyorService {
     const relatedIssue = (id: string): StoredIssue | null => {
       if (!relatedIssues.has(id)) {
         const candidate = this.store.getIssue(id);
-        if (candidate && candidate.projectedState !== "offboarded") relatedIssues.set(id, candidate);
+        if (candidate) relatedIssues.set(id, candidate);
       }
       return relatedIssues.get(id) ?? null;
+    };
+    // Board cards show only enrolled children and parents, but their dependency list deliberately
+    // retains offboarded relationship stubs so a stopped item can still say what it is waiting for.
+    const boardIssue = (id: string): StoredIssue | null => {
+      const candidate = relatedIssue(id);
+      return candidate?.projectedState === "offboarded" ? null : candidate;
     };
     const stageStates = new Map<string, ReturnType<ConveyorStore["getStageState"]>>();
     const stageStateFor = (id: string) => {
@@ -3254,21 +3260,38 @@ export class ConveyorService {
     const state = stageStateFor(issue.id);
     const cost = this.store.costSummary({ issueId: issue.id });
     const children = childrenFor(issue.id).flatMap(({ issueId: childId }) => {
-      const child = relatedIssue(childId);
+      const child = boardIssue(childId);
       return child ? [childRelation(child)] : [];
     });
     const dependencies = dependenciesFor(issue.id).flatMap((dependencyId) => {
       const dependency = relatedIssue(dependencyId);
       return dependency ? [withProgress(dependency, relation(dependency))] : [];
     });
-    const parent = issue.parentId ? relatedIssue(issue.parentId) : null;
+    const parent = issue.parentId ? boardIssue(issue.parentId) : null;
     const siblings = parent
       ? childrenFor(parent.id).flatMap(({ issueId: siblingId }) => {
-          const sibling = relatedIssue(siblingId);
+          const sibling = boardIssue(siblingId);
           return sibling ? [relation(sibling)] : [];
         })
       : [];
-    const projectedState = issue.projectedState ?? issue.sourceState;
+    const configuredStages = new Set(Object.values(this.config.pipelines).flatMap((itemPipeline) =>
+      itemPipeline.stages.map((stage) => stage.id),
+    ));
+    const remainsInWorkflow = issue.projectedStage !== null &&
+      configuredStages.has(issue.projectedStage) &&
+      issue.projectedState !== "done" &&
+      issue.projectedState !== "inconsistent" &&
+      (sourceStages(issue).length === 1 || issue.projectedState === "active");
+    const finishedRollup = ["done", "completed"].includes(issue.projectedState ?? "") &&
+      childrenFor(issue.id).length > 0;
+    const finished = (issue.sourceState === "closed" && !remainsInWorkflow) || finishedRollup;
+    const doneState = finishedRollup
+      ? issue.projectedState ?? "done"
+      : issue.sourceStateReason === "completed" ? "completed" : "closed";
+    const doneReason = issue.sourceStateReason && issue.sourceStateReason !== "completed"
+      ? `GitHub close reason: ${issue.sourceStateReason.replaceAll("_", " ")}.`
+      : null;
+    const projectedState = finished ? doneState : issue.projectedState ?? issue.sourceState;
     const manualGates = this.manualGateViews(issue);
     const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
     const waiting = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue, queue) : null;
@@ -3283,7 +3306,7 @@ export class ConveyorService {
     const stopReason = stopped
       ? latestStopReason(this.store, issue.id) ??
         (openQuestion ? `${openQuestion.reason}. Answer needed: ${openQuestion.prompt}` : null) ??
-        dependencyReason ?? issue.warning ??
+        dependencyReason ?? issue.warning ?? doneReason ??
         "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
       : null;
     const retryable = (issue.sourceState === "open" ||
@@ -3344,7 +3367,7 @@ export class ConveyorService {
       activity: cursor?.state === "pending" ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}` : state ? `${state.stageId} · ${state.status}` : null,
       reason: stopReason ?? (manualWaiting
         ? `Waiting for board approval for ${manualWaiting.configured && manualWaiting.itemSpecific ? "a configured and item-specific" : manualWaiting.configured ? "a configured" : "an item-specific"} manual gate \"${manualWaiting.gateId}\".`
-        : liveWaiting ? null : issue.warning ?? null),
+        : liveWaiting ? null : issue.warning ?? doneReason ?? null),
       cost: formatUsage(cost),
       duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
       stateChangedAt: state?.updatedAt ?? issue.sourceUpdatedAt,

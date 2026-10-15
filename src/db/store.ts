@@ -750,18 +750,18 @@ export class ConveyorStore {
       bindings.push(...query.repositoryIds);
     }
     for (const word of query.words) {
+      const pattern = `%${word.replace(/[\\%_]/g, "\\$&")}%`;
       const actorClauses = query.stageActors.map(({ repositoryId, stageId, text }) => {
-        bindings.push(repositoryId, stageId, text, `%${word}%`);
-        return "(issues.repository_id = ? AND issues.projected_stage = ? AND ? LIKE ?)";
+        bindings.push(repositoryId, stageId, text, pattern);
+        return "(issues.repository_id = ? AND issues.projected_stage = ? AND ? LIKE ? ESCAPE '\\')";
       });
-      const pattern = `%${word}%`;
       filters.push(`(
-        LOWER(issues.title) LIKE ? OR
-        LOWER(CAST(issues.source_number AS TEXT)) LIKE ? OR
-        LOWER('#' || issues.source_number) LIKE ? OR
-        LOWER(issues.repository_id) LIKE ? OR
-        LOWER(issues.labels_json) LIKE ? OR
-        LOWER(COALESCE(issues.metadata_json, '')) LIKE ?
+        LOWER(issues.title) LIKE ? ESCAPE '\\' OR
+        LOWER(CAST(issues.source_number AS TEXT)) LIKE ? ESCAPE '\\' OR
+        LOWER('#' || issues.source_number) LIKE ? ESCAPE '\\' OR
+        LOWER(issues.repository_id) LIKE ? ESCAPE '\\' OR
+        LOWER(issues.labels_json) LIKE ? ESCAPE '\\' OR
+        LOWER(COALESCE(issues.metadata_json, '')) LIKE ? ESCAPE '\\'
         ${actorClauses.length > 0 ? `OR ${actorClauses.join(" OR ")}` : ""}
       )`);
       // Keep the six ordinary search fields ahead of the stage-specific actor clauses above.
@@ -777,6 +777,7 @@ export class ConveyorStore {
           SELECT 1 FROM issue_relationships WHERE parent_id = issues.id
         ))
       )
+      AND COALESCE(issues.projected_state, '') <> 'offboarded'
       ${filters.length > 0 ? `AND ${filters.join(" AND ")}` : ""}
     `).get(...bindings) as { count: number };
     return Number(row.count);
