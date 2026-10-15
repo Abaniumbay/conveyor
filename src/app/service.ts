@@ -613,7 +613,7 @@ export class ConveyorService {
       // item never starts a new run after becoming a roll-up parent.
       if (
         this.store.listChildren(issue.id).length > 0 &&
-        !this.hasPendingExecution(issue.id)
+        !this.hasResumableQuestionExecution(issue.id)
       ) continue;
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
@@ -676,7 +676,7 @@ export class ConveyorService {
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly:
-          children(issue.id).length > 0 && !this.hasPendingExecution(issue.id),
+          children(issue.id).length > 0 && !this.hasResumableQuestionExecution(issue.id),
         lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
@@ -841,19 +841,28 @@ export class ConveyorService {
     return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
   }
 
-  /** True when this item can continue work that began before it became a parent. */
-  private hasPendingExecution(issueId: string): boolean {
-    return this.store.executions().getCursor(issueId) !== null;
-  }
-
-  /** Whether an unanswered question can still resume this item's parked execution. */
-  private hasParkedQuestionExecution(issueId: string): boolean {
-    const cursor = this.store.executions().getCursor(issueId);
-    if (!cursor || cursor.state !== "pending") return false;
-    return this.store.listOpenQuestions().some((question) =>
-      question.issueId === issueId &&
-      question.runId !== null &&
-      this.store.getRun(question.runId)?.stageId === cursor.stage);
+  /** Whether a parked agent question belongs to this item's current execution. */
+  private hasResumableQuestionExecution(issueId: string): boolean {
+    const journal = this.store.executions();
+    const cursor = journal.getCursor(issueId);
+    const issue = this.store.getIssue(issueId);
+    if (!cursor || cursor.state !== "pending" || cursor.list !== "actions" || cursor.taskInstanceId === null || !issue) {
+      return false;
+    }
+    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
+      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
+    const stage = plan.stages.find((candidate) => candidate.id === cursor.stage);
+    const task = stage?.actions.find((candidate) => candidate.id === cursor.taskInstanceId);
+    if (stage === undefined || stage.legacy || task?.task !== "agent.run") return false;
+    const executionKey = journal.idempotencyKey({
+      issueId,
+      stage: cursor.stage,
+      stageEpoch: cursor.stageEpoch,
+      attempt: cursor.attempt,
+      taskInstanceId: cursor.taskInstanceId,
+    });
+    return this.store.listRunsForExecution(issueId, cursor.stage, "producer", executionKey)
+      .some((run) => this.store.getQuestionForRun(run.id) !== null);
   }
 
   /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
@@ -1455,8 +1464,8 @@ export class ConveyorService {
       // Child roll-up must not fence that run or replace its source state.
       if (runningIssueIds.has(parent.id)) continue;
       // A parked question has already finished its producer run, but its cursor
-      // still belongs to that run and must survive until the answer resumes it.
-      if (this.hasParkedQuestionExecution(parent.id)) continue;
+      // still belongs to that run and must survive until its answer resumes it.
+      if (this.hasResumableQuestionExecution(parent.id)) continue;
       // A stage that passed earlier may subsequently be stopped. Never let a
       // roll-up erase that stop while its source state still says to park it.
       if (this.hasRollupStopLabel(parent)) continue;
@@ -2183,12 +2192,8 @@ export class ConveyorService {
     const cursor = journal.getCursor(question.issueId);
     const run = question.runId ? this.store.getRun(question.runId) : null;
     const issue = this.store.getIssue(question.issueId);
-    if (!cursor || cursor.state !== "pending" || cursor.list !== "actions" || run?.stageId !== cursor.stage || !issue) return false;
-    const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
-      ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
-    const stage = plan.stages.find((candidate) => candidate.id === cursor.stage);
-    const task = stage?.actions.find((candidate) => candidate.id === cursor.taskInstanceId);
-    return stage !== undefined && !stage.legacy && task?.task === "agent.run" && journal.wakeNow(question.issueId);
+    if (!cursor || run?.stageId !== cursor.stage || !issue || !this.hasResumableQuestionExecution(question.issueId)) return false;
+    return journal.wakeNow(question.issueId);
   }
 
   async answerQuestion(questionId: string, answer: string, source = "web"): Promise<void> {
@@ -3546,7 +3551,7 @@ export class ConveyorService {
     const question = this.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId);
     const resumesQuestionRun = question !== undefined &&
       question.runId !== null &&
-      this.hasPendingExecution(issueId);
+      this.hasResumableQuestionExecution(issueId);
     if (!running && !resumesQuestionRun && this.store.listChildren(issueId).length > 0) {
       throw new Error("roll-up parents cannot run directly; message a child issue instead");
     }
