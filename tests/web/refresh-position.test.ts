@@ -147,7 +147,12 @@ function startDashboard(state: {
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
     getActivityRevision: () => "activity-1",
-    getSystemStatus: () => ({ memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 }, disk: { usedBytes: 1, totalBytes: 2, availableBytes: 1 }, uptimeSeconds: 1 }),
+    getSystemStatus: () => ({
+      memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
+      disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
+      storage: { artifacts: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 }, temporaryDirectory: { available: false } },
+      uptimeSeconds: 1,
+    }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
     answerQuestion: () => state.answerQuestion?.(),

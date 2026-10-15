@@ -146,9 +146,22 @@ export interface IssueRunEventsViewModel {
   nextEventBefore: number | null;
 }
 
+export interface FilesystemStatusViewModel {
+  available: boolean;
+  usedBytes?: number;
+  totalBytes?: number;
+  availableBytes?: number;
+  /** The temporary directory has the same capacity as the configured artifacts directory. */
+  sharesFilesystemWithArtifacts?: boolean;
+}
+
 export interface SystemStatusViewModel {
   memory: { usedBytes: number; totalBytes: number; processBytes: number };
-  disk: { usedBytes: number; totalBytes: number; availableBytes: number };
+  disk: FilesystemStatusViewModel;
+  storage: {
+    artifacts: FilesystemStatusViewModel;
+    temporaryDirectory: FilesystemStatusViewModel;
+  };
   uptimeSeconds: number;
 }
 

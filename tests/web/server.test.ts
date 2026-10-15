@@ -115,7 +115,11 @@ function setup(overrides: Record<string, unknown> = {}) {
     getActivityRevision: () => "activity-1",
     getSystemStatus: async () => ({
       memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
-      disk: { usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
+      disk: { available: true, usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
+      storage: {
+        artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
+        temporaryDirectory: { available: false },
+      },
       uptimeSeconds: 3_600,
     }),
     isReady: () => true,
@@ -777,7 +781,11 @@ describe("createWebHandler", () => {
         if (statusAttempts === 1) throw new Error("temporary statfs failure");
         return {
           memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
-          disk: { usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
+          disk: { available: true, usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
+          storage: {
+            artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
+            temporaryDirectory: { available: false },
+          },
           uptimeSeconds: 3_600,
         };
       },
@@ -829,6 +837,8 @@ describe("createWebHandler", () => {
     expect(streamed).toContain("event: revision");
     expect(streamed).toContain('"revision":"revision-1"');
     expect(streamed).toContain("event: status");
+    expect(streamed).toContain('"artifacts":{"available":true,"usedBytes":86000');
+    expect(streamed).toContain('"temporaryDirectory":{"available":false}');
     expect(statusAttempts).toBe(2);
     await reader.cancel();
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";

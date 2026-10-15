@@ -1,8 +1,28 @@
 import { quotaCountdown, updateQuotaWindow } from "../usage/quota-time";
+import type { FilesystemStatusViewModel, SystemStatusViewModel } from "./types";
 
 /** The quota helpers, embedded by their source; each must be self-contained (see updateQuotaWindow). */
 export const quotaClient = `const quotaCountdown = ${quotaCountdown.toString()};
   const updateQuotaWindow = ${updateQuotaWindow.toString()};`;
+
+export function serverStatusMetrics(
+  status: SystemStatusViewModel,
+  formatBytes: (value: number) => string,
+  formatElapsed: (value: number) => string,
+): string {
+  const filesystem = (label: string, measurement: FilesystemStatusViewModel): string => {
+    if (!measurement.available || measurement.usedBytes === undefined || measurement.totalBytes === undefined) return `${label} unavailable`;
+    const fullness = Math.round((measurement.usedBytes / measurement.totalBytes) * 1_000) / 10;
+    const warning = fullness > 85 ? "Warning: " : "";
+    return `${warning}${label} ${fullness}% used (${formatBytes(measurement.usedBytes)} / ${formatBytes(measurement.totalBytes)})`;
+  };
+  const artifacts = status.storage.artifacts;
+  const temporaryDirectory = status.storage.temporaryDirectory;
+  const storage = temporaryDirectory.sharesFilesystemWithArtifacts && artifacts.available
+    ? filesystem("artifacts and temporary directory", artifacts)
+    : `${filesystem("artifacts", artifacts)} · ${filesystem("temporary directory", temporaryDirectory)}`;
+  return `Memory ${formatBytes(status.memory.usedBytes)} / ${formatBytes(status.memory.totalBytes)} · ${filesystem("Disk", status.disk)} · ${storage} · App ${formatBytes(status.memory.processBytes)} · Up ${formatElapsed(status.uptimeSeconds)}`;
+}
 
 type DashboardEventSource = {
   readyState: number;
@@ -216,6 +236,7 @@ export function createDashboardNavigation<T>(options: {
 
 export const dashboardClient = String.raw`(() => {
   ${quotaClient}
+  const serverStatusMetrics = ${serverStatusMetrics.toString()};
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const morphDashboard = ${morphDashboard.toString()};
@@ -2025,9 +2046,7 @@ export const dashboardClient = String.raw`(() => {
   const renderServerStatus = () => {
     if (!serverMetrics || !latestServerStatus) return;
     const status = latestServerStatus;
-    serverMetrics.textContent = 'Memory ' + formatBytes(status.memory.usedBytes) + ' / ' + formatBytes(status.memory.totalBytes) +
-      ' · Disk ' + formatBytes(status.disk.usedBytes) + ' / ' + formatBytes(status.disk.totalBytes) +
-      ' · App ' + formatBytes(status.memory.processBytes) + ' · Up ' + formatElapsed(status.uptimeSeconds);
+    serverMetrics.textContent = serverStatusMetrics(status, formatBytes, formatElapsed);
   };
   const bindServerStatus = () => {
     serverStatus = document.querySelector('[data-server-status]');

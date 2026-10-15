@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
-import { freemem, homedir, totalmem, uptime } from "node:os";
+import { chmod, mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { freemem, homedir, tmpdir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import { redactSecrets } from "../config/compose";
@@ -32,7 +32,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -85,6 +85,53 @@ interface ServiceImplementations {
   codeHosts?: CodeHostRegistry;
   /** Agent harnesses by runner type; defaults to Codex. */
   harnesses?: Record<string, Harness>;
+}
+
+type StatfsReader = (location: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
+type StatReader = (location: string) => Promise<{ dev: number }>;
+
+export async function collectSystemStatus(options: {
+  database: string;
+  artifacts: string;
+  temporaryDirectory: string;
+  statfs?: StatfsReader;
+  stat?: StatReader;
+  memory?: { totalBytes: number; freeBytes: number; processBytes: number; uptimeSeconds: number };
+}): Promise<SystemStatusViewModel> {
+  const readStatfs: StatfsReader = options.statfs ?? statfs;
+  const readStat: StatReader = options.stat ?? stat;
+  const filesystem = async (location: string): Promise<{ status: FilesystemStatusViewModel; device: number | null }> => {
+    try {
+      const stats = await readStatfs(location);
+      const totalBytes = stats.blocks * stats.bsize;
+      const availableBytes = stats.bavail * stats.bsize;
+      if (!Number.isFinite(totalBytes) || !Number.isFinite(availableBytes) || totalBytes <= 0 || availableBytes < 0) {
+        return { status: { available: false }, device: null };
+      }
+      const device = await readStat(location).then(({ dev }) => dev).catch(() => null);
+      return { status: { available: true, usedBytes: totalBytes - availableBytes, totalBytes, availableBytes }, device };
+    } catch {
+      return { status: { available: false }, device: null };
+    }
+  };
+  const [diskMeasurement, artifactsMeasurement, temporaryMeasurement] = await Promise.all([
+    filesystem(options.database), filesystem(options.artifacts), filesystem(options.temporaryDirectory),
+  ]);
+  const memory = options.memory ?? {
+    totalBytes: totalmem(), freeBytes: freemem(), processBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(uptime()),
+  };
+  const sharesFilesystem = artifactsMeasurement.device !== null && artifactsMeasurement.device === temporaryMeasurement.device;
+  return {
+    memory: { usedBytes: memory.totalBytes - memory.freeBytes, totalBytes: memory.totalBytes, processBytes: memory.processBytes },
+    disk: diskMeasurement.status,
+    storage: {
+      artifacts: artifactsMeasurement.status,
+      temporaryDirectory: sharesFilesystem
+        ? { ...temporaryMeasurement.status, sharesFilesystemWithArtifacts: true }
+        : temporaryMeasurement.status,
+    },
+    uptimeSeconds: memory.uptimeSeconds,
+  };
 }
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
@@ -3489,24 +3536,11 @@ export class ConveyorService {
   }
 
   async systemStatus(): Promise<SystemStatusViewModel> {
-    const memoryTotal = totalmem();
-    const memoryFree = freemem();
-    const disk = await statfs(this.config.settings.database);
-    const diskTotal = disk.blocks * disk.bsize;
-    const diskAvailable = disk.bavail * disk.bsize;
-    return {
-      memory: {
-        usedBytes: memoryTotal - memoryFree,
-        totalBytes: memoryTotal,
-        processBytes: process.memoryUsage().rss,
-      },
-      disk: {
-        usedBytes: diskTotal - diskAvailable,
-        totalBytes: diskTotal,
-        availableBytes: diskAvailable,
-      },
-      uptimeSeconds: Math.floor(uptime()),
-    };
+    return collectSystemStatus({
+      database: this.config.settings.database,
+      artifacts: this.config.settings.artifacts,
+      temporaryDirectory: tmpdir(),
+    });
   }
 
   issueConversation(issueId: string): IssueConversationViewModel | null {
