@@ -32,7 +32,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -2664,6 +2664,8 @@ export class ConveyorService {
       repositoryIds: [],
       q: "",
       state: null,
+      recentTypes: [],
+      recentCursor: null,
     },
   ): DashboardViewModel {
     const agentRunner = new Map(Object.entries(this.config.agents ?? {}).map(([agentId, agent]) => [agentId, agent.runner]));
@@ -2881,6 +2883,9 @@ export class ConveyorService {
       }
     }
     const stages = [...stageNames.keys()];
+    const recent = pagination.view === "recent"
+      ? this.recentActivity(pagination, repositoryColors)
+      : undefined;
     const actorsForStage = (stageId: string, pipelineId?: string): StageActorViewModel[] => {
       const actors: StageActorViewModel[] = [];
       const addAgent = (agentId: string) => {
@@ -3113,6 +3118,7 @@ export class ConveyorService {
         q: pagination.q ?? "",
         state: pagination.state ?? null,
       },
+      ...(recent ? { recent } : {}),
       counts: {
         board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,
@@ -3186,6 +3192,85 @@ export class ConveyorService {
         ? card(byId.get(pagination.issueId)!)
         : null,
       csrfToken,
+    };
+  }
+
+  private recentActivity(
+    pagination: DashboardPageSelection,
+    repositoryColors: ReadonlyMap<string, number>,
+  ): RecentActivityViewModel {
+    const allTypes: RecentActivityType[] = ["done", "stopped", "sent-back", "moved-forward", "new", "resumed", "rollup"];
+    const defaultTypes = allTypes.filter((type) => type !== "rollup");
+    const types = pagination.recentTypes && pagination.recentTypes.length > 0
+      ? [...new Set(pagination.recentTypes)]
+      : defaultTypes;
+    const selectedTypes = new Set(types);
+    const selectedRepositories = new Set(pagination.repositoryIds ?? []);
+    const rangeStartedAt = pagination.recentCursor
+      ? null
+      : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const events: RecentActivityEventViewModel[] = [];
+    let cursor = pagination.recentCursor ?? null;
+    let nextCursor: { occurredAt: string; id: string } | null = null;
+    let exhausted = false;
+    while (!exhausted && events.length < 50) {
+      // Fetch one extra source record so the cursor never claims that another page exists
+      // merely because the current batch happened to end on its size boundary.
+      const candidates = this.store.listRecentActivity({ from: rangeStartedAt, before: cursor, limit: 101 });
+      if (candidates.length === 0) {
+        exhausted = true;
+        break;
+      }
+      let processed = 0;
+      for (const event of candidates) {
+        processed += 1;
+        const classified = this.classifyRecentActivity(event, repositoryColors);
+        if (!classified || !selectedTypes.has(classified.type)) continue;
+        if (selectedRepositories.size > 0 && !selectedRepositories.has(classified.repository)) continue;
+        events.push(classified);
+        if (events.length === 50) break;
+      }
+      const last = candidates[processed - 1]!;
+      cursor = { occurredAt: last.occurredAt, id: last.id };
+      nextCursor = cursor;
+      exhausted = processed === candidates.length && candidates.length < 101;
+    }
+    return { types, repositoryIds: [...selectedRepositories], events, nextCursor: exhausted ? null : nextCursor, rangeStartedAt };
+  }
+
+  private classifyRecentActivity(
+    event: ReturnType<ConveyorStore["listRecentActivity"]>[number],
+    repositoryColors: ReadonlyMap<string, number>,
+  ): RecentActivityEventViewModel | null {
+    let type: RecentActivityType | null = null;
+    if (event.source === "done" || event.source === "done-fallback") {
+      type = "done";
+    } else {
+      const stopped = new Set(["blocked", "error", "needs-intervention", "rejected"]);
+      const pipeline = this.config.pipelines[this.config.repositories[event.repositoryId]?.pipeline ?? ""];
+      const configuredStages = pipeline?.stages ?? [];
+      const from = configuredStages.findIndex((stage) => stage.id === event.fromStage);
+      const to = configuredStages.findIndex((stage) => stage.id === event.toStage);
+      if (event.kind === "onboarded") type = "new";
+      else if (event.kind === "restarted" || event.kind === "resumed") type = "resumed";
+      else if (event.kind === "rollup") type = "rollup";
+      else if (event.kind === "stopped" || stopped.has(event.resultStatus ?? "")) type = "stopped";
+      else if (from >= 0 && to >= 0 && to < from) type = "sent-back";
+      else if (event.kind === "advance" || (from >= 0 && to >= 0 && to > from)) type = "moved-forward";
+    }
+    if (!type) return null;
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      type,
+      repository: event.repositoryId,
+      repositoryColor: repositoryColors.get(event.repositoryId) ?? 1,
+      issueNumber: event.issueNumber,
+      issueTitle: event.issueTitle,
+      issueUrl: `/issues/${encodeURIComponent(event.repositoryId)}/${event.issueNumber}`,
+      fromStage: event.fromStage,
+      toStage: event.toStage,
+      reason: event.reason,
     };
   }
 

@@ -321,6 +321,15 @@ function dashboardPage(
   // Board filters are intentionally permissive: an unknown repository simply matches no cards
   // in the browser, and an unknown state has no special meaning.
   const repositoryIds = [...new Set(url.searchParams.getAll("repo").filter((id) => id.length > 0 && id.length <= 200))];
+  const recentTypes = [...new Set(url.searchParams.getAll("type").filter((type): type is import("./types").RecentActivityType =>
+    ["done", "stopped", "sent-back", "moved-forward", "new", "resumed", "rollup"].includes(type),
+  ))];
+  const beforeAt = url.searchParams.getAll("beforeAt");
+  const beforeId = url.searchParams.getAll("beforeId");
+  const cursorTime = beforeAt.length === 1 && !Number.isNaN(Date.parse(beforeAt[0]!)) ? beforeAt[0]! : null;
+  const recentCursor = cursorTime && beforeId.length === 1 && beforeId[0]!.length > 0 && beforeId[0]!.length <= 400
+    ? { occurredAt: cursorTime, id: beforeId[0]! }
+    : null;
   const rawQuery = url.searchParams.getAll("q");
   const q = rawQuery.length === 1 ? rawQuery[0]!.slice(0, 500) : "";
   const rawState = url.searchParams.getAll("state");
@@ -336,24 +345,24 @@ function dashboardPage(
   const columns = url.searchParams.getAll("column");
   const pages = url.searchParams.getAll("page");
   if (columns.length !== 1 || pages.length !== 1) {
-    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state, recentTypes, recentCursor };
   }
   const column = columns[0]!;
   const page = pages[0]!;
   if (column.length === 0 || column.length > 200 || !/^[1-9]\d*$/.test(page)) {
-    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
+    return { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state, recentTypes, recentCursor };
   }
   const parsedPage = Number(page);
   return Number.isSafeInteger(parsedPage)
-    ? { view, repositoryId, column, page: parsedPage, doneLimit, runId, issueId, repositoryIds, q, state }
-    : { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state };
+    ? { view, repositoryId, column, page: parsedPage, doneLimit, runId, issueId, repositoryIds, q, state, recentTypes, recentCursor }
+    : { view, repositoryId, column: null, page: 1, doneLimit, runId, issueId, repositoryIds, q, state, recentTypes, recentCursor };
 }
 
 function paginationSuffix(url: URL): string {
   const pagination = new URLSearchParams();
-  for (const key of ["repo", "q", "state", "doneLimit", "column", "page"]) {
+  for (const key of ["repo", "type", "q", "state", "doneLimit", "column", "page", "beforeAt", "beforeId"]) {
     const values = url.searchParams.getAll(key);
-    if (key === "repo") {
+    if (key === "repo" || key === "type") {
       for (const value of [...new Set(values)]) pagination.append(key, value);
     } else if (values.length === 1) {
       pagination.set(key, values[0]!);
@@ -758,6 +767,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     const repositoryPath = /^\/repositories\/([^/]{1,200})$/.exec(path);
     const dashboardView = path === "/" || path === "/board"
       ? "board"
+      : path === "/recent"
+        ? "recent"
       : path === "/attention"
         ? "attention"
         : path === "/team" || teamProfilePath
@@ -784,7 +795,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
-      if (!currentSession) return redirect(issuePagePath || repositoryPath ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
+      if (!currentSession) return redirect(issuePagePath || repositoryPath || dashboardView === "recent" ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
       if (dashboardView === "accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       try {
         if (legacyDashboardQuery) {

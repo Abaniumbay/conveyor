@@ -2,7 +2,7 @@
 
 The dashboard is where you watch and steer delivery: the board, each item's story, the agents, reports and the operator. It is served by `conveyor serve` (default `http://127.0.0.1:7788`) and needs a signed-in account (`conveyor init` creates the first).
 
-The shared header is followed by the view navigation: **Board**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
+The shared header is followed by the view navigation: **Board**, **Recent**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
 
 ## Screenshots
 
@@ -36,6 +36,16 @@ The compact filter bar narrows the cards already on the board by repository, tex
 ![The Board after a long phone scroll, retaining its compact navigation](screenshots/board-phone-scrolled.png)
 
 ![The Board with active filters on a phone](screenshots/board-phone-filtered.png)
+
+## Recent activity
+
+**Recent** (`/recent`) is a read-only, all-repository activity feed for every signed-in dashboard account. It starts with the preceding 24 hours, newest first, and **Load more** continues backwards with a stable time-and-event cursor. Each row links to the item, names its repository, shows its relative time with the exact timestamp available on hover or keyboard focus, and can expand its recorded reason.
+
+The feed derives rows from completed stage transitions and existing completion records; it does not keep a separate history table. Its categories are **Done** (green), **Stopped** (red), **Sent back** (orange), **Moved forward** (blue), and **New**, **Restarted / resumed**, and **Roll-up** (grey). Corrections and observations use their recorded result and the repository pipeline's stage direction. Roll-up is hidden until selected.
+
+Done is independent of stage movement: Conveyor uses the stored `done` push-event timestamp when an item enters done. For an older completed item with no such record, it uses the merged pull request's `merged_at` timestamp. The fallback is never added when a recorded Done event exists, so one completion produces one Done row.
+
+Select any combination of type chips and repositories; selections, including page cursors, are query parameters in the URL, so the resulting view can be reloaded, bookmarked, or opened on a phone. For example, `/recent?type=done&type=stopped&repo=sample` shows Done and Stopped events from `sample`.
 
 ![An item's conversation](screenshots/item.png)
 

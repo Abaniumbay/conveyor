@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
 
 const password = "correct horse";
 let browser: Browser | null = null;
@@ -79,6 +79,38 @@ function dashboard(
     steering: { enabled: false, agent: null, selected: null, recent: [] },
     selectedIssue: null,
     csrfToken: "filled-by-handler",
+  };
+}
+
+function recentDashboard(selection: DashboardPageSelection): DashboardViewModel {
+  const types: readonly RecentActivityType[] = selection.recentTypes?.length
+    ? selection.recentTypes
+    : ["done", "stopped", "sent-back", "moved-forward", "new", "resumed"];
+  const repositoryIds = selection.repositoryIds ?? [];
+  const hasOlderPage = selection.recentCursor !== null && selection.recentCursor !== undefined;
+  const title = "A realistic issue title that is deliberately long enough to prove that the Recent page stays inside a phone viewport without horizontal scrolling";
+  const reason = "A realistic transition reason with enough operational detail to stay on one collapsed summary line before the reader expands it in place on their phone.";
+  return {
+    ...dashboard("recent-1", []),
+    view: "recent",
+    repositories: [{
+      id: "sample", address: "owner/sample", addressUrl: "https://github.com/owner/sample", color: 1,
+      health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, backlog: 0,
+      stages: [], done: 0, items: [], deliveries: [], capacity: { busy: 0, slots: 1 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", ciProvider: null, ciMode: "disabled", systemLabels: [] },
+      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+    }],
+    recent: {
+      types,
+      repositoryIds,
+      rangeStartedAt: hasOlderPage ? null : "2026-10-14T12:00:00.000Z",
+      nextCursor: hasOlderPage ? null : { occurredAt: "2026-10-15T11:00:00.000Z", id: "transition:older" },
+      events: repositoryIds.length > 0 && !repositoryIds.includes("sample") ? [] : [{
+        id: hasOlderPage ? "transition:older" : "transition:newer", occurredAt: "2026-10-15T12:00:00.000Z", type: "stopped",
+        repository: "sample", repositoryColor: 1, issueNumber: 72, issueTitle: title, issueUrl: "/issues/sample/72",
+        fromStage: "review", toStage: "implementation", reason,
+      }],
+    },
   };
 }
 
@@ -191,6 +223,39 @@ afterEach(async () => {
 });
 
 describe("dashboard live refresh position", () => {
+  test("keeps Recent usable at phone width while filtering, expanding a reason, and paging", async () => {
+    const server = startDashboard({ dashboard: recentDashboard, revision: () => "recent-1", delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/recent`);
+      for (const type of ["sent-back", "moved-forward", "new", "resumed"]) await page.locator(`input[name="type"][value="${type}"]`).uncheck();
+      await page.locator('input[name="repo"][value="sample"]').check();
+      await Promise.all([
+        page.waitForURL("**/recent?type=done&type=stopped&repo=sample"),
+        page.locator(".recent-filter-submit").click(),
+      ]);
+
+      expect(await page.locator('input[name="type"][value="done"]').isChecked()).toBe(true);
+      expect(await page.locator('input[name="type"][value="stopped"]').isChecked()).toBe(true);
+      expect(await page.locator('input[name="repo"][value="sample"]').isChecked()).toBe(true);
+      expect(await page.locator('a[href="/issues/sample/72"]').isVisible()).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+      await page.locator(".recent-reason summary").click();
+      expect(await page.locator(".recent-reason").getAttribute("open")).not.toBeNull();
+      await Promise.all([
+        page.waitForURL("**/recent?type=done&type=stopped&repo=sample&beforeAt=2026-10-15T11%3A00%3A00.000Z&beforeId=transition%3Aolder"),
+        page.locator(".recent-load-more").click(),
+      ]);
+      expect(await page.locator(".recent-load-more").count()).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("shows a distinct storage warning from a live status event without reloading", async () => {
     let status: SystemStatusViewModel = {
       memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },

@@ -290,6 +290,33 @@ describe("issue type and fields", () => {
 });
 
 describe("renderDashboard", () => {
+  test("renders a bookmarkable, read-only recent activity feed with safe long content", () => {
+    const title = "A realistic issue title that is intentionally long enough to wrap on a phone without widening the document";
+    const reason = "A realistic transition reason that remains on one summary line until expanded and has enough detail to make wrapping behaviour observable.";
+    const html = renderDashboard({
+      ...dashboard,
+      view: "recent",
+      recent: {
+        types: ["done", "stopped"], repositoryIds: ["sample"], rangeStartedAt: "2026-10-14T12:00:00.000Z",
+        nextCursor: { occurredAt: "2026-10-15T11:00:00.000Z", id: "transition:older" },
+        events: [{
+          id: "transition:event-1", occurredAt: "2026-10-15T12:00:00.000Z", type: "stopped", repository: "sample", repositoryColor: 1,
+          issueNumber: 72, issueTitle: title, issueUrl: "/issues/sample/72", fromStage: "review", toStage: "implementation", reason,
+        }],
+      },
+    });
+
+    expect(html).toContain('<a href="/recent" class="tab tab--active" aria-current="page">Recent</a>');
+    expect(html).toContain('name="type" value="done" checked');
+    expect(html).toContain('datetime="2026-10-15T12:00:00.000Z" data-relative-time="true" title="2026-10-15T12:00:00.000Z" aria-label="2026-10-15T12:00:00.000Z" tabindex="0"');
+    expect(html).toContain('href="/issues/sample/72"');
+    expect(html).toContain("review</span><span aria-hidden=\"true\">→</span><span>implementation");
+    expect(html).toContain(`<details class="recent-reason"><summary><span>Reason</span><span>${reason}</span></summary>`);
+    expect(html).toContain('href="/recent?type=done&amp;type=stopped&amp;repo=sample&amp;beforeAt=2026-10-15T11%3A00%3A00.000Z&amp;beforeId=transition%3Aolder"');
+    expect(html).not.toContain('method="post" action="/recent"');
+    expect(html).toContain("overflow-wrap:anywhere");
+  });
+
   test("shows a no-split marker on the card and details only while the item carries the label", () => {
     const labelled = renderDashboard({ ...dashboard, selectedIssue: parent, stages: [{ ...dashboard.stages[0]!, issues: [parent] }], backlog: [backlogIssue] });
     const unlabelledIssue = { ...parent, noSplit: false };
@@ -623,7 +650,7 @@ describe("renderDashboard", () => {
     expect(reader).toContain('href="/repositories"');
     expect(reader).toContain("‹ Repositories");
     expect(reader).toContain('href="https://github.com/owner/space-name"');
-    expect(reader).toContain('data-relative-time="true">recently</time>');
+    expect(reader).toContain('data-relative-time="true" title="2026-10-01T00:00:00.000Z" aria-label="2026-10-01T00:00:00.000Z" tabindex="0">recently</time>');
     expect(reader).toContain("Last checked");
     expect(reader).toContain("Slots");
     expect(reader).toContain("1 of 2");
@@ -969,7 +996,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="#station-stage-build"');
     expect(html).toContain('class="line-station line-station--running"');
     expect(html).toContain("andon--run");
-    expect(html).toContain('<time datetime="2026-09-29T11:30:00Z" data-relative-time="true">recently</time>');
+    expect(html).toContain('<time datetime="2026-09-29T11:30:00Z" data-relative-time="true" title="2026-09-29T11:30:00Z" aria-label="2026-09-29T11:30:00Z" tabindex="0">recently</time>');
     expect(html).toContain('class="stage stage--empty" id="station-stage-review"');
     expect(html).toContain(".stage--empty .stage-heading h2{writing-mode:vertical-rl");
     const parentCardStart = html.indexOf('data-issue-id="parent" data-dialog-open');

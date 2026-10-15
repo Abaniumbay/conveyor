@@ -47,6 +47,54 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("lists completed transitions and independent Done events in stable time order", async () => {
+    const store = await openStore();
+    for (const id of ["repo-a", "repo-b"]) {
+      store.upsertRepository({ id, configName: id, source: "github", address: `owner/${id}`, folder: `/srv/${id}`, configHash: "config-hash" });
+    }
+    for (const [id, repositoryId, number] of [["recorded", "repo-a", 1], ["legacy", "repo-b", 2], ["transition-a", "repo-a", 3], ["transition-b", "repo-b", 4]] as const) {
+      store.upsertIssue({ id, repositoryId, sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: `Item ${number}`, body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
+    }
+    const completeTransition = (id: string, issueId: string) => {
+      store.beginStageTransition({
+        id, issueId, fromStage: "review", toStage: "cleanup", kind: "advance", sourceMutationId: null,
+        detail: { reason: `Reason for ${id}`, requiredFixes: [], resultStatus: null },
+      });
+      store.completeStageTransition(id);
+    };
+    completeTransition("transition-a", "transition-a");
+    completeTransition("transition-b", "transition-b");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run("2026-10-15T12:03:00.000Z", "transition-a");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run("2026-10-15T12:03:00.000Z", "transition-b");
+
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "active", warning: null });
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "done", warning: null });
+    store.sqlite().query("UPDATE push_events SET created_at = ? WHERE category = 'done' AND target = ?").run("2026-10-15T12:02:00.000Z", "recorded");
+
+    store.activateEnrollment("legacy");
+    store.upsertPullRequest({ issueId: "legacy", id: "legacy-pr", number: 2, url: "https://example.test/pr/2", state: "merged", mergedAt: "2026-10-15T12:01:00.000Z" });
+    store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", "legacy");
+
+    const events = store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before: null, limit: 10 });
+    expect(events.map((event) => event.id)).toEqual(["transition:transition-b", "transition:transition-a", expect.stringMatching(/^done:/), "done:fallback:legacy"]);
+    expect(events.find((event) => event.id === "transition:transition-a")).toMatchObject({ kind: "advance", reason: "Reason for transition-a", fromStage: "review", toStage: "cleanup" });
+    expect(events.filter((event) => event.issueId === "recorded")).toHaveLength(1);
+    expect(events.find((event) => event.id === "done:fallback:legacy")).toMatchObject({ source: "done-fallback", occurredAt: "2026-10-15T12:01:00.000Z" });
+    const paged: string[] = [];
+    let before: { occurredAt: string; id: string } | null = null;
+    for (let page = 0; page < events.length; page += 1) {
+      const [event] = store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before, limit: 1 });
+      expect(event).toBeDefined();
+      paged.push(event!.id);
+      before = { occurredAt: event!.occurredAt, id: event!.id };
+    }
+    expect(paged).toEqual(events.map((event) => event.id));
+    expect(store.listRecentActivity({ from: "2026-10-15T12:03:00.000Z", before: null, limit: 10 }).map((event) => event.id)).toEqual(["transition:transition-b", "transition:transition-a"]);
+    const plan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM stage_transitions INDEXED BY stage_transitions_created_at_idx WHERE status = 'completed' AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(plan).toContain("stage_transitions_created_at_idx");
+    store.close();
+  });
+
   test("seeds one superuser once and persists accounts, changed credentials, avatars, and session versions", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-accounts-"));
     temporaryDirectories.push(directory);
