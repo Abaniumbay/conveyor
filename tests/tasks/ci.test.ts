@@ -370,7 +370,7 @@ describe("ci.settled", () => {
     });
   });
 
-  test("waits for registered or running checks without reading their logs", async () => {
+  test("waits for queued or running checks without reading their logs", async () => {
     const w = await world();
     w.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
     w.provider.runs = [ciRun("Tests", "running"), ciRun("Lint", "queued")];
@@ -379,12 +379,36 @@ describe("ci.settled", () => {
     }) as Pending;
     expect(running).toMatchObject({ status: "pending", message: expect.stringContaining("Tests, Lint") });
     expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
-    w.provider.runs = [];
-    w.clock.now += 270_000;
+  });
+
+  test("waits for checks to register and for a late-running or started check", async () => {
+    const w = await world();
     const registering = await run("ci.settled", {
       context: { change: change() }, deps: w.deps,
+    }) as Pending;
+    expect(registering).toMatchObject({ status: "pending", message: expect.stringContaining("checks to register") });
+
+    w.clock.now += 10_000;
+    w.provider.runs = [ciRun("Tests", "running")];
+    const late = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
+    }) as Pending;
+    expect(late).toMatchObject({ status: "pending", message: expect.stringContaining("Tests") });
+
+    w.provider.runs = [];
+    w.clock.now += 110_000;
+    const expired = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
     });
-    expect(registering.status).toBe("pass");
+    expect(expired.status).toBe("pass");
+
+    const started = await world();
+    started.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+    started.store.executions().markCi("i1", "head1", "started", "Web", SETTLED);
+    const awaitingStart = await run("ci.settled", {
+      context: { change: change() }, deps: started.deps,
+    }) as Pending;
+    expect(awaitingStart).toMatchObject({ status: "pending", message: expect.stringContaining("Web to start") });
   });
 
   test("releases review for both passing and failed settled CI", async () => {
