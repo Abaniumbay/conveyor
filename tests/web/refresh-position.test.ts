@@ -213,6 +213,7 @@ describe("dashboard live refresh position", () => {
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
       await signIn(page, server.port);
       await page.waitForFunction(() => document.querySelector('[data-server-metrics]')?.textContent?.includes("artifacts 50% used"));
+      expect(await page.locator('[data-storage-warning]').isVisible()).toBe(false);
       await page.evaluate(() => { (document.querySelector("main.dashboard") as HTMLElement).dataset.statusTestMarker = "kept"; });
 
       status = {
@@ -231,6 +232,19 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('[data-server-metrics]').getAttribute("class")).toContain("server-status-metrics--warning");
       expect(await page.locator('[data-server-status] summary').getAttribute("aria-label")).toContain("storage pressure warning");
       expect(await page.evaluate(() => document.querySelector("main.dashboard")?.getAttribute("data-status-test-marker"))).toBe("kept");
+
+      status = {
+        ...status,
+        storage: {
+          artifacts: { available: true, usedBytes: 8_500, totalBytes: 10_000, availableBytes: 1_500 },
+          temporaryDirectory: { available: false },
+          workspaceScratch: { available: false },
+        },
+      };
+      await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-server-status]')?.dataset.storagePressure === "false", undefined, { timeout: 15_000 });
+
+      expect(await page.locator('[data-storage-warning]').isVisible()).toBe(false);
+      expect(await page.locator('[data-server-metrics]').getAttribute("class")).not.toContain("server-status-metrics--warning");
     } finally {
       server.stop(true);
     }
