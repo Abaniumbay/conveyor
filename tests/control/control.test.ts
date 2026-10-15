@@ -157,9 +157,13 @@ describe("operating through the CLI", () => {
     expect(result.out).toContain("Runners: 0 of 2 busy");
     expect(result.out).toContain("Stopped items: 2");
     expect(result.out).toContain("app:1 implementation blocked:");
-    const json = JSON.parse((await cli("status", "--json")).out) as { running: boolean; service: { stopped: unknown[] }; disk: Record<string, number> };
+    const json = JSON.parse((await cli("status", "--json")).out) as { running: boolean; service: { stopped: unknown[]; artifacts: string; temporary: string }; disk: Record<string, number>; filesystems: Array<{ name: string; location: string }> };
     expect(json.running).toBe(true);
     expect(json.service.stopped).toHaveLength(2);
+    expect(json.filesystems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "artifacts", location: json.service.artifacts }),
+      expect.objectContaining({ name: "temporary", location: json.service.temporary }),
+    ]));
     expect(Object.keys(json.disk)).toContain("state");
   });
 

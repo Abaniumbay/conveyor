@@ -5,6 +5,7 @@
 
 import { chmod, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ConveyorService } from "../app/service";
@@ -67,6 +68,8 @@ function status(service: ConveyorService, info: ControlInfo) {
     version: BUILD,
     pid: process.pid,
     ...info,
+    artifacts: service.config.settings.artifacts,
+    temporary: tmpdir(),
     configHash: service.config.hash,
     ready: service.isReady(),
     draining: service.draining(),

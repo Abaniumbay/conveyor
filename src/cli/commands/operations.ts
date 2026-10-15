@@ -17,6 +17,8 @@ interface StatusPayload {
   config: string;
   logs: string;
   database: string;
+  artifacts?: string;
+  temporary?: string;
   dashboardUrl: string;
   startedAt: string;
   supervised: boolean;
@@ -67,10 +69,10 @@ export async function statePaths(context: CommandContext): Promise<{ state: stri
 
 /** Local filesystem capacity is available even while the Conveyor service is down. */
 export async function statusFilesystems(
-  paths: Pick<Awaited<ReturnType<typeof statePaths>>, "artifacts">,
+  paths: { artifacts: string; temporary?: string },
   measureFilesystem?: FilesystemMeasure,
 ): Promise<FilesystemPressure[]> {
-  return filesystemPressure({ artifacts: paths.artifacts, temporary: tmpdir() }, measureFilesystem);
+  return filesystemPressure({ artifacts: paths.artifacts, temporary: paths.temporary ?? tmpdir() }, measureFilesystem);
 }
 
 export const status: Command = {
@@ -84,7 +86,12 @@ export const status: Command = {
       return null;
     });
     const paths = await statePaths(context);
-    const [disk, filesystems] = await Promise.all([diskUsage(paths), statusFilesystems(paths)]);
+    // A reachable service owns both paths. Falling back preserves status output for a stopped
+    // service and for an older service that has not yet exposed its filesystem locations.
+    const filesystemPaths = service?.artifacts && service.temporary
+      ? { artifacts: service.artifacts, temporary: service.temporary }
+      : paths;
+    const [disk, filesystems] = await Promise.all([diskUsage(paths), statusFilesystems(filesystemPaths)]);
     if (context.json) {
       printJson(context, {
         installed: BUILD,

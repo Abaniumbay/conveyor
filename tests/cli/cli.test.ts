@@ -606,6 +606,20 @@ describe("conveyor status filesystem capacity", () => {
     ]);
   });
 
+  test("uses the running service's artifact and temporary locations when supplied", async () => {
+    const locations: string[] = [];
+    const report = await statusFilesystems({ artifacts: "/running/artifacts", temporary: "/running/tmp" }, async (location) => {
+      locations.push(location);
+      return { blocks: 100, bsize: 1, bavail: location === "/running/artifacts" ? 14 : 15 };
+    });
+
+    expect(locations).toEqual(["/running/artifacts", "/running/tmp"]);
+    expect(report).toEqual([
+      { name: "artifacts", location: "/running/artifacts", status: "warn", usedBytes: 86, totalBytes: 100, usedPercent: 86 },
+      { name: "temporary", location: "/running/tmp", status: "ok", usedBytes: 85, totalBytes: 100, usedPercent: 85 },
+    ]);
+  });
+
   test("keeps local filesystem output when the service is unreachable", async () => {
     const home = await initialisedHome();
     const result = await cli("status", "--home", home, "--json");
