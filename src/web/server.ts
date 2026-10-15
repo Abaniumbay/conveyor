@@ -9,11 +9,11 @@ import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } 
 import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
 import { REPORT_PERIOD_VALUES } from "./report-page";
-import { renderDashboard } from "./render";
+import { renderDashboard, renderIssueDetails } from "./render";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
-import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -40,6 +40,8 @@ export interface WebHandlerDependencies {
     pagination: DashboardPageSelection,
   ) => DashboardViewModel | Promise<DashboardViewModel>;
   getDashboardRevision: () => string | Promise<string>;
+  /** Current data for a single board details dialog, without rebuilding the board page. */
+  getIssueDetails?: (csrfToken: string, issueId: string) => IssueCardViewModel | null | Promise<IssueCardViewModel | null>;
   getConversationRevision: () => string | Promise<string>;
   getActivityRevision: () => string | Promise<string>;
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
@@ -904,6 +906,30 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
           : text("Agent not found", 404);
       } catch {
         return text("Agent profile is temporarily unavailable", 503);
+      }
+    }
+
+    const issueDetails = /^\/api\/issues\/([^/]{1,1000})\/details$/.exec(path);
+    if (issueDetails) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      let issueId: string;
+      try {
+        issueId = decodeURIComponent(issueDetails[1]!);
+      } catch {
+        return text("Invalid issue id", 400);
+      }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      if (!dependencies.getIssueDetails) return text("Issue details are temporarily unavailable", 503);
+      try {
+        const issue = await dependencies.getIssueDetails(currentSession.csrfToken, issueId);
+        return issue
+          ? response(renderIssueDetails(issue, currentSession.account.role === "superuser"), 200, "text/html; charset=utf-8")
+          : text("Issue not found", 404);
+      } catch {
+        return text("Issue details are temporarily unavailable", 503);
       }
     }
 

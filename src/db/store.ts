@@ -48,6 +48,17 @@ export interface StoredIssue extends IssueProjection {
   warning: string | null;
 }
 
+export interface CostSummary {
+  runs: number;
+  amount: number;
+  currency: string;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  unavailableRuns: number;
+}
+
 export interface DashboardAccount {
   id: string;
   username: string;
@@ -699,6 +710,21 @@ export class ConveyorStore {
           )
           .all()) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapIssue(row));
+  }
+
+  /** Counts a prepared issue set without mapping it into dashboard cards. */
+  countIssues(issueIds: readonly string[]): number {
+    if (issueIds.length === 0) return 0;
+    let count = 0;
+    // SQLite limits bound parameters, while historical boards can have more than one thousand Done items.
+    for (let start = 0; start < issueIds.length; start += 900) {
+      const ids = issueIds.slice(start, start + 900);
+      const row = this.#database
+        .query(`SELECT COUNT(*) AS count FROM issues WHERE id IN (${ids.map(() => "?").join(", ")})`)
+        .get(...ids) as { count: number };
+      count += Number(row.count);
+    }
+    return count;
   }
 
   replaceRelationships(
@@ -1731,16 +1757,7 @@ export class ConveyorStore {
     };
   }
 
-  costSummary(filters: { issueId?: string; stageId?: string } = {}): {
-    runs: number;
-    amount: number;
-    currency: string;
-    durationMs: number;
-    inputTokens: number;
-    outputTokens: number;
-    cachedTokens: number;
-    unavailableRuns: number;
-  } {
+  costSummary(filters: { issueId?: string; stageId?: string } = {}): CostSummary {
     const conditions: string[] = [];
     const bindings: string[] = [];
     if (filters.issueId) {
@@ -1773,6 +1790,33 @@ export class ConveyorStore {
       cachedTokens: Number(row.cached_tokens),
       unavailableRuns: Number(row.unavailable_runs),
     };
+  }
+
+  /** Returns every stage's usage in one query for board column summaries. */
+  costSummaryByStage(): Map<string, CostSummary> {
+    const rows = this.#database
+      .query(
+        `SELECT r.stage_id,
+           COUNT(*) AS runs, COALESCE(SUM(amount), 0) AS amount,
+           COALESCE(SUM(duration_ms), 0) AS duration_ms,
+           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+           COALESCE(SUM(CASE WHEN source = 'unavailable' THEN 1 ELSE 0 END), 0) AS unavailable_runs
+         FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id
+         GROUP BY r.stage_id`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return new Map(rows.map((row) => [String(row.stage_id), {
+      runs: Number(row.runs),
+      amount: Number(row.amount),
+      currency: "USD",
+      durationMs: Number(row.duration_ms),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cachedTokens: Number(row.cached_tokens),
+      unavailableRuns: Number(row.unavailable_runs),
+    }]));
   }
 
   moveQueueIssue(issueId: string, direction: "up" | "down"): void {

@@ -785,12 +785,13 @@ export const dashboardClient = String.raw`(() => {
       const panel = dialog && dialog.querySelector('[data-detail-panel="summary"]');
       if (!dialog || !panel) return;
       try {
-        const response = await fetch(location.pathname + location.search, { headers: { accept: 'text/html' }, cache: 'no-store' });
+        const detailsUrl = dialog.getAttribute('data-details-url') || ('/api/issues/' + encodeURIComponent(dialog.getAttribute('data-issue-id') || '') + '/details');
+        const response = await fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store' });
         if (!response.ok) return;
         const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
         const issueId = dialog.getAttribute('data-issue-id');
         const candidates = [...nextDocument.querySelectorAll('dialog[data-issue-id]')].filter((candidate) => candidate.getAttribute('data-issue-id') === issueId);
-        const next = candidates.find((candidate) => candidate.id === dialog.id) || candidates[0];
+        const next = candidates[0];
         const nextPanel = next && next.querySelector('[data-detail-panel="summary"]');
         if (!nextPanel) return;
         for (const selector of SUMMARY_LIVE_PARTS) {
@@ -806,25 +807,6 @@ export const dashboardClient = String.raw`(() => {
           }
         }
         localizeTimes(panel);
-        // The card's progress bar behind the dialog follows too.
-        const card = [...document.querySelectorAll('article[data-issue-id]')].find((candidate) => candidate.getAttribute('data-issue-id') === issueId);
-        const nextCard = [...nextDocument.querySelectorAll('article[data-issue-id]')].find((candidate) => candidate.getAttribute('data-issue-id') === issueId);
-        const progress = card && card.querySelector(':scope > .todo-progress');
-        const nextProgress = nextCard && nextCard.querySelector(':scope > .todo-progress');
-        if (progress && nextProgress) progress.replaceWith(document.importNode(nextProgress, true));
-        else if (progress) progress.remove();
-        else if (card && nextProgress) {
-          const anchor = card.querySelector(':scope > .rollup-summary, :scope > dialog');
-          if (anchor) anchor.before(document.importNode(nextProgress, true));
-        }
-        const chips = card && card.querySelector(':scope > .indicator-chips');
-        const nextChips = nextCard && nextCard.querySelector(':scope > .indicator-chips');
-        if (chips && nextChips) chips.replaceWith(document.importNode(nextChips, true));
-        else if (chips) chips.remove();
-        else if (card && nextChips) {
-          const anchor = card.querySelector(':scope > .todo-progress, :scope > .rollup-summary, :scope > dialog');
-          if (anchor) anchor.before(document.importNode(nextChips, true));
-        }
       } catch {}
     }, 250);
   };
@@ -947,10 +929,41 @@ export const dashboardClient = String.raw`(() => {
     }
   };
 
-  const openIssueDialog = (opener, updateUrl = true) => {
+  const detailsErrorDialog = (opener, message) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'issue-details issue-details--load-error';
+    dialog.dataset.issueId = opener.dataset.issueId || '';
+    dialog.dataset.repositoryId = opener.dataset.repositoryId || opener.dataset.boardRepository || '';
+    dialog.dataset.issueNumber = opener.dataset.number || '';
+    dialog.innerHTML = '<section><h2>Could not load item details</h2><p role="alert"></p><button type="button" data-details-retry>Retry</button><button type="button" data-details-cancel>Close</button></section>';
+    dialog.querySelector('[role="alert"]').textContent = message;
+    document.body.append(dialog);
+    return dialog;
+  };
+
+  const openIssueDialog = async (opener, updateUrl = true) => {
     const id = opener.getAttribute('data-dialog-open');
-    const dialog = id ? document.getElementById(id) : null;
+    let dialog = id ? document.getElementById(id) : null;
+    if (!(dialog instanceof HTMLDialogElement)) {
+      const detailsUrl = opener.getAttribute('data-details-url');
+      if (!detailsUrl || opener.dataset.detailsLoading === 'true') return;
+      opener.dataset.detailsLoading = 'true';
+      try {
+        const response = await fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store' });
+        if (!response.ok) throw new Error(response.status === 404 ? 'This item is no longer available.' : 'Please check your connection and try again.');
+        const fragment = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const loaded = fragment.querySelector('dialog[data-issue-id]');
+        if (!(loaded instanceof HTMLDialogElement)) throw new Error('The details response was incomplete.');
+        dialog = document.importNode(loaded, true);
+        document.body.append(dialog);
+      } catch (error) {
+        dialog = detailsErrorDialog(opener, error instanceof Error ? error.message : 'Please try again.');
+      } finally {
+        delete opener.dataset.detailsLoading;
+      }
+    }
     if (dialog instanceof HTMLDialogElement && !dialog.open) {
+      dialog._conveyorOpener = opener;
       selectDetailTab(dialog, 'summary');
       showDialog(dialog);
       const issueId = dialog.dataset.issueId;
@@ -1445,6 +1458,17 @@ export const dashboardClient = String.raw`(() => {
 
     const containingDialog = event.target.closest('dialog');
     if (containingDialog instanceof HTMLDialogElement) {
+      if (event.target.closest('[data-details-retry]')) {
+        const opener = containingDialog._conveyorOpener;
+        containingDialog.close();
+        containingDialog.remove();
+        if (opener instanceof HTMLElement) void openIssueDialog(opener);
+        return;
+      }
+      if (event.target.closest('[data-details-cancel]')) {
+        containingDialog.close();
+        return;
+      }
       const tab = event.target.closest('[data-detail-tab]');
       if (tab) {
         selectDetailTab(containingDialog, tab.getAttribute('data-detail-tab') || 'summary', true);
@@ -1739,7 +1763,9 @@ export const dashboardClient = String.raw`(() => {
 
   document.addEventListener('close', (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
+    const opener = event.target._conveyorOpener;
     markOpener(event.target, false);
+    if (opener instanceof HTMLElement && document.contains(opener)) opener.focus({ preventScroll: true });
     // Opening one item from another closes the first after the second has set its title.
     if (body.dataset.viewTitle && !document.querySelector('dialog[open]')) document.title = body.dataset.viewTitle;
     const currentPath = parseDashboardPath();

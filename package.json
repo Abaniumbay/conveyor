@@ -14,6 +14,7 @@
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
     "check": "bun test && tsc --noEmit",
+    "benchmark:dashboard": "bun run scripts/benchmark-dashboard.ts",
     "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "docs:cli": "bun run scripts/generate-cli-docs.ts",
     "docs:screenshots": "bun run scripts/regenerate-screenshots.ts",

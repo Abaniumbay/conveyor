@@ -197,7 +197,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
   const journeyId = `${id}-journey`;
   const activityId = `${id}-activity`;
   return (
-    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
+    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-details-url={`/api/issues/${encodeURIComponent(issue.id)}/details`} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
           <p class={`details-kicker repo-color-${issue.repositoryColor}`}><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
@@ -347,6 +347,12 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
   );
 }
 
+/** Renders the one details dialog fetched when a board card is opened. */
+export function renderIssueDetails(issue: IssueCardViewModel, canManage = false): string {
+  const id = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
+  return renderToString(<DetailsDialog issue={issue} id={id} canManage={canManage} />);
+}
+
 function RelativeTime({ value }: { value: string }) {
   return <time dateTime={value} data-relative-time>recently</time>;
 }
@@ -468,6 +474,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
+      data-details-url={`/api/issues/${encodeURIComponent(issue.id)}/details`}
       data-card-revision={revision}
       data-number={issue.number}
       data-state-word={issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}
@@ -493,7 +500,6 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       <IndicatorChips issue={issue} />
       <TodoProgress issue={issue} />
       {rollup && <p class="rollup-summary">{partsSummary(issue)}</p>}
-      <DetailsDialog issue={issue} id={dialogId} canManage={canManage} />
     </article>
   );
 }
@@ -622,7 +628,7 @@ function FoldButton({ target, label }: { target: string; label: string }) {
 /** One open parent: its header (the parent itself) and its children, each in its own station's column. */
 function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel; stations: readonly Station[]; canManage: boolean }) {
   const rowId = `family-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const dialogId = `issue-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${parent.number}-family`;
+  const dialogId = `issue-${parent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${parent.number}`;
   const done = parent.children.filter((child) => child.satisfied);
   const doneIds = new Set(done.map((child) => child.id));
   const stopped = parent.needsAttention || parent.tone === "danger";
@@ -631,7 +637,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   return (
     <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={idList(parent.dependencies)} data-parts={idList(parent.children)} aria-label={`#${parent.number} ${parent.title}`}>
       <div class="row-band">
-      <div class="family-head" data-dialog-open={dialogId} data-filter-card data-board-search={boardSearchText(parent, parentActors)} data-board-repository={parent.repository} data-board-state={boardFilterState(parent)} data-board-station={parentStation?.id ?? "backlog"}>
+      <div class="family-head" data-dialog-open={dialogId} data-details-url={`/api/issues/${encodeURIComponent(parent.id)}/details`} data-filter-card data-board-search={boardSearchText(parent, parentActors)} data-board-repository={parent.repository} data-board-state={boardFilterState(parent)} data-board-station={parentStation?.id ?? "backlog"}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />
         <RepositoryBadge repository={parent.repository} />
         <span class="family-number">#{parent.number}</span>
@@ -641,7 +647,6 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         {stopped && <span class="family-stop" title={parent.reason ?? undefined}><i class="andon andon--stop" aria-hidden="true" />{stateWords(parent)}</span>}
         <BlocksChip issue={parent} />
         <button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>
-        <DetailsDialog issue={parent} id={dialogId} canManage={canManage} />
       </div>
       </div>
       <div class="row-body">

@@ -69,6 +69,8 @@ export interface RepositorySummaries {
 export interface BuildRepositorySummariesInput {
   store: ConveyorStore;
   config: ConveyorConfig;
+  /** The board already loaded these rows; reuse them instead of issuing another list query. */
+  issues?: readonly StoredIssue[];
   onboardingErrors?: ReadonlyMap<string, string>;
   reconciliationErrors?: ReadonlyMap<string, string>;
   lastReconciledAt?: string | null;
@@ -131,7 +133,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
   const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
   const questionIssueIds = new Set(store.listOpenQuestions().map((question) => question.issueId));
   const issuesByRepository = new Map<string, StoredIssue[]>();
-  for (const issue of store.listIssues()) {
+  for (const issue of input.issues ?? store.listIssues()) {
     if (!config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") continue;
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }

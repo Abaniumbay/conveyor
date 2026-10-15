@@ -310,8 +310,8 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
-  test("building a dashboard reads the item list a fixed number of times, however many cards it shows", async () => {
-    const listings = async (count: number): Promise<number> => {
+  test("building a dashboard shares one item list and caches per-item lookups", async () => {
+    const listings = async (count: number) => {
       const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-cost-"));
       temporaryDirectories.push(root);
       const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -334,12 +334,34 @@ describe("ConveyorService dashboard", () => {
       }
       const service = new ConveyorService(config, store, {} as never);
       const listIssues = spyOn(store, "listIssues");
+      const getIssue = spyOn(store, "getIssue");
+      const getStageState = spyOn(store, "getStageState");
+      const listChildren = spyOn(store, "listChildren");
+      const costSummary = spyOn(store, "costSummary");
+      const costSummaryByStage = spyOn(store, "costSummaryByStage");
+      const countIssues = spyOn(store, "countIssues");
       expect(service.dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
-      const calls = listIssues.mock.calls.length;
+      const calls = {
+        listIssues: listIssues.mock.calls.length,
+        getIssue: getIssue.mock.calls.map(([issueId]) => issueId),
+        getStageState: getStageState.mock.calls.map(([issueId]) => issueId),
+        listChildren: listChildren.mock.calls.map(([issueId]) => issueId),
+        stageCostQueries: costSummary.mock.calls.filter(([filters]) => filters?.stageId !== undefined).length,
+        groupedCostQueries: costSummaryByStage.mock.calls.length,
+        doneCounts: countIssues.mock.calls.length,
+      };
       store.close();
       return calls;
     };
-    expect(await listings(12)).toBe(await listings(2));
+    const calls = await listings(12);
+    expect(calls.listIssues).toBe(1);
+    expect(calls.getIssue).toHaveLength(0);
+    expect(calls.stageCostQueries).toBe(0);
+    expect(calls.groupedCostQueries).toBe(1);
+    expect(calls.doneCounts).toBe(1);
+    for (const lookups of [calls.getStageState, calls.listChildren]) {
+      expect(new Set(lookups).size).toBe(lookups.length);
+    }
   });
 
   test("a card carries the item's todo list with done/total progress and the current item", async () => {
