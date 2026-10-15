@@ -640,6 +640,9 @@ describe("ConveyorStore", () => {
     expect(store.getStageState("issue-1")).toMatchObject({ stageId: "review", status: "running" });
     expect(store.executions().getCursor("issue-1")).toMatchObject({ stage: "review", stageEpoch: newerEpoch, state: "pending" });
     expect(store.listActiveIssueRuns()).toMatchObject([{ id: "orchestration:issue-1:review" }]);
+    expect(store.releaseFencedStageExecution({ issueId: "issue-1", stageId: "review", stageEpoch: newerEpoch })).toBe(false);
+    expect(store.getStageState("issue-1")).toMatchObject({ stageId: "review", status: "running" });
+    expect(store.executions().getCursor("issue-1")).toMatchObject({ stage: "review", stageEpoch: newerEpoch, state: "pending" });
     store.close();
   });
 

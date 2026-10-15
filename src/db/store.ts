@@ -1146,7 +1146,7 @@ export class ConveyorStore {
       ) return false;
 
       const cursor = this.#executions.getCursor(input.issueId);
-      if (cursor && cursor.stageEpoch !== input.stageEpoch) return false;
+      if (cursor) return false;
 
       const issue = this.getIssue(input.issueId);
       if (!issue) return false;
