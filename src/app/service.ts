@@ -3217,7 +3217,7 @@ export class ConveyorService {
     }
     const events: RecentActivityEventViewModel[] = [];
     let cursor = pagination.recentCursor ?? null;
-    let nextCursor: { occurredAt: string; id: string } | null = null;
+    let nextCursor: { occurredAt: string; id: string | null } | null = null;
     let exhausted = false;
     let inspected = 0;
     while (!exhausted && events.length < 50 && inspected < recentActivityCandidateLimit) {
@@ -3249,7 +3249,20 @@ export class ConveyorService {
       nextCursor = cursor;
       exhausted = processed === candidates.length && candidates.length < candidateLimit;
     }
-    return { types, repositoryIds: [...selectedRepositories], events, nextCursor: exhausted ? null : nextCursor, rangeStartedAt };
+    if (exhausted && rangeStartedAt) {
+      // The first page is bounded to the last day. A cursor without an ID means strictly before
+      // that range boundary, allowing Load more to continue into retained history.
+      const older = this.store.listRecentActivity({
+        from: null,
+        before: { occurredAt: rangeStartedAt, id: null },
+        limit: 1,
+        repositoryIds: configuredRepositories,
+      });
+      nextCursor = older.length > 0 ? { occurredAt: rangeStartedAt, id: null } : null;
+    } else if (exhausted) {
+      nextCursor = null;
+    }
+    return { types, repositoryIds: [...selectedRepositories], events, nextCursor, rangeStartedAt };
   }
 
   private classifyRecentActivity(

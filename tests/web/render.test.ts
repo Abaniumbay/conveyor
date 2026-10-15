@@ -317,6 +317,25 @@ describe("renderDashboard", () => {
     expect(html).toContain("overflow-wrap:anywhere");
   });
 
+  test("renders clear final and empty-page states for Recent activity", () => {
+    const finalPage = renderDashboard({
+      ...dashboard,
+      view: "recent",
+      recent: {
+        types: ["done"], repositoryIds: [], rangeStartedAt: null, nextCursor: null,
+        events: [{ id: "done:event", occurredAt: "2026-10-15T12:00:00.000Z", type: "done", repository: "sample", repositoryColor: 1, issueNumber: 1, issueTitle: "Done item", issueUrl: "/issues/sample/1", fromStage: null, toStage: null, reason: null }],
+      },
+    });
+    const emptyOlderPage = renderDashboard({
+      ...dashboard,
+      view: "recent",
+      recent: { types: ["done"], repositoryIds: [], rangeStartedAt: null, nextCursor: null, events: [] },
+    });
+
+    expect(finalPage).toContain("You've reached the end of the activity feed.");
+    expect(emptyOlderPage).toContain("You've reached the end of the activity feed.");
+  });
+
   test("shows a no-split marker on the card and details only while the item carries the label", () => {
     const labelled = renderDashboard({ ...dashboard, selectedIssue: parent, stages: [{ ...dashboard.stages[0]!, issues: [parent] }], backlog: [backlogIssue] });
     const unlabelledIssue = { ...parent, noSplit: false };

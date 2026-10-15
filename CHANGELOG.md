@@ -10,7 +10,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Added
 
-- The dashboard now has a read-only **Recent** page that combines recent activity from every configured repository, with bookmarkable type and repository filters, expandable reasons, stable Load more paging, and independently timestamped Done completions.
+- The dashboard now has a read-only **Recent** page that combines recent activity from every configured repository, with bookmarkable type and repository filters, expandable reasons, stable Load more paging beyond the initial 24-hour range, and independently timestamped Done completions.
 
 ### Changed
 

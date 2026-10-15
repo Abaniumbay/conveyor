@@ -100,6 +100,30 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("pages same-time mixed-case activity IDs in SQLite cursor order", async () => {
+    const store = await openStore();
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo", configHash: "config-hash" });
+    for (const [id, number] of [["github:Zed", 1], ["github:abc", 2]] as const) {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "", sourceState: "closed", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
+      store.activateEnrollment(id);
+      store.upsertPullRequest({ issueId: id, id: `pr-${number}`, number, url: `https://example.test/pr/${number}`, state: "merged", mergedAt: "2026-10-15T12:00:00.000Z" });
+      store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", id);
+    }
+
+    const ids: string[] = [];
+    let before: { occurredAt: string; id: string } | null = null;
+    for (let page = 0; page < 2; page += 1) {
+      const [event] = store.listRecentActivity({ from: null, before, limit: 1 });
+      expect(event).toBeDefined();
+      ids.push(event!.id);
+      before = { occurredAt: event!.occurredAt, id: event!.id };
+    }
+
+    expect(ids).toEqual(["done:fallback:github:abc", "done:fallback:github:Zed"]);
+    expect(new Set(ids)).toHaveLength(2);
+    store.close();
+  });
+
   test("seeds one superuser once and persists accounts, changed credentials, avatars, and session versions", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-accounts-"));
     temporaryDirectories.push(directory);

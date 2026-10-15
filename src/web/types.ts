@@ -244,7 +244,7 @@ export interface DashboardPageSelection {
   state?: string | null;
   /** Recent page event categories; an empty list means its non-roll-up default. */
   recentTypes?: readonly RecentActivityType[];
-  recentCursor?: { occurredAt: string; id: string } | null;
+  recentCursor?: { occurredAt: string; id: string | null } | null;
 }
 
 export type DashboardView = "board" | "recent" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
@@ -269,7 +269,7 @@ export interface RecentActivityViewModel {
   types: readonly RecentActivityType[];
   repositoryIds: readonly string[];
   events: readonly RecentActivityEventViewModel[];
-  nextCursor: { occurredAt: string; id: string } | null;
+  nextCursor: { occurredAt: string; id: string | null } | null;
   rangeStartedAt: string | null;
 }
 

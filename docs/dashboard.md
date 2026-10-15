@@ -39,7 +39,7 @@ The compact filter bar narrows the cards already on the board by repository, tex
 
 ## Recent activity
 
-**Recent** (`/recent`) is a read-only, all-repository activity feed for every signed-in dashboard account. It starts with the preceding 24 hours, newest first, and **Load more** continues backwards with a stable time-and-event cursor. Each row links to the item, names its repository, shows its relative time with the exact timestamp available on hover or keyboard focus, and can expand its recorded reason.
+**Recent** (`/recent`) is a read-only, all-repository activity feed for every signed-in dashboard account. It starts with the preceding 24 hours, newest first, and **Load more** continues backwards past that initial range with a stable time-and-event cursor. The initial range boundary is itself a time-only cursor, so records at that boundary are not repeated. Each row links to the item, names its repository, shows its relative time with the exact timestamp available on hover or keyboard focus, and can expand its recorded reason.
 
 The feed derives rows from completed stage transitions and existing completion records; it does not keep a separate history table. Its categories are **Done** (green), **Stopped** (red), **Sent back** (orange), **Moved forward** (blue), and **New**, **Restarted / resumed**, and **Roll-up** (grey). Corrections and observations use their recorded result and the repository pipeline's stage direction. Roll-up is hidden until selected.
 

@@ -748,7 +748,7 @@ export class ConveyorStore {
    */
   listRecentActivity(input: {
     from: string | null;
-    before: { occurredAt: string; id: string } | null;
+    before: { occurredAt: string; id: string | null } | null;
     limit: number;
     repositoryIds?: readonly string[];
   }): StoredRecentActivity[] {
@@ -765,6 +765,7 @@ export class ConveyorStore {
       before?.occurredAt ?? null,
       before?.occurredAt ?? null,
       before?.id ?? null,
+      before?.id ?? null,
     ];
     const page = (rows: Array<Record<string, SQLQueryBindings>>) => rows.map((row) => this.mapRecentActivity(row));
     const transitionRows = this.#database.query(
@@ -777,7 +778,7 @@ export class ConveyorStore {
         WHERE st.status = 'completed'
           AND COALESCE(i.projected_state, '') <> 'offboarded'
           AND (? IS NULL OR st.created_at >= ?)
-          AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND ('transition:' || st.id) < ?))
+          AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND (? IS NULL OR ('transition:' || st.id) < ?)))
           ${repositoryFilter}
         ORDER BY st.created_at DESC, st.id DESC
         LIMIT ?`,
@@ -791,7 +792,7 @@ export class ConveyorStore {
         WHERE p.category = 'done'
           AND COALESCE(i.projected_state, '') <> 'offboarded'
           AND (? IS NULL OR p.created_at >= ?)
-          AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND ('done:' || p.id) < ?))
+          AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND (? IS NULL OR ('done:' || p.id) < ?)))
           ${repositoryFilter}
         ORDER BY p.created_at DESC, p.id DESC
         LIMIT ?`,
@@ -819,7 +820,7 @@ export class ConveyorStore {
                    OR (newer_pull_request.merged_at = pr.merged_at AND newer_pull_request.id > pr.id))
             )
             AND (? IS NULL OR pr.merged_at >= ?)
-            AND (? IS NULL OR pr.merged_at < ? OR (pr.merged_at = ? AND ('done:fallback:' || i.id) < ?))
+            AND (? IS NULL OR pr.merged_at < ? OR (pr.merged_at = ? AND (? IS NULL OR ('done:fallback:' || i.id) < ?)))
             ${repositoryFilter}
        )
        SELECT * FROM legacy_done
@@ -827,7 +828,11 @@ export class ConveyorStore {
         LIMIT ?`,
     ).all(...bindings, ...repositoryIds, limit) as Array<Record<string, SQLQueryBindings>>;
     return page([...transitionRows, ...doneRows, ...fallbackRows])
-      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || right.id.localeCompare(left.id))
+      // SQLite compares these cursor keys with its binary collation. Keep the in-memory merge
+      // identical so a timestamp tie cannot be reordered between one page and the next.
+      .sort((left, right) => left.occurredAt === right.occurredAt
+        ? left.id === right.id ? 0 : left.id > right.id ? -1 : 1
+        : left.occurredAt > right.occurredAt ? -1 : 1)
       .slice(0, limit);
   }
 

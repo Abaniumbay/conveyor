@@ -921,14 +921,14 @@ const recentTypeLabels: Record<RecentActivityType, string> = {
 
 const recentTypes: readonly RecentActivityType[] = ["done", "stopped", "sent-back", "moved-forward", "new", "resumed", "rollup"];
 
-function recentHref(model: DashboardViewModel, cursor?: { occurredAt: string; id: string }): string {
+function recentHref(model: DashboardViewModel, cursor?: { occurredAt: string; id: string | null }): string {
   const recent = model.recent!;
   const search = new URLSearchParams();
   for (const type of recent.types) search.append("type", type);
   for (const repository of recent.repositoryIds) search.append("repo", repository);
   if (cursor) {
     search.set("beforeAt", cursor.occurredAt);
-    search.set("beforeId", cursor.id);
+    if (cursor.id !== null) search.set("beforeId", cursor.id);
   }
   const query = search.toString();
   return query ? `/recent?${query}` : "/recent";
@@ -969,8 +969,8 @@ function Recent({ model }: { model: DashboardViewModel }) {
         <button class="recent-filter-submit" type="submit">Apply filters</button>
       </form>
       {recent.events.length === 0
-        ? <p class="recent-empty" role="status">No activity matches these filters.</p>
-        : <ol class="recent-list">
+        ? <p class="recent-empty" role="status">{recent.rangeStartedAt ? "No activity matches these filters." : "You've reached the end of the activity feed."}</p>
+        : <><ol class="recent-list">
           {recent.events.map((event) => (
             <li class="recent-event" key={event.id}>
               <RelativeTime value={event.occurredAt} />
@@ -985,7 +985,7 @@ function Recent({ model }: { model: DashboardViewModel }) {
                 : <p class="recent-no-reason">No reason recorded.</p>}
             </li>
           ))}
-        </ol>}
+        </ol>{!recent.nextCursor && <p class="recent-empty recent-end" role="status">You've reached the end of the activity feed.</p>}</>}
       {recent.nextCursor && <a class="recent-load-more" href={recentHref(model, recent.nextCursor)}>Load more</a>}
     </section>
   );

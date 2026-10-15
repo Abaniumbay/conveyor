@@ -327,8 +327,8 @@ function dashboardPage(
   const beforeAt = url.searchParams.getAll("beforeAt");
   const beforeId = url.searchParams.getAll("beforeId");
   const cursorTime = beforeAt.length === 1 && !Number.isNaN(Date.parse(beforeAt[0]!)) ? beforeAt[0]! : null;
-  const recentCursor = cursorTime && beforeId.length === 1 && beforeId[0]!.length > 0 && beforeId[0]!.length <= 400
-    ? { occurredAt: cursorTime, id: beforeId[0]! }
+  const recentCursor = cursorTime && (beforeId.length === 0 || beforeId.length === 1 && beforeId[0]!.length > 0 && beforeId[0]!.length <= 400)
+    ? { occurredAt: cursorTime, id: beforeId[0] ?? null }
     : null;
   const rawQuery = url.searchParams.getAll("q");
   const q = rawQuery.length === 1 ? rawQuery[0]!.slice(0, 500) : "";

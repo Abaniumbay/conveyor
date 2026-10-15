@@ -577,6 +577,10 @@ describe("createWebHandler", () => {
       view: "recent", recentTypes: ["done", "stopped"], repositoryIds: ["midgame"],
       recentCursor: { occurredAt: "2026-10-15T12:00:00.000Z", id: "transition:abc" },
     });
+    await get("/recent?beforeAt=2026-10-14T12%3A00%3A00.000Z");
+    expect(dashboardCalls.at(-1)).toMatchObject({
+      view: "recent", recentCursor: { occurredAt: "2026-10-14T12:00:00.000Z", id: null },
+    });
     expect((await get("/team/kaveh")).status).toBe(200);
     expect((await get("/operator/runs/run-1")).status).toBe(200);
     expect((await get("/issues/midgame/1/conversation?column=stage%3Areview&page=2")).status).toBe(200);
