@@ -604,9 +604,17 @@ export class ConveyorService {
         repositories: repositoryUsage,
       },
     );
+    const startedIds = new Set<string>();
     for (const candidate of selected) {
       const issue = this.store.getIssue(candidate.id);
       if (!issue) continue;
+      // Relationship reconciliation can add children after this scheduling
+      // pass built its candidates. Recheck at the admission boundary so an
+      // item never starts a new run after becoming a roll-up parent.
+      if (
+        this.store.listChildren(issue.id).length > 0 &&
+        !this.hasPendingExecution(issue.id)
+      ) continue;
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
@@ -614,6 +622,7 @@ export class ConveyorService {
         lightweight: candidate.lightweight === true,
         interrupted: false,
       });
+      startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       void this.execute(issue, active.controller.signal).finally(() => {
@@ -623,7 +632,7 @@ export class ConveyorService {
         }
       });
     }
-    const selectedIds = new Set(selected.map((candidate) => candidate.id));
+    const selectedIds = startedIds;
     this.refreshStatusComments([
       ...selectedIds,
       ...candidates
@@ -662,73 +671,24 @@ export class ConveyorService {
         eligible:
           issue.projectedState === "active" &&
           state.status === "ready" &&
-          this.parentRefinementComplete(issue) &&
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
-        rollupOnly: children(issue.id).length > 0 && !this.resumingParentRefinement(issue),
+        rollupOnly:
+          children(issue.id).length > 0 && !this.hasPendingExecution(issue.id),
         lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
   }
 
-  /** Children remain parked until their parent has actually left refinement. */
-  private parentRefinementComplete(issue: StoredIssue): boolean {
-    if (!issue.parentId) return true;
-    const parent = this.store.getIssue(issue.parentId);
-    if (!parent || parent.sourceState === "closed" || parent.projectedState === "done") return true;
-    return this.refinementComplete(parent);
-  }
-
-  private refinementComplete(issue: StoredIssue): boolean {
-    if (this.store.listOpenQuestions().some((question) => question.issueId === issue.id)) return false;
-    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
-    // Pipelines without a refinement stage have no refinement decision to
-    // wait for. Their parents retain the ordinary roll-up behaviour.
-    if (!pipeline?.stages.some((stage) => stage.id === "refinement")) return true;
-    // A projected child stage is not evidence that the parent completed its
-    // own refinement. Only an advance from the current refinement visit can
-    // release it. A correction or a fresh enrollment back to refinement
-    // starts a new visit; a roll-up to refinement only follows children and
-    // deliberately does not invalidate the parent's earlier passage.
-    const transitions = this.store.listStageTransitions(issue.id)
-      .filter((transition) => transition.status === "completed");
-    // An item may be enrolled directly at a later pipeline stage. In that
-    // case it never owned a refinement decision, so retain ordinary roll-up
-    // behavior rather than waiting for an advance it cannot produce.
-    const currentStage = this.store.getStageState(issue.id)?.stageId;
-    // A parent currently running refinement owns a refinement decision even
-    // before that visit has produced its first completed transition. Do not
-    // mistake the absence of a transition for direct later-stage enrollment.
-    if (currentStage !== "refinement" && !transitions.some((transition) => transition.toStage === "refinement")) return true;
-    let refinementVisit = 0;
-    for (const [index, transition] of transitions.entries()) {
-      const startsRefinementVisit =
-        transition.toStage === "refinement" &&
-        transition.kind !== "rollup" &&
-        (transition.kind === "onboarded" || transition.fromStage !== "refinement");
-      if (startsRefinementVisit) {
-        refinementVisit = index + 1;
-      }
-    }
-    return transitions.slice(refinementVisit).some((transition) =>
-      transition.status === "completed" &&
-      transition.kind === "advance" &&
-      transition.fromStage === "refinement",
-    );
-  }
-
   private hasRollupStopLabel(issue: StoredIssue): boolean {
-    // Every configured state label puts an item in the evaluator's stopped
-    // mode. Do not let a roll-up silently replace any of them.
-    const stopLabels = Object.values(this.config.labels.states);
-    return issue.labels.some((label) => stopLabels.includes(label));
-  }
-
-  private resumingParentRefinement(issue: StoredIssue): boolean {
-    return this.store.getStageState(issue.id)?.stageId === "refinement" &&
-      !this.refinementComplete(issue);
+    // A source refresh can lag the recorded result. Keep any configured
+    // stopped state intact until the ordinary item path has cleared it.
+    const stoppedStates = new Set(Object.keys(this.config.labels.states));
+    const stopLabels = new Set(Object.values(this.config.labels.states));
+    return (issue.projectedState !== null && stoppedStates.has(issue.projectedState)) ||
+      issue.labels.some((label) => stopLabels.has(label));
   }
 
   private concurrencyLimits(): ConcurrencyLimits {
@@ -879,6 +839,11 @@ export class ConveyorService {
     if (!cursor) return true;
     if (cursor.state === "pending" && cursor.list === "exit-gate" && cursor.wakeAt === null) return false;
     return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
+  }
+
+  /** True when this item can continue work that began before it became a parent. */
+  private hasPendingExecution(issueId: string): boolean {
+    return this.store.executions().getCursor(issueId) !== null;
   }
 
   /** Schedules one pass for the earliest future wake-up; past-due items are picked up by ordinary passes. */
@@ -1476,39 +1441,12 @@ export class ConveyorService {
       ) {
         continue;
       }
-      const openQuestion = this.store.listOpenQuestions().find((question) => question.issueId === parent.id);
-      if (openQuestion) {
-        // Source labels can be overwritten by a child roll-up between polls.
-        // Restore the parked parent's state before skipping its roll-up.
-        const needsInput = this.config.labels.states["needs-input"];
-        const runStage = openQuestion.runId ? this.store.getRun(openQuestion.runId)?.stageId : null;
-        const stage = runStage ?? parent.projectedStage ?? "refinement";
-        // Keep the Board and scheduler parked even when writing the source
-        // label is delayed until a later reconciliation pass.
-        this.store.setIssueProjection(parent.id, {
-          stage,
-          state: "needs-input",
-          warning: openQuestion.reason,
-        });
-        if (needsInput && !parent.labels.includes(needsInput)) {
-          const metadata = metadataLabels(parent.labels, this.config);
-          await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
-            this.config.labels.enrollment,
-            this.config.labels.stageTemplate.replace("{stage}", stage),
-            needsInput,
-            ...metadata,
-          ], [this.config.labels.metadata.noSplit]);
-        }
-        continue;
-      }
+      // A live parent run owns its outcome, including any question it asks.
+      // Child roll-up must not fence that run or replace its source state.
+      if (runningIssueIds.has(parent.id)) continue;
       // A stage that passed earlier may subsequently be stopped. Never let a
       // roll-up erase that stop while its source state still says to park it.
       if (this.hasRollupStopLabel(parent)) continue;
-      // A parent with children may still own the refinement decision which
-      // created them. Do not roll it forward, clean its workspace, or mark it
-      // done until that refinement has genuinely completed.
-      if (!this.refinementComplete(parent)) continue;
-      if (runningIssueIds.has(parent.id)) continue;
       if (this.store.getStageState(parent.id)?.status !== "running") {
         await removeWorkspace({
           store: this.store,
@@ -2854,7 +2792,7 @@ export class ConveyorService {
         issue.labels.includes(this.config.labels.enrollment) &&
         ["blocked", "error", "needs-intervention"].includes(projectedState) &&
         !activeIssueIds.has(issue.id) &&
-        (children.length === 0 || issue.projectedStage === "refinement");
+        children.length === 0;
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -3373,7 +3311,7 @@ export class ConveyorService {
       issue.labels.includes(this.config.labels.enrollment) &&
       ["blocked", "error", "needs-intervention"].includes(projectedState) &&
       !activeIssueIds.has(issue.id) &&
-      (children.length === 0 || issue.projectedStage === "refinement");
+      children.length === 0;
     const indicators = this.store.listIndicators(issue.id)
       .filter((indicator) => indicator.id !== CI_INDICATOR_ID || this.config.repositories[issue.repositoryId]?.ci?.mode !== "disabled")
       .map((indicator) => indicatorView(indicator, Date.now()));
@@ -3593,7 +3531,10 @@ export class ConveyorService {
     const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
     const running = this.#active.has(issueId) || Boolean(activeRun);
     const question = this.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId);
-    if (!running && !question && this.store.listChildren(issueId).length > 0) {
+    const resumesQuestionRun = question !== undefined &&
+      question.runId !== null &&
+      this.hasPendingExecution(issueId);
+    if (!running && !resumesQuestionRun && this.store.listChildren(issueId).length > 0) {
       throw new Error("roll-up parents cannot run directly; message a child issue instead");
     }
     const stageId = issue.projectedStage ?? this.store.getStageState(issueId)?.stageId ?? activeRun?.stageId ?? null;
@@ -3712,7 +3653,7 @@ export class ConveyorService {
       }
 
       const stageId = evaluated.stage;
-      if (this.store.listChildren(issueId).length > 0 && stageId !== "refinement") {
+      if (this.store.listChildren(issueId).length > 0) {
         throw new Error("roll-up parents cannot be retried directly");
       }
       const mutation = this.store.beginSourceMutation({

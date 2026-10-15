@@ -753,7 +753,7 @@ When refinement decomposes an issue:
 
 - It creates native GitHub subissues.
 - Each child is fully refined, labeled, and starts at the stage selected by the producer stage's `childrenStartAt` configuration, normally the following stage; preceding results are recorded as skipped.
-- The original becomes a roll-up parent and performs no implementation work itself.
+- The original becomes a roll-up parent. Current child links prevent new parent runs in every stage, but a run already active when the links appear may finish or resume an answer it asked.
 - The parent's temporary refinement worktree is removed after decomposition succeeds; each child receives a clean worktree and unique branch from the then-current configured base branch.
 - Children are independently releasable, each with its own worktree, branch, and PR.
 - Nested subissues are supported.

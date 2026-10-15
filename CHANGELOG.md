@@ -20,6 +20,9 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Claude Code removes each run's private home after its process exits, including failed,
   interrupted, and timed-out runs, while preserving declared artifacts.
+- Parent items now refuse new runs and direct retries while they have current children in any
+  stage, while active or stopped parents keep their own status until ordinary item handling clears
+  it. An already parked parent question can still resume its original run.
 
 ## [0.8.0] - 2026-10-14
 

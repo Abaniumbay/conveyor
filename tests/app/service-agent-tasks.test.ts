@@ -238,6 +238,13 @@ describe("agent.run through the service", () => {
     expect(w.store.getIssue("issue")?.warning).toBe("Waiting for an answer: Which database?");
     expect(w.store.getStageState("issue")?.status).toBe("ready");
 
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "implementation", state: "active", warning: null });
+    w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
+
     const question = w.store.listOpenQuestions()[0]!;
     await w.service.answerQuestion(question.id, "PostgreSQL", "Needs you");
     expect(Date.parse(journal.wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
@@ -248,7 +255,8 @@ describe("agent.run through the service", () => {
       expect.objectContaining({ actorName: "Needs you", message: expect.stringContaining("**Question:** Which database?\n\n**Accepted answer:** PostgreSQL") }),
     ]);
 
-    await w.execute();
+    w.schedule();
+    while (w.calls.length < 2) await Bun.sleep(5);
     expect(w.calls).toHaveLength(2);
     expect(w.calls[1]).toMatchObject({ resumeSessionId: "sess-1", answeredQuestion: { question: "Which database?", answer: "PostgreSQL" } });
     expect(w.labelWrites.at(-1)).toContain("conveyor:implementation");
@@ -456,29 +464,25 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("holds child scheduling until its parent's answered refinement leaves refinement", async () => {
+  test("does not start a new parent run until its current child is unlinked", async () => {
     const w = await setup();
-    await w.execute();
     w.store.upsertIssue({
       id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
       sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     w.store.setIssueProjection("child", { stage: "refinement", state: "active", warning: null });
-    w.store.setQueueRank("child", w.store.nextQueueRank());
-    w.store.setStageState({ issueId: "child", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "test" });
     w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
 
-    const candidates = () => (w.service as unknown as { schedulerCandidates(): Array<{ id: string; eligible: boolean }> }).schedulerCandidates();
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
+    w.schedule();
+    await Bun.sleep(20);
+    expect(w.calls).toHaveLength(0);
 
-    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
-
-    await w.execute();
-    // Relationship roll-up may project the parent back to the child frontier,
-    // but the successful refinement transition remains the scheduler boundary.
-    w.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(true);
+    w.store.replaceRelationships("child", null, []);
+    w.schedule();
+    while (w.calls.length < 1) await Bun.sleep(5);
+    expect(w.calls).toHaveLength(1);
+    expect(w.store.listIssueRuns("issue")).toHaveLength(1);
+    expect(w.store.listIssueRuns("child")).toEqual([]);
     await w.service.close();
   });
 });
