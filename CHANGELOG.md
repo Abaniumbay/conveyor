@@ -13,6 +13,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - Board cards now load their details on demand, keeping ordinary board responses compact and updates focused on cards.
 - Dashboard navigation now remains visible while scrolling; phone controls move into the System popover, and desktop board stage headings stay visible while their cards scroll.
 
+### Fixed
+
+- Claude Code removes each run's private home after its process exits, including failed,
+  interrupted, and timed-out runs, while preserving declared artifacts.
+
 ## [0.8.0] - 2026-10-14
 
 Stage exit gates can wait for a human approval on the board, configured per pipeline or set per item. Answering an agent's question resumes it instead of restarting the stage, and the answer returns at once. The board's rows and the line fold with an animation, and the line starts closed on phones; a repository that cannot sync is called out on the board.
