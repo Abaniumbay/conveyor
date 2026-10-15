@@ -6,7 +6,8 @@ import path from "node:path";
 import { parse, stringify } from "yaml";
 
 import { CliError, EXIT, parseArgs } from "../../src/cli/args";
-import { doctorChecks } from "../../src/cli/commands/doctor";
+import { doctorChecks, doctorReport } from "../../src/cli/commands/doctor";
+import { statusFilesystems } from "../../src/cli/commands/operations";
 import { RESTART_EXIT_CODE, stopAgentTransportsAfterService, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS } from "../../src/cli/commands/serve";
 import { runCli } from "../../src/cli/main";
 import { ConveyorService } from "../../src/app/service";
@@ -550,6 +551,23 @@ describe("conveyor doctor", () => {
     expect(report.checks.find((check) => check.name === "home")).toMatchObject({ status: "fail", fix: `conveyor init --home ${path.join(root, "absent")}` });
   });
 
+  test("reports artifact and temporary filesystem pressure in its text-ready checks and JSON report", async () => {
+    const home = await initialisedHome();
+    const artifacts = path.join(home, "artifacts");
+    const report = await doctorReport(home, path.join(home, "config/conveyor.yaml"), async () => false, undefined, async (location) => {
+      if (location === artifacts) return { blocks: 100, bsize: 1, bavail: 14 };
+      return { blocks: 100, bsize: 1, bavail: 15 };
+    });
+
+    expect(report.filesystems).toEqual([
+      { name: "artifacts", location: artifacts, status: "warn", usedBytes: 86, totalBytes: 100, usedPercent: 86 },
+      { name: "temporary", location: tmpdir(), status: "ok", usedBytes: 85, totalBytes: 100, usedPercent: 85 },
+    ]);
+    expect(report.checks.find((check) => check.name === "artifacts filesystem")).toMatchObject({
+      status: "warn", detail: `${artifacts}: 86% full`,
+    });
+  });
+
   test("reports a repository that is not a checkout and a listen port taken by another process", async () => {
     const home = await initialisedHome();
     const blocker = net.createServer();
@@ -572,5 +590,32 @@ describe("conveyor doctor", () => {
     } finally {
       blocker.close();
     }
+  });
+});
+
+describe("conveyor status filesystem capacity", () => {
+  test("uses the shared capacity report with stubbed artifact and temporary measurements", async () => {
+    const report = await statusFilesystems({ artifacts: "/srv/conveyor/artifacts" }, async (location) => {
+      if (location === "/srv/conveyor/artifacts") return { blocks: 100, bsize: 1, bavail: 14 };
+      throw new Error("temporary filesystem unavailable");
+    });
+
+    expect(report).toEqual([
+      { name: "artifacts", location: "/srv/conveyor/artifacts", status: "warn", usedBytes: 86, totalBytes: 100, usedPercent: 86 },
+      { name: "temporary", location: tmpdir(), status: "unavailable", diagnostic: "temporary filesystem unavailable" },
+    ]);
+  });
+
+  test("keeps local filesystem output when the service is unreachable", async () => {
+    const home = await initialisedHome();
+    const result = await cli("status", "--home", home, "--json");
+    const report = JSON.parse(result.out) as { running: boolean; filesystems: Array<{ name: string; location: string; status: string }> };
+
+    expect(result.code).toBe(EXIT.unavailable);
+    expect(report.running).toBe(false);
+    expect(report.filesystems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "artifacts", location: path.join(home, "artifacts") }),
+      expect.objectContaining({ name: "temporary", location: tmpdir() }),
+    ]));
   });
 });

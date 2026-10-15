@@ -10,6 +10,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Changed
 
+- `conveyor doctor` and `conveyor status` now warn when their artifact or temporary filesystem exceeds 85% capacity.
 - Board cards now load their details on demand, keeping ordinary board responses compact and updates focused on cards.
 - Dashboard navigation now remains visible while scrolling; phone controls move into the System popover, and desktop board stage headings stay visible while their cards scroll.
 

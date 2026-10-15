@@ -1,12 +1,14 @@
 // Operational inspection and recovery through the running service: status, board, item, questions.
 
 import path from "node:path";
+import { tmpdir } from "node:os";
 
 import { loadConfig } from "../../config/load";
 import { BUILD, versionLine } from "../../version";
 import { CliError, EXIT } from "../args";
 import { positional, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
+import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
 
 interface StatusPayload {
   version: { version: string; commit: string };
@@ -63,6 +65,14 @@ export async function statePaths(context: CommandContext): Promise<{ state: stri
   };
 }
 
+/** Local filesystem capacity is available even while the Conveyor service is down. */
+export async function statusFilesystems(
+  paths: Pick<Awaited<ReturnType<typeof statePaths>>, "artifacts">,
+  measureFilesystem?: FilesystemMeasure,
+): Promise<FilesystemPressure[]> {
+  return filesystemPressure({ artifacts: paths.artifacts, temporary: tmpdir() }, measureFilesystem);
+}
+
 export const status: Command = {
   name: "status",
   summary: "show versions, paths, dashboard URL, service health, capacity, stopped items and disk usage",
@@ -73,9 +83,17 @@ export const status: Command = {
       unreachable = error.reason;
       return null;
     });
-    const disk = await diskUsage(await statePaths(context));
+    const paths = await statePaths(context);
+    const [disk, filesystems] = await Promise.all([diskUsage(paths), statusFilesystems(paths)]);
     if (context.json) {
-      printJson(context, { installed: BUILD, running: service !== null, service, disk });
+      printJson(context, {
+        installed: BUILD,
+        running: service !== null,
+        service,
+        disk,
+        filesystems,
+        warnings: filesystems.filter((filesystem) => filesystem.status === "warn"),
+      });
       return service ? EXIT.ok : EXIT.unavailable;
     }
     const lines = [`Installed: ${versionLine()}`];
@@ -97,6 +115,9 @@ export const status: Command = {
       );
     }
     lines.push(`Disk: ${Object.entries(disk).map(([name, bytes]) => `${name} ${formatBytes(bytes)}`).join(", ") || "nothing yet"}`);
+    lines.push(...filesystems.map((filesystem) =>
+      `Filesystem ${filesystem.name}: ${filesystem.status === "warn" ? "WARNING " : ""}${filesystemPressureDetail(filesystem)}`,
+    ));
     context.out(lines.join("\n"));
     return service ? EXIT.ok : EXIT.unavailable;
   },
