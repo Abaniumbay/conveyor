@@ -25,11 +25,15 @@ The implementer keeps a working todo list (`todo.set`, `todo.update`). When the 
 
 ![The Board, with its summaries after the shared navigation](screenshots/board.png)
 
+![The Board after a long stage scroll, retaining its navigation and stage headings](screenshots/board-scrolled.png)
+
 The compact filter bar narrows the cards already on the board by repository, text, and state without hiding the separate **Needs you** panel. Repository choices open their own detail pages as well as filtering, and active choices stay in the URL for a reload or shared link. On a phone, search and the Filters control occupy the collapsed bar; selected choices and Clear filters remain directly below it.
 
 ![The Board filtered to a repository and text search](screenshots/board-filtered.png)
 
 ![The collapsed Board filter bar on a phone](screenshots/board-phone.png)
+
+![The Board after a long phone scroll, retaining its compact navigation](screenshots/board-phone-scrolled.png)
 
 ![The Board with active filters on a phone](screenshots/board-phone-filtered.png)
 

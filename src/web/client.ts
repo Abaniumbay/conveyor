@@ -229,6 +229,35 @@ export const dashboardClient = String.raw`(() => {
   let journeyRefreshTimer = null;
   let summaryRefreshTimer = null;
   let activityRefreshTimer = null;
+  let stickyNavigation = null;
+  let stickyNavigationObserver = null;
+
+  const syncStickyNavigationHeight = () => {
+    const dashboard = document.querySelector('main.dashboard');
+    const nextStickyNavigation = dashboard?.querySelector('.dashboard-sticky');
+    if (!(dashboard instanceof HTMLElement) || !(nextStickyNavigation instanceof HTMLElement)) return;
+    const update = () => dashboard.style.setProperty('--dashboard-sticky-height', nextStickyNavigation.getBoundingClientRect().height + 'px');
+    if (stickyNavigation !== nextStickyNavigation) {
+      if (stickyNavigationObserver) stickyNavigationObserver.disconnect();
+      stickyNavigation = nextStickyNavigation;
+      stickyNavigationObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
+      if (stickyNavigationObserver) stickyNavigationObserver.observe(nextStickyNavigation);
+    }
+    update();
+  };
+  const scrollInitialFragmentBelowNavigation = () => {
+    if (!location.hash) return;
+    try {
+      const anchor = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (anchor) anchor.scrollIntoView();
+    } catch {}
+  };
+  document.addEventListener('conveyor:dashboard-rendered', syncStickyNavigationHeight);
+  window.addEventListener('resize', syncStickyNavigationHeight);
+  requestAnimationFrame(() => {
+    syncStickyNavigationHeight();
+    scrollInitialFragmentBelowNavigation();
+  });
 
   const selectedTheme = () => {
     const theme = document.documentElement.dataset.theme;
@@ -1102,6 +1131,14 @@ export const dashboardClient = String.raw`(() => {
     ];
     const summary = filter.querySelector('[data-filter-summary]');
     if (summary) summary.textContent = 'Showing ' + visibleOpen.length + ' of ' + openCards.length + ' active board items' + (activeLabels.length ? ' · ' + activeLabels.join(', ') : '');
+    const stickySummary = document.querySelector('[data-sticky-filter-summary]');
+    if (stickySummary) {
+      const text = 'Filters: ' + activeLabels.join(', ');
+      stickySummary.hidden = !activeLabels.length;
+      stickySummary.dataset.filterCount = String(activeLabels.length);
+      stickySummary.textContent = text;
+      stickySummary.setAttribute('title', text);
+    }
     const clear = filter.querySelector('[data-filter-clear]');
     if (clear) clear.hidden = !active;
   };
@@ -1235,6 +1272,16 @@ export const dashboardClient = String.raw`(() => {
   };
   bindBoardFilters();
   document.addEventListener('conveyor:dashboard-rendered', bindBoardFilters);
+
+  const revealActiveTab = () => {
+    const activeTab = document.querySelector('.tabs .tab--active');
+    if (activeTab instanceof HTMLElement) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+  document.addEventListener('conveyor:dashboard-rendered', (event) => {
+    if (event instanceof CustomEvent && event.detail?.preservePosition) return;
+    requestAnimationFrame(revealActiveTab);
+  });
+  requestAnimationFrame(revealActiveTab);
 
   // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
   // A parent waits on its unfinished parts, so whatever waits on a parent is held up by them too.
@@ -1913,9 +1960,11 @@ export const dashboardClient = String.raw`(() => {
   let revision = body.dataset.dashboardRevision || '';
   const setConnection = (nextConnected) => {
     connected = nextConnected;
-    if (!serverStatus || !connectionState) return;
+    if (!serverStatus) return;
     serverStatus.dataset.connected = nextConnected ? 'true' : 'false';
-    connectionState.textContent = nextConnected ? 'Connected' : 'Reconnecting';
+    const label = nextConnected ? 'Connected' : 'Reconnecting';
+    if (connectionState) connectionState.textContent = label;
+    serverStatus.querySelector('summary')?.setAttribute('aria-label', 'Connection state: ' + label);
   };
   const renderServerStatus = () => {
     if (!serverMetrics || !latestServerStatus) return;
@@ -2069,7 +2118,7 @@ export const dashboardClient = String.raw`(() => {
       syncThemeControls(rendered);
       updateQuotaCountdowns();
       bindServerStatus();
-      document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered'));
+      document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered', { detail: { preservePosition } }));
       if (preservePosition) {
         restoreDashboardPosition(position);
       } else if (target.hash) {

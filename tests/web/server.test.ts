@@ -285,7 +285,7 @@ describe("createWebHandler", () => {
     expect(notificationsPage).toContain("/assets/notifications.js");
     expect(notificationsPage).toContain('class="dashboard"');
     expect(notificationsPage).toContain('data-dashboard-view="notifications"');
-    expect(notificationsPage).toContain('class="header-link header-link--active" href="/settings/notifications" aria-current="page"');
+    expect(notificationsPage).toContain('class="header-link header-desktop-control header-link--active" href="/settings/notifications" aria-current="page"');
     expect(notificationsPage).toContain('id="notification-settings" class="settings-form notification-form"');
     expect(notificationsPage).not.toContain('class="account-page"');
     expect(notificationsPage).toContain('class="theme-control" data-theme-control');

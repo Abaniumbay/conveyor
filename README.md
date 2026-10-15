@@ -12,6 +12,12 @@ you watch and steer everything from a dashboard or the command line.
 
 ![The delivery Board, with shared navigation above Board-only summaries](docs/screenshots/board.png)
 
+![The delivery Board after a long stage scroll](docs/screenshots/board-scrolled.png)
+
+![The delivery Board on a phone](docs/screenshots/board-phone.png)
+
+![The delivery Board on a phone after scrolling](docs/screenshots/board-phone-scrolled.png)
+
 ## Why Conveyor
 
 - **GitHub stays the source of truth.** Issues, labels, pull requests and checks drive everything.
