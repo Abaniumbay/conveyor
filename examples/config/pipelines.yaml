@@ -51,6 +51,10 @@ delivery:
       icon: "🔍"
       concurrency: 1
       actions:
+        - id: ciSettled
+          task: ci.settled
+          wait: { timeout: 3h, poll: 1m }
+          onFail: { stop: blocked }
         - { id: review, task: agent.run, with: { agents: [shaghayegh, shirin] } }
       exit-gate:
         - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }

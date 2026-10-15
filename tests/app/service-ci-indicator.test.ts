@@ -22,7 +22,7 @@ const run = (name: string, state: CiRun["state"], over: Partial<CiRun> = {}): Ci
   id: `id-${name}`, name, state, url: `https://ci/${name}`, canRerun: false, hasLog: false, startedAt: "2026-01-01T00:00:00Z", completedAt: null, ...over,
 });
 
-async function setup(ci = "", manual = false) {
+async function setup(ci = "", manual = false, reviewSettlement = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-ci-indicator-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -48,7 +48,7 @@ pipelines:
     stages:
       - id: implementation
         concurrency: 1
-        actions: []
+        actions: ${reviewSettlement ? "[{ id: ciSettled, task: ci.settled, with: { settleSeconds: 120 } }]" : "[]"}
         exit-gate:
           - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 }${manual ? ", manual: true" : ""} }
 repositories:
@@ -124,16 +124,17 @@ repositories:
 const workflowRun = (head: string, extra: Record<string, unknown> = {}) =>
   ({ action: "completed", workflow_run: { head_sha: head, pull_requests: [{ number: 5 }], ...extra } });
 
-function parkCiGate(store: ConveyorStore, wakeAt: string) {
+function parkCiGate(store: ConveyorStore, wakeAt: string, options: { list?: "actions" | "exit-gate"; taskInstanceId?: string; deadlineAt?: string | null } = {}) {
+  const { list = "exit-gate", taskInstanceId = "ciGate", deadlineAt = null } = options;
   const journal = store.executions();
   const epoch = journal.stageEpoch("issue");
   const { record } = journal.planExecution({
-    itemId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, list: "exit-gate", taskInstanceId: "ciGate",
+    itemId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, list, taskInstanceId,
   });
-  journal.markPending(record.id, { wakeAt, deadlineAt: null, message: "Waiting for CI at head1: 1 running." }, epoch);
+  journal.markPending(record.id, { wakeAt, deadlineAt, message: "Waiting for CI at head1: 1 running." }, epoch);
   journal.saveCursor({
-    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
-    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt, deadlineAt: null,
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list,
+    taskInstanceId, state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt, deadlineAt,
   }, epoch);
 }
 
@@ -236,7 +237,7 @@ test("a workflow_run webhook for the current head updates the stored indicator a
   const w = await setup();
   await w.internals.backfillCiIndicators("repo");
   parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
-  expect(w.card()?.waiting).toMatchObject({ kind: "waiting", reason: "Waiting for CI at head1: 1 running · 0/1 passed." });
+  expect(w.card()?.waiting).toMatchObject({ kind: "waiting", reason: "Waiting for CI at head1: build." });
   const revision = w.service.dashboard("csrf").revision;
   await Bun.sleep(3);
   w.state.runs = [run("build", "passed", { completedAt: "2026-01-01T00:01:00Z" })];
@@ -264,6 +265,32 @@ test("a CI settle status preserves its head and end time across a restart", asyn
   const restarted = await w.reopen();
   const after = restarted.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason;
   expect(after).toBe(before);
+  await restarted.service.close();
+});
+
+test("a parked review settlement action shows its current head, unfinished checks, next check, and deadline after restart", async () => {
+  const w = await setup("", false, true);
+  await w.internals.backfillCiIndicators("repo");
+  const wakeAt = new Date(Date.now() + 60_000).toISOString();
+  const deadlineAt = new Date(Date.now() + 180_000).toISOString();
+  parkCiGate(w.store, wakeAt, { list: "actions", taskInstanceId: "ciSettled", deadlineAt });
+
+  expect(w.card()).toMatchObject({
+    activity: "implementation › ciSettled",
+    waiting: {
+      kind: "waiting",
+      reason: "Waiting for CI at head1: build.",
+      nextCheckAt: wakeAt,
+      deadline: deadlineAt,
+    },
+  });
+  await w.service.close();
+
+  const restarted = await w.reopen();
+  const card = restarted.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+  expect(card?.waiting).toMatchObject({
+    reason: "Waiting for CI at head1: build.", nextCheckAt: wakeAt, deadline: deadlineAt,
+  });
   await restarted.service.close();
 });
 
@@ -330,7 +357,7 @@ test("a late completion for a cached head is ignored after the change advances",
   await w.internals.applyCiWebhook("repo", "workflow_run", workflowRun("head1"));
 
   expect(w.indicator()).toEqual(before);
-  expect(w.card()?.waiting?.reason).toBe("Waiting for CI at head1: 1 running · 0/1 passed.");
+  expect(w.card()?.waiting?.reason).toBe("Waiting for CI at head1: build.");
   expect(w.state.listed).not.toContain("head1");
   await w.service.close();
 });

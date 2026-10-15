@@ -80,17 +80,20 @@ describe("reference configuration", () => {
     const gates = (repository: string) => {
       const plan = config.plans.find((candidate) => candidate.repositoryId === repository)!;
       const implementation = plan.stages.find((stage) => stage.id === "implementation")!;
+      const reviewStage = plan.stages.find((stage) => stage.id === "review")!;
       return {
         actions: implementation.actions.map((task) => task.id),
         gate: implementation.exitGate.map((task) => task.id),
-        review: plan.stages.find((stage) => stage.id === "review")!.exitGate.map((task) => task.id),
+        reviewActions: reviewStage.actions.map((task) => task.id),
+        review: reviewStage.exitGate.map((task) => task.id),
       };
     };
     expect(config.repositories.service!.ci.mode).toBe("required");
     expect(config.repositories.service!.ci.provider).toBe("actions");
-    const { actions, gate, review } = gates("service");
+    const { actions, gate, reviewActions, review } = gates("service");
     expect(actions).toContain("startCi");
     expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
+    expect(reviewActions).toEqual(["ciSettled", "review"]);
     expect(review).toContain("ciHead");
   });
 

@@ -203,6 +203,29 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   },
 };
 
+const settled: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
+  name: "ci.settled",
+  kind: "act",
+  description: "Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it.",
+  reads: ["change", "ci"],
+  writes: [],
+  invalidates: [],
+  config: passedConfig,
+  defaultWait: { timeoutMs: 3 * 3_600_000, pollMs: 60_000 },
+  run({ context, config }) {
+    const change = context.change;
+    const snapshot = context.ci;
+    if (!change || !snapshot) return fail(NO_CHANGE);
+    const { running } = classifyRuns(snapshot.runs, () => false);
+    const waitingOn = [...snapshot.awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
+    const elapsedMs = Date.parse(snapshot.observedAt) - Date.parse(snapshot.firstSeenAt);
+    if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
+      return pending(`Waiting for CI at ${short(snapshot.headSha)}: ${waitingOn.join(", ") || "checks to register"}.`);
+    }
+    return pass();
+  },
+};
+
 async function logs(
   { deps, input }: Args<unknown, z.output<typeof logsInput>>,
 ) {
@@ -240,4 +263,4 @@ const getLogs: TaskDefinition<unknown, z.output<typeof logsInput>, Deps> = {
   run: logs,
 };
 
-export const ciGroup = defineGroup("ci", [load, start, defined, passed, getLogs]);
+export const ciGroup = defineGroup("ci", [load, start, defined, passed, settled, getLogs]);
