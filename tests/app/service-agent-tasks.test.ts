@@ -23,7 +23,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; completeAfterRelease?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; completeAfterRelease?: boolean; reconcile?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -68,9 +68,40 @@ repositories:
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repositoryPath, configHash: config.hash });
   const labelWrites: string[][] = [];
   const comments: string[] = [];
+  const linkedChildren = new Set<number>();
   let failComments = 0;
   let failLabels = 0;
   const github = {
+    async listIssues() {
+      return store.listIssues("repo").map((issue) => ({
+        id: issue.id,
+        number: issue.sourceNumber,
+        url: issue.sourceUrl,
+        title: issue.title,
+        body: issue.body,
+        state: issue.sourceState,
+        stateReason: issue.sourceStateReason,
+        labels: issue.labels,
+        updatedAt: issue.sourceUpdatedAt,
+      }));
+    },
+    async listSubIssues(_address: string, number: number) {
+      if (number !== 1) return [];
+      return store.listIssues("repo")
+        .filter((issue) => linkedChildren.has(issue.sourceNumber))
+        .map((child) => ({
+          id: child.id,
+          number: child.sourceNumber,
+          url: child.sourceUrl,
+          title: child.title,
+          body: child.body,
+          state: child.sourceState,
+          stateReason: child.sourceStateReason,
+          labels: child.labels,
+          updatedAt: child.sourceUpdatedAt,
+        }));
+    },
+    async listDependencies() { return []; },
     replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => {
       if (failLabels > 0) { failLabels -= 1; throw new Error("temporary label outage"); }
       labelWrites.push([...labels]);
@@ -118,7 +149,10 @@ repositories:
     },
   };
   const service = new ConveyorService(config, store, github as never, { harnesses: { codex: harness } });
-  Object.assign(service as object, { reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {} });
+  Object.assign(service as object, {
+    ...(options.reconcile ? {} : { reconcileRepository: async () => {}, schedule: () => {} }),
+    updateStatusComment: async () => {},
+  });
 
   store.upsertIssue({
     id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Issue", body: CRITERIA,
@@ -147,7 +181,7 @@ repositories:
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
   const schedule = () => (Object.getPrototypeOf(service) as { schedule(this: unknown): void }).schedule.call(service);
-  return { config, store, service, execute, schedule, running, release: () => release!(), calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, failNextLabel: () => { failLabels += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
+  return { config, store, service, execute, schedule, running, release: () => release!(), calls, created, workspace, labelWrites, comments, root, linkChild: (number: number) => linkedChildren.add(number), failNextComment: () => { failComments += 1; }, failNextLabel: () => { failLabels += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
@@ -238,6 +272,13 @@ describe("agent.run through the service", () => {
     expect(w.store.getIssue("issue")?.warning).toBe("Waiting for an answer: Which database?");
     expect(w.store.getStageState("issue")?.status).toBe("ready");
 
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "implementation", state: "active", warning: null });
+    w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
+
     const question = w.store.listOpenQuestions()[0]!;
     await w.service.answerQuestion(question.id, "PostgreSQL", "Needs you");
     expect(Date.parse(journal.wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
@@ -248,10 +289,114 @@ describe("agent.run through the service", () => {
       expect.objectContaining({ actorName: "Needs you", message: expect.stringContaining("**Question:** Which database?\n\n**Accepted answer:** PostgreSQL") }),
     ]);
 
-    await w.execute();
+    w.schedule();
+    while (w.calls.length < 2) await Bun.sleep(5);
+    while (w.labelWrites.length === 0) await Bun.sleep(5);
     expect(w.calls).toHaveLength(2);
     expect(w.calls[1]).toMatchObject({ resumeSessionId: "sess-1", answeredQuestion: { question: "Which database?", answer: "PostgreSQL" } });
     expect(w.labelWrites.at(-1)).toContain("conveyor:implementation");
+    await w.service.close();
+  });
+
+  test("keeps a parked parent question resumable while a newly linked child rolls up", async () => {
+    const w = await setup({ reconcile: true });
+    const journal = w.store.executions();
+    await w.service.tick();
+    while (journal.getCursor("issue")?.state !== "pending" || w.service.activeWork().items.length > 0) await Bun.sleep(5);
+    const parked = journal.getCursor("issue")!;
+    const parentLabels = w.store.getIssue("issue")!.labels;
+
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "implementation", state: "blocked", warning: null });
+    w.linkChild(2);
+    const parent = w.store.getIssue("issue")!;
+    w.store.upsertIssue({
+      id: parent.id, repositoryId: parent.repositoryId, sourceNumber: parent.sourceNumber, sourceUrl: parent.sourceUrl,
+      title: parent.title, body: parent.body, sourceState: parent.sourceState,
+      ...(parent.sourceStateReason === undefined ? {} : { sourceStateReason: parent.sourceStateReason }),
+      labels: parent.labels, sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+
+    await w.service.tick();
+
+    expect(w.store.listChildren("issue")).toEqual([{ issueId: "child", siblingOrder: 1 }]);
+    // Reconciliation supplies needs-input for the parked question; roll-up must not replace its stage.
+    expect(w.store.getIssue("issue")).toMatchObject({ projectedStage: "refinement", projectedState: "needs-input", labels: parentLabels });
+    expect(journal.getCursor("issue")).toMatchObject({ state: "pending", stage: "refinement", stageEpoch: parked!.stageEpoch });
+    expect(w.labelWrites).toEqual([]);
+
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+    while (w.calls.length < 2) await Bun.sleep(5);
+    expect(w.calls[1]).toMatchObject({ resumeSessionId: "sess-1", answeredQuestion: { question: "Which database?", answer: "PostgreSQL" } });
+    await w.service.close();
+  });
+
+  test("keeps an answered parent question resumable while a newly linked child rolls up", async () => {
+    const w = await setup({ reconcile: true });
+    const journal = w.store.executions();
+    await w.service.tick();
+    while (journal.getCursor("issue")?.state !== "pending" || w.service.activeWork().items.length > 0) await Bun.sleep(5);
+    const parked = journal.getCursor("issue")!;
+    const parentLabels = w.store.getIssue("issue")!.labels;
+
+    // Hold scheduling after the answer so roll-up observes the interval before
+    // the parked task gets its next scheduler slot.
+    Object.assign(w.service as object, { schedule: () => {} });
+    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
+
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "implementation", state: "blocked", warning: null });
+    w.linkChild(2);
+    const parent = w.store.getIssue("issue")!;
+    w.store.upsertIssue({
+      id: parent.id, repositoryId: parent.repositoryId, sourceNumber: parent.sourceNumber, sourceUrl: parent.sourceUrl,
+      title: parent.title, body: parent.body, sourceState: parent.sourceState,
+      ...(parent.sourceStateReason === undefined ? {} : { sourceStateReason: parent.sourceStateReason }),
+      labels: parent.labels, sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+
+    await w.service.tick();
+
+    expect(w.store.getIssue("issue")).toMatchObject({ projectedStage: "refinement", projectedState: "active", labels: parentLabels });
+    expect(journal.getCursor("issue")).toMatchObject({ state: "pending", stage: "refinement", stageEpoch: parked.stageEpoch });
+    expect(w.labelWrites).toEqual([]);
+
+    w.schedule();
+    while (w.calls.length < 2) await Bun.sleep(5);
+    expect(w.calls[1]).toMatchObject({ resumeSessionId: "sess-1", answeredQuestion: { question: "Which database?", answer: "PostgreSQL" } });
+    await w.service.close();
+  });
+
+  test("does not admit a parent with children from a non-question pending cursor", async () => {
+    const w = await setup();
+    const journal = w.store.executions();
+    await w.execute();
+    const cursor = journal.getCursor("issue")!;
+    journal.saveCursor({
+      ...cursor,
+      list: "exit-gate",
+      taskInstanceId: "item.criteriaDefined",
+      wakeAt: new Date(0).toISOString(),
+    }, cursor.stageEpoch);
+
+    w.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    w.store.setIssueProjection("child", { stage: "implementation", state: "active", warning: null });
+    w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
+
+    w.schedule();
+    await Bun.sleep(10);
+
+    expect(w.calls).toHaveLength(1);
+    expect(journal.getCursor("issue")).toMatchObject({ list: "exit-gate", taskInstanceId: "item.criteriaDefined", state: "pending" });
     await w.service.close();
   });
 
@@ -456,29 +601,25 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("holds child scheduling until its parent's answered refinement leaves refinement", async () => {
+  test("does not start a new parent run until its current child is unlinked", async () => {
     const w = await setup();
-    await w.execute();
     w.store.upsertIssue({
       id: "child", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Child", body: CRITERIA,
       sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     w.store.setIssueProjection("child", { stage: "refinement", state: "active", warning: null });
-    w.store.setQueueRank("child", w.store.nextQueueRank());
-    w.store.setStageState({ issueId: "child", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "test" });
     w.store.replaceRelationships("child", { parentId: "issue", siblingOrder: 1 }, []);
 
-    const candidates = () => (w.service as unknown as { schedulerCandidates(): Array<{ id: string; eligible: boolean }> }).schedulerCandidates();
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
+    w.schedule();
+    await Bun.sleep(20);
+    expect(w.calls).toHaveLength(0);
 
-    await w.service.answerQuestion(w.store.listOpenQuestions()[0]!.id, "PostgreSQL");
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(false);
-
-    await w.execute();
-    // Relationship roll-up may project the parent back to the child frontier,
-    // but the successful refinement transition remains the scheduler boundary.
-    w.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
-    expect(candidates().find((candidate) => candidate.id === "child")?.eligible).toBe(true);
+    w.store.replaceRelationships("child", null, []);
+    w.schedule();
+    while (w.calls.length < 1) await Bun.sleep(5);
+    expect(w.calls).toHaveLength(1);
+    expect(w.store.listIssueRuns("issue")).toHaveLength(1);
+    expect(w.store.listIssueRuns("child")).toEqual([]);
     await w.service.close();
   });
 });
