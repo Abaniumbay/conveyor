@@ -124,6 +124,41 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("treats a time-only activity cursor as strictly before its boundary for every source", async () => {
+    const store = await openStore();
+    const boundary = "2026-10-15T12:00:00.000Z";
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo", configHash: "config-hash" });
+    for (const [id, number] of [["transition", 1], ["recorded", 2], ["legacy", 3]] as const) {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "", sourceState: "closed", labels: [], sourceUpdatedAt: boundary });
+    }
+
+    store.beginStageTransition({
+      id: "edge-transition", issueId: "transition", fromStage: "review", toStage: "cleanup", kind: "advance", sourceMutationId: null,
+      detail: { reason: null, requiredFixes: [], resultStatus: null },
+    });
+    store.completeStageTransition("edge-transition");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run(boundary, "edge-transition");
+
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "active", warning: null });
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "done", warning: null });
+    store.sqlite().query("UPDATE push_events SET created_at = ? WHERE category = 'done' AND target = ?").run(boundary, "recorded");
+
+    store.activateEnrollment("legacy");
+    store.upsertPullRequest({ issueId: "legacy", id: "legacy-pr", number: 3, url: "https://example.test/pr/3", state: "merged", mergedAt: boundary });
+    store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", "legacy");
+
+    const firstPage = store.listRecentActivity({ from: boundary, before: null, limit: 10 });
+    const beforeBoundary = store.listRecentActivity({ from: null, before: { occurredAt: boundary, id: null }, limit: 10 });
+
+    expect(firstPage).toHaveLength(3);
+    expect(firstPage.filter((event) => event.source === "transition")).toHaveLength(1);
+    expect(firstPage.filter((event) => event.source === "done")).toHaveLength(1);
+    expect(firstPage.filter((event) => event.source === "done-fallback")).toHaveLength(1);
+    expect(beforeBoundary).toEqual([]);
+    expect([...firstPage, ...beforeBoundary]).toHaveLength(3);
+    store.close();
+  });
+
   test("seeds one superuser once and persists accounts, changed credentials, avatars, and session versions", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-accounts-"));
     temporaryDirectories.push(directory);

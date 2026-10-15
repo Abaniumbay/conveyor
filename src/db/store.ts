@@ -778,7 +778,7 @@ export class ConveyorStore {
         WHERE st.status = 'completed'
           AND COALESCE(i.projected_state, '') <> 'offboarded'
           AND (? IS NULL OR st.created_at >= ?)
-          AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND (? IS NULL OR ('transition:' || st.id) < ?)))
+          AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND (? IS NOT NULL AND ('transition:' || st.id) < ?)))
           ${repositoryFilter}
         ORDER BY st.created_at DESC, st.id DESC
         LIMIT ?`,
@@ -792,7 +792,7 @@ export class ConveyorStore {
         WHERE p.category = 'done'
           AND COALESCE(i.projected_state, '') <> 'offboarded'
           AND (? IS NULL OR p.created_at >= ?)
-          AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND (? IS NULL OR ('done:' || p.id) < ?)))
+          AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND (? IS NOT NULL AND ('done:' || p.id) < ?)))
           ${repositoryFilter}
         ORDER BY p.created_at DESC, p.id DESC
         LIMIT ?`,
@@ -820,7 +820,7 @@ export class ConveyorStore {
                    OR (newer_pull_request.merged_at = pr.merged_at AND newer_pull_request.id > pr.id))
             )
             AND (? IS NULL OR pr.merged_at >= ?)
-            AND (? IS NULL OR pr.merged_at < ? OR (pr.merged_at = ? AND (? IS NULL OR ('done:fallback:' || i.id) < ?)))
+            AND (? IS NULL OR pr.merged_at < ? OR (pr.merged_at = ? AND (? IS NOT NULL AND ('done:fallback:' || i.id) < ?)))
             ${repositoryFilter}
        )
        SELECT * FROM legacy_done
