@@ -719,4 +719,11 @@ export const migrations: readonly Migration[] = [
         ON conversation_messages(question_id) WHERE question_id IS NOT NULL;
     `,
   },
+  {
+    version: 22,
+    sql: `
+      -- A stale executor may release only the stage state it originally claimed.
+      ALTER TABLE stage_states ADD COLUMN execution_epoch INTEGER;
+    `,
+  },
 ];
