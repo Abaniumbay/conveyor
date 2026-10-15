@@ -254,6 +254,50 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
+  test("keeps a phone reader's tab strip position across a live refresh", async () => {
+    let revision = "revision-1";
+    const withOverflowingTabs = (nextRevision: string) => {
+      const base = dashboard(nextRevision, [issue("card-1", 1)]);
+      return {
+        ...base,
+        attention: stage("attention", "Attention", [issue("attention-1", 2)]),
+        counts: { ...base.counts, attention: 1 },
+      };
+    };
+    let currentDashboard = withOverflowingTabs(revision);
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+      });
+      await signIn(page, server.port);
+
+      const tabPosition = await page.evaluate(() => {
+        const tabs = document.querySelector<HTMLElement>(".tabs");
+        if (!tabs) return null;
+        tabs.scrollLeft = tabs.scrollWidth;
+        return { scrollLeft: tabs.scrollLeft, maximum: tabs.scrollWidth - tabs.clientWidth };
+      });
+      expect(tabPosition?.maximum).toBeGreaterThan(0);
+      expect(tabPosition?.scrollLeft).toBeGreaterThan(0);
+
+      revision = "revision-2";
+      currentDashboard = withOverflowingTabs(revision);
+      await waitForReplacement(page);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+
+      const refreshedScrollLeft = await page.evaluate(
+        () => document.querySelector<HTMLElement>(".tabs")?.scrollLeft,
+      );
+      expect(refreshedScrollLeft).toBe(tabPosition?.scrollLeft);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("a live update replaces only the cards that changed, and the server sends only those", async () => {
     const cards = Array.from({ length: 6 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
     let revision = "revision-1";

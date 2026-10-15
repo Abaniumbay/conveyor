@@ -1277,7 +1277,10 @@ export const dashboardClient = String.raw`(() => {
     const activeTab = document.querySelector('.tabs .tab--active');
     if (activeTab instanceof HTMLElement) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
-  document.addEventListener('conveyor:dashboard-rendered', () => requestAnimationFrame(revealActiveTab));
+  document.addEventListener('conveyor:dashboard-rendered', (event) => {
+    if (event instanceof CustomEvent && event.detail?.preservePosition) return;
+    requestAnimationFrame(revealActiveTab);
+  });
   requestAnimationFrame(revealActiveTab);
 
   // Tracing an item lights its dependency chain across the rows: what it waits on, and what waits on it.
@@ -2115,7 +2118,7 @@ export const dashboardClient = String.raw`(() => {
       syncThemeControls(rendered);
       updateQuotaCountdowns();
       bindServerStatus();
-      document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered'));
+      document.dispatchEvent(new CustomEvent('conveyor:dashboard-rendered', { detail: { preservePosition } }));
       if (preservePosition) {
         restoreDashboardPosition(position);
       } else if (target.hash) {
