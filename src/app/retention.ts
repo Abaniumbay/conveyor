@@ -24,7 +24,7 @@ export interface RetentionReport {
 }
 
 async function size(target: string): Promise<number> {
-  const info = await stat(target).catch(() => null);
+  const info = await lstat(target).catch(() => null);
   if (!info) return 0;
   if (!info.isDirectory()) return info.size;
   let total = 0;
@@ -63,7 +63,19 @@ export async function applyRetention(input: {
     artifacts: { directories: 0, bytes: 0 },
     homes: { directories: 0, bytes: 0, failures: [] },
   };
-  for (const run of input.store.listTerminalRuns()) {
+  const selectedHomeBytes = new Map<string, number>();
+  let artifactEntries: string[];
+  try {
+    artifactEntries = await readdir(input.artifacts);
+  } catch (error) {
+    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) {
+      report.homes.failures.push(`artifact directory: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    artifactEntries = [];
+  }
+  for (const runId of artifactEntries) {
+    const run = input.store.getRun(runId);
+    if (!run || run.status === "running" || run.finishedAt === null) continue;
     const selected = runHome(input.artifacts, run.id);
     if (!selected) continue;
     try {
@@ -89,6 +101,7 @@ export async function applyRetention(input: {
     if (dryRun) {
       report.homes.directories += 1;
       report.homes.bytes += bytes;
+      selectedHomeBytes.set(selected.directory, bytes);
       continue;
     }
     try {
@@ -111,7 +124,8 @@ export async function applyRetention(input: {
       // Run ids are UUIDs: never follow anything that could leave the artifacts directory.
       if (path.dirname(path.resolve(directory)) !== path.resolve(input.artifacts) || !(await stat(directory).catch(() => null))?.isDirectory()) continue;
       report.artifacts.directories += 1;
-      report.artifacts.bytes += await size(directory);
+      const bytes = await size(directory);
+      report.artifacts.bytes += dryRun ? Math.max(0, bytes - (selectedHomeBytes.get(path.resolve(directory)) ?? 0)) : bytes;
       if (!dryRun) await rm(directory, { recursive: true, force: true });
     }
   }

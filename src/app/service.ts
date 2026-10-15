@@ -484,6 +484,9 @@ export class ConveyorService {
     if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0)) {
       log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes });
     }
+    if (!report.dryRun && report.homes.failures.length > 0) {
+      log.warn("Could not reclaim some terminal run homes", { homeFailures: report.homes.failures.length, failures: report.homes.failures });
+    }
     return report;
   }
 

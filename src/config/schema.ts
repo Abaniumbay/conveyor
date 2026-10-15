@@ -89,8 +89,8 @@ const settingsSchema = z
       .strict()
       .prefault({}),
     /**
-     * How long finished work is kept: run events (agent transcripts, tool calls) and per-run
-     * artifacts of items that are closed, done or offboarded. Open items are never pruned.
+     * How long run events (agent transcripts, tool calls) and non-home per-run artifacts of closed,
+     * done or offboarded items are kept. Terminal private homes are reclaimed independently.
      */
     retention: z
       .object({

@@ -129,10 +129,12 @@ settings:
     artifacts: 30d          # per-run artifact directories; default unlimited
 ```
 
-Retention applies only to finished runs of items that are closed, done or offboarded, and to
-finished steering runs. Open items, including parked and stopped ones, keep everything they may need
-to resume. The service applies the policy at start and daily; `conveyor cleanup` applies it on
-demand.
+The retention settings apply to run events and non-home per-run artifacts of finished runs whose
+items are closed, done or offboarded, and to finished steering runs. Independently of those settings,
+every terminal run's private `home` directory is reclaimed, including runs of open, parked and
+stopped items; a running run's home is never selected. Recorded results, events and artifacts outside
+that private home remain subject to the configured retention policy. The service checks at start and
+daily; `conveyor cleanup` applies the same operations on demand.
 
 ## Operator scripts
 

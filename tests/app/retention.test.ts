@@ -53,13 +53,13 @@ describe("retention", () => {
   test("prunes retired history by age while reclaiming every terminal run home", async () => {
     const { store, artifacts } = await world();
     const dry = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW, dryRun: true });
-    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 3000 }, homes: { directories: 5, bytes: 5000, failures: [] } });
+    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] } });
     expect(store.listRunEvents("closed-old")).toHaveLength(2);
 
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW });
     expect(report.runHistory).toEqual({ runs: 3, events: 6 });
     expect(report.homes).toEqual({ directories: 5, bytes: 5000, failures: [] });
-    expect(report.artifacts).toEqual({ directories: 3, bytes: 0 });
+    expect(report.artifacts).toEqual(dry.artifacts);
     for (const pruned of ["closed-old", "done-old", "steering-old"]) {
       expect(store.listRunEvents(pruned)).toEqual([]);
       expect(store.getRun(pruned)).not.toBeNull();

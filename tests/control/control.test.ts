@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +10,7 @@ import { runCli } from "../../src/cli/main";
 import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
-import { ConsoleSink, log } from "../../src/log/logger";
+import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -272,6 +272,27 @@ describe("operating through the CLI", () => {
     expect(await readFile(path.join(home, "artifacts/finished/result.json"), "utf8")).toBe("recorded result");
     expect(await readFile(path.join(activeHome, "session.jsonl"), "utf8")).toBe("active");
     expect(store.getRun("finished")).toMatchObject({ status: "completed", result: { outcome: "success" } });
+  });
+
+  test("automatic cleanup warns when it cannot reclaim a terminal run home", async () => {
+    const { home, service, store } = await running();
+    store.createRun({ id: "unreclaimed", issueId: "issue-1", stageId: "implementation", attempt: 1, kind: "implementer", status: "running", configHash: "config-hash", startedAt: "2026-10-06T10:00:00Z" });
+    store.finishRun("unreclaimed", {
+      status: "completed", exitCode: 0, result: { outcome: "success" }, sessionId: null,
+      finishedAt: "2026-10-06T10:01:00Z",
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, amount: 0, currency: "USD", source: "test", durationMs: 1 },
+    });
+    const outside = path.join(home, "outside");
+    await mkdir(outside);
+    await mkdir(path.join(home, "artifacts"));
+    await symlink(outside, path.join(home, "artifacts", "unreclaimed"));
+    const records: LogRecord[] = [];
+    log.configure({ sinks: [{ write: (record) => records.push(record) }] });
+
+    const report = await service.applyRetention();
+
+    expect(report.homes.failures).toHaveLength(1);
+    expect(records).toContainEqual(expect.objectContaining({ level: "warn", message: "Could not reclaim some terminal run homes", homeFailures: 1 }));
   });
 
   test("a drain stops admission and steering until it is lifted; the restart route needs systemd", async () => {
