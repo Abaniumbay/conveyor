@@ -4,7 +4,7 @@ import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
-import { CodexRunnerError, type CodexMcpConfiguration } from "./codex";
+import { CodexRunnerError, cleanupCodexRun, type CodexMcpConfiguration, withCleanupError } from "./codex";
 import { EMPTY_USAGE } from "./result";
 
 export interface CodexSteeringInput {
@@ -36,6 +36,7 @@ export interface CodexSteeringResult {
   durationMs: number;
   exitCode: number;
   stderr: string;
+  cleanupError?: string;
 }
 
 interface CodexEvent {
@@ -169,9 +170,8 @@ export async function runCodexSteering(
     child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    await network?.close();
-    await scratch.cleanup();
-    throw error;
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    throw withCleanupError(error, cleanupError);
   }
   child.stdin.write(input.prompt);
   child.stdin.end();
@@ -219,33 +219,33 @@ export async function runCodexSteering(
   input.signal?.addEventListener("abort", onAbort, { once: true });
 
   let exitCode: number;
+  let cleanupError: string | undefined;
   try {
     exitCode = await child.exited;
   } finally {
-    await network?.close();
-    await scratch.cleanup();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([stdout, stderrPromise]);
   const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");
 
   if (timedOut) {
-    throw new CodexRunnerError(`Codex steering timed out${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr);
+    throw withCleanupError(new CodexRunnerError(`Codex steering timed out${detail ? `: ${detail}` : ""}`, "timeout", exitCode, stderr), cleanupError);
   }
   if (interrupted) {
-    throw new CodexRunnerError(`Codex steering was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr);
+    throw withCleanupError(new CodexRunnerError(`Codex steering was interrupted${detail ? `: ${detail}` : ""}`, "interrupted", exitCode, stderr), cleanupError);
   }
   if (exitCode !== 0) {
     const kind = USAGE_LIMIT_PATTERN.test(`${detail}\n${raw}`) ? "usage-limit" : "process";
-    throw new CodexRunnerError(`Codex steering exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr);
+    throw withCleanupError(new CodexRunnerError(`Codex steering exited with code ${exitCode}${detail ? `: ${detail}` : ""}`, kind, exitCode, stderr), cleanupError);
   }
   if (invalidLine) {
-    throw new CodexRunnerError(`Codex steering emitted invalid JSONL: ${invalidLine}`, "protocol", exitCode, stderr);
+    throw withCleanupError(new CodexRunnerError(`Codex steering emitted invalid JSONL: ${invalidLine}`, "protocol", exitCode, stderr), cleanupError);
   }
   if (!summary.trim()) {
-    throw new CodexRunnerError("Codex steering completed without a final report", "protocol", exitCode, stderr);
+    throw withCleanupError(new CodexRunnerError("Codex steering completed without a final report", "protocol", exitCode, stderr), cleanupError);
   }
   return {
     summary: summary.trim(),
@@ -254,5 +254,6 @@ export async function runCodexSteering(
     durationMs: Math.max(0, Math.round(performance.now() - started)),
     exitCode,
     stderr,
+    ...(cleanupError ? { cleanupError } : {}),
   };
 }

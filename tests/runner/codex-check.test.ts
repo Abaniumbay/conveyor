@@ -229,9 +229,9 @@ describe("runCodexCheck", () => {
     await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
   });
 
-  test("cleans disposable scratch after failure, timeout, and interruption", async () => {
+  test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`
-      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
       process.exit(2);
     `);
     const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
@@ -240,24 +240,30 @@ describe("runCodexCheck", () => {
       mcp: { command: "bun", args: [] }, env: { CAPTURE: files.capture },
     });
     await expect(runCodexCheck(base(failed))).rejects.toMatchObject({ kind: "process" });
-    expect(existsSync((await readFile(failed.capture, "utf8")).trim())).toBe(false);
+    const failedPaths = JSON.parse(await readFile(failed.capture, "utf8")) as { tmpdir: string; home: string };
+    expect(existsSync(failedPaths.tmpdir)).toBe(false);
+    expect(existsSync(failedPaths.home)).toBe(false);
 
     const slow = await fixture(`
-      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
       await Bun.sleep(2_000);
     `);
     await expect(runCodexCheck({ ...base(slow), timeoutMs: 20 })).rejects.toMatchObject({ kind: "timeout" });
-    expect(existsSync((await readFile(slow.capture, "utf8")).trim())).toBe(false);
+    const timeoutPaths = JSON.parse(await readFile(slow.capture, "utf8")) as { tmpdir: string; home: string };
+    expect(existsSync(timeoutPaths.tmpdir)).toBe(false);
+    expect(existsSync(timeoutPaths.home)).toBe(false);
 
     const interrupted = await fixture(`
-      await Bun.write(process.env.CAPTURE!, process.env.TMPDIR!);
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
       await Bun.sleep(2_000);
     `);
     const controller = new AbortController();
     const run = runCodexCheck({ ...base(interrupted), signal: controller.signal });
     setTimeout(() => controller.abort(), 100);
     await expect(run).rejects.toMatchObject({ kind: "interrupted" });
-    expect(existsSync((await readFile(interrupted.capture, "utf8")).trim())).toBe(false);
+    const interruptedPaths = JSON.parse(await readFile(interrupted.capture, "utf8")) as { tmpdir: string; home: string };
+    expect(existsSync(interruptedPaths.tmpdir)).toBe(false);
+    expect(existsSync(interruptedPaths.home)).toBe(false);
   });
 
   test("rejects invalid verifier protocol output", async () => {

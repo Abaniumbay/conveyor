@@ -11,6 +11,8 @@ import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scrat
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import {
   CodexRunnerError,
+  cleanupCodexRun,
+  withCleanupError,
   type CodexMcpConfiguration,
   type CodexErrorKind,
 } from "./codex";
@@ -45,6 +47,7 @@ export interface CodexCheckRunResult extends CheckResult {
   durationMs: number;
   exitCode: number;
   stderr: string;
+  cleanupError?: string;
 }
 
 export const checkResultSchema = z
@@ -243,15 +246,14 @@ export async function runCodexCheck(
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    await network?.close();
-    await scratch.cleanup();
-    throw new CodexRunnerError(
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    throw withCleanupError(new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
       null,
       "",
       { cause: error },
-    );
+    ), cleanupError);
   }
   child.stdin.write(input.prompt);
   child.stdin.end();
@@ -298,14 +300,14 @@ export async function runCodexCheck(
   if (interrupted) stop();
 
   let exitCode: number;
+  let cleanupError: string | undefined;
   try {
     exitCode = await child.exited;
   } finally {
-    await network?.close();
-    await scratch.cleanup();
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([
     stdoutPromise,
@@ -315,61 +317,61 @@ export async function runCodexCheck(
   const failureDetail = [stderr.trim(), ...messages].filter(Boolean).join("\n");
 
   if (timedOut) {
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier timed out after ${input.timeoutMs}ms${failureDetail ? `: ${failureDetail}` : ""}`,
       "timeout",
       exitCode,
       stderr,
-    );
+    ), cleanupError);
   }
   if (interrupted) {
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier was interrupted${failureDetail ? `: ${failureDetail}` : ""}`,
       "interrupted",
       exitCode,
       stderr,
-    );
+    ), cleanupError);
   }
   if (exitCode !== 0) {
     const kind = errorKind(`${failureDetail}\n${raw}`);
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier exited with code ${exitCode}${failureDetail ? `: ${failureDetail}` : ""}`,
       kind,
       exitCode,
       stderr,
-    );
+    ), cleanupError);
   }
   if (invalidLine) {
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier emitted invalid JSONL: ${invalidLine}`,
       "protocol",
       exitCode,
       stderr,
-    );
+    ), cleanupError);
   }
 
   let decoded: unknown;
   try {
     decoded = JSON.parse(await readFile(outputFile, "utf8"));
   } catch (error) {
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier did not produce valid structured output: ${error instanceof Error ? error.message : String(error)}`,
       "protocol",
       exitCode,
       stderr,
       { cause: error },
-    );
+    ), cleanupError);
   }
   const parsed = checkResultSchema.safeParse(decoded);
   if (!parsed.success) {
-    throw new CodexRunnerError(
+    throw withCleanupError(new CodexRunnerError(
       `Codex verifier structured output failed validation: ${parsed.error.issues
         .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
         .join("; ")}`,
       "protocol",
       exitCode,
       stderr,
-    );
+    ), cleanupError);
   }
   const { version: _version, ...check } = parsed.data;
   return {
@@ -379,5 +381,6 @@ export async function runCodexCheck(
     durationMs,
     exitCode,
     stderr,
+    ...(cleanupError ? { cleanupError } : {}),
   };
 }

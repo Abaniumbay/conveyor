@@ -26,7 +26,7 @@ describe("runCodexSteering", () => {
       const args = process.argv.slice(2);
       const prompt = await new Response(Bun.stdin.stream()).text();
       await Bun.write(process.env.TMPDIR + "/steering-marker", "temporary");
-      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, prompt, tmpdir: process.env.TMPDIR }));
+      await Bun.write(process.env.CAPTURE!, JSON.stringify({ args, prompt, tmpdir: process.env.TMPDIR, home: process.env.HOME }));
       console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-steer" }));
       console.log(JSON.stringify({ type: "item.started", item: { type: "command_execution", command: "git status" } }));
       console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Changed the board and ran tests." } }));
@@ -56,7 +56,7 @@ describe("runCodexSteering", () => {
       exitCode: 0,
     });
     expect(events).toHaveLength(4);
-    const invocation = JSON.parse(await readFile(capture, "utf8")) as { args: string[]; prompt: string; tmpdir: string };
+    const invocation = JSON.parse(await readFile(capture, "utf8")) as { args: string[]; prompt: string; tmpdir: string; home: string };
     expect(invocation.prompt).toBe("Make the requested UI change");
     expect(invocation.args).toContain("--approve-for-me");
     expect(invocation.args).toContain("--skip-git-repo-check");
@@ -65,5 +65,6 @@ describe("runCodexSteering", () => {
     expect(invocation.args).toContain('mcp_servers.conveyor.command="bun"');
     expect(invocation.args).toContain("sandbox_workspace_write.exclude_slash_tmp=true");
     expect(existsSync(invocation.tmpdir)).toBe(false);
+    expect(existsSync(invocation.home)).toBe(false);
   });
 });

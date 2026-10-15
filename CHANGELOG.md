@@ -65,6 +65,8 @@ Stage exit gates can wait for a human approval on the board, configured per pipe
 - Agent and script launches now use one resolved filesystem path for their configuration,
   workspaces, artifacts, writable roots, and derived run directories, so symlinked data roots no
   longer break sandbox mounts or split a run's access boundary.
+- Completed, failed, timed-out, and interrupted Codex agent, check, and steering runs now remove
+  their private run home without removing retained results or artifacts.
 
 ## [0.7.0] - 2026-10-14
 

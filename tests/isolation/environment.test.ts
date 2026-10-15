@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { prepareSanitizedHome, sanitizedAgentEnvironment } from "../../src/isolation/environment";
+import { cleanupSanitizedHome, prepareSanitizedHome, sanitizedAgentEnvironment } from "../../src/isolation/environment";
 
 const directories: string[] = [];
 async function temporary(): Promise<string> {
@@ -130,5 +131,36 @@ describe("prepareSanitizedHome", () => {
     await writeFile(path.join(home, ".netrc"), "machine x password y");
     await prepareSanitizedHome({ root, runId: "r", gitUser: { name: "A" } });
     expect(await readdir(home)).toEqual([".gitconfig"]);
+  });
+
+  test("removes only a run home without following symbolic links or deleting results", async () => {
+    const root = await temporary();
+    const run = path.join(root, "run");
+    const target = path.join(root, "shared-cache");
+    const home = await prepareSanitizedHome({ root, runId: "run", gitUser: {} });
+    await mkdir(target);
+    await writeFile(path.join(target, "state"), "keep");
+    await symlink(target, path.join(home, ".cache"));
+    await writeFile(path.join(run, "result.json"), "result");
+
+    await cleanupSanitizedHome(run);
+
+    expect(existsSync(home)).toBe(false);
+    expect(await readFile(path.join(target, "state"), "utf8")).toBe("keep");
+    expect(await readFile(path.join(run, "result.json"), "utf8")).toBe("result");
+  });
+
+  test("surfaces home deletion failures without removing the run result", async () => {
+    const root = await temporary();
+    const run = path.join(root, "run");
+    await prepareSanitizedHome({ root, runId: "run", gitUser: {} });
+    await writeFile(path.join(run, "result.json"), "result");
+    await chmod(run, 0o500);
+    try {
+      await expect(cleanupSanitizedHome(run)).rejects.toThrow();
+    } finally {
+      await chmod(run, 0o700);
+    }
+    expect(await readFile(path.join(run, "result.json"), "utf8")).toBe("result");
   });
 });

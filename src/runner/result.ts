@@ -66,6 +66,8 @@ export interface RunEnvelope {
   exitCode: number;
   artifacts: Artifact[];
   stderr: string;
+  /** A completed run's non-fatal teardown failure, retained separately from its stage result. */
+  cleanupError?: string;
 }
 
 export const EMPTY_USAGE: RunEnvelope["usage"] = {
