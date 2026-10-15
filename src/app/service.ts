@@ -830,10 +830,10 @@ export class ConveyorService {
     const indicator = this.store.listIndicators(issue.id).find((item) => item.id === CI_INDICATOR_ID);
     if (!indicator) return null;
     const head = indicator.headSha.slice(0, 7);
-    if (indicator.state === "running" || indicator.state === "unknown") {
-      const unfinished = indicator.entries
-        .filter((entry) => entry.state === "queued" || entry.state === "running")
-        .map((entry) => entry.name);
+    const unfinished = indicator.entries
+      .filter((entry) => entry.state === "queued" || entry.state === "running")
+      .map((entry) => entry.name);
+    if (unfinished.length > 0 || indicator.state === "running" || indicator.state === "unknown") {
       return `Waiting for CI at ${head}: ${unfinished.join(", ") || indicator.detail}.`;
     }
     if (indicator.state === "failed") return `CI failed at ${head}: ${indicator.detail}.`;

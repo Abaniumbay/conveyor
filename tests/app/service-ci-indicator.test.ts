@@ -270,7 +270,9 @@ test("a CI settle status preserves its head and end time across a restart", asyn
 
 test("a parked review settlement action shows its current head, unfinished checks, next check, and deadline after restart", async () => {
   const w = await setup("", false, true);
-  await w.internals.backfillCiIndicators("repo");
+  w.state.runs = [run("Failures", "failed"), run("build", "running")];
+  await w.deliver("workflow_run", workflowRun("head1"));
+  expect(w.indicator()).toMatchObject({ state: "failed" });
   const wakeAt = new Date(Date.now() + 60_000).toISOString();
   const deadlineAt = new Date(Date.now() + 180_000).toISOString();
   parkCiGate(w.store, wakeAt, { list: "actions", taskInstanceId: "ciSettled", deadlineAt });

@@ -372,22 +372,28 @@ describe("ci.settled", () => {
 
   test("waits for registered or running checks without reading their logs", async () => {
     const w = await world();
+    w.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+    w.provider.runs = [ciRun("Tests", "running"), ciRun("Lint", "queued")];
     const running = await run("ci.settled", {
-      context: gateCtx(ci({ firstSeenAt: SETTLED, runs: [crun("Tests", "running"), crun("Lint", "queued")] })), deps: w.deps,
+      context: { change: change() }, deps: w.deps,
     }) as Pending;
     expect(running).toMatchObject({ status: "pending", message: expect.stringContaining("Tests, Lint") });
     expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
+    w.provider.runs = [];
+    w.clock.now += 270_000;
     const registering = await run("ci.settled", {
-      context: gateCtx(ci({ firstSeenAt: new Date(T0 - 30_000).toISOString() })), deps: w.deps,
-    }) as Pending;
-    expect(registering.message).toContain("checks to register");
-    expect((await run("ci.settled", { context: gateCtx(ci({ firstSeenAt: SETTLED })) })).status).toBe("pass");
+      context: { change: change() }, deps: w.deps,
+    });
+    expect(registering.status).toBe("pass");
   });
 
   test("releases review for both passing and failed settled CI", async () => {
     for (const state of ["passed", "failed"] as const) {
+      const w = await world();
+      w.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+      w.provider.runs = [ciRun("Tests", state)];
       expect((await run("ci.settled", {
-        context: gateCtx(ci({ firstSeenAt: SETTLED, runs: [crun("Tests", state)] })),
+        context: { change: change() }, deps: w.deps,
       })).status).toBe("pass");
     }
   });
@@ -511,6 +517,14 @@ describe("review CI settlement through the stage executor", () => {
     expect(w.store.executions().getCursor("i1")).toBeNull();
     expect(w.provider.calls.some((call) => call.startsWith("start") && call.includes("@head1"))).toBe(true);
     expect(first.deadlineAt).toBe(new Date(T0 + 60_000).toISOString());
+  });
+
+  test("does not load failed-job logs while another check keeps settlement parked", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Failures", "failed"), ciRun("Tests", "running")];
+
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
   });
 
   test("uses the latest head while parked and never lets the old head release review", async () => {

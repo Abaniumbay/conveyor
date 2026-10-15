@@ -117,7 +117,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `ci.getLogs` | tool | - | - | Read the failing (or named) CI job logs for the change head, bounded to 20-1000 lines (default 200). |
 | `ci.load` | load | change | writes ci | Loads the CI runs of the change's current head from the provider (ignoring `ci.ignoreChecks`), whether CI is defined for it, and the durable gate facts; null until a change request exists. |
 | `ci.passed` | check | change, ci | - | Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running; fails with focused logs when a run failed. |
-| `ci.settled` | act | change, ci | - | Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it. |
+| `ci.settled` | act | change | - | Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it. |
 | `ci.start` | act | repository, change, ci | invalidates ci | Starts label-triggered CI runs for the change head, reruns a cancelled run once per head, announces CI once per head and, in advisory mode, starts the durable watch. |
 
 ### conversation
