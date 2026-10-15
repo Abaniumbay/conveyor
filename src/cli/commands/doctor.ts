@@ -1,5 +1,6 @@
 import { access, constants, stat } from "node:fs/promises";
 import net from "node:net";
+import { tmpdir } from "node:os";
 
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { dashboardAccountCount } from "../../db/store";
@@ -8,6 +9,7 @@ import { GhCliTransport, GitHubAdapter, type GitHubTransport } from "../../sourc
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
 import { serviceRunning } from "../control-client";
+import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
 
 export interface DoctorCheck {
   name: string;
@@ -15,6 +17,11 @@ export interface DoctorCheck {
   detail: string;
   /** What to do about a warning or failure. */
   fix?: string;
+}
+
+export interface DoctorReport {
+  checks: DoctorCheck[];
+  filesystems: FilesystemPressure[];
 }
 
 async function run(argv: string[], timeoutMs = 15_000): Promise<{ code: number; output: string }> {
@@ -40,13 +47,15 @@ async function portAvailable(hostname: string, port: number): Promise<boolean> {
 }
 
 /** Every check; `serviceRunning` tells whether the listen port may legitimately be taken. */
-export async function doctorChecks(
+export async function doctorReport(
   home: string,
   configPath: string,
   serviceRunning: () => Promise<boolean>,
   github?: GitHubTransport,
-): Promise<DoctorCheck[]> {
+  measureFilesystem?: FilesystemMeasure,
+): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
+  const filesystems: FilesystemPressure[] = [];
   const homeInfo = await stat(home).catch(() => undefined);
   if (!homeInfo?.isDirectory()) {
     checks.push({ name: "home", status: "fail", detail: `${home} does not exist`, fix: `conveyor init --home ${home}` });
@@ -95,6 +104,14 @@ export async function doctorChecks(
   }
 
   if (config) {
+    filesystems.push(...await filesystemPressure({ artifacts: config.settings.artifacts, temporary: tmpdir() }, measureFilesystem));
+    for (const filesystem of filesystems) {
+      checks.push({
+        name: `${filesystem.name} filesystem`,
+        status: filesystem.status === "ok" ? "ok" : "warn",
+        detail: filesystemPressureDetail(filesystem),
+      });
+    }
     const used = new Set(Object.values(config.agents).map((agent) => agent.runner));
     for (const name of [...used].sort()) {
       const runner = config.runners[name];
@@ -126,7 +143,18 @@ export async function doctorChecks(
     else if (await serviceRunning()) checks.push({ name: "listen", status: "ok", detail: `${config.web.listen} is served by the running Conveyor` });
     else checks.push({ name: "listen", status: "fail", detail: `${config.web.listen} is in use by another process`, fix: "stop that process or change web.listen" });
   }
-  return checks;
+  return { checks, filesystems };
+}
+
+/** Backwards-compatible checks-only API for callers that do not need structured capacity data. */
+export async function doctorChecks(
+  home: string,
+  configPath: string,
+  serviceRunning: () => Promise<boolean>,
+  github?: GitHubTransport,
+  measureFilesystem?: FilesystemMeasure,
+): Promise<DoctorCheck[]> {
+  return (await doctorReport(home, configPath, serviceRunning, github, measureFilesystem)).checks;
 }
 
 /**
@@ -207,9 +235,9 @@ export const doctor: Command = {
   name: "doctor",
   summary: "check the home, configuration and every external prerequisite, with fixes",
   async run(context) {
-    const checks = await doctorChecks(context.paths.home, context.paths.config, () => serviceRunning(context));
+    const { checks, filesystems } = await doctorReport(context.paths.home, context.paths.config, () => serviceRunning(context));
     const failed = checks.some((check) => check.status === "fail");
-    if (context.json) printJson(context, { ok: !failed, checks });
+    if (context.json) printJson(context, { ok: !failed, checks, filesystems, warnings: filesystems.filter((filesystem) => filesystem.status === "warn") });
     else {
       context.out(checks.map((check) => `${SYMBOL[check.status]}  ${check.name}: ${check.detail}${check.fix ? `\n        fix: ${check.fix}` : ""}`).join("\n"));
     }

@@ -1300,7 +1300,12 @@ export const dashboardClient = String.raw`(() => {
 
   const revealActiveTab = () => {
     const activeTab = document.querySelector('.tabs .tab--active');
-    if (activeTab instanceof HTMLElement) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const tabs = activeTab?.closest('.tabs');
+    if (!(activeTab instanceof HTMLElement) || !(tabs instanceof HTMLElement)) return;
+    const tab = activeTab.getBoundingClientRect();
+    const container = tabs.getBoundingClientRect();
+    if (tab.left < container.left) tabs.scrollLeft += tab.left - container.left;
+    else if (tab.right > container.right) tabs.scrollLeft += tab.right - container.right;
   };
   document.addEventListener('conveyor:dashboard-rendered', (event) => {
     if (event instanceof CustomEvent && event.detail?.preservePosition) return;
