@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,7 +30,7 @@ async function running() {
   const store = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
   const config = {
     hash: "config-hash", root: home,
-    settings: { artifacts: path.join(home, "artifacts"), workspaces: path.join(home, "worktrees"), runners: 2, labelPrefix: "conveyor" },
+    settings: { artifacts: path.join(home, "artifacts"), workspaces: path.join(home, "worktrees"), runners: 2, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
     web: { listen: "127.0.0.1:7788" }, sources: { github: { type: "github" } },
     labels: {
       enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
@@ -241,6 +241,37 @@ describe("operating through the CLI", () => {
       expect.stringMatching(/\[implementation\/producer\] report_progress: tests written$/),
       expect.stringMatching(/\[implementation\/producer\] tool: \{"name":"ci\.getLogs"\}$/),
     ]);
+  });
+
+  test("cleanup through the running service reports and reclaims terminal run homes", async () => {
+    const { cli, home, store } = await running();
+    store.createRun({ id: "finished", issueId: "issue-1", stageId: "implementation", attempt: 1, kind: "implementer", status: "running", configHash: "config-hash", startedAt: "2026-10-06T10:00:00Z" });
+    store.finishRun("finished", {
+      status: "completed", exitCode: 0, result: { outcome: "success" }, sessionId: null,
+      finishedAt: "2026-10-06T10:01:00Z",
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, amount: 0, currency: "USD", source: "test", durationMs: 1 },
+    });
+    store.createRun({ id: "active", issueId: "issue-1", stageId: "implementation", attempt: 2, kind: "implementer", status: "running", configHash: "config-hash", startedAt: "2026-10-06T10:02:00Z" });
+    const finishedHome = path.join(home, "artifacts/finished/home");
+    const activeHome = path.join(home, "artifacts/active/home");
+    await mkdir(finishedHome, { recursive: true });
+    await mkdir(activeHome, { recursive: true });
+    await writeFile(path.join(finishedHome, "session.jsonl"), "x".repeat(1200));
+    await writeFile(path.join(home, "artifacts/finished/result.json"), "recorded result");
+    await writeFile(path.join(activeHome, "session.jsonl"), "active");
+
+    const dryRun = await cli("cleanup", "--dry-run");
+    expect(dryRun.code).toBe(EXIT.ok);
+    expect(dryRun.out).toContain("Would delete 1 run home");
+    expect(await readFile(path.join(finishedHome, "session.jsonl"), "utf8")).toHaveLength(1200);
+
+    const reclaimed = await cli("cleanup", "--json");
+    expect(reclaimed.code).toBe(EXIT.ok);
+    expect(JSON.parse(reclaimed.out)).toMatchObject({ homes: { directories: 1, bytes: 1200, failures: [] } });
+    await expect(stat(finishedHome)).rejects.toThrow();
+    expect(await readFile(path.join(home, "artifacts/finished/result.json"), "utf8")).toBe("recorded result");
+    expect(await readFile(path.join(activeHome, "session.jsonl"), "utf8")).toBe("active");
+    expect(store.getRun("finished")).toMatchObject({ status: "completed", result: { outcome: "success" } });
   });
 
   test("a drain stops admission and steering until it is lifted; the restart route needs systemd", async () => {

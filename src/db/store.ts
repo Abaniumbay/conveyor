@@ -2170,6 +2170,18 @@ export class ConveyorStore {
     return rows.map((row) => ({ id: String(row.id), events: Number(row.events) }));
   }
 
+  /** Terminal runs whose private homes can be reclaimed without affecting their recorded history. */
+  listTerminalRuns(): Array<{ id: string }> {
+    const rows = this.#database
+      .query(
+        `SELECT id FROM runs
+         WHERE status <> 'running' AND finished_at IS NOT NULL
+         ORDER BY finished_at`,
+      )
+      .all() as Array<{ id: string }>;
+    return rows.map((row) => ({ id: String(row.id) }));
+  }
+
   /** Deletes the events (transcripts, tool calls) of the given runs; the runs and their results stay. */
   deleteRunEvents(runIds: readonly string[]): number {
     const remove = this.#database.query("DELETE FROM run_events WHERE run_id = ?");

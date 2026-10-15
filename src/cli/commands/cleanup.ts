@@ -7,15 +7,16 @@ import { formatBytes } from "./operations";
 
 export const cleanup: Command = {
   name: "cleanup",
-  summary: "prune finished work past the retention policy (run events and per-run artifacts)",
+  summary: "prune finished work and reclaim private homes of terminal runs",
   options: {
     "dry-run": { type: "boolean", description: "report what would be deleted without deleting it" },
     "run-history": { type: "string", value: "<duration>", description: "this time instead of settings.retention.runHistory" },
     artifacts: { type: "string", value: "<duration>", description: "this time instead of settings.retention.artifacts" },
   },
   details: [
-    "Only runs of items that are closed, done or offboarded (and finished steering runs) are pruned;",
-    "open items keep everything they may need to resume. Service logs rotate by settings.logging.",
+    "Run events and artifact directories follow the configured retention policy for retired items.",
+    "Private homes of every terminal run are reclaimed immediately; running runs and shared caches are kept.",
+    "Service logs rotate by settings.logging.",
   ].join("\n"),
   async run(context) {
     const runHistory = stringOption(context, "run-history");
@@ -44,6 +45,8 @@ export const cleanup: Command = {
     context.out([
       `${verb} ${report.runHistory.events} run event(s) of ${report.runHistory.runs} finished run(s).`,
       `${verb} ${report.artifacts.directories} artifact director${report.artifacts.directories === 1 ? "y" : "ies"} (${formatBytes(report.artifacts.bytes)}).`,
+      `${verb} ${report.homes.directories} run home${report.homes.directories === 1 ? "" : "s"} (${formatBytes(report.homes.bytes)}).`,
+      ...(report.homes.failures.length > 0 ? [`Could not delete ${report.homes.failures.length} run home${report.homes.failures.length === 1 ? "" : "s"}: ${report.homes.failures.join("; ")}`] : []),
     ].join("\n"));
   },
 };

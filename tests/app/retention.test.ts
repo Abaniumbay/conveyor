@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -32,7 +32,8 @@ async function world() {
   issue("done", 2, "open", "done");
   issue("parked", 3, "open", "needs-input");
   const run = async (id: string, issueId: string | null, finishedDaysAgo: number | null) => {
-    store.createRun({ id, issueId, stageId: "review", attempt: 1, kind: "producer", status: finishedDaysAgo === null ? "running" : "completed", configHash: "h", startedAt: daysAgo((finishedDaysAgo ?? 0) + 1) });
+    const status = finishedDaysAgo === null ? "running" : id === "parked-old" ? "failed" : id === "steering-old" ? "interrupted" : "completed";
+    store.createRun({ id, issueId, stageId: "review", attempt: 1, kind: "producer", status, configHash: "h", startedAt: daysAgo((finishedDaysAgo ?? 0) + 1) });
     if (finishedDaysAgo !== null) store.sqlite().query("UPDATE runs SET finished_at = ? WHERE id = ?").run(daysAgo(finishedDaysAgo), id);
     store.appendRunEvent(id, "agent", { text: `transcript of ${id}` });
     store.appendRunEvent(id, "tool", { name: "x" });
@@ -49,14 +50,16 @@ async function world() {
 }
 
 describe("retention", () => {
-  test("prunes only finished runs of closed, done or no items past the age; open items keep everything", async () => {
+  test("prunes retired history by age while reclaiming every terminal run home", async () => {
     const { store, artifacts } = await world();
     const dry = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW, dryRun: true });
-    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 3000 } });
+    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 3000 }, homes: { directories: 5, bytes: 5000, failures: [] } });
     expect(store.listRunEvents("closed-old")).toHaveLength(2);
 
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW });
     expect(report.runHistory).toEqual({ runs: 3, events: 6 });
+    expect(report.homes).toEqual({ directories: 5, bytes: 5000, failures: [] });
+    expect(report.artifacts).toEqual({ directories: 3, bytes: 0 });
     for (const pruned of ["closed-old", "done-old", "steering-old"]) {
       expect(store.listRunEvents(pruned)).toEqual([]);
       expect(store.getRun(pruned)).not.toBeNull();
@@ -66,9 +69,9 @@ describe("retention", () => {
     store.close();
   });
 
-  test("an unlimited policy (the default) deletes nothing; each kind has its own age", async () => {
+  test("an unlimited retention policy keeps history but reclaims terminal homes", async () => {
     const { store, artifacts } = await world();
-    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 } });
+    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] } });
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: DAY }, now: NOW });
     expect(report.artifacts.directories).toBe(4);
     expect(store.listRunEvents("closed-new")).toHaveLength(2);
@@ -87,10 +90,42 @@ describe("retention", () => {
     const out: string[] = [];
     const code = await runCli(["cleanup", "--home", home, "--dry-run"], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(0);
-    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).");
+    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).\nWould delete 5 run homes (4.9 KB).");
     const json: string[] = [];
     await runCli(["cleanup", "--home", home, "--artifacts", "30d", "--json"], { out: (text) => json.push(text), err: () => {}, environment: {}, interactive: false });
-    expect(JSON.parse(json.join(""))).toMatchObject({ dryRun: false, runHistory: { events: 6 }, artifacts: { directories: 3 } });
+    expect(JSON.parse(json.join(""))).toMatchObject({ dryRun: false, runHistory: { events: 6 }, artifacts: { directories: 3 }, homes: { directories: 5, bytes: 5000, failures: [] } });
+  });
+
+  test("reclaims only terminal run homes without following links and continues after a deletion failure", async () => {
+    const { store, artifacts, root } = await world();
+    const external = path.join(root, "shared-cache");
+    await mkdir(external);
+    await writeFile(path.join(external, "keep"), "cache");
+    await rm(path.join(artifacts, "closed-new", "home"), { recursive: true });
+    await symlink(external, path.join(artifacts, "closed-new", "home"));
+    const linkedBytes = (await lstat(path.join(artifacts, "closed-new", "home"))).size;
+    store.createRun({ id: "linked-directory", issueId: "closed", stageId: "review", attempt: 2, kind: "producer", status: "completed", configHash: "h", startedAt: daysAgo(2) });
+    store.sqlite().query("UPDATE runs SET finished_at = ? WHERE id = ?").run(daysAgo(1), "linked-directory");
+    const linkedDirectory = path.join(root, "linked-run-directory");
+    await mkdir(path.join(linkedDirectory, "home"), { recursive: true });
+    await writeFile(path.join(linkedDirectory, "home", "keep"), "outside");
+    await symlink(linkedDirectory, path.join(artifacts, "linked-directory"));
+    const locked = path.join(artifacts, "done-old");
+    await chmod(locked, 0o500);
+    try {
+      const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+      expect(report.homes.directories).toBe(4);
+      expect(report.homes.bytes).toBe(3000 + linkedBytes);
+      expect(report.homes.failures).toHaveLength(2);
+      expect(await readFile(path.join(external, "keep"), "utf8")).toBe("cache");
+      expect(await readFile(path.join(linkedDirectory, "home", "keep"), "utf8")).toBe("outside");
+      expect(await readdir(path.join(artifacts, "running", "home"))).not.toEqual([]);
+      expect(store.getRun("parked-old")).not.toBeNull();
+      expect(store.listRunEvents("parked-old")).toHaveLength(2);
+    } finally {
+      await chmod(locked, 0o700);
+    }
+    store.close();
   });
 });
 

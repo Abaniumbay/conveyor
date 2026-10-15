@@ -457,12 +457,9 @@ export class ConveyorService {
     if (this.#timer) return;
     void this.tick();
     this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
-    const { retention } = this.config.settings;
-    if (retention.runHistoryMs !== null || retention.artifactsMs !== null) {
-      const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
-      prune();
-      this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
-    }
+    const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
+    prune();
+    this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
   }
 
   private async recoverWorkspaceScratch(): Promise<void> {
@@ -484,8 +481,8 @@ export class ConveyorService {
       policy: options.policy ?? this.config.settings.retention,
       dryRun: options.dryRun === true,
     });
-    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0)) {
-      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, bytes: report.artifacts.bytes });
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0)) {
+      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes });
     }
     return report;
   }
