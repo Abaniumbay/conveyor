@@ -361,6 +361,68 @@ describe("ci.passed", () => {
   });
 });
 
+describe("ci.settled", () => {
+  const SETTLED = new Date(T0 - 300_000).toISOString();
+
+  test("declares a bounded action precondition", () => {
+    expect(registry.require("ci.settled")).toMatchObject({
+      kind: "act", defaultWait: { timeoutMs: 3 * 3_600_000, pollMs: 60_000 },
+    });
+  });
+
+  test("waits for queued or running checks without reading their logs", async () => {
+    const w = await world();
+    w.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+    w.provider.runs = [ciRun("Tests", "running"), ciRun("Lint", "queued")];
+    const running = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
+    }) as Pending;
+    expect(running).toMatchObject({ status: "pending", message: expect.stringContaining("Tests, Lint") });
+    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
+  });
+
+  test("waits for checks to register and for a late-running or started check", async () => {
+    const w = await world();
+    const registering = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
+    }) as Pending;
+    expect(registering).toMatchObject({ status: "pending", message: expect.stringContaining("checks to register") });
+
+    w.clock.now += 10_000;
+    w.provider.runs = [ciRun("Tests", "running")];
+    const late = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
+    }) as Pending;
+    expect(late).toMatchObject({ status: "pending", message: expect.stringContaining("Tests") });
+
+    w.provider.runs = [];
+    w.clock.now += 110_000;
+    const expired = await run("ci.settled", {
+      context: { change: change() }, deps: w.deps,
+    });
+    expect(expired.status).toBe("pass");
+
+    const started = await world();
+    started.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+    started.store.executions().markCi("i1", "head1", "started", "Web", SETTLED);
+    const awaitingStart = await run("ci.settled", {
+      context: { change: change() }, deps: started.deps,
+    }) as Pending;
+    expect(awaitingStart).toMatchObject({ status: "pending", message: expect.stringContaining("Web to start") });
+  });
+
+  test("releases review for both passing and failed settled CI", async () => {
+    for (const state of ["passed", "failed"] as const) {
+      const w = await world();
+      w.store.executions().markCi("i1", "head1", "first-seen", "", SETTLED);
+      w.provider.runs = [ciRun("Tests", state)];
+      expect((await run("ci.settled", {
+        context: { change: change() }, deps: w.deps,
+      })).status).toBe("pass");
+    }
+  });
+});
+
 describe("ci.getLogs", () => {
   const logsTool = (w: Awaited<ReturnType<typeof world>>, input: Record<string, unknown> = {}) =>
     run("ci.getLogs", { context: {}, deps: w.deps, input }).then((result) => (result as Pass).output as { change: unknown; pullRequest: unknown; checks: Array<Record<string, unknown>>; note?: string });
@@ -403,6 +465,13 @@ const baseConfig = (mode: "required" | "advisory" | "disabled") => configSchema.
           { task: "ci.passed", when: "ci.required", with: { settleSeconds: 1 } },
           { task: "change.mergeable" },
         ],
+      }, {
+        id: "review", concurrency: 1, retries: 0,
+        actions: [
+          { id: "ciSettled", task: "ci.settled", with: { settleSeconds: 1 }, wait: { timeout: "1m", poll: "10s" }, onFail: { stop: "blocked" } },
+          { id: "startAfterSettlement", task: "ci.start" },
+        ],
+        "exit-gate": [{ task: "change.mergeable" }],
       }],
     },
   },
@@ -425,10 +494,90 @@ describe("ci modes", () => {
     expect(stage.actions.map((t) => t.task)).toEqual(["ci.start"]);
     expect(stage.exitGate.map((t) => t.task)).toEqual(["change.mergeable"]);
   });
-  test("disabled compiles no CI task and needs no CI provider", () => {
+  test("disabled omits implementation CI tasks", () => {
     const stage = plan("disabled");
     expect(stage.actions).toEqual([]);
     expect(stage.exitGate.map((t) => t.task)).toEqual(["change.mergeable"]);
+  });
+
+  test("review settles CI for every mode before its later action", () => {
+    for (const mode of ["required", "advisory", "disabled"] as const) {
+      const review = compilePipeline({ config: baseConfig(mode), repositoryId: "sample", registry }).stages[1]!;
+      expect(review.actions.map((task) => task.task)).toEqual(["ci.settled", "ci.start"]);
+      expect(review.actions[0]!.wait).toEqual({ timeoutMs: 60_000, pollMs: 10_000 });
+    }
+  });
+});
+
+describe("review CI settlement through the stage executor", () => {
+  const baseContext = (mode: "required" | "advisory" | "disabled" = "disabled"): TaskContext => ({
+    schemaVersion: 1, configHash: "h",
+    run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: new Date(T0).toISOString(), feedback: null },
+    repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: mode, systemLabels: [] },
+    item: { id: "i1", number: 7, title: "T", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+    checkpoints: { ciPassed: null, reviewPassed: null },
+  });
+
+  const executorFor = (w: Awaited<ReturnType<typeof world>>) => new StageExecutor({
+    registry, journal: w.store.executions(), clock: () => new Date(w.clock.now), notify: () => {}, setStatus: () => {}, settings: { maxReturns: 5 },
+  });
+
+  const review = (w: Awaited<ReturnType<typeof world>>) => executorFor(w).execute({
+    issueId: "i1", pipeline: compilePipeline({ config: baseConfig("disabled"), repositoryId: "sample", registry }),
+    stageId: "review", baseContext: baseContext(), deps: w.deps,
+  });
+
+  test("persists a parked current-head wait across a restart and resumes for a failed check", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "running")];
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+    const first = w.store.executions().getCursor("i1")!;
+    expect(first).toMatchObject({ list: "actions", taskInstanceId: "ciSettled", state: "pending" });
+    expect(w.provider.calls.some((call) => call.startsWith("start"))).toBe(false);
+
+    w.clock.now += 10_000;
+    w.provider.runs[0]!.state = "failed";
+    expect(await review(w)).toMatchObject({ kind: "advance", stageId: "review" });
+    expect(w.store.executions().getCursor("i1")).toBeNull();
+    expect(w.provider.calls.some((call) => call.startsWith("start") && call.includes("@head1"))).toBe(true);
+    expect(first.deadlineAt).toBe(new Date(T0 + 60_000).toISOString());
+  });
+
+  test("does not load failed-job logs while another check keeps settlement parked", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Failures", "failed"), ciRun("Tests", "running")];
+
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
+  });
+
+  test("uses the latest head while parked and never lets the old head release review", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "running")];
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+
+    w.changeState.change = request({ headSha: "head2" });
+    w.provider.runs = [ciRun("Tests", "passed")];
+    w.clock.now += 10_000;
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+    w.clock.now += 10_000;
+    expect(await review(w)).toMatchObject({ kind: "advance", stageId: "review" });
+    expect(w.provider.calls).toContain("list@head2");
+    expect(w.provider.calls.some((call) => call.startsWith("start") && call.includes("@head1"))).toBe(false);
+    expect(w.provider.calls.some((call) => call.startsWith("start") && call.includes("@head2"))).toBe(true);
+  });
+
+  test("times out as blocked with the head and unfinished check named", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "running")];
+    expect(await review(w)).toMatchObject({ kind: "parked", reason: "pending" });
+    w.clock.now += 60_000;
+    const outcome = await review(w);
+    expect(outcome).toMatchObject({
+      kind: "stopped", state: "blocked",
+      reason: expect.stringMatching(/ciSettled did not finish within 1m: Waiting for CI at head1: Tests/),
+    });
+    expect(w.store.executions().getCursor("i1")).toBeNull();
   });
 });
 

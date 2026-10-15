@@ -203,6 +203,49 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   },
 };
 
+const settled: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
+  name: "ci.settled",
+  kind: "act",
+  description: "Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it.",
+  // Settlement only needs each check's state.  Do not implicitly load the full CI snapshot here:
+  // its diagnostics include failed-job logs, which would otherwise be downloaded on every poll.
+  reads: ["change"],
+  writes: [],
+  invalidates: [],
+  config: passedConfig,
+  defaultWait: { timeoutMs: 3 * 3_600_000, pollMs: 60_000 },
+  async run({ context, deps, config }: Args<z.output<typeof passedConfig>>) {
+    const change = context.change;
+    if (!change) return fail(NO_CHANGE);
+    const provider = providerOf(deps);
+    const target: CiChange = { ...ciChange(change), repository: deps.repository.address };
+    const head = change.headSha;
+    const observedAt = now(deps).toISOString();
+    const marks = deps.store.executions();
+    const firstSeenAt = marks.markCi(deps.issueId, head, "first-seen", "", observedAt).at;
+    const ignored = new Set(deps.config.repositories[deps.repository.id]?.ci.ignoreChecks ?? []);
+    const indicator = { issueId: deps.issueId, headSha: head, changeUrl: change.url, ignoreChecks: [...ignored], now: now(deps), authoritative: true };
+    let all: Awaited<ReturnType<CiProvider["list"]>>;
+    try { all = await provider.list(target, head); }
+    catch (error) { observeCiError(deps.store, { ...indicator, error }); throw error; }
+    observeCi(deps.store, { ...indicator, runs: all });
+
+    const rerunIds = new Set(marks.ciMarks(deps.issueId, head, "rerun-id"));
+    const runs = all
+      .filter((run) => !ignored.has(run.name))
+      .map((run) => ({ name: run.name, state: run.state === "cancelled" && rerunIds.has(run.id) ? "running" : run.state }));
+    const started = marks.ciMarks(deps.issueId, head, "started");
+    const awaitingStart = started.filter((name) => !runs.some((run) => run.name === name && run.state !== "skipped"));
+    const { running } = classifyRuns(runs, () => false);
+    const waitingOn = [...awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
+    const elapsedMs = Date.parse(observedAt) - Date.parse(firstSeenAt);
+    if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
+      return pending(`Waiting for CI at ${short(head)}: ${waitingOn.join(", ") || "checks to register"}.`);
+    }
+    return pass();
+  },
+};
+
 async function logs(
   { deps, input }: Args<unknown, z.output<typeof logsInput>>,
 ) {
@@ -240,4 +283,4 @@ const getLogs: TaskDefinition<unknown, z.output<typeof logsInput>, Deps> = {
   run: logs,
 };
 
-export const ciGroup = defineGroup("ci", [load, start, defined, passed, getLogs]);
+export const ciGroup = defineGroup("ci", [load, start, defined, passed, settled, getLogs]);

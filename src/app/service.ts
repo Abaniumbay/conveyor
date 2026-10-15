@@ -830,8 +830,11 @@ export class ConveyorService {
     const indicator = this.store.listIndicators(issue.id).find((item) => item.id === CI_INDICATOR_ID);
     if (!indicator) return null;
     const head = indicator.headSha.slice(0, 7);
-    if (indicator.state === "running" || indicator.state === "unknown") {
-      return `Waiting for CI at ${head}: ${indicator.detail}.`;
+    const unfinished = indicator.entries
+      .filter((entry) => entry.state === "queued" || entry.state === "running")
+      .map((entry) => entry.name);
+    if (unfinished.length > 0 || indicator.state === "running" || indicator.state === "unknown") {
+      return `Waiting for CI at ${head}: ${unfinished.join(", ") || indicator.detail}.`;
     }
     if (indicator.state === "failed") return `CI failed at ${head}: ${indicator.detail}.`;
     const settleEnd = this.ciSettleEnd(issue, taskInstanceId, indicator);
@@ -843,10 +846,9 @@ export class ConveyorService {
   private ciSettleEnd(issue: StoredIssue, taskInstanceId: string, indicator: StoredIndicator): string | null {
     const plan = this.config.plans.find((candidate) => candidate.repositoryId === issue.repositoryId)
       ?? compilePipeline({ config: this.config, repositoryId: issue.repositoryId, registry: createTaskRegistry() });
-    const task = plan.stages
-      .find((stage) => stage.id === this.store.getStageState(issue.id)?.stageId)
-      ?.exitGate.find((candidate) => candidate.id === taskInstanceId);
-    if (task?.task !== "ci.passed") return null;
+    const stage = plan.stages.find((candidate) => candidate.id === this.store.getStageState(issue.id)?.stageId);
+    const task = stage && [...stage.actions, ...stage.exitGate].find((candidate) => candidate.id === taskInstanceId);
+    if (task?.task !== "ci.passed" && task?.task !== "ci.settled") return null;
     const seconds = typeof task.with.settleSeconds === "number" ? task.with.settleSeconds : 120;
     const firstSeen = this.store.executions().ciMarkAt(issue.id, indicator.headSha, "first-seen") ?? indicator.observedAt;
     const settleEnd = new Date(Date.parse(firstSeen) + seconds * 1_000).toISOString();

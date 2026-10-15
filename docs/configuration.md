@@ -348,6 +348,7 @@ pipelines:
       - id: review
         concurrency: 1
         actions:
+          - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
           - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
@@ -454,6 +455,8 @@ repositories:
 
 - **`required`** (the default): the implementation stage starts CI (`ci.start`) and its exit gate requires `ci.defined` (a missing or unprovable CI definition stops as `blocked`; it never passes silently) and `ci.passed` for every reported check of the current head except `ignoreChecks`. A red run returns to the implementation actions with the focused log; a cancelled run is rerun once; checks that have not registered are awaited for the settle window. The review gate also requires the head to be unchanged since CI passed (`change.headUnchanged`), and merge refuses a head other than the one CI passed for.
 - **`advisory`**: only `ci.start` runs; the stage advances without waiting. CI start is announced once, and a durable watch per (repository, item, head commit) is polled by the service outside the stage, without a runner permit. It reports one final pass, failure with focused logs, or timeout (default 3 hours) to the item's conversation, survives a restart, is superseded by a newer head (whose older result is never posted), and never routes, stops or reopens the item.
-- **`disabled`**: tasks guarded by `ci.enabled`, `ci.required` or `ci.advisory` are left out of the plan and no CI provider is needed.
+- **`disabled`**: tasks guarded by `ci.enabled`, `ci.required` or `ci.advisory` are left out of the plan. The default review settlement action remains: it observes checks when the repository still runs them, but never makes their result a pass requirement.
 
-Timing is task configuration (`ci.passed` `with: { settleSeconds, logLines }` and `wait`, overridable per repository by instance id). Legacy pipelines keep the `ci.await` source action (`with: { settleSeconds, pollSeconds, timeoutMinutes }`) and `pullRequest.awaitChecks` with `with.triggers`; both are deprecated, and a stage cannot define triggers when its selected provider already declares them.
+Every default review starts with `ci.settled`. It waits for the current change head's checks to register and leave queued or running state, then starts the reviewer whether the settled result passed or failed. The wait is persisted, shown on the board with its head, unfinished checks, next poll, and deadline, and follows a newer head if one arrives. It uses the same registration settle window as `ci.passed`; if no applicable checks appear by that window's end, review proceeds under the repository's existing mode policy. Its finite timeout stops the item as blocked with the head and checks still unfinished.
+
+Timing is task configuration (`ci.passed` `with: { settleSeconds, logLines }`, `ci.settled` `with: { settleSeconds }`, and `wait`, overridable per repository by instance id). Legacy pipelines keep the `ci.await` source action (`with: { settleSeconds, pollSeconds, timeoutMinutes }`) and `pullRequest.awaitChecks` with `with.triggers`; both are deprecated, and a stage cannot define triggers when its selected provider already declares them.

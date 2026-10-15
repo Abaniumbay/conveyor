@@ -270,6 +270,7 @@ pipelines:
       - id: review
         concurrency: 1
         actions:
+          - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
           - { id: review, task: agent.run, with: { agent: reviewer } }
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
@@ -618,7 +619,9 @@ A repository's CI `mode` is `required`, `advisory` or `disabled` (default `requi
 
 - **required.** The implementation stage runs `ci.start` (starts label-triggered runs, reruns a cancelled run once per head, announces CI once per head) and its gate requires `ci.defined` then `ci.passed`. `ci.defined` fails as `blocked` when no applicable CI definition exists or the provider cannot prove whether one does: no CI is never success, so a deleted workflow cannot weaken the gate. `ci.passed` handles registration settling (default 120 s), queued and running checks, and failures; a red run fails with focused logs and, by default routing, retries the implementation actions. All reported checks of the current head count except `ignoreChecks`. The review gate re-checks the head is unchanged since CI passed. Defaults: timeout 3 h, poll 1 min (a reference configuration can set 8 h and 5 min).
 - **advisory.** Only `ci.start` runs and the stage advances at once. Starting CI creates, or reuses, one durable watch per (repository, item, head SHA) that persists its settle and timeout deadline, holds no runner or stage permit, survives restarts and is polled by the service every minute. It posts the normal start announcement at most once and exactly one final message: pass, failure with run links and focused logs, or timeout (3 hours). A newer head marks the older watch `superseded` and its final message is never posted; starting the same head again reuses the watch. The result is evidence only and never routes, stops or reopens the item.
-- **disabled.** Tasks guarded by `ci.enabled`, `ci.required` or `ci.advisory` are omitted and no CI provider is needed.
+- **disabled.** Tasks guarded by `ci.enabled`, `ci.required` or `ci.advisory` are omitted. The default review settlement action remains: it observes checks when the repository still runs them, but never makes their result a pass requirement.
+
+Every default review first runs `ci.settled`. It persists a bounded wait for the current head's applicable checks to register and then leave queued or running state; the board names that head and unfinished checks with the next poll and deadline, and a restart resumes the same wait. A newer head is observed independently, so an older head cannot release review. Once checks settle, the task passes for both green and red CI and the reviewer makes the normal decision. If no applicable checks appear by the normal registration settle window, review proceeds under the repository's existing CI mode; if the action timeout expires, the item is blocked with its head and unfinished checks named.
 
 ### Review evidence
 

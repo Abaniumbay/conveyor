@@ -10,6 +10,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Changed
 
+- Default review now waits durably for the current change head's CI checks to settle before starting the reviewer, even for advisory and disabled CI modes. The board shows the current head, unfinished checks, next poll, and finite deadline; both passing and failing settled CI continue to normal review (#246).
 - `conveyor doctor` and `conveyor status` now warn when their artifact or temporary filesystem exceeds 85% capacity.
 - The dashboard Server status now warns live when artifact, service-temporary, or agent-scratch storage exceeds 85% capacity.
 - Board cards now load their details on demand, keeping ordinary board responses compact and updates focused on cards.
