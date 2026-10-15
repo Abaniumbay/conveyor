@@ -236,9 +236,9 @@ Return to the release the last upgrade replaced.
 
 ### `conveyor cleanup`
 
-Prune finished work past the retention policy (run events and per-run artifacts).
+Prune finished work and reclaim private homes of terminal runs.
 
-Only runs of items that are closed, done or offboarded (and finished steering runs) are pruned; open items keep everything they may need to resume. Service logs rotate by settings.logging.
+Run events and artifact directories follow the configured retention policy for retired items. Private homes of every terminal run are reclaimed immediately; running runs and shared caches are kept. Service logs rotate by settings.logging.
 
 | Option | Description |
 | --- | --- |

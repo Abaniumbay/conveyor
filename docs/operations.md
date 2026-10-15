@@ -192,8 +192,10 @@ and 5 means it refused the request (the reason is printed).
   `~/.conveyor/logs/conveyor.log`, rotated by `settings.logging`. Records carry the repository, item,
   stage and run they concern. Credentials and tokens are redacted.
 - **Run history:** agent transcripts, tool calls and checks. It is stored in the database and per-run
-  artifacts, and shown by `conveyor item logs`. It is pruned only by `settings.retention` or
-  `conveyor cleanup`, and only for items that are closed, done or offboarded.
+  artifacts, and shown by `conveyor item logs`. Events and artifacts outside a run's private `home`
+  directory are pruned by `settings.retention` or `conveyor cleanup`, and only for items that are
+  closed, done or offboarded. Every terminal run's private home is reclaimed independently of those
+  settings, including for open, parked and stopped items; recorded results and run history remain.
 - `conveyor status` shows the disk use of state, logs, artifacts, worktrees and backups.
 
 ## Troubleshooting
