@@ -78,6 +78,9 @@ blocking review finding.
    stage epoch (`ExecutionStore.onStageChange` in `src/engine/journal.ts`). Journal and context writes take the expected
    epoch and fail with `StaleEpochError` when it moved. Change an item's projection only through
    `store.setIssueProjection`; never write `projected_stage` / `projected_state` with your own SQL.
+   One deliberate exception: while a step is parked on an agent's question, switching the state
+   between `active` and `needs-input` in the same stage keeps the epoch and the cursor, so the
+   answer can resume that step. `setIssueProjection` implements this; never remove it.
 3. **External changes are idempotent.** Before an act changes GitHub, the workspace or anything
    outside the database, it records what it will do (a planned task execution or a source
    mutation with an idempotency key). On resume it observes the external state first and does
