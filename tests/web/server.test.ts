@@ -3,7 +3,7 @@ import packageMetadata from "../../package.json";
 import { ToolRequestError } from "../../src/tasks/errors";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardViewModel } from "../../src/web/types";
+import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const model: DashboardViewModel = {
   title: "Test board",
@@ -46,6 +46,39 @@ const model: DashboardViewModel = {
   restrictedRepositories: [],
   steering: { enabled: false, agent: null, selected: null, recent: [] },
   csrfToken: "filled-by-handler",
+};
+
+const detailIssue: IssueCardViewModel = {
+  id: "github:owner/repo#1",
+  repository: "repo",
+  repositoryColor: 1,
+  number: 1,
+  title: "Keep <item> safe",
+  url: "https://github.com/owner/repo/issues/1",
+  state: "in_progress",
+  labels: ["feature"],
+  issueType: null,
+  issueFields: [],
+  acceptanceCriteria: [{ id: "AC-1", text: "Works safely", approved: true }],
+  todos: { finished: 1, skipped: 0, total: 1, current: null, items: [{ id: "t1", text: "Complete", status: "done" }] },
+  indicators: [],
+  activity: "Testing",
+  reason: null,
+  cost: "$0.01",
+  duration: "1m",
+  stateChangedAt: "2026-09-29T12:00:00Z",
+  waiting: null,
+  blocked: false,
+  inconsistent: false,
+  closable: false,
+  noSplit: false,
+  tone: "active",
+  parent: null,
+  children: [],
+  dependencies: [],
+  working: true,
+  needsAttention: false,
+  retryable: false,
 };
 
 interface CallLog {
@@ -351,6 +384,26 @@ describe("createWebHandler", () => {
     expect(unauthenticated.status).toBe(303);
     expect(unauthenticated.headers.get("location")).toBe("/login");
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
+  });
+
+  test("loads an authenticated item's escaped details as an HTML fragment", async () => {
+    const { handler } = setup({
+      getIssueDetails: async (_csrfToken: string, issueId: string) => issueId === detailIssue.id ? detailIssue : null,
+    });
+    const path = "/api/issues/github%3Aowner%2Frepo%231/details";
+
+    expect((await handler(new Request(`http://localhost${path}`))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const details = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+    expect(details.status).toBe(200);
+    expect(details.headers.get("content-type")).toContain("text/html");
+    const html = await details.text();
+    expect(html).toContain('class="issue-details issue-inspector"');
+    expect(html).toContain("Keep &lt;item> safe");
+    expect(html).toContain("Works safely");
+
+    expect((await handler(new Request("http://localhost/api/issues/missing/details", { headers: { cookie } }))).status).toBe(404);
+    expect((await handler(new Request(`http://localhost${path}`, { method: "POST", headers: { cookie } }))).status).toBe(405);
   });
 
   test("compresses pages on request and lets browsers revalidate the scripts", async () => {

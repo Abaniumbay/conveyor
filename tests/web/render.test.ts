@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderDashboard } from "../../src/web/render";
+import { renderDashboard, renderIssueDetails } from "../../src/web/render";
 import { BUILD } from "../../src/version";
 import { dashboardCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
@@ -221,8 +221,10 @@ const ciView = (state: "passing" | "running" | "failed" | "unknown", progress: s
 });
 
 describe("indicators", () => {
-  const withIndicators = (indicators: IssueCardViewModel["indicators"]) =>
-    renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, indicators }] }] });
+  const withIndicators = (indicators: IssueCardViewModel["indicators"]) => {
+    const issue = { ...parent, indicators };
+    return `${renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [issue] }] })}${renderIssueDetails(issue)}`;
+  };
 
   test.each([
     ["passing", "2/2", "✓", "passing"],
@@ -268,8 +270,10 @@ describe("indicators", () => {
 });
 
 describe("issue type and fields", () => {
-  const html = (issueType: string | null, issueFields: IssueCardViewModel["issueFields"]) =>
-    renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, issueType, issueFields }] }] });
+  const html = (issueType: string | null, issueFields: IssueCardViewModel["issueFields"]) => {
+    const issue = { ...parent, issueType, issueFields };
+    return renderDashboard({ ...dashboard, selectedIssue: issue, stages: [{ ...dashboard.stages[0]!, issues: [issue] }] });
+  };
 
   test("the details show the type and the configured field values beside the source labels", () => {
     const page = html("Bug", [{ name: "Effort", value: "Low" }, { name: "Priority", value: "<High>" }]);
@@ -287,8 +291,9 @@ describe("issue type and fields", () => {
 
 describe("renderDashboard", () => {
   test("shows a no-split marker on the card and details only while the item carries the label", () => {
-    const labelled = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [parent] }], backlog: [backlogIssue] });
-    const unlabelled = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [{ ...parent, noSplit: false }] }], backlog: [backlogIssue] });
+    const labelled = renderDashboard({ ...dashboard, selectedIssue: parent, stages: [{ ...dashboard.stages[0]!, issues: [parent] }], backlog: [backlogIssue] });
+    const unlabelledIssue = { ...parent, noSplit: false };
+    const unlabelled = renderDashboard({ ...dashboard, selectedIssue: unlabelledIssue, stages: [{ ...dashboard.stages[0]!, issues: [unlabelledIssue] }], backlog: [backlogIssue] });
 
     expect(labelled.match(/No split/g)).toHaveLength(2);
     expect(unlabelled).not.toContain("No split");
@@ -329,9 +334,9 @@ describe("renderDashboard", () => {
   });
 
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
-    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
+    const html = renderDashboard({ ...dashboard, selectedIssue: queuedIssue, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
 
-    expect(html.match(/>Queued<\/strong>/g)).toHaveLength(4);
+    expect(html.match(/>Queued<\/strong>/g)).toHaveLength(3);
     expect(html).toContain("repo slots 1/1 busy: #41");
     expect(html).not.toContain("next check");
   });
@@ -407,6 +412,7 @@ describe("renderDashboard", () => {
     const stopped = { ...backlogIssue, id: "stopped", state: "blocked", retryable: true };
     const html = renderDashboard({
       ...dashboard,
+      selectedIssue: stopped,
       stages: [{ ...dashboard.stages[0]!, issues: [stopped] }],
       backlog: [backlogIssue],
     });
@@ -430,7 +436,7 @@ describe("renderDashboard", () => {
         ],
       },
     };
-    const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [working] }], backlog: [backlogIssue] });
+    const html = renderDashboard({ ...dashboard, selectedIssue: working, stages: [{ ...dashboard.stages[0]!, issues: [working] }], backlog: [backlogIssue] });
     expect(html).toContain('aria-label="Todo progress for #77: 2 of 4 todos finished"');
     expect(html).toContain('<meter min="0" max="4" value="2"');
     expect(html).toContain('<span class="todo-progress-count">2/4</span>');
@@ -452,7 +458,7 @@ describe("renderDashboard", () => {
         ...backlogIssue, id: "later", number: 78, stage,
         todos: { finished: 1, skipped: 1, total: 1, current: null, items: [{ id: "t1", text: "Closed", status: "skipped" as const, note: "n" }] },
       };
-      const html = renderDashboard({ ...dashboard, stages: [{ ...dashboard.stages[0]!, issues: [issue] }], backlog: [backlogIssue] });
+      const html = renderDashboard({ ...dashboard, selectedIssue: issue, stages: [{ ...dashboard.stages[0]!, issues: [issue] }], backlog: [backlogIssue] });
       expect(html).not.toContain('class="todo-progress"');
       expect(html.match(/aria-label="Implementation todos"/g)).toHaveLength(1);
     }
@@ -498,7 +504,7 @@ describe("renderDashboard", () => {
   });
 
   test("initializes and controls system, light, and dark themes without a first-paint flash", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
     // A blocking script in <head>, before the stylesheet; a file, since the CSP forbids inline scripts.
     const themeScript = html.indexOf('<script src="/assets/theme.js"></script>');
     const stylesheet = html.indexOf("<style>");
@@ -523,7 +529,7 @@ describe("renderDashboard", () => {
   });
 
   test("uses the configured repository colour for cards, inspector headers, and needs-you rows", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
     expect(html).toContain('class="issue issue--warning issue--working issue--glow-attention repo-color-1"');
     expect(html).toContain('class="repository-badge" href="/repositories/sample" title="sample"><i class="repository-dot" aria-hidden="true"></i><span class="repository-name">sample</span></a><span class="issue-number">#41</span>');
@@ -680,7 +686,7 @@ describe("renderDashboard", () => {
   });
 
   test("renders REST-style navigation, issue, pagination, team, and operator URLs", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
     const operatorHtml = renderDashboard({
       ...dashboard,
       view: "agent",
@@ -745,7 +751,7 @@ describe("renderDashboard", () => {
   });
 
   test("keeps active-run links in the mobile System popover", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
     expect(html).toContain('<section class="mobile-active-work"><h3>Active work</h3><ul><li><a href="/issues/sample/41"><strong>#41 Build &lt;safe> &amp; sound</strong>');
   });
@@ -789,7 +795,7 @@ describe("renderDashboard", () => {
     expect(familyRow).toContain('<span class="family-progress"><strong>1/3</strong> done</span>');
     expect(familyRow).toContain('class="family-stop"');
     expect(familyRow).toContain('<button type="button" class="family-details card-open" aria-haspopup="dialog">Details</button>');
-    expect(familyRow).toContain('id="issue-family-172-family"');
+    expect(familyRow).toContain('data-dialog-open="issue-family-172"');
     // Its children are cards in their stations, labelled with the station for phones; its done parts are listed.
     expect(familyRow).toContain('id="family-family-cells"');
     // The page script's trace walks from the parent through its unfinished parts, kept apart from its dependencies.
@@ -863,7 +869,7 @@ describe("renderDashboard", () => {
   });
 
   test("renders one horizontal board column per configured stage with card status styling", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
     expect(html).toContain("Delivery board");
     expect(html).toContain(">Backlog</h2>");
@@ -989,7 +995,7 @@ describe("renderDashboard", () => {
   });
 
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
     expect(html).toContain("Build &lt;safe> &amp; sound");
     expect(html).toContain("&lt;script>alert(1)&lt;/script>");
@@ -999,7 +1005,7 @@ describe("renderDashboard", () => {
   });
 
   test("labels token totals as usage rather than cost", () => {
-    const html = renderDashboard(dashboard);
+    const html = renderDashboard({ ...dashboard, selectedIssue: parent });
     expect(html).toContain("<dt>Usage</dt><dd>$0.42</dd>");
     expect(html).not.toContain("<dt>Cost</dt>");
   });
@@ -1031,6 +1037,7 @@ describe("renderDashboard", () => {
     };
     const html = renderDashboard({
       ...dashboard,
+      selectedIssue: blocked,
       needsYou: [],
       questions: [],
       stages: [{ ...dashboard.stages[0]!, issues: [blocked] }],
@@ -1204,6 +1211,13 @@ describe("renderDashboard", () => {
 
     expect(html).toContain('data-selected-issue="true"');
     expect(html).toContain('data-issue-id="completed"');
+  });
+
+  test("keeps ordinary board cards compact while exposing their details endpoint", () => {
+    const html = renderDashboard(dashboard);
+
+    expect(html).toContain('data-details-url="/api/issues/parent/details"');
+    expect(html).not.toContain('class="issue-details issue-inspector"');
   });
 
   test("names each view in the document title and offers a skip link past the shared header", () => {

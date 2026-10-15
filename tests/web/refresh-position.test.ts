@@ -82,6 +82,17 @@ function dashboard(
   };
 }
 
+function dashboardIssue(model: DashboardViewModel, id: string): IssueCardViewModel | null {
+  const cards = [
+    ...model.stages.flatMap((column) => column.issues),
+    ...model.backlog,
+    ...model.done.issues,
+    ...model.attention.issues,
+    ...model.needsYou,
+  ];
+  return cards.find((card) => card.id === id) ?? null;
+}
+
 function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   return page.evaluate(() => {
     const card = document.querySelector('article.issue[data-issue-id="target"]');
@@ -103,7 +114,13 @@ async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>)
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
-function startDashboard(state: { dashboard: (selection: DashboardPageSelection) => DashboardViewModel | Promise<DashboardViewModel>; revision: () => string; delayMs: () => number; answerQuestion?: () => Promise<void> }) {
+function startDashboard(state: {
+  dashboard: (selection: DashboardPageSelection) => DashboardViewModel | Promise<DashboardViewModel>;
+  revision: () => string;
+  delayMs: () => number;
+  detailsDelayMs?: (issueId: string) => number;
+  answerQuestion?: () => Promise<void>;
+}) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -114,7 +131,18 @@ function startDashboard(state: { dashboard: (selection: DashboardPageSelection) 
     username: "operator",
     getDashboard: async (csrfToken, selection) => {
       if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      return { ...await state.dashboard(selection), csrfToken };
+      const model = await state.dashboard(selection);
+      return {
+        ...model,
+        selectedIssue: selection.issueId ? dashboardIssue(model, selection.issueId) : model.selectedIssue,
+        csrfToken,
+      };
+    },
+    getIssueDetails: async (_csrfToken, issueId) => {
+      const detailsDelayMs = state.detailsDelayMs?.(issueId) ?? 0;
+      if (detailsDelayMs > 0) await Bun.sleep(detailsDelayMs);
+      const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
+      return dashboardIssue(model, issueId);
     },
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
@@ -236,8 +264,14 @@ describe("dashboard live refresh position", () => {
       expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolledTo)).toBeLessThanOrEqual(24);
       responseDelayMs = 0;
 
+      const detailsRequest = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/above-0/details");
       await page.locator('article.issue[data-issue-id="above-0"] .card-open').click();
+      expect((await detailsRequest).status()).toBe(200);
       expect(await page.locator("dialog[open]").count()).toBe(1);
+      expect(await page.locator("dialog[open] [role=tab][aria-selected=true]").evaluate((element) => document.activeElement === element)).toBe(true);
+      await page.locator('dialog[open] [data-detail-tab="conversation"]').click();
+      const draft = page.locator('dialog[open] textarea[name="message"]');
+      await draft.fill("Keep this draft while the board changes");
       await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
       currentDashboard = dashboard(
         "revision-4",
@@ -249,6 +283,8 @@ describe("dashboard live refresh position", () => {
       await page.waitForTimeout(1100);
       expect(await page.locator("main.dashboard").getAttribute("data-before-refresh")).toBe("true");
       expect(await page.locator("dialog[open]").count()).toBe(1);
+      expect(await page.locator('dialog[open] [data-detail-tab="conversation"]').getAttribute("aria-selected")).toBe("true");
+      expect(await draft.inputValue()).toBe("Keep this draft while the board changes");
     } finally {
       server.stop(true);
     }
@@ -293,6 +329,95 @@ describe("dashboard live refresh position", () => {
         () => document.querySelector<HTMLElement>(".tabs")?.scrollLeft,
       );
       expect(refreshedScrollLeft).toBe(tabPosition?.scrollLeft);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("loads card details on demand and keeps the URL, history, and focus in sync", async () => {
+    let revision = "revision-1";
+    const target = issue("target", 20, "Target item");
+    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+      expect(await page.locator("dialog.issue-details").count()).toBe(0);
+
+      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator('article.issue[data-issue-id="target"] .card-open').click();
+      expect((await request).status()).toBe(200);
+      await page.waitForURL("**/issues/sample/20");
+      expect(await page.locator("dialog.issue-details[open]").count()).toBe(1);
+
+      await page.goBack();
+      await page.waitForURL("**/board");
+      await page.waitForFunction(() => !document.querySelector("dialog.issue-details[open]"));
+      expect(await page.locator('article.issue[data-issue-id="target"] .card-open').evaluate((element) => document.activeElement === element)).toBe(true);
+
+      await page.goForward();
+      await page.waitForURL("**/issues/sample/20");
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]"));
+      expect(await page.locator("dialog.issue-details[open]").count()).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("keeps the newest card selection when an earlier details load finishes late", async () => {
+    let revision = "revision-1";
+    const slow = issue("slow", 20, "Slow item");
+    const fast = issue("fast", 21, "Fast item");
+    const server = startDashboard({
+      dashboard: () => dashboard(revision, [slow, fast]),
+      revision: () => revision,
+      delayMs: () => 0,
+      detailsDelayMs: (issueId) => issueId === "slow" ? 200 : 0,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+
+      const slowRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/issues/slow/details");
+      await page.locator('article.issue[data-issue-id="slow"] .card-open').click();
+      await slowRequest;
+      await page.locator('article.issue[data-issue-id="fast"] .card-open').click();
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'fast');
+      await page.waitForTimeout(250);
+
+      expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("fast");
+      expect(page.url()).toContain("/issues/sample/21");
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("reloads details after close instead of retaining a stale lazy dialog", async () => {
+    let revision = "revision-1";
+    let currentDashboard = dashboard(revision, [issue("target", 20, "Original item")]);
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+
+      const firstDetails = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator('article.issue[data-issue-id="target"] .card-open').click();
+      await firstDetails;
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('dialog.issue-details'));
+
+      revision = "revision-2";
+      currentDashboard = dashboard(revision, [issue("target", 20, "Updated item")]);
+      await waitForReplacement(page);
+      const refreshedDetails = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator('article.issue[data-issue-id="target"] .card-open').click();
+      await refreshedDetails;
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
+
+      expect(await page.locator('dialog.issue-details[open] .details-header h2').textContent()).toBe("Updated item");
     } finally {
       server.stop(true);
     }

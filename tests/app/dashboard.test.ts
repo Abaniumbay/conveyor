@@ -310,8 +310,8 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
-  test("building a dashboard reads the item list a fixed number of times, however many cards it shows", async () => {
-    const listings = async (count: number): Promise<number> => {
+  test("building a dashboard shares one item list and caches per-item lookups", async () => {
+    const listings = async (count: number) => {
       const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-cost-"));
       temporaryDirectories.push(root);
       const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -334,12 +334,47 @@ describe("ConveyorService dashboard", () => {
       }
       const service = new ConveyorService(config, store, {} as never);
       const listIssues = spyOn(store, "listIssues");
+      const getIssue = spyOn(store, "getIssue");
+      const getStageState = spyOn(store, "getStageState");
+      const listChildren = spyOn(store, "listChildren");
+      const costSummary = spyOn(store, "costSummary");
+      const costSummaryByStage = spyOn(store, "costSummaryByStage");
+      const countFinishedIssues = spyOn(store, "countFinishedIssues");
       expect(service.dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
-      const calls = listIssues.mock.calls.length;
+      const calls = {
+        listIssues: listIssues.mock.calls.length,
+        getIssue: getIssue.mock.calls.map(([issueId]) => issueId),
+        getStageState: getStageState.mock.calls.map(([issueId]) => issueId),
+        listChildren: listChildren.mock.calls.map(([issueId]) => issueId),
+        stageCostQueries: costSummary.mock.calls.filter(([filters]) => filters?.stageId !== undefined).length,
+        groupedCostQueries: costSummaryByStage.mock.calls.length,
+        doneCounts: countFinishedIssues.mock.calls.length,
+      };
+      const dashboard = spyOn(service, "dashboard");
+      const listCallsBeforeDetails = listIssues.mock.calls.length;
+      expect(service.issueDetails("csrf", "item-1")).toMatchObject({
+        id: "item-1",
+        title: "item-1",
+        csrfToken: "csrf",
+      });
+      const detailCalls = {
+        detailsDashboardCalls: dashboard.mock.calls.length,
+        detailsListCalls: listIssues.mock.calls.length - listCallsBeforeDetails,
+      };
       store.close();
-      return calls;
+      return { calls, detailCalls };
     };
-    expect(await listings(12)).toBe(await listings(2));
+    const { calls, detailCalls } = await listings(12);
+    expect(calls.listIssues).toBe(1);
+    expect(calls.getIssue).toHaveLength(0);
+    expect(calls.stageCostQueries).toBe(0);
+    expect(calls.groupedCostQueries).toBe(1);
+    expect(calls.doneCounts).toBe(1);
+    expect(detailCalls.detailsDashboardCalls).toBe(0);
+    expect(detailCalls.detailsListCalls).toBe(0);
+    for (const lookups of [calls.getStageState, calls.listChildren]) {
+      expect(new Set(lookups).size).toBe(lookups.length);
+    }
   });
 
   test("a card carries the item's todo list with done/total progress and the current item", async () => {
@@ -372,6 +407,62 @@ describe("ConveyorService dashboard", () => {
     const cards = service.dashboard("csrf").stages.flatMap((stage) => stage.issues);
     expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ finished: 1, total: 2, skipped: 0, current: "Endpoint", items });
     expect(cards.find((card) => card.id === "without")!.todos).toBeNull();
+    store.close();
+  });
+
+  test("builds direct Done details with the same relations and presentation as its board card", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-direct-done-details-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const add = (id: string, number: number, sourceState: "open" | "closed", sourceStateReason: string | null, state: string) => {
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`,
+        title: id, body: "", sourceState, sourceStateReason, labels: ["conveyor", "conveyor:implementation"],
+        sourceUpdatedAt: "2026-10-01T00:00:00Z",
+      });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage: "implementation", state, warning: null });
+      store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    };
+    add("done-parent", 1, "closed", "not_planned", "done");
+    add("completed-child", 2, "closed", "completed", "done");
+    add("offboarded-blocker", 3, "closed", "completed", "offboarded");
+    add("ancestor", 4, "open", null, "active");
+    store.replaceRelationships("completed-child", { parentId: "done-parent", siblingOrder: 1 }, []);
+    store.replaceRelationships("done-parent", { parentId: "ancestor", siblingOrder: 1 }, ["offboarded-blocker"]);
+    new ItemTodos(store.sqlite()).set("done-parent", [
+      { id: "t1", text: "Keep this detail", status: "in_progress" },
+    ], null, "2026-10-01T00:00:00Z");
+    store.saveIndicator("done-parent", "head", {
+      id: "quality", label: "Quality", state: "passing", detail: "Checks passed", progress: "1/1", url: null,
+      observedAt: "2026-10-01T00:00:00Z", entries: [{ name: "Check", state: "passed", url: null, startedAt: "2026-10-01T00:00:00Z", completedAt: "2026-10-01T00:01:00Z" }], reference: null,
+    }, true);
+    store.openQuestion({ issueId: "done-parent", runId: null, prompt: "Confirm release?", reason: "Owner confirmation", options: [], allowFreeText: true });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const boardCard = service.dashboard("csrf").done.issues.find((card) => card.id === "done-parent");
+    expect(boardCard).toBeDefined();
+    expect(service.issueDetails("csrf", "done-parent")).toEqual(boardCard!);
+    expect(boardCard).toMatchObject({
+      state: "done",
+      reason: "GitHub close reason: not planned.",
+      parent: { id: "ancestor" },
+      children: [{ id: "completed-child" }],
+      dependencies: [{ id: "offboarded-blocker" }],
+      todos: { current: "Keep this detail" },
+      indicators: [{ id: "quality", detail: "Checks passed" }],
+      needsAttention: true,
+    });
     store.close();
   });
 
@@ -1875,12 +1966,39 @@ describe("ConveyorService dashboard", () => {
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "alpha")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Alice"]);
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "beta")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Beatrice"]);
     expect(all.done.issues.map((issue) => issue.id)).not.toContain("target");
+    const cardCosts = spyOn(store, "costSummary");
+    const beforeHistory = service.dashboard("csrf");
+    const cardsBeforeHistory = cardCosts.mock.calls.length;
+    const visibleDoneBeforeHistory = beforeHistory.done.issues.map((issue) => issue.id);
+    for (let index = 1; index <= 350; index += 1) {
+      add(`history-${index}`, "beta", 1_000 + index, "closed", `Archived ${index}`, "2025-01-01T00:00:00Z");
+    }
+    const afterHistory = service.dashboard("csrf");
+    // Done history affects its count, but not the bounded card work or open-board projections.
+    expect(afterHistory.done.totalIssues).toBe(beforeHistory.done.totalIssues + 350);
+    expect(afterHistory.done.issues.map((issue) => issue.id)).toEqual(visibleDoneBeforeHistory);
+    expect(afterHistory.counts).toEqual(beforeHistory.counts);
+    expect(afterHistory.attention.totalIssues).toBe(beforeHistory.attention.totalIssues);
+    expect(afterHistory.repositories.map(({ id, backlog, stages, done }) => ({ id, backlog, stages, done: id === "beta" ? done - 350 : done })))
+      .toEqual(beforeHistory.repositories.map(({ id, backlog, stages, done }) => ({ id, backlog, stages, done })));
+    expect(cardCosts.mock.calls.length - cardsBeforeHistory).toBe(cardsBeforeHistory);
     const filters = (q: string, repositoryIds: string[]) => ({ view: "board" as const, repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null, q, repositoryIds, state: null });
     const byNumber = service.dashboard("csrf", filters("#245", []));
     expect(byNumber.done.issues.map((issue) => issue.id)).toEqual(["target"]);
     const byFieldsAndAgent = service.dashboard("csrf", filters("BACKEND feature large alice", ["alpha"]));
     expect(byFieldsAndAgent.done.issues.map((issue) => issue.id)).toEqual(["target"]);
     expect(service.dashboard("csrf", filters("private body phrase", [])).done.totalIssues).toBe(0);
+    // The database count uses the same literal search and enrollment predicates as the rendered
+    // Done cards. In particular, closed offboarded relationship stubs are not board items, and
+    // SQLite LIKE metacharacters in a user query are ordinary text for the board filter.
+    store.upsertIssue({ id: "offboarded", repositoryId: "beta", sourceNumber: 900, sourceUrl: "https://github.com/owner/beta/issues/900", title: "Offboarded history", body: "", sourceState: "closed", sourceStateReason: "done", labels: ["conveyor"], sourceUpdatedAt: "2026-10-03T00:00:00Z" });
+    store.setIssueProjection("offboarded", { stage: "implementation", state: "offboarded", warning: null });
+    add("literal-query", "beta", 901, "closed", "Literal _% query", "2026-10-03T00:00:00Z");
+    add("wildcard-only", "beta", 902, "closed", "Literal AX query", "2026-10-03T00:00:00Z");
+    expect(service.dashboard("csrf").done.totalIssues).toBe(afterHistory.done.totalIssues + 2);
+    const literalSearch = service.dashboard("csrf", filters("literal _%", []));
+    expect(literalSearch.done.totalIssues).toBe(1);
+    expect(literalSearch.done.issues.map((issue) => issue.id)).toEqual(["literal-query"]);
     // Owner-action work belongs to its panel, not the board filter model.
     expect(byNumber.needsYou).toEqual(all.needsYou);
     store.close();

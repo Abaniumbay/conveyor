@@ -48,6 +48,30 @@ export interface StoredIssue extends IssueProjection {
   warning: string | null;
 }
 
+export interface CostSummary {
+  runs: number;
+  amount: number;
+  currency: string;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  unavailableRuns: number;
+}
+
+/** SQL-side definition of the Done lane used by the dashboard. */
+export interface FinishedIssueCountQuery {
+  repositoryIds: readonly string[];
+  words: readonly string[];
+  workflows: ReadonlyArray<{
+    repositoryId: string;
+    stages: readonly string[];
+    sourceStageLabels: readonly string[];
+  }>;
+  /** Searchable configured actors keyed by the repository and stage that own them. */
+  stageActors: ReadonlyArray<{ repositoryId: string; stageId: string; text: string }>;
+}
+
 export interface DashboardAccount {
   id: string;
   username: string;
@@ -699,6 +723,64 @@ export class ConveyorStore {
           )
           .all()) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapIssue(row));
+  }
+
+  /**
+   * Counts all items qualifying for the dashboard's Done lane in SQLite, without mapping historic
+   * issues into cards. The caller supplies the configured workflow labels because they are config,
+   * not durable database state.
+   */
+  countFinishedIssues(query: FinishedIssueCountQuery): number {
+    const bindings: SQLQueryBindings[] = [];
+    const workflowClauses = query.workflows.flatMap(({ repositoryId, stages, sourceStageLabels }) => {
+      if (stages.length === 0) return [];
+      const stagePlaceholders = stages.map(() => "?").join(", ");
+      const sourceLabelCount = sourceStageLabels.length === 0
+        ? "0"
+        : `(SELECT COUNT(*) FROM json_each(issues.labels_json) WHERE value IN (${sourceStageLabels.map(() => "?").join(", ")}))`;
+      bindings.push(repositoryId, ...stages, ...sourceStageLabels);
+      return [`(issues.repository_id = ?
+        AND issues.projected_stage IN (${stagePlaceholders})
+        AND COALESCE(issues.projected_state, '') NOT IN ('done', 'inconsistent')
+        AND (issues.projected_state = 'active' OR ${sourceLabelCount} = 1))`];
+    });
+    const filters: string[] = [];
+    if (query.repositoryIds.length > 0) {
+      filters.push(`issues.repository_id IN (${query.repositoryIds.map(() => "?").join(", ")})`);
+      bindings.push(...query.repositoryIds);
+    }
+    for (const word of query.words) {
+      const pattern = `%${word.replace(/[\\%_]/g, "\\$&")}%`;
+      const actorClauses = query.stageActors.map(({ repositoryId, stageId, text }) => {
+        bindings.push(repositoryId, stageId, text, pattern);
+        return "(issues.repository_id = ? AND issues.projected_stage = ? AND ? LIKE ? ESCAPE '\\')";
+      });
+      filters.push(`(
+        LOWER(issues.title) LIKE ? ESCAPE '\\' OR
+        LOWER(CAST(issues.source_number AS TEXT)) LIKE ? ESCAPE '\\' OR
+        LOWER('#' || issues.source_number) LIKE ? ESCAPE '\\' OR
+        LOWER(issues.repository_id) LIKE ? ESCAPE '\\' OR
+        LOWER(issues.labels_json) LIKE ? ESCAPE '\\' OR
+        LOWER(COALESCE(issues.metadata_json, '')) LIKE ? ESCAPE '\\'
+        ${actorClauses.length > 0 ? `OR ${actorClauses.join(" OR ")}` : ""}
+      )`);
+      // Keep the six ordinary search fields ahead of the stage-specific actor clauses above.
+      bindings.splice(bindings.length - actorClauses.length * 4, 0, pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+    const workflow = workflowClauses.length > 0 ? workflowClauses.join(" OR ") : "0";
+    const row = this.#database.query(`
+      SELECT COUNT(*) AS count
+      FROM issues
+      WHERE (
+        (issues.source_state = 'closed' AND NOT (${workflow})) OR
+        (issues.projected_state IN ('done', 'completed') AND EXISTS (
+          SELECT 1 FROM issue_relationships WHERE parent_id = issues.id
+        ))
+      )
+      AND COALESCE(issues.projected_state, '') <> 'offboarded'
+      ${filters.length > 0 ? `AND ${filters.join(" AND ")}` : ""}
+    `).get(...bindings) as { count: number };
+    return Number(row.count);
   }
 
   replaceRelationships(
@@ -1731,16 +1813,7 @@ export class ConveyorStore {
     };
   }
 
-  costSummary(filters: { issueId?: string; stageId?: string } = {}): {
-    runs: number;
-    amount: number;
-    currency: string;
-    durationMs: number;
-    inputTokens: number;
-    outputTokens: number;
-    cachedTokens: number;
-    unavailableRuns: number;
-  } {
+  costSummary(filters: { issueId?: string; stageId?: string } = {}): CostSummary {
     const conditions: string[] = [];
     const bindings: string[] = [];
     if (filters.issueId) {
@@ -1773,6 +1846,33 @@ export class ConveyorStore {
       cachedTokens: Number(row.cached_tokens),
       unavailableRuns: Number(row.unavailable_runs),
     };
+  }
+
+  /** Returns every stage's usage in one query for board column summaries. */
+  costSummaryByStage(): Map<string, CostSummary> {
+    const rows = this.#database
+      .query(
+        `SELECT r.stage_id,
+           COUNT(*) AS runs, COALESCE(SUM(amount), 0) AS amount,
+           COALESCE(SUM(duration_ms), 0) AS duration_ms,
+           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+           COALESCE(SUM(CASE WHEN source = 'unavailable' THEN 1 ELSE 0 END), 0) AS unavailable_runs
+         FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id
+         GROUP BY r.stage_id`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return new Map(rows.map((row) => [String(row.stage_id), {
+      runs: Number(row.runs),
+      amount: Number(row.amount),
+      currency: "USD",
+      durationMs: Number(row.duration_ms),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cachedTokens: Number(row.cached_tokens),
+      unavailableRuns: Number(row.unavailable_runs),
+    }]));
   }
 
   moveQueueIssue(issueId: string, direction: "up" | "down"): void {
