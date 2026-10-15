@@ -380,9 +380,9 @@ describe("dashboard live refresh position", () => {
       await signIn(page, server.port);
 
       const slowRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/issues/slow/details");
-      await page.locator('article.issue[data-issue-id="slow"] .card-open').evaluate((element) => element.click());
+      await page.locator('article.issue[data-issue-id="slow"] .card-open').click();
       await slowRequest;
-      await page.locator('article.issue[data-issue-id="fast"] .card-open').evaluate((element) => element.click());
+      await page.locator('article.issue[data-issue-id="fast"] .card-open').click();
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'fast');
       await page.waitForTimeout(250);
 
