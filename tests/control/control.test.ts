@@ -214,6 +214,9 @@ describe("operating through the CLI", () => {
     const answered = await cli("questions", "answer", question.id, "eu");
     expect(answered.out).toBe(`Answered ${question.id} for app:1.`);
     expect(store.getQuestion(question.id)?.status).not.toBe("open");
+    expect(store.listConversationMessages("issue-1").filter((message) => message.questionId === question.id)).toEqual([
+      expect.objectContaining({ actorName: expect.stringContaining("(CLI)"), message: expect.stringContaining("**Question:** Which region?\n\n**Accepted answer:** eu") }),
+    ]);
     expect((await cli("questions", "answer", question.id, "us")).code).toBe(EXIT.rejected);
   });
 
@@ -232,6 +235,7 @@ describe("operating through the CLI", () => {
     expect(answer.code).toBe(EXIT.rejected);
     expect(answer.err).toContain("offboarded");
     expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
+    expect(store.listConversationMessages("issue-1").filter((message) => message.questionId === question.id)).toEqual([]);
     expect(issues[0]!.labels).toEqual(labelsBefore);
   });
 

@@ -170,8 +170,9 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         const question = service.store.getQuestion(decodeURIComponent(answer[1]!));
         if (!question) throw new ControlError("no such question", 404);
         if (question.status !== "open") throw new ControlError(`the question is ${question.status}`, 409);
-        await service.answerQuestion(question.id, text.trim());
-        log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: actor(request) });
+        const answeringActor = actor(request);
+        await service.answerQuestion(question.id, text.trim(), answeringActor);
+        log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: answeringActor });
         return json({ answered: question.id, item: itemReference(service, question.issueId) });
       }
       const itemRoute = /^(GET|POST) \/v1\/items\/([^/]+)(?:\/(history|logs|retry|pause|resume))?$/.exec(route);
