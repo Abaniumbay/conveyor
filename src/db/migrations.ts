@@ -709,4 +709,14 @@ export const migrations: readonly Migration[] = [
         ON manual_gate_approvals(issue_id, stage_id, stage_epoch, attempt);
     `,
   },
+  {
+    version: 21,
+    sql: `
+      -- An accepted answer is also durable item context. The question link makes retries
+      -- idempotent even when an earlier source-label sync failed after saving the answer.
+      ALTER TABLE conversation_messages ADD COLUMN question_id TEXT REFERENCES questions(id) ON DELETE SET NULL;
+      CREATE UNIQUE INDEX conversation_messages_question_idx
+        ON conversation_messages(question_id) WHERE question_id IS NOT NULL;
+    `,
+  },
 ];

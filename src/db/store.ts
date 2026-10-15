@@ -229,6 +229,7 @@ export interface StoredConversationMessage {
   issueId: string;
   runId: string | null;
   stageId: string | null;
+  questionId: string | null;
   actorType: string;
   actorId: string;
   actorName: string;
@@ -2015,6 +2016,50 @@ export class ConveyorStore {
     })();
   }
 
+  /**
+   * Saves an accepted answer and the durable context an agent needs after a restart.
+   * A question can contribute one answer message, so retrying an answer saved before a
+   * source-label failure completes the missing message without duplicating it.
+   */
+  recordQuestionAnswerWithConversation(input: {
+    questionId: string;
+    source: string;
+    answer: unknown;
+    stageId: string | null;
+    message: string;
+  }): void {
+    this.#database.transaction(() => {
+      const question = this.getQuestion(input.questionId);
+      if (!question) throw new Error(`unknown question: ${input.questionId}`);
+      if (question.status !== "open") throw new Error("question is no longer open");
+      const source = question.answerSource ?? input.source;
+      if (question.answer === null) {
+        this.#database
+          .query(`INSERT INTO answers(id, question_id, source, answer_json, created_at) VALUES (?, ?, ?, ?, ?)`)
+          .run(randomUUID(), question.id, source, json(input.answer), now());
+      }
+      this.#database
+        .query(
+          `INSERT OR IGNORE INTO conversation_messages(
+             issue_id, run_id, stage_id, question_id, actor_type, actor_id, actor_name,
+             actor_title, message, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          question.issueId,
+          question.runId,
+          input.stageId,
+          question.id,
+          "user",
+          source,
+          source,
+          null,
+          input.message,
+          now(),
+        );
+    })();
+  }
+
   completeQuestionAnswer(questionId: string): void {
     this.#database
       .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ? AND status = 'open'")
@@ -2051,6 +2096,21 @@ export class ConveyorStore {
          WHERE q.status = 'open' ORDER BY q.created_at, q.id`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => this.mapQuestion(row));
+  }
+
+  /** Answered questions from prior runs of this item and stage, including pre-conversation data. */
+  listAnsweredQuestionsForStage(issueId: string, stageId: string): StoredQuestion[] {
+    const rows = this.#database
+      .query(
+        `SELECT q.*, a.answer_json, a.source AS answer_source
+         FROM questions q
+         JOIN runs r ON r.id = q.run_id
+         JOIN answers a ON a.question_id = q.id
+         WHERE q.issue_id = ? AND r.stage_id = ?
+         ORDER BY q.answered_at, a.rowid`,
+      )
+      .all(issueId, stageId) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapQuestion(row));
   }
 
@@ -2245,6 +2305,7 @@ export class ConveyorStore {
     issueId: string;
     runId: string | null;
     stageId: string | null;
+    questionId?: string | null;
     actorType: "agent" | "user" | "conveyor";
     actorId: string;
     actorName: string;
@@ -2263,14 +2324,15 @@ export class ConveyorStore {
     const result = this.#database
       .query(
         `INSERT INTO conversation_messages(
-           issue_id, run_id, stage_id, actor_type, actor_id, actor_name,
+           issue_id, run_id, stage_id, question_id, actor_type, actor_id, actor_name,
            actor_title, message, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.issueId,
         input.runId,
         input.stageId,
+        input.questionId ?? null,
         input.actorType,
         input.actorId,
         input.actorName,
@@ -2281,6 +2343,7 @@ export class ConveyorStore {
     return {
       id: Number(result.lastInsertRowid),
       ...input,
+      questionId: input.questionId ?? null,
       message,
       createdAt,
     };
@@ -2303,6 +2366,7 @@ export class ConveyorStore {
       issueId: String(row.issue_id),
       runId: row.run_id === null ? null : String(row.run_id),
       stageId: row.stage_id === null ? null : String(row.stage_id),
+      questionId: row.question_id === null ? null : String(row.question_id),
       actorType: String(row.actor_type),
       actorId: String(row.actor_id),
       actorName: String(row.actor_name),

@@ -744,7 +744,12 @@ describe("ConveyorService dashboard", () => {
       answerSource: "operator",
     });
     expect(comments[0]).toContain("Use the compact layout.");
-    expect(store.listConversationMessages("issue")[0]).toMatchObject({ actorType: "user", message: "Use the compact layout." });
+    expect(store.listConversationMessages("issue")[0]).toMatchObject({
+      actorType: "user",
+      actorName: "operator",
+      questionId: question.id,
+      message: "**Question:** Which layout?\n\n**Accepted answer:** Use the compact layout.",
+    });
     await service.close();
   });
 

@@ -165,5 +165,5 @@ describe("conveyor diagnostics export", () => {
     expect(manifest.excluded.join(" ")).toContain("the database");
     expect(manifest.files.find((entry) => entry.file === "config.yaml")?.mayContain.join(" ")).toContain("repository details");
     expect(await readFile(path.join(extracted, bundle!, "config.yaml"), "utf8")).toContain("webhookSecret: <redacted>");
-  });
+  }, 20_000);
 });

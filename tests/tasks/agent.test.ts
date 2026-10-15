@@ -466,7 +466,7 @@ describe("agent.run", () => {
     expect(w.calls[2]!.prompt).toContain("PostgreSQL");
   });
 
-  test("an answered question from another execution of the stage is not picked up", async () => {
+  test("a fresh execution of the same stage receives an earlier answered question", async () => {
     const w = await world();
     w.setBehaviour(asks("Old question?"));
     await w.run(false);
@@ -479,7 +479,8 @@ describe("agent.run", () => {
     });
     expect(other.status).toBe("pass");
     expect(w.calls[1]!.resumeSessionId).toBeUndefined();
-    expect(w.calls[1]!.prompt).not.toContain("old answer");
+    expect(w.calls[1]!.prompt).toContain("Old question?");
+    expect(w.calls[1]!.prompt).toContain("old answer");
   });
 
   test("a resumed execution that never asked a question runs a fresh attempt", async () => {
@@ -487,7 +488,7 @@ describe("agent.run", () => {
     w.setBehaviour(() => ({}));
     expect((await w.run(true)).status).toBe("pass");
     expect(w.calls).toHaveLength(1);
-    expect(w.calls[0]!.prompt).not.toContain("answered");
+    expect(w.calls[0]!.prompt).toContain('"answeredQuestions": {\n      "count": 0');
   });
 
   test.each([

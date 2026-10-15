@@ -2252,9 +2252,15 @@ export class ConveyorService {
         ? (question.answer as { answer?: unknown }).answer
         : question.answer;
       if (prior !== response) throw new Error("This question already has a pending answer; retry the same answer.");
-    } else {
-      this.store.recordQuestionAnswer(questionId, source, { answer: response });
     }
+    const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
+    this.store.recordQuestionAnswerWithConversation({
+      questionId,
+      source,
+      answer: { answer: response },
+      stageId: runStage ?? issue?.projectedStage ?? null,
+      message: `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
+    });
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
@@ -2264,7 +2270,6 @@ export class ConveyorService {
     const needsInput = this.config.labels.states["needs-input"];
     const hadNeedsInput = Boolean(needsInput && issue.labels.includes(needsInput));
     if (hadNeedsInput) {
-      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
       const stage = runStage ?? issue.projectedStage;
       const metadata = metadataLabels(issue.labels, this.config);
       try {
@@ -2280,7 +2285,6 @@ export class ConveyorService {
     this.store.completeQuestionAnswer(question.id);
     // A stage parked on an agent's question continues where it stopped; legacy stages restart.
     const parkedAgentWoken = this.wakeParkedAgent(question);
-    const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
     const resumedStage = runStage ?? issue.projectedStage;
     if (resumedStage) {
       // A native agent can park without first writing needs-input to the source. Clear its local
@@ -3595,7 +3599,7 @@ export class ConveyorService {
     // Reject an invalid choice before it becomes a misleading conversation
     // entry. Human replies may use the label rendered by the form.
     const answer = question ? conversationQuestionAnswer(question, message) : null;
-    const recorded = this.store.appendConversationMessage({
+    const recorded = question && !running ? null : this.store.appendConversationMessage({
       issueId,
       runId: null,
       stageId,
@@ -3624,7 +3628,7 @@ export class ConveyorService {
         ...metadata,
       ];
       const mutation = this.store.beginSourceMutation({
-        idempotencyKey: `conversation-resume:${recorded.id}`,
+        idempotencyKey: `conversation-resume:${recorded!.id}`,
         source: repository.source,
         operation: "issue.labels.resume",
         request: { issueId, issueNumber: issue.sourceNumber, labels },

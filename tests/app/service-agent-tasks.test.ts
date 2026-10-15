@@ -69,8 +69,12 @@ repositories:
   const labelWrites: string[][] = [];
   const comments: string[] = [];
   let failComments = 0;
+  let failLabels = 0;
   const github = {
-    replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => { labelWrites.push([...labels]); },
+    replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => {
+      if (failLabels > 0) { failLabels -= 1; throw new Error("temporary label outage"); }
+      labelWrites.push([...labels]);
+    },
     hasCommentWithMarker: async (_a: string, _n: number, marker: string) => comments.some((comment) => comment.includes(marker)),
     addComment: async (_a: string, _n: number, body: string) => {
       if (failComments > 0) { failComments -= 1; throw new Error("temporary source outage"); }
@@ -143,7 +147,7 @@ repositories:
   const execute = (signal = new AbortController().signal) =>
     (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
   const schedule = () => (Object.getPrototypeOf(service) as { schedule(this: unknown): void }).schedule.call(service);
-  return { config, store, service, execute, schedule, running, release: () => release!(), calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
+  return { config, store, service, execute, schedule, running, release: () => release!(), calls, created, workspace, labelWrites, comments, root, failNextComment: () => { failComments += 1; }, failNextLabel: () => { failLabels += 1; }, setResume: (value: boolean) => { sessionResume = value; } };
 }
 
 describe("agent.run through the service", () => {
@@ -235,11 +239,14 @@ describe("agent.run through the service", () => {
     expect(w.store.getStageState("issue")?.status).toBe("ready");
 
     const question = w.store.listOpenQuestions()[0]!;
-    await w.service.answerQuestion(question.id, "PostgreSQL");
+    await w.service.answerQuestion(question.id, "PostgreSQL", "Needs you");
     expect(Date.parse(journal.wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
     expect(journal.getCursor("issue")).toMatchObject({ state: "pending", stage: "refinement" });
     expect(w.labelWrites).toEqual([]);
     expect(w.comments[0]).toContain("PostgreSQL");
+    expect(w.store.listConversationMessages("issue").filter((entry) => entry.questionId === question.id)).toEqual([
+      expect.objectContaining({ actorName: "Needs you", message: expect.stringContaining("**Question:** Which database?\n\n**Accepted answer:** PostgreSQL") }),
+    ]);
 
     await w.execute();
     expect(w.calls).toHaveLength(2);
@@ -286,6 +293,9 @@ describe("agent.run through the service", () => {
     expect(w.store.listOpenQuestions()).toEqual([]);
     expect(Date.parse(w.store.executions().wakeAt("issue")!)).toBeLessThanOrEqual(Date.now());
     expect(w.labelWrites).toEqual([]);
+    expect(w.store.listConversationMessages("issue").filter((entry) => entry.questionId !== null)).toEqual([
+      expect.objectContaining({ actorName: "operator", message: expect.stringContaining("**Accepted answer:** PostgreSQL please") }),
+    ]);
     await w.service.close();
   });
 
@@ -318,6 +328,65 @@ describe("agent.run through the service", () => {
     expect(w.comments).toHaveLength(1);
     expect(w.comments[0]).toContain("PostgreSQL");
     await expect(w.service.answerQuestion(question.id, "PostgreSQL")).rejects.toThrow("already been answered");
+    await w.service.close();
+  });
+
+  test("keeps one durable answer entry when retrying after the needs-input label sync fails", async () => {
+    const w = await setup({ needsInput: true });
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    w.failNextLabel();
+
+    await expect(w.service.answerQuestion(question.id, "PostgreSQL", "Needs you")).rejects.toThrow("Your answer was saved");
+    expect(w.store.listConversationMessages("issue").filter((entry) => entry.questionId === question.id)).toHaveLength(1);
+    const cursor = w.store.executions().getCursor("issue")!;
+    w.store.executions().clearCursor("issue", cursor.stageEpoch);
+    w.store.executions().onStageChange("issue");
+    await w.execute();
+    expect(w.calls.at(-1)!.prompt).toContain('"answeredQuestions"');
+    expect(w.calls.at(-1)!.prompt).toContain('"answer": "PostgreSQL"');
+    await w.service.answerQuestion(question.id, "PostgreSQL", "Needs you");
+    expect(w.store.listConversationMessages("issue").filter((entry) => entry.questionId === question.id)).toHaveLength(1);
+    await w.service.close();
+  });
+
+  test("keeps an accepted answer in conversation for a fresh run after its parked cursor was cleared", async () => {
+    const w = await setup();
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    const journal = w.store.executions();
+    const cursor = journal.getCursor("issue")!;
+    journal.clearCursor("issue", cursor.stageEpoch);
+    await w.service.answerQuestion(question.id, "PostgreSQL", "Needs you");
+    journal.onStageChange("issue");
+
+    await w.execute();
+    expect(w.calls).toHaveLength(2);
+    expect(w.calls[1]!.prompt).toContain('"answeredQuestions"');
+    expect(w.calls[1]!.prompt).toContain('"prompt": "Which database?"');
+    expect(w.calls[1]!.prompt).toContain('"answer": "PostgreSQL"');
+    expect(w.calls[1]!.prompt).toContain('"actor": "Needs you"');
+    await w.service.close();
+  });
+
+  test("puts a legacy stored answer without a conversation entry in a fresh stage handover", async () => {
+    const w = await setup();
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    // This represents an answer stored by an earlier version, before answer messages existed.
+    w.store.recordQuestionAnswer(question.id, "Legacy operator", { answer: "PostgreSQL" });
+    w.store.completeQuestionAnswer(question.id);
+    const journal = w.store.executions();
+    const cursor = journal.getCursor("issue")!;
+    journal.clearCursor("issue", cursor.stageEpoch);
+    journal.onStageChange("issue");
+
+    await w.execute();
+    expect(w.calls).toHaveLength(2);
+    expect(w.calls[1]!.prompt).toContain('"answeredQuestions"');
+    expect(w.calls[1]!.prompt).toContain('"prompt": "Which database?"');
+    expect(w.calls[1]!.prompt).toContain('"answer": "PostgreSQL"');
+    expect(w.calls[1]!.prompt).toContain('"actor": "Legacy operator"');
     await w.service.close();
   });
 
@@ -452,6 +521,17 @@ describe("legacy MCP names delegate to the agent tools", () => {
     expect(await call("workspace.record_artifact", { name: "b" })).toEqual({ accepted: true });
     expect(await call("run.report_rationale", { why: "x" })).toEqual({ accepted: true });
     expect(await call("conversation.get", { limit: 5 })).toMatchObject({ issueId: "issue", messages: [{ actorName: "Worker", message: "Halfway" }] });
+    await w.service.answerQuestion(asked.questionId, "a", "Needs you");
+    expect(await call("conversation.get", { limit: 5 })).toMatchObject({
+      issueId: "issue",
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          actorName: "Needs you",
+          questionId: asked.questionId,
+          message: "**Question:** Which?\n\n**Accepted answer:** a",
+        }),
+      ]),
+    });
     expect(w.store.listRunEvents("run-1").map((e) => e.type)).toEqual(["report_progress", "question", "record_artifact", "record_artifact", "report_rationale"]);
 
     await w.service.handleMcp({ tool: "agent.reportProgress", input: { message: "Exactly once" } }, token, "lost-response");
