@@ -229,6 +229,35 @@ export const dashboardClient = String.raw`(() => {
   let journeyRefreshTimer = null;
   let summaryRefreshTimer = null;
   let activityRefreshTimer = null;
+  let stickyNavigation = null;
+  let stickyNavigationObserver = null;
+
+  const syncStickyNavigationHeight = () => {
+    const dashboard = document.querySelector('main.dashboard');
+    const nextStickyNavigation = dashboard?.querySelector('.dashboard-sticky');
+    if (!(dashboard instanceof HTMLElement) || !(nextStickyNavigation instanceof HTMLElement)) return;
+    const update = () => dashboard.style.setProperty('--dashboard-sticky-height', nextStickyNavigation.getBoundingClientRect().height + 'px');
+    if (stickyNavigation !== nextStickyNavigation) {
+      if (stickyNavigationObserver) stickyNavigationObserver.disconnect();
+      stickyNavigation = nextStickyNavigation;
+      stickyNavigationObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
+      if (stickyNavigationObserver) stickyNavigationObserver.observe(nextStickyNavigation);
+    }
+    update();
+  };
+  const scrollInitialFragmentBelowNavigation = () => {
+    if (!location.hash) return;
+    try {
+      const anchor = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (anchor) anchor.scrollIntoView();
+    } catch {}
+  };
+  document.addEventListener('conveyor:dashboard-rendered', syncStickyNavigationHeight);
+  window.addEventListener('resize', syncStickyNavigationHeight);
+  requestAnimationFrame(() => {
+    syncStickyNavigationHeight();
+    scrollInitialFragmentBelowNavigation();
+  });
 
   const selectedTheme = () => {
     const theme = document.documentElement.dataset.theme;

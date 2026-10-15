@@ -744,6 +744,12 @@ describe("renderDashboard", () => {
     expect(dashboardCss).toContain('#content,#needs-you-heading,[id^="station-"]{scroll-margin-top:calc(var(--dashboard-sticky-height) + .5rem)}');
   });
 
+  test("keeps active-run links in the mobile System popover", () => {
+    const html = renderDashboard(dashboard);
+
+    expect(html).toContain('<section class="mobile-active-work"><h3>Active work</h3><ul><li><a href="/issues/sample/41"><strong>#41 Build &lt;safe> &amp; sound</strong>');
+  });
+
   test("shows each open parent as a foldable row of its children, and a finished family as its parent alone", () => {
     const station = (index: number, name: string) => ({ index, count: 4, name });
     const family: IssueCardViewModel = {

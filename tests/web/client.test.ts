@@ -198,6 +198,10 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("void navigateDashboard(destination)");
     expect(dashboardClient).toContain("new URL(location.href), 'none'");
     expect(dashboardClient).toContain("conveyor:dashboard-rendered");
+    expect(dashboardClient).toContain("const syncStickyNavigationHeight = () => {");
+    expect(dashboardClient).toContain("new ResizeObserver(update)");
+    expect(dashboardClient).toContain("dashboard.style.setProperty('--dashboard-sticky-height'");
+    expect(dashboardClient).toContain("document.addEventListener('conveyor:dashboard-rendered', syncStickyNavigationHeight)");
     expect(dashboardClient).toContain("destination.origin !== location.origin");
     expect(dashboardClient).toContain("const createDashboardNavigation =");
     expect(dashboardClient).toContain("body.classList.add('page-loading', 'dashboard-navigating')");

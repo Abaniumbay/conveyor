@@ -1149,12 +1149,16 @@ function RunnerStatus({ model }: { model: DashboardViewModel }) {
       <summary><strong>{runnerCount} of {runnerCapacity}</strong> runners</summary>
       <div class="header-popover">
         <h2>Active work</h2>
-        {runs.length > 0
-          ? <ul>{runs.map((run) => <li key={run.id}><a href={issueHref(run.repository, run.issueNumber)}><strong>#{run.issueNumber} {run.issueTitle}</strong><span>{run.stageId} · <LocalTime value={run.startedAt} /></span></a></li>)}</ul>
-          : <p>No issue is being worked on right now.</p>}
+        <ActiveWorkList runs={runs} />
       </div>
     </details>
   );
+}
+
+function ActiveWorkList({ runs }: { runs: DashboardViewModel["activeWork"]["runs"] }) {
+  return runs.length > 0
+    ? <ul>{runs.map((run) => <li key={run.id}><a href={issueHref(run.repository, run.issueNumber)}><strong>#{run.issueNumber} {run.issueTitle}</strong><span>{run.stageId} · <LocalTime value={run.startedAt} /></span></a></li>)}</ul>
+    : <p>No issue is being worked on right now.</p>;
 }
 
 function HarnessUsage({ model }: { model: DashboardViewModel }) {
@@ -1219,9 +1223,10 @@ function ThemeOptions() {
 }
 
 function MobileSystemControls({ model }: { model: DashboardViewModel }) {
-  const { runnerCount, runnerCapacity } = model.activeWork;
+  const { runnerCount, runnerCapacity, runs } = model.activeWork;
   return <div class="mobile-system-controls" data-theme-control>
     <p><strong>{runnerCount} of {runnerCapacity}</strong> runners</p>
+    {runs.length > 0 && <section class="mobile-active-work"><h3>Active work</h3><ActiveWorkList runs={runs} /></section>}
     <HarnessUsage model={model} />
     <p class="mobile-total-usage" title={model.totalUsage}>{model.totalUsage}</p>
     <a class="header-link" href="/settings/notifications">Notifications</a>
