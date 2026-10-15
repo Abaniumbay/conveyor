@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, StageColumnViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
 
 const password = "correct horse";
 let browser: Browser | null = null;
@@ -120,6 +120,7 @@ function startDashboard(state: {
   delayMs: () => number;
   detailsDelayMs?: (issueId: string) => number;
   answerQuestion?: () => Promise<void>;
+  systemStatus?: () => SystemStatusViewModel;
 }) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
@@ -147,7 +148,12 @@ function startDashboard(state: {
     getDashboardRevision: () => state.revision(),
     getConversationRevision: () => "conversation-1",
     getActivityRevision: () => "activity-1",
-    getSystemStatus: () => ({ memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 }, disk: { usedBytes: 1, totalBytes: 2, availableBytes: 1 }, uptimeSeconds: 1 }),
+    getSystemStatus: () => state.systemStatus?.() ?? ({
+      memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
+      disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
+      storage: { artifacts: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 }, temporaryDirectory: { available: false }, workspaceScratch: { available: false } },
+      uptimeSeconds: 1,
+    }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
     answerQuestion: () => state.answerQuestion?.(),
@@ -185,6 +191,65 @@ afterEach(async () => {
 });
 
 describe("dashboard live refresh position", () => {
+  test("shows a distinct storage warning from a live status event without reloading", async () => {
+    let status: SystemStatusViewModel = {
+      memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
+      disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
+      storage: {
+        artifacts: { available: true, usedBytes: 50, totalBytes: 100, availableBytes: 50 },
+        temporaryDirectory: { available: false },
+        workspaceScratch: { available: false },
+      },
+      uptimeSeconds: 1,
+    };
+    const server = startDashboard({
+      dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]),
+      revision: () => "revision-1",
+      delayMs: () => 0,
+      systemStatus: () => status,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await signIn(page, server.port);
+      await page.waitForFunction(() => document.querySelector('[data-server-metrics]')?.textContent?.includes("artifacts 50% used"));
+      expect(await page.locator('[data-storage-warning]').isVisible()).toBe(false);
+      await page.evaluate(() => { (document.querySelector("main.dashboard") as HTMLElement).dataset.statusTestMarker = "kept"; });
+
+      status = {
+        ...status,
+        storage: {
+          artifacts: { available: true, usedBytes: 8_504, totalBytes: 10_000, availableBytes: 1_496 },
+          temporaryDirectory: { available: true, usedBytes: 8_504, totalBytes: 10_000, availableBytes: 1_496, sharesFilesystemWithArtifacts: true },
+          workspaceScratch: { available: false },
+        },
+      };
+      await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-server-status]')?.dataset.storagePressure === "true", undefined, { timeout: 15_000 });
+
+      expect(await page.locator('[data-storage-warning]').isVisible()).toBe(true);
+      expect(await page.locator('[data-server-metrics]').textContent()).toContain("Warning: artifacts and temporary directory 85% used");
+      expect(await page.locator('[data-server-metrics]').textContent()).toContain("agent scratch unavailable");
+      expect(await page.locator('[data-server-metrics]').getAttribute("class")).toContain("server-status-metrics--warning");
+      expect(await page.locator('[data-server-status] summary').getAttribute("aria-label")).toContain("storage pressure warning");
+      expect(await page.evaluate(() => document.querySelector("main.dashboard")?.getAttribute("data-status-test-marker"))).toBe("kept");
+
+      status = {
+        ...status,
+        storage: {
+          artifacts: { available: true, usedBytes: 8_500, totalBytes: 10_000, availableBytes: 1_500 },
+          temporaryDirectory: { available: false },
+          workspaceScratch: { available: false },
+        },
+      };
+      await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-server-status]')?.dataset.storagePressure === "false", undefined, { timeout: 15_000 });
+
+      expect(await page.locator('[data-storage-warning]').isVisible()).toBe(false);
+      expect(await page.locator('[data-server-metrics]').getAttribute("class")).not.toContain("server-status-metrics--warning");
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("keeps a phone reader's card in place, then bounds offsets when the card disappears", async () => {
     const original = Array.from({ length: 8 }, (_, index) => issue(`above-${index}`, index + 2));
     const target = issue("target", 20, "Target card");
