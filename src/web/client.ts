@@ -929,9 +929,13 @@ export const dashboardClient = String.raw`(() => {
     }
   };
 
+  let detailsRequestAbort = null;
+  let detailsRequestSequence = 0;
+
   const detailsErrorDialog = (opener, message) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'issue-details issue-details--load-error';
+    dialog.dataset.lazyDetails = 'true';
     dialog.dataset.issueId = opener.dataset.issueId || '';
     dialog.dataset.repositoryId = opener.dataset.repositoryId || opener.dataset.boardRepository || '';
     dialog.dataset.issueNumber = opener.dataset.number || '';
@@ -942,26 +946,34 @@ export const dashboardClient = String.raw`(() => {
   };
 
   const openIssueDialog = async (opener, updateUrl = true) => {
+    const detailsRequestSequenceForOpen = ++detailsRequestSequence;
+    detailsRequestAbort?.abort();
+    detailsRequestAbort = null;
     const id = opener.getAttribute('data-dialog-open');
     let dialog = id ? document.getElementById(id) : null;
     if (!(dialog instanceof HTMLDialogElement)) {
       const detailsUrl = opener.getAttribute('data-details-url');
-      if (!detailsUrl || opener.dataset.detailsLoading === 'true') return;
-      opener.dataset.detailsLoading = 'true';
+      if (!detailsUrl) return;
+      const detailsAbortController = new AbortController();
+      detailsRequestAbort = detailsAbortController;
       try {
-        const response = await fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store' });
+        const response = await fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store', signal: detailsAbortController.signal });
         if (!response.ok) throw new Error(response.status === 404 ? 'This item is no longer available.' : 'Please check your connection and try again.');
         const fragment = new DOMParser().parseFromString(await response.text(), 'text/html');
         const loaded = fragment.querySelector('dialog[data-issue-id]');
         if (!(loaded instanceof HTMLDialogElement)) throw new Error('The details response was incomplete.');
+        if (detailsRequestSequenceForOpen !== detailsRequestSequence) return;
         dialog = document.importNode(loaded, true);
+        dialog.dataset.lazyDetails = 'true';
         document.body.append(dialog);
       } catch (error) {
+        if (detailsAbortController.signal.aborted || detailsRequestSequenceForOpen !== detailsRequestSequence) return;
         dialog = detailsErrorDialog(opener, error instanceof Error ? error.message : 'Please try again.');
       } finally {
-        delete opener.dataset.detailsLoading;
+        if (detailsRequestAbort === detailsAbortController) detailsRequestAbort = null;
       }
     }
+    if (detailsRequestSequenceForOpen !== detailsRequestSequence) return;
     if (dialog instanceof HTMLDialogElement && !dialog.open) {
       dialog._conveyorOpener = opener;
       selectDetailTab(dialog, 'summary');
@@ -1773,15 +1785,18 @@ export const dashboardClient = String.raw`(() => {
     if (agentId && currentPath.agent === agentId) {
       history.replaceState(null, '', '/team' + paginationSearch());
       renderedUrl = '/team' + paginationSearch();
+      if (event.target.dataset.lazyDetails === 'true') event.target.remove();
       return;
     }
-    if (!currentPath.issue || currentPath.issue.repository !== event.target.dataset.repositoryId || currentPath.issue.number !== event.target.dataset.issueNumber) return;
-    history.replaceState(null, '', '/board' + paginationSearch());
-    renderedUrl = '/board' + paginationSearch();
-    if (pendingRefresh) {
-      pendingRefresh = false;
-      void refreshDashboard();
+    if (currentPath.issue && currentPath.issue.repository === event.target.dataset.repositoryId && currentPath.issue.number === event.target.dataset.issueNumber) {
+      history.replaceState(null, '', '/board' + paginationSearch());
+      renderedUrl = '/board' + paginationSearch();
+      if (pendingRefresh) {
+        pendingRefresh = false;
+        void refreshDashboard();
+      }
     }
+    if (event.target.dataset.lazyDetails === 'true') event.target.remove();
   }, true);
 
   const syncRouteDialogs = () => {
@@ -1791,7 +1806,17 @@ export const dashboardClient = String.raw`(() => {
     const requested = requestedPath.issue;
     const dialog = requested ? findIssueDialog(requested) : null;
     if (requestedAgent && !agentDialog) return false;
-    if (requested && !dialog) return false;
+    if (requested && !dialog) {
+      const matchingOpener = Array.from(document.querySelectorAll('[data-dialog-open][data-details-url]')).find((candidate) =>
+        candidate.closest('.issue')?.dataset.boardRepository === requested.repository &&
+        candidate.closest('.issue')?.dataset.number === requested.number,
+      );
+      if (matchingOpener instanceof HTMLElement) {
+        void openIssueDialog(matchingOpener, false);
+        return true;
+      }
+      return false;
+    }
     if (!requestedAgent && !requested && location.pathname + location.search !== renderedUrl) return false;
     for (const dialog of document.querySelectorAll('dialog[data-agent-id][open]')) {
       if (dialog.dataset.agentId !== requestedAgent) dialog.close();

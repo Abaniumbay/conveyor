@@ -180,7 +180,12 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts'];");
     expect(dashboardClient).toContain("dialog.getAttribute('data-details-url')");
     expect(dashboardClient).toContain("const openIssueDialog = async");
-    expect(dashboardClient).toContain("fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store' })");
+    expect(dashboardClient).toContain("const detailsAbortController = new AbortController();");
+    expect(dashboardClient).toContain("detailsRequestAbort?.abort();");
+    expect(dashboardClient).toContain("signal: detailsAbortController.signal");
+    expect(dashboardClient).toContain("dialog.dataset.lazyDetails = 'true'");
+    expect(dashboardClient).toContain("lazyDetails");
+    expect(dashboardClient).toContain("event.target.remove");
     expect(dashboardClient).toContain("data-details-retry");
     expect(dashboardClient).toContain("dialog._conveyorOpener = opener");
     expect(dashboardClient).toContain("opener.focus({ preventScroll: true })");

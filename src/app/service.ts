@@ -2949,7 +2949,29 @@ export class ConveyorService {
         left.repositoryId.localeCompare(right.repositoryId) ||
         right.sourceNumber - left.sourceNumber
       );
-    const doneTotal = this.store.countIssues(closedIssues.map((issue) => issue.id));
+    // This is a database count over the Done predicate, not a count of the already materialized
+    // list. Keep the card projection below limited even when a repository has years of history.
+    const doneTotal = this.store.countFinishedIssues({
+      repositoryIds: [...filterRepositories],
+      words: filterWords,
+      workflows: Object.entries(this.config.repositories).map(([repositoryId, repository]) => ({
+        repositoryId,
+        stages,
+        sourceStageLabels: (this.config.pipelines[repository.pipeline]?.stages ?? []).map((stage) =>
+          this.config.labels.stageTemplate.replace("{stage}", stage.id),
+        ),
+      })),
+      stageActors: Object.entries(this.config.repositories).flatMap(([repositoryId, repository]) =>
+        (this.config.pipelines[repository.pipeline]?.stages ?? []).map((stage) => ({
+          repositoryId,
+          stageId: stage.id,
+          text: actorsForStage(stage.id, repository.pipeline)
+            .flatMap((actor) => [actor.name, actor.title ?? ""])
+            .join(" ")
+            .toLocaleLowerCase(),
+        })),
+      ),
+    });
     const workflowIssues = issues.filter((issue) =>
       !finishedRollupIds.has(issue.id) && (issue.sourceState !== "closed" || remainsInWorkflow(issue))
     );
@@ -3145,18 +3167,202 @@ export class ConveyorService {
 
   /** Builds the same details view used by a direct issue URL without rendering board cards. */
   issueDetails(csrfToken: string, issueId: string): IssueCardViewModel | null {
-    return this.dashboard(csrfToken, {
-      view: "board",
-      repositoryId: null,
-      column: null,
-      page: 1,
-      doneLimit: 0,
-      runId: null,
-      issueId,
-      repositoryIds: [],
-      q: "",
-      state: null,
-    }).selectedIssue;
+    // This route is deliberately independent from dashboard(). A dialog is normally opened for
+    // one card, so rebuilding every board column, rollup, and repository summary here would make
+    // the on-demand endpoint proportional to the board rather than to the item being opened.
+    const issue = this.store.getIssue(issueId);
+    if (!issue || issue.projectedState === "offboarded") return null;
+    const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
+      [repositoryId, (index % 8) + 1],
+    ));
+    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
+    const stages = pipeline?.stages ?? [];
+    const stageNames = stages.map((stage) => stage.name ?? displayName(stage.id));
+    const activeIssueIds = new Set(this.store.listActiveIssueRuns().map((run) => run.issueId));
+    const allOpenQuestions = this.store.listOpenQuestions();
+    const openQuestions = allOpenQuestions.filter((question) => question.issueId === issue.id);
+    const questionIssueIds = new Set(allOpenQuestions.map((question) => question.issueId));
+    const relatedIssues = new Map<string, StoredIssue>([[issue.id, issue]]);
+    const relatedIssue = (id: string): StoredIssue | null => {
+      if (!relatedIssues.has(id)) {
+        const candidate = this.store.getIssue(id);
+        if (candidate && candidate.projectedState !== "offboarded") relatedIssues.set(id, candidate);
+      }
+      return relatedIssues.get(id) ?? null;
+    };
+    const stageStates = new Map<string, ReturnType<ConveyorStore["getStageState"]>>();
+    const stageStateFor = (id: string) => {
+      if (!stageStates.has(id)) stageStates.set(id, this.store.getStageState(id));
+      return stageStates.get(id)!;
+    };
+    const childrenByParent = new Map<string, ReturnType<ConveyorStore["listChildren"]>>();
+    const childrenFor = (id: string) => {
+      if (!childrenByParent.has(id)) childrenByParent.set(id, this.store.listChildren(id));
+      return childrenByParent.get(id)!;
+    };
+    const dependenciesByIssue = new Map<string, ReturnType<ConveyorStore["listDependencies"]>>();
+    const dependenciesFor = (id: string) => {
+      if (!dependenciesByIssue.has(id)) dependenciesByIssue.set(id, this.store.listDependencies(id));
+      return dependenciesByIssue.get(id)!;
+    };
+    const relation = (item: StoredIssue): IssueRelationViewModel => ({
+      id: item.id,
+      repository: item.repositoryId,
+      number: item.sourceNumber,
+      title: item.title,
+      url: item.sourceUrl,
+      satisfied: item.sourceState === "closed" || item.projectedState === "done" || item.projectedState === "completed",
+    });
+    const withProgress = (item: StoredIssue, base: IssueRelationViewModel): IssueRelationViewModel => {
+      if (base.satisfied) return base;
+      const state = item.projectedState ?? item.sourceState;
+      const signal = activeIssueIds.has(item.id)
+        ? "run"
+        : questionIssueIds.has(item.id) || STOPPED_ISSUE_STATES.has(state) || state === "inconsistent" ? "stop" : "wait";
+      return { ...base, signal, state: displayName(state) };
+    };
+    const sourceStages = (item: StoredIssue): string[] => {
+      const itemPipeline = this.config.pipelines[this.config.repositories[item.repositoryId]?.pipeline ?? ""];
+      return itemPipeline?.stages.flatMap((stage) =>
+        item.labels.includes(this.config.labels.stageTemplate.replace("{stage}", stage.id)) ? [stage.id] : [],
+      ) ?? [];
+    };
+    const isBacklog = (item: StoredIssue): boolean => {
+      if (item.sourceState === "closed" || item.parentId || !item.labels.includes(this.config.labels.enrollment)) return false;
+      if (sourceStages(item).length !== 0 ||
+        (item.projectedState !== "active" && !STOPPED_ISSUE_STATES.has(item.projectedState ?? ""))) return false;
+      const itemPipeline = this.config.pipelines[this.config.repositories[item.repositoryId]?.pipeline ?? ""];
+      if (item.projectedStage !== itemPipeline?.stages[0]?.id) return false;
+      const state = stageStateFor(item.id);
+      return item.projectedState === "active"
+        ? state?.status === "ready" && !this.store.getActiveWorkspace(item.id)
+        : state?.status === item.projectedState || (item.projectedState === "needs-input" && state?.status === "ready");
+    };
+    const childRelation = (child: StoredIssue): IssueRelationViewModel => {
+      const base = relation(child);
+      const names = ["Backlog", ...stageNames, "Done"];
+      const stageIndex = child.projectedStage ? stages.findIndex((stage) => stage.id === child.projectedStage) : -1;
+      const index = base.satisfied ? names.length - 1 : isBacklog(child) || stageIndex < 0 ? 0 : stageIndex + 1;
+      return { ...withProgress(child, base), station: { index, count: names.length, name: names[index]! } };
+    };
+    const queue = this.schedulerQueue([issue], {
+      stageState: stageStateFor,
+      dependencies: dependenciesFor,
+      children: childrenFor,
+      issue: relatedIssue,
+    });
+    const state = stageStateFor(issue.id);
+    const cost = this.store.costSummary({ issueId: issue.id });
+    const children = childrenFor(issue.id).flatMap(({ issueId: childId }) => {
+      const child = relatedIssue(childId);
+      return child ? [childRelation(child)] : [];
+    });
+    const dependencies = dependenciesFor(issue.id).flatMap((dependencyId) => {
+      const dependency = relatedIssue(dependencyId);
+      return dependency ? [withProgress(dependency, relation(dependency))] : [];
+    });
+    const parent = issue.parentId ? relatedIssue(issue.parentId) : null;
+    const siblings = parent
+      ? childrenFor(parent.id).flatMap(({ issueId: siblingId }) => {
+          const sibling = relatedIssue(siblingId);
+          return sibling ? [relation(sibling)] : [];
+        })
+      : [];
+    const projectedState = issue.projectedState ?? issue.sourceState;
+    const manualGates = this.manualGateViews(issue);
+    const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
+    const waiting = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue, queue) : null;
+    const retry = !activeIssueIds.has(issue.id) ? this.#infrastructureFailures.get(issue.id)?.waiting ?? null : null;
+    const liveWaiting = waiting ?? retry;
+    const stopped = STOPPED_ISSUE_STATES.has(projectedState);
+    const openQuestion = stopped ? openQuestions[0] : undefined;
+    const waitingDependencies = dependencies.filter((dependency) => !dependency.satisfied);
+    const dependencyReason = waitingDependencies.length > 0
+      ? `Waiting for ${waitingDependencies.map((dependency) => `#${dependency.number} ${dependency.title}`).join(", ")} to be completed.`
+      : null;
+    const stopReason = stopped
+      ? latestStopReason(this.store, issue.id) ??
+        (openQuestion ? `${openQuestion.reason}. Answer needed: ${openQuestion.prompt}` : null) ??
+        dependencyReason ?? issue.warning ??
+        "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
+      : null;
+    const retryable = (issue.sourceState === "open" ||
+      (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
+      issue.labels.includes(this.config.labels.enrollment) &&
+      ["blocked", "error", "needs-intervention"].includes(projectedState) &&
+      !activeIssueIds.has(issue.id) &&
+      (children.length === 0 || issue.projectedStage === "refinement");
+    const indicators = this.store.listIndicators(issue.id)
+      .filter((indicator) => indicator.id !== CI_INDICATOR_ID || this.config.repositories[issue.repositoryId]?.ci?.mode !== "disabled")
+      .map((indicator) => indicatorView(indicator, Date.now()));
+    const actorsForStage = (stageId: string): StageActorViewModel[] => {
+      const actors: StageActorViewModel[] = [];
+      const addAgent = (agentId: string) => {
+        const agent = this.config.agents[agentId];
+        actors.push({ type: "agent", name: agent?.name ?? displayName(agentId), title: agent?.title ?? "AI agent" });
+      };
+      for (const stage of stages.filter((candidate) => candidate.id === stageId)) {
+        if (isNativeStage(stage)) {
+          const agentIds = stage.actions.flatMap((task) => task.task !== "agent.run" ? [] : [
+            ...(typeof task.with?.agent === "string" ? [task.with.agent] : []),
+            ...(Array.isArray(task.with?.agents) ? task.with.agents.filter((value): value is string => typeof value === "string") : []),
+          ]);
+          if (agentIds.length === 0) actors.push({ type: "script", name: "Script", title: null });
+          else agentIds.forEach(addAgent);
+        } else if (stage.run.type !== "agent") {
+          actors.push({ type: "script", name: "Script", title: null });
+        } else addAgent(stage.run.agent);
+      }
+      return [...new Map(actors.map((actor) => [`${actor.type}:${actor.name}:${actor.title ?? ""}`, actor])).values()];
+    };
+    const cursor = this.store.executions().getCursor(issue.id);
+    const todos = new ItemTodos(this.store.sqlite());
+    const tone = (itemState: string): IssueTone => {
+      if (itemState === "done" || itemState === "completed") return "success";
+      if (["blocked", "error", "rejected", "needs-intervention", "inconsistent"].includes(itemState)) return "danger";
+      if (["paused", "needs-input"].includes(itemState)) return "warning";
+      return itemState === "closed" ? "muted" : "active";
+    };
+    return {
+      id: issue.id,
+      repository: issue.repositoryId,
+      repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
+      number: issue.sourceNumber,
+      title: issue.title,
+      url: issue.sourceUrl,
+      state: projectedState,
+      labels: issue.labels,
+      issueType: issue.metadata.type,
+      issueFields: this.issueFieldValues(issue),
+      acceptanceCriteria: this.criterionApprovalStates(issue),
+      manualGates,
+      csrfToken,
+      todos: todosView(todos.get(issue.id)?.items ?? []),
+      stage: issue.projectedStage,
+      searchActors: issue.projectedStage ? actorsForStage(issue.projectedStage) : [],
+      indicators,
+      activity: cursor?.state === "pending" ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}` : state ? `${state.stageId} · ${state.status}` : null,
+      reason: stopReason ?? (manualWaiting
+        ? `Waiting for board approval for ${manualWaiting.configured && manualWaiting.itemSpecific ? "a configured and item-specific" : manualWaiting.configured ? "a configured" : "an item-specific"} manual gate \"${manualWaiting.gateId}\".`
+        : liveWaiting ? null : issue.warning ?? null),
+      cost: formatUsage(cost),
+      duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
+      stateChangedAt: state?.updatedAt ?? issue.sourceUpdatedAt,
+      waiting: liveWaiting,
+      blocked: ["blocked", "error", "needs-input", "needs-intervention"].includes(projectedState),
+      inconsistent: issue.projectedState === "inconsistent",
+      closable: issue.labels.includes(this.config.labels.metadata.closable),
+      noSplit: issue.labels.includes(this.config.labels.metadata.noSplit),
+      tone: tone(projectedState),
+      parent: parent ? relation(parent) : null,
+      parentProgress: parent && siblings.length > 0 ? { done: siblings.filter((sibling) => sibling.satisfied).length, total: siblings.length } : null,
+      children,
+      dependencies,
+      working: activeIssueIds.has(issue.id),
+      needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
+        ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
+      retryable,
+    };
   }
 
   issueActivity(issueId: string, before?: string): IssueActivityViewModel | null {

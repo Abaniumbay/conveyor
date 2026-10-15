@@ -339,7 +339,7 @@ describe("ConveyorService dashboard", () => {
       const listChildren = spyOn(store, "listChildren");
       const costSummary = spyOn(store, "costSummary");
       const costSummaryByStage = spyOn(store, "costSummaryByStage");
-      const countIssues = spyOn(store, "countIssues");
+      const countFinishedIssues = spyOn(store, "countFinishedIssues");
       expect(service.dashboard("csrf").stages.flatMap((stage) => stage.issues)).toHaveLength(count);
       const calls = {
         listIssues: listIssues.mock.calls.length,
@@ -348,17 +348,30 @@ describe("ConveyorService dashboard", () => {
         listChildren: listChildren.mock.calls.map(([issueId]) => issueId),
         stageCostQueries: costSummary.mock.calls.filter(([filters]) => filters?.stageId !== undefined).length,
         groupedCostQueries: costSummaryByStage.mock.calls.length,
-        doneCounts: countIssues.mock.calls.length,
+        doneCounts: countFinishedIssues.mock.calls.length,
+      };
+      const dashboard = spyOn(service, "dashboard");
+      const listCallsBeforeDetails = listIssues.mock.calls.length;
+      expect(service.issueDetails("csrf", "item-1")).toMatchObject({
+        id: "item-1",
+        title: "item-1",
+        csrfToken: "csrf",
+      });
+      const detailCalls = {
+        detailsDashboardCalls: dashboard.mock.calls.length,
+        detailsListCalls: listIssues.mock.calls.length - listCallsBeforeDetails,
       };
       store.close();
-      return calls;
+      return { calls, detailCalls };
     };
-    const calls = await listings(12);
+    const { calls, detailCalls } = await listings(12);
     expect(calls.listIssues).toBe(1);
     expect(calls.getIssue).toHaveLength(0);
     expect(calls.stageCostQueries).toBe(0);
     expect(calls.groupedCostQueries).toBe(1);
     expect(calls.doneCounts).toBe(1);
+    expect(detailCalls.detailsDashboardCalls).toBe(0);
+    expect(detailCalls.detailsListCalls).toBe(0);
     for (const lookups of [calls.getStageState, calls.listChildren]) {
       expect(new Set(lookups).size).toBe(lookups.length);
     }
@@ -1897,6 +1910,22 @@ describe("ConveyorService dashboard", () => {
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "alpha")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Alice"]);
     expect((all.stages[0]?.issues.find((issue) => issue.repository === "beta")?.searchActors ?? []).map((actor) => actor.name)).toEqual(["Beatrice"]);
     expect(all.done.issues.map((issue) => issue.id)).not.toContain("target");
+    const cardCosts = spyOn(store, "costSummary");
+    const beforeHistory = service.dashboard("csrf");
+    const cardsBeforeHistory = cardCosts.mock.calls.length;
+    const visibleDoneBeforeHistory = beforeHistory.done.issues.map((issue) => issue.id);
+    for (let index = 1; index <= 350; index += 1) {
+      add(`history-${index}`, "beta", 1_000 + index, "closed", `Archived ${index}`, "2025-01-01T00:00:00Z");
+    }
+    const afterHistory = service.dashboard("csrf");
+    // Done history affects its count, but not the bounded card work or open-board projections.
+    expect(afterHistory.done.totalIssues).toBe(beforeHistory.done.totalIssues + 350);
+    expect(afterHistory.done.issues.map((issue) => issue.id)).toEqual(visibleDoneBeforeHistory);
+    expect(afterHistory.counts).toEqual(beforeHistory.counts);
+    expect(afterHistory.attention.totalIssues).toBe(beforeHistory.attention.totalIssues);
+    expect(afterHistory.repositories.map(({ id, backlog, stages, done }) => ({ id, backlog, stages, done: id === "beta" ? done - 350 : done })))
+      .toEqual(beforeHistory.repositories.map(({ id, backlog, stages, done }) => ({ id, backlog, stages, done })));
+    expect(cardCosts.mock.calls.length - cardsBeforeHistory).toBe(cardsBeforeHistory);
     const filters = (q: string, repositoryIds: string[]) => ({ view: "board" as const, repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null, q, repositoryIds, state: null });
     const byNumber = service.dashboard("csrf", filters("#245", []));
     expect(byNumber.done.issues.map((issue) => issue.id)).toEqual(["target"]);

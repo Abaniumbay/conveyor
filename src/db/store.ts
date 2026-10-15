@@ -59,6 +59,19 @@ export interface CostSummary {
   unavailableRuns: number;
 }
 
+/** SQL-side definition of the Done lane used by the dashboard. */
+export interface FinishedIssueCountQuery {
+  repositoryIds: readonly string[];
+  words: readonly string[];
+  workflows: ReadonlyArray<{
+    repositoryId: string;
+    stages: readonly string[];
+    sourceStageLabels: readonly string[];
+  }>;
+  /** Searchable configured actors keyed by the repository and stage that own them. */
+  stageActors: ReadonlyArray<{ repositoryId: string; stageId: string; text: string }>;
+}
+
 export interface DashboardAccount {
   id: string;
   username: string;
@@ -712,19 +725,61 @@ export class ConveyorStore {
     return rows.map((row) => this.mapIssue(row));
   }
 
-  /** Counts a prepared issue set without mapping it into dashboard cards. */
-  countIssues(issueIds: readonly string[]): number {
-    if (issueIds.length === 0) return 0;
-    let count = 0;
-    // SQLite limits bound parameters, while historical boards can have more than one thousand Done items.
-    for (let start = 0; start < issueIds.length; start += 900) {
-      const ids = issueIds.slice(start, start + 900);
-      const row = this.#database
-        .query(`SELECT COUNT(*) AS count FROM issues WHERE id IN (${ids.map(() => "?").join(", ")})`)
-        .get(...ids) as { count: number };
-      count += Number(row.count);
+  /**
+   * Counts all items qualifying for the dashboard's Done lane in SQLite, without mapping historic
+   * issues into cards. The caller supplies the configured workflow labels because they are config,
+   * not durable database state.
+   */
+  countFinishedIssues(query: FinishedIssueCountQuery): number {
+    const bindings: SQLQueryBindings[] = [];
+    const workflowClauses = query.workflows.flatMap(({ repositoryId, stages, sourceStageLabels }) => {
+      if (stages.length === 0) return [];
+      const stagePlaceholders = stages.map(() => "?").join(", ");
+      const sourceLabelCount = sourceStageLabels.length === 0
+        ? "0"
+        : `(SELECT COUNT(*) FROM json_each(issues.labels_json) WHERE value IN (${sourceStageLabels.map(() => "?").join(", ")}))`;
+      bindings.push(repositoryId, ...stages, ...sourceStageLabels);
+      return [`(issues.repository_id = ?
+        AND issues.projected_stage IN (${stagePlaceholders})
+        AND COALESCE(issues.projected_state, '') NOT IN ('done', 'inconsistent')
+        AND (issues.projected_state = 'active' OR ${sourceLabelCount} = 1))`];
+    });
+    const filters: string[] = [];
+    if (query.repositoryIds.length > 0) {
+      filters.push(`issues.repository_id IN (${query.repositoryIds.map(() => "?").join(", ")})`);
+      bindings.push(...query.repositoryIds);
     }
-    return count;
+    for (const word of query.words) {
+      const actorClauses = query.stageActors.map(({ repositoryId, stageId, text }) => {
+        bindings.push(repositoryId, stageId, text, `%${word}%`);
+        return "(issues.repository_id = ? AND issues.projected_stage = ? AND ? LIKE ?)";
+      });
+      const pattern = `%${word}%`;
+      filters.push(`(
+        LOWER(issues.title) LIKE ? OR
+        LOWER(CAST(issues.source_number AS TEXT)) LIKE ? OR
+        LOWER('#' || issues.source_number) LIKE ? OR
+        LOWER(issues.repository_id) LIKE ? OR
+        LOWER(issues.labels_json) LIKE ? OR
+        LOWER(COALESCE(issues.metadata_json, '')) LIKE ?
+        ${actorClauses.length > 0 ? `OR ${actorClauses.join(" OR ")}` : ""}
+      )`);
+      // Keep the six ordinary search fields ahead of the stage-specific actor clauses above.
+      bindings.splice(bindings.length - actorClauses.length * 4, 0, pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+    const workflow = workflowClauses.length > 0 ? workflowClauses.join(" OR ") : "0";
+    const row = this.#database.query(`
+      SELECT COUNT(*) AS count
+      FROM issues
+      WHERE (
+        (issues.source_state = 'closed' AND NOT (${workflow})) OR
+        (issues.projected_state IN ('done', 'completed') AND EXISTS (
+          SELECT 1 FROM issue_relationships WHERE parent_id = issues.id
+        ))
+      )
+      ${filters.length > 0 ? `AND ${filters.join(" AND ")}` : ""}
+    `).get(...bindings) as { count: number };
+    return Number(row.count);
   }
 
   replaceRelationships(
