@@ -12,16 +12,30 @@ export function serverStatusMetrics(
 ): string {
   const filesystem = (label: string, measurement: FilesystemStatusViewModel): string => {
     if (!measurement.available || measurement.usedBytes === undefined || measurement.totalBytes === undefined) return `${label} unavailable`;
-    const fullness = Math.round((measurement.usedBytes / measurement.totalBytes) * 1_000) / 10;
-    const warning = fullness > 85 ? "Warning: " : "";
+    const ratio = measurement.usedBytes / measurement.totalBytes;
+    const fullness = Math.round(ratio * 1_000) / 10;
+    const warning = ratio > 0.85 ? "Warning: " : "";
     return `${warning}${label} ${fullness}% used (${formatBytes(measurement.usedBytes)} / ${formatBytes(measurement.totalBytes)})`;
   };
   const artifacts = status.storage.artifacts;
   const temporaryDirectory = status.storage.temporaryDirectory;
-  const storage = temporaryDirectory.sharesFilesystemWithArtifacts && artifacts.available
-    ? filesystem("artifacts and agent scratch", artifacts)
-    : `${filesystem("artifacts", artifacts)} · ${filesystem("agent scratch", temporaryDirectory)}`;
+  const workspaceScratch = status.storage.workspaceScratch;
+  const storage = temporaryDirectory.sharesFilesystemWithArtifacts && workspaceScratch.sharesFilesystemWithArtifacts && artifacts.available
+    ? filesystem("artifacts, temporary directory, and agent scratch", artifacts)
+    : temporaryDirectory.sharesFilesystemWithArtifacts && artifacts.available
+      ? `${filesystem("artifacts and temporary directory", artifacts)} · ${filesystem("agent scratch", workspaceScratch)}`
+      : workspaceScratch.sharesFilesystemWithArtifacts && artifacts.available
+        ? `${filesystem("artifacts and agent scratch", artifacts)} · ${filesystem("temporary directory", temporaryDirectory)}`
+        : `${filesystem("artifacts", artifacts)} · ${filesystem("temporary directory", temporaryDirectory)} · ${filesystem("agent scratch", workspaceScratch)}`;
   return `Memory ${formatBytes(status.memory.usedBytes)} / ${formatBytes(status.memory.totalBytes)} · ${filesystem("Disk", status.disk)} · ${storage} · App ${formatBytes(status.memory.processBytes)} · Up ${formatElapsed(status.uptimeSeconds)}`;
+}
+
+export function serverStatusHasPressure(status: SystemStatusViewModel): boolean {
+  return Object.values(status.storage).some((measurement) => measurement.available
+    && measurement.usedBytes !== undefined
+    && measurement.totalBytes !== undefined
+    && measurement.totalBytes > 0
+    && measurement.usedBytes / measurement.totalBytes > 0.85);
 }
 
 type DashboardEventSource = {
@@ -237,6 +251,7 @@ export function createDashboardNavigation<T>(options: {
 export const dashboardClient = String.raw`(() => {
   ${quotaClient}
   const serverStatusMetrics = ${serverStatusMetrics.toString()};
+  const serverStatusHasPressure = ${serverStatusHasPressure.toString()};
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const morphDashboard = ${morphDashboard.toString()};
@@ -2041,12 +2056,18 @@ export const dashboardClient = String.raw`(() => {
     serverStatus.dataset.connected = nextConnected ? 'true' : 'false';
     const label = nextConnected ? 'Connected' : 'Reconnecting';
     if (connectionState) connectionState.textContent = label;
-    serverStatus.querySelector('summary')?.setAttribute('aria-label', 'Connection state: ' + label);
+    serverStatus.querySelector('summary')?.setAttribute('aria-label', 'Connection state: ' + label + (serverStatus.dataset.storagePressure === 'true' ? '; storage pressure warning' : ''));
   };
   const renderServerStatus = () => {
     if (!serverMetrics || !latestServerStatus) return;
     const status = latestServerStatus;
+    const hasPressure = serverStatusHasPressure(status);
     serverMetrics.textContent = serverStatusMetrics(status, formatBytes, formatElapsed);
+    serverMetrics.classList.toggle('server-status-metrics--warning', hasPressure);
+    serverStatus.dataset.storagePressure = hasPressure ? 'true' : 'false';
+    const warning = serverStatus.querySelector('[data-storage-warning]');
+    if (warning) warning.hidden = !hasPressure;
+    setConnection(connected);
   };
   const bindServerStatus = () => {
     serverStatus = document.querySelector('[data-server-status]');

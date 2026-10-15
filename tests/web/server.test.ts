@@ -119,6 +119,7 @@ function setup(overrides: Record<string, unknown> = {}) {
       storage: {
         artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
         temporaryDirectory: { available: false },
+        workspaceScratch: { available: false },
       },
       uptimeSeconds: 3_600,
     }),
@@ -785,6 +786,7 @@ describe("createWebHandler", () => {
           storage: {
             artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
             temporaryDirectory: { available: false },
+            workspaceScratch: { available: false },
           },
           uptimeSeconds: 3_600,
         };
@@ -839,6 +841,7 @@ describe("createWebHandler", () => {
     expect(streamed).toContain("event: status");
     expect(streamed).toContain('"artifacts":{"available":true,"usedBytes":86000');
     expect(streamed).toContain('"temporaryDirectory":{"available":false}');
+    expect(streamed).toContain('"workspaceScratch":{"available":false}');
     expect(statusAttempts).toBe(2);
     await reader.cancel();
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";

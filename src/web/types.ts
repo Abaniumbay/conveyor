@@ -151,7 +151,7 @@ export interface FilesystemStatusViewModel {
   usedBytes?: number;
   totalBytes?: number;
   availableBytes?: number;
-  /** The temporary directory has the same capacity as the configured artifacts directory. */
+  /** This location has the same capacity as the configured artifacts directory. */
   sharesFilesystemWithArtifacts?: boolean;
 }
 
@@ -161,6 +161,7 @@ export interface SystemStatusViewModel {
   storage: {
     artifacts: FilesystemStatusViewModel;
     temporaryDirectory: FilesystemStatusViewModel;
+    workspaceScratch: FilesystemStatusViewModel;
   };
   uptimeSeconds: number;
 }

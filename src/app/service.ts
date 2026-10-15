@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
-import { freemem, homedir, totalmem, uptime } from "node:os";
+import { freemem, homedir, tmpdir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import { redactSecrets } from "../config/compose";
@@ -94,6 +94,7 @@ export async function collectSystemStatus(options: {
   database: string;
   artifacts: string;
   temporaryDirectory: string;
+  workspaceScratch: string;
   statfs?: StatfsReader;
   stat?: StatReader;
   memory?: { totalBytes: number; freeBytes: number; processBytes: number; uptimeSeconds: number };
@@ -114,13 +115,15 @@ export async function collectSystemStatus(options: {
       return { status: { available: false }, device: null };
     }
   };
-  const [diskMeasurement, artifactsMeasurement, temporaryMeasurement] = await Promise.all([
-    filesystem(options.database), filesystem(options.artifacts), filesystem(options.temporaryDirectory),
+  const [diskMeasurement, artifactsMeasurement, temporaryMeasurement, workspaceScratchMeasurement] = await Promise.all([
+    filesystem(options.database), filesystem(options.artifacts), filesystem(options.temporaryDirectory), filesystem(options.workspaceScratch),
   ]);
   const memory = options.memory ?? {
     totalBytes: totalmem(), freeBytes: freemem(), processBytes: process.memoryUsage().rss, uptimeSeconds: Math.floor(uptime()),
   };
   const sharesFilesystem = artifactsMeasurement.device !== null && artifactsMeasurement.device === temporaryMeasurement.device;
+  const workspaceScratchSharesFilesystem = artifactsMeasurement.device !== null
+    && artifactsMeasurement.device === workspaceScratchMeasurement.device;
   return {
     memory: { usedBytes: memory.totalBytes - memory.freeBytes, totalBytes: memory.totalBytes, processBytes: memory.processBytes },
     disk: diskMeasurement.status,
@@ -129,6 +132,9 @@ export async function collectSystemStatus(options: {
       temporaryDirectory: sharesFilesystem
         ? { ...temporaryMeasurement.status, sharesFilesystemWithArtifacts: true }
         : temporaryMeasurement.status,
+      workspaceScratch: workspaceScratchSharesFilesystem
+        ? { ...workspaceScratchMeasurement.status, sharesFilesystemWithArtifacts: true }
+        : workspaceScratchMeasurement.status,
     },
     uptimeSeconds: memory.uptimeSeconds,
   };
@@ -3539,9 +3545,10 @@ export class ConveyorService {
     return collectSystemStatus({
       database: this.config.settings.database,
       artifacts: this.config.settings.artifacts,
+      temporaryDirectory: tmpdir(),
       // Agent scratch paths are siblings of managed worktrees, so their capacity
       // follows the configured workspaces filesystem rather than the host TMPDIR.
-      temporaryDirectory: this.config.settings.workspaces,
+      workspaceScratch: this.config.settings.workspaces,
     });
   }
 
