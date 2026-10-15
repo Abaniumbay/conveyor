@@ -19,8 +19,8 @@ export function serverStatusMetrics(
   const artifacts = status.storage.artifacts;
   const temporaryDirectory = status.storage.temporaryDirectory;
   const storage = temporaryDirectory.sharesFilesystemWithArtifacts && artifacts.available
-    ? filesystem("artifacts and temporary directory", artifacts)
-    : `${filesystem("artifacts", artifacts)} · ${filesystem("temporary directory", temporaryDirectory)}`;
+    ? filesystem("artifacts and agent scratch", artifacts)
+    : `${filesystem("artifacts", artifacts)} · ${filesystem("agent scratch", temporaryDirectory)}`;
   return `Memory ${formatBytes(status.memory.usedBytes)} / ${formatBytes(status.memory.totalBytes)} · ${filesystem("Disk", status.disk)} · ${storage} · App ${formatBytes(status.memory.processBytes)} · Up ${formatElapsed(status.uptimeSeconds)}`;
 }
 
@@ -1330,7 +1330,7 @@ export const dashboardClient = String.raw`(() => {
   };
   document.addEventListener('conveyor:dashboard-rendered', (event) => {
     if (event instanceof CustomEvent && event.detail?.preservePosition) return;
-    requestAnimationFrame(revealActiveTab);
+    revealActiveTab();
   });
   requestAnimationFrame(revealActiveTab);
 

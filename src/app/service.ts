@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
-import { freemem, homedir, tmpdir, totalmem, uptime } from "node:os";
+import { freemem, homedir, totalmem, uptime } from "node:os";
 import path from "node:path";
 
 import { redactSecrets } from "../config/compose";
@@ -3539,7 +3539,9 @@ export class ConveyorService {
     return collectSystemStatus({
       database: this.config.settings.database,
       artifacts: this.config.settings.artifacts,
-      temporaryDirectory: tmpdir(),
+      // Agent scratch paths are siblings of managed worktrees, so their capacity
+      // follows the configured workspaces filesystem rather than the host TMPDIR.
+      temporaryDirectory: this.config.settings.workspaces,
     });
   }
 

@@ -3,13 +3,13 @@ import { describe, expect, test } from "bun:test";
 import { collectSystemStatus } from "../../src/app/service";
 
 describe("collectSystemStatus", () => {
-  test("measures configured artifacts and temporary filesystems independently", async () => {
+  test("measures configured artifacts and agent scratch filesystems independently", async () => {
     const status = await collectSystemStatus({
       database: "/database",
       artifacts: "/artifacts",
-      temporaryDirectory: "/temporary",
+      temporaryDirectory: "/workspaces",
       statfs: async (location: string) => {
-        if (location === "/temporary") throw new Error("temporary filesystem is unavailable");
+        if (location === "/workspaces") throw new Error("workspace scratch filesystem is unavailable");
         if (location === "/artifacts") return { blocks: 100, bsize: 1, bavail: 14 } as never;
         return { blocks: 200, bsize: 1, bavail: 100 } as never;
       },

@@ -21,8 +21,8 @@ describe("dashboard browser client", () => {
       uptimeSeconds: 60,
     }, formatBytes, formatElapsed);
     expect(pressured).toContain("Warning: artifacts 86% used (86 B / 100 B)");
-    expect(pressured).toContain("temporary directory 85% used (85 B / 100 B)");
-    expect(pressured).not.toContain("Warning: temporary directory");
+    expect(pressured).toContain("agent scratch 85% used (85 B / 100 B)");
+    expect(pressured).not.toContain("Warning: agent scratch");
 
     const sharedAndUnavailable = serverStatusMetrics({
       memory: { usedBytes: 8, totalBytes: 16, processBytes: 2 },
@@ -33,7 +33,7 @@ describe("dashboard browser client", () => {
       },
       uptimeSeconds: 60,
     }, formatBytes, formatElapsed);
-    expect(sharedAndUnavailable).toContain("Warning: artifacts and temporary directory 90% used (90 B / 100 B)");
+    expect(sharedAndUnavailable).toContain("Warning: artifacts and agent scratch 90% used (90 B / 100 B)");
     expect(sharedAndUnavailable.match(/90 B \/ 100 B/g)).toHaveLength(1);
 
     const unavailable = serverStatusMetrics({
@@ -44,7 +44,7 @@ describe("dashboard browser client", () => {
     }, formatBytes, formatElapsed);
     expect(unavailable).toContain("Disk unavailable");
     expect(unavailable).toContain("artifacts unavailable");
-    expect(unavailable).toContain("temporary directory unavailable");
+    expect(unavailable).toContain("agent scratch unavailable");
   });
 
   test("recovers a failed or silent dashboard stream with one bounded replacement stream", () => {
