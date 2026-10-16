@@ -914,6 +914,21 @@ describe("work breakdown tasks", () => {
     expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
   });
 
+  test("keeps a reused child's later stage while enrolling an unenrolled sibling", async () => {
+    const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation", "review"], breakdownFailAfterCreates: 99 });
+    w.add("i1", 1, { body: storedPlanBody(splitPlan()) });
+
+    await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" });
+    w.updateLiveSource(100, { labels: ["area:api", "conveyor:review"] });
+    w.updateLiveSource(101, { labels: ["area:ui"] });
+
+    await runAt("breakdown.createChildren", "work-breakdown", { context: {}, deps: w.deps(), input: {}, actor: "agent" });
+
+    expect(w.source(100).labels).toContain("conveyor:review");
+    expect(w.source(100).labels).not.toContain("conveyor:implementation");
+    expect(w.source(101).labels).toEqual(expect.arrayContaining(["conveyor", "conveyor:implementation"]));
+  });
+
   test("returns a split plan to refinement when the live parent becomes no-split", async () => {
     const w = await world({ pipelineStages: ["refinement", "refinement-review", "work-breakdown", "implementation"] });
     w.add("i1", 1, { body: storedPlanBody(splitPlan()), labels: ["conveyor", "conveyor:no-split"] });

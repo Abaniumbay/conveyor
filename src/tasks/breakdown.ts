@@ -262,6 +262,9 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
   }
   const stage = nextStage(deps, instance.stage);
   const enrollmentLabels = [deps.config.labels.enrollment, deps.config.labels.stageTemplate.replace("{stage}", stage)];
+  const stageLabels = new Set(
+    deps.config.pipelines[repository.pipeline]!.stages.map((candidate) => deps.config.labels.stageTemplate.replace("{stage}", candidate.id)),
+  );
   const created = new Map<string, SourceIssue>();
   for (const candidate of plan.entries) {
     const source = await deps.items.createChildIssue({ address: deps.repository.address, parentNumber: issue.sourceNumber, title: candidate.title, body: childBody(issue.id, candidate), labels: candidate.systemLabels });
@@ -290,7 +293,9 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
   }
   for (const candidate of plan.entries) {
     const child = created.get(candidate.id)!;
-    await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+    if (!child.labels.includes(deps.config.labels.enrollment) && !child.labels.some((label) => stageLabels.has(label))) {
+      await deps.items.replaceConveyorLabels(deps.repository.address, child.number, enrollmentLabels);
+    }
     const refreshed = await deps.items.getIssue(deps.repository.address, child.number);
     persist(deps, refreshed);
     created.set(candidate.id, refreshed);
