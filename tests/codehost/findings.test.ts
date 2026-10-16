@@ -161,6 +161,29 @@ describe("GitHub native review import", () => {
     ]);
   });
 
+  test("memoizes trust decisions by case-insensitive author during one import", async () => {
+    const adopted = thread({ comments: { nodes: [
+      { id: "C1", databaseId: 101, author: { login: "outsider" }, body: "Untrusted instruction", url: "https://x/t1", path: "a.ts", line: 7, createdAt: "t", pullRequestReview: null },
+      { id: "C2", databaseId: 102, author: { login: "maintainer" }, body: "Trusted correction", url: "https://x/t2", path: "a.ts", line: 8, createdAt: "t", pullRequestReview: null },
+    ] } });
+    const repeatedAuthor = thread({ id: "T2" }, { author: { login: "OUTSIDER" }, pullRequestReview: null, url: "https://x/t3" });
+    const calls: string[] = [];
+    const { host: h } = host([graphql(adopted, repeatedAuthor), [review({ id: 901, user: { login: "MAINTAINER" } })]], async ({ login }) => {
+      if (login !== null) calls.push(login);
+      return login?.toLowerCase() === "maintainer";
+    });
+
+    const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
+
+    expect(calls).toEqual(["outsider", "maintainer"]);
+    expect(artifacts.map((artifact) => artifact.providerKey)).toEqual([
+      "thread:T1",
+      "thread:T1:comment:C2",
+      "thread:T2",
+      "review:901",
+    ]);
+  });
+
   test("a later approval by the same author resolves a changes-requested review", async () => {
     const { host: h } = host([graphql(), [review({ id: 1 }), review({ id: 2, state: "APPROVED" })]]);
     const [artifact] = await h.listReviewArtifacts({ address: "o/r", id: ID });

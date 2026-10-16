@@ -853,20 +853,15 @@ export class GitHubAdapter {
 
   /** The account's current repository permission; an absent collaborator is not trusted. */
   async collaboratorPermission(address: string, login: string): Promise<GitHubRepositoryPermission> {
-    try {
-      const result = await this.transport.request<{ permission?: unknown }>({
-        method: "GET",
-        path: `repos/${address}/collaborators/${encodeURIComponent(login)}/permission`,
-      });
-      if (result.permission === "admin" || result.permission === "maintain" || result.permission === "write"
-        || result.permission === "triage" || result.permission === "read" || result.permission === "none") {
-        return result.permission;
-      }
-      throw new Error(`GitHub returned no usable repository permission for ${login}`);
-    } catch (error) {
-      if (error instanceof GitHubTransportError && /HTTP 404|Not Found/i.test(`${error.message} ${error.stderr}`)) return "none";
-      throw error;
+    const result = await this.transport.request<{ permission?: unknown }>({
+      method: "GET",
+      path: `repos/${address}/collaborators/${encodeURIComponent(login)}/permission`,
+    });
+    if (result.permission === "admin" || result.permission === "maintain" || result.permission === "write"
+      || result.permission === "triage" || result.permission === "read" || result.permission === "none") {
+      return result.permission;
     }
+    throw new Error(`GitHub returned no usable repository permission for ${login}`);
   }
 
   async updateManagedSection(input: {

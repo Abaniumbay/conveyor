@@ -319,6 +319,16 @@ export class GitHubCodeHost implements CodeHost {
     const reviews = await this.github.listReviews(input.address, number);
     const artifacts: ReviewArtifact[] = [];
     const threadedReviews = new Set<number>();
+    const extraTrustedLogins = input.extraTrustedLogins ?? [];
+    const trustByLogin = new Map<string | null, Promise<boolean>>();
+    const isTrusted = (login: string | null): Promise<boolean> => {
+      const key = login?.toLowerCase() ?? null;
+      const existing = trustByLogin.get(key);
+      if (existing !== undefined) return existing;
+      const decision = this.trust.isTrusted({ address: input.address, login, extraTrustedLogins });
+      trustByLogin.set(key, decision);
+      return decision;
+    };
     for (const thread of threads) {
       const first = thread.comments.nodes[0];
       if (!first) continue;
@@ -327,13 +337,13 @@ export class GitHubCodeHost implements CodeHost {
       }
       if (first.body.includes(OWN_MARKER)) continue;
       const author = first.author?.login ?? null;
-      const trusted = await this.trust.isTrusted({ address: input.address, login: author, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+      const trusted = await isTrusted(author);
       artifacts.push({ providerKey: `thread:${thread.id}`, author, trusted, body: first.body, url: first.url, path: first.path, line: first.line, resolved: thread.isResolved });
       if (trusted) continue;
       for (const reply of thread.comments.nodes.slice(1)) {
         if (reply.body.includes(OWN_MARKER)) continue;
         const replyAuthor = reply.author?.login ?? null;
-        const replyTrusted = await this.trust.isTrusted({ address: input.address, login: replyAuthor, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+        const replyTrusted = await isTrusted(replyAuthor);
         if (!replyTrusted) continue;
         artifacts.push({
           providerKey: `thread:${thread.id}:comment:${reply.id}`, author: replyAuthor, trusted: true, body: reply.body,
@@ -347,7 +357,7 @@ export class GitHubCodeHost implements CodeHost {
       const author = review.user?.login ?? null;
       const body = review.body ?? "";
       if (review.state !== "CHANGES_REQUESTED" || body.includes(OWN_MARKER) || threadedReviews.has(review.id)) continue;
-      const trusted = await this.trust.isTrusted({ address: input.address, login: author, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+      const trusted = await isTrusted(author);
       const approved = ordered.some((later) => later.id > review.id && later.user?.login?.toLowerCase() === author?.toLowerCase() && later.state === "APPROVED");
       artifacts.push({ providerKey: `review:${review.id}`, author, trusted, body, url: review.html_url, path: null, line: null, resolved: approved });
     }

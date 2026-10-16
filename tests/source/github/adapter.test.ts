@@ -25,7 +25,9 @@ class FakeTransport implements GitHubTransport {
   async request<T>(request: GitHubTransportRequest): Promise<T> {
     this.requests.push(request);
     if (this.#responses.length === 0) throw new Error("unexpected GitHub request");
-    return this.#responses.shift() as T;
+    const response = this.#responses.shift();
+    if (response instanceof Error) throw response;
+    return response as T;
   }
 }
 
@@ -128,6 +130,47 @@ describe("GitHubAdapter.setDependencies", () => {
         blockerNumbers: [2],
       }),
     ).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("GitHubAdapter.collaboratorPermission", () => {
+  test("returns each recognized permission and URL-encodes the login", async () => {
+    for (const permission of ["admin", "maintain", "write", "triage", "read", "none"] as const) {
+      const transport = new FakeTransport({ permission });
+      const adapter = new GitHubAdapter(transport, "conveyor");
+
+      expect(await adapter.collaboratorPermission("owner/my-app", "reviewer[bot]")).toBe(permission);
+      expect(transport.requests).toEqual([
+        {
+          method: "GET",
+          path: "repos/owner/my-app/collaborators/reviewer%5Bbot%5D/permission",
+        },
+      ]);
+    }
+  });
+
+  test("rejects missing and unusable permission payloads", async () => {
+    for (const response of [{}, { permission: "owner" }]) {
+      const adapter = new GitHubAdapter(new FakeTransport(response), "conveyor");
+
+      await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toThrow(
+        "GitHub returned no usable repository permission for reviewer",
+      );
+    }
+  });
+
+  test("propagates an unavailable collaborator lookup", async () => {
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 404", 1, "Not Found");
+    const adapter = new GitHubAdapter(new FakeTransport(unavailable), "conveyor");
+
+    await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toBe(unavailable);
+  });
+
+  test("propagates non-404 collaborator lookup failures", async () => {
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 503", 1, "Service unavailable");
+    const adapter = new GitHubAdapter(new FakeTransport(unavailable), "conveyor");
+
+    await expect(adapter.collaboratorPermission("owner/my-app", "reviewer")).rejects.toBe(unavailable);
   });
 });
 
