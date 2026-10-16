@@ -811,8 +811,8 @@ export const dashboardClient = String.raw`(() => {
   };
 
   // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
-  // so its live parts are swapped in place: the status line, the todo checklist and the facts.
-  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts'];
+  // so its live parts are swapped in place: the status line, criterion evidence, todo checklist and facts.
+  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts', '[data-criterion-evidence]'];
   const scheduleSummaryRefresh = () => {
     if (summaryRefreshTimer !== null) return;
     summaryRefreshTimer = setTimeout(async () => {

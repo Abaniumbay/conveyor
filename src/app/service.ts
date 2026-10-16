@@ -2529,11 +2529,27 @@ export class ConveyorService {
       new CriterionApprovals(this.store.sqlite()).list(issue.id).map((approval) => [approval.criterionId, approval]),
     );
     const headSha = this.criterionApprovalHead(issue);
-    return criteriaOf(issue.body).map(({ id, text }) => ({
-      id,
-      text,
-      approved: isCriterionApprovedAt(approvals, { id, text }, headSha),
-    }));
+    const evidence = new Map(this.store.criterionTestEvidence(issue.id).map((entry) => [entry.criterionId, entry]));
+    const repository = this.config.repositories[issue.repositoryId];
+    const host = this.codeHostFor(issue.repositoryId);
+    return criteriaOf(issue.body).map(({ id, text, manual }) => {
+      const recorded = evidence.get(id);
+      return {
+        id,
+        text,
+        approved: isCriterionApprovedAt(approvals, { id, text }, headSha),
+        manual,
+        tests: (recorded?.tests ?? []).map((test) => ({
+          name: test.name,
+          file: test.file,
+          line: test.line ?? null,
+          description: test.description ?? null,
+          sourceUrl: repository && host && recorded?.sourceLinkHead
+            ? host.sourceFileUrl({ address: repository.address, path: test.file, headSha: recorded.sourceLinkHead, ...(test.line === undefined ? {} : { line: test.line }) })
+            : null,
+        })),
+      };
+    });
   }
 
   private async writeStatusComment(issueId: string): Promise<void> {

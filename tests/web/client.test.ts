@@ -233,7 +233,7 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("scheduleJourneyRefresh");
     // An open issue dialog still gets its live summary parts (todos above all) without a page refresh.
     expect(dashboardClient).toContain("scheduleSummaryRefresh();");
-    expect(dashboardClient).toContain("const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts'];");
+    expect(dashboardClient).toContain("const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts', '[data-criterion-evidence]'];");
     expect(dashboardClient).toContain("dialog.getAttribute('data-details-url')");
     expect(dashboardClient).toContain("const openIssueDialog = async");
     expect(dashboardClient).toContain("const detailsAbortController = new AbortController();");

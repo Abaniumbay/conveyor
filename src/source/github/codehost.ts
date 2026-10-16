@@ -80,8 +80,9 @@ export class GitHubCodeHost implements CodeHost {
     return this.github.fileSource(input.address, input.path, input.headSha);
   }
 
-  sourceFileUrl(input: { address: string; path: string; headSha: string; line: number }): string {
-    return `https://github.com/${input.address}/blob/${input.headSha}/${input.path.split("/").map(encodeURIComponent).join("/")}#L${input.line}`;
+  sourceFileUrl(input: { address: string; path: string; headSha: string; line?: number }): string {
+    const line = input.line === undefined ? "" : `#L${input.line}`;
+    return `https://github.com/${input.address}/blob/${input.headSha}/${input.path.split("/").map(encodeURIComponent).join("/")}${line}`;
   }
 
   async pushBranch(input: {

@@ -37,6 +37,17 @@ export interface IssueCriterionViewModel {
   id: string;
   text: string;
   approved: boolean;
+  manual: boolean;
+  tests: readonly IssueCriterionTestViewModel[];
+}
+
+/** A test linked to an item acceptance criterion by recorded delivery evidence. */
+export interface IssueCriterionTestViewModel {
+  name: string;
+  file: string;
+  line: number | null;
+  description: string | null;
+  sourceUrl: string | null;
 }
 
 /** A native exit gate that a superuser may require or approve for this item. */

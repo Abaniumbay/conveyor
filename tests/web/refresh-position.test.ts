@@ -140,9 +140,24 @@ function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   });
 }
 
-async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
+async function armReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
   await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
-  await page.waitForFunction(() => !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh"));
+}
+
+async function waitForArmedReplacement(
+  page: Awaited<ReturnType<Browser["newPage"]>>,
+  changedCard?: { id: string; present: boolean },
+) {
+  await page.waitForFunction((expected) => {
+    const replaced = !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh");
+    if (!replaced || !expected) return replaced;
+    return (document.querySelector(`article.issue[data-issue-id="${expected.id}"]`) !== null) === expected.present;
+  }, changedCard);
+}
+
+async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
+  await armReplacement(page);
+  await waitForArmedReplacement(page);
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
@@ -326,7 +341,7 @@ describe("dashboard live refresh position", () => {
     const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => responseDelayMs });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       const baseUrl = `http://127.0.0.1:${server.port}`;
       await page.goto(`${baseUrl}/login`);
       await page.locator('input[name="username"]').fill("operator");
@@ -341,26 +356,28 @@ describe("dashboard live refresh position", () => {
       expect(before.scrollX).toBe(0);
 
       const inserted = Array.from({ length: 5 }, (_, index) => issue(`inserted-${index}`, index + 60));
+      await armReplacement(page);
       currentDashboard = dashboard(
         "revision-2",
         [...original, ...inserted, target, ...below],
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-2";
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page, { id: "inserted-0", present: true });
       const afterInsert = await cardPositions(page);
       expect(Math.abs(afterInsert.cardTop! - before.cardTop!)).toBeLessThanOrEqual(24);
       expect(Math.abs(afterInsert.stageLeft! - before.stageLeft!)).toBeLessThanOrEqual(24);
       expect(afterInsert.path).toBe(before.path);
 
       const priorOffsets = await cardPositions(page);
+      await armReplacement(page);
       currentDashboard = dashboard(
         "revision-3",
         [...original, ...inserted, ...below],
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-3";
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page, { id: "target", present: false });
       const afterRemoval = await page.evaluate(() => {
         const board = document.querySelector<HTMLElement>(".board");
         return {
@@ -553,6 +570,52 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
+  test("refreshes criterion evidence and approval state in an open phone detail dialog", async () => {
+    let revision = "criterion-evidence-1";
+    const initial = issue("target", 20, "Target item");
+    initial.acceptanceCriteria = [
+      { id: "AC-1", text: "Evidence criterion", approved: false, manual: false, tests: [] },
+      { id: "AC-2", text: "Manual criterion", approved: false, manual: true, tests: [] },
+    ];
+    let currentDashboard = dashboard(revision, [initial]);
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
+      await signIn(page, server.port);
+
+      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator('article.issue[data-issue-id="target"] .card-open').click();
+      await request;
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
+      expect(await page.locator("[data-criterion-evidence]").textContent()).toContain("no tests linked");
+      expect(await page.locator("[data-criterion-evidence]").textContent()).toContain("manual");
+
+      const refreshed = issue("target", 20, "Target item");
+      refreshed.acceptanceCriteria = [
+        {
+          id: "AC-1", text: "Evidence criterion", approved: true, manual: false,
+          tests: [{
+            name: "refreshes evidence", file: "tests/web/refresh-position.test.ts", line: 579,
+            description: "Uses the verified source revision.",
+            sourceUrl: "https://example.com/owner/repo/blob/verified-head/tests/web/refresh-position.test.ts#L579",
+          }],
+        },
+        { id: "AC-2", text: "Manual criterion", approved: false, manual: true, tests: [] },
+      ];
+      revision = "criterion-evidence-2";
+      currentDashboard = dashboard(revision, [refreshed]);
+      await page.waitForFunction(() => document.querySelector("[data-criterion-evidence]")?.textContent?.includes("refreshes evidence"));
+
+      const evidence = page.locator("[data-criterion-evidence]");
+      expect(await evidence.textContent()).toContain("☑ Approved");
+      expect(await evidence.locator("a.criterion-test-location").getAttribute("href")).toContain("/blob/verified-head/tests/web/refresh-position.test.ts#L579");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("a live update replaces only the cards that changed, and the server sends only those", async () => {
     const cards = Array.from({ length: 6 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
     let revision = "revision-1";
@@ -611,7 +674,7 @@ describe("dashboard live refresh position", () => {
     const alpha = {
       ...issue("alpha-card", 245, "Find the alpha item"), repository: "alpha", labels: ["backend"],
       issueType: "Feature", issueFields: [{ name: "Effort", value: "Large" }], searchActors: [{ type: "agent" as const, name: "Ada Lovelace", title: null }],
-      acceptanceCriteria: [{ id: "private-criterion", text: "Private criterion text", approved: false }], needsAttention: true, tone: "danger" as const,
+      acceptanceCriteria: [{ id: "private-criterion", text: "Private criterion text", approved: false, manual: false, tests: [] }], needsAttention: true, tone: "danger" as const,
     };
     const beta = { ...issue("beta-card", 246, "Keep the beta item"), repository: "beta", working: true };
     const family = {

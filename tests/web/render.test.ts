@@ -16,8 +16,8 @@ const parent: IssueCardViewModel = {
   issueType: "Feature",
   issueFields: [{ name: "Effort", value: "Medium" }],
   acceptanceCriteria: [
-    { id: "AC-1", text: "<script>alert(1)</script>", approved: false },
-    { id: "AC-2", text: "Keyboard usable", approved: true },
+    { id: "AC-1", text: "<script>alert(1)</script>", approved: false, manual: false, tests: [] },
+    { id: "AC-2", text: "Keyboard usable", approved: true, manual: false, tests: [] },
   ],
   todos: null,
   indicators: [],
@@ -348,7 +348,7 @@ describe("renderDashboard", () => {
   test("renders visible approved and unapproved criterion states", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
-    expect(html).toContain("☐ Not approved");
+    expect(html).toContain("☐ Waiting");
     expect(html).toContain("☑ Approved");
     expect(html).toContain("Keyboard usable");
   });
@@ -1288,4 +1288,36 @@ describe("renderDashboard", () => {
     expect(html).toContain(".indicator-chip--passing{border-color:var(--run);color:var(--run-text)}");
     expect(html).toContain(".andon--wait{background:var(--wait)}");
   });
+});
+
+test("renders expandable criterion evidence as text with SHA-correct source links", () => {
+  const html = renderIssueDetails({
+    ...parent,
+    acceptanceCriteria: [
+      {
+        id: "AC-1", text: "<criterion>", approved: true, manual: false,
+        tests: [
+          { name: "renders <safely>", file: "tests/web/render.test.ts", line: 47, description: "Escapes <stored> text", sourceUrl: "https://example.com/owner/repo/blob/verified-head/tests/web/render.test.ts#L47" },
+          { name: "uses a file link", file: "tests/web/no-line.test.ts", line: null, description: null, sourceUrl: "https://example.com/owner/repo/blob/recorded-head/tests/web/no-line.test.ts" },
+        ],
+      },
+      { id: "AC-2", text: "No evidence", approved: false, manual: false, tests: [] },
+      { id: "AC-3", text: "Production validation", approved: false, manual: true, tests: [] },
+    ],
+  });
+
+  expect(html).toContain('<details class="criterion-evidence">');
+  expect(html).toContain("☑ Approved");
+  expect(html).toContain("2 linked tests");
+  expect(html).toContain('href="https://example.com/owner/repo/blob/verified-head/tests/web/render.test.ts#L47"');
+  expect(html).toContain('href="https://example.com/owner/repo/blob/recorded-head/tests/web/no-line.test.ts"');
+  expect(html).toContain("tests/web/render.test.ts:47");
+  expect(html).toContain("tests/web/no-line.test.ts");
+  expect(html).toContain("Escapes &lt;stored> text");
+  expect(html).toContain("&lt;criterion>");
+  expect(html).toContain("renders &lt;safely>");
+  expect(html).toContain("no tests linked");
+  expect(html).toContain("manual");
+  expect(html).not.toContain("<criterion>");
+  expect(html).not.toContain("<stored>");
 });
