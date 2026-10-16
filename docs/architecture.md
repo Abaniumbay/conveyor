@@ -65,7 +65,7 @@ An issue is enrolled with the configured base label (by default `conveyor`). A s
 
 Removing the enrollment label pauses execution without erasing the issue. Removing every Conveyor-prefixed label offboards it from the dashboard. Ambiguous, unknown, or conflicting labels are shown under **Label problems** rather than guessed.
 
-Parents are roll-ups: current child links prevent new parent runs regardless of the pipeline stage or how the links were created. A run that was already active may finish or resume an answer it asked. Otherwise, a parent's source stage and board column follow the earliest pipeline stage occupied by an unfinished child, except while its own result is stopped or a run is active. The board separates roll-ups from executable issues within that column. Dependencies prevent an issue from running until the required issues are satisfied. A refinement stage may create child issues and place them directly into a later stage so independent slices can run in parallel.
+Parents are roll-ups: current child links prevent new parent runs regardless of the pipeline stage or how the links were created. A run that was already active may finish or resume an answer it asked. Otherwise, a parent's source stage and board column follow the earliest pipeline stage occupied by an unfinished child, except while its own result is stopped or a run is active. The board separates roll-ups from executable issues within that column. Dependencies prevent an issue from running until the required issues are satisfied. The built-in pipeline records a proposed child breakdown during refinement, reviews it while the item is still ordinary, then creates only the approved entries in a separate work-breakdown stage. Custom pipelines can retain direct child creation unless they opt into those tasks.
 
 Every stage is two task lists:
 
@@ -89,6 +89,7 @@ Agents never receive unrestricted control-plane access. Conveyor creates an ephe
 Tools are the registry's `tool` tasks, named in camelCase:
 
 - `item.*`: `get`, `comment`, `setCriteria`, `setTitle`, `setSystemLabels`, `setType`, `setFields`, `setRefinement`, `setParent`, `setDependencies`, `createChild`, `guidance`
+- `breakdown.*`: `setPlan`, `reviewPlan`, `createChildren`
 - `workspace.*`: `get`, `fetch`, `push`
 - `change.*`: `get`, `setMetadata`, `checkCriterion`, `uncheckCriterion`, `comment`, `resolveFinding`, `listFindings`
 - `ci.getLogs`, `conversation.get`

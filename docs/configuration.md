@@ -323,16 +323,26 @@ pipelines:
         icon: "🧭"                                                  # optional: an emoji beside the stage's name
         concurrency: 3
         retries: 2
-        childrenStartAt: next
         actions:
           - { id: refine, task: agent.run, with: { agent: refiner } }
         exit-gate:
           - { id: criteria, task: item.criteriaDefined }
           - { id: labels, task: item.labelsValid }
-          - { id: children, task: item.childrenValid }
+          - { id: plan, task: breakdown.planComplete }
           - id: dependencies
             task: item.dependenciesMet
             wait: { timeout: unlimited, poll: 5m }
+      - id: refinement-review
+        actions:
+          - { id: reviewPlan, task: agent.run, with: { agent: planReviewer } }
+        exit-gate:
+          - { id: reviewed, task: breakdown.reviewed, onFail: { return: refinement } }
+      - id: work-breakdown
+        childrenStartAt: next
+        actions:
+          - { id: createChildren, task: agent.run, with: { agent: childCreator } }
+        exit-gate:
+          - { id: complete, task: breakdown.complete, onFail: { return: refinement } }
       - id: implementation
         concurrency: 2
         retries: 3

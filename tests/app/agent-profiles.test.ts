@@ -20,7 +20,7 @@ async function reference() {
 describe("buildAgentProfiles", () => {
   test("describes every configured agent from the reference configuration", async () => {
     const profiles = await buildAgentProfiles(await reference());
-    expect(profiles.map((profile) => profile.id)).toEqual(["darya", "jamshid", "kaveh", "omid", "shaghayegh", "shirin"]);
+    expect(profiles.map((profile) => profile.id)).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin"]);
 
     const kaveh = profiles.find((profile) => profile.id === "kaveh")!;
     expect(kaveh).toMatchObject({
@@ -34,6 +34,10 @@ describe("buildAgentProfiles", () => {
     expect(kaveh.usage).toContainEqual({ pipeline: "delivery", stage: "implementation", role: "runs the stage action" });
     const jamshid = profiles.find((profile) => profile.id === "jamshid")!;
     expect(jamshid.usage).toContainEqual({ pipeline: "delivery", stage: "implementation", role: "runs the stage action when kaveh cannot" });
+    const parisa = profiles.find((profile) => profile.id === "parisa")!;
+    expect(parisa.usage).toContainEqual({ pipeline: "delivery", stage: "refinement-review", role: "runs the stage action" });
+    const roya = profiles.find((profile) => profile.id === "roya")!;
+    expect(roya.usage).toContainEqual({ pipeline: "delivery", stage: "work-breakdown", role: "runs the stage action" });
     const shirin = profiles.find((profile) => profile.id === "shirin")!;
     expect(shirin.usage).toContainEqual({ pipeline: "delivery", stage: "review", role: "runs the stage action when shaghayegh cannot" });
     const groups = Object.fromEntries(kaveh.tasks.map((group) => [group.group, group.tasks]));

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /** The only issue or pull-request body blocks this module considers Conveyor-owned. */
-export type ManagedSectionName = "acceptance-criteria" | "dependencies" | "description" | "refinement";
+export type ManagedSectionName = "acceptance-criteria" | "breakdown" | "dependencies" | "description" | "refinement";
 
 export interface ManagedSectionsSnapshot {
   /** SHA-256 of the entire body; pass this back when writing to reject stale edits. */
@@ -16,6 +16,7 @@ export class ManagedSectionError extends Error {
 
 const SECTION_NAMES: readonly ManagedSectionName[] = [
   "acceptance-criteria",
+  "breakdown",
   "dependencies",
   "description",
   "refinement",
@@ -46,7 +47,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     if (raw.length === 0) break;
     const contentEnd = offset + raw.replace(/(?:\r\n|\n|\r)$/, "").length;
     const text = body.slice(offset, contentEnd).trim();
-    const match = /^<!-- conveyor:(acceptance-criteria|dependencies|description|refinement):(start|end) -->$/.exec(text);
+    const match = /^<!-- conveyor:(acceptance-criteria|breakdown|dependencies|description|refinement):(start|end) -->$/.exec(text);
     if (match) {
       const marker: MarkerLine = {
         name: match[1] as ManagedSectionName,
@@ -71,6 +72,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
   const ranges: Array<{ name: ManagedSectionName; start: MarkerLine; end: MarkerLine }> = [];
   const sections: Record<ManagedSectionName, string | undefined> = {
     "acceptance-criteria": undefined,
+    breakdown: undefined,
     dependencies: undefined,
     description: undefined,
     refinement: undefined,

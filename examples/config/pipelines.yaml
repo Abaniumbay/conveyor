@@ -5,21 +5,39 @@ delivery:
   stages:
     - &refinement
       id: refinement
-      description: "Turns an item into a clear, testable plan: acceptance criteria, labels, and children or dependencies when it is too big."
+      description: "Turns an item into a clear, testable plan and records a proposed work breakdown without creating children."
       icon: "🧭"
       concurrency: 3
       retries: 2
-      childrenStartAt: next
       actions:
         - { id: refine, task: agent.run, with: { agent: darya } }
       exit-gate:
         - { id: criteria, task: item.criteriaDefined }
         - { id: labels, task: item.labelsValid }
         - { id: outputs, task: item.refinementComplete }   # type, fields and Refinement section the repository requires
-        - { id: children, task: item.childrenValid }
+        - { id: breakdownPlan, task: breakdown.planComplete }
         - id: dependencies
           task: item.dependenciesMet
           wait: { timeout: unlimited, poll: 5m }
+
+    - id: refinement-review
+      description: "Reviews the proposed work breakdown before Conveyor creates any child issues."
+      icon: "🧾"
+      concurrency: 1
+      actions:
+        - { id: reviewBreakdown, task: agent.run, with: { agent: parisa } }
+      exit-gate:
+        - { id: approvedBreakdown, task: breakdown.reviewed, onFail: { return: refinement } }
+
+    - id: work-breakdown
+      description: "Creates the approved work breakdown's child issues exactly as planned."
+      icon: "🧩"
+      concurrency: 1
+      childrenStartAt: next
+      actions:
+        - { id: createChildren, task: agent.run, with: { agent: roya } }
+      exit-gate:
+        - { id: completedBreakdown, task: breakdown.complete, onFail: { return: refinement } }
 
     - id: implementation
       description: "Writes the change on its own branch, opens a pull request, and waits for CI to pass."

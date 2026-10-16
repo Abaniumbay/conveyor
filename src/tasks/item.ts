@@ -222,6 +222,12 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
         enrolled: child.labels.includes(config.labels.enrollment),
         hasCriteria: parseCriteria(child.body).length > 0,
         hasChildren: store.listChildren(child.id).length > 0,
+        title: child.title,
+        body: child.body,
+        labels: child.labels,
+        dependsOn: store.listDependencies(child.id)
+          .flatMap((dependencyId) => store.getIssue(dependencyId)?.sourceNumber ?? [] )
+          .sort((left, right) => left - right),
       }];
     });
     const dependencies = store.listDependencies(issue.id).flatMap((blockerId) => {
@@ -238,6 +244,14 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       labels: issue.labels,
       state: issue.sourceState,
       criteria: criteriaOf(issue.body),
+      ...(() => {
+        try {
+          const breakdown = parseManagedSections(issue.body).sections.breakdown;
+          return breakdown === undefined ? {} : { breakdown };
+        } catch {
+          return {};
+        }
+      })(),
       children,
       dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
       systemLabels: issue.labels.filter((label) => systemLabels.includes(label)),

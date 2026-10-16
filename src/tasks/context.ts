@@ -36,7 +36,21 @@ export interface ItemContext {
   labels: string[];
   state: string;
   criteria: Array<{ id: string; text: string; manual: boolean }>;
-  children: Array<{ id: string; number: number; state: string; enrolled: boolean; hasCriteria: boolean; hasChildren: boolean }>;
+  /** The managed work-breakdown section, when refinement recorded one. */
+  breakdown?: string;
+  children: Array<{
+    id: string;
+    number: number;
+    state: string;
+    enrolled: boolean;
+    hasCriteria: boolean;
+    hasChildren: boolean;
+    /** Present in loaded snapshots so deterministic breakdown gates can compare planned children. */
+    title?: string;
+    body?: string;
+    labels?: string[];
+    dependsOn?: number[];
+  }>;
   dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
   systemLabels: string[];
   /** Present only when the item carries the configured metadata label that prevents decomposition. */

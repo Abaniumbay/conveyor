@@ -26,6 +26,8 @@ describe("agent profiles in the service", () => {
       { id: "jamshid", name: "Jamshid", title: "Developer" },
       { id: "kaveh", name: "Kaveh", title: "Senior Developer" },
       { id: "omid", name: "Omid", title: "Conveyor Operator" },
+      { id: "parisa", name: "Parisa", title: "Work Breakdown Reviewer" },
+      { id: "roya", name: "Roya", title: "Work Breakdown Coordinator" },
       { id: "shaghayegh", name: "Shaghayegh", title: "Senior Reviewer" },
       { id: "shirin", name: "Shirin", title: "Senior Reviewer" },
     ]);

@@ -87,6 +87,17 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `agent.reportResult` | tool | - | - | Record the agent's result report. |
 | `agent.run` | act | run | writes agent; invalidates workspace | Runs a configured agent (`agent`, or `agents` in order of preference: the next runs when one's harness cannot) through its harness in the item's workspace (creating or re-attaching it when needed) and captures `{ agentId, status, summary, reason, sessionId, runId }` in `agent`. `needs-input` parks the action until the question is answered, then continues the agent's session when the harness supports resuming and otherwise starts a fresh attempt that carries the question and answer. `blocked` and `rejected` stop with the agent's reason, `changes-requested` passes (the exit gate decides) when the item has an open finding, including imported findings or findings from earlier runs, and otherwise stops as an error. An invalid result stops as an error. |
 
+### breakdown
+
+| Task | Kind | Reads | Writes / invalidates | Description |
+| --- | --- | --- | --- | --- |
+| `breakdown.complete` | check | item, repository | - | Passes only when every approved plan entry has one matching marked child and all parent criteria are covered. |
+| `breakdown.createChildren` | tool | - | invalidates item | Create exactly the approved plan's marked children, copying their title, scope, managed criteria, labels and dependency links without inventing details. Re-running reuses each entry marker. |
+| `breakdown.planComplete` | check | item, repository | - | Passes when refinement recorded a complete split plan or an explicit no-split decision, with valid references and parent-criterion coverage. |
+| `breakdown.reviewed` | check | item, repository | - | Passes only after a reviewer approved the valid breakdown plan; a rejection returns its actionable reason. |
+| `breakdown.reviewPlan` | tool | - | invalidates item | Approve a valid work breakdown plan, or reject it with an actionable reason for refinement. This tool cannot create children. |
+| `breakdown.setPlan` | tool | - | invalidates item | Record a complete split plan with stable entry IDs or an explicit no-split decision. Replacing a plan always requires fresh review. |
+
 ### change
 
 | Task | Kind | Reads | Writes / invalidates | Description |
