@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import packageMetadata from "../../package.json";
 import { ToolRequestError } from "../../src/tasks/errors";
+import { BUILD } from "../../src/version";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
@@ -377,12 +378,28 @@ describe("createWebHandler", () => {
     expect(subscriptions).toEqual([["legacy", "https://push.example/subscription", { p256dh, auth: authKey }]]);
   });
 
+  test("publishes source build metadata without a session", async () => {
+    const { handler } = setup();
+    const version = await handler(new Request("http://localhost/version"));
+
+    expect(version.status).toBe(200);
+    expect(version.headers.get("content-type")).toContain("application/json");
+    const metadata = await version.json();
+    expect(metadata).toEqual({
+      service: "conveyor",
+      version: BUILD.version,
+      commit: BUILD.commit,
+      builtAt: BUILD.builtAt,
+    });
+    expect(metadata).toMatchObject({ version: packageMetadata.version, commit: "development", builtAt: null });
+  });
+
   test("keeps liveness public and protects readiness and the dashboard", async () => {
     const { handler } = setup();
     const live = await handler(new Request("http://localhost/health/live"));
     expect(live.status).toBe(200);
     expect(live.headers.get("content-type")).toContain("application/json");
-    expect(await live.json()).toEqual({ status: "live" });
+    expect(await live.json()).toEqual({ status: "live", version: BUILD.version, commit: BUILD.commit });
 
     expect((await handler(new Request("http://localhost/health/ready"))).status).toBe(401);
     const unauthenticated = await handler(new Request("http://localhost/"));
@@ -392,6 +409,14 @@ describe("createWebHandler", () => {
     expect(recentUnauthenticated.status).toBe(303);
     expect(recentUnauthenticated.headers.get("location")).toBe("/login?returnTo=%2Frecent%3Ftype%3Ddone");
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
+  });
+
+  test("limits the public version endpoint to GET", async () => {
+    const { handler } = setup();
+    const response = await handler(new Request("http://localhost/version", { method: "POST" }));
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET");
   });
 
   test("loads an authenticated item's escaped details as an HTML fragment", async () => {

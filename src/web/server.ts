@@ -4,6 +4,7 @@ import plexSans500 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500
 import plexSans600 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2" with { type: "file" };
 import { timingSafeEqual } from "node:crypto";
 import { ToolRequestError } from "../tasks/errors";
+import { BUILD } from "../version";
 import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
 import { dashboardClient } from "./client";
@@ -582,7 +583,17 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
 
     if (path === "/health/live") {
       const methodError = requireMethod(request, "GET");
-      return methodError ?? json({ status: "live" });
+      return methodError ?? json({ status: "live", version: BUILD.version, commit: BUILD.commit });
+    }
+
+    if (path === "/version") {
+      const methodError = requireMethod(request, "GET");
+      return methodError ?? json({
+        service: "conveyor",
+        version: BUILD.version,
+        commit: BUILD.commit,
+        builtAt: BUILD.builtAt,
+      });
     }
 
     if (path === "/health/ready") {
