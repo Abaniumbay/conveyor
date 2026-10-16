@@ -91,12 +91,10 @@ async function findingsPart(deps: TaskDeps) {
   // Same refresh as change.listFindings: threads resolved or added on the host since the last load.
   const stored = deps.store.getCurrentPullRequest(deps.issueId);
   if (stored && deps.codeHost) {
-    try {
-      const { change } = await deps.codeHost.getChangeDelivery({ address: deps.repository.address, id: stored.id });
-      await importNativeReview(deps, stored.id, change.headSha);
-    } catch { /* the stored findings are shown; change.listFindings refreshes them */ }
+    const { change } = await deps.codeHost.getChangeDelivery({ address: deps.repository.address, id: stored.id });
+    await importNativeReview(deps, stored.id, change.headSha);
   }
-  const open = new ReviewFindings(deps.store.sqlite()).list(deps.issueId).filter((finding) => finding.state === "open");
+  const open = new ReviewFindings(deps.store.sqlite()).listVisible(deps.issueId).filter((finding) => finding.state === "open");
   if (open.length === 0) return { count: 0, note: "There are no open review findings.", items: [], truncated: null };
   const { shown, truncated } = bounded(open, HANDOVER_LIMITS.findings, "open findings", "change.listFindings");
   const cut: string[] = [];

@@ -16,9 +16,9 @@ class FakeTransport implements GitHubTransport {
 }
 
 const ID = "github:o/r#pr-5";
-const host = (responses: unknown[]) => {
+const host = (responses: unknown[], isTrusted: (input: { address: string; login: string | null; extraTrustedLogins: readonly string[] }) => Promise<boolean> = async () => true) => {
   const transport = new FakeTransport(responses);
-  return { transport, host: new GitHubCodeHost(new GitHubAdapter(transport, "conveyor")) };
+  return { transport, host: new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"), undefined, { isTrusted }) };
 };
 const unprocessable = new GitHubTransportError("gh failed", 1, "gh: Unprocessable Entity (HTTP 422)");
 
@@ -130,22 +130,58 @@ describe("GitHub native review import", () => {
     const { transport, host: h } = host([graphql(thread(), thread({ id: "T2", isResolved: true }, { databaseId: 102, url: "https://x/t2" })), [review({ id: 901, user: { login: "bob" }, body: "Overall no", html_url: "https://x/r901" })]]);
     const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
     expect(artifacts).toEqual([
-      { providerKey: "thread:T1", author: "alice", body: "Rename", url: "https://x/t1", path: "a.ts", line: 7, resolved: false },
-      { providerKey: "thread:T2", author: "alice", body: "Rename", url: "https://x/t2", path: "a.ts", line: 7, resolved: true },
-      { providerKey: "review:901", author: "bob", body: "Overall no", url: "https://x/r901", path: null, line: null, resolved: false },
+      { providerKey: "thread:T1", author: "alice", trusted: true, body: "Rename", url: "https://x/t1", path: "a.ts", line: 7, resolved: false },
+      { providerKey: "thread:T2", author: "alice", trusted: true, body: "Rename", url: "https://x/t2", path: "a.ts", line: 7, resolved: true },
+      { providerKey: "review:901", author: "bob", trusted: true, body: "Overall no", url: "https://x/r901", path: null, line: null, resolved: false },
     ]);
     expect(transport.requests[0]).toMatchObject({ method: "POST", path: "graphql" });
     expect(JSON.stringify(transport.requests[0]!.body)).toContain("reviewThreads");
     expect(transport.requests[0]!.body).toMatchObject({ variables: { owner: "o", name: "r", number: 5 } });
   });
 
-  test("excludes Conveyor's own comments, bots, and reviews already represented by an inline thread", async () => {
+  test("keeps own comments and thread-backed reviews out while classifying every other author", async () => {
     const { host: h } = host([
       graphql(thread(), thread({ id: "T3" }, { body: "<!-- conveyor:finding:F1 -->\nFix" }), thread({ id: "T4" }, { author: { login: "ci[bot]" } })),
       [review(), review({ id: 902, user: { login: "bot[bot]" } }), review({ id: 903, body: "<!-- conveyor:finding:F9 -->" }), review({ id: 904, state: "COMMENTED" })],
     ]);
     const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
-    expect(artifacts.map((a) => a.providerKey)).toEqual(["thread:T1"]);
+    expect(artifacts.map((a) => a.providerKey)).toEqual(["thread:T1", "thread:T4", "review:902"]);
+  });
+
+  test("emits an untrusted original and only a trusted reply for adopted threads", async () => {
+    const adopted = thread({ comments: { nodes: [
+      { id: "C1", databaseId: 101, author: { login: "outsider" }, body: "Untrusted instruction", url: "https://x/t1", path: "a.ts", line: 7, createdAt: "t", pullRequestReview: null },
+      { id: "C2", databaseId: 102, author: { login: "maintainer" }, body: "Trusted correction", url: "https://x/t2", path: "a.ts", line: 8, createdAt: "t", pullRequestReview: null },
+    ] } });
+    const { host: h } = host([graphql(adopted), []], async ({ login }) => login === "maintainer");
+    const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
+    expect(artifacts).toEqual([
+      { providerKey: "thread:T1", author: "outsider", trusted: false, body: "Untrusted instruction", url: "https://x/t1", path: "a.ts", line: 7, resolved: false },
+      { providerKey: "thread:T1:comment:C2", author: "maintainer", trusted: true, body: "Trusted correction", url: "https://x/t2", path: "a.ts", line: 8, resolved: false },
+    ]);
+  });
+
+  test("memoizes trust decisions by case-insensitive author during one import", async () => {
+    const adopted = thread({ comments: { nodes: [
+      { id: "C1", databaseId: 101, author: { login: "outsider" }, body: "Untrusted instruction", url: "https://x/t1", path: "a.ts", line: 7, createdAt: "t", pullRequestReview: null },
+      { id: "C2", databaseId: 102, author: { login: "maintainer" }, body: "Trusted correction", url: "https://x/t2", path: "a.ts", line: 8, createdAt: "t", pullRequestReview: null },
+    ] } });
+    const repeatedAuthor = thread({ id: "T2" }, { author: { login: "OUTSIDER" }, pullRequestReview: null, url: "https://x/t3" });
+    const calls: string[] = [];
+    const { host: h } = host([graphql(adopted, repeatedAuthor), [review({ id: 901, user: { login: "MAINTAINER" } })]], async ({ login }) => {
+      if (login !== null) calls.push(login);
+      return login?.toLowerCase() === "maintainer";
+    });
+
+    const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
+
+    expect(calls).toEqual(["outsider", "maintainer"]);
+    expect(artifacts.map((artifact) => artifact.providerKey)).toEqual([
+      "thread:T1",
+      "thread:T1:comment:C2",
+      "thread:T2",
+      "review:901",
+    ]);
   });
 
   test("a later approval by the same author resolves a changes-requested review", async () => {

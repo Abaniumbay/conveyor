@@ -179,7 +179,7 @@ export interface ChangeContext {
     line: number | null;
     url: string;
     dismissal?: { actor: string; reason: string; at: string };
-    withdrawal?: { actor: string; reason: "provider-artifact-deleted"; at: string };
+    withdrawal?: { actor: string; reason: "provider-artifact-deleted" | "provider-artifact-untrusted"; at: string };
   }>;
 }
 

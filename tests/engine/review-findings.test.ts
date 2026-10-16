@@ -25,7 +25,7 @@ async function open() {
 
 const created = { issueId: "i1", runId: "run1", author: "reviewer", headSha: "h1", path: "a.ts", line: 3, body: "Fix this" };
 const artifact = (over: Partial<NativeArtifact> = {}): NativeArtifact => ({
-  providerKey: "thread:T1", author: "alice", body: "Please rename", url: "https://x/c1", path: "b.ts", line: 9, resolved: false, ...over,
+  providerKey: "thread:T1", author: "alice", trusted: true, body: "Please rename", url: "https://x/c1", path: "b.ts", line: 9, resolved: false, ...over,
 });
 
 describe("ReviewFindings", () => {
@@ -114,5 +114,33 @@ describe("ReviewFindings", () => {
     findings.importNative("i1", [], "h1", "t4");
     expect(findings.get("i1", imported.id)!.state).toBe("dismissed");
     expect(findings.get("i1", agent.id)!.state).toBe("open");
+  });
+
+  test("records untrusted artifacts without their body and hides legacy findings until trust returns", async () => {
+    const findings = await open();
+    findings.importNative("i1", [artifact()], "h1", "t1");
+    findings.importNative("i1", [artifact({ author: "outsider", trusted: false, body: "Never expose this" })], "h2", "t2");
+
+    expect(findings.list("i1")[0]).toMatchObject({ state: "withdrawn", withdrawal: { reason: "provider-artifact-untrusted", at: "t2" } });
+    expect(findings.listVisible("i1")).toEqual([]);
+    expect(findings.skippedNative("i1")).toEqual([{
+      providerKey: "thread:T1", author: "outsider", url: "https://x/c1", skippedAt: "t2", active: true,
+    }]);
+
+    findings.importNative("i1", [artifact({ author: "outsider", trusted: false, body: "A different secret" })], "h2", "t3");
+    expect(findings.skippedNative("i1")).toHaveLength(1);
+
+    findings.importNative("i1", [artifact()], "h3", "t4");
+    expect(findings.listVisible("i1")).toMatchObject([{ providerKey: "thread:T1", state: "open" }]);
+    expect(findings.skippedNative("i1")[0]).toMatchObject({ active: false });
+  });
+
+  test("does not create a finding for an untrusted native artifact", async () => {
+    const findings = await open();
+    findings.importNative("i1", [artifact({ author: null, trusted: false, body: "Untrusted text" })], "h1", "t1");
+    expect(findings.list("i1")).toEqual([]);
+    expect(findings.skippedNative("i1")).toEqual([{
+      providerKey: "thread:T1", author: null, url: "https://x/c1", skippedAt: "t1", active: true,
+    }]);
   });
 });

@@ -389,6 +389,7 @@ repositories:
     baseBranch: main
     pipeline: default
     concurrency: 2
+    extraTrustedLogins: [review-bot]
     agentEgress:
       allowLoopbackMcp: true
       httpsHosts: [registry.npmjs.org]
@@ -398,6 +399,13 @@ repositories:
           actions:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
+
+Native review findings are trusted only when GitHub reports that the author has `write`,
+`maintain`, or `admin` permission for that repository. `extraTrustedLogins` adds named accounts,
+such as an approved review bot (GitHub App bot logins use the `name[bot]` form), and login
+matching is case-insensitive. `read`, `triage`, no access, missing authors, and omitted logins
+are not trusted. If GitHub cannot determine an author's permission, Conveyor retries native
+review import and the review gate does not pass on an incomplete trust check.
 
 `labels.metadata.noSplit` is a per-item metadata label that keeps refinement to one item. It defaults to `<labels.enrollment>:no-split`, so existing configurations continue to load unchanged; set it explicitly when the label name should differ from the enrollment prefix. Conveyor never adds, removes, or inherits this label. Adding it neither enrolls an issue nor changes its stage or state, and it remains present through Conveyor's workflow-label updates. Removing it takes effect on the next refinement run. While it is present, `item.createChild` refuses before changing the source issue, relationships, or dependencies; refine the whole scope instead, or report `needs-input` with a concrete reason when that is impossible. Existing children remain unchanged, and a child can be kept whole only by carrying the label itself. The dashboard marks labelled items as “No split”.
 

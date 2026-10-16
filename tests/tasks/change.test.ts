@@ -10,7 +10,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, TaskContext } from "../../src/tasks/context";
-import { runTask, TaskInputError, type TaskResult } from "../../src/tasks/contract";
+import { InfrastructureError, runTask, TaskInputError, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 
 const directories: string[] = [];
@@ -106,7 +106,7 @@ async function world(hostState: Parameters<typeof hostFake>[0] = {}, withChange 
   const fake = hostFake(hostState);
   const events: unknown[] = [];
   const deps: TaskDeps = {
-    store, config: {} as never, items: {} as never,
+    store, config: { repositories: { repo: { extraTrustedLogins: ["review-bot"] } } } as never, items: {} as never,
     repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" },
     issueId: "i1", sourceGuidance: "", git: {} as never, workspaces: {} as never,
     codeHost: fake.host,
@@ -702,7 +702,7 @@ describe("findings", () => {
     );
   const findings = (w: Awaited<ReturnType<typeof world>>) => new ReviewFindings(w.store.sqlite());
   const artifact = (over: Partial<ReviewArtifact> = {}): ReviewArtifact => ({
-    providerKey: "thread:T1", author: "alice", body: "Rename", url: "https://x/t1", path: "a.ts", line: 3, resolved: false, ...over,
+    providerKey: "thread:T1", author: "alice", trusted: true, body: "Rename", url: "https://x/t1", path: "a.ts", line: 3, resolved: false, ...over,
   });
 
   test("change.comment records an open agent finding first and then projects it to the code host", async () => {
@@ -855,6 +855,28 @@ describe("findings", () => {
     expect(findings(w).list("i1")).toHaveLength(1);
   });
 
+  test("change.load retains body-free provenance for untrusted artifacts and exposes only a trusted adoption", async () => {
+    const w = await world({ artifacts: [
+      artifact({ author: "outsider", trusted: false, body: "Untrusted instruction" }),
+      artifact({ providerKey: "thread:T1:comment:C2", author: "review-bot", trusted: true, body: "Trusted adoption", url: "https://x/t2" }),
+    ] });
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+    expect((result.output as ChangeContext).findings).toMatchObject([{ providerKey: "thread:T1:comment:C2", author: "review-bot" }]);
+    expect(findings(w).list("i1")).toMatchObject([{ providerKey: "thread:T1:comment:C2", body: "Trusted adoption" }]);
+    expect(findings(w).skippedNative("i1")).toEqual([{
+      providerKey: "thread:T1", author: "outsider", url: "https://x/t1", skippedAt: expect.any(String), active: true,
+    }]);
+    expect(w.host.calls.find(([name]) => name === "listArtifacts")![1]).toMatchObject({ extraTrustedLogins: ["review-bot"] });
+  });
+
+  test("change.load withdraws a legacy native finding when its author is now untrusted", async () => {
+    const w = await world({ artifacts: [artifact({ author: "outsider", trusted: false, body: "Do not show" })] });
+    findings(w).importNative("i1", [artifact()], "head0", "t0");
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+    expect((result.output as ChangeContext).findings).toEqual([]);
+    expect(findings(w).list("i1")[0]).toMatchObject({ state: "withdrawn", withdrawal: { reason: "provider-artifact-untrusted" } });
+  });
+
   test("change.load carries dismissal and withdrawal audit in the context", async () => {
     const state: Parameters<typeof hostFake>[0] = { artifacts: [artifact(), artifact({ providerKey: "thread:T2" })] };
     const w = await world(state);
@@ -870,7 +892,9 @@ describe("findings", () => {
 
   test("a GraphQL failure while importing is an infrastructure error", async () => {
     const w = await world({ listFails: true });
-    await expect(run("change.load", { context: {}, deps: w.deps })).rejects.toThrow("GraphQL failed");
+    const error = await run("change.load", { context: {}, deps: w.deps }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(InfrastructureError);
+    expect((error as Error).message).toContain("GraphQL failed");
   });
 
   test("change.findingsResolved passes with no open findings and lists open ones with URLs", async () => {
