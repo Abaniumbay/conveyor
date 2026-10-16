@@ -219,12 +219,12 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
     const gaps: string[] = [];
     const lines = new Map<string, number[]>();
     for (const criterion of context.item!.criteria) {
+      if (criterion.manual) continue;
       const entry = entries.get(criterion.id);
       if (!entry) {
-        if (!criterion.manual) gaps.push(`${criterion.id}: no tests linked`);
+        gaps.push(`${criterion.id}: no tests linked`);
         continue;
       }
-      if (entry.manual) continue;
       if (entry.tests.length === 0) {
         gaps.push(`${criterion.id}: no tests linked`);
         continue;

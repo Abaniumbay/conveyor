@@ -222,6 +222,9 @@ export async function deliveryWorld(options: { requireDescription?: boolean } = 
           const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
           await git(input.workspace, "push", "--set-upstream", "origin", branch);
           host.headSha = await git(input.workspace, "rev-parse", "HEAD");
+        } else if (implementationRuns === 2) {
+          // The first run created the branch commit. Conveyor has now opened the change, so this
+          // returned implementation run can bind the evidence to its authoritative head.
           const run = store.listRunsForStage("issue", "implementation", "producer")[0];
           if (!run) throw new Error("the implementation tool call requires its active run");
           const actor = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };

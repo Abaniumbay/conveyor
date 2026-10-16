@@ -387,6 +387,24 @@ describe("change tools", () => {
     expect(changedHead.route).toEqual({ return: "implementation" });
   });
 
+  test("criterionTestsVerified uses the current Manual marker rather than recorded evidence", async () => {
+    const formerlyManual = await world({ body: PR_BODY }, true, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "m", manual: true }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => formerlyManual.deps, liveHeadSha: async () => "head1", store: formerlyManual.store },
+    );
+    const missing = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "m", text: "Looks right", manual: false }] } as never }), deps: formerlyManual.deps }) as Fail;
+    expect(missing.message).toContain("m: no tests linked");
+
+    const nowManual = await world({ body: PR_BODY }, true, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "m", tests: [{ name: "does work", file: "tests/missing.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => nowManual.deps, liveHeadSha: async () => "head1", store: nowManual.store },
+    );
+    const skipped = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "m", text: "[Manual] Looks right", manual: true }] } as never }), deps: nowManual.deps });
+    expect(skipped.status).toBe("pass");
+  });
+
   const dispatchMetadata = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, tasks = new Set(["change.setMetadata"]), store = w.store) =>
     dispatchTool(
       { name, input, actor: { id: "kaveh", name: "K", title: "T" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks } },
