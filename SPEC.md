@@ -71,7 +71,12 @@ Conveyor runs as one systemd-managed Bun process. It uses:
 
 SQLite is an operational journal and projection, not the issue source of truth. It stores scheduling order, leases, attempts, events, questions, costs, source cursors, cached source data, and the durable execution state of task chains (item contexts and history, task executions, stage cursors and epochs). Reconciliation must be capable of rebuilding the source projection.
 
-Unauthenticated liveness and authenticated readiness/diagnostic endpoints report process, database, scheduler, disk, webhook, and last-reconciliation health without exposing issue content or secrets. The UI shows degraded repositories without stopping healthy repositories.
+Unauthenticated `GET /health/live` reports `{ "status": "live", "version", "commit" }` for
+process supervision. Unauthenticated `GET /version` reports `{ "service": "conveyor", "version",
+"commit", "builtAt" }` from the running build; source checkouts report `"development"` and `null`
+for the latter two fields. Readiness and diagnostic endpoints are authenticated and report process,
+database, scheduler, disk, webhook, and last-reconciliation health without exposing issue content or
+secrets. The UI shows degraded repositories without stopping healthy repositories.
 
 ## 5. Plugin contracts
 

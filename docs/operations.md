@@ -160,8 +160,11 @@ CLIs are not in `~/.local/bin`, `~/.bun/bin` or the system directories, pass `--
 
 When a drain times out, nothing is stopped and admission resumes; `--force` goes ahead anyway.
 
-`GET /health/live` is public, for process supervision and load balancers. Readiness, operational
-data and the dashboard require a signed-in account.
+`GET /health/live` is public, for process supervision and load balancers. Its JSON response is
+`{ "status": "live", "version", "commit" }`, identifying the running release. `GET /version`
+is also public and returns `{ "service": "conveyor", "version", "commit", "builtAt" }`; in a
+source checkout, `commit` is `"development"` and `builtAt` is `null`. Readiness, operational data
+and the dashboard require a signed-in account.
 
 ## Day to day
 
