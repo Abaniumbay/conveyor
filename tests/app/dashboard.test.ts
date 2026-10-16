@@ -2036,6 +2036,30 @@ describe("ConveyorService dashboard", () => {
       }],
     });
     expect(JSON.stringify(service.issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
+    store.setIssueProjection("github:owner/repo#31", {
+      stage: null,
+      state: "offboarded",
+      warning: null,
+    });
+    const repositoryDetail = service.dashboard("csrf", {
+      view: "repository",
+      repositoryId: "repo",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+      runId: null,
+      issueId: null,
+    }).repositories.find((repository) => repository.id === "repo");
+    expect(repositoryDetail?.skippedReviewItems).toContainEqual({
+      number: 31,
+      title: "Waiting for CI",
+      count: 1,
+    });
+    expect(service.issueJourney("github:owner/repo#31")).toMatchObject({
+      skippedReviews: [{ author: "outside-reviewer", url: "https://example.com/reviews/1" }],
+    });
+    expect(await service.webDependencies({} as never, "operator").getIssueRoute({ repository: "repo", number: 31 }))
+      .toEqual({ id: "github:owner/repo#31", repository: "repo", number: 31 });
     expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
       visibility: "public",
       checkedAt: "2026-09-29T03:00:00Z",

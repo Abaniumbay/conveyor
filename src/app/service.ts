@@ -500,6 +500,8 @@ export class ConveyorService {
         const message = error instanceof Error ? error.message : String(error);
         this.#repositoryErrors.set(id, message);
         log.error("Repository reconciliation failed", { repository: id }, error);
+      } finally {
+        await this.recordRepositoryTrustStatus(id, repository.address);
       }
     }
     this.#lastReconciledAt = new Date().toISOString();
@@ -3618,7 +3620,7 @@ export class ConveyorService {
 
   issueJourney(issueId: string): IssueJourneyViewModel | null {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue) return null;
     const repository = this.config.repositories[issue.repositoryId]
       ?? Object.values(this.config.repositories).find((candidate) =>
         candidate.address === issue.repositoryId
@@ -4034,7 +4036,7 @@ export class ConveyorService {
   }
 
   webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {
-    const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
+    const githubSource = Object.values(this.config.sources ?? {}).find((source) => source.type === "github");
     return {
       auth,
       username,
@@ -4081,7 +4083,7 @@ export class ConveyorService {
         const issue = "id" in reference
           ? this.store.getIssue(reference.id)
           : this.store.listIssues(reference.repository).find((candidate) => candidate.sourceNumber === reference.number) ?? null;
-        if (!issue || issue.projectedState === "offboarded") return null;
+        if (!issue) return null;
         return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
       },
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),

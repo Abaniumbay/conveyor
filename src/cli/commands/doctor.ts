@@ -166,7 +166,7 @@ export async function doctorChecks(
  */
 export async function repositoryTrustChecks(
   config: ConveyorConfig,
-  adapter: Pick<GitHubAdapter, "repositoryVisibility"> | null,
+  adapter: Pick<GitHubAdapter, "repositoryVisibility" | "collaboratorPermission"> | null,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   for (const [id, repository] of Object.entries(config.repositories)) {
@@ -183,9 +183,24 @@ export async function repositoryTrustChecks(
     }
     try {
       const visibility = await adapter.repositoryVisibility(repository.address);
-      checks.push(visibility === "public"
-        ? { name: `repository trust ${id}`, status: "ok", detail: `This repository is public. ${policy}` }
-        : { name: `repository trust ${id}`, status: "ok", detail: `This repository is private; the public-source status is not required. ${policy}` });
+      if (visibility !== "public") {
+        checks.push({ name: `repository trust ${id}`, status: "ok", detail: `This repository is private; the public-source status is not required. ${policy}` });
+        continue;
+      }
+      // Probe the same GitHub endpoint the trust policy uses. The repository owner is a stable
+      // login for this purpose; the result is not itself a trust decision for future authors.
+      const owner = repository.address.split("/")[0]!;
+      try {
+        await adapter.collaboratorPermission(repository.address, owner);
+        checks.push({ name: `repository trust ${id}`, status: "ok", detail: `This repository is public and GitHub author-permission lookups are available. ${policy}` });
+      } catch (error) {
+        checks.push({
+          name: `repository trust ${id}`,
+          status: "warn",
+          detail: `This repository is public, but GitHub author-permission lookups cannot be confirmed: ${error instanceof Error ? error.message : String(error)}. ${policy}`,
+          fix: `check GitHub access to collaborator permissions for ${repository.address}, then run conveyor doctor`,
+        });
+      }
     } catch (error) {
       checks.push({
         name: `repository trust ${id}`,

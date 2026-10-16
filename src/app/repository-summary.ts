@@ -150,8 +150,11 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
   const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
   const questionIssueIds = new Set(store.listOpenQuestions().map((question) => question.issueId));
   const issuesByRepository = new Map<string, StoredIssue[]>();
+  const allIssuesByRepository = new Map<string, StoredIssue[]>();
   for (const issue of input.issues ?? store.listIssues()) {
-    if (!config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") continue;
+    if (!config.repositories[issue.repositoryId]) continue;
+    allIssuesByRepository.set(issue.repositoryId, [...(allIssuesByRepository.get(issue.repositoryId) ?? []), issue]);
+    if (issue.projectedState === "offboarded") continue;
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }
   const recordedDeliveries = deliveryRows(store);
@@ -162,6 +165,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
 
   const repositories = Object.entries(config.repositories).map(([id, repository], index) => {
     const issues = issuesByRepository.get(id) ?? [];
+    const issuesWithHistory = allIssuesByRepository.get(id) ?? [];
     const nonDone = issues.filter(isActiveWork);
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
@@ -202,7 +206,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         .filter((delivery) => delivery.repository_id === id && doneIssueIds.has(delivery.issue_id))
         .slice(0, 10)
         .map((delivery) => ({ number: delivery.source_number, title: delivery.title, deliveredAt: delivery.delivered_at })),
-      skippedReviewItems: issues.flatMap((issue) => {
+      skippedReviewItems: issuesWithHistory.flatMap((issue) => {
         const count = reviewFindings.skippedNative(issue.id).length;
         return count === 0 ? [] : [{ number: issue.sourceNumber, title: issue.title, count }];
       }),

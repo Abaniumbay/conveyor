@@ -54,7 +54,7 @@ repositories:
     type: "Bug" as string | null | undefined,
     fields: { Effort: "Low", "Target date": "2026-11-01" } as Record<string, string>,
     second: null as null | { fields: Record<string, string>; updatedAt: string },
-    fieldReads: 0, fail: false, failedNumbers: new Set<number>(), updatedAt: "2026-01-01T00:00:00Z",
+    fieldReads: 0, visibilityReads: 0, visibility: "private" as "public" | "private", fail: false, failedNumbers: new Set<number>(), updatedAt: "2026-01-01T00:00:00Z",
   };
   const github = {
     async listIssues() {
@@ -67,6 +67,10 @@ repositories:
         updatedAt: source.second.updatedAt, type: "Task",
       });
       return issues;
+    },
+    async repositoryVisibility() {
+      source.visibilityReads += 1;
+      return source.visibility;
     },
     async getIssueProvenance() {
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
@@ -91,6 +95,17 @@ test("the dashboard shows the issue type and only the repository-configured fiel
   const { service, card, store } = await setup();
   await service.reconcileAll();
   expect(card()).toMatchObject({ issueType: "Bug", issueFields: [{ name: "Effort", value: "Low" }] });
+  store.close();
+});
+
+test("reconciliation refreshes the repository visibility projection", async () => {
+  const { service, store, source } = await setup();
+  await service.reconcileAll();
+  source.visibility = "public";
+  await service.reconcileAll();
+
+  expect(source.visibilityReads).toBe(2);
+  expect(store.repositoryTrustStatus("repo")).toMatchObject({ visibility: "public", warning: null });
   store.close();
 });
 

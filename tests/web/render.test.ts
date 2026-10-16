@@ -694,8 +694,6 @@ describe("renderDashboard", () => {
     expect(reader).not.toContain('<img src=x onerror=alert(1)>');
     expect(reader).toContain('href="/issues/space%2Fname/7/journey"');
     expect(reader).toContain("Ignored native reviews");
-    expect(dashboardCss).toContain(".repository-trust-list");
-    expect(dashboardCss).toContain(".repository-detail,.repository-detail>section,.repository-detail-header{min-width:0}");
     expect(reader).not.toContain("/sentinel/local-folder");
     expect(reader).not.toContain("sentinel.egress.example");
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });

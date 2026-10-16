@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Locator, type Page } from "playwright";
 import { ConveyorStore, type IssueProjection } from "../src/db/store";
+import { ReviewFindings } from "../src/engine/review-findings";
 
 const DEMO_USERNAME = "demo";
 const DEMO_PASSWORD = "demo-password-12chars";
@@ -25,6 +26,8 @@ const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
 const PHONE_OVERFLOW_REPOSITORY = "MobileViewportRegressionContentMustWrapWithoutCreatingADocumentWideHorizontalScrollRange";
 const PHONE_OVERFLOW_ADDRESS = "demo/PhoneWidthAddressMustWrapWithoutCreatingDocumentWideHorizontalOverflow";
 const DEGRADED_STATUS = "simulated provider outage for screenshot coverage";
+const PHONE_TRUST_WARNING = "The source visibility check remains uncertain while the simulated provider outage is investigated for this deliberately long phone-width status message.";
+const PHONE_TRUSTED_LOGIN = "phone-width-trusted-login-0000000000000";
 // This folder is rendered in the superuser Setup section. Keep its display value
 // independent of the host's temporary-directory configuration.
 const SCREENSHOT_WORKSPACE = "/tmp/conveyor-screenshot-workspace";
@@ -180,7 +183,7 @@ async function configureDemo(
       'case "$*" in',
       `  *\"/repos/demo/dashboard-demo/issues?state=all\"*) printf '%s\\n' '${sourceSnapshot}' ;;`,
       // Keep one configured repository visibly degraded without talking to a real provider.
-      `  *repos/${PHONE_OVERFLOW_ADDRESS}*) printf '%s\\n' '${DEGRADED_STATUS}' >&2; exit 1 ;;`,
+      `  *repos/${PHONE_OVERFLOW_ADDRESS}*) printf '%s\\n' '${DEGRADED_STATUS}: ${PHONE_TRUST_WARNING}' >&2; exit 1 ;;`,
       "  *\"--method POST\"*) printf '%s\\n' '{}' ;;",
       "  *) printf '%s\\n' '[]' ;;",
       "esac",
@@ -223,6 +226,7 @@ async function configureDemo(
       id: PHONE_OVERFLOW_REPOSITORY,
       address: PHONE_OVERFLOW_ADDRESS,
       ci: ["  provider: actions", "  mode: advisory"],
+      extraTrustedLogins: [PHONE_TRUSTED_LOGIN],
     },
   ];
   let config = await readFile(configPath, "utf8");
@@ -242,6 +246,9 @@ async function configureDemo(
         `folder: ${workspace}`,
         "baseBranch: main",
         "pipeline: delivery",
+        ...(repository.extraTrustedLogins
+          ? ["extraTrustedLogins:", ...repository.extraTrustedLogins.map((login) => `  - ${login}`)]
+          : []),
         "ci:",
         // The long repository shows a stored CI chip; the demo repository shows none.
         ...repository.ci,
@@ -329,6 +336,22 @@ async function seedDemo(home: string): Promise<void> {
       issues.push(issue(number, `Keep the long implementation board card ${number}`, "implementation"));
     }
     for (const entry of issues) store.upsertIssue(entry);
+    store.setRepositoryTrustStatus({
+      repositoryId: PHONE_OVERFLOW_REPOSITORY,
+      visibility: "unknown",
+      checkedAt: DEMO_TIME,
+      warning: PHONE_TRUST_WARNING,
+    });
+    new ReviewFindings(store.sqlite()).importNative(phoneOverflowIssue.id, [{
+      providerKey: "screenshot-ignored-review",
+      author: "untrusted-phone-reviewer",
+      trusted: false,
+      body: "This review text is intentionally absent from the dashboard screenshot.",
+      url: "https://example.com/reviews/screenshot-ignored-review",
+      path: null,
+      line: null,
+      resolved: false,
+    }], "demo-head", DEMO_TIME);
     // A CI chip carries visually hidden text. In a stage scrolled out of view at phone widths it
     // must not widen the document, which verifyPhoneLayouts checks.
     store.saveIndicator(
@@ -868,6 +891,15 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
         await expectReachableText(page, PHONE_OVERFLOW_ADDRESS);
         await expectReachableText(page, DEGRADED_STATUS);
         await expectReachableHealth(page, "Degraded");
+      }
+      if (name === "repository detail") {
+        await expectReachableText(page, "Public repository trust");
+        await expectReachableText(page, PHONE_TRUSTED_LOGIN);
+        await expectReachableText(page, PHONE_TRUST_WARNING);
+        await expectReachableElement(
+          page.locator(`a[href="/issues/${encodeURIComponent(PHONE_OVERFLOW_REPOSITORY)}/6/journey"]`),
+          "Ignored review history",
+        );
       }
       if (name === "board") {
         // On a phone the board lists its stages top to bottom: nothing scrolls sideways, and every stage

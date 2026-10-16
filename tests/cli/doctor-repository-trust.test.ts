@@ -6,12 +6,17 @@ import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from
 
 const config = (repositories: Record<string, unknown>) => ({ repositories }) as unknown as ConveyorConfig;
 
-function adapter(visibility: unknown) {
+function adapter(visibility: unknown, permission: unknown = "admin") {
   const transport: GitHubTransport = {
     async request<T>(request: GitHubTransportRequest): Promise<T> {
-      expect(request).toEqual({ method: "GET", path: "repos/owner/my-app" });
-      if (visibility instanceof Error) throw visibility;
-      return visibility as T;
+      if (request.path === "repos/owner/my-app") {
+        expect(request).toEqual({ method: "GET", path: "repos/owner/my-app" });
+        if (visibility instanceof Error) throw visibility;
+        return visibility as T;
+      }
+      expect(request).toEqual({ method: "GET", path: "repos/owner/my-app/collaborators/owner/permission" });
+      if (permission instanceof Error) throw permission;
+      return { permission } as T;
     },
   };
   return new GitHubAdapter(transport, "conveyor");
@@ -35,6 +40,7 @@ describe("doctor repository trust checks", () => {
     expect(detail).toContain("native review findings");
     expect(detail).toContain("post-enrollment issue title and body edits");
     expect(detail).toContain("enrollment labels");
+    expect(detail).toContain("author-permission lookups are available");
   });
 
   test("reports private repositories without claiming public-source protection is active", async () => {
@@ -68,5 +74,19 @@ describe("doctor repository trust checks", () => {
       detail: expect.stringContaining("GitHub is unavailable"),
     })]);
     expect(checks[0]!.detail).toContain("cannot determine whether owner/my-app is public");
+  });
+
+  test("warns when GitHub cannot confirm author-permission lookups for a public repository", async () => {
+    const checks = await repositoryTrustChecks(
+      config({ app: { address: "owner/my-app" } }),
+      adapter({ private: false }, new Error("permission endpoint is unavailable")),
+    );
+
+    expect(checks).toEqual([expect.objectContaining({
+      status: "warn",
+      detail: expect.stringContaining("author-permission lookups cannot be confirmed"),
+      fix: expect.stringContaining("collaborator permissions"),
+    })]);
+    expect(checks[0]!.detail).toContain("permission endpoint is unavailable");
   });
 });

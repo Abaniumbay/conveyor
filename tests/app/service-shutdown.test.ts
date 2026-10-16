@@ -53,6 +53,7 @@ describe("ConveyorService shutdown", () => {
     const listing = new Promise<void>((resolve) => { release = resolve; });
     let listed = 0;
     const github = {
+      async repositoryVisibility() { return "private" as const; },
       async listIssues() { listed += 1; await listing; return []; },
       async listSubIssues() { return []; },
       async listDependencies() { return []; },
