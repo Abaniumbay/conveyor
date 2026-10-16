@@ -200,11 +200,12 @@ conveyor config compare /path/to/other/conveyor.yaml
 `config check` prints the configuration hash and then, for every repository that compiles, the
 expanded plan of each stage: the `actions` and `exit-gate` task instances in order with their
 implicit loads (`(load item)`, `(load change)`...), `with` values, `wait` timeout and poll and the
-effective `onFail` (marked `(default)` when not configured). Legacy stages appear as their
+effective `onFail` (marked `(default)` when not configured). A manually approved exit gate is
+marked `[check, manual approval]`; ordinary checks remain `[check]`. Legacy stages appear as their
 `legacy.*` tasks. An invalid task, instance id, route or dataflow is reported with its file and path
 before the service can start. `config compare` prints two configurations' compiled plans side by
-side, with a summary of added, removed and changed tasks, routes and waits, and exits 1 when they
-differ.
+side, marking any manual exit gate and reporting a manual approval setting change in its summary;
+it exits 1 when the plans differ, including when only that setting differs.
 
 ## Reference
 

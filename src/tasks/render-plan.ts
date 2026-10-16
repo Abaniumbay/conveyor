@@ -16,13 +16,18 @@ export function renderOnFail(task: CompiledTask, list: "actions" | "exit-gate"):
   return `onFail stop ${route.stop}`;
 }
 
+/** The compact task status shown in human-readable plan reports. */
+export function taskMarker(task: CompiledTask): string {
+  return task.manual ? `[${task.kind}, manual approval]` : `[${task.kind}]`;
+}
+
 function renderList(list: "actions" | "exit-gate", tasks: CompiledTask[]): string[] {
   const lines = [`  ${list}:`];
   if (tasks.length === 0) return [...lines, "    (none)"];
   for (const [index, task] of tasks.entries()) {
     for (const key of task.implicitLoads) lines.push(`    (load ${key})`);
     const name = task.id === task.task ? task.task : `${task.id}: ${task.task}`;
-    lines.push(`    ${index + 1}. ${name}${task.label ? ` (${task.label})` : ""} [${task.kind}]`);
+    lines.push(`    ${index + 1}. ${name}${task.label ? ` (${task.label})` : ""} ${taskMarker(task)}`);
     if (!task.label && Object.keys(task.with).length > 0) lines.push(`       with ${JSON.stringify(task.with)}`);
     const timeout = task.wait.timeoutMs === null ? "unlimited" : formatMs(task.wait.timeoutMs);
     lines.push(`       wait timeout ${timeout}, poll ${formatMs(task.wait.pollMs)}; ${renderOnFail(task, list)}`);

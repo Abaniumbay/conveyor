@@ -117,12 +117,28 @@ describe("plan compilation at load", () => {
 });
 
 describe("check-config", () => {
+  test("prints manual approval markers while keeping ordinary task details", async () => {
+    const manual = await checkConfig(await write(`
+    stages:
+      - id: build
+        concurrency: 1
+        actions: [{ task: demo.act }]
+        exit-gate:
+          - { id: operator, task: demo.gate, manual: true }
+          - { id: automatic, task: demo.gate }
+`), registry());
+    expect(manual).toMatch(/1\. operator: demo\.gate \[check, manual approval\]/);
+    expect(manual).toMatch(/2\. automatic: demo\.gate \[check\]/);
+    expect(manual).toContain("1. demo.act [act]");
+    expect(manual).toContain("wait timeout 30m, poll 1m");
+  });
+
   test("prints the hash then the rendered plan of each compilable repository", async () => {
     const output = await checkConfig(await write(NATIVE), registry());
     expect(output).toMatch(/^Configuration is valid \([0-9a-f]{64}\)\n/);
     expect(output).toContain("Repository sample (pipeline default)");
     expect(output).toContain("(load item)");
-    expect(output).toContain("demo.gate");
+    expect(output).toContain("1. demo.gate [check]");
   });
 
   test("prints the plan of a legacy repository", async () => {
