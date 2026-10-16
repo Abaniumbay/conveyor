@@ -10,7 +10,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, TaskContext } from "../../src/tasks/context";
-import { runTask, type TaskResult } from "../../src/tasks/contract";
+import { runTask, TaskInputError, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 
 const directories: string[] = [];
@@ -324,6 +324,26 @@ describe("change tools", () => {
     const atomic = await run("change.recordCriterionTests", { context: {}, deps: w.deps, input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "replacement", file: "tests/a.test.ts" }] }, { criterionId: "unknown", tests: [{ name: "other", file: "tests/b.test.ts" }] }] } }) as Fail;
     expect(atomic.status).toBe("fail");
     expect(w.store.criterionTestEvidence("i1")).toMatchObject([{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }]);
+  });
+
+  test("recordCriterionTests rejects invalid batches without recording evidence", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    const grant = { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) };
+    const invalidCriteria = [
+      [{ criterionId: "a", tests: [] }],
+      [{ criterionId: "a", tests: [{ name: "", file: "tests/a.test.ts" }] }],
+      [{ criterionId: "a", tests: [{ name: "does work", file: "../tests/a.test.ts" }] }],
+      [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", line: 0 }] }],
+      [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", description: "two\nlines" }] }],
+      [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }, { criterionId: "a", tests: [{ name: "again", file: "tests/a.test.ts" }] }],
+    ];
+    for (const criteria of invalidCriteria) {
+      await expect(dispatchTool(
+        { name: "change.recordCriterionTests", input: { headSha: "head1", criteria }, actor: { id: "kaveh" } as never, grant },
+        { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store: w.store },
+      )).rejects.toBeInstanceOf(TaskInputError);
+      expect(w.store.criterionTestEvidence("i1")).toEqual([]);
+    }
   });
 
   test("criterionTestsVerified routes unlinked, stale, and renamed evidence to implementation and refreshes a moved line", async () => {
