@@ -68,6 +68,10 @@ repositories:
       });
       return issues;
     },
+    async getIssueProvenance() {
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
     async listSubIssues() { return []; },
     async listDependencies() { return []; },
     async getIssueFieldValues(_address: string, number: number) {

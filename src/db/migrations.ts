@@ -795,4 +795,12 @@ export const migrations: readonly Migration[] = [
         ON skipped_review_artifacts(issue_id, active);
     `,
   },
+  {
+    version: 27,
+    sql: `
+      -- Existing projections predate source-event provenance, so do not expose them until reconciled.
+      ALTER TABLE issues ADD COLUMN accepted_text_at TEXT;
+      UPDATE issues SET title = '', body = '';
+    `,
+  },
 ];

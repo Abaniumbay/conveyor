@@ -175,6 +175,21 @@ describe("GitHubAdapter.collaboratorPermission", () => {
 });
 
 describe("GitHubAdapter", () => {
+  test("uses the effective label and field-edit actors from chronologically ordered events", async () => {
+    const transport = new FakeTransport([
+      { id: 40, created_at: "2026-01-04T00:00:00Z", event: "edited", actor: { login: "body-editor" }, changes: { body: { from: "before" } } },
+      { id: 30, created_at: "2026-01-03T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "current-labeler" } },
+      { id: 20, created_at: "2026-01-02T00:00:00Z", event: "unlabeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 10, created_at: "2026-01-01T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 15, created_at: "2026-01-01T12:00:00Z", event: "edited", actor: { login: "title-editor" }, changes: { title: { from: "before" } } },
+    ]);
+
+    await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+      enrollment: { login: "current-labeler" }, title: { login: "title-editor" }, body: { login: "body-editor" },
+    });
+    expect(transport.requests).toEqual([{ method: "GET", path: "repos/owner/my-app/issues/7/events?per_page=100", paginate: true }]);
+  });
+
   test("projects only issues carrying the configured Conveyor prefix", async () => {
     const transport = new FakeTransport([
       {

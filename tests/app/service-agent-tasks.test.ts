@@ -85,6 +85,10 @@ repositories:
         updatedAt: issue.sourceUpdatedAt,
       }));
     },
+    async getIssueProvenance() {
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
     async listSubIssues(_address: string, number: number) {
       if (number !== 1) return [];
       return store.listIssues("repo")

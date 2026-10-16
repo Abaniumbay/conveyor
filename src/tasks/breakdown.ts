@@ -63,13 +63,14 @@ function issueOf(deps: Deps) {
   return issue;
 }
 
-function persist(deps: Deps, source: SourceIssue, storedId?: string) {
+function persist(deps: Deps, source: SourceIssue, storedId?: string, accepted: Partial<Pick<SourceIssue, "title" | "body">> = {}) {
   const existing = storedId ? deps.store.getIssue(storedId) : deps.store.listIssues(deps.repository.id).find((candidate) => candidate.sourceNumber === source.number);
   const id = existing?.id ?? source.id;
   deps.store.upsertIssue({
     id, repositoryId: deps.repository.id, sourceNumber: source.number, sourceUrl: source.url,
-    title: source.title, body: source.body, sourceState: source.state, sourceStateReason: source.stateReason ?? null,
-    labels: source.labels, sourceUpdatedAt: source.updatedAt, ...(source.type !== undefined ? { issueType: source.type } : {}),
+    // Keep the reconciler's accepted text when a read-after-write races an untrusted source edit.
+    title: accepted.title ?? existing?.title ?? "", body: accepted.body ?? existing?.body ?? "", sourceState: source.state, sourceStateReason: source.stateReason ?? null,
+    labels: source.labels, sourceUpdatedAt: source.updatedAt, acceptedTextAt: existing?.acceptedTextAt ?? (accepted.title !== undefined || accepted.body !== undefined ? source.updatedAt : null), ...(source.type !== undefined ? { issueType: source.type } : {}),
   });
   return deps.store.getIssue(id)!;
 }
@@ -120,7 +121,10 @@ async function savePlan(deps: Deps, issue: ReturnType<typeof issueOf>, current: 
     address: deps.repository.address, issueNumber: issue.sourceNumber, section: "breakdown",
     markdown: renderBreakdownPlan(plan), expectedRevision: deps.items.managedRevision(current.body),
   });
-  persist(deps, updated, issue.id);
+  const body = upsertManagedSection(issue.body, "breakdown", renderBreakdownPlan(plan), parseManagedSections(issue.body).revision);
+  // This section is the trusted tool input just written by Conveyor.  Keep it
+  // separate from the read-after-write source body, which may have changed.
+  persist(deps, updated, issue.id, { body });
   return updated;
 }
 
@@ -136,7 +140,11 @@ function childBody(parentId: string, candidate: Entry): string {
 async function updateSection(deps: Deps, number: number, section: "description" | "acceptance-criteria" | "dependencies", markdown: string): Promise<SourceIssue> {
   const current = await deps.items.getIssue(deps.repository.address, number);
   const updated = await deps.items.updateManagedSection({ address: deps.repository.address, issueNumber: number, section, markdown, expectedRevision: deps.items.managedRevision(current.body) });
-  persist(deps, updated);
+  const stored = deps.store.listIssues(deps.repository.id).find((issue) => issue.sourceNumber === number);
+  const body = stored
+    ? upsertManagedSection(stored.body, section, markdown, parseManagedSections(stored.body).revision)
+    : "";
+  persist(deps, updated, undefined, { body });
   return updated;
 }
 
@@ -218,7 +226,7 @@ const tool = <I>(name: string, description: string, input: z.ZodType<I>, run: (a
 const setPlan = tool("breakdown.setPlan", "Record a complete split plan with stable entry IDs or an explicit no-split decision. Replacing a plan always requires fresh review.", planInput, async ({ deps, input }, issue) => {
   if (!input) throw new ToolRequestError("Work breakdown plan input is required.");
   const current = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
-  const errors = validationErrors(input, criteriaOf(current.body), deps.config.repositories[deps.repository.id]!.systemLabels);
+  const errors = validationErrors(input, criteriaOf(issue.body), deps.config.repositories[deps.repository.id]!.systemLabels);
   if (errors.length > 0) throw new ToolRequestError(`Cannot record an incomplete work breakdown plan: ${errors.join("; ")}`);
   const plan: BreakdownPlan = input.decision === "split" ? { decision: "split", entries: input.entries, review: "proposed" } : { decision: "no-split", review: "proposed" };
   await savePlan(deps, issue, current, plan);
@@ -229,9 +237,9 @@ const reviewPlan = tool("breakdown.reviewPlan", "Approve a valid work breakdown 
   if (!value.approved && !value.reason) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A rejection needs an actionable reason", path: ["reason"] });
 }), async ({ deps, input }, issue) => {
   const current = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
-  const plan = parseBreakdownPlan(current.body);
+  const plan = parseBreakdownPlan(issue.body);
   if (!plan) throw new ToolRequestError("There is no valid work breakdown plan to review.");
-  const errors = validationErrors(plan, criteriaOf(current.body), deps.config.repositories[deps.repository.id]!.systemLabels);
+  const errors = validationErrors(plan, criteriaOf(issue.body), deps.config.repositories[deps.repository.id]!.systemLabels);
   if (input!.approved && errors.length > 0) throw new ToolRequestError(`The work breakdown plan is incomplete: ${errors.join("; ")}`);
   const afterReview = reviewedPlan(plan, input!.approved ? "approved" : "rejected", input!.reason);
   await savePlan(deps, issue, current, afterReview);
@@ -240,9 +248,9 @@ const reviewPlan = tool("breakdown.reviewPlan", "Approve a valid work breakdown 
 
 const createChildren = tool("breakdown.createChildren", "Create exactly the approved plan's marked children, copying their title, scope, managed criteria, labels and dependency links without inventing details. Re-running reuses each entry marker.", z.object({}).strict(), async ({ deps, instance }, issue) => {
   const current = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
-  const plan = parseBreakdownPlan(current.body);
+  const plan = parseBreakdownPlan(issue.body);
   if (!plan) throw new ToolRequestError("Work breakdown plan is missing or invalid; return to refinement.");
-  const errors = validationErrors(plan, criteriaOf(current.body), deps.config.repositories[deps.repository.id]!.systemLabels);
+  const errors = validationErrors(plan, criteriaOf(issue.body), deps.config.repositories[deps.repository.id]!.systemLabels);
   if (errors.length > 0) {
     const reason = `Work breakdown plan is incomplete: ${errors.join("; ")}`;
     await savePlan(deps, issue, current, reviewedPlan(plan, "rejected", reason));
@@ -267,8 +275,9 @@ const createChildren = tool("breakdown.createChildren", "Create exactly the appr
   );
   const created = new Map<string, SourceIssue>();
   for (const candidate of plan.entries) {
-    const source = await deps.items.createChildIssue({ address: deps.repository.address, parentNumber: issue.sourceNumber, title: candidate.title, body: childBody(issue.id, candidate), labels: candidate.systemLabels });
-    persist(deps, source);
+    const body = childBody(issue.id, candidate);
+    const source = await deps.items.createChildIssue({ address: deps.repository.address, parentNumber: issue.sourceNumber, title: candidate.title, body, labels: candidate.systemLabels });
+    persist(deps, source, undefined, { title: candidate.title, body });
     await deps.items.setTitle(deps.repository.address, source.number, candidate.title);
     await updateSection(deps, source.number, "description", scopeSection(candidate.scope));
     await updateSection(deps, source.number, "acceptance-criteria", renderAcceptanceCriteriaSection(candidate.acceptanceCriteria));

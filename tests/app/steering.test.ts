@@ -203,6 +203,10 @@ describe("ConveyorService steering", () => {
         issue.labels = [...labels];
       },
       async listIssues() { return [...sourceIssues.values()]; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
       async listSubIssues(_address: string, number: number) { return number === 87 ? [sourceIssues.get(90)!] : []; },
       async listDependencies() { return []; },
       async getPullRequestDelivery() {

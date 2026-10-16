@@ -138,7 +138,7 @@ describe("legacy MCP names delegate to the item tools", () => {
     expect(await call("item.comment", { markdown: "other" })).toEqual({ commentId: 7 });
     expect(comments).toHaveLength(2);
     await expect(call("item.comment", { markdown: "" })).rejects.toThrow("Invalid input for task item.comment");
-    expect(await call("source.get_issue", {})).toMatchObject({ body: "B" });
+    expect(await call("source.get_issue", {})).toMatchObject({ body: "" });
     await expect(call("source.set_labels", { labels: [] })).rejects.toThrow(/not granted/);
     await lease.close();
     await w.service.close();

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import type { PullRequestReference, SourceIssue } from "../types";
+import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../types";
 import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "./issue-metadata";
 import {
   parseManagedSections,
@@ -133,6 +133,19 @@ interface GitHubIssue {
   updated_at: string;
   type?: { name: string } | null;
   pull_request?: unknown;
+}
+
+interface GitHubIssueEvent {
+  id?: number;
+  created_at?: string;
+  event: string;
+  actor?: { login?: unknown } | null;
+  label?: { name?: unknown } | null;
+  changes?: { title?: unknown; body?: unknown } | null;
+}
+
+function eventActor(event: GitHubIssueEvent): SourceEventActor {
+  return { login: typeof event.actor?.login === "string" ? event.actor.login : null };
 }
 
 function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
@@ -298,6 +311,33 @@ export class GitHubAdapter {
     return issues
       .filter((issue) => issue.pull_request === undefined)
       .map((issue) => sourceIssue(address, issue));
+  }
+
+  async getIssueProvenance(address: string, issueNumber: number, enrollmentLabel: string): Promise<SourceIssueProvenance> {
+    const events = await this.transport.request<GitHubIssueEvent[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/events?per_page=100`,
+      paginate: true,
+    });
+    // The events API returns newest-first today, but provenance is defined by the
+    // effective event rather than that response ordering.
+    const chronological = events.map((event, index) => ({ event, index })).sort((left, right) => {
+      const byTime = (left.event.created_at ?? "").localeCompare(right.event.created_at ?? "");
+      if (byTime !== 0) return byTime;
+      const byId = (left.event.id ?? left.index) - (right.event.id ?? right.index);
+      return byId !== 0 ? byId : left.index - right.index;
+    });
+    let enrollment: SourceEventActor | null = null;
+    let title: SourceEventActor | null = null;
+    let body: SourceEventActor | null = null;
+    for (const { event } of chronological) {
+      if (event.event === "labeled" && event.label?.name === enrollmentLabel) enrollment = eventActor(event);
+      if (event.event === "unlabeled" && event.label?.name === enrollmentLabel) enrollment = null;
+      if (event.event !== "edited") continue;
+      if (event.changes && Object.hasOwn(event.changes, "title")) title = eventActor(event);
+      if (event.changes && Object.hasOwn(event.changes, "body")) body = eventActor(event);
+    }
+    return { enrollment, title, body };
   }
 
   async ensureLabels(

@@ -536,6 +536,8 @@ Eligibility is resolved in this order:
 4. Base label plus a waiting, blocking, or terminal state: visible but not eligible until the corresponding question, retry, or explicit restart transition resolves it. Done and rejected never restart automatically.
 5. Base label plus an open issue and no stopping state: active. A newly enrolled issue with no stage label enters the first configured stage; otherwise its one valid stage label selects the stage.
 
+The effective enrollment-label event must be performed by a trusted account: an account with GitHub `write`, `maintain`, or `admin` permission, or a case-insensitive repository `extraTrustedLogins` entry. When its provenance is unavailable or untrusted, the issue remains visible with a warning but is not eligible. At trusted enrollment, Conveyor accepts the visible title and body as its initial agent-facing snapshot. Later title and body changes replace that snapshot only when their field editor is trusted; an untrusted or unverifiable edit preserves the prior snapshot and produces a field-specific warning until a trusted edit adopts the current text.
+
 The expected closure caused by merging the issue's own Conveyor-managed PR is the sole exception to step 3: explicitly configured post-merge stages remain eligible until a terminal result.
 
 Pausing interrupts the current process, releases its concurrency permit, and preserves its worktree. Restoring the base label starts a fresh agent process at the same incomplete stage using the existing worktree and current source state. Previous chat transcript is not injected.

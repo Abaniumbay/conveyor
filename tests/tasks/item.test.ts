@@ -373,13 +373,14 @@ describe("item tools", () => {
     }
   });
 
-  test("get and guidance read", async () => {
+  test("get and guidance read the accepted stored snapshot", async () => {
     const w = await world({ noSplitLabel: "workflow:keep-whole" }); w.add("i1", 5, { body: "B", labels: ["conveyor", "workflow:keep-whole"] });
+    w.updateLiveSource(5, { body: "Untrusted live body" });
     expect((await tool("item.get", w.deps(), {})).output).toMatchObject({
       body: "B",
       noSplit: { label: "workflow:keep-whole", instruction: expect.stringMatching(/must remain one item/i) },
     });
-    expect(w.calls[0]).toEqual(["getIssue", ["o/r", 5]]);
+    expect(w.calls).not.toContainEqual(["getIssue", ["o/r", 5]]);
     w.add("plain", 6, { labels: ["conveyor"] });
     expect((await tool("item.get", w.deps("plain"), {})).output).not.toHaveProperty("noSplit");
     expect((await tool("item.guidance", w.deps(), {})).output).toBe("GUIDE");

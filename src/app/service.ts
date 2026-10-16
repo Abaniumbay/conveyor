@@ -19,6 +19,7 @@ import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
 import { GitHubAdapter, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubRepositoryTrust } from "../source/github/trust";
 import type { SourceIssue } from "../source/types";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
@@ -344,6 +345,7 @@ export class ConveyorService {
   readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   readonly #manualGateApprovals: ManualGateApprovals;
+  readonly #issueTrust: GitHubRepositoryTrust;
 
   constructor(
     readonly config: ConveyorConfig,
@@ -353,6 +355,7 @@ export class ConveyorService {
   ) {
     this.store = store;
     this.github = github;
+    this.#issueTrust = new GitHubRepositoryTrust(github);
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
@@ -464,6 +467,8 @@ export class ConveyorService {
           stages: pipeline.stages.map((stage) => stage.id),
           labels: this.config.labels,
           source: this.github,
+          trust: this.#issueTrust,
+          extraTrustedLogins: repository.extraTrustedLogins ?? [],
           expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
         });
         listing.finish();
@@ -1318,6 +1323,8 @@ export class ConveyorService {
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
       source: this.github,
+      trust: this.#issueTrust,
+      extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       ...(listing.since !== undefined ? { since: listing.since } : {}),
       ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
@@ -1395,12 +1402,15 @@ export class ConveyorService {
           repositoryId,
           sourceNumber: dependency.number,
           sourceUrl: dependency.url,
-          title: dependency.title,
-          body: dependency.body,
+          // Dependencies can be read before they are independently reconciled.
+          // Do not make that raw read an agent-visible snapshot.
+          title: "",
+          body: "",
           sourceState: dependency.state,
           sourceStateReason: dependency.stateReason ?? null,
           labels: dependency.labels,
           sourceUpdatedAt: dependency.updatedAt,
+          acceptedTextAt: null,
           ...(dependency.type !== undefined ? { issueType: dependency.type } : {}),
         });
         this.store.setIssueProjection(dependency.id, {

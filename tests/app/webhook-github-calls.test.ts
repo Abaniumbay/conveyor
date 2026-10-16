@@ -58,6 +58,10 @@ async function service() {
       if (rejectedFetches.has(issueNumber)) throw new Error("not found");
       return issue;
     },
+    async getIssueProvenance() {
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
     async listSubIssues() { calls.subIssues += 1; return []; },
     async listDependencies() { calls.dependencies += 1; return []; },
     async upsertStatusComment(_address: string, issueNumber: number, _markdown: string, known?: number) {
