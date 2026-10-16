@@ -2005,7 +2005,44 @@ export class ConveyorStore {
          UNION ALL
          SELECT 'todos', COUNT(*), COALESCE(MAX(updated_at), '') FROM item_todos
          UNION ALL
-         SELECT 'indicators', COUNT(*), COALESCE(MAX(changed_at), '') FROM item_indicators`,
+         SELECT 'indicators', COUNT(*), COALESCE(MAX(changed_at), '') FROM item_indicators
+         UNION ALL
+         SELECT 'criterion-approvals', COUNT(*), COALESCE((
+           SELECT group_concat(json_object(
+             'issueId', issue_id,
+             'criterionId', criterion_id,
+             'reviewer', reviewer,
+             'headSha', head_sha,
+             'checkedAt', checked_at,
+             'textHash', text_hash
+           ), '|')
+           FROM (SELECT * FROM criterion_approvals ORDER BY issue_id, criterion_id)
+         ), '') FROM criterion_approvals
+         UNION ALL
+         SELECT 'criterion-evidence', COUNT(*), COALESCE((
+           SELECT group_concat(json_object(
+             'issueId', issue_id,
+             'criterionId', criterion_id,
+             'manual', manual,
+             'recordedHead', recorded_head_sha,
+             'sourceLinkHead', source_link_head_sha,
+             'recordedAt', recorded_at
+           ), '|')
+           FROM (SELECT * FROM criterion_test_evidence ORDER BY issue_id, criterion_id)
+         ), '') FROM criterion_test_evidence
+         UNION ALL
+         SELECT 'criterion-evidence-tests', COUNT(*), COALESCE((
+           SELECT group_concat(json_object(
+             'issueId', issue_id,
+             'criterionId', criterion_id,
+             'ordinal', ordinal,
+             'name', name,
+             'file', file,
+             'line', line,
+             'description', description
+           ), '|')
+           FROM (SELECT * FROM criterion_test_evidence_tests ORDER BY issue_id, criterion_id, ordinal)
+         ), '') FROM criterion_test_evidence_tests`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows

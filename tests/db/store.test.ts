@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
+import { CriterionApprovals } from "../../src/engine/review-records";
 import { ItemTodos } from "../../src/engine/todos";
 
 const temporaryDirectories: string[] = [];
@@ -615,6 +616,85 @@ describe("ConveyorStore", () => {
     expect(withTodo).not.toBe(board);
     new ItemTodos(store.sqlite()).set("issue-1", [{ id: "t1", text: "A", status: "done" }], "run-1", "2026-01-01T00:00:03.000Z");
     expect(store.dashboardRevision()).not.toBe(withTodo);
+    store.close();
+  });
+
+  test("changes the dashboard revision for criterion approval and evidence updates", async () => {
+    const store = await openStore();
+    store.upsertRepository({
+      id: "repo-1",
+      configName: "sample",
+      source: "github",
+      address: "owner/sample",
+      folder: "/srv/sample",
+      configHash: "config-hash",
+    });
+    store.upsertIssue({
+      id: "issue-1",
+      repositoryId: "repo-1",
+      sourceNumber: 12,
+      sourceUrl: "https://example.test/12",
+      title: "Evidence revision",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor"],
+      sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const approvals = new CriterionApprovals(store.sqlite());
+    const initial = store.dashboardRevision();
+    approvals.withdraw("issue-1", "AC-1");
+    expect(store.dashboardRevision()).toBe(initial);
+
+    approvals.approve({
+      issueId: "issue-1",
+      criterionId: "AC-1",
+      reviewer: "reviewer",
+      headSha: "head-1",
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      textHash: "text-1",
+    });
+    const approved = store.dashboardRevision();
+    expect(approved).not.toBe(initial);
+
+    approvals.approve({
+      issueId: "issue-1",
+      criterionId: "AC-1",
+      reviewer: "reviewer",
+      headSha: "head-2",
+      checkedAt: "2026-01-01T00:01:00.000Z",
+      textHash: "text-2",
+    });
+    const replacedApproval = store.dashboardRevision();
+    expect(replacedApproval).not.toBe(approved);
+
+    approvals.withdraw("issue-1", "AC-1");
+    const withdrawn = store.dashboardRevision();
+    expect(withdrawn).not.toBe(replacedApproval);
+    approvals.withdraw("issue-1", "AC-1");
+    expect(store.dashboardRevision()).toBe(withdrawn);
+
+    const evidence = [
+      {
+        criterionId: "AC-1",
+        manual: false,
+        tests: [{ name: "shows evidence", file: "tests/evidence.test.ts", line: 5 }],
+        recordedHead: "recorded-head",
+        sourceLinkHead: "recorded-head",
+        recordedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    store.replaceCriterionTestEvidence("issue-1", evidence);
+    const recorded = store.dashboardRevision();
+    expect(recorded).not.toBe(withdrawn);
+    store.replaceCriterionTestEvidence("issue-1", evidence);
+    expect(store.dashboardRevision()).toBe(recorded);
+
+    store.refreshCriterionTestEvidence("issue-1", "verified-head", new Map([["AC-1", [8]]]));
+    const refreshed = store.dashboardRevision();
+    expect(refreshed).not.toBe(recorded);
+    store.refreshCriterionTestEvidence("issue-1", "verified-head", new Map([["AC-1", [8]]]));
+    expect(store.dashboardRevision()).toBe(refreshed);
     store.close();
   });
 
