@@ -798,9 +798,10 @@ export const migrations: readonly Migration[] = [
   {
     version: 27,
     sql: `
-      -- Existing projections predate source-event provenance, so do not expose them until reconciled.
+      -- Existing projections are the only recoverable accepted snapshot for
+      -- already-paused items, which do not have a current enrollment event.
       ALTER TABLE issues ADD COLUMN accepted_text_at TEXT;
-      UPDATE issues SET title = '', body = '';
+      UPDATE issues SET accepted_text_at = source_updated_at;
     `,
   },
 ];

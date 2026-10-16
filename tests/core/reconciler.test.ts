@@ -637,18 +637,27 @@ describe("reconcileRepository", () => {
     };
 
     await reconcileRepository({ ...common, source });
-    expect(store.getIssue(live.id)).toMatchObject({ title: "", body: "", projectedState: "offboarded", warning: expect.stringContaining("@outsider") });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "", body: "", projectedState: "waiting", warning: expect.stringContaining("@outsider") });
 
     labeler = "maintainer";
     await reconcileRepository({ ...common, source });
     expect(store.getIssue(live.id)).toMatchObject({ title: "Untrusted author's title", body: "Untrusted author's body", projectedState: "active", warning: null });
+
+    const activeEnrollment = store.activateEnrollment(live.id);
+    labeler = "outsider";
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+    expect(store.getEnrollment(activeEnrollment.id)).toMatchObject({ status: "trust-blocked" });
+
+    labeler = "maintainer";
+    await reconcileRepository({ ...common, source });
 
     live = { ...live, labels: ["backend"] };
     await reconcileRepository({ ...common, source });
     labeler = "outsider";
     live = { ...live, labels: ["conveyor", "conveyor:refinement"] };
     await reconcileRepository({ ...common, source });
-    expect(store.getIssue(live.id)).toMatchObject({ projectedState: "offboarded", warning: expect.stringContaining("@outsider") });
+    expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
     store.close();
   });
 
@@ -685,7 +694,7 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("blocks unverifiable enrollment until source provenance can be read", async () => {
+  test("retries an unavailable provenance lookup without replacing an accepted snapshot", async () => {
     const store = await openStore();
     const common = {
       store, configHash: "hash-1",
@@ -693,20 +702,25 @@ describe("reconcileRepository", () => {
       stages: ["refinement"], labels, extraTrustedLogins: [],
       trust: { async isTrusted() { return true; } },
     };
-    const live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Safe only after evidence", body: "Body" };
-    let available = false;
+    const live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Accepted title", body: "Accepted body" };
+    let available = true;
     const source = {
       async listIssues() { return [live]; },
       async getIssueProvenance() {
         if (!available) throw new Error("temporary source failure");
-        return { enrollment: { login: "maintainer" }, title: null, body: null };
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: null };
       },
     };
     await reconcileRepository({ ...common, source });
-    expect(store.getIssue(live.id)).toMatchObject({ title: "", projectedState: "offboarded", warning: expect.stringContaining("could not be verified") });
+    const enrollment = store.activateEnrollment(live.id);
+    live.title = "Unverified title";
+    available = false;
+    await expect(reconcileRepository({ ...common, source })).rejects.toThrow("temporary source failure");
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Accepted title", body: "Accepted body", projectedState: "active", warning: null });
+    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "active" });
     available = true;
     await reconcileRepository({ ...common, source });
-    expect(store.getIssue(live.id)).toMatchObject({ title: "Safe only after evidence", projectedState: "active", warning: null });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Unverified title", projectedState: "active", warning: null });
     store.close();
   });
 

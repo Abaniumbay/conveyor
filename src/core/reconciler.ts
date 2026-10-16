@@ -93,16 +93,13 @@ async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: So
   if (!enrolled) {
     return { title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null, enrollmentTrusted: true, warnings: [] };
   }
-  let provenance: SourceIssueProvenance;
-  try {
-    provenance = await input.source.getIssueProvenance(input.repository.address, sourceIssue.number, input.labels.enrollment);
-  } catch {
-    return {
-      title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null,
-      enrollmentTrusted: false,
-      warnings: ["Enrollment blocked: the conveyor label actor could not be verified."],
-    };
-  }
+  // Source-event lookup is evidence, not a negative trust decision.  Propagate
+  // an outage so the caller retries without replacing the existing projection.
+  const provenance = await input.source.getIssueProvenance(
+    input.repository.address,
+    sourceIssue.number,
+    input.labels.enrollment,
+  );
   const enrollment = await decideTrust(input, provenance.enrollment);
   if (!enrollment.trusted) {
     return {
@@ -219,9 +216,11 @@ export async function reconcileRepository(
     // roll-up must not turn its parked owner back into an active item.
     const openQuestion = input.store.listOpenQuestions().find((question) => question.issueId === issueId);
     const questionRun = openQuestion?.runId ? input.store.getRun(openQuestion.runId) : null;
-    const visible = projected.visible && snapshot.enrollmentTrusted;
+    const visible = projected.visible;
+    const eligible = visible && snapshot.enrollmentTrusted;
     const projectedState = !visible
       ? "offboarded"
+      : !snapshot.enrollmentTrusted ? "waiting"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
@@ -246,12 +245,14 @@ export async function reconcileRepository(
 
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
-    if (visible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
+    if (eligible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
       new ItemTodos(input.store.sqlite()).closeOut(issueId);
     }
 
     if (!visible) {
       input.store.endActiveEnrollment(issueId, "offboarded");
+    } else if (!snapshot.enrollmentTrusted) {
+      input.store.endActiveEnrollment(issueId, "trust-blocked");
     } else if (!openQuestion && projected.mode === "active" && projected.stage) {
       const stageState = input.store.getStageState(issueId);
       const awaitingDifferentStage =
@@ -275,7 +276,7 @@ export async function reconcileRepository(
 
     // Dependencies are stored before their own repository snapshot is read. A visible item
     // without a rank has therefore never completed onboarding, even when it already has a row.
-    if (projected.visible && (prior === undefined || prior.queueRank === null)) {
+    if (eligible && (prior === undefined || prior.queueRank === null)) {
       input.store.setQueueRank(issueId, input.store.nextQueueRank());
       input.store.recordJourneyEvent({
         issueId,

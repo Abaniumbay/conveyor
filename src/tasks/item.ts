@@ -421,14 +421,14 @@ const comment = tool("item.comment", "Add a Markdown comment to the current issu
 const setCriteria = tool("item.setCriteria", "Replace acceptance criteria on the current issue.", setCriteriaInput, true,
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
     const markdown = renderAcceptanceCriteriaSection(input!.criteria.map(normalise));
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "acceptance-criteria",
       markdown,
-      expectedRevision: deps.items.managedRevision(current.body),
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
     persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "acceptance-criteria", markdown, parseManagedSections(issue.body).revision) });
     return { revision: deps.items.managedRevision(updated.body) };
@@ -479,14 +479,14 @@ const setDependencies = tool("item.setDependencies", "Replace dependencies of th
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
     await deps.items.setDependencies({ address, issueNumber: issue.sourceNumber, blockerNumbers: input!.issueNumbers });
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
     const markdown = formatDependencies(input!.issueNumbers.map((number) => ({ number })));
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "dependencies",
       markdown,
-      expectedRevision: deps.items.managedRevision(current.body),
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
     const stored = persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "dependencies", markdown, parseManagedSections(issue.body).revision) });
     await persistDependencies(deps, stored, input!.issueNumbers);
@@ -635,14 +635,14 @@ const setRefinement = tool("item.setRefinement",
   refinementInput, true,
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
     const markdown = renderRefinementSection(input!);
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "refinement",
       markdown,
-      expectedRevision: deps.items.managedRevision(current.body),
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
     persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "refinement", markdown, parseManagedSections(issue.body).revision) });
     return { revision: deps.items.managedRevision(updated.body) };
@@ -704,13 +704,13 @@ const createChild = tool("item.createChild",
         issueNumber: child.number,
         blockerNumbers: dependsOn,
       });
-      const current = await deps.items.getIssue(deps.repository.address, child.number);
       sourceChild = await deps.items.updateManagedSection({
         address: deps.repository.address,
         issueNumber: child.number,
         section: "dependencies",
         markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
-        expectedRevision: deps.items.managedRevision(current.body),
+        expectedRevision: deps.items.managedRevision(acceptedChildBody),
+        baseBody: acceptedChildBody,
       });
       acceptedChildBody = upsertManagedSection(
         acceptedChildBody,

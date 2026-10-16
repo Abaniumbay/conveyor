@@ -48,6 +48,21 @@ describe("ConveyorStore", () => {
     store.close();
   });
 
+  test("preserves an existing projection as the accepted snapshot when adding provenance", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-store-migration-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    let store = await ConveyorStore.open(database);
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
+    store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Paused title", body: "Paused body", sourceState: "open", labels: ["conveyor:refinement"], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
+    store.sqlite().exec("ALTER TABLE issues DROP COLUMN accepted_text_at; DELETE FROM schema_migrations WHERE version = 27;");
+    store.close();
+
+    store = await ConveyorStore.open(database);
+    expect(store.getIssue("issue")).toMatchObject({ title: "Paused title", body: "Paused body", acceptedTextAt: "2026-10-16T00:00:00.000Z" });
+    store.close();
+  });
+
   test("lists completed transitions and independent Done events in stable time order", async () => {
     const store = await openStore();
     for (const id of ["repo-a", "repo-b"]) {

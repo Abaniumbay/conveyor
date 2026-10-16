@@ -212,9 +212,12 @@ async function world(options: {
         options.failDependencySectionWriteOnce = false;
         throw new Error("temporary dependency section failure");
       }
-      const write = input as { issueNumber: number; section: ManagedSectionName; markdown: string; expectedRevision: string };
+      const write = input as { issueNumber: number; section: ManagedSectionName; markdown: string; expectedRevision: string; baseBody: string };
       const current = source(write.issueNumber);
-      const updated = { ...current, body: upsertManagedSection(current.body, write.section, write.markdown, write.expectedRevision) };
+      // Match the adapter's optimistic check before applying the managed change
+      // to the accepted body supplied by the task.
+      upsertManagedSection(current.body, write.section, write.markdown, write.expectedRevision);
+      const updated = { ...current, body: upsertManagedSection(write.baseBody, write.section, write.markdown, write.expectedRevision) };
       sources.set(updated.number, updated);
       return updated;
     },
@@ -418,10 +421,20 @@ describe("item tools", () => {
     const w = await world(); w.add("i1", 5, { body: "B" });
     const out = await tool("item.setCriteria", w.deps(), { criteria: [{ id: "a", text: "First" }] });
     expect(out.output).toMatchObject({ revision: expect.any(String) });
-    expect(w.calls[1]).toEqual(["updateManagedSection", {
+    expect(w.calls[0]).toEqual(["updateManagedSection", {
       address: "o/r", issueNumber: 5, section: "acceptance-criteria",
-      markdown: "## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: expect.any(String),
+      markdown: "## Acceptance Criteria\n\n- [ ] First <!-- conveyor:criterion:a -->", expectedRevision: expect.any(String), baseBody: "B",
     }]);
+  });
+
+  test("setCriteria refuses a managed write when the live body no longer matches its accepted snapshot", async () => {
+    const w = await world(); w.add("i1", 5, { body: "Accepted body" });
+    w.updateLiveSource(5, { body: "Untrusted replacement" });
+
+    await expect(tool("item.setCriteria", w.deps(), { criteria: [{ id: "a", text: "First" }] }))
+      .rejects.toThrow("body changed since it was read");
+
+    expect(w.store.getIssue("i1")!.body).toBe("Accepted body");
   });
 
   test("setTitle replaces the current issue's title, trimmed", async () => {
@@ -463,9 +476,9 @@ describe("item tools", () => {
     const w = await world(); w.add("i1", 5);
     expect((await tool("item.setParent", w.deps(), { parentNumber: 3 })).output).toEqual({ accepted: true });
     await tool("item.setDependencies", w.deps(), { issueNumbers: [7, 8] });
-    expect(w.calls.map((c) => c[0])).toEqual(["setParent", "getIssue", "setDependencies", "getIssue", "updateManagedSection", "getIssue", "getIssue"]);
+    expect(w.calls.map((c) => c[0])).toEqual(["setParent", "getIssue", "setDependencies", "updateManagedSection", "getIssue", "getIssue"]);
     expect(w.calls[2]![1]).toEqual({ address: "o/r", issueNumber: 5, blockerNumbers: [7, 8] });
-    expect(w.calls[4]![1]).toMatchObject({ section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls[3]![1]).toMatchObject({ section: "dependencies", markdown: "- #7\n- #8", baseBody: "" });
     expect(w.store.listChildren("github:o/r#3").map((child) => child.issueId)).toEqual(["i1"]);
     expect(w.store.listDependencies("i1")).toEqual(["github:o/r#7", "github:o/r#8"]);
   });
@@ -558,11 +571,11 @@ describe("item tools", () => {
     });
 
     expect(out.output).toMatchObject({ id: "c", number: 99, dependsOn: [7, 8] });
-    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "getIssue", "createChildIssue", "setDependencies", "getIssue", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
+    expect(w.calls.map(([name]) => name)).toEqual(["getIssue", "getIssue", "getIssue", "createChildIssue", "setDependencies", "updateManagedSection", "replaceConveyorLabels", "getIssue", "getIssue", "getIssue"]);
     expect(w.calls[3]![1]).toMatchObject({ labels: [] });
     expect(w.calls[4]![1]).toEqual({ address: "o/r", issueNumber: 99, blockerNumbers: [7, 8] });
-    expect(w.calls[6]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
-    expect(w.calls[7]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"], ["conveyor:no-split"]]);
+    expect(w.calls[5]![1]).toMatchObject({ issueNumber: 99, section: "dependencies", markdown: "- #7\n- #8" });
+    expect(w.calls[6]![1]).toEqual(["o/r", 99, ["conveyor", "conveyor:implementation"], ["conveyor:no-split"]]);
 
     expect(w.store.getIssue("c")).toMatchObject({
       labels: ["conveyor", "conveyor:implementation"],
@@ -774,8 +787,9 @@ describe("item tools", () => {
       coupling: ["#111 edits the renderer; ordered after it"], parallelChildren: ["#2 and #3"], risks: ["Org lacks types"], verification: ["Unit tests"],
     });
     expect(out.output).toMatchObject({ revision: expect.any(String) });
-    const written = w.calls[1]![1] as { section: string; markdown: string };
+    const written = w.calls[0]![1] as { section: string; markdown: string; baseBody: string };
     expect(written.section).toBe("refinement");
+    expect(written.baseBody).toBe("");
     expect(written.markdown).toBe([
       "## Refinement", "", "One release.", "", "**In scope**", "- Tools", "", "**Out of scope**", "- Dates", "",
       "**Areas and files expected to change**", "- src/tasks/item.ts", "", "**Coupling with other open issues**",

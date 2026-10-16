@@ -141,7 +141,7 @@ interface GitHubIssueEvent {
   event: string;
   actor?: { login?: unknown } | null;
   label?: { name?: unknown } | null;
-  changes?: { title?: unknown; body?: unknown } | null;
+  rename?: { from?: unknown; to?: unknown } | null;
 }
 
 function eventActor(event: GitHubIssueEvent): SourceEventActor {
@@ -333,9 +333,19 @@ export class GitHubAdapter {
     for (const { event } of chronological) {
       if (event.event === "labeled" && event.label?.name === enrollmentLabel) enrollment = eventActor(event);
       if (event.event === "unlabeled" && event.label?.name === enrollmentLabel) enrollment = null;
-      if (event.event !== "edited") continue;
-      if (event.changes && Object.hasOwn(event.changes, "title")) title = eventActor(event);
-      if (event.changes && Object.hasOwn(event.changes, "body")) body = eventActor(event);
+      // REST issue events record title changes as `renamed`; webhook-only
+      // `edited.changes` payloads are never returned by this endpoint.
+      if (event.event === "renamed" && event.rename !== undefined) title = eventActor(event);
+    }
+    const [owner, name] = address.split("/");
+    if (!owner || !name) throw new Error(`Invalid GitHub repository address ${address}`);
+    const history = await this.#graphql<{ repository?: { issue?: { userContentEdits?: { nodes?: Array<{ editor?: { login?: unknown } | null }> } | null } | null } | null }>(
+      "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { userContentEdits(last: 1) { nodes { editor { login } } } } } }",
+      { owner, name, number: issueNumber },
+    );
+    const editor = history.repository?.issue?.userContentEdits?.nodes?.[0]?.editor;
+    if (history.repository?.issue?.userContentEdits?.nodes?.length) {
+      body = { login: typeof editor?.login === "string" ? editor.login : null };
     }
     return { enrollment, title, body };
   }
@@ -910,14 +920,19 @@ export class GitHubAdapter {
     section: ManagedSectionName;
     markdown: string;
     expectedRevision: string;
+    /** The accepted body to update, never a concurrently read source body. */
+    baseBody: string;
   }): Promise<SourceIssue> {
     const current = await this.transport.request<GitHubIssue>({
       method: "GET",
       path: `repos/${input.address}/issues/${input.issueNumber}`,
     });
-    const body = current.body ?? "";
+    const currentRevision = this.managedRevision(current.body ?? "");
+    if (currentRevision !== input.expectedRevision) {
+      throw new Error("The issue body changed while its managed section was being updated.");
+    }
     const updatedBody = upsertManagedSection(
-      body,
+      input.baseBody,
       input.section,
       input.markdown,
       input.expectedRevision,
