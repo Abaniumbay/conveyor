@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { CodeHost } from "../codehost/types";
 import { ReviewFindings, type Finding } from "../engine/review-findings";
 import type { ChangeContext } from "./context";
-import { fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
+import { fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -48,7 +48,7 @@ function codeHostOf(deps: Deps): CodeHost {
 
 /** The findings of the item as `ChangeContext.findings` carries them. */
 export function findingsView(deps: Deps): ChangeContext["findings"] {
-  return findingsOf(deps).list(deps.issueId).map((finding) => ({
+  return findingsOf(deps).listVisible(deps.issueId).map((finding) => ({
     id: finding.id, providerKey: finding.providerKey, author: finding.author, source: finding.source, headSha: finding.headSha,
     state: finding.state, path: finding.path, line: finding.line, url: finding.url,
     ...(finding.dismissal ? { dismissal: finding.dismissal } : {}),
@@ -58,8 +58,19 @@ export function findingsView(deps: Deps): ChangeContext["findings"] {
 
 /** Reads the code host's native review and brings the imported findings in line with it (a Conveyor-owned write, safe to repeat). */
 export async function importNativeReview(deps: Deps, changeId: string, headSha: string): Promise<void> {
-  const artifacts = await codeHostOf(deps).listReviewArtifacts({ address: deps.repository.address, id: changeId });
-  findingsOf(deps).importNative(deps.issueId, artifacts, headSha, (deps.clock?.() ?? new Date()).toISOString());
+  const repository = deps.config.repositories[deps.repository.id];
+  if (!repository) throw new InfrastructureError(`No configuration exists for repository ${deps.repository.id}`);
+  try {
+    const artifacts = await codeHostOf(deps).listReviewArtifacts({
+      address: deps.repository.address,
+      id: changeId,
+      extraTrustedLogins: repository.extraTrustedLogins,
+    });
+    findingsOf(deps).importNative(deps.issueId, artifacts, headSha, (deps.clock?.() ?? new Date()).toISOString());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new InfrastructureError(`Could not verify native review author trust: ${message}`, { cause: error });
+  }
 }
 
 const comment: TaskDefinition<unknown, CommentInput, Deps> = {
@@ -171,7 +182,7 @@ const listFindings: TaskDefinition<unknown, z.output<typeof listInput>, Deps> = 
       await importNativeReview(deps, stored.id, delivery.change.headSha);
     }
     const state = input?.state;
-    const rows = findingsOf(deps).list(deps.issueId).filter((finding) => !state || finding.state === state);
+    const rows = findingsOf(deps).listVisible(deps.issueId).filter((finding) => !state || finding.state === state);
     return pass({ findings: rows.map(({ projection: _projection, ...rest }: Finding) => rest) });
   },
 };

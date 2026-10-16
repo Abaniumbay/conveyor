@@ -778,4 +778,21 @@ export const migrations: readonly Migration[] = [
         ON criterion_test_evidence_tests(issue_id, criterion_id);
     `,
   },
+  {
+    version: 26,
+    sql: `
+      -- Keep body-free provenance for native review artifacts excluded by repository trust.
+      CREATE TABLE skipped_review_artifacts (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        provider_key TEXT NOT NULL,
+        author TEXT,
+        url TEXT NOT NULL,
+        skipped_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (issue_id, provider_key)
+      );
+      CREATE INDEX skipped_review_artifacts_issue_idx
+        ON skipped_review_artifacts(issue_id, active);
+    `,
+  },
 ];

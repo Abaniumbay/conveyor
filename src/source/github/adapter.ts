@@ -246,6 +246,8 @@ export interface GitHubReview {
   submitted_at?: string;
 }
 
+export type GitHubRepositoryPermission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
+
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -254,7 +256,7 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
         nodes {
           id
           isResolved
-          comments(first: 1) {
+          comments(first: 100) {
             nodes { id databaseId author { login } body url path line createdAt pullRequestReview { databaseId } }
           }
         }
@@ -812,7 +814,7 @@ export class GitHubAdapter {
     return response.data as T;
   }
 
-  /** All of the pull request's review threads with their first comment, through paginated GraphQL; throws unless every page was read. */
+  /** All of the pull request's review threads with their comments, through paginated GraphQL; throws unless every page was read. */
   async listReviewThreads(address: string, pullRequestNumber: number): Promise<GitHubReviewThread[]> {
     const [owner, name] = address.split("/");
     const threads: GitHubReviewThread[] = [];
@@ -847,6 +849,24 @@ export class GitHubAdapter {
       path: `repos/${address}/pulls/${pullRequestNumber}/reviews?per_page=100`,
       paginate: true,
     });
+  }
+
+  /** The account's current repository permission; an absent collaborator is not trusted. */
+  async collaboratorPermission(address: string, login: string): Promise<GitHubRepositoryPermission> {
+    try {
+      const result = await this.transport.request<{ permission?: unknown }>({
+        method: "GET",
+        path: `repos/${address}/collaborators/${encodeURIComponent(login)}/permission`,
+      });
+      if (result.permission === "admin" || result.permission === "maintain" || result.permission === "write"
+        || result.permission === "triage" || result.permission === "read" || result.permission === "none") {
+        return result.permission;
+      }
+      throw new Error(`GitHub returned no usable repository permission for ${login}`);
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /HTTP 404|Not Found/i.test(`${error.message} ${error.stderr}`)) return "none";
+      throw error;
+    }
   }
 
   async updateManagedSection(input: {

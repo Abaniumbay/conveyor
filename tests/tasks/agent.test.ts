@@ -534,7 +534,7 @@ describe("agent.run", () => {
     if (source === "earlier-agent") {
       findings.create({ issueId: "i1", runId: "earlier", author: "reviewer", headSha: "older-head", body: "Still needs fixing" });
     } else {
-      findings.importNative("i1", [{ providerKey: "thread:1", author: "review-bot", body: "Still needs fixing", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
+      findings.importNative("i1", [{ providerKey: "thread:1", author: "review-bot", trusted: true, body: "Still needs fixing", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
     }
     const original = findings.list("i1")[0]!;
     for (const outcome of ["failure", "success"] as const) {
@@ -556,7 +556,7 @@ describe("agent.run", () => {
   test.each(["resolved", "dismissed", "withdrawn"] as const)("changes-requested cannot reuse a %s finding", async (state) => {
     const w = await world();
     const findings = new ReviewFindings(w.store.sqlite());
-    findings.importNative("i1", [{ providerKey: "thread:1", author: "reviewer", body: "Old finding", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
+    findings.importNative("i1", [{ providerKey: "thread:1", author: "reviewer", trusted: true, body: "Old finding", url: "https://x/7#review", path: null, line: null, resolved: false }], "older-head", "2026-01-01T00:00:00Z");
     const finding = findings.list("i1")[0]!;
     if (state === "resolved") findings.resolve("i1", finding.id, "reviewer");
     else if (state === "dismissed") findings.dismiss("i1", finding.id, { actor: "owner", reason: "does not apply", at: "2026-01-02T00:00:00Z" });

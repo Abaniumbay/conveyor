@@ -20,6 +20,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - `conveyor config check` and `conveyor config compare` now mark manual native exit gates as
   `[check, manual approval]`; comparisons also report when only that approval setting changed.
 - The built-in delivery pipeline now reviews a recorded child-breakdown plan before a separate, constrained work-breakdown stage creates its children. Interrupted creation reuses marked children and validates the completed breakdown before implementation.
+- Native review findings now accept only GitHub authors with write-level repository access or configured extra trusted logins, preventing untrusted review text from reaching agents.
 - Default review now waits durably for the current change head's CI checks to settle before starting the reviewer, even for advisory and disabled CI modes. The board shows the current head, unfinished checks, next poll, and finite deadline; both passing and failing settled CI continue to normal review (#246).
 - `conveyor doctor` and `conveyor status` now warn when their artifact or temporary filesystem exceeds 85% capacity.
 - The dashboard Server status now warns live when artifact, service-temporary, or agent-scratch storage exceeds 85% capacity.

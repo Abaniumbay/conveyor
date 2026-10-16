@@ -20,7 +20,7 @@ async function git(cwd: string, ...args: string[]) {
   return { out: out.trim(), code };
 }
 
-async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string; ignoreChecks?: string[]; noSplit?: boolean } = {}) {
+async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: string; ignoreChecks?: string[]; noSplit?: boolean; artifactError?: Error } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-handover-"));
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
@@ -39,7 +39,10 @@ async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: stri
     repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" },
     issueId: "i1",
     codeHost: options.changeHead === undefined ? null : {
-      listReviewArtifacts: async () => artifacts,
+      listReviewArtifacts: async () => {
+        if (options.artifactError) throw options.artifactError;
+        return artifacts;
+      },
       getChangeDelivery: async () => ({ change: { number: 5, url: "https://x/pull/5", headSha: options.changeHead, mergeable: true }, checks: [] }),
     },
     ci: options.ci === "none" ? undefined : {
@@ -137,13 +140,21 @@ describe("handover", () => {
 
   test("refreshes native review findings before listing, and leaves out ignored checks", async () => {
     const w = await setup({ changeHead: "head-2", ignoreChecks: ["Flaky"] });
-    w.artifacts.push({ providerKey: "thread:1", author: "bot", body: "Fresh native", url: "u", path: "a.ts", line: 2, resolved: false });
+    w.artifacts.push({ providerKey: "thread:1", author: "bot", trusted: true, body: "Fresh native", url: "u", path: "a.ts", line: 2, resolved: false });
     w.listed.push({ name: "Check", state: "passed" }, { name: "Flaky", state: "failed" });
     const h = await w.build();
     expect(h.openFindings).toMatchObject({ count: 1, items: [{ author: "bot", text: "Fresh native" }] });
     expect((h.change as { ci: { checks: unknown } }).ci.checks).toEqual([{ name: "Check", state: "passed" }]);
     w.artifacts[0]!.resolved = true;
     expect((await w.build()).openFindings).toMatchObject({ count: 0 });
+  });
+
+  test("does not expose stored native findings when their refreshed trust decision fails", async () => {
+    const w = await setup({ changeHead: "head-2", artifactError: new Error("permission lookup unavailable") });
+    new ReviewFindings(w.store.sqlite()).importNative("i1", [{
+      providerKey: "thread:1", author: "reviewer", trusted: true, body: "Stored finding", url: "u", path: null, line: null, resolved: false,
+    }], "head-1", "t1");
+    await expect(w.build()).rejects.toThrow("Could not verify native review author trust: permission lookup unavailable");
   });
 
   test("reports CI that cannot be read or has no results without inventing one", async () => {

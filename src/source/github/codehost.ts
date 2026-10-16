@@ -7,6 +7,7 @@ import type {
   ReviewArtifact,
 } from "../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "./adapter";
+import { GitHubRepositoryTrust } from "./trust";
 
 interface CommandResult {
   stdout: string;
@@ -63,8 +64,6 @@ async function bestEffort(step: () => Promise<unknown>): Promise<void> {
   }
 }
 
-const isBot = (login: string) => login.endsWith("[bot]");
-
 /** GitHub implementation of the provider-neutral branch and change contract. */
 /** Only a conflict is a definite no; blocked/behind/unknown/draft say nothing about conflicts, so they stay unknown. */
 function mergeable(mergeState: string | null): boolean | null {
@@ -74,7 +73,11 @@ function mergeable(mergeState: string | null): boolean | null {
 }
 
 export class GitHubCodeHost implements CodeHost {
-  constructor(private readonly github: GitHubAdapter, private readonly git: GitRunner = runGit) {}
+  constructor(
+    private readonly github: GitHubAdapter,
+    private readonly git: GitRunner = runGit,
+    private readonly trust: Pick<GitHubRepositoryTrust, "isTrusted"> = new GitHubRepositoryTrust(github),
+  ) {}
 
   readFileAtRevision(input: { address: string; path: string; headSha: string }): Promise<string | null> {
     return this.github.fileSource(input.address, input.path, input.headSha);
@@ -288,8 +291,8 @@ export class GitHubCodeHost implements CodeHost {
   async resolveNativeFinding(input: {
     address: string; id: string; providerKey: string; verdict: FindingVerdict; message: string;
   }): Promise<void> {
-    const [kind, ...rest] = input.providerKey.split(":");
-    const key = rest.join(":");
+    const [kind, key] = input.providerKey.split(":");
+    if (!key) throw new Error(`Cannot resolve native finding with provider key ${input.providerKey}`);
     if (kind === "thread") {
       await this.github.replyToReviewThread(key, input.message);
       await bestEffort(() => this.github.reactToReviewThread(key, reaction(input.verdict)));
@@ -310,7 +313,7 @@ export class GitHubCodeHost implements CodeHost {
     return (await this.github.deleteBranchRef(input.address, input.branch)) ? "deleted" : "absent";
   }
 
-  async listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]> {
+  async listReviewArtifacts(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewArtifact[]> {
     const number = reference(input.address, input.id);
     const threads = await this.github.listReviewThreads(input.address, number);
     const reviews = await this.github.listReviews(input.address, number);
@@ -319,18 +322,34 @@ export class GitHubCodeHost implements CodeHost {
     for (const thread of threads) {
       const first = thread.comments.nodes[0];
       if (!first) continue;
-      if (first.pullRequestReview) threadedReviews.add(first.pullRequestReview.databaseId);
-      const author = first.author?.login ?? "ghost";
-      if (isBot(author) || first.body.includes(OWN_MARKER)) continue;
-      artifacts.push({ providerKey: `thread:${thread.id}`, author, body: first.body, url: first.url, path: first.path, line: first.line, resolved: thread.isResolved });
+      for (const comment of thread.comments.nodes) {
+        if (comment.pullRequestReview) threadedReviews.add(comment.pullRequestReview.databaseId);
+      }
+      if (first.body.includes(OWN_MARKER)) continue;
+      const author = first.author?.login ?? null;
+      const trusted = await this.trust.isTrusted({ address: input.address, login: author, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+      artifacts.push({ providerKey: `thread:${thread.id}`, author, trusted, body: first.body, url: first.url, path: first.path, line: first.line, resolved: thread.isResolved });
+      if (trusted) continue;
+      for (const reply of thread.comments.nodes.slice(1)) {
+        if (reply.body.includes(OWN_MARKER)) continue;
+        const replyAuthor = reply.author?.login ?? null;
+        const replyTrusted = await this.trust.isTrusted({ address: input.address, login: replyAuthor, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+        if (!replyTrusted) continue;
+        artifacts.push({
+          providerKey: `thread:${thread.id}:comment:${reply.id}`, author: replyAuthor, trusted: true, body: reply.body,
+          url: reply.url, path: reply.path, line: reply.line, resolved: thread.isResolved,
+        });
+        break;
+      }
     }
     const ordered = [...reviews].sort((a, b) => a.id - b.id);
     for (const review of ordered) {
-      const author = review.user?.login ?? "ghost";
+      const author = review.user?.login ?? null;
       const body = review.body ?? "";
-      if (review.state !== "CHANGES_REQUESTED" || isBot(author) || body.includes(OWN_MARKER) || threadedReviews.has(review.id)) continue;
-      const approved = ordered.some((later) => later.id > review.id && later.user?.login === author && later.state === "APPROVED");
-      artifacts.push({ providerKey: `review:${review.id}`, author, body, url: review.html_url, path: null, line: null, resolved: approved });
+      if (review.state !== "CHANGES_REQUESTED" || body.includes(OWN_MARKER) || threadedReviews.has(review.id)) continue;
+      const trusted = await this.trust.isTrusted({ address: input.address, login: author, extraTrustedLogins: input.extraTrustedLogins ?? [] });
+      const approved = ordered.some((later) => later.id > review.id && later.user?.login?.toLowerCase() === author?.toLowerCase() && later.state === "APPROVED");
+      artifacts.push({ providerKey: `review:${review.id}`, author, trusted, body, url: review.html_url, path: null, line: null, resolved: approved });
     }
     return artifacts;
   }

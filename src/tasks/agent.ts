@@ -93,7 +93,7 @@ function outcomeOf(deps: Deps, runId: string, agentId: string, result: RunEnvelo
   if (status === "changes-requested") {
     // Use the same item-scoped open findings as the review gate. Imported findings and
     // unresolved findings from earlier runs still block; the reviewer need not duplicate them.
-    if (!new ReviewFindings(deps.store.sqlite()).list(deps.issueId).some((finding) => finding.state === "open")) {
+    if (!new ReviewFindings(deps.store.sqlite()).listVisible(deps.issueId).some((finding) => finding.state === "open")) {
       return fail("Reviewer requested changes without an open finding for this item", { route: { stop: "error" } });
     }
     return pass(captured);

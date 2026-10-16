@@ -53,7 +53,9 @@ export type BranchPushResult =
 export interface ReviewArtifact {
   /** Stable key of the artifact on the host; dedupes imports. */
   providerKey: string;
-  author: string;
+  author: string | null;
+  /** Whether the repository's current trust policy permits this artifact to become a finding. */
+  trusted: boolean;
   body: string;
   url: string;
   path: string | null;
@@ -141,8 +143,8 @@ export interface CodeHost {
    * gone, "kept" when an open change keeps it.
    */
   deleteBranch(input: { address: string; branch: string }): Promise<"deleted" | "absent" | "kept">;
-  /** Human review artifacts of the change's native review; Conveyor's own comments and bots are excluded. */
-  listReviewArtifacts(input: { address: string; id: string }): Promise<ReviewArtifact[]>;
+  /** Native review artifacts of the change, each classified by current repository trust. */
+  listReviewArtifacts(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewArtifact[]>;
 }
 
 /** How an agent closed a finding: the problem is fixed, or the finding is invalid (wrong, not applicable or already satisfied). */

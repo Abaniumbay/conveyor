@@ -93,6 +93,12 @@ describe("task-chain stage configuration", () => {
     expect(config.pipelines.default!.successStatuses).toBeUndefined();
   });
 
+  test("validates extra trusted GitHub logins", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository("    extraTrustedLogins: [Review-Bot, maintainer]\n"));
+    expect(config.repositories.sample!.extraTrustedLogins).toEqual(["Review-Bot", "maintainer"]);
+    await expect(load(NATIVE_PIPELINE + repository("    extraTrustedLogins: [not_valid]\n"))).rejects.toThrow(/GitHub login/);
+  });
+
   test("rejects an empty exit gate", async () => {
     await expect(
       load(`

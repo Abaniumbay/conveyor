@@ -24,7 +24,7 @@ export interface Finding {
   /** How the finding is projected on the code host (opaque to this module). */
   projection: unknown;
   dismissal?: { actor: string; reason: string; at: string };
-  withdrawal?: { actor: string; reason: "provider-artifact-deleted"; at: string };
+  withdrawal?: { actor: string; reason: "provider-artifact-deleted" | "provider-artifact-untrusted"; at: string };
 }
 
 export interface FindingEvent { kind: string; actor: string; reason: string | null; at: string; detail: unknown }
@@ -32,7 +32,9 @@ export interface FindingEvent { kind: string; actor: string; reason: string | nu
 /** A review artifact of the code host's native review, as the host reports it. */
 export interface NativeArtifact {
   providerKey: string;
-  author: string;
+  author: string | null;
+  /** Whether the repository's current trust policy permits this artifact to become a finding. */
+  trusted: boolean;
   body: string;
   url: string;
   path: string | null;
@@ -44,6 +46,14 @@ interface Row {
   id: string; issue_id: string; run_id: string | null; provider_key: string | null; author: string; source: string;
   head_sha: string; state: string; path: string | null; line: number | null; url: string; body: string;
   projection_json: string | null; dismissal_json: string | null; withdrawal_json: string | null;
+}
+
+export interface SkippedNativeArtifact {
+  providerKey: string;
+  author: string | null;
+  url: string;
+  skippedAt: string;
+  active: boolean;
 }
 
 const parse = (json: string | null): unknown => (json === null ? undefined : JSON.parse(json));
@@ -104,6 +114,28 @@ export class ReviewFindings {
     return (this.#db.query("SELECT * FROM findings WHERE issue_id = ? ORDER BY created_at, rowid").all(issueId) as Row[]).map(toFinding);
   }
 
+  /** Findings safe to include in agent context under the current native-review trust decision. */
+  listVisible(issueId: string): Finding[] {
+    return (this.#db.query(`SELECT * FROM findings AS finding
+      WHERE finding.issue_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM skipped_review_artifacts AS skipped
+          WHERE skipped.issue_id = finding.issue_id
+            AND skipped.provider_key = finding.provider_key
+            AND skipped.active = 1
+        )
+      ORDER BY finding.created_at, finding.rowid`).all(issueId) as Row[]).map(toFinding);
+  }
+
+  /** Body-free provenance for native artifacts excluded by the current trust decision. */
+  skippedNative(issueId: string): SkippedNativeArtifact[] {
+    return this.#db.query(`SELECT provider_key, author, url, skipped_at, active
+      FROM skipped_review_artifacts WHERE issue_id = ? ORDER BY skipped_at, rowid`).all(issueId).map((row) => {
+      const skipped = row as { provider_key: string; author: string | null; url: string; skipped_at: string; active: number };
+      return { providerKey: skipped.provider_key, author: skipped.author, url: skipped.url, skippedAt: skipped.skipped_at, active: skipped.active === 1 };
+    });
+  }
+
   /** Findings created by the run that are still open. */
   countForRun(runId: string): number {
     return (this.#db.query("SELECT COUNT(*) AS n FROM findings WHERE run_id = ? AND state = 'open'").get(runId) as { n: number }).n;
@@ -145,6 +177,25 @@ export class ReviewFindings {
     return true;
   }
 
+  #skipNative(issueId: string, artifact: NativeArtifact, at: string): void {
+    this.#db.query(`INSERT INTO skipped_review_artifacts(issue_id, provider_key, author, url, skipped_at, active)
+      VALUES (?, ?, ?, ?, ?, 1)
+      ON CONFLICT(issue_id, provider_key) DO UPDATE SET active = 1`)
+      .run(issueId, artifact.providerKey, artifact.author, artifact.url, at);
+  }
+
+  #markNativeTrusted(issueId: string, providerKey: string): void {
+    this.#db.query("UPDATE skipped_review_artifacts SET active = 0 WHERE issue_id = ? AND provider_key = ?")
+      .run(issueId, providerKey);
+  }
+
+  #withdrawUntrusted(finding: Finding, at: string): void {
+    if (finding.state === "dismissed" || (finding.state === "withdrawn" && finding.withdrawal?.reason === "provider-artifact-untrusted")) return;
+    const withdrawal = { actor: "provider", reason: "provider-artifact-untrusted" as const, at };
+    this.#db.query("UPDATE findings SET state = 'withdrawn', withdrawal_json = ? WHERE id = ?").run(JSON.stringify(withdrawal), finding.id);
+    this.#event(finding.id, "withdrawn", "provider", at, withdrawal.reason);
+  }
+
   /**
    * Brings the findings imported from the code host's native review in line with `artifacts`:
    * new ones open, edited bodies update, resolved threads resolve, and an imported finding whose
@@ -156,6 +207,14 @@ export class ReviewFindings {
     for (const artifact of artifacts) {
       seen.add(artifact.providerKey);
       const existing = imported.get(artifact.providerKey);
+      if (!artifact.trusted) {
+        this.#skipNative(issueId, artifact, at);
+        if (existing) this.#withdrawUntrusted(existing, at);
+        continue;
+      }
+      this.#markNativeTrusted(issueId, artifact.providerKey);
+      // A trusted artifact always has an author because missing authors cannot be trusted.
+      if (artifact.author === null) continue;
       if (!existing) {
         const finding = this.#insert({
           issueId, runId: null, providerKey: artifact.providerKey, author: artifact.author, source: "human", headSha,
