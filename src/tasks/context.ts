@@ -151,6 +151,12 @@ export interface ChangeContext {
   mergeCommitSha: string | null;
   criteria: Array<{
     id: string;
+    /** A manual designation recorded by implementation, distinct from the source criterion flag. */
+    manual?: boolean;
+    criterionManual?: boolean;
+    tests?: Array<{ name: string; file: string; line?: number; description?: string }>;
+    recordedHead?: string | null;
+    sourceLinkHead?: string | null;
     projectedChecked: boolean;       // PR rendering, not authority
     approval: null | {
       reviewer: string;

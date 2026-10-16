@@ -117,9 +117,10 @@ describe("reference configuration", () => {
     expect(config.repositories.service!.ci.mode).toBe("required");
     expect(config.repositories.service!.ci.provider).toBe("actions");
     const { actions, gate, reviewActions, review } = gates("service");
+    expect(actions).toEqual(["workspace", "implement", "ensureChange", "startCi"]);
     expect(actions).toContain("startCi");
     expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
-    expect(reviewActions).toEqual(["ciSettled", "review"]);
+    expect(reviewActions).toEqual(["ciSettled", "criterionTests", "review"]);
     expect(review).toContain("ciHead");
   });
 

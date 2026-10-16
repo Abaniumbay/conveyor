@@ -40,6 +40,16 @@ export interface IssueProjection {
   issueType?: string | null;
 }
 
+/** Authoritative test evidence recorded for one acceptance criterion. */
+export interface CriterionTestEvidence {
+  criterionId: string;
+  manual: boolean;
+  tests: Array<{ name: string; file: string; line?: number; description?: string }>;
+  recordedHead: string;
+  sourceLinkHead: string;
+  recordedAt: string;
+}
+
 export interface StoredIssue extends IssueProjection {
   metadata: IssueMetadata;
   queueRank: number | null;
@@ -380,6 +390,61 @@ export class ConveyorStore {
       .query("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
       .get() as { version: number };
     return row.version;
+  }
+
+  criterionTestEvidence(issueId: string): CriterionTestEvidence[] {
+    const rows = this.#database.query(`
+      SELECT e.criterion_id AS criterionId, e.manual AS manual, e.recorded_head_sha AS recordedHead,
+             e.source_link_head_sha AS sourceLinkHead, e.recorded_at AS recordedAt,
+             t.ordinal AS ordinal, t.name AS name, t.file AS file, t.line AS line, t.description AS description
+        FROM criterion_test_evidence e
+        LEFT JOIN criterion_test_evidence_tests t ON t.issue_id = e.issue_id AND t.criterion_id = e.criterion_id
+       WHERE e.issue_id = ?
+       ORDER BY e.criterion_id, t.ordinal
+    `).all(issueId) as Array<{ criterionId: string; manual: number; recordedHead: string; sourceLinkHead: string; recordedAt: string; ordinal: number | null; name: string | null; file: string | null; line: number | null; description: string | null }>;
+    const evidence = new Map<string, CriterionTestEvidence>();
+    for (const row of rows) {
+      let entry = evidence.get(row.criterionId);
+      if (!entry) {
+        entry = { criterionId: row.criterionId, manual: row.manual === 1, tests: [], recordedHead: row.recordedHead, sourceLinkHead: row.sourceLinkHead, recordedAt: row.recordedAt };
+        evidence.set(row.criterionId, entry);
+      }
+      if (row.name !== null && row.file !== null) {
+        const test: { name: string; file: string; line?: number; description?: string } = { name: row.name, file: row.file };
+        if (row.line !== null) test.line = row.line;
+        if (row.description !== null) test.description = row.description;
+        entry.tests.push(test);
+      }
+    }
+    return [...evidence.values()];
+  }
+
+  replaceCriterionTestEvidence(issueId: string, entries: readonly CriterionTestEvidence[]): void {
+    const replace = this.#database.transaction(() => {
+      const deleteTests = this.#database.query("DELETE FROM criterion_test_evidence_tests WHERE issue_id = ? AND criterion_id = ?");
+      const deleteEvidence = this.#database.query("DELETE FROM criterion_test_evidence WHERE issue_id = ? AND criterion_id = ?");
+      const insertEvidence = this.#database.query("INSERT INTO criterion_test_evidence (issue_id, criterion_id, manual, recorded_head_sha, source_link_head_sha, recorded_at) VALUES (?, ?, ?, ?, ?, ?)");
+      const insertTest = this.#database.query("INSERT INTO criterion_test_evidence_tests (issue_id, criterion_id, ordinal, name, file, line, description) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      for (const entry of entries) {
+        deleteTests.run(issueId, entry.criterionId);
+        deleteEvidence.run(issueId, entry.criterionId);
+        insertEvidence.run(issueId, entry.criterionId, entry.manual ? 1 : 0, entry.recordedHead, entry.sourceLinkHead, entry.recordedAt);
+        entry.tests.forEach((test, ordinal) => insertTest.run(issueId, entry.criterionId, ordinal, test.name, test.file, test.line ?? null, test.description ?? null));
+      }
+    });
+    replace();
+  }
+
+  refreshCriterionTestEvidence(issueId: string, sourceLinkHead: string, lines: ReadonlyMap<string, readonly number[]>): void {
+    const refresh = this.#database.transaction(() => {
+      const updateHeader = this.#database.query("UPDATE criterion_test_evidence SET source_link_head_sha = ? WHERE issue_id = ? AND criterion_id = ?");
+      const updateLine = this.#database.query("UPDATE criterion_test_evidence_tests SET line = ? WHERE issue_id = ? AND criterion_id = ? AND ordinal = ?");
+      for (const [criterionId, testLines] of lines) {
+        updateHeader.run(sourceLinkHead, issueId, criterionId);
+        testLines.forEach((line, ordinal) => updateLine.run(line, issueId, criterionId, ordinal));
+      }
+    });
+    refresh();
   }
 
   dashboardAccounts(): DashboardAccount[] {

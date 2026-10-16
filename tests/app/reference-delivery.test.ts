@@ -11,7 +11,7 @@ test("a fresh item runs the whole reference delivery pipeline and ends done", as
   await w.drive();
 
   expect([...new Set(w.executed)]).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
-  expect(w.agentRuns).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review"]);
+  expect(w.agentRuns).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "implementation", "review"]);
   expect(w.scriptRuns).toEqual(["deploy", "verify"]);
   expect(w.store.getStageState("issue")?.status).toBe("done");
   expect(w.store.getActiveWorkspace("issue")).toBeNull();
@@ -29,7 +29,7 @@ test("an implementation agent explains a criterion-required result through the m
   const w = world;
   await w.drive();
 
-  expect(w.agentRuns).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "implementation", "review"]);
+  expect(w.agentRuns).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "implementation", "review", "implementation", "review"]);
   expect(w.store.getStageState("issue")?.status).toBe("done");
   expect((await w.host.getChange({ address: "owner/conveyor", id: "github:owner/conveyor#pr-5" })).body).toContain(REQUIRED_DESCRIPTION);
   expect(w.host.descriptionUpdates).toBe(1);

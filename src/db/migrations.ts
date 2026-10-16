@@ -750,4 +750,32 @@ export const migrations: readonly Migration[] = [
         ON enrollments(issue_id, id);
     `,
   },
+  {
+    version: 25,
+    sql: `
+      CREATE TABLE criterion_test_evidence (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        criterion_id TEXT NOT NULL,
+        manual INTEGER NOT NULL CHECK (manual IN (0, 1)),
+        recorded_head_sha TEXT NOT NULL,
+        source_link_head_sha TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, criterion_id)
+      );
+      CREATE TABLE criterion_test_evidence_tests (
+        issue_id TEXT NOT NULL,
+        criterion_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        file TEXT NOT NULL,
+        line INTEGER,
+        description TEXT,
+        PRIMARY KEY (issue_id, criterion_id, ordinal),
+        FOREIGN KEY (issue_id, criterion_id)
+          REFERENCES criterion_test_evidence(issue_id, criterion_id) ON DELETE CASCADE
+      );
+      CREATE INDEX criterion_test_evidence_tests_issue_idx
+        ON criterion_test_evidence_tests(issue_id, criterion_id);
+    `,
+  },
 ];

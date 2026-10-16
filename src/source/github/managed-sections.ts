@@ -215,12 +215,13 @@ export interface AcceptanceCriterion {
   id: string;
   text: string;
   completed?: boolean;
+  detail?: string;
 }
 
 /** Render stable, single-line checklist entries that can be reordered safely. */
 export function formatAcceptanceCriteria(criteria: readonly AcceptanceCriterion[]): string {
   const ids = new Set<string>();
-  return criteria.map(({ id, text, completed = false }) => {
+  return criteria.map(({ id, text, completed = false, detail }) => {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || ids.has(id)) {
       throw new ManagedSectionError(`invalid or duplicate acceptance-criterion ID: ${id}`);
     }
@@ -229,7 +230,11 @@ export function formatAcceptanceCriteria(criteria: readonly AcceptanceCriterion[
     if (safeText.length === 0 || safeText.includes("<!-- conveyor:criterion:")) {
       throw new ManagedSectionError(`invalid text for acceptance criterion ${id}`);
     }
-    return `- [${completed ? "x" : " "}] ${safeText} <!-- conveyor:criterion:${id} -->`;
+    const line = `- [${completed ? "x" : " "}] ${safeText} <!-- conveyor:criterion:${id} -->`;
+    if (detail === undefined) return line;
+    const safeDetail = detail.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+    if (safeDetail.length === 0 || safeDetail.includes("<!-- conveyor:criterion:")) throw new ManagedSectionError(`invalid detail for acceptance criterion ${id}`);
+    return `${line}\n  ${safeDetail}`;
   }).join("\n");
 }
 

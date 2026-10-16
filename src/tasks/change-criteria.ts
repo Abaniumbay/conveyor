@@ -16,6 +16,12 @@ type Deps = TaskDeps;
 
 const criterionInput = z.object({ criterionId: z.string().min(1), headSha: z.string().min(1) }).strict();
 type CriterionInput = z.output<typeof criterionInput>;
+const oneLine = z.string().refine((value) => value.trim().length > 0 && !/[\r\n]/.test(value), "must be non-empty and one line");
+const repositoryFile = z.string().refine((value) => value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.includes("\0") && value.split("/").every((part) => part.length > 0 && part !== "." && part !== ".."), "must be a safe repository-relative path");
+const linkedTest = z.object({ name: oneLine, file: repositoryFile, line: z.number().int().positive().optional(), description: oneLine.optional() }).strict();
+const criterionEvidence = z.union([z.object({ criterionId: z.string().min(1), tests: z.array(linkedTest).min(1) }).strict(), z.object({ criterionId: z.string().min(1), manual: z.literal(true) }).strict()]);
+const recordEvidenceInput = z.object({ headSha: z.string().min(1), criteria: z.array(criterionEvidence).min(1).superRefine((entries, context) => { const seen = new Set<string>(); entries.forEach((entry, index) => { if (seen.has(entry.criterionId)) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "criterionId"], message: "criterion ids must be unique" }); seen.add(entry.criterionId); }); }) }).strict();
+type RecordEvidenceInput = z.output<typeof recordEvidenceInput>;
 
 const NO_CHANGE = "No change request exists yet";
 
@@ -24,11 +30,18 @@ const MALFORMED = (detail: string) => `PR checklist markers are malformed: ${det
 /** The item's criteria with their approval at `headSha` (an approval for another head or other text is none). */
 export function criteriaView(deps: Deps, body: string, headSha: string): ChangeContext["criteria"] {
   const approvals = new Map(new CriterionApprovals(deps.store.sqlite()).list(deps.issueId).map((a) => [a.criterionId, a]));
+  const evidence = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
   const projected = projectedChecklist(body).checked;
-  return criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").map(({ id, text }) => {
+  return criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").map(({ id, text, manual: criterionManual }) => {
     const approval = approvals.get(id);
+    const recorded = evidence.get(id);
     return {
       id,
+      manual: recorded?.manual ?? false,
+      criterionManual,
+      tests: recorded?.tests ?? [],
+      recordedHead: recorded?.recordedHead ?? null,
+      sourceLinkHead: recorded?.sourceLinkHead ?? null,
       projectedChecked: projected.get(id) ?? false,
       approval: approval && isCriterionApprovedAt(approvals, { id, text }, headSha)
         ? { reviewer: approval.reviewer, headSha: approval.headSha, checkedAt: approval.checkedAt }
@@ -57,13 +70,22 @@ export function projectedChecklist(body: string): { checked: Map<string, boolean
 export type SyncResult = { ok: true } | { ok: false; malformed: boolean; message: string };
 
 /** The checklist markdown for the item's criteria, or the reason it cannot be rendered (invalid or duplicate ids). */
-function render(deps: Deps, headSha: string | null): { markdown: string } | { error: string } {
+function render(deps: Deps, headSha: string | null, host?: CodeHost): { markdown: string } | { error: string } {
   const approvals = new Map(new CriterionApprovals(deps.store.sqlite()).list(deps.issueId).map((a) => [a.criterionId, a]));
+  const evidence = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
   const criteria = criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "");
   try {
     return {
       markdown: formatAcceptanceCriteria(criteria.map(({ id, text }) => {
-        return { id, text, completed: isCriterionApprovedAt(approvals, { id, text }, headSha) };
+        const recorded = evidence.get(id);
+        const detail = recorded?.manual ? "manual" : recorded?.tests.length ? `tests: ${recorded.tests.map((test) => {
+          const location = `${test.file}${test.line ? `:${test.line}` : ""}`;
+          const linkedLocation = host && test.line
+            ? `[${location}](${host.sourceFileUrl({ address: deps.repository.address, path: test.file, headSha: recorded.sourceLinkHead, line: test.line })})`
+            : location;
+          return `${test.name} (${linkedLocation}${test.description ? ` — ${test.description}` : ""})`;
+        }).join("; ")}` : "no tests linked";
+        return { id, text, completed: isCriterionApprovedAt(approvals, { id, text }, headSha), detail };
       })),
     };
   } catch (error) {
@@ -79,7 +101,7 @@ export async function syncChecklist(host: CodeHost, deps: Deps, changeId: string
   const body = live.body ?? "";
   const { error } = projectedChecklist(body);
   if (error) return { ok: false, malformed: true, message: MALFORMED(error) };
-  const rendered = render(deps, live.headSha);
+  const rendered = render(deps, live.headSha, host);
   if ("error" in rendered) return { ok: false, malformed: false, message: rendered.error };
   const existing = parseManagedSections(body).sections["acceptance-criteria"];
   if ((existing ?? "") === rendered.markdown) return { ok: true };
@@ -144,6 +166,89 @@ export const uncheckCriterion = criterionTool(
   "Withdraw the approval of one acceptance criterion and untick it in the pull request checklist. headSha must be the current head.",
   (approvals, input, _reviewer, issueId) => approvals.withdraw(issueId, input.criterionId),
 );
+
+/** Atomically replaces only the supplied criterion evidence entries. */
+export const recordCriterionTests: TaskDefinition<unknown, RecordEvidenceInput, Deps> = {
+  name: "change.recordCriterionTests",
+  kind: "tool",
+  description: "Records exact tests or a permitted manual designation for item criteria at the current change head, then refreshes the managed PR checklist.",
+  reads: [], writes: [], invalidates: ["change"], mutating: true, journal: false,
+  input: recordEvidenceInput,
+  async run({ deps, input }: TaskArgs<unknown, RecordEvidenceInput, Deps>) {
+    const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    if (!stored) return fail(NO_CHANGE);
+    const known = new Map(criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").map((criterion) => [criterion.id, criterion]));
+    for (const entry of input!.criteria) {
+      const criterion = known.get(entry.criterionId);
+      if (!criterion) return fail(`Unknown criterion "${entry.criterionId}"; no evidence was recorded`);
+      if ("manual" in entry && !criterion.manual) return fail(`Criterion "${entry.criterionId}" is not marked [Manual]; no evidence was recorded`);
+    }
+    const host = deps.codeHost;
+    if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
+    const live = await host.getChange({ address: deps.repository.address, id: stored.id });
+    if (live.headSha !== input!.headSha) return fail(`The change head is ${live.headSha}, not ${input!.headSha}; read change.get and retry`);
+    deps.store.replaceCriterionTestEvidence(deps.issueId, input!.criteria.map((entry) => ({
+      criterionId: entry.criterionId, manual: "manual" in entry, tests: "tests" in entry ? entry.tests.map((test) => {
+        const recorded: { name: string; file: string; line?: number; description?: string } = { name: test.name, file: test.file };
+        if (test.line !== undefined) recorded.line = test.line;
+        if (test.description !== undefined) recorded.description = test.description;
+        return recorded;
+      }) : [],
+      recordedHead: live.headSha, sourceLinkHead: live.headSha, recordedAt: new Date().toISOString(),
+    })));
+    const synced = await syncChecklist(host, deps, stored.id);
+    return pass(synced.ok ? { headSha: live.headSha } : { headSha: live.headSha, checklist: `Recorded, but the PR checklist could not be updated: ${synced.message}` });
+  },
+};
+
+/** A deterministic admission gate which also refreshes source lines at the verified head. */
+export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
+  name: "change.criterionTestsVerified",
+  kind: "act",
+  description: "Before review, requires test evidence for every non-manual criterion and verifies each linked test name exists in its file at the current change head. It refreshes stored display lines and source-link heads only when all links verify.",
+  reads: ["item", "change"], writes: [], invalidates: ["change"],
+  async run({ context, deps }: TaskArgs<unknown, unknown, Deps>) {
+    const change = context.change;
+    if (!change) return fail(NO_CHANGE);
+    const host = deps.codeHost;
+    if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
+    const live = await host.getChange({ address: deps.repository.address, id: change.ref.id });
+    if (live.headSha !== change.headSha) return fail(`Change head moved from ${change.headSha} to ${live.headSha}; return to implementation and record evidence for the current head`, { route: { return: "implementation" } });
+    const entries = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
+    const files = new Map<string, string | null>();
+    const gaps: string[] = [];
+    const lines = new Map<string, number[]>();
+    for (const criterion of context.item!.criteria) {
+      if (criterion.manual) continue;
+      const entry = entries.get(criterion.id);
+      if (!entry) {
+        gaps.push(`${criterion.id}: no tests linked`);
+        continue;
+      }
+      if (entry.tests.length === 0) {
+        gaps.push(`${criterion.id}: no tests linked`);
+        continue;
+      }
+      const foundLines: number[] = [];
+      for (const test of entry.tests) {
+        let source = files.get(test.file);
+        if (source === undefined) {
+          source = await host.readFileAtRevision({ address: deps.repository.address, path: test.file, headSha: live.headSha });
+          files.set(test.file, source);
+        }
+        if (source === null) { gaps.push(`${criterion.id}: file ${test.file} is missing at ${live.headSha}`); continue; }
+        const line = source.split(/\r?\n/).findIndex((sourceLine) => sourceLine.includes(test.name)) + 1;
+        if (line === 0) { gaps.push(`${criterion.id}: test "${test.name}" is not in ${test.file} at ${live.headSha}`); continue; }
+        foundLines.push(line);
+      }
+      if (foundLines.length === entry.tests.length) lines.set(criterion.id, foundLines);
+    }
+    if (gaps.length > 0) return fail(`Criterion test evidence is incomplete or stale: ${gaps.join("; ")}`, { route: { return: "implementation" } });
+    deps.store.refreshCriterionTestEvidence(deps.issueId, live.headSha, lines);
+    const synced = await syncChecklist(host, deps, change.ref.id);
+    return synced.ok ? pass() : fail(`Criterion test evidence was verified, but the PR checklist could not be updated: ${synced.message}`, { route: { return: "implementation" } });
+  },
+};
 
 export const criteriaInSync: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.criteriaInSync",

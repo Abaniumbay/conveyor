@@ -73,7 +73,7 @@ kaveh:
   tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
-          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
+          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata, change.recordCriterionTests,
           change.listFindings, change.comment, change.resolveFinding]
 jamshid:                                 # implements when Kaveh cannot run; Claude Code (Haiku)
   name: Jamshid
@@ -107,7 +107,7 @@ jamshid:                                 # implements when Kaveh cannot run; Cla
   tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
-          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata,
+          todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata, change.recordCriterionTests,
           change.listFindings, change.comment, change.resolveFinding]
 shaghayegh:                              # reviews first; Claude Code (read-only)
   name: Shaghayegh

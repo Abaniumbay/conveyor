@@ -1078,6 +1078,20 @@ export class GitHubAdapter {
     return Buffer.from(file.content, "base64").toString("utf8");
   }
 
+  async fileSource(address: string, filePath: string, ref: string): Promise<string | null> {
+    try {
+      const file = await this.transport.request<{ content?: string; encoding?: string }>({
+        method: "GET",
+        path: `repos/${address}/contents/${filePath.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
+      });
+      if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error(`file ${filePath} has no readable content`);
+      return Buffer.from(file.content, "base64").toString("utf8");
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\b404\b|Not Found/i.test(error.message)) return null;
+      throw error;
+    }
+  }
+
   /** Remove (if present) and re-add a PR label so a `labeled` workflow runs for the current head. */
   async retriggerLabel(address: string, pullRequestNumber: number, label: string): Promise<void> {
     try {

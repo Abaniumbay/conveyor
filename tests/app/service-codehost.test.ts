@@ -165,6 +165,8 @@ describe("CodeHost service integration", () => {
         return { id: "custom:change/1", number: 1, url: "https://code.example/change/1", state: "open", headSha: "custom-head", draft: false, mergeable: true };
       },
       async getChange() { throw new Error("not expected"); },
+      async readFileAtRevision() { throw new Error("not expected"); },
+      sourceFileUrl() { throw new Error("not expected"); },
       async mergeChange() { throw new Error("not expected"); },
       async setChangeChecklist() { throw new Error("not expected"); },
       async setChangeDescription() { throw new Error("not expected"); },
@@ -296,7 +298,7 @@ describe("CodeHost service integration", () => {
       const token = JSON.parse(await readFile(file, "utf8")).control.token as string;
       try { return await service.handleMcp({ tool, input }, token); } finally { await lease.close(); }
     };
-    expect(await call("delivery.get_state")).toEqual({ change: null, pullRequest: null, checks: [] });
+    expect(await call("delivery.get_state")).toEqual({ change: null, pullRequest: null, checks: [], criteria: [] });
     store.upsertPullRequest({ issueId: "issue", id: "github:owner/repo#pr-23", number: 23, url: "https://github.com/owner/repo/pull/23", state: "open" });
     expect(await call("delivery.get_state")).toMatchObject({
       change: { id: "github:owner/repo#pr-23", number: 23, state: "open", headSha: "head-sha-23", draft: false, mergeable: true },
