@@ -568,9 +568,11 @@ export const dashboardClient = String.raw`(() => {
     if (!root || !status) return;
     root.replaceChildren();
     const transitions = Array.isArray(journey.transitions) ? journey.transitions : [];
-    status.textContent = transitions.length === 0
-      ? 'No stage changes have been recorded yet.'
-      : transitions.length + (transitions.length === 1 ? ' recorded stage change.' : ' recorded stage changes.');
+    const skippedReviews = Array.isArray(journey.skippedReviews) ? journey.skippedReviews : [];
+    status.textContent = transitions.length === 0 && skippedReviews.length === 0
+      ? 'No stage changes or ignored native reviews have been recorded yet.'
+      : transitions.length + (transitions.length === 1 ? ' recorded stage change; ' : ' recorded stage changes; ')
+        + skippedReviews.length + (skippedReviews.length === 1 ? ' ignored native review.' : ' ignored native reviews.');
     // Oldest first, like the stored history; where the item is now comes last.
     const now = journey.now && typeof journey.now === 'object' ? journey.now : null;
     let nowItem = null;
@@ -651,6 +653,36 @@ export const dashboardClient = String.raw`(() => {
         lifecycle.textContent = 'Transition ' + String(transition.status || 'pending');
         item.append(lifecycle);
       }
+      root.append(item);
+    }
+    for (const review of skippedReviews) {
+      const item = document.createElement('li');
+      item.className = 'journey-entry journey-entry--ignored-review';
+      const header = document.createElement('header');
+      const title = document.createElement('strong');
+      title.textContent = 'Native review ignored by trust safeguards';
+      const badge = document.createElement('span');
+      badge.className = 'journey-kind';
+      badge.textContent = review.active ? 'Ignored' : 'Previously ignored';
+      header.append(title, badge);
+      const meta = document.createElement('p');
+      meta.className = 'journey-meta';
+      const time = document.createElement('time');
+      time.dateTime = String(review.skippedAt || '');
+      time.textContent = formatDateTime(review.skippedAt);
+      meta.append(String(review.author || 'Unknown author'), ' · ', time);
+      item.append(header, meta);
+      try {
+        const reviewUrl = new URL(String(review.url || ''), location.origin);
+        if (reviewUrl.protocol === 'http:' || reviewUrl.protocol === 'https:') {
+          const link = document.createElement('a');
+          link.href = reviewUrl.href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'Open review ↗';
+          item.append(link);
+        }
+      } catch { /* A malformed provider URL has no safe history link. */ }
       root.append(item);
     }
     if (nowItem) root.append(nowItem);

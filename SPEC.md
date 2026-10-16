@@ -538,6 +538,14 @@ Eligibility is resolved in this order:
 
 The effective enrollment-label event must be performed by a trusted account: an account with GitHub `write`, `maintain`, or `admin` permission, or a case-insensitive repository `extraTrustedLogins` entry. When its provenance is unavailable or untrusted, the issue remains visible with a warning but is not eligible. At trusted enrollment, Conveyor accepts the visible title and body as its initial agent-facing snapshot. Later title and body changes replace that snapshot only when their field editor is trusted; an untrusted or unverifiable edit preserves the prior snapshot and produces a field-specific warning until a trusted edit adopts the current text.
 
+For every public repository, `conveyor doctor` and the authenticated repository dashboard show this
+effective permission threshold, the configured extra trusted logins, and the three ignored input
+categories: native review findings, post-enrollment issue title and body edits, and enrollment
+labels. If source visibility or trust checks are unavailable, they identify that uncertainty rather
+than claiming the safeguards are active. A skipped native review remains inspectable from item
+history by its author and URL only; Conveyor never repeats its body or promotes it to an agent
+finding without a trusted source action.
+
 The expected closure caused by merging the issue's own Conveyor-managed PR is the sole exception to step 3: explicitly configured post-merge stages remain eligible until a terminal result.
 
 Pausing interrupts the current process, releases its concurrency permit, and preserves its worktree. Restoring the base label starts a fresh agent process at the same incomplete stage using the existing worktree and current source state. Previous chat transcript is not injected.
@@ -639,6 +647,10 @@ Review evidence is bound to the change head; the pull request is its projection.
 - **Findings.** A finding is a provider-neutral record with an id, a provider key when imported, author, source (`agent` or `human`), head SHA, state, location and URL. States: `open`, `resolved`, `dismissed`, `withdrawn`; every change is kept in an audit trail. A reviewer records one with `change.comment` (an inline review comment when `path` and `line` are in the diff, otherwise a managed change comment). `change.load` imports native review only from authors with GitHub `write`, `maintain`, or `admin` permission, or a case-insensitive repository `extraTrustedLogins` entry. Unavailable permission data makes the import retryable rather than accepting or silently omitting the artifact. Untrusted artifacts are recorded without their text and do not enter an agent context; a trusted reply may create a finding from its own text. Unresolved threads and changes-requested reviews (a changes-requested review without a thread becomes one top-level finding) use the provider artifact id as the deduplication key, edits update the same record, resolved threads resolve it, and a deleted artifact becomes an audited `withdrawn` finding. Ordinary conversation comments are not findings. Imported findings stay provider-authoritative: an agent closes one with `change.resolveFinding` (verdict `fixed` or `invalid` and a comment), which replies on the native thread with the verdict, the current head and the agent's name, adds a thumbs up or down, and resolves the thread; the record is resolved only when the thread is, and a thread that is unresolved again reopens it. A changes-requested review has no thread: the agent's answer is a change comment and the record stays resolved. Agent findings get the same reply and reaction on their projection.
 - **Gate.** `change.findingsResolved` fails while any finding is open. A reviewer result of `changes-requested` with no recorded finding is invalid. The gate's passing records `reviewPassed`.
 - **Operator dismissal.** An operator dismisses an open finding with `POST /api/issues/:issueId/findings/:findingId/dismiss` (signed-in dashboard session, `X-CSRF-Token`, JSON `{ "reason": "..." }`, non-empty reason). The route calls the same task dispatcher as `change.dismissFinding` with the signed-in user as a human actor. `change.dismissFinding` is never grantable to an agent. The authorization is the single dashboard login; provider-level human-login allowlists are not supported. The web UI has no dismiss control yet.
+
+GitHub's repository interaction limits and protection settings are a separate operator-controlled
+layer. Conveyor does not configure them; they complement rather than replace Conveyor's recorded
+trust policy.
 
 ### Producer results and the run envelope
 

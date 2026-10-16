@@ -11,6 +11,7 @@ import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { ItemTodos } from "../../src/engine/todos";
 import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
 import { parseManagedSections } from "../../src/source/github/managed-sections";
@@ -1737,7 +1738,7 @@ describe("ConveyorService dashboard", () => {
       },
       repositories: {
         earlier: { source: "github", address: "owner/earlier", folder: root, pipeline: "default" },
-        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", extraTrustedLogins: ["reviewer[bot]"] },
       },
     } as unknown as ConveyorConfig;
     store.upsertRepository({
@@ -1930,6 +1931,22 @@ describe("ConveyorService dashboard", () => {
       feedbackCycle: 0,
       configHash: config.hash,
     });
+    store.setRepositoryTrustStatus({
+      repositoryId: "repo",
+      visibility: "public",
+      checkedAt: "2026-09-29T03:00:00Z",
+      warning: null,
+    });
+    new ReviewFindings(store.sqlite()).importNative("github:owner/repo#31", [{
+      providerKey: "review-1",
+      author: "outside-reviewer",
+      trusted: false,
+      body: "Never expose this skipped review body",
+      url: "https://example.com/reviews/1",
+      path: null,
+      line: null,
+      resolved: false,
+    }], "head", "2026-09-29T03:00:00Z");
     const journal = store.executions();
     const epoch = journal.stageEpoch("github:owner/repo#31");
     const pending = journal.planExecution({
@@ -2011,6 +2028,21 @@ describe("ConveyorService dashboard", () => {
         reason: "Waiting for CI for 7c0ea55",
         since: "2026-09-29T03:02:00Z",
       },
+      skippedReviews: [{
+        author: "outside-reviewer",
+        url: "https://example.com/reviews/1",
+        skippedAt: "2026-09-29T03:00:00Z",
+        active: true,
+      }],
+    });
+    expect(JSON.stringify(service.issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
+    expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
+      visibility: "public",
+      checkedAt: "2026-09-29T03:00:00Z",
+      warning: null,
+      permissionThreshold: "write, maintain, or admin",
+      extraTrustedLogins: ["reviewer[bot]"],
+      ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"],
     });
     expect(dashboard.activeWork).toMatchObject({
       runnerCount: 2,

@@ -46,7 +46,7 @@ Safe to repeat: existing files are kept, a configuration cloned into &lt;home>/c
 
 ### `conveyor doctor`
 
-Check the home, configuration and every external prerequisite, with fixes.
+Check the home, configuration, repository trust safeguards and external prerequisites, with fixes.
 
 ### `conveyor version`
 

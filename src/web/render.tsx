@@ -1097,6 +1097,11 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
     : undefined;
   const addressUrl = safeUrl(repository.addressUrl);
   const line = [`${repository.backlog} backlog`, ...repository.stages.map((stage) => `${stage.count} ${stage.name}`), `${repository.done} completed all-time`];
+  const trustStatus = repository.trust.visibility === "public"
+    ? "GitHub reports this repository is public."
+    : repository.trust.visibility === "private"
+      ? "GitHub reports this repository is private; the public-source safeguards are not required."
+      : "Repository visibility is uncertain; public-repository safeguards cannot be confirmed.";
   return (
     <article class="repository-detail">
       <header class={`repository-detail-header repo-color-${repository.color}`}>
@@ -1112,6 +1117,7 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
       <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
       <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
       <section><h3>Last 30 days</h3><a href={`/reports/${encodeURIComponent(repository.id)}?period=30d`}>Full report →</a><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
+      <section><h3>Public repository trust</h3><p>{trustStatus}</p><dl class="repository-facts"><dt>Default permission threshold</dt><dd>{repository.trust.permissionThreshold}</dd><dt>Extra trusted logins</dt><dd>{repository.trust.extraTrustedLogins.length > 0 ? repository.trust.extraTrustedLogins.join(", ") : "None"}</dd><dt>Ignored inputs</dt><dd><ul class="repository-trust-list">{repository.trust.ignoredInputCategories.map((category) => <li key={category}>{category}</li>)}</ul></dd></dl>{repository.skippedReviewItems.length > 0 ? <p class="repository-empty">Ignored native reviews: {repository.skippedReviewItems.map((item, index) => <span key={item.number}>{index > 0 && ", "}<a href={issueHref(repository.id, item.number, "journey")}>#{item.number} {item.title} Journey history</a> ({item.count})</span>)}</p> : <p class="repository-empty">No ignored native reviews have been recorded. Their text is never shown here.</p>}{repository.trust.warning && <p class="repository-error">Source checks uncertain: {repository.trust.warning}</p>}</section>
     </article>
   );
 }

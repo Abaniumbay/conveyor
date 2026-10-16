@@ -174,6 +174,26 @@ describe("GitHubAdapter.collaboratorPermission", () => {
   });
 });
 
+describe("GitHubAdapter.repositoryVisibility", () => {
+  test("returns public and private visibility from GitHub's repository payload", async () => {
+    for (const [response, visibility] of [[{ private: false }, "public"], [{ private: true }, "private"], [{ visibility: "public" }, "public"]] as const) {
+      const transport = new FakeTransport(response);
+      const adapter = new GitHubAdapter(transport, "conveyor");
+
+      expect(await adapter.repositoryVisibility("owner/my-app")).toBe(visibility);
+      expect(transport.requests).toEqual([{ method: "GET", path: "repos/owner/my-app" }]);
+    }
+  });
+
+  test("rejects incomplete visibility payloads and propagates transport errors", async () => {
+    await expect(new GitHubAdapter(new FakeTransport({}), "conveyor").repositoryVisibility("owner/my-app"))
+      .rejects.toThrow("GitHub returned no usable repository visibility for owner/my-app");
+    const unavailable = new GitHubTransportError("GitHub request failed with HTTP 503", 1, "Service unavailable");
+    await expect(new GitHubAdapter(new FakeTransport(unavailable), "conveyor").repositoryVisibility("owner/my-app"))
+      .rejects.toBe(unavailable);
+  });
+});
+
 describe("GitHubAdapter", () => {
   test("uses the effective label, REST rename, and GraphQL body-edit actors", async () => {
     const transport = new FakeTransport([

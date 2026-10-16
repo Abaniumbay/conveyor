@@ -6,6 +6,7 @@ import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load"
 import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
 import { GhCliTransport, GitHubAdapter, type GitHubTransport } from "../../source/github/adapter";
+import { publicRepositoryTrustPolicy } from "../../source/github/trust";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
 import { serviceRunning } from "../control-client";
@@ -131,7 +132,9 @@ export async function doctorReport(
         ? { name: `repository ${id}`, status: "ok", detail: repository.folder }
         : { name: `repository ${id}`, status: "fail", detail: `${repository.folder} is not a Git checkout`, fix: `git clone the repository into ${repository.folder}` });
     }
-    if (transport) checks.push(...await issueMetadataChecks(config, new GitHubAdapter(transport, config.settings.labelPrefix)));
+    const adapter = transport ? new GitHubAdapter(transport, config.settings.labelPrefix) : null;
+    checks.push(...await repositoryTrustChecks(config, adapter));
+    if (adapter) checks.push(...await issueMetadataChecks(config, adapter));
     const accounts = await accountCount(config.settings.database);
     checks.push(accounts > 0
       ? { name: "dashboard", status: "ok", detail: `${accounts} account(s)` }
@@ -155,6 +158,44 @@ export async function doctorChecks(
   measureFilesystem?: FilesystemMeasure,
 ): Promise<DoctorCheck[]> {
   return (await doctorReport(home, configPath, serviceRunning, github, measureFilesystem)).checks;
+}
+
+/**
+ * Reports the configured protections for public repositories. Visibility is read from GitHub so
+ * a missing or unavailable source is always reported as uncertainty, rather than protection.
+ */
+export async function repositoryTrustChecks(
+  config: ConveyorConfig,
+  adapter: Pick<GitHubAdapter, "repositoryVisibility"> | null,
+): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  for (const [id, repository] of Object.entries(config.repositories)) {
+    const extras = repository.extraTrustedLogins ?? [];
+    const policy = `The effective default permission threshold is ${publicRepositoryTrustPolicy.permissionThreshold}; extra trusted logins: ${extras.length === 0 ? "none" : extras.join(", ")}. Conveyor ignores untrusted ${publicRepositoryTrustPolicy.ignoredInputCategories.join(", ")}.`;
+    if (!adapter) {
+      checks.push({
+        name: `repository trust ${id}`,
+        status: "warn",
+        detail: `cannot determine whether ${repository.address} is public, so public-repository trust safeguards cannot be confirmed`,
+        fix: `authenticate GitHub credentials with read access to ${repository.address}, then run conveyor doctor`,
+      });
+      continue;
+    }
+    try {
+      const visibility = await adapter.repositoryVisibility(repository.address);
+      checks.push(visibility === "public"
+        ? { name: `repository trust ${id}`, status: "ok", detail: `This repository is public. ${policy}` }
+        : { name: `repository trust ${id}`, status: "ok", detail: `This repository is private; the public-source status is not required. ${policy}` });
+    } catch (error) {
+      checks.push({
+        name: `repository trust ${id}`,
+        status: "warn",
+        detail: `cannot determine whether ${repository.address} is public, so public-repository trust safeguards cannot be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+        fix: `check GitHub read access to ${repository.address}, then run conveyor doctor`,
+      });
+    }
+  }
+  return checks;
 }
 
 /**
@@ -233,7 +274,7 @@ const SYMBOL = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
 
 export const doctor: Command = {
   name: "doctor",
-  summary: "check the home, configuration and every external prerequisite, with fixes",
+  summary: "check the home, configuration, repository trust safeguards and external prerequisites, with fixes",
   async run(context) {
     const { checks, filesystems } = await doctorReport(context.paths.home, context.paths.config, () => serviceRunning(context));
     const failed = checks.some((check) => check.status === "fail");

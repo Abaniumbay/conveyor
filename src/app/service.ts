@@ -58,6 +58,7 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
+import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
 
 interface ActiveRun {
@@ -427,6 +428,7 @@ export class ConveyorService {
         folder: repository.folder,
         configHash: this.config.hash,
       });
+      await this.recordRepositoryTrustStatus(id, repository.address);
       try {
         await this.github.ensureLabels(repository.address, labelDefinitions(this.config, id));
         const source = this.config.sources[repository.source];
@@ -446,6 +448,24 @@ export class ConveyorService {
         this.#onboardingErrors.set(id, message);
         log.error("Repository onboarding failed", { repository: id }, error);
       }
+    }
+  }
+
+  /** Records source visibility for operators without changing any trust decision. */
+  private async recordRepositoryTrustStatus(id: string, address: string): Promise<void> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const visibility = await this.github.repositoryVisibility(address);
+      this.store.setRepositoryTrustStatus({ repositoryId: id, visibility, checkedAt, warning: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRepositoryTrustStatus({
+        repositoryId: id,
+        visibility: "unknown",
+        checkedAt,
+        warning: `Could not determine repository visibility: ${message}`,
+      });
+      log.warn("Repository trust status could not be determined", { repository: id }, error);
     }
   }
 
@@ -3648,6 +3668,12 @@ export class ConveyorService {
           : actorFor(transition.fromStage ?? transition.toStage),
         createdAt: transition.createdAt,
         completedAt: transition.completedAt,
+      })),
+      skippedReviews: new ReviewFindings(this.store.sqlite()).skippedNative(issueId).map((review) => ({
+        author: review.author,
+        url: review.url,
+        skippedAt: review.skippedAt,
+        active: review.active,
       })),
     };
   }

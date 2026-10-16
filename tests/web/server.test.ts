@@ -197,6 +197,7 @@ function setup(overrides: Record<string, unknown> = {}) {
           createdAt: "2026-09-29T12:00:00Z",
           completedAt: "2026-09-29T12:00:01Z",
         }],
+        skippedReviews: [{ author: "reviewer", url: "https://example.com/reviews/1", skippedAt: "2026-09-29T12:00:00Z", active: true }],
       };
     },
     getIssueRoute: async (reference: { id?: string; repository?: string; number?: number }) => {
@@ -634,8 +635,10 @@ describe("createWebHandler", () => {
       id: "space/name", address: "owner/space-name", color: 1, health: "healthy" as const,
       addressUrl: "https://github.com/owner/space-name", error: null, errorSummary: null, lastReconciledAt: null,
       backlog: 0, stages: [], done: 0, items: [], deliveries: [],
+      skippedReviewItems: [],
       capacity: { busy: 0, slots: 1 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     };
     const pages: Array<{ view: string; repositoryId?: string | null }> = [];
@@ -996,6 +999,7 @@ describe("createWebHandler", () => {
       issueId: "github:owner/repo#1",
       now: { stage: "review", state: "stopped" },
       transitions: [{ kind: "correction", actor: "Reviewer · Senior Code Reviewer" }],
+      skippedReviews: [{ author: "reviewer", url: "https://example.com/reviews/1", active: true }],
     });
     expect(calls.issueJourney).toEqual([["github:owner/repo#1"]]);
   });
