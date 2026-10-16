@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { isNativeStage, type ConveyorConfigData, type NativeStageConfig, type TaskEntryConfig, type TaskOverrideConfig } from "../config/schema";
 import { CAPTURED_KEYS, SNAPSHOT_KEYS, type CapturedKey, type SnapshotKey } from "./context";
 import type { Route, TaskKind, TaskRegistry } from "./contract";
@@ -42,6 +44,23 @@ export interface CompiledPipeline {
   id: string;
   repositoryId: string;
   stages: CompiledStage[];
+}
+
+/**
+ * Identifies what a stage parked mid-way depends on: its task chain with each task's settings,
+ * routes and waits. Concurrency is left out because it only affects scheduling.
+ */
+export function stagePlanHash(stage: CompiledStage): string {
+  const { concurrency: _concurrency, ...plan } = stage;
+  return createHash("sha256").update(JSON.stringify(stableValue(plan))).digest("hex");
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, stableValue((value as Record<string, unknown>)[key])]),
+  );
 }
 
 export class PlanError extends Error {

@@ -19,6 +19,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Changed
 
+- A configuration change now restarts an item parked mid-stage only when the plan of that stage changed. Adding or removing a repository, or editing another pipeline or stage, no longer restarts parked work or discards manual approvals waiting at a gate.
 - `conveyor config check` and `conveyor config compare` now mark manual native exit gates as
   `[check, manual approval]`; comparisons also report when only that approval setting changed.
 - The built-in delivery pipeline now reviews a recorded child-breakdown plan before a separate, constrained work-breakdown stage creates its children. Interrupted creation reuses marked children and validates the completed breakdown before implementation.

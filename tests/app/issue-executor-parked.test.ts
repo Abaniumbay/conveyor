@@ -25,13 +25,23 @@ const success = {
   stderr: "",
 };
 
-async function setup() {
-  const root = await mkdtemp(path.join(tmpdir(), "conveyor-parked-"));
-  directories.push(root);
-  const repositoryPath = path.join(root, "repo");
-  await mkdir(repositoryPath);
-  await writeFile(path.join(root, "instructions.md"), "Work.");
-  await writeFile(path.join(root, "config.yml"), `
+/** Configuration variants: another repository, or a different agent for one stage. */
+interface Variant {
+  otherRepository?: boolean;
+  implementationAgent?: string;
+  reviewAgent?: string;
+}
+
+function configText(root: string, variant: Variant = {}): string {
+  const other = variant.otherRepository
+    ? `
+  other:
+    source: github
+    address: owner/other
+    folder: ${path.join(root, "other")}
+    pipeline: default`
+    : "";
+  return `
 settings:
   database: ${root}/db.sqlite
   logs: ${root}/logs
@@ -40,7 +50,9 @@ settings:
 web: {}
 sources: { github: { type: github } }
 runners: { codex: { type: codex } }
-agents: { worker: { runner: codex, instructions: ./instructions.md } }
+agents:
+  worker: { runner: codex, instructions: ./instructions.md }
+  helper: { runner: codex, instructions: ./instructions.md }
 checks: {}
 labels:
   enrollment: conveyor
@@ -53,18 +65,28 @@ pipelines:
     failureStatuses: [blocked]
     stages:
       - id: implementation
-        run: { agent: worker }
+        run: { agent: ${variant.implementationAgent ?? "worker"} }
         concurrency: 1
       - id: review
-        run: { agent: worker }
+        run: { agent: ${variant.reviewAgent ?? "worker"} }
         concurrency: 1
 repositories:
   repo:
     source: github
     address: owner/repo
-    folder: ${repositoryPath}
-    pipeline: default
-`);
+    folder: ${path.join(root, "repo")}
+    pipeline: default${other}
+`;
+}
+
+async function setup() {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-parked-"));
+  directories.push(root);
+  const repositoryPath = path.join(root, "repo");
+  await mkdir(repositoryPath);
+  await mkdir(path.join(root, "other"));
+  await writeFile(path.join(root, "instructions.md"), "Work.");
+  await writeFile(path.join(root, "config.yml"), configText(root));
   const config = await loadConfig(path.join(root, "config.yml"));
   const store = await ConveyorStore.open(config.settings.database);
   store.upsertRepository({
@@ -108,6 +130,11 @@ repositories:
   });
   return {
     config, store, labels, producers, executorFor,
+    async variant(variant: Variant): Promise<ConveyorConfig> {
+      const file = path.join(root, `config-${Object.keys(variant).join("-")}.yml`);
+      await writeFile(file, configText(root, variant));
+      return loadConfig(file);
+    },
     stopWaiting() { wait = null; },
     failNext() { wait = null; failure = true; },
     fenceNextProducer() { fenceNextProducer = true; },
@@ -151,20 +178,20 @@ describe("IssueExecutor parked stages", () => {
     h.store.close();
   });
 
-  test("a changed config hash restarts a parked stage and says so once", async () => {
+  test("a change to the parked stage's own plan restarts it and says so once", async () => {
     const h = await setup();
     await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
     const epoch = h.store.executions().stageEpoch("issue");
 
-    // Same hash: resumes quietly.
+    // Same configuration: resumes quietly.
     await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
     expect(h.store.executions().stageEpoch("issue")).toBe(epoch);
     expect(h.messages()).toEqual([]);
 
-    const changed = { ...h.config, hash: "changed-hash" };
+    const changed = await h.variant({ implementationAgent: "helper" });
     await h.executorFor(changed).execute(h.store.getIssue("issue")!);
     expect(h.store.executions().stageEpoch("issue")).toBeGreaterThan(epoch);
-    expect(h.store.executions().getContext("issue")?.context.configHash).toBe("changed-hash");
+    expect(h.store.executions().getContext("issue")?.context.configHash).toBe(changed.hash);
     const notes = h.messages();
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/plan changed.*restart/i);
@@ -172,6 +199,70 @@ describe("IssueExecutor parked stages", () => {
       kind: "restarted", fromStage: "implementation", toStage: "implementation", reason: notes[0],
     });
     expect(h.producers).toEqual(["implementation", "implementation", "implementation"]);
+
+    // The restart recorded the new plan, so the next resume is quiet again.
+    await h.executorFor(changed).execute(h.store.getIssue("issue")!);
+    expect(h.messages()).toHaveLength(1);
+    h.store.close();
+  });
+
+  test("adding another repository does not restart a parked stage", async () => {
+    const h = await setup();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    const epoch = h.store.executions().stageEpoch("issue");
+    const cursor = h.store.executions().getCursor("issue");
+
+    const changed = await h.variant({ otherRepository: true });
+    expect(changed.hash).not.toBe(h.config.hash);
+    await h.executorFor(changed).execute(h.store.getIssue("issue")!);
+
+    expect(h.store.executions().stageEpoch("issue")).toBe(epoch);
+    expect(h.store.executions().getCursor("issue")).toMatchObject({ stage: "implementation", stageEpoch: cursor?.stageEpoch });
+    expect(h.messages()).toEqual([]);
+    expect(h.store.listStageTransitions("issue").filter((transition) => transition.kind === "restarted")).toEqual([]);
+    h.store.close();
+  });
+
+  test("changing another stage of the same pipeline does not restart a parked stage", async () => {
+    const h = await setup();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    const epoch = h.store.executions().stageEpoch("issue");
+
+    const changed = await h.variant({ reviewAgent: "helper" });
+    expect(changed.hash).not.toBe(h.config.hash);
+    await h.executorFor(changed).execute(h.store.getIssue("issue")!);
+
+    expect(h.store.executions().stageEpoch("issue")).toBe(epoch);
+    expect(h.messages()).toEqual([]);
+    h.store.close();
+  });
+
+  test("a context stored without a stage plan hash falls back to the configuration hash", async () => {
+    const h = await setup();
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    // A context as written before stage plan hashes existed.
+    const journal = h.store.executions();
+    const stored = journal.getContext("issue")!;
+    const { stagePlanHash: _hash, ...legacyContext } = stored.context;
+    journal.saveContext("issue", legacyContext, {
+      stage: "implementation", taskInstanceId: "legacy.produce", expectedEpoch: stored.stageEpoch,
+    });
+    const epoch = journal.stageEpoch("issue");
+
+    // Same configuration hash: resumes quietly.
+    await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+    expect(journal.stageEpoch("issue")).toBe(epoch);
+    expect(h.messages()).toEqual([]);
+
+    // Strip the hash again; a different configuration hash then restarts the stage, even though its plan is unchanged.
+    const resumed = journal.getContext("issue")!;
+    const { stagePlanHash: _resumedHash, ...again } = resumed.context;
+    journal.saveContext("issue", again, {
+      stage: "implementation", taskInstanceId: "legacy.produce", expectedEpoch: resumed.stageEpoch,
+    });
+    await h.executorFor(await h.variant({ otherRepository: true })).execute(h.store.getIssue("issue")!);
+    expect(journal.stageEpoch("issue")).toBeGreaterThan(epoch);
+    expect(h.messages()).toHaveLength(1);
     h.store.close();
   });
 

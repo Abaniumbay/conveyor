@@ -4,7 +4,7 @@ import { z } from "zod";
 import { configSchema, type ConveyorConfigData } from "../../src/config/schema";
 import { defineGroup, pass, TaskRegistry, type TaskDefinition } from "../../src/tasks/contract";
 import { legacyGroup } from "../../src/tasks/legacy";
-import { compilePipeline, PlanError, renderPlan } from "../../src/tasks/plan";
+import { compilePipeline, PlanError, renderPlan, stagePlanHash } from "../../src/tasks/plan";
 
 type Def = Partial<TaskDefinition> & Pick<TaskDefinition, "name" | "kind">;
 
@@ -370,6 +370,30 @@ describe("compilePipeline", () => {
   test("carries childrenStartAt and concurrency", () => {
     const plan = compile({ stages: [stage("impl", [], [{ task: "workspace.pushed" }], { childrenStartAt: "next", retries: 4, concurrency: 3 })] });
     expect(plan.stages[0]).toMatchObject({ id: "impl", concurrency: 3, retries: 4, childrenStartAt: "next" });
+  });
+});
+
+describe("stagePlanHash", () => {
+  const hashOf = (pipeline: unknown, index = 0) => stagePlanHash(compile(pipeline).stages[index]!);
+  const gate = [{ task: "ci.passed", wait: { poll: "5s" } }];
+
+  test("is stable for the same stage and ignores concurrency", () => {
+    const base = hashOf(simple([{ task: "workspace.ensure" }], gate));
+    expect(hashOf(simple([{ task: "workspace.ensure" }], gate))).toBe(base);
+    expect(hashOf({ stages: [stage("impl", [{ task: "workspace.ensure" }], gate, { concurrency: 3 })] })).toBe(base);
+  });
+
+  test("changes when a task, its settings or its wait change", () => {
+    const base = hashOf(simple([{ task: "workspace.ensure" }], gate));
+    expect(hashOf(simple([{ task: "workspace.ensure" }, { task: "agent.run" }], gate))).not.toBe(base);
+    expect(hashOf(simple([{ task: "workspace.ensure" }], [{ task: "ci.passed", wait: { poll: "10s" } }]))).not.toBe(base);
+    expect(hashOf(simple([{ task: "workspace.ensure" }], [{ task: "ci.passed", wait: { poll: "5s" }, manual: true }]))).not.toBe(base);
+  });
+
+  test("does not change when another stage of the pipeline changes", () => {
+    const first = stage("impl", [{ task: "workspace.ensure" }], gate);
+    const base = hashOf({ stages: [first, stage("review", [{ task: "agent.run" }], [{ task: "agent.done" }])] });
+    expect(hashOf({ stages: [first, stage("review", [{ task: "agent.run" }], [{ task: "workspace.pushed" }])] })).toBe(base);
   });
 });
 

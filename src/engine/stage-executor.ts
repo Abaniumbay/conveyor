@@ -100,7 +100,12 @@ export class StageExecutor {
     if (!stage) throw new Error(`Unknown stage ${input.stageId}`);
     const stored = journal.getContext(input.issueId);
     const context: TaskContext = stored
-      ? { ...stored.context, repository: input.baseContext.repository, configHash: input.baseContext.configHash }
+      ? {
+          ...stored.context,
+          repository: input.baseContext.repository,
+          configHash: input.baseContext.configHash,
+          ...(input.baseContext.stagePlanHash !== undefined ? { stagePlanHash: input.baseContext.stagePlanHash } : {}),
+        }
       : structuredClone(input.baseContext);
     const existing = journal.getCursor(input.issueId);
     const resuming = existing !== null && existing.stage === stage.id && existing.stageEpoch === epoch;
