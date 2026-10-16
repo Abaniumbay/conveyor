@@ -127,7 +127,7 @@ function issueOf(deps: Deps) {
 }
 
 /** Store the source snapshot a successful item write produced, without waiting for reconciliation. */
-function persistSourceIssue(deps: Deps, source: SourceIssue, storedId?: string) {
+function persistSourceIssue(deps: Deps, source: SourceIssue, storedId?: string, accepted: Partial<Pick<SourceIssue, "title" | "body">> = {}) {
   const existing = storedId
     ? deps.store.getIssue(storedId)
     : deps.store.listIssues(deps.repository.id).find((candidate) => candidate.sourceNumber === source.number);
@@ -137,12 +137,15 @@ function persistSourceIssue(deps: Deps, source: SourceIssue, storedId?: string) 
     repositoryId: deps.repository.id,
     sourceNumber: source.number,
     sourceUrl: source.url,
-    title: source.title,
-    body: source.body,
+    // A source read after a write may include a concurrent untrusted edit. Only values this
+    // action deliberately wrote may advance the accepted snapshot before reconciliation.
+    title: accepted.title ?? existing?.title ?? "",
+    body: accepted.body ?? existing?.body ?? "",
     sourceState: source.state,
     sourceStateReason: source.stateReason ?? null,
     labels: source.labels,
     sourceUpdatedAt: source.updatedAt,
+    acceptedTextAt: existing?.acceptedTextAt ?? (accepted.title !== undefined || accepted.body !== undefined ? source.updatedAt : null),
     ...(source.type !== undefined ? { issueType: source.type } : {}),
   });
   return deps.store.getIssue(id)!;
@@ -362,9 +365,20 @@ const normalise = (criterion: z.infer<typeof acceptanceCriterionInput>) => ({
   id: criterion.id, text: criterion.text, completed: criterion.completed === true,
 });
 
-const get = tool("item.get", "Read the latest source state of the current issue, including whether it must remain one item.", emptyInput, false,
+const get = tool("item.get", "Read the accepted source snapshot of the current issue, including whether it must remain one item.", emptyInput, false,
   async ({ deps }, issue) => {
-    const source = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
+    const source: SourceIssue = {
+      id: issue.id,
+      number: issue.sourceNumber,
+      url: issue.sourceUrl,
+      title: issue.title,
+      body: issue.body,
+      state: issue.sourceState === "closed" ? "closed" : "open",
+      ...(issue.sourceStateReason !== undefined ? { stateReason: issue.sourceStateReason } : {}),
+      labels: issue.labels,
+      updatedAt: issue.sourceUpdatedAt,
+      ...(issue.metadata.type !== null ? { type: issue.metadata.type } : {}),
+    };
     return issue.labels.includes(deps.config.labels.metadata.noSplit)
       ? { ...source, noSplit: noSplitContext(deps.config.labels.metadata.noSplit) }
       : source;
@@ -407,15 +421,16 @@ const comment = tool("item.comment", "Add a Markdown comment to the current issu
 const setCriteria = tool("item.setCriteria", "Replace acceptance criteria on the current issue.", setCriteriaInput, true,
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
+    const markdown = renderAcceptanceCriteriaSection(input!.criteria.map(normalise));
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "acceptance-criteria",
-      markdown: renderAcceptanceCriteriaSection(input!.criteria.map(normalise)),
-      expectedRevision: deps.items.managedRevision(current.body),
+      markdown,
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
-    persistSourceIssue(deps, updated, issue.id);
+    persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "acceptance-criteria", markdown, parseManagedSections(issue.body).revision) });
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
@@ -425,8 +440,8 @@ const setTitle = tool("item.setTitle",
   async ({ deps, input }, issue) => {
     await deps.items.setTitle(deps.repository.address, issue.sourceNumber, input!.title);
     const updated = await deps.items.getIssue(deps.repository.address, issue.sourceNumber);
-    persistSourceIssue(deps, updated, issue.id);
-    return { title: updated.title };
+    persistSourceIssue(deps, updated, issue.id, { title: input!.title });
+    return { title: input!.title };
   });
 
 const setSystemLabels = tool("item.setSystemLabels",
@@ -464,15 +479,16 @@ const setDependencies = tool("item.setDependencies", "Replace dependencies of th
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
     await deps.items.setDependencies({ address, issueNumber: issue.sourceNumber, blockerNumbers: input!.issueNumbers });
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
+    const markdown = formatDependencies(input!.issueNumbers.map((number) => ({ number })));
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "dependencies",
-      markdown: formatDependencies(input!.issueNumbers.map((number) => ({ number }))),
-      expectedRevision: deps.items.managedRevision(current.body),
+      markdown,
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
-    const stored = persistSourceIssue(deps, updated, issue.id);
+    const stored = persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "dependencies", markdown, parseManagedSections(issue.body).revision) });
     await persistDependencies(deps, stored, input!.issueNumbers);
     return ACCEPTED;
   });
@@ -619,15 +635,16 @@ const setRefinement = tool("item.setRefinement",
   refinementInput, true,
   async ({ deps, input }, issue) => {
     const address = deps.repository.address;
-    const current = await deps.items.getIssue(address, issue.sourceNumber);
+    const markdown = renderRefinementSection(input!);
     const updated = await deps.items.updateManagedSection({
       address,
       issueNumber: issue.sourceNumber,
       section: "refinement",
-      markdown: renderRefinementSection(input!),
-      expectedRevision: deps.items.managedRevision(current.body),
+      markdown,
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
     });
-    persistSourceIssue(deps, updated, issue.id);
+    persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "refinement", markdown, parseManagedSections(issue.body).revision) });
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
@@ -679,6 +696,7 @@ const createChild = tool("item.createChild",
       ...(plan.fields.length > 0 ? { fields: plan.fields } : {}),
     });
     validateCreatedChildDependencies(deps, child.number, dependsOn);
+    let acceptedChildBody = body;
     let sourceChild = child;
     if (dependsOn.length > 0) {
       await deps.items.setDependencies({
@@ -686,14 +704,20 @@ const createChild = tool("item.createChild",
         issueNumber: child.number,
         blockerNumbers: dependsOn,
       });
-      const current = await deps.items.getIssue(deps.repository.address, child.number);
       sourceChild = await deps.items.updateManagedSection({
         address: deps.repository.address,
         issueNumber: child.number,
         section: "dependencies",
         markdown: formatDependencies(dependsOn.map((number) => ({ number }))),
-        expectedRevision: deps.items.managedRevision(current.body),
+        expectedRevision: deps.items.managedRevision(acceptedChildBody),
+        baseBody: acceptedChildBody,
       });
+      acceptedChildBody = upsertManagedSection(
+        acceptedChildBody,
+        "dependencies",
+        formatDependencies(dependsOn.map((number) => ({ number }))),
+        parseManagedSections(acceptedChildBody).revision,
+      );
       await deps.items.replaceConveyorLabels(
         deps.repository.address,
         child.number,
@@ -702,7 +726,7 @@ const createChild = tool("item.createChild",
       );
       sourceChild = await deps.items.getIssue(deps.repository.address, child.number);
     }
-    const storedChild = persistSourceIssue(deps, sourceChild);
+    const storedChild = persistSourceIssue(deps, sourceChild, undefined, { title: input!.title, body: acceptedChildBody });
     if (plan.fields.length > 0) {
       deps.store.setIssueMetadata(storedChild.id, { fields: Object.fromEntries(plan.fields.map(({ name, value }) => [name, value])) });
     }
@@ -710,6 +734,8 @@ const createChild = tool("item.createChild",
     deps.store.replaceRelationships(storedChild.id, { parentId: issue.id, siblingOrder: null }, deps.store.listDependencies(storedChild.id));
     return {
       ...child,
+      title: input!.title,
+      body: acceptedChildBody,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(plan.type ? { type: plan.type } : {}),
       ...(plan.fields.length > 0 ? { fields: Object.fromEntries(plan.fields.map(({ name, value }) => [name, value])) } : {}),

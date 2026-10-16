@@ -58,7 +58,12 @@ async function running() {
       const issue = issues.find((candidate) => candidate.number === number)!;
       issue.labels = [...labels, ...issue.labels.filter((label) => !label.startsWith("conveyor:") && label !== "conveyor")];
     },
-    async listIssues() { return issues; }, async listSubIssues() { return []; }, async listDependencies() { return []; },
+    async listIssues() { return issues; },
+    async getIssueProvenance() {
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
+    async listSubIssues() { return []; }, async listDependencies() { return []; },
     async upsertStatusComment() { return 1; }, async addComment() { return 1; },
   };
   const service = new ConveyorService(config, store, github as never);

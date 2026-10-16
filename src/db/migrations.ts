@@ -795,4 +795,13 @@ export const migrations: readonly Migration[] = [
         ON skipped_review_artifacts(issue_id, active);
     `,
   },
+  {
+    version: 27,
+    sql: `
+      -- Existing projections are the only recoverable accepted snapshot for
+      -- already-paused items, which do not have a current enrollment event.
+      ALTER TABLE issues ADD COLUMN accepted_text_at TEXT;
+      UPDATE issues SET accepted_text_at = source_updated_at;
+    `,
+  },
 ];

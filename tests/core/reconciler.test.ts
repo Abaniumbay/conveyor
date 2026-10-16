@@ -3,15 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { reconcileRepository } from "../../src/core/reconciler";
+import { reconcileRepository as reconcile } from "../../src/core/reconciler";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
-import type { SourceIssue } from "../../src/source/types";
+import type { IssueSourceAdapter, SourceIssue } from "../../src/source/types";
 
 const temporaryDirectories: string[] = [];
 
-async function openStore(): Promise<ConveyorStore> {
+async function openStore(database?: string): Promise<ConveyorStore> {
+  if (database) return ConveyorStore.open(database);
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-reconcile-"));
   temporaryDirectories.push(directory);
   return ConveyorStore.open(path.join(directory, "conveyor.sqlite"));
@@ -36,6 +37,26 @@ const labels = {
   },
 };
 
+type ReconcileInput = Parameters<typeof reconcile>[0];
+
+async function reconcileRepository(input: Omit<ReconcileInput, "source" | "trust" | "extraTrustedLogins"> & {
+  source: Pick<IssueSourceAdapter, "listIssues"> & Partial<Pick<IssueSourceAdapter, "getIssue" | "getIssueProvenance">>;
+  trust?: ReconcileInput["trust"];
+  extraTrustedLogins?: readonly string[];
+}): Promise<Awaited<ReturnType<typeof reconcile>>> {
+  return reconcile({
+    ...input,
+    source: {
+      ...input.source,
+      getIssueProvenance: input.source.getIssueProvenance ?? (async () => ({
+        enrollment: { login: "trusted" }, title: { login: "trusted" }, body: { login: "trusted" },
+      })),
+    },
+    trust: input.trust ?? { async isTrusted({ login }) { return login === "trusted"; } },
+    extraTrustedLogins: input.extraTrustedLogins ?? [],
+  });
+}
+
 function issue(number: number, issueLabels: string[], state: "open" | "closed" = "open"): SourceIssue {
   return {
     id: `github:owner/repo#${number}`,
@@ -54,7 +75,7 @@ describe("reconcileRepository", () => {
     const store = await openStore();
     const common = {
       store, configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"], labels,
     };
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
@@ -71,7 +92,7 @@ describe("reconcileRepository", () => {
     const store = await openStore();
     const common = {
       store, configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"], labels,
     };
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
@@ -90,7 +111,7 @@ describe("reconcileRepository", () => {
     const store = await openStore();
     const common = {
       store, configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"], labels,
     };
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
@@ -396,7 +417,7 @@ describe("reconcileRepository", () => {
     const common = {
       store,
       configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation", "review"],
       labels,
     };
@@ -438,7 +459,7 @@ describe("reconcileRepository", () => {
     const common = {
       store,
       configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "review"],
       labels,
     };
@@ -460,7 +481,7 @@ describe("reconcileRepository", () => {
     const common = {
       store,
       configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"],
       labels: { ...labels, states: { ...labels.states, error: "conveyor:error" } },
     };
@@ -482,7 +503,7 @@ describe("reconcileRepository", () => {
     const common = {
       store,
       configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"],
       labels,
     };
@@ -502,7 +523,7 @@ describe("reconcileRepository", () => {
     const common = {
       store,
       configHash: "hash-1",
-      repository: { id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo" },
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
       stages: ["refinement", "implementation"],
       labels,
     };
@@ -596,6 +617,147 @@ describe("reconcileRepository", () => {
 
     await pass(["backend"]);
     expect(journal.stageEpoch(id)).toBeGreaterThan(resumed);
+    store.close();
+  });
+
+  test("requires a trusted effective labeler for initial and renewed enrollment", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels,
+      trust: { async isTrusted({ login }: { login: string | null }) { return login === "maintainer"; } },
+      extraTrustedLogins: [],
+    };
+    let labeler: string | null = "outsider";
+    let live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Untrusted author's title", body: "Untrusted author's body" };
+    const source = {
+      async listIssues() { return [live]; },
+      async getIssueProvenance() { return { enrollment: { login: labeler }, title: null, body: null }; },
+    };
+
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "", body: "", projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+
+    labeler = "maintainer";
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Untrusted author's title", body: "Untrusted author's body", projectedState: "active", warning: null });
+
+    const activeEnrollment = store.activateEnrollment(live.id);
+    labeler = "outsider";
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+    expect(store.getEnrollment(activeEnrollment.id)).toMatchObject({ status: "trust-blocked" });
+
+    labeler = "maintainer";
+    await reconcileRepository({ ...common, source });
+
+    live = { ...live, labels: ["backend"] };
+    await reconcileRepository({ ...common, source });
+    labeler = "outsider";
+    live = { ...live, labels: ["conveyor", "conveyor:refinement"] };
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+    store.close();
+  });
+
+  test("keeps untrusted field edits out of the accepted snapshot until a trusted edit adopts them", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels, extraTrustedLogins: [],
+      trust: { async isTrusted({ login }: { login: string | null }) { return login === "maintainer"; } },
+    };
+    let live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Baseline title", body: "Baseline body" };
+    let provenance = { enrollment: { login: "maintainer" }, title: null as { login: string | null } | null, body: null as { login: string | null } | null };
+    const source = { async listIssues() { return [live]; }, async getIssueProvenance() { return provenance; } };
+
+    await reconcileRepository({ ...common, source });
+    live = { ...live, title: "Trusted title", body: "Skipped body" };
+    provenance = { ...provenance, title: { login: "maintainer" }, body: { login: "outsider" } };
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Trusted title", body: "Baseline body", warning: expect.stringContaining("body edit by @outsider") });
+
+    provenance = { ...provenance, body: { login: "maintainer" } };
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Trusted title", body: "Skipped body", warning: null });
+
+    live = { ...live, title: "Skipped title" };
+    provenance = { ...provenance, title: { login: "outsider" } };
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Trusted title", body: "Skipped body", warning: expect.stringContaining("title edit by @outsider") });
+
+    provenance = { ...provenance, title: { login: "maintainer" } };
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Skipped title", body: "Skipped body", warning: null });
+    store.close();
+  });
+
+  test("retries an unavailable provenance lookup without replacing an accepted snapshot", async () => {
+    const store = await openStore();
+    const common = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels, extraTrustedLogins: [],
+      trust: { async isTrusted() { return true; } },
+    };
+    const live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Accepted title", body: "Accepted body" };
+    let available = true;
+    const source = {
+      async listIssues() { return [live]; },
+      async getIssueProvenance() {
+        if (!available) throw new Error("temporary source failure");
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: null };
+      },
+    };
+    await reconcileRepository({ ...common, source });
+    const enrollment = store.activateEnrollment(live.id);
+    live.title = "Unverified title";
+    available = false;
+    await expect(reconcileRepository({ ...common, source })).rejects.toThrow("temporary source failure");
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Accepted title", body: "Accepted body", projectedState: "active", warning: null });
+    expect(store.getEnrollment(enrollment.id)).toMatchObject({ status: "active" });
+    available = true;
+    await reconcileRepository({ ...common, source });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Unverified title", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("keeps the accepted snapshot through restart and repeated webhook reconciliation", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-reconcile-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    let store = await openStore(database);
+    const common = {
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels, extraTrustedLogins: [],
+      trust: { async isTrusted({ login }: { login: string | null }) { return login === "maintainer"; } },
+    };
+    let live = { ...issue(1, ["conveyor", "conveyor:refinement"]), title: "Accepted title", body: "Accepted body" };
+    let webhook = false;
+    const source = {
+      async listIssues() { return webhook ? [] : [live]; },
+      async getIssue() { return live; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: null, body: live.body === "Skipped body" ? { login: "outsider" } : null };
+      },
+    };
+
+    await reconcileRepository({ ...common, store, source });
+    store.close();
+    store = await openStore(database);
+    live = { ...live, body: "Skipped body" };
+    webhook = true;
+    await reconcileRepository({ ...common, store, source, includeIssueNumbers: [live.number] });
+    const afterWebhook = store.getIssue(live.id)!;
+    expect(afterWebhook).toMatchObject({ title: "Accepted title", body: "Accepted body", warning: expect.stringContaining("body edit by @outsider") });
+    const transitions = store.listStageTransitions(live.id);
+
+    await reconcileRepository({ ...common, store, source, includeIssueNumbers: [live.number] });
+    expect(store.getIssue(live.id)).toMatchObject({ title: "Accepted title", body: "Accepted body", warning: afterWebhook.warning });
+    expect(store.listStageTransitions(live.id)).toEqual(transitions);
     store.close();
   });
 });

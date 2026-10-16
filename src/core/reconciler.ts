@@ -3,7 +3,11 @@ import { evaluateIssueState } from "./issue-state";
 import type { ConveyorStore, RepositoryRecord } from "../db/store";
 import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
 import { log } from "../log/logger";
-import type { IssueSourceAdapter } from "../source/types";
+import type { IssueSourceAdapter, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../source/types";
+
+export interface RepositoryTrust {
+  isTrusted(input: { address: string; login: string | null; extraTrustedLogins: readonly string[] }): Promise<boolean>;
+}
 
 export interface ReconcileRepositoryInput {
   store: ConveyorStore;
@@ -11,7 +15,9 @@ export interface ReconcileRepositoryInput {
   repository: Omit<RepositoryRecord, "configHash">;
   stages: readonly string[];
   labels: LabelConfiguration;
-  source: Pick<IssueSourceAdapter, "listIssues"> & Partial<Pick<IssueSourceAdapter, "getIssue">>;
+  source: Pick<IssueSourceAdapter, "listIssues" | "getIssueProvenance"> & Partial<Pick<IssueSourceAdapter, "getIssue">>;
+  trust: RepositoryTrust;
+  extraTrustedLogins: readonly string[];
   expectedPostMergeClosure?: (issueId: string) => boolean;
   /** Read only issues updated since this time; issues not returned are left as they are rather than marked missing. */
   since?: string;
@@ -44,6 +50,83 @@ function isConveyorIssue(labels: readonly string[], enrollment: string): boolean
   return labels.some(
     (label) => label === enrollment || label.startsWith(`${enrollment}:`),
   );
+}
+
+type TrustDecision = { trusted: boolean; unavailable: boolean };
+
+async function decideTrust(input: ReconcileRepositoryInput, actor: SourceEventActor | null): Promise<TrustDecision> {
+  if (actor === null || actor.login === null) return { trusted: false, unavailable: false };
+  try {
+    return { trusted: await input.trust.isTrusted({
+      address: input.repository.address,
+      login: actor.login,
+      extraTrustedLogins: input.extraTrustedLogins,
+    }), unavailable: false };
+  } catch {
+    return { trusted: false, unavailable: true };
+  }
+}
+
+function actorName(actor: SourceEventActor | null): string {
+  return actor?.login === null || actor === null ? "" : ` by @${actor.login}`;
+}
+
+function enrollmentWarning(actor: SourceEventActor | null, unavailable: boolean): string {
+  if (unavailable) return "Enrollment blocked: the conveyor label actor could not be verified.";
+  if (actor === null || actor.login === null) return "Enrollment blocked: the conveyor label has no verifiable actor.";
+  return `Enrollment blocked: the conveyor label was added by untrusted account @${actor.login}.`;
+}
+
+function textWarning(field: "title" | "body", actor: SourceEventActor | null, unavailable: boolean): string {
+  if (unavailable) return `Ignored ${field} edit because its editor could not be verified; keeping the accepted ${field}.`;
+  if (actor === null || actor.login === null) return `Ignored ${field} edit with no verifiable editor; keeping the accepted ${field}.`;
+  return `Ignored untrusted ${field} edit${actorName(actor)}; keeping the accepted ${field}.`;
+}
+
+async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: SourceIssue, prior: ReturnType<ConveyorStore["getIssue"]> | undefined, enrolled: boolean): Promise<{
+  title: string;
+  body: string;
+  acceptedTextAt: string | null;
+  enrollmentTrusted: boolean;
+  warnings: string[];
+}> {
+  if (!enrolled) {
+    return { title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null, enrollmentTrusted: true, warnings: [] };
+  }
+  // Source-event lookup is evidence, not a negative trust decision.  Propagate
+  // an outage so the caller retries without replacing the existing projection.
+  const provenance = await input.source.getIssueProvenance(
+    input.repository.address,
+    sourceIssue.number,
+    input.labels.enrollment,
+  );
+  const enrollment = await decideTrust(input, provenance.enrollment);
+  if (!enrollment.trusted) {
+    return {
+      title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null,
+      enrollmentTrusted: false,
+      warnings: [enrollmentWarning(provenance.enrollment, enrollment.unavailable)],
+    };
+  }
+  if (prior === null || prior === undefined || prior.acceptedTextAt === null || prior.acceptedTextAt === undefined) {
+    return { title: sourceIssue.title, body: sourceIssue.body, acceptedTextAt: sourceIssue.updatedAt, enrollmentTrusted: true, warnings: [] };
+  }
+  let title = prior.title;
+  let body = prior.body;
+  let acceptedTextAt = prior.acceptedTextAt;
+  const warnings: string[] = [];
+  for (const [field, value, actor] of [["title", sourceIssue.title, provenance.title], ["body", sourceIssue.body, provenance.body]] as const) {
+    if (value === prior[field]) continue;
+    const decision = await decideTrust(input, actor);
+    if (decision.trusted) {
+      if (field === "title") title = value;
+      else body = value;
+      acceptedTextAt = sourceIssue.updatedAt;
+    } else {
+      warnings.push(textWarning(field, actor, decision.unavailable));
+    }
+  }
+  return { title, body, acceptedTextAt: acceptedTextAt ?? null, enrollmentTrusted: true, warnings };
 }
 
 /**
@@ -103,17 +186,21 @@ export async function reconcileRepository(
     );
     if (!relevant && !prior) continue;
 
+    const hasEnrollment = sourceIssue.labels.includes(input.labels.enrollment);
+    const snapshot = await acceptedSnapshot(input, sourceIssue, prior, hasEnrollment);
+
     input.store.upsertIssue({
       id: issueId,
       repositoryId: input.repository.id,
       sourceNumber: sourceIssue.number,
       sourceUrl: sourceIssue.url,
-      title: sourceIssue.title,
-      body: sourceIssue.body,
+      title: snapshot.title,
+      body: snapshot.body,
       sourceState: sourceIssue.state,
       sourceStateReason: sourceIssue.stateReason ?? null,
       labels: sourceIssue.labels,
       sourceUpdatedAt: sourceIssue.updatedAt,
+      acceptedTextAt: snapshot.acceptedTextAt,
       ...(sourceIssue.type !== undefined ? { issueType: sourceIssue.type } : {}),
     });
 
@@ -129,8 +216,11 @@ export async function reconcileRepository(
     // roll-up must not turn its parked owner back into an active item.
     const openQuestion = input.store.listOpenQuestions().find((question) => question.issueId === issueId);
     const questionRun = openQuestion?.runId ? input.store.getRun(openQuestion.runId) : null;
-    const projectedState = !projected.visible
+    const visible = projected.visible;
+    const eligible = visible && snapshot.enrollmentTrusted;
+    const projectedState = !visible
       ? "offboarded"
+      : !snapshot.enrollmentTrusted ? "waiting"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
@@ -148,19 +238,21 @@ export async function reconcileRepository(
       });
     }
     input.store.setIssueProjection(issueId, {
-      stage: projected.visible ? projectedStage : null,
+      stage: visible ? projectedStage : null,
       state: projectedState,
-      warning: projected.warnings.length > 0 ? projected.warnings.join("; ") : null,
+      warning: [...projected.warnings, ...snapshot.warnings].join("; ") || null,
     });
 
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
-    if (projected.visible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
+    if (eligible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
       new ItemTodos(input.store.sqlite()).closeOut(issueId);
     }
 
-    if (!projected.visible) {
+    if (!visible) {
       input.store.endActiveEnrollment(issueId, "offboarded");
+    } else if (!snapshot.enrollmentTrusted) {
+      input.store.endActiveEnrollment(issueId, "trust-blocked");
     } else if (!openQuestion && projected.mode === "active" && projected.stage) {
       const stageState = input.store.getStageState(issueId);
       const awaitingDifferentStage =
@@ -184,7 +276,7 @@ export async function reconcileRepository(
 
     // Dependencies are stored before their own repository snapshot is read. A visible item
     // without a rank has therefore never completed onboarding, even when it already has a row.
-    if (projected.visible && (prior === undefined || prior.queueRank === null)) {
+    if (eligible && (prior === undefined || prior.queueRank === null)) {
       input.store.setQueueRank(issueId, input.store.nextQueueRank());
       input.store.recordJourneyEvent({
         issueId,

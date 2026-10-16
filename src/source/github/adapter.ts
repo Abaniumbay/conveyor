@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import type { PullRequestReference, SourceIssue } from "../types";
+import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../types";
 import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "./issue-metadata";
 import {
   parseManagedSections,
@@ -133,6 +133,19 @@ interface GitHubIssue {
   updated_at: string;
   type?: { name: string } | null;
   pull_request?: unknown;
+}
+
+interface GitHubIssueEvent {
+  id?: number;
+  created_at?: string;
+  event: string;
+  actor?: { login?: unknown } | null;
+  label?: { name?: unknown } | null;
+  rename?: { from?: unknown; to?: unknown } | null;
+}
+
+function eventActor(event: GitHubIssueEvent): SourceEventActor {
+  return { login: typeof event.actor?.login === "string" ? event.actor.login : null };
 }
 
 function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
@@ -298,6 +311,75 @@ export class GitHubAdapter {
     return issues
       .filter((issue) => issue.pull_request === undefined)
       .map((issue) => sourceIssue(address, issue));
+  }
+
+  async getIssueProvenance(address: string, issueNumber: number, enrollmentLabel: string): Promise<SourceIssueProvenance> {
+    const events = await this.transport.request<GitHubIssueEvent[]>({
+      method: "GET",
+      path: `repos/${address}/issues/${issueNumber}/events?per_page=100`,
+      paginate: true,
+    });
+    // The events API returns newest-first today, but provenance is defined by the
+    // effective event rather than that response ordering.
+    const chronological = events.map((event, index) => ({ event, index })).sort((left, right) => {
+      const byTime = (left.event.created_at ?? "").localeCompare(right.event.created_at ?? "");
+      if (byTime !== 0) return byTime;
+      const byId = (left.event.id ?? left.index) - (right.event.id ?? right.index);
+      return byId !== 0 ? byId : left.index - right.index;
+    });
+    let enrollment: SourceEventActor | null = null;
+    let title: SourceEventActor | null = null;
+    let body: SourceEventActor | null = null;
+    for (const { event } of chronological) {
+      if (event.event === "labeled" && event.label?.name === enrollmentLabel) enrollment = eventActor(event);
+      if (event.event === "unlabeled" && event.label?.name === enrollmentLabel) enrollment = null;
+      // REST issue events record title changes as `renamed`; webhook-only
+      // `edited.changes` payloads are never returned by this endpoint.
+      if (event.event === "renamed" && event.rename !== undefined) title = eventActor(event);
+    }
+    const [owner, name] = address.split("/");
+    if (!owner || !name) throw new Error(`Invalid GitHub repository address ${address}`);
+    type BodyEdit = { editedAt?: unknown; editor?: { login?: unknown } | null };
+    type BodyEditConnection = { nodes?: BodyEdit[]; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } | null };
+    type BodyEditHistory = { repository?: { issue?: { userContentEdits?: BodyEditConnection | null } | null } | null };
+    let cursor: string | null = null;
+    let latest: BodyEdit | null = null;
+    let latestEditedAt = -Infinity;
+    let ambiguousLatest = false;
+    let incompleteHistory = false;
+    do {
+      const history: BodyEditHistory = await this.#graphql<BodyEditHistory>(
+        "query($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { userContentEdits(first: 100, after: $cursor) { nodes { editedAt editor { login } } pageInfo { hasNextPage endCursor } } } } }",
+        { owner, name, number: issueNumber, cursor },
+      );
+      const edits: BodyEditConnection | null | undefined = history.repository?.issue?.userContentEdits;
+      for (const edit of edits?.nodes ?? []) {
+        const editedAt = typeof edit.editedAt === "string" ? Date.parse(edit.editedAt) : Number.NaN;
+        if (!Number.isFinite(editedAt)) {
+          incompleteHistory = true;
+          continue;
+        }
+        if (editedAt > latestEditedAt) {
+          latest = edit;
+          latestEditedAt = editedAt;
+          ambiguousLatest = false;
+        } else if (editedAt === latestEditedAt && edit.editor?.login !== latest?.editor?.login) {
+          ambiguousLatest = true;
+        }
+      }
+      const pageInfo: BodyEditConnection["pageInfo"] | undefined = edits?.pageInfo;
+      if (pageInfo?.hasNextPage === false) break;
+      if (pageInfo?.hasNextPage !== true || typeof pageInfo.endCursor !== "string") {
+        incompleteHistory = true;
+        break;
+      }
+      cursor = pageInfo.endCursor;
+    } while (true);
+    if (latest !== null || ambiguousLatest || incompleteHistory) {
+      const editor = latest?.editor;
+      body = { login: !ambiguousLatest && !incompleteHistory && typeof editor?.login === "string" ? editor.login : null };
+    }
+    return { enrollment, title, body };
   }
 
   async ensureLabels(
@@ -870,14 +952,19 @@ export class GitHubAdapter {
     section: ManagedSectionName;
     markdown: string;
     expectedRevision: string;
+    /** The accepted body to update, never a concurrently read source body. */
+    baseBody: string;
   }): Promise<SourceIssue> {
     const current = await this.transport.request<GitHubIssue>({
       method: "GET",
       path: `repos/${input.address}/issues/${input.issueNumber}`,
     });
-    const body = current.body ?? "";
+    const currentRevision = this.managedRevision(current.body ?? "");
+    if (currentRevision !== input.expectedRevision) {
+      throw new Error("The issue body changed while its managed section was being updated.");
+    }
     const updatedBody = upsertManagedSection(
-      body,
+      input.baseBody,
       input.section,
       input.markdown,
       input.expectedRevision,

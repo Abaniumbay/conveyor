@@ -175,6 +175,56 @@ describe("GitHubAdapter.collaboratorPermission", () => {
 });
 
 describe("GitHubAdapter", () => {
+  test("uses the effective label, REST rename, and GraphQL body-edit actors", async () => {
+    const transport = new FakeTransport([
+      { id: 30, created_at: "2026-01-03T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "current-labeler" } },
+      { id: 20, created_at: "2026-01-02T00:00:00Z", event: "unlabeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 10, created_at: "2026-01-01T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
+      { id: 15, created_at: "2026-01-01T12:00:00Z", event: "renamed", actor: { login: "title-editor" }, rename: { from: "before", to: "after" } },
+    ], {
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: { login: "body-editor" } }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
+    });
+
+    await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+      enrollment: { login: "current-labeler" }, title: { login: "title-editor" }, body: { login: "body-editor" },
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/my-app/issues/7/events?per_page=100", paginate: true },
+      expect.objectContaining({ method: "POST", path: "graphql", body: expect.objectContaining({ variables: { owner: "owner", name: "my-app", number: 7, cursor: null } }) }),
+    ]);
+  });
+
+  test("keeps an unavailable GraphQL body editor unverifiable", async () => {
+    const transport = new FakeTransport([], {
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: null }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
+    });
+
+    await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+      enrollment: null, title: null, body: { login: null },
+    });
+  });
+
+  test("selects the newest body editor regardless of GraphQL connection order", async () => {
+    for (const nodes of [
+      [
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+      ],
+      [
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+      ],
+    ]) {
+      const transport = new FakeTransport([], {
+        data: { repository: { issue: { userContentEdits: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } } },
+      });
+
+      await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+        enrollment: null, title: null, body: { login: "untrusted-editor" },
+      });
+    }
+  });
+
   test("projects only issues carrying the configured Conveyor prefix", async () => {
     const transport = new FakeTransport([
       {
@@ -440,6 +490,7 @@ describe("GitHubAdapter", () => {
       section: "acceptance-criteria",
       markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
       expectedRevision: adapter.managedRevision(body),
+      baseBody: body,
     });
 
     expect(transport.requests[1]).toEqual({
@@ -448,6 +499,25 @@ describe("GitHubAdapter", () => {
       body: { body: updatedBody },
     });
     expect(updated.body).toBe(updatedBody);
+  });
+
+  test("refuses to write a managed section after later live text changes", async () => {
+    const acceptedBody = "Accepted human text";
+    const liveBody = "Untrusted human text";
+    const issue = {
+      id: 101, number: 3, html_url: "https://github.com/owner/repo/issues/3", title: "Feature", body: liveBody,
+      state: "open" as const, labels: [{ name: "conveyor" }], updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(issue);
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await expect(adapter.updateManagedSection({
+      address: "owner/repo", issueNumber: 3, section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(acceptedBody), baseBody: acceptedBody,
+    })).rejects.toThrow("issue body changed");
+
+    expect(transport.requests).toHaveLength(1);
   });
 
   test("creates a PR idempotently and requests squash merge", async () => {

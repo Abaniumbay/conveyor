@@ -151,7 +151,12 @@ describe("ConveyorService dashboard", () => {
         const issue = issues.find((candidate) => candidate.number === number)!;
         issue.labels = [...labels, ...issue.labels.filter((label) => !label.startsWith("conveyor:") && label !== "conveyor")];
       },
-      async listIssues() { return [...issues, blocker]; }, async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 7 ? [blocker] : []; },
+      async listIssues() { return [...issues, blocker]; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
+      async listSubIssues() { return []; }, async listDependencies(_address: string, number: number) { return number <= 7 ? [blocker] : []; },
       async upsertStatusComment() { return 1; },
     };
     const service = new ConveyorService(config, store, github as never);
@@ -277,6 +282,10 @@ describe("ConveyorService dashboard", () => {
         liveIssues.get(number)!.labels = [...labels];
       },
       async listIssues() { return [...liveIssues.values()]; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
       async listSubIssues(_address: string, number: number) {
         const parent = [...liveIssues.values()].find((issue) => issue.number === number);
         return parent?.id === "rollup" ? [child] : parent?.id === "review-rollup" ? [reviewChild] : [];
@@ -631,6 +640,10 @@ describe("ConveyorService dashboard", () => {
         sourceIssues[0]!.labels = [...labels];
       },
       async listIssues() { return sourceIssues; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
       async listSubIssues() { return []; },
       async listDependencies(_address: string, number: number) {
         return number === 1 ? [sourceIssues[1]!] : [];
@@ -725,6 +738,10 @@ describe("ConveyorService dashboard", () => {
       async addComment(_address: string, _number: number, markdown: string) { comments.push(markdown); return 1; },
       async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { sourceIssue.labels = [...labels]; },
       async listIssues() { return [sourceIssue]; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
       async listSubIssues() { return []; },
       async listDependencies() { return []; },
       async upsertStatusComment() { return 1; },

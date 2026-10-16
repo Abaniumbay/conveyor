@@ -35,6 +35,8 @@ export interface IssueProjection {
   sourceStateReason?: string | null;
   labels: string[];
   sourceUpdatedAt: string;
+  /** When title and body were last admitted into the agent-visible source snapshot. */
+  acceptedTextAt?: string | null;
   parentId?: string | null;
   /** The issue type the source reports; undefined leaves the stored type as it is. */
   issueType?: string | null;
@@ -651,8 +653,8 @@ export class ConveyorStore {
       .query(
         `INSERT INTO issues(
            id, repository_id, source_number, source_url, title, body, source_state,
-           source_state_reason, labels_json, source_updated_at, parent_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           source_state_reason, labels_json, source_updated_at, accepted_text_at, parent_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            repository_id = excluded.repository_id,
            source_number = excluded.source_number,
@@ -663,6 +665,7 @@ export class ConveyorStore {
            source_state_reason = excluded.source_state_reason,
            labels_json = excluded.labels_json,
            source_updated_at = excluded.source_updated_at,
+           accepted_text_at = COALESCE(excluded.accepted_text_at, issues.accepted_text_at),
            parent_id = COALESCE(excluded.parent_id, issues.parent_id),
            updated_at = CASE WHEN
              issues.repository_id IS NOT excluded.repository_id OR
@@ -674,6 +677,7 @@ export class ConveyorStore {
              issues.source_state_reason IS NOT excluded.source_state_reason OR
              issues.labels_json IS NOT excluded.labels_json OR
              issues.source_updated_at IS NOT excluded.source_updated_at OR
+             issues.accepted_text_at IS NOT COALESCE(excluded.accepted_text_at, issues.accepted_text_at) OR
              issues.parent_id IS NOT COALESCE(excluded.parent_id, issues.parent_id)
            THEN excluded.updated_at ELSE issues.updated_at END`,
       )
@@ -688,6 +692,7 @@ export class ConveyorStore {
         issue.sourceStateReason ?? null,
         json(labels),
         issue.sourceUpdatedAt,
+        issue.acceptedTextAt ?? null,
         issue.parentId ?? null,
         timestamp,
         timestamp,
@@ -1534,6 +1539,7 @@ export class ConveyorStore {
       labels: parseJson<string[]>(String(row.labels_json)) ?? [],
       metadata: parseMetadata(row.metadata_json === null ? null : String(row.metadata_json)),
       sourceUpdatedAt: String(row.source_updated_at),
+      acceptedTextAt: row.accepted_text_at === null ? null : String(row.accepted_text_at),
       parentId: row.parent_id === null ? null : String(row.parent_id),
       queueRank: row.queue_rank === null ? null : Number(row.queue_rank),
       projectedStage:

@@ -77,6 +77,10 @@ repositories:
     async listIssues() {
       return [{ id: "issue", number: 1, url: "u", title: "F", body: "", state: "open", labels: ["conveyor"], updatedAt: "2026-01-01T00:00:00Z" }];
     },
+    async getIssueProvenance() {
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
     async listSubIssues() { return []; },
     async listDependencies() { return []; },
     async upsertStatusComment(_address: string, _number: number, markdown: string) {
