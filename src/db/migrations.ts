@@ -726,4 +726,28 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE stage_states ADD COLUMN execution_epoch INTEGER;
     `,
   },
+  {
+    version: 23,
+    sql: `
+      -- Recent activity is ordered across all items by transition creation time, rather than by one issue.
+      CREATE INDEX stage_transitions_created_at_idx
+        ON stage_transitions(created_at DESC, id DESC);
+    `,
+  },
+  {
+    version: 24,
+    sql: `
+      -- Recent activity has independently timestamped Done sources as well as transitions.
+      CREATE INDEX push_events_done_created_at_idx
+        ON push_events(category, created_at DESC, id DESC);
+      CREATE INDEX push_events_done_target_idx
+        ON push_events(category, target);
+      CREATE INDEX pull_requests_merged_at_idx
+        ON pull_requests(merged_at DESC, id DESC) WHERE merged_at IS NOT NULL;
+      CREATE INDEX pull_requests_enrollment_merged_at_idx
+        ON pull_requests(enrollment_id, merged_at DESC, id DESC) WHERE merged_at IS NOT NULL;
+      CREATE INDEX enrollments_issue_id_idx
+        ON enrollments(issue_id, id);
+    `,
+  },
 ];

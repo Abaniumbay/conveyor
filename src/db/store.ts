@@ -206,6 +206,22 @@ export interface StoredStageTransition extends StageTransitionDetail {
   completedAt: string | null;
 }
 
+/** A durable source record for the cross-repository Recent feed. */
+export interface StoredRecentActivity {
+  id: string;
+  source: "transition" | "done" | "done-fallback";
+  issueId: string;
+  repositoryId: string;
+  issueNumber: number;
+  issueTitle: string;
+  occurredAt: string;
+  fromStage: string | null;
+  toStage: string | null;
+  kind: string;
+  resultStatus: string | null;
+  reason: string | null;
+}
+
 export interface StoredQuestion {
   id: string;
   issueId: string;
@@ -724,6 +740,118 @@ export class ConveyorStore {
           )
           .all()) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapIssue(row));
+  }
+
+  /**
+   * Returns durable activity ordered by its event time and a source-prefixed ID. A Done push event
+   * is the source of truth for a completion; only legacy done items without one use merged_at.
+   */
+  listRecentActivity(input: {
+    from: string | null;
+    before: { occurredAt: string; id: string | null } | null;
+    limit: number;
+    repositoryIds?: readonly string[];
+  }): StoredRecentActivity[] {
+    const limit = Math.max(1, Math.min(500, Math.floor(input.limit)));
+    const before = input.before;
+    const repositoryIds = [...new Set(input.repositoryIds ?? [])];
+    const repositoryFilter = repositoryIds.length === 0
+      ? ""
+      : ` AND i.repository_id IN (${repositoryIds.map(() => "?").join(", ")})`;
+    const bindings: SQLQueryBindings[] = [
+      input.from,
+      input.from,
+      before?.occurredAt ?? null,
+      before?.occurredAt ?? null,
+      before?.occurredAt ?? null,
+      before?.id ?? null,
+      before?.id ?? null,
+    ];
+    const page = (rows: Array<Record<string, SQLQueryBindings>>) => rows.map((row) => this.mapRecentActivity(row));
+    const transitionRows = this.#database.query(
+      `SELECT 'transition' AS source, 'transition:' || st.id AS id, st.issue_id AS issue_id,
+              i.repository_id AS repository_id, i.source_number AS issue_number, i.title AS issue_title,
+              st.created_at AS occurred_at, st.from_stage AS from_stage, st.to_stage AS to_stage,
+              st.kind AS kind, st.detail_json AS detail_json
+         FROM stage_transitions AS st INDEXED BY stage_transitions_created_at_idx
+         JOIN issues AS i ON i.id = st.issue_id
+        WHERE st.status = 'completed'
+          AND COALESCE(i.projected_state, '') <> 'offboarded'
+          AND (? IS NULL OR st.created_at >= ?)
+          AND (? IS NULL OR st.created_at < ? OR (st.created_at = ? AND (? IS NOT NULL AND ('transition:' || st.id) < ?)))
+          ${repositoryFilter}
+        ORDER BY st.created_at DESC, st.id DESC
+        LIMIT ?`,
+    ).all(...bindings, ...repositoryIds, limit) as Array<Record<string, SQLQueryBindings>>;
+    const doneRows = this.#database.query(
+      `SELECT 'done' AS source, 'done:' || p.id AS id, i.id AS issue_id,
+              i.repository_id AS repository_id, i.source_number AS issue_number, i.title AS issue_title,
+              p.created_at AS occurred_at, NULL AS from_stage, NULL AS to_stage, 'done' AS kind, NULL AS detail_json
+         FROM push_events AS p INDEXED BY push_events_done_created_at_idx
+         JOIN issues AS i ON i.id = p.target
+        WHERE p.category = 'done'
+          AND COALESCE(i.projected_state, '') <> 'offboarded'
+          AND (? IS NULL OR p.created_at >= ?)
+          AND (? IS NULL OR p.created_at < ? OR (p.created_at = ? AND (? IS NOT NULL AND ('done:' || p.id) < ?)))
+          ${repositoryFilter}
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT ?`,
+    ).all(...bindings, ...repositoryIds, limit) as Array<Record<string, SQLQueryBindings>>;
+    const fallbackRows = this.#database.query(
+      `WITH legacy_done AS (
+         SELECT 'done-fallback' AS source, 'done:fallback:' || i.id AS id, i.id AS issue_id,
+                i.repository_id AS repository_id, i.source_number AS issue_number, i.title AS issue_title,
+                pr.merged_at AS occurred_at, NULL AS from_stage, NULL AS to_stage, 'done' AS kind, NULL AS detail_json
+           FROM pull_requests AS pr INDEXED BY pull_requests_merged_at_idx
+           JOIN enrollments AS e ON e.id = pr.enrollment_id
+           JOIN issues AS i ON i.id = e.issue_id
+          WHERE i.projected_state IN ('done', 'completed')
+            AND COALESCE(i.projected_state, '') <> 'offboarded'
+            AND pr.merged_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM push_events AS p WHERE p.category = 'done' AND p.target = i.id)
+            AND NOT EXISTS (
+              SELECT 1
+                FROM enrollments AS newer_enrollment INDEXED BY enrollments_issue_id_idx
+                JOIN pull_requests AS newer_pull_request INDEXED BY pull_requests_enrollment_merged_at_idx
+                  ON newer_pull_request.enrollment_id = newer_enrollment.id
+               WHERE newer_enrollment.issue_id = i.id
+                 AND newer_pull_request.merged_at IS NOT NULL
+                 AND (newer_pull_request.merged_at > pr.merged_at
+                   OR (newer_pull_request.merged_at = pr.merged_at AND newer_pull_request.id > pr.id))
+            )
+            AND (? IS NULL OR pr.merged_at >= ?)
+            AND (? IS NULL OR pr.merged_at < ? OR (pr.merged_at = ? AND (? IS NOT NULL AND ('done:fallback:' || i.id) < ?)))
+            ${repositoryFilter}
+       )
+       SELECT * FROM legacy_done
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT ?`,
+    ).all(...bindings, ...repositoryIds, limit) as Array<Record<string, SQLQueryBindings>>;
+    return page([...transitionRows, ...doneRows, ...fallbackRows])
+      // SQLite compares these cursor keys with its binary collation. Keep the in-memory merge
+      // identical so a timestamp tie cannot be reordered between one page and the next.
+      .sort((left, right) => left.occurredAt === right.occurredAt
+        ? left.id === right.id ? 0 : left.id > right.id ? -1 : 1
+        : left.occurredAt > right.occurredAt ? -1 : 1)
+      .slice(0, limit);
+  }
+
+  private mapRecentActivity(row: Record<string, SQLQueryBindings>): StoredRecentActivity {
+    const detail = row.detail_json === null ? {} : parseJson<Partial<StageTransitionDetail>>(String(row.detail_json)) ?? {};
+    return {
+      id: String(row.id),
+      source: String(row.source) as StoredRecentActivity["source"],
+      issueId: String(row.issue_id),
+      repositoryId: String(row.repository_id),
+      issueNumber: Number(row.issue_number),
+      issueTitle: String(row.issue_title),
+      occurredAt: String(row.occurred_at),
+      fromStage: row.from_stage === null ? null : String(row.from_stage),
+      toStage: row.to_stage === null ? null : String(row.to_stage),
+      kind: String(row.kind),
+      resultStatus: typeof detail.resultStatus === "string" ? detail.resultStatus : null,
+      reason: typeof detail.reason === "string" ? detail.reason : null,
+    };
   }
 
   /**

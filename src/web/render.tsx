@@ -14,6 +14,7 @@ import type {
   DashboardViewModel,
   IssueCardViewModel,
   IssueRelationViewModel,
+  RecentActivityType,
   RepositoryDashboardSummary,
   StageActorViewModel,
   StageColumnViewModel,
@@ -37,6 +38,7 @@ function issueHref(repository: string, number: number, tab?: "conversation" | "j
 }
 
 function viewHref(view: DashboardView): string {
+  if (view === "recent") return "/recent";
   if (view === "attention") return "/attention";
   if (view === "team") return "/team";
   if (view === "agent") return "/operator";
@@ -354,7 +356,7 @@ export function renderIssueDetails(issue: IssueCardViewModel, canManage = false)
 }
 
 function RelativeTime({ value }: { value: string }) {
-  return <time dateTime={value} data-relative-time>recently</time>;
+  return <time dateTime={value} data-relative-time title={value} aria-label={value} tabIndex={0}>recently</time>;
 }
 
 function WaitingLine({ issue, className }: { issue: IssueCardViewModel; className?: string }) {
@@ -889,6 +891,7 @@ function needsYouItems(model: DashboardViewModel) {
 function Navigation({ model }: { model: DashboardViewModel }) {
   const tabs: Array<{ view: DashboardView; label: string; count: number | null }> = [
     { view: "board", label: "Board", count: model.counts.board },
+    { view: "recent", label: "Recent", count: null },
     { view: "team", label: "Team", count: null },
     { view: "reports", label: "Reports", count: null },
     { view: "repositories", label: "Repositories", count: null },
@@ -903,6 +906,88 @@ function Navigation({ model }: { model: DashboardViewModel }) {
         </a>
       ))}
     </nav>
+  );
+}
+
+const recentTypeLabels: Record<RecentActivityType, string> = {
+  done: "Done",
+  stopped: "Stopped",
+  "sent-back": "Sent back",
+  "moved-forward": "Moved forward",
+  new: "New",
+  resumed: "Restarted / resumed",
+  rollup: "Roll-up",
+};
+
+const recentTypes: readonly RecentActivityType[] = ["done", "stopped", "sent-back", "moved-forward", "new", "resumed", "rollup"];
+
+function recentHref(model: DashboardViewModel, cursor?: { occurredAt: string; id: string | null }): string {
+  const recent = model.recent!;
+  const search = new URLSearchParams();
+  for (const type of recent.types) search.append("type", type);
+  for (const repository of recent.repositoryIds) search.append("repo", repository);
+  if (cursor) {
+    search.set("beforeAt", cursor.occurredAt);
+    if (cursor.id !== null) search.set("beforeId", cursor.id);
+  }
+  const query = search.toString();
+  return query ? `/recent?${query}` : "/recent";
+}
+
+function Recent({ model }: { model: DashboardViewModel }) {
+  const recent = model.recent!;
+  const typeClass = (type: RecentActivityType) => `recent-type recent-type--${type}`;
+  return (
+    <section class="recent-activity" aria-labelledby="recent-heading">
+      <header class="recent-header">
+        <h2 id="recent-heading">Recent activity</h2>
+        <p>{recent.rangeStartedAt ? "Events from the last 24 hours." : "Earlier events."}</p>
+      </header>
+      <form class="recent-filters" action="/recent" method="get">
+        <fieldset>
+          <legend>Event types</legend>
+          <div class="recent-filter-options">
+            {recentTypes.map((type) => (
+              <label class={typeClass(type)} key={type}>
+                <input type="checkbox" name="type" value={type} checked={recent.types.includes(type)} />
+                <span>{recentTypeLabels[type]}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Repositories</legend>
+          <div class="recent-filter-options">
+            {model.repositories.map((repository) => (
+              <label class="recent-repository-filter" key={repository.id}>
+                <input type="checkbox" name="repo" value={repository.id} checked={recent.repositoryIds.includes(repository.id)} />
+                <span>{repository.id}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <button class="recent-filter-submit" type="submit">Apply filters</button>
+      </form>
+      {recent.events.length === 0
+        ? <p class="recent-empty" role="status">{recent.rangeStartedAt ? "No activity matches these filters." : "You've reached the end of the activity feed."}</p>
+        : <><ol class="recent-list">
+          {recent.events.map((event) => (
+            <li class="recent-event" key={event.id}>
+              <RelativeTime value={event.occurredAt} />
+              <span class={typeClass(event.type)}>{recentTypeLabels[event.type]}</span>
+              <div class="recent-item">
+                <RepositoryBadge repository={event.repository} />
+                <a href={event.issueUrl}>#{event.issueNumber} {event.issueTitle}</a>
+              </div>
+              {event.fromStage && event.toStage && <p class="recent-move"><span>{event.fromStage}</span><span aria-hidden="true">→</span><span>{event.toStage}</span></p>}
+              {event.reason
+                ? <details class="recent-reason"><summary><span>Reason</span><span>{event.reason}</span></summary><p>{event.reason}</p></details>
+                : <p class="recent-no-reason">No reason recorded.</p>}
+            </li>
+          ))}
+        </ol>{!recent.nextCursor && <p class="recent-empty recent-end" role="status">You've reached the end of the activity feed.</p>}</>}
+      {recent.nextCursor && <a class="recent-load-more" href={recentHref(model, recent.nextCursor)}>Load more</a>}
+    </section>
   );
 }
 
@@ -1253,6 +1338,7 @@ function viewTitle(model: DashboardViewModel): string {
   if (model.view === "reports" && model.report?.repository) return `Reports · ${model.report.repository}`;
   const names: Record<Exclude<DashboardView, "repository">, string> = {
     board: "Board",
+    recent: "Recent",
     attention: "Label problems",
     agent: "Operator",
     team: "Team",
@@ -1269,7 +1355,8 @@ function viewTitle(model: DashboardViewModel): string {
 function Page({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
-  if (model.view === "attention") content = <Attention model={model} />;
+  if (model.view === "recent" && model.recent) content = <Recent model={model} />;
+  else if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;

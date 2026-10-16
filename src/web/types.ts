@@ -242,9 +242,36 @@ export interface DashboardPageSelection {
   repositoryIds?: readonly string[];
   q?: string;
   state?: string | null;
+  /** Recent page event categories; an empty list means its non-roll-up default. */
+  recentTypes?: readonly RecentActivityType[];
+  recentCursor?: { occurredAt: string; id: string | null } | null;
 }
 
-export type DashboardView = "board" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
+export type DashboardView = "board" | "recent" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
+
+export type RecentActivityType = "done" | "stopped" | "sent-back" | "moved-forward" | "new" | "resumed" | "rollup";
+
+export interface RecentActivityEventViewModel {
+  id: string;
+  occurredAt: string;
+  type: RecentActivityType;
+  repository: string;
+  repositoryColor: number;
+  issueNumber: number;
+  issueTitle: string;
+  issueUrl: string;
+  fromStage: string | null;
+  toStage: string | null;
+  reason: string | null;
+}
+
+export interface RecentActivityViewModel {
+  types: readonly RecentActivityType[];
+  repositoryIds: readonly string[];
+  events: readonly RecentActivityEventViewModel[];
+  nextCursor: { occurredAt: string; id: string | null } | null;
+  rangeStartedAt: string | null;
+}
 
 export interface RepositoryDashboardItem {
   number: number;
@@ -346,6 +373,7 @@ export interface DashboardViewModel {
   view: DashboardView;
   repositoryId: string | null;
   boardFilters?: { repositories: readonly string[]; q: string; state: string | null };
+  recent?: RecentActivityViewModel;
   counts: { board: number; attention: number };
   activeWork: {
     runnerCount: number;

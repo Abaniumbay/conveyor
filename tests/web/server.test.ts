@@ -388,6 +388,9 @@ describe("createWebHandler", () => {
     const unauthenticated = await handler(new Request("http://localhost/"));
     expect(unauthenticated.status).toBe(303);
     expect(unauthenticated.headers.get("location")).toBe("/login");
+    const recentUnauthenticated = await handler(new Request("http://localhost/recent?type=done"));
+    expect(recentUnauthenticated.status).toBe(303);
+    expect(recentUnauthenticated.headers.get("location")).toBe("/login?returnTo=%2Frecent%3Ftype%3Ddone");
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
   });
 
@@ -526,6 +529,8 @@ describe("createWebHandler", () => {
       repositoryIds: [],
       q: "",
       state: null,
+      recentTypes: [],
+      recentCursor: null,
     }]]);
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
@@ -563,10 +568,19 @@ describe("createWebHandler", () => {
     const { cookie } = await login(handler);
     const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
 
-    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
+    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/recent", "recent"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
       expect((await get(path)).status).toBe(200);
       expect(dashboardCalls.at(-1)?.view).toBe(view);
     }
+    await get("/recent?type=done&type=stopped&repo=midgame&beforeAt=2026-10-15T12%3A00%3A00.000Z&beforeId=transition%3Aabc");
+    expect(dashboardCalls.at(-1)).toMatchObject({
+      view: "recent", recentTypes: ["done", "stopped"], repositoryIds: ["midgame"],
+      recentCursor: { occurredAt: "2026-10-15T12:00:00.000Z", id: "transition:abc" },
+    });
+    await get("/recent?beforeAt=2026-10-14T12%3A00%3A00.000Z");
+    expect(dashboardCalls.at(-1)).toMatchObject({
+      view: "recent", recentCursor: { occurredAt: "2026-10-14T12:00:00.000Z", id: null },
+    });
     expect((await get("/team/kaveh")).status).toBe(200);
     expect((await get("/operator/runs/run-1")).status).toBe(200);
     expect((await get("/issues/midgame/1/conversation?column=stage%3Areview&page=2")).status).toBe(200);
@@ -1013,7 +1027,7 @@ describe("createWebHandler", () => {
     const cookie = created.cookie.split(";")[0]!;
     const csrf = created.csrfToken;
 
-    for (const path of ["/board", "/attention", "/team", "/operator", "/reports", "/about", "/settings/notifications", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
+    for (const path of ["/board", "/recent", "/attention", "/team", "/operator", "/reports", "/about", "/settings/notifications", "/issues/repo/1", "/api/issues/github%3Aowner%2Frepo%231/journey", "/api/issues/github%3Aowner%2Frepo%231/activity"]) {
       const page = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
       expect(page.status).toBe(200);
     }

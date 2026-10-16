@@ -42,8 +42,120 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(22);
+    expect(store.schemaVersion()).toBe(24);
 
+    store.close();
+  });
+
+  test("lists completed transitions and independent Done events in stable time order", async () => {
+    const store = await openStore();
+    for (const id of ["repo-a", "repo-b"]) {
+      store.upsertRepository({ id, configName: id, source: "github", address: `owner/${id}`, folder: `/srv/${id}`, configHash: "config-hash" });
+    }
+    for (const [id, repositoryId, number] of [["recorded", "repo-a", 1], ["legacy", "repo-b", 2], ["transition-a", "repo-a", 3], ["transition-b", "repo-b", 4]] as const) {
+      store.upsertIssue({ id, repositoryId, sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: `Item ${number}`, body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
+    }
+    const completeTransition = (id: string, issueId: string) => {
+      store.beginStageTransition({
+        id, issueId, fromStage: "review", toStage: "cleanup", kind: "advance", sourceMutationId: null,
+        detail: { reason: `Reason for ${id}`, requiredFixes: [], resultStatus: null },
+      });
+      store.completeStageTransition(id);
+    };
+    completeTransition("transition-a", "transition-a");
+    completeTransition("transition-b", "transition-b");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run("2026-10-15T12:03:00.000Z", "transition-a");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run("2026-10-15T12:03:00.000Z", "transition-b");
+
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "active", warning: null });
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "done", warning: null });
+    store.sqlite().query("UPDATE push_events SET created_at = ? WHERE category = 'done' AND target = ?").run("2026-10-15T12:02:00.000Z", "recorded");
+
+    store.activateEnrollment("legacy");
+    store.upsertPullRequest({ issueId: "legacy", id: "legacy-pr", number: 2, url: "https://example.test/pr/2", state: "merged", mergedAt: "2026-10-15T12:01:00.000Z" });
+    store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", "legacy");
+
+    const events = store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before: null, limit: 10 });
+    expect(events.map((event) => event.id)).toEqual(["transition:transition-b", "transition:transition-a", expect.stringMatching(/^done:/), "done:fallback:legacy"]);
+    expect(events.find((event) => event.id === "transition:transition-a")).toMatchObject({ kind: "advance", reason: "Reason for transition-a", fromStage: "review", toStage: "cleanup" });
+    expect(events.filter((event) => event.issueId === "recorded")).toHaveLength(1);
+    expect(events.find((event) => event.id === "done:fallback:legacy")).toMatchObject({ source: "done-fallback", occurredAt: "2026-10-15T12:01:00.000Z" });
+    expect(store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before: null, limit: 10, repositoryIds: ["repo-a"] }).map((event) => event.repositoryId)).toEqual(["repo-a", "repo-a"]);
+    const paged: string[] = [];
+    let before: { occurredAt: string; id: string } | null = null;
+    for (let page = 0; page < events.length; page += 1) {
+      const [event] = store.listRecentActivity({ from: "2026-10-15T12:00:00.000Z", before, limit: 1 });
+      expect(event).toBeDefined();
+      paged.push(event!.id);
+      before = { occurredAt: event!.occurredAt, id: event!.id };
+    }
+    expect(paged).toEqual(events.map((event) => event.id));
+    expect(store.listRecentActivity({ from: "2026-10-15T12:03:00.000Z", before: null, limit: 10 }).map((event) => event.id)).toEqual(["transition:transition-b", "transition:transition-a"]);
+    const plan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM stage_transitions INDEXED BY stage_transitions_created_at_idx WHERE status = 'completed' AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(plan).toContain("stage_transitions_created_at_idx");
+    const donePlan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM push_events INDEXED BY push_events_done_created_at_idx WHERE category = 'done' AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(donePlan).toContain("push_events_done_created_at_idx");
+    const fallbackPlan = JSON.stringify(store.sqlite().query("EXPLAIN QUERY PLAN SELECT id FROM pull_requests INDEXED BY pull_requests_merged_at_idx WHERE merged_at >= ? ORDER BY merged_at DESC, id DESC LIMIT ?").all("2026-10-15T12:00:00.000Z", 10));
+    expect(fallbackPlan).toContain("pull_requests_merged_at_idx");
+    store.close();
+  });
+
+  test("pages same-time mixed-case activity IDs in SQLite cursor order", async () => {
+    const store = await openStore();
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo", configHash: "config-hash" });
+    for (const [id, number] of [["github:Zed", 1], ["github:abc", 2]] as const) {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "", sourceState: "closed", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
+      store.activateEnrollment(id);
+      store.upsertPullRequest({ issueId: id, id: `pr-${number}`, number, url: `https://example.test/pr/${number}`, state: "merged", mergedAt: "2026-10-15T12:00:00.000Z" });
+      store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", id);
+    }
+
+    const ids: string[] = [];
+    let before: { occurredAt: string; id: string } | null = null;
+    for (let page = 0; page < 2; page += 1) {
+      const [event] = store.listRecentActivity({ from: null, before, limit: 1 });
+      expect(event).toBeDefined();
+      ids.push(event!.id);
+      before = { occurredAt: event!.occurredAt, id: event!.id };
+    }
+
+    expect(ids).toEqual(["done:fallback:github:abc", "done:fallback:github:Zed"]);
+    expect(new Set(ids)).toHaveLength(2);
+    store.close();
+  });
+
+  test("treats a time-only activity cursor as strictly before its boundary for every source", async () => {
+    const store = await openStore();
+    const boundary = "2026-10-15T12:00:00.000Z";
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: "/srv/repo", configHash: "config-hash" });
+    for (const [id, number] of [["transition", 1], ["recorded", 2], ["legacy", 3]] as const) {
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "", sourceState: "closed", labels: [], sourceUpdatedAt: boundary });
+    }
+
+    store.beginStageTransition({
+      id: "edge-transition", issueId: "transition", fromStage: "review", toStage: "cleanup", kind: "advance", sourceMutationId: null,
+      detail: { reason: null, requiredFixes: [], resultStatus: null },
+    });
+    store.completeStageTransition("edge-transition");
+    store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run(boundary, "edge-transition");
+
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "active", warning: null });
+    store.setIssueProjection("recorded", { stage: "cleanup", state: "done", warning: null });
+    store.sqlite().query("UPDATE push_events SET created_at = ? WHERE category = 'done' AND target = ?").run(boundary, "recorded");
+
+    store.activateEnrollment("legacy");
+    store.upsertPullRequest({ issueId: "legacy", id: "legacy-pr", number: 3, url: "https://example.test/pr/3", state: "merged", mergedAt: boundary });
+    store.sqlite().query("UPDATE issues SET projected_stage = ?, projected_state = ? WHERE id = ?").run("cleanup", "done", "legacy");
+
+    const firstPage = store.listRecentActivity({ from: boundary, before: null, limit: 10 });
+    const beforeBoundary = store.listRecentActivity({ from: null, before: { occurredAt: boundary, id: null }, limit: 10 });
+
+    expect(firstPage).toHaveLength(3);
+    expect(firstPage.filter((event) => event.source === "transition")).toHaveLength(1);
+    expect(firstPage.filter((event) => event.source === "done")).toHaveLength(1);
+    expect(firstPage.filter((event) => event.source === "done-fallback")).toHaveLength(1);
+    expect(beforeBoundary).toEqual([]);
+    expect([...firstPage, ...beforeBoundary]).toHaveLength(3);
     store.close();
   });
 
@@ -288,7 +400,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);");
+    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);");
     store.close();
 
     store = await ConveyorStore.open(database);
