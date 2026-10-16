@@ -10,6 +10,13 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Added
 
+- The Board now replaces its repository-card strip with compact repository, text, and state
+  filters. Open cards filter immediately in the browser, share their state in the URL, and retain
+  every open item; Done searches remain server-backed. The filter controls show filtered counts,
+  preserve the full Needs you list, and collapse to a phone-friendly search and filter control.
+- `conveyor cleanup` now also reclaims the private homes of finished runs of open, parked and
+  stopped items; `--dry-run` reports how many and how much space, and recorded results, artifacts
+  and logs are kept.
 - Public `GET /version` now reports the running build's service, version, commit, and build time;
   public liveness responses also identify their version and commit.
 - The dashboard now has a read-only **Recent** page that combines recent activity from every configured repository, with bookmarkable type and repository filters, expandable reasons, stable Load more paging beyond the initial 24-hour range, and independently timestamped Done completions.
@@ -32,9 +39,15 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- Agent and script launches now use one resolved filesystem path for their configuration,
+  workspaces, artifacts, writable roots, and derived run directories, so symlinked data roots no
+  longer break sandbox mounts or split a run's access boundary.
+- Completed, failed, timed-out, and interrupted Codex agent, check, and steering runs now remove
+  their private run home without removing retained results or artifacts.
+- An answered question is recorded once in the item's conversation, with the answer and who gave
+  it, and stays available to the agent after a stage restart.
 - A live dashboard update no longer resets the scroll position. It moves the page only by the distance the card you are reading shifted, and not at all when nothing moved, so a scroll or swipe in progress is no longer interrupted.
 - Enrollment labels and agent-visible issue text now require trusted GitHub provenance. Untrusted or unverifiable changes remain out of agent context and appear as board warnings instead.
-
 - **Needs you** now retains stopped post-merge work when its merged Conveyor pull request has
   closed the source issue, so operators can act on its recorded reason.
 - A stage fenced while it is running now releases its stale worker state immediately, so the board
@@ -89,20 +102,6 @@ Stage exit gates can wait for a human approval on the board, configured per pipe
 - Answering an agent's question resumes the agent with the answer again. Since 2026-10-10 the
   item's switch to needs-input (and back) restarted its stage, dropping the step that waited for
   the answer, so the agent started over and asked the same question again.
-### Added
-
-- The Board now replaces its repository-card strip with compact repository, text, and state
-  filters. Open cards filter immediately in the browser, share their state in the URL, and retain
-  every open item; Done searches remain server-backed. The filter controls show filtered counts,
-  preserve the full Needs you list, and collapse to a phone-friendly search and filter control.
-
-### Fixed
-
-- Agent and script launches now use one resolved filesystem path for their configuration,
-  workspaces, artifacts, writable roots, and derived run directories, so symlinked data roots no
-  longer break sandbox mounts or split a run's access boundary.
-- Completed, failed, timed-out, and interrupted Codex agent, check, and steering runs now remove
-  their private run home without removing retained results or artifacts.
 
 ## [0.7.0] - 2026-10-14
 
