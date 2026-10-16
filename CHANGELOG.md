@@ -39,6 +39,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 - A stage fenced while it is running now releases its stale worker state immediately, so the board
   and scheduler do not wait for a service restart before the item can continue.
 - Local and CI checks now keep Bubblewrap sandbox coverage visible while avoiding cleanup, socket-path, and shared-host timing flakes.
+- Structured question choices that use legacy `value` identifiers are now answerable by that
+  value from the CLI, dashboard, and issue conversation.
 - Claude Code removes each run's private home after its process exits, including failed,
   interrupted, and timed-out runs, while preserving declared artifacts.
 - Parent items now refuse new runs and direct retries while they have current children in any

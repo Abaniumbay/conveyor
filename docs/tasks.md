@@ -78,7 +78,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
-| `agent.askQuestion` | tool | - | - | Ask the user a structured question. The agent's run then ends with `needs-input` and the stage waits for the answer. |
+| `agent.askQuestion` | tool | - | - | Ask the user a structured question. Choices may be strings or `{ id, label, description? }` objects; `id` is the stored answer identifier and `label` is displayed. Legacy `{ value, label }` choices are normalized to `id`. The agent's run then ends with `needs-input` and the stage waits for the answer. |
 | `agent.recordArtifact` | tool | - | - | Record an artifact (a log, a report, a file) produced during the run. |
 | `agent.reportBlocker` | tool | - | - | Record a blocker the agent hit. |
 | `agent.reportMilestone` | tool | - | - | Record a milestone the agent reached. |

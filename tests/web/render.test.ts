@@ -700,6 +700,13 @@ describe("renderDashboard", () => {
     expect(legacy).toContain('type="radio" name="answer" value="compact"');
     expect(legacy).toContain('type="radio" name="answer" value="expanded"');
 
+    const valueBacked = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [{ id: "current-main", label: "Current main commit" }], answerError: null }],
+    });
+    expect(valueBacked).toContain('type="radio" name="answer" value="current-main"');
+    expect(valueBacked).toContain("Current main commit");
+
     const invalid = renderDashboard({
       ...dashboard,
       questions: [{ ...dashboard.questions[0]!, options: [], allowFreeText: false, answerError: "A question needs at least one valid choice or free-text input." }],

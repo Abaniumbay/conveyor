@@ -625,13 +625,27 @@ describe("agent tools", () => {
   }
   const events = (w: World, runId: string) => w.store.listRunEventsPage(runId, { limit: 50 }).events.map((e: { type: string; payload: unknown }) => [e.type, e.payload]);
 
-  test("askQuestion opens a structured question and records the event", async () => {
+  test("askQuestion normalizes a value-backed structured choice and records the event", async () => {
     const { w, run } = await withRun();
-    const result = await tool(w, "agent.askQuestion", { prompt: "Which?", reason: "Need it", options: [{ id: "a" }], allowFreeText: true, maxSelections: 2 }, run);
+    const result = await tool(w, "agent.askQuestion", {
+      prompt: "Which?", reason: "Need it", options: [{ label: " Current main commit ", value: " current-main ", description: "Use the current main commit." }], allowFreeText: false, maxSelections: 2,
+    }, run);
     const questionId = (outcome(result) as { questionId: string }).questionId;
     expect(outcome(result)).toEqual({ accepted: true, questionId });
-    expect(w.store.getQuestion(questionId)).toMatchObject({ prompt: "Which?", reason: "Need it", runId: run.id, allowFreeText: true, maxSelections: 2, minSelections: 1, status: "open" });
+    expect(w.store.getQuestion(questionId)).toMatchObject({
+      prompt: "Which?", reason: "Need it", runId: run.id, allowFreeText: false, maxSelections: 2, minSelections: 1, status: "open",
+      options: [{ id: "current-main", label: "Current main commit", description: "Use the current main commit." }],
+    });
     expect(events(w, run.id)).toContainEqual(["question", { questionId }]);
+  });
+
+  test("askQuestion keeps valid choices when another choice is malformed", async () => {
+    const { w, run } = await withRun();
+    const result = await tool(w, "agent.askQuestion", {
+      prompt: "Which?", reason: "Need it", options: [{ id: "yes", label: "Yes" }, null], allowFreeText: false,
+    }, run);
+    const questionId = (outcome(result) as { questionId: string }).questionId;
+    expect(w.store.getQuestion(questionId)?.options).toEqual([{ id: "yes", label: "Yes" }]);
   });
 
   test("askQuestion rejects a question with neither a usable choice nor free text", async () => {

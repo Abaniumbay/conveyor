@@ -822,7 +822,7 @@ Normal successful terminal processing runs the configured cleanup stage to remov
 
 Any agent may ask a structured question through MCP. Refinement questions are expected; questions in later stages should be exceptional.
 
-A question contains an ID, prompt, reason, zero or more options with stable IDs, minimum/maximum selections, whether free text is allowed, and the requesting stage/run. Only one unanswered question may exist per issue. Conveyor then:
+A question contains an ID, prompt, reason, zero or more options with stable IDs, minimum/maximum selections, whether free text is allowed, and the requesting stage/run. Options may be strings or structured `{ id, label, description? }` choices: `id` is stored and submitted while `label` is displayed. Legacy structured choices with `{ value, label }` use `value` as their ID when `id` is absent; stored label-only choices still use their label. IDs and labels are trimmed, unusable or duplicate IDs are not offered, and an answer may use an unambiguous displayed label; conversation replies match those labels case-insensitively. Only one unanswered question may exist per issue. Conveyor then:
 
 1. Adds the configured needs-input label.
 2. Posts the question to the issue conversation.

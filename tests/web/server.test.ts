@@ -701,10 +701,10 @@ describe("createWebHandler", () => {
 
     const answer = await handler(new Request("http://localhost/questions/q-1/answer", {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ answer: "yes", csrf }),
+      body: new URLSearchParams({ answer: "current-main", csrf }),
     }));
     expect(answer.status).toBe(303);
-    expect(calls.answers).toEqual([["q-1", "yes", "operator"]]);
+    expect(calls.answers).toEqual([["q-1", "current-main", "operator"]]);
 
     const reorder = await handler(new Request("http://localhost/backlog/reorder", {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -782,17 +782,17 @@ describe("createWebHandler", () => {
     expect(await scripted.json()).toEqual({ error: "Choose one of the available answers." });
   });
 
-  test("answers a question for the page script with JSON instead of a redirect", async () => {
+  test("answers a canonical question choice for the page script with JSON instead of a redirect", async () => {
     const { handler, auth, calls } = setup();
     const { cookie } = await login(handler);
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const answer = await handler(new Request("http://localhost/questions/q-1/answer", {
       method: "POST", headers: { cookie, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ answer: "yes", csrf }),
+      body: new URLSearchParams({ answer: "current-main", csrf }),
     }));
     expect(answer.status).toBe(200);
     expect(await answer.json()).toEqual({ ok: true });
-    expect(calls.answers).toEqual([["q-1", "yes", "operator"]]);
+    expect(calls.answers).toEqual([["q-1", "current-main", "operator"]]);
   });
 
   test("moves a backlog issue in place for drag and drop, with CSRF", async () => {
