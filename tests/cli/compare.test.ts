@@ -5,7 +5,7 @@ import path from "node:path";
 import { runCli } from "../../src/cli/main";
 import type { CompiledPipeline, CompiledStage, CompiledTask } from "../../src/tasks/plan";
 import { comparePlans } from "../../src/tasks/compare-plans";
-import { referenceConfigDirectory } from "../config/reference-fixture";
+import { referenceConfigDirectory, referenceConfigEntrypoint } from "../config/reference-fixture";
 
 const LEGACY = path.resolve(import.meta.dir, "../fixtures/legacy-pipeline");
 const CLI = path.resolve(import.meta.dir, "../../src/cli.ts");
@@ -67,6 +67,18 @@ describe("comparePlans", () => {
     const same = () => plan("repo", [stage("a", [task("run", "agent.run", { kind: "act" })], [task("t", "x.y")])]);
     expect(comparePlans([same()], [same()], { left: "A", right: "B" })).toContain("no differences");
   });
+
+  test("marks manual exit gates on both sides and reports a manual-only change", () => {
+    const automatic = plan("repo", [stage("review", [], [task("mergeable", "change.mergeable")])]);
+    const manual = plan("repo", [stage("review", [], [task("mergeable", "change.mergeable", { manual: true })])]);
+    const out = comparePlans([automatic], [manual], { left: "automatic", right: "manual" });
+    expect(out).toMatch(/mergeable: change\.mergeable\s+\| mergeable: change\.mergeable \[check, manual approval\]/);
+    expect(out).toContain("changed: exit-gate change.mergeable [mergeable]: manual approval no -> yes");
+
+    const reversed = comparePlans([manual], [automatic], { left: "manual", right: "automatic" });
+    expect(reversed).toMatch(/mergeable: change\.mergeable \[check, manual approval\]\s+\| mergeable: change\.mergeable/);
+    expect(reversed).toContain("changed: exit-gate change.mergeable [mergeable]: manual approval yes -> no");
+  });
 });
 
 describe("config compare", () => {
@@ -101,5 +113,21 @@ describe("config compare", () => {
     expect(code).toBe(0);
     expect(stdout).toContain("Configuration is valid");
     expect(stdout).toContain("Repository service");
+  });
+
+  test("returns failure when configurations differ only by manual approval", async () => {
+    const left = await referenceConfigEntrypoint();
+    const right = await referenceConfigEntrypoint();
+    bases.push(left.base, right.base);
+    const pipelines = path.join(right.directory, "defaults/pipelines.yaml");
+    const original = await Bun.file(pipelines).text();
+    await Bun.write(pipelines, original.replace("task: change.mergeable\n", "task: change.mergeable\n          manual: true\n"));
+
+    const lines: string[] = [];
+    const code = await runCli(["config", "compare", left.entrypoint, right.entrypoint], { out: (text) => lines.push(text), err: () => {}, interactive: false });
+    const out = lines.join("\n");
+    expect(code).toBe(1);
+    expect(out).toMatch(/mergeable: change\.mergeable\s+\| mergeable: change\.mergeable \[check, manual approval\]/);
+    expect(out).toContain("manual approval no -> yes");
   });
 });

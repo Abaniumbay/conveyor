@@ -1,5 +1,5 @@
 import type { CompiledPipeline, CompiledStage, CompiledTask } from "./plan";
-import { formatMs, renderOnFail } from "./render-plan";
+import { formatMs, renderOnFail, taskMarker } from "./render-plan";
 
 type ListName = "actions" | "exit-gate";
 
@@ -15,7 +15,8 @@ const lists = (stage: CompiledStage): [ListName, CompiledTask[]][] => [
 
 function cell(task: CompiledTask): string {
   const name = task.id === task.task ? task.task : `${task.id}: ${task.task}`;
-  return task.label ? `${name} (${task.label})` : name;
+  const details = task.label ? `${name} (${task.label})` : name;
+  return task.manual ? `${details} ${taskMarker(task)}` : details;
 }
 
 /** The task name first, so a summary reads the same whatever the instance ids are. */
@@ -31,7 +32,12 @@ function waitText(task: CompiledTask): string {
 
 /** Everything about a task except its identity that a difference summary should surface. */
 function behaviour(task: CompiledTask, list: ListName): string[] {
-  return [waitText(task), renderOnFail(task, list), Object.keys(task.with).length > 0 ? `with ${JSON.stringify(task.with)}` : "with (none)"];
+  return [
+    waitText(task),
+    renderOnFail(task, list),
+    Object.keys(task.with).length > 0 ? `with ${JSON.stringify(task.with)}` : "with (none)",
+    ...(list === "exit-gate" ? [`manual approval ${task.manual ? "yes" : "no"}`] : []),
+  ];
 }
 
 type Row = { left: CompiledTask | undefined; right: CompiledTask | undefined; matched: boolean };
@@ -110,7 +116,14 @@ function compareStage(left: CompiledStage | undefined, right: CompiledStage | un
       } else if (row.left && row.right) {
         const before = behaviour(row.left, name);
         const after = behaviour(row.right, name);
-        const changed = before.flatMap((part, index) => (part === after[index] ? [] : [`${part} -> ${after[index]}`]));
+        const changed = before.flatMap((part, index) => {
+          const next = after[index]!;
+          if (part === next) return [];
+          if (part.startsWith("manual approval ") && next.startsWith("manual approval ")) {
+            return [`manual approval ${part.slice("manual approval ".length)} -> ${next.slice("manual approval ".length)}`];
+          }
+          return [`${part} -> ${next}`];
+        });
         if (changed.length > 0) summary.push(`changed: ${name} ${summaryName(row.right)}: ${changed.join("; ")}`);
       }
     }
