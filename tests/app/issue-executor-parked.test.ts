@@ -80,6 +80,7 @@ repositories:
   const labels: string[][] = [];
   const producers: string[] = [];
   let failure = false;
+  let fenceNextProducer = false;
   let wait: ExternalWaitError | null = new ExternalWaitError("Waiting for CI at abc1234: Tests.", 60_000, "CI started");
   const executorFor = (current: ConveyorConfig) => new IssueExecutor({
     config: current,
@@ -92,6 +93,11 @@ repositories:
       async runCheck() { throw new Error("no checks"); },
       async runProducer(stage) {
         producers.push(stage.id);
+        if (fenceNextProducer) {
+          fenceNextProducer = false;
+          store.openQuestion({ issueId: "issue", runId: null, prompt: "Which database?", reason: "need it", options: [], allowFreeText: true });
+          store.setIssueProjection("issue", { stage: "implementation", state: "needs-input", warning: "Waiting for an answer: Which database?" });
+        }
         if (wait) throw wait;
         if (failure) return { ...success, stageResult: { ...success.stageResult, outcome: "failure" as const, status: "blocked", reason: "nope" } };
         return success;
@@ -104,6 +110,7 @@ repositories:
     config, store, labels, producers, executorFor,
     stopWaiting() { wait = null; },
     failNext() { wait = null; failure = true; },
+    fenceNextProducer() { fenceNextProducer = true; },
     messages: () => store.listConversationMessages("issue").map((message) => message.message),
   };
 }
@@ -127,6 +134,20 @@ describe("IssueExecutor parked stages", () => {
     expect(resumed).toMatchObject({ kind: "advance", nextStageId: "review" });
     expect(h.store.executions().wakeAt("issue")).toBeNull();
     expect(h.labels).toEqual([["conveyor", "conveyor:review"]]);
+    h.store.close();
+  });
+
+  test("a stale epoch from a projection change releases the abandoned running stage", async () => {
+    const h = await setup();
+    h.fenceNextProducer();
+
+    const outcome = await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+
+    expect(outcome).toMatchObject({ kind: "parked", stageId: "implementation", reason: "superseded" });
+    expect(h.store.listOpenQuestions()).toHaveLength(1);
+    expect(h.store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "ready" });
+    expect(h.store.listActiveIssueRuns()).toEqual([]);
+    expect(h.store.executions().getCursor("issue")).toBeNull();
     h.store.close();
   });
 

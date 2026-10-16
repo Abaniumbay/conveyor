@@ -84,10 +84,11 @@ export class IssueExecutor {
       });
     }
 
-    store.setStageState({
+    const journal = store.executions();
+    this.#restartOnPlanChange(issue.id, stageId);
+    const executionEpoch = store.claimStageExecution({
       issueId: issue.id,
       stageId,
-      status: "running",
       feedbackCycle: state.feedbackCycle,
       configHash: config.hash,
     });
@@ -114,7 +115,6 @@ export class IssueExecutor {
         checks: [],
       };
     };
-    const journal = store.executions();
     const transitionId = randomUUID();
     try {
       signal?.throwIfAborted();
@@ -135,7 +135,6 @@ export class IssueExecutor {
           input: { issue: issue as unknown as Record<string, unknown>, workspace: workspace!.path },
         } satisfies LegacyRuntime;
       }
-      this.#restartOnPlanChange(issue.id, stageId);
       let ownStatus: string | null = journal.pendingMessage(issue.id);
       const executor = new StageExecutor({
         registry: createTaskRegistry(),
@@ -179,11 +178,12 @@ export class IssueExecutor {
       });
       signal?.throwIfAborted();
       if (result.kind === "parked") {
-        // Superseded: the item moved on, so its state is no longer ours to touch.
         if (result.reason === "pending") {
           store.setStageState({
             issueId: issue.id, stageId, status: "ready", feedbackCycle: state.feedbackCycle, configHash: config.hash,
           });
+        } else {
+          store.releaseFencedStageExecution({ issueId: issue.id, stageId, stageEpoch: executionEpoch });
         }
         return result;
       }

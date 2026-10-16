@@ -1106,28 +1106,88 @@ export class ConveyorStore {
     })();
   }
 
+  /** Marks a stage as owned by its current execution epoch and returns that ownership token. */
+  claimStageExecution(state: {
+    issueId: string;
+    stageId: string;
+    feedbackCycle: number;
+    configHash: string;
+  }): number {
+    return this.#database.transaction(() => {
+      const stageEpoch = this.#executions.stageEpoch(state.issueId);
+      this.writeStageState({ ...state, status: "running", executionEpoch: stageEpoch });
+      return stageEpoch;
+    })();
+  }
+
+  /**
+   * Releases a running stage after its executor was fenced. The epoch token prevents an older
+   * executor from clearing a stage that a newer executor, cursor, or projection now owns.
+   */
+  releaseFencedStageExecution(input: { issueId: string; stageId: string; stageEpoch: number }): boolean {
+    return this.#database.transaction(() => {
+      const owned = this.#database
+        .query(
+          `SELECT stage_id, status, feedback_cycle, config_hash, execution_epoch
+           FROM stage_states WHERE issue_id = ?`,
+        )
+        .get(input.issueId) as {
+          stage_id: string;
+          status: string;
+          feedback_cycle: number;
+          config_hash: string;
+          execution_epoch: number | null;
+        } | null;
+      if (
+        !owned
+        || owned.stage_id !== input.stageId
+        || owned.status !== "running"
+        || owned.execution_epoch !== input.stageEpoch
+      ) return false;
+
+      const cursor = this.#executions.getCursor(input.issueId);
+      if (cursor) return false;
+
+      const issue = this.getIssue(input.issueId);
+      if (!issue) return false;
+      this.writeStageState({
+        issueId: input.issueId,
+        stageId: issue.projectedStage ?? input.stageId,
+        status: "ready",
+        feedbackCycle: owned.feedback_cycle,
+        configHash: owned.config_hash,
+        executionEpoch: null,
+      });
+      return true;
+    })();
+  }
+
   private writeStageState(state: {
     issueId: string;
     stageId: string;
     status: string;
     feedbackCycle: number;
     configHash: string;
+    executionEpoch?: number | null;
   }): void {
+    const executionEpoch = state.executionEpoch ?? null;
     this.#database
       .query(
         `INSERT INTO stage_states(
-           issue_id, stage_id, status, feedback_cycle, config_hash, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?)
+           issue_id, stage_id, status, feedback_cycle, config_hash, execution_epoch, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(issue_id) DO UPDATE SET
            stage_id = excluded.stage_id,
            status = excluded.status,
            feedback_cycle = excluded.feedback_cycle,
            config_hash = excluded.config_hash,
+           execution_epoch = excluded.execution_epoch,
            updated_at = CASE WHEN
              stage_states.stage_id IS NOT excluded.stage_id OR
              stage_states.status IS NOT excluded.status OR
              stage_states.feedback_cycle IS NOT excluded.feedback_cycle OR
-             stage_states.config_hash IS NOT excluded.config_hash
+             stage_states.config_hash IS NOT excluded.config_hash OR
+             stage_states.execution_epoch IS NOT excluded.execution_epoch
            THEN excluded.updated_at ELSE stage_states.updated_at END`,
       )
       .run(
@@ -1136,6 +1196,7 @@ export class ConveyorStore {
         state.status,
         state.feedbackCycle,
         state.configHash,
+        executionEpoch,
         now(),
       );
   }
