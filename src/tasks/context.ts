@@ -93,6 +93,8 @@ export interface AgentContext {
 export interface TaskContext {
   schemaVersion: number;
   configHash: string;
+  /** Hash of the compiled plan of the stage that last wrote this context; absent in contexts written before it existed. */
+  stagePlanHash?: string;
   run: RunContext;                  // engine, rewritten for each task
   repository: RepositoryContext;    // engine/config
   item: ItemContext;                // item.load only
@@ -284,4 +286,4 @@ export interface AdvisoryCiWatch {
   finalMessageAt: string | null;
 }
 
-export type ContextKey = keyof Omit<TaskContext, "schemaVersion" | "configHash" | "engine">;
+export type ContextKey = keyof Omit<TaskContext, "schemaVersion" | "configHash" | "stagePlanHash" | "engine">;

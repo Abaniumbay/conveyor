@@ -11,7 +11,7 @@ import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps } from "../tasks/deps";
 import type { LegacyRuntime } from "../tasks/legacy";
 import { displayName } from "../tasks/agent-support";
-import { compilePipeline, type CompiledPipeline } from "../tasks/plan";
+import { compilePipeline, stagePlanHash, type CompiledPipeline, type CompiledStage } from "../tasks/plan";
 import { createWorkspace } from "../workspace/lifecycle";
 import type { WorkspaceManager } from "../workspace/manager";
 import type { RuntimeDeliveryState, RuntimeIssueContext } from "./runtime";
@@ -85,7 +85,7 @@ export class IssueExecutor {
     }
 
     const journal = store.executions();
-    this.#restartOnPlanChange(issue.id, stageId);
+    this.#restartOnPlanChange(issue.id, stage);
     const executionEpoch = store.claimStageExecution({
       issueId: issue.id,
       stageId,
@@ -167,7 +167,7 @@ export class IssueExecutor {
         issueId: issue.id,
         pipeline: plan,
         stageId,
-        baseContext: baseContext(issue, config.hash, {
+        baseContext: baseContext(issue, config.hash, stagePlanHash(stage), {
           ...runtimeRepository,
           ciMode: repository.ci.mode,
           systemLabels: repository.systemLabels,
@@ -236,16 +236,25 @@ export class IssueExecutor {
   }
 
   /**
-   * A stage parked mid-way belongs to the plan it started under. When the configuration
+   * A stage parked mid-way belongs to the plan it started under. When that stage's plan
    * changed since, resuming against the new plan could point the cursor at a task that no
    * longer exists, so the stage starts fresh (a new epoch drops the cursor and journal keys).
+   * Changes elsewhere in the configuration leave it, and any approval it holds, in place.
    */
-  #restartOnPlanChange(issueId: string, stageId: string): void {
+  #restartOnPlanChange(issueId: string, stage: CompiledStage): void {
     const { store, config } = this.dependencies;
+    const stageId = stage.id;
     const journal = store.executions();
     const stored = journal.getContext(issueId);
     const cursor = journal.getCursor(issueId);
-    if (!stored || !cursor || cursor.stage !== stageId || stored.context.configHash === config.hash) return;
+    if (!stored || !cursor || cursor.stage !== stageId) return;
+    // A context written before stage plan hashes existed, or last written by another stage,
+    // carries no hash for this stage, so it falls back to the whole configuration.
+    const { stagePlanHash: storedPlanHash, run } = stored.context;
+    const unchanged = storedPlanHash !== undefined && run?.stage === stageId
+      ? storedPlanHash === stagePlanHash(stage)
+      : stored.context.configHash === config.hash;
+    if (unchanged) return;
     journal.onStageChange(issueId);
     const message = `The pipeline plan changed since ${stageId} started; the stage restarted from the beginning.`;
     store.appendConversationMessage({
@@ -256,10 +265,16 @@ export class IssueExecutor {
   }
 }
 
-function baseContext(issue: StoredIssue, configHash: string, repository: TaskContext["repository"]): TaskContext {
+function baseContext(
+  issue: StoredIssue,
+  configHash: string,
+  planHash: string,
+  repository: TaskContext["repository"],
+): TaskContext {
   return {
     schemaVersion: CONTEXT_SCHEMA_VERSION,
     configHash,
+    stagePlanHash: planHash,
     run: {
       stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "",
       enteredAt: new Date().toISOString(), feedback: null,
