@@ -503,7 +503,7 @@ describe("agent.run through the service", () => {
     });
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
-    expect(w.service.dashboard().questions).toMatchObject([{
+    expect(w.service.dashboard("csrf").questions).toMatchObject([{
       id: question.id,
       options: [{ id: "current-main", label: "Current main commit" }],
     }]);

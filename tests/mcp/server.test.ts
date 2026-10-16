@@ -87,7 +87,9 @@ describe("Conveyor MCP server", () => {
     expect(progress.inputSchema.properties).toHaveProperty("message");
     const askQuestion = tools.tools.find((tool) => tool.name === "agent.askQuestion")!;
     expect(askQuestion.description).toContain("`id`");
-    const choices = JSON.stringify(askQuestion.inputSchema.properties.options);
+    const properties = askQuestion.inputSchema.properties;
+    if (!properties) throw new Error("agent.askQuestion needs an object schema");
+    const choices = JSON.stringify(properties.options);
     expect(choices).toContain('"id"');
     expect(choices).toContain('"label"');
     expect(choices).toContain('"description"');

@@ -639,6 +639,15 @@ describe("agent tools", () => {
     expect(events(w, run.id)).toContainEqual(["question", { questionId }]);
   });
 
+  test("askQuestion keeps valid choices when another choice is malformed", async () => {
+    const { w, run } = await withRun();
+    const result = await tool(w, "agent.askQuestion", {
+      prompt: "Which?", reason: "Need it", options: [{ id: "yes", label: "Yes" }, null], allowFreeText: false,
+    }, run);
+    const questionId = (outcome(result) as { questionId: string }).questionId;
+    expect(w.store.getQuestion(questionId)?.options).toEqual([{ id: "yes", label: "Yes" }]);
+  });
+
   test("askQuestion rejects a question with neither a usable choice nor free text", async () => {
     const { w, run } = await withRun();
     await expect(tool(w, "agent.askQuestion", {

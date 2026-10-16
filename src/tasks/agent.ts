@@ -305,7 +305,7 @@ const structuredQuestionOption = z.looseObject({
 const askInput = z.object({
   prompt: z.string(),
   reason: z.string(),
-  options: lenient(z.array(z.union([z.string(), structuredQuestionOption]))),
+  options: lenient(z.array(lenient(z.union([z.string(), structuredQuestionOption])))),
   minSelections: lenient(z.number()),
   maxSelections: lenient(z.number()),
   allowFreeText: lenient(z.boolean()),

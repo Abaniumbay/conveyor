@@ -33,16 +33,18 @@ export function questionOptions(options: readonly unknown[]): QuestionOption[] {
 
 /** Normalizes new structured choices before they are stored, while preserving legacy strings. */
 export function normalizedQuestionOptions(options: readonly unknown[]): unknown[] {
-  return options.map((option) => {
-    if (typeof option === "string") return option;
+  const seen = new Set<string>();
+  return options.flatMap<unknown>((option) => {
     const normalized = questionOptions([option])[0];
-    if (!normalized) return option;
+    if (!normalized || seen.has(normalized.id)) return [];
+    seen.add(normalized.id);
+    if (typeof option === "string") return [option];
     const description = (option as { description?: unknown }).description;
-    return {
+    return [{
       id: normalized.id,
       label: normalized.label,
       ...(typeof description === "string" ? { description } : {}),
-    };
+    }];
   });
 }
 
