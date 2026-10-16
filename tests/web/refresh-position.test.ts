@@ -616,6 +616,42 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
+  test("a live update leaves the scroll position alone when nothing moved, so a scroll in progress finishes", async () => {
+    const cards = Array.from({ length: 40 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
+    let revision = "revision-1";
+    let currentDashboard = dashboard(revision, cards);
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "no-preference" });
+      await signIn(page, server.port);
+      const destination = await page.evaluate(() => Math.floor((document.documentElement.scrollHeight - innerHeight) * 0.8));
+      expect(destination).toBeGreaterThan(1500);
+
+      // A refresh whose only change is below the fold lands while a long smooth scroll is under way.
+      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      await page.evaluate((top) => {
+        (window as unknown as { scrollWrites: number }).scrollWrites = 0;
+        const original = window.scrollTo.bind(window);
+        window.scrollTo = ((...args: Parameters<typeof window.scrollTo>) => {
+          (window as unknown as { scrollWrites: number }).scrollWrites++;
+          return original(...args);
+        }) as typeof window.scrollTo;
+        original({ top, behavior: "smooth" });
+      }, destination);
+      currentDashboard = dashboard("revision-2", cards.map((card) => card.id === "card-39" ? { ...card, title: "Card 39 renamed" } : card));
+      revision = "revision-2";
+      await refresh;
+      await page.locator('[data-issue-id="card-39"] .issue-title').filter({ hasText: "Card 39 renamed" }).waitFor();
+      await page.waitForFunction((top) => Math.abs(window.scrollY - top) <= 2, destination, { timeout: 5_000 });
+
+      expect(await page.evaluate(() => (window as unknown as { scrollWrites: number }).scrollWrites)).toBe(0);
+      expect(Math.abs((await page.evaluate(() => window.scrollY)) - destination)).toBeLessThanOrEqual(2);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("a live update replaces only the cards that changed, and the server sends only those", async () => {
     const cards = Array.from({ length: 6 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
     let revision = "revision-1";
