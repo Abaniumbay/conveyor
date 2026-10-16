@@ -111,6 +111,8 @@ export interface IssueCardViewModel {
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;
   retryable: boolean;
+  /** An offboarded item exposes its immutable journey history only. */
+  historyOnly?: boolean;
 }
 
 export interface ActiveRunViewModel {

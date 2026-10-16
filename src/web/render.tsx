@@ -194,6 +194,7 @@ function FamilySquares({ parent }: { parent: IssueCardViewModel }) {
 
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const url = safeUrl(issue.url);
+  const historyOnly = issue.historyOnly === true;
   const summaryId = `${id}-summary`;
   const conversationId = `${id}-conversation`;
   const journeyId = `${id}-journey`;
@@ -210,11 +211,16 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         </div>
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
-        <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
-        <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} aria-selected="false" data-detail-tab="conversation">Conversation</button>
-        <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="false" data-detail-tab="journey">Journey</button>
-        <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Technical logs</button>
+        {historyOnly
+          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="true" data-detail-tab="journey">Journey</button>
+          : <>
+            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
+            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} aria-selected="false" data-detail-tab="conversation">Conversation</button>
+            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="false" data-detail-tab="journey">Journey</button>
+            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Technical logs</button>
+          </>}
       </nav>
+      {!historyOnly && <>
       <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
         <div class="details-status">
           <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
@@ -342,17 +348,20 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           </div>
         </form>
       </section>
+      </>}
       <section
         id={journeyId}
         role="tabpanel"
         aria-labelledby={`${journeyId}-tab`}
         data-detail-panel="journey"
         data-journey-url={`/api/issues/${encodeURIComponent(issue.id)}/journey`}
-        hidden
+        hidden={!historyOnly}
       >
+        {historyOnly && <p class="details-empty">This item is no longer enrolled. Its history is read-only.</p>}
         <p class="journey-status" data-journey-status>Open Journey to load the stage history.</p>
         <ol class="journey-list" data-journey-list />
       </section>
+      {!historyOnly && <>
       <section
         id={activityId}
         role="tabpanel"
@@ -364,6 +373,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         <p class="activity-status" data-activity-status>Open Technical logs to load the persisted run log.</p>
         <div data-activity-runs />
       </section>
+      </>}
     </dialog>
   );
 }

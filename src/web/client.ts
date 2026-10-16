@@ -956,6 +956,7 @@ export const dashboardClient = String.raw`(() => {
 
   const selectDetailTab = (dialog, name, updateUrl = false) => {
     name = validDetailTab(name);
+    if (!dialog.querySelector('[data-detail-tab="' + name + '"]')) name = 'journey';
     for (const tab of dialog.querySelectorAll('[data-detail-tab]')) {
       const selected = tab.getAttribute('data-detail-tab') === name;
       tab.setAttribute('aria-selected', selected ? 'true' : 'false');

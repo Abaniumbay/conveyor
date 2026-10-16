@@ -166,7 +166,7 @@ export async function doctorChecks(
  */
 export async function repositoryTrustChecks(
   config: ConveyorConfig,
-  adapter: Pick<GitHubAdapter, "repositoryVisibility" | "collaboratorPermission"> | null,
+  adapter: Pick<GitHubAdapter, "repositoryVisibility" | "collaboratorPermission" | "authenticatedLogin"> | null,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   for (const [id, repository] of Object.entries(config.repositories)) {
@@ -187,11 +187,11 @@ export async function repositoryTrustChecks(
         checks.push({ name: `repository trust ${id}`, status: "ok", detail: `This repository is private; the public-source status is not required. ${policy}` });
         continue;
       }
-      // Probe the same GitHub endpoint the trust policy uses. The repository owner is a stable
-      // login for this purpose; the result is not itself a trust decision for future authors.
-      const owner = repository.address.split("/")[0]!;
+      // Probe the same GitHub endpoint the trust policy uses with a guaranteed user login. An
+      // organization repository owner is not itself a valid collaborator-login probe.
       try {
-        await adapter.collaboratorPermission(repository.address, owner);
+        const login = await adapter.authenticatedLogin();
+        await adapter.collaboratorPermission(repository.address, login);
         checks.push({ name: `repository trust ${id}`, status: "ok", detail: `This repository is public and GitHub author-permission lookups are available. ${policy}` });
       } catch (error) {
         checks.push({

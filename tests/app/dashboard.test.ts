@@ -1740,6 +1740,7 @@ describe("ConveyorService dashboard", () => {
         earlier: { source: "github", address: "owner/earlier", folder: root, pipeline: "default" },
         repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", extraTrustedLogins: ["reviewer[bot]"] },
       },
+      sources: { github: { type: "github" } },
     } as unknown as ConveyorConfig;
     store.upsertRepository({
       id: "repo",
@@ -2060,6 +2061,24 @@ describe("ConveyorService dashboard", () => {
     });
     expect(await service.webDependencies({} as never, "operator").getIssueRoute({ repository: "repo", number: 31 }))
       .toEqual({ id: "github:owner/repo#31", repository: "repo", number: 31 });
+    const offboardedDashboard = service.dashboard("csrf", {
+      view: "repository",
+      repositoryId: "repo",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+      runId: null,
+      issueId: "github:owner/repo#31",
+    });
+    expect(offboardedDashboard.selectedIssue).toMatchObject({
+      id: "github:owner/repo#31",
+      historyOnly: true,
+    });
+    expect(service.issueDetails("csrf", "github:owner/repo#31")).toMatchObject({ historyOnly: true });
+    const offboardedHtml = renderDashboard(offboardedDashboard);
+    expect(offboardedHtml).toContain("This item is no longer enrolled. Its history is read-only.");
+    expect(offboardedHtml).toContain('data-detail-tab="journey"');
+    expect(offboardedHtml).not.toContain('data-conversation-form');
     expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
       visibility: "public",
       checkedAt: "2026-09-29T03:00:00Z",

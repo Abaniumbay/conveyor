@@ -708,6 +708,11 @@ describe("renderDashboard", () => {
 
     const publicRepository = renderDashboard({ ...base, repositories: [{ ...repository, trust: { ...repository.trust, visibility: "public", warning: null } }] });
     expect(publicRepository).toContain("GitHub reports this repository is public.");
+
+    const privateRepository = renderDashboard({ ...base, repositories: [{ ...repository, trust: { ...repository.trust, visibility: "private", warning: null } }] });
+    expect(privateRepository).toContain("GitHub reports this repository is private; the public-source safeguards are not required.");
+    expect(privateRepository).not.toContain("GitHub reports this repository is public.");
+    expect(privateRepository).not.toContain("Public repository safeguards are active.");
   });
 
   test("renders legacy string choices and an actionable error instead of an empty answer form", () => {

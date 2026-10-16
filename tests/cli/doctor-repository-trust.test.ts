@@ -14,7 +14,11 @@ function adapter(visibility: unknown, permission: unknown = "admin") {
         if (visibility instanceof Error) throw visibility;
         return visibility as T;
       }
-      expect(request).toEqual({ method: "GET", path: "repos/owner/my-app/collaborators/owner/permission" });
+      if (request.path === "user") {
+        expect(request).toEqual({ method: "GET", path: "user" });
+        return { login: "doctor-user" } as T;
+      }
+      expect(request).toEqual({ method: "GET", path: "repos/owner/my-app/collaborators/doctor-user/permission" });
       if (permission instanceof Error) throw permission;
       return { permission } as T;
     },
@@ -51,6 +55,31 @@ describe("doctor repository trust checks", () => {
       detail: expect.stringContaining("private"),
     })]);
     expect(checks[0]!.detail).toContain("not required");
+  });
+
+  test("uses the authenticated user to probe author lookups for organization repositories", async () => {
+    const requests: GitHubTransportRequest[] = [];
+    const transport: GitHubTransport = {
+      async request<T>(request: GitHubTransportRequest): Promise<T> {
+        requests.push(request);
+        if (request.path === "repos/organization/my-app") return { private: false } as T;
+        if (request.path === "user") return { login: "doctor-user" } as T;
+        if (request.path === "repos/organization/my-app/collaborators/doctor-user/permission") return { permission: "write" } as T;
+        throw new Error(`Unexpected GitHub request: ${request.path}`);
+      },
+    };
+
+    const checks = await repositoryTrustChecks(
+      config({ app: { address: "organization/my-app" } }),
+      new GitHubAdapter(transport, "conveyor"),
+    );
+
+    expect(checks[0]).toMatchObject({ status: "ok" });
+    expect(requests.map((request) => request.path)).toEqual([
+      "repos/organization/my-app",
+      "user",
+      "repos/organization/my-app/collaborators/doctor-user/permission",
+    ]);
   });
 
   test("warns specifically when repository visibility cannot be determined", async () => {

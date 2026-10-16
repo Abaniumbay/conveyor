@@ -2920,6 +2920,7 @@ export class ConveyorService {
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
         ].includes(projectedState),
         retryable,
+        ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
       };
     };
     const stageNames = new Map<string, string>();
@@ -3240,8 +3241,8 @@ export class ConveyorService {
         selected: selectedSteering,
         recent: recentSteeringRuns,
       },
-      selectedIssue: pagination.issueId && byId.has(pagination.issueId)
-        ? card(byId.get(pagination.issueId)!)
+      selectedIssue: pagination.issueId && listedById.has(pagination.issueId)
+        ? card(listedById.get(pagination.issueId)!)
         : null,
       csrfToken,
     };
@@ -3357,7 +3358,7 @@ export class ConveyorService {
     // one card, so rebuilding every board column, rollup, and repository summary here would make
     // the on-demand endpoint proportional to the board rather than to the item being opened.
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue) return null;
     const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
       [repositoryId, (index % 8) + 1],
     ));
@@ -3571,6 +3572,7 @@ export class ConveyorService {
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
+      ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
     };
   }
 
@@ -4036,7 +4038,7 @@ export class ConveyorService {
   }
 
   webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {
-    const githubSource = Object.values(this.config.sources ?? {}).find((source) => source.type === "github");
+    const githubSource = Object.values(this.config.sources).find((source) => source.type === "github");
     return {
       auth,
       username,
