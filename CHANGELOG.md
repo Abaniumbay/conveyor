@@ -32,6 +32,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- A live dashboard update no longer resets the scroll position. It moves the page only by the distance the card you are reading shifted, and not at all when nothing moved, so a scroll or swipe in progress is no longer interrupted.
 - Enrollment labels and agent-visible issue text now require trusted GitHub provenance. Untrusted or unverifiable changes remain out of agent context and appear as board warnings instead.
 
 - **Needs you** now retains stopped post-merge work when its merged Conveyor pull request has

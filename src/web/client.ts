@@ -2140,22 +2140,30 @@ export const dashboardClient = String.raw`(() => {
       stage: stage ? { id: stage.getAttribute('data-station-cell'), left: stage.getBoundingClientRect().left } : null,
     };
   };
+  // Undoes only what the update itself moved. A scroller is written only when the reader's card or
+  // station actually shifted, and then by that distance, so a scroll or fling in progress is never
+  // reset to where it was when the update landed.
   const restoreDashboardPosition = (position) => {
-    window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
-    if (board) {
-      board.scrollTop = clampScrollOffset(position.boardY || 0, board.scrollHeight - board.clientHeight);
-      board.scrollLeft = clampScrollOffset(position.scrollX, boardScrollMaximum());
-      const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
-      if (stage) board.scrollLeft = clampScrollOffset(board.scrollLeft + stage.getBoundingClientRect().left - position.stage.left, boardScrollMaximum());
+    const issue = position.issue?.id ? document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]') : null;
+    if (issue) {
+      const shift = issue.getBoundingClientRect().top - position.issue.top;
+      if (Math.abs(shift) >= 1) {
+        // On wide screens the board scrolls vertically inside itself; on phones the page does.
+        if (board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
+          board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
+        } else window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
+      }
+    } else {
+      // The card the reader was looking at is gone: keep the offsets they had, within the new bounds.
+      if (Math.abs(window.scrollY - position.scrollY) >= 1) window.scrollTo(0, clampScrollOffset(position.scrollY, documentScrollMaximum()));
+      if (board && Math.abs(board.scrollTop - (position.boardY || 0)) >= 1) {
+        board.scrollTop = clampScrollOffset(position.boardY || 0, board.scrollHeight - board.clientHeight);
+      }
     }
-    if (position.issue?.id) {
-      const issue = document.querySelector('article.issue[data-issue-id="' + CSS.escape(position.issue.id) + '"]');
-      const shift = issue ? issue.getBoundingClientRect().top - position.issue.top : 0;
-      // On wide screens the board scrolls vertically inside itself; on phones the page does.
-      if (issue && board && board.contains(issue) && board.scrollHeight > board.clientHeight) {
-        board.scrollTop = clampScrollOffset(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
-      } else if (issue) window.scrollTo(0, clampScrollOffset(window.scrollY + shift, documentScrollMaximum()));
-    }
+    if (!board) return;
+    const stage = position.stage && board.querySelector('[data-station-cell="' + CSS.escape(position.stage.id) + '"]');
+    const drift = stage ? stage.getBoundingClientRect().left - position.stage.left : board.scrollLeft - position.scrollX;
+    if (Math.abs(drift) >= 1) board.scrollLeft = clampScrollOffset(board.scrollLeft + (stage ? drift : -drift), boardScrollMaximum());
   };
   const interactionInProgress = () => {
     if (document.querySelector('.dashboard-header details[open]')) return true;
