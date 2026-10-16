@@ -29,7 +29,7 @@ async function release(root: string, version: string) {
 
 function install(root: string, ...args: string[]) {
   const result = Bun.spawnSync(["sh", INSTALL, "--prefix", path.join(root, "prefix"), "--bin-dir", path.join(root, "bin"), ...args], {
-    env: { HOME: root, PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe",
+    env: { HOME: root, PATH: "/usr/bin:/bin", TMPDIR: tmpdir() }, stdout: "pipe", stderr: "pipe",
   });
   return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
