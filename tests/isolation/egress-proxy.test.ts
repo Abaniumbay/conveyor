@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -11,7 +12,7 @@ afterEach(async () => {
 });
 
 async function socketPath(): Promise<string> {
-  const directory = await mkdtemp("/tmp/conveyor-egress-");
+  const directory = await shortTemporaryDirectory("conveyor-egress-", { socketPath: "p.sock" });
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   return path.join(directory, "p.sock");
 }

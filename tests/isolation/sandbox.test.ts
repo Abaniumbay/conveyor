@@ -9,6 +9,7 @@ import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
 import { privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { bwrapUnavailableReason } from "../support/bwrap";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const unavailable = bwrapUnavailableReason();
 const describeSandbox = unavailable ? describe.skip : describe;
@@ -21,8 +22,8 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
 });
 
-test("network isolation resolves a symlinked run temporary directory before binding it", async () => {
-  const root = await mkdtemp("/tmp/conveyor-isolation-paths-");
+test("network isolation normalizes a symlinked run temporary directory", async () => {
+  const root = await shortTemporaryDirectory("conveyor-isolation-paths-");
   const target = path.join(root, "target");
   const link = path.join(root, "link");
   const runTmp = path.join(target, "run-tmp");
@@ -34,8 +35,10 @@ test("network isolation resolves a symlinked run temporary directory before bind
       env: { TMPDIR: path.join(link, "run-tmp") },
       dataProxySocket: "/tmp/conveyor-proxy.sock",
     });
-    expect(launch.argv.join(" ")).toContain(`--bind ${runTmp} ${runTmp}`);
-    expect(launch.argv.join(" ")).not.toContain(link);
+    const command = launch.argv.join(" ");
+    expect(command).not.toContain(link);
+    if (runTmp.startsWith("/tmp/")) expect(command).toContain(`--bind ${runTmp} ${runTmp}`);
+    else expect(command).not.toContain(`--bind ${runTmp} ${runTmp}`);
     expect(launch.env.TMPDIR).toBe(runTmp);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -124,8 +127,10 @@ async function echo(): Promise<{ server: net.Server; port: number }> {
 
 beforeAll(async () => {
   if (unavailable) return;
-  // /tmp is private in the sandbox; this short visible base also leaves room for Unix socket names.
-  directory = await mkdtemp("/var/tmp/conveyor-sbx-");
+  directory = await shortTemporaryDirectory("conveyor-sbx-", {
+    socketPath: "control.sock",
+    visibleInSandbox: true,
+  });
   await writeFile(path.join(directory, "probes.ts"), PROBES);
   await writeFile(path.join(directory, "harness.ts"), HARNESS);
   const model = await echo();

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { EXIT } from "../../src/cli/args";
@@ -19,6 +19,7 @@ import { claimPidFile, runningServe } from "../../src/cli/process-lock";
 import { currentVersion, detectPrefix, stageRelease, switchCurrent } from "../../src/release/install";
 import { backupState, BACKUPS_KEPT, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, writeReleaseState, type PendingSwitch, type ReleaseState, type SwitchRecord } from "../../src/release/state";
 import { BUILD } from "../../src/version";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -27,8 +28,7 @@ afterEach(async () => {
 });
 
 async function temporary(): Promise<string> {
-  // Release readiness starts a Unix control socket under this home; keep it short on nested worktrees.
-  const directory = await mkdtemp("/var/tmp/conveyor-release-");
+  const directory = await shortTemporaryDirectory("conveyor-release-", { socketPath: "run/control.sock" });
   directories.push(directory);
   return directory;
 }

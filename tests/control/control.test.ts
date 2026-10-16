@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
@@ -11,6 +10,7 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -24,7 +24,7 @@ interface FakeIssue { id: string; number: number; url: string; title: string; bo
 
 /** A running service with a control socket under a fresh home, two stopped items and a fake GitHub. */
 async function running() {
-  const home = await mkdtemp(path.join(tmpdir(), "conveyor-control-"));
+  const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
   directories.push(home);
   log.configure({ sinks: [] });
   const store = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
@@ -97,7 +97,7 @@ describe("control socket", () => {
   });
 
   test("a socket nobody listens on, or one the caller may not open, is explained rather than called stopped", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "conveyor-control-"));
+    const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
     directories.push(home);
     const socket = path.join(home, "run/control.sock");
     await mkdir(path.dirname(socket), { recursive: true });
@@ -119,7 +119,7 @@ describe("control socket", () => {
   });
 
   test("without a running service, status reports it and exits 4; item commands exit 4", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "conveyor-control-"));
+    const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
     directories.push(home);
     const out: string[] = [];
     const code = await runCli(["status", "--home", home], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });

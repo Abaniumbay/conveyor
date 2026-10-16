@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +16,7 @@ import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION } from "../
 import { ConsoleSink, log } from "../../src/log/logger";
 import { verifyPassword } from "../../src/web/auth";
 import { referenceConfigDirectory } from "../config/reference-fixture";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const LEGACY = path.resolve(import.meta.dir, "../fixtures/legacy-pipeline");
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples/config");
@@ -27,7 +28,7 @@ afterEach(async () => {
 });
 
 async function temporary(): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "conveyor-cli-"));
+  const directory = await shortTemporaryDirectory("conveyor-cli-", { socketPath: "home/run/control.sock" });
   directories.push(directory);
   return directory;
 }
