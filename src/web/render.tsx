@@ -275,14 +275,33 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           </section>
         )}
         <TodoChecklist issue={issue} />
-        <section class="criteria" aria-label="Acceptance criteria">
+        <section class="criteria" aria-label="Acceptance criteria" data-criterion-evidence>
           <h3>Acceptance criteria</h3>
           {issue.acceptanceCriteria.length > 0
-            ? <ul class="criteria-list">{issue.acceptanceCriteria.map((criterion) => (
+            ? <ul class="criteria-list criterion-list">{issue.acceptanceCriteria.map((criterion) => (
               <li key={criterion.id}>
-                <span aria-label={criterion.approved ? "Approved" : "Not approved"}>
-                  {criterion.approved ? "☑ Approved" : "☐ Not approved"}
-                </span>{" "}{criterion.text}
+                <details class="criterion-evidence">
+                  <summary class="criterion-summary">
+                    <span class="criterion-state" aria-label={criterion.manual ? "Manual" : criterion.approved ? "Approved" : "Waiting"}>
+                      {criterion.manual ? "◌ Manual" : criterion.approved ? "☑ Approved" : "☐ Waiting"}
+                    </span>
+                    <span class="criterion-text">{criterion.text}</span>
+                    <span class="criterion-test-count">{criterion.tests.length} linked test{criterion.tests.length === 1 ? "" : "s"}</span>
+                  </summary>
+                  {criterion.manual
+                    ? <p class="criterion-empty">manual</p>
+                    : criterion.tests.length === 0
+                    ? <p class="criterion-empty">no tests linked</p>
+                    : <ul class="criterion-tests">{criterion.tests.map((test, index) => {
+                      const sourceUrl = safeUrl(test.sourceUrl);
+                      const location = `${test.file}${test.line === null ? "" : `:${test.line}`}`;
+                      return <li class="criterion-test" key={`${test.name}:${test.file}:${index}`}>
+                        <strong>{test.name}</strong>
+                        {sourceUrl ? <a class="criterion-test-location" href={sourceUrl}>{location}</a> : <span class="criterion-test-location">{location}</span>}
+                        {test.description && <span class="criterion-test-description">{test.description}</span>}
+                      </li>;
+                    })}</ul>}
+                </details>
               </li>
             ))}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}

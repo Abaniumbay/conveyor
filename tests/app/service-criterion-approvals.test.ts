@@ -7,6 +7,7 @@ import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-records";
+import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
 import type { TaskContext } from "../../src/tasks/context";
 
 const directories: string[] = [];
@@ -17,6 +18,7 @@ afterEach(async () => {
 const BODY = `<!-- conveyor:acceptance-criteria:start -->
 - [ ] Current criterion <!-- conveyor:criterion:AC-1 -->
 - [ ] Other criterion <!-- conveyor:criterion:AC-2 -->
+- [ ] [Manual] Production validation <!-- conveyor:criterion:AC-3 -->
 <!-- conveyor:acceptance-criteria:end -->`;
 
 async function setup(merged = false) {
@@ -66,7 +68,7 @@ repositories:
 
   const statusComments: string[] = [];
   const github = { async upsertStatusComment(_address: string, _number: number, markdown: string) { statusComments.push(markdown); return statusComments.length; } };
-  const service = new ConveyorService(config, store, github as never);
+  const service = new ConveyorService(config, store, github as never, { codeHosts: createGitHubCodeHostRegistry(config, github as never) });
   service.drain("tests: nothing executes");
   const internals = service as unknown as { updateStatusComment(id: string): Promise<void> };
   const persist = (state: "open" | "merged", headSha: string, reviewPassed: string | null) => {
@@ -95,8 +97,9 @@ test("projects current-head approvals into status comments and dashboard details
   expect(w.statusComments.at(-1)).toContain("- [x] Current criterion");
   expect(w.statusComments.at(-1)).toContain("- [ ] Other criterion");
   expect(w.card().acceptanceCriteria).toEqual([
-    { id: "AC-1", text: "Current criterion", approved: true },
-    { id: "AC-2", text: "Other criterion", approved: false },
+    { id: "AC-1", text: "Current criterion", approved: true, manual: false, tests: [] },
+    { id: "AC-2", text: "Other criterion", approved: false, manual: false, tests: [] },
+    { id: "AC-3", text: "[Manual] Production validation", approved: false, manual: true, tests: [] },
   ]);
 
   const unticked = async (label: string) => {
@@ -124,6 +127,40 @@ test("projects current-head approvals into status comments and dashboard details
   approvals.withdraw("issue", "AC-1");
   await unticked("withdrawn");
   expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion");
+  await w.service.close();
+});
+
+test("projects recorded criterion tests with coherent refreshed source revisions", async () => {
+  const w = await setup();
+  w.persist("open", "head-1", null);
+  w.store.replaceCriterionTestEvidence("issue", [
+    {
+      criterionId: "AC-1", manual: false,
+      tests: [{ name: "checks the criterion", file: "tests/criteria.test.ts", line: 17, description: "Covers the stored condition" }],
+      recordedHead: "recorded-head", sourceLinkHead: "recorded-head", recordedAt: "2026-01-01T00:00:00Z",
+    },
+    {
+      criterionId: "AC-2", manual: false,
+      tests: [{ name: "has no verified line", file: "tests/file-only.test.ts" }],
+      recordedHead: "recorded-head", sourceLinkHead: "recorded-head", recordedAt: "2026-01-01T00:00:00Z",
+    },
+  ]);
+
+  const initial = w.card().acceptanceCriteria;
+  expect(initial).toMatchObject([
+    { id: "AC-1", approved: false, manual: false, tests: [{ name: "checks the criterion", file: "tests/criteria.test.ts", line: 17, description: "Covers the stored condition" }] },
+    { id: "AC-2", approved: false, manual: false, tests: [{ name: "has no verified line", file: "tests/file-only.test.ts", line: null, description: null }] },
+    { id: "AC-3", approved: false, manual: true, tests: [] },
+  ]);
+  expect(initial[0]?.tests[0]?.sourceUrl).toContain("/blob/recorded-head/tests/criteria.test.ts#L17");
+  expect(initial[1]?.tests[0]?.sourceUrl).toContain("/blob/recorded-head/tests/file-only.test.ts");
+  expect(initial[1]?.tests[0]?.sourceUrl).not.toContain("#L");
+
+  new CriterionApprovals(w.store.sqlite()).approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-1", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
+  w.store.refreshCriterionTestEvidence("issue", "verified-head", new Map([["AC-1", [31]]]));
+  const refreshed = w.card().acceptanceCriteria[0]!;
+  expect(refreshed).toMatchObject({ id: "AC-1", approved: true, tests: [{ line: 31 }] });
+  expect(refreshed.tests[0]?.sourceUrl).toContain("/blob/verified-head/tests/criteria.test.ts#L31");
   await w.service.close();
 });
 

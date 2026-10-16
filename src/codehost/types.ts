@@ -79,8 +79,8 @@ export interface CodeHost {
   getChange(input: { address: string; id: string }): Promise<ChangeRequest>;
   /** Reads a repository file at an immutable change head; null means that path does not exist. */
   readFileAtRevision(input: { address: string; path: string; headSha: string }): Promise<string | null>;
-  /** Returns a stable source URL for a line in a repository file at an immutable change head. */
-  sourceFileUrl(input: { address: string; path: string; headSha: string; line: number }): string;
+  /** Returns a stable source URL for a repository file, optionally pinned to a line, at an immutable change head. */
+  sourceFileUrl(input: { address: string; path: string; headSha: string; line?: number }): string;
   mergeChange(input: {
     address: string;
     id: string;

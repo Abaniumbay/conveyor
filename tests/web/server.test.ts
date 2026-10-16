@@ -60,7 +60,7 @@ const detailIssue: IssueCardViewModel = {
   labels: ["feature"],
   issueType: null,
   issueFields: [],
-  acceptanceCriteria: [{ id: "AC-1", text: "Works safely", approved: true }],
+  acceptanceCriteria: [{ id: "AC-1", text: "Works safely", approved: true, manual: false, tests: [] }],
   todos: { finished: 1, skipped: 0, total: 1, current: null, items: [{ id: "t1", text: "Complete", status: "done" }] },
   indicators: [],
   activity: "Testing",
