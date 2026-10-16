@@ -182,7 +182,7 @@ describe("GitHubAdapter", () => {
       { id: 10, created_at: "2026-01-01T00:00:00Z", event: "labeled", label: { name: "conveyor" }, actor: { login: "previous-labeler" } },
       { id: 15, created_at: "2026-01-01T12:00:00Z", event: "renamed", actor: { login: "title-editor" }, rename: { from: "before", to: "after" } },
     ], {
-      data: { repository: { issue: { userContentEdits: { nodes: [{ editor: { login: "body-editor" } }] } } } },
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: { login: "body-editor" } }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
     });
 
     await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
@@ -190,18 +190,39 @@ describe("GitHubAdapter", () => {
     });
     expect(transport.requests).toEqual([
       { method: "GET", path: "repos/owner/my-app/issues/7/events?per_page=100", paginate: true },
-      expect.objectContaining({ method: "POST", path: "graphql", body: expect.objectContaining({ variables: { owner: "owner", name: "my-app", number: 7 } }) }),
+      expect.objectContaining({ method: "POST", path: "graphql", body: expect.objectContaining({ variables: { owner: "owner", name: "my-app", number: 7, cursor: null } }) }),
     ]);
   });
 
   test("keeps an unavailable GraphQL body editor unverifiable", async () => {
     const transport = new FakeTransport([], {
-      data: { repository: { issue: { userContentEdits: { nodes: [{ editor: null }] } } } },
+      data: { repository: { issue: { userContentEdits: { nodes: [{ editedAt: "2026-01-03T00:00:00Z", editor: null }], pageInfo: { hasNextPage: false, endCursor: null } } } } },
     });
 
     await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
       enrollment: null, title: null, body: { login: null },
     });
+  });
+
+  test("selects the newest body editor regardless of GraphQL connection order", async () => {
+    for (const nodes of [
+      [
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+      ],
+      [
+        { editedAt: "2026-01-02T00:00:00Z", editor: { login: "untrusted-editor" } },
+        { editedAt: "2026-01-01T00:00:00Z", editor: { login: "trusted-editor" } },
+      ],
+    ]) {
+      const transport = new FakeTransport([], {
+        data: { repository: { issue: { userContentEdits: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } } },
+      });
+
+      await expect(new GitHubAdapter(transport, "conveyor").getIssueProvenance("owner/my-app", 7, "conveyor")).resolves.toEqual({
+        enrollment: null, title: null, body: { login: "untrusted-editor" },
+      });
+    }
   });
 
   test("projects only issues carrying the configured Conveyor prefix", async () => {

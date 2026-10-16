@@ -339,13 +339,45 @@ export class GitHubAdapter {
     }
     const [owner, name] = address.split("/");
     if (!owner || !name) throw new Error(`Invalid GitHub repository address ${address}`);
-    const history = await this.#graphql<{ repository?: { issue?: { userContentEdits?: { nodes?: Array<{ editor?: { login?: unknown } | null }> } | null } | null } | null }>(
-      "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { userContentEdits(last: 1) { nodes { editor { login } } } } } }",
-      { owner, name, number: issueNumber },
-    );
-    const editor = history.repository?.issue?.userContentEdits?.nodes?.[0]?.editor;
-    if (history.repository?.issue?.userContentEdits?.nodes?.length) {
-      body = { login: typeof editor?.login === "string" ? editor.login : null };
+    type BodyEdit = { editedAt?: unknown; editor?: { login?: unknown } | null };
+    type BodyEditConnection = { nodes?: BodyEdit[]; pageInfo?: { hasNextPage?: unknown; endCursor?: unknown } | null };
+    type BodyEditHistory = { repository?: { issue?: { userContentEdits?: BodyEditConnection | null } | null } | null };
+    let cursor: string | null = null;
+    let latest: BodyEdit | null = null;
+    let latestEditedAt = -Infinity;
+    let ambiguousLatest = false;
+    let incompleteHistory = false;
+    do {
+      const history: BodyEditHistory = await this.#graphql<BodyEditHistory>(
+        "query($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { userContentEdits(first: 100, after: $cursor) { nodes { editedAt editor { login } } pageInfo { hasNextPage endCursor } } } } }",
+        { owner, name, number: issueNumber, cursor },
+      );
+      const edits: BodyEditConnection | null | undefined = history.repository?.issue?.userContentEdits;
+      for (const edit of edits?.nodes ?? []) {
+        const editedAt = typeof edit.editedAt === "string" ? Date.parse(edit.editedAt) : Number.NaN;
+        if (!Number.isFinite(editedAt)) {
+          incompleteHistory = true;
+          continue;
+        }
+        if (editedAt > latestEditedAt) {
+          latest = edit;
+          latestEditedAt = editedAt;
+          ambiguousLatest = false;
+        } else if (editedAt === latestEditedAt && edit.editor?.login !== latest?.editor?.login) {
+          ambiguousLatest = true;
+        }
+      }
+      const pageInfo: BodyEditConnection["pageInfo"] | undefined = edits?.pageInfo;
+      if (pageInfo?.hasNextPage === false) break;
+      if (pageInfo?.hasNextPage !== true || typeof pageInfo.endCursor !== "string") {
+        incompleteHistory = true;
+        break;
+      }
+      cursor = pageInfo.endCursor;
+    } while (true);
+    if (latest !== null || ambiguousLatest || incompleteHistory) {
+      const editor = latest?.editor;
+      body = { login: !ambiguousLatest && !incompleteHistory && typeof editor?.login === "string" ? editor.login : null };
     }
     return { enrollment, title, body };
   }
