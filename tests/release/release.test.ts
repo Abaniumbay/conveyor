@@ -3,7 +3,6 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { EXIT } from "../../src/cli/args";
@@ -28,7 +27,8 @@ afterEach(async () => {
 });
 
 async function temporary(): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "conveyor-release-"));
+  // Release readiness starts a Unix control socket under this home; keep it short on nested worktrees.
+  const directory = await mkdtemp("/var/tmp/conveyor-release-");
   directories.push(directory);
   return directory;
 }

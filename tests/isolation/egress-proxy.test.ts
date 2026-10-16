@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
@@ -12,7 +11,7 @@ afterEach(async () => {
 });
 
 async function socketPath(): Promise<string> {
-  const directory = await mkdtemp(path.join(tmpdir(), "egress-"));
+  const directory = await mkdtemp("/tmp/conveyor-egress-");
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   return path.join(directory, "p.sock");
 }

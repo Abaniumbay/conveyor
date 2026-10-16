@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import { runCodex } from "../../src/runner/codex";
@@ -36,9 +35,8 @@ await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outco
 `;
 
 async function run(egress: boolean) {
-  const scratch = path.join(homedir(), ".cache", "conveyor-test");
-  await mkdir(scratch, { recursive: true });
-  const directory = await mkdtemp(path.join(scratch, "cx-"));
+  // /tmp is private in the bwrap sandbox; /var/tmp remains visible and keeps socket names short.
+  const directory = await mkdtemp("/var/tmp/conveyor-cx-");
   directories.push(directory);
   const workspace = path.join(directory, "workspace");
   const artifacts = path.join(directory, "artifacts", "run-1");

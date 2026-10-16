@@ -23,6 +23,12 @@ async function fixture(source: string) {
   return { directory, workspace, artifacts, executable, capture };
 }
 
+async function waitForCapturedPaths(capture: string): Promise<{ tmpdir: string; home: string }> {
+  for (let attempts = 0; !existsSync(capture) && attempts < 100; attempts += 1) await Bun.sleep(10);
+  if (!existsSync(capture)) throw new Error("fake Codex did not record its disposable paths");
+  return JSON.parse(await readFile(capture, "utf8")) as { tmpdir: string; home: string };
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
@@ -248,8 +254,11 @@ describe("runCodexCheck", () => {
       await Bun.write(process.env.CAPTURE!, JSON.stringify({ tmpdir: process.env.TMPDIR, home: process.env.HOME }));
       await Bun.sleep(2_000);
     `);
-    await expect(runCodexCheck({ ...base(slow), timeoutMs: 20 })).rejects.toMatchObject({ kind: "timeout" });
-    const timeoutPaths = JSON.parse(await readFile(slow.capture, "utf8")) as { tmpdir: string; home: string };
+    const timeout = runCodexCheck({ ...base(slow), timeoutMs: 1_000 });
+    const timeoutPaths = await waitForCapturedPaths(slow.capture);
+    expect(existsSync(timeoutPaths.tmpdir)).toBe(true);
+    expect(existsSync(timeoutPaths.home)).toBe(true);
+    await expect(timeout).rejects.toMatchObject({ kind: "timeout" });
     expect(existsSync(timeoutPaths.tmpdir)).toBe(false);
     expect(existsSync(timeoutPaths.home)).toBe(false);
 

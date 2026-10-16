@@ -399,7 +399,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
     expect(await readFile(path.join(scratch, "from-agent"), "utf8")).toBe("temporary\n");
   });
 
-  test.skipIf(bwrapUnavailable !== null)("starts with symlinked run paths and can write its resolved home", async () => {
+  test.skipIf(bwrapUnavailable !== null)("writes its resolved private home during a symlinked run and cleans it afterwards", async () => {
     const root = await mkdtemp(path.join(process.env.HOME ?? tmpdir(), ".conveyor-claude-paths-"));
     directories.push(root);
     const target = path.join(root, "target");
@@ -411,6 +411,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
 set -e
 cat > /dev/null
 echo home > "$HOME/from-agent"
+[ -s "$HOME/from-agent" ]
 echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"success","status":"done","summary":"Done","reason":null,"metrics":{},"artifacts":[]}}'
 `);
     await chmod(fake, 0o755);
@@ -425,6 +426,6 @@ echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","us
     });
 
     expect(result.stageResult).toMatchObject({ outcome: "success", status: "done" });
-    expect(await readFile(path.join(target, "artifacts", "run-1", "home", "from-agent"), "utf8")).toBe("home\n");
+    expect(existsSync(path.join(target, "artifacts", "run-1", "home"))).toBe(false);
   });
 });

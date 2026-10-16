@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
@@ -43,7 +42,6 @@ test("network isolation resolves a symlinked run temporary directory before bind
   }
 });
 
-const SCRATCH = path.join(homedir(), ".cache", "conveyor-test");
 const TOKEN = "per-run-token-1234";
 const PROBES = `
 import net from "node:net";
@@ -126,9 +124,8 @@ async function echo(): Promise<{ server: net.Server; port: number }> {
 
 beforeAll(async () => {
   if (unavailable) return;
-  // Not under /tmp: the sandbox mounts a private /tmp.
-  await mkdir(SCRATCH, { recursive: true });
-  directory = await mkdtemp(path.join(SCRATCH, "sbx-"));
+  // /tmp is private in the sandbox; this short visible base also leaves room for Unix socket names.
+  directory = await mkdtemp("/var/tmp/conveyor-sbx-");
   await writeFile(path.join(directory, "probes.ts"), PROBES);
   await writeFile(path.join(directory, "harness.ts"), HARNESS);
   const model = await echo();
