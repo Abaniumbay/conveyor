@@ -85,6 +85,13 @@ describe("Conveyor MCP server", () => {
     const progress = tools.tools.find((tool) => tool.name === "agent.reportProgress")!;
     expect(progress.description).toContain("progress");
     expect(progress.inputSchema.properties).toHaveProperty("message");
+    const askQuestion = tools.tools.find((tool) => tool.name === "agent.askQuestion")!;
+    expect(askQuestion.description).toContain("`id`");
+    const choices = JSON.stringify(askQuestion.inputSchema.properties.options);
+    expect(choices).toContain('"id"');
+    expect(choices).toContain('"label"');
+    expect(choices).toContain('"description"');
+    expect(choices).not.toContain('"value"');
   });
 
   test("a legacy snake_case grant lists canonical names and legacy names still work in calls", async () => {

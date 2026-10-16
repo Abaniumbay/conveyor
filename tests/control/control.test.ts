@@ -225,6 +225,31 @@ describe("operating through the CLI", () => {
     expect((await cli("questions", "answer", question.id, "us")).code).toBe(EXIT.rejected);
   });
 
+  test("questions with legacy value choices accept their value and label through the CLI", async () => {
+    const { cli, store } = await running();
+    const first = store.openQuestion({
+      issueId: "issue-1", runId: null, prompt: "Which commit?", reason: "choose a baseline",
+      options: [{ label: "Current main commit", value: "current-main" }], allowFreeText: false,
+    });
+    expect((await cli("questions", "list")).out).toContain('"value":"current-main"');
+    expect((await cli("questions", "answer", first.id, "current-main")).code).toBe(EXIT.ok);
+    expect(store.getQuestion(first.id)?.answer).toEqual({ answer: "current-main" });
+
+    const second = store.openQuestion({
+      issueId: "issue-1", runId: null, prompt: "Which commit?", reason: "choose a baseline",
+      options: [{ label: "Current main commit", value: "current-main" }], allowFreeText: false,
+    });
+    expect((await cli("questions", "answer", second.id, "Current main commit")).code).toBe(EXIT.ok);
+    expect(store.getQuestion(second.id)?.answer).toEqual({ answer: "current-main" });
+
+    const invalid = store.openQuestion({
+      issueId: "issue-1", runId: null, prompt: "Which commit?", reason: "choose a baseline",
+      options: [{ label: "Current main commit", value: "current-main" }], allowFreeText: false,
+    });
+    expect((await cli("questions", "answer", invalid.id, "unknown")).code).toBe(EXIT.rejected);
+    expect(store.getQuestion(invalid.id)?.status).toBe("open");
+  });
+
   test("offboarded questions are hidden and cannot be answered", async () => {
     const { cli, store, issues } = await running();
     const question = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Which region?", reason: "two are configured", options: ["eu", "us"] });

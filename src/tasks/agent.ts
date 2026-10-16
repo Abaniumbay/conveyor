@@ -31,7 +31,7 @@ import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
 import { workspaceScratchPath } from "../workspace/manager";
-import { questionConfigurationError } from "../questions";
+import { normalizedQuestionOptions, questionConfigurationError } from "../questions";
 
 type Deps = TaskDeps;
 
@@ -297,10 +297,15 @@ async function runAgent(
 const looseInput = z.looseObject({});
 const progressInput = z.looseObject({ message: z.string() });
 const lenient = <T extends z.ZodType>(schema: T) => schema.optional().catch(undefined);
+const structuredQuestionOption = z.looseObject({
+  id: z.string().optional(),
+  label: z.string(),
+  description: z.string().optional(),
+});
 const askInput = z.object({
   prompt: z.string(),
   reason: z.string(),
-  options: lenient(z.array(z.unknown())),
+  options: lenient(z.array(z.union([z.string(), structuredQuestionOption]))),
   minSelections: lenient(z.number()),
   maxSelections: lenient(z.number()),
   allowFreeText: lenient(z.boolean()),
@@ -336,7 +341,7 @@ const reportProgress = event("agent.reportProgress", "Report a concise user-faci
 const askQuestion: TaskDefinition<unknown, z.output<typeof askInput>, Deps> = {
   name: "agent.askQuestion",
   kind: "tool",
-  description: "Ask the user a structured question. The agent's run then ends with `needs-input` and the stage waits for the answer.",
+  description: "Ask the user a structured question. Choices may be strings or `{ id, label, description? }` objects; `id` is the stored answer identifier and `label` is displayed. Legacy `{ value, label }` choices are normalized to `id`. The agent's run then ends with `needs-input` and the stage waits for the answer.",
   reads: [], writes: [], invalidates: [],
   input: askInput,
   run({ deps, input }) {
@@ -348,7 +353,7 @@ const askQuestion: TaskDefinition<unknown, z.output<typeof askInput>, Deps> = {
       runId: run.id,
       prompt: input!.prompt,
       reason: input!.reason,
-      options: input!.options ?? [],
+      options: normalizedQuestionOptions(input!.options ?? []),
       minSelections: input!.minSelections ?? 1,
       maxSelections: input!.maxSelections ?? 1,
       allowFreeText: input!.allowFreeText === true,

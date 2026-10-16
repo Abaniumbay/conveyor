@@ -480,18 +480,35 @@ describe("agent.run through the service", () => {
     await w.service.close();
   });
 
-  test("normalizes a choice-label conversation reply before recording it and rejects invalid replies", async () => {
+  test("normalizes a value-backed choice-label conversation reply before recording it and rejects invalid replies", async () => {
     const w = await setup({
-      questionOptions: [{ id: " postgres ", label: " PostgreSQL " }],
+      questionOptions: [{ value: " postgres ", label: " PostgreSQL " }],
       allowFreeText: false,
     });
     await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
     await expect(w.service.postIssueMessage("issue", "not one of the choices", "operator")).rejects.toThrow("Choose one of the available answers.");
     expect(w.store.listConversationMessages("issue").some((entry) => entry.actorType === "user")).toBe(false);
 
     await w.service.postIssueMessage("issue", "postgresql", "operator");
-    expect(w.store.getQuestion(w.store.listOpenQuestions()[0]?.id ?? "missing")).toBeNull();
+    expect(w.store.getQuestion(question.id)?.answer).toEqual({ answer: "postgres" });
     expect(w.comments[0]).toContain("postgres");
+    await w.service.close();
+  });
+
+  test("projects value-backed choices to the dashboard and stores their canonical web answer", async () => {
+    const w = await setup({
+      questionOptions: [{ value: "current-main", label: "Current main commit" }],
+      allowFreeText: false,
+    });
+    await w.execute();
+    const question = w.store.listOpenQuestions()[0]!;
+    expect(w.service.dashboard().questions).toMatchObject([{
+      id: question.id,
+      options: [{ id: "current-main", label: "Current main commit" }],
+    }]);
+    await w.service.answerQuestion(question.id, "Current main commit");
+    expect(w.store.getQuestion(question.id)?.answer).toEqual({ answer: "current-main" });
     await w.service.close();
   });
 
