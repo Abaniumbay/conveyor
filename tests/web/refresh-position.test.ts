@@ -140,9 +140,24 @@ function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   });
 }
 
-async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
+async function armReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
   await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
-  await page.waitForFunction(() => !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh"));
+}
+
+async function waitForArmedReplacement(
+  page: Awaited<ReturnType<Browser["newPage"]>>,
+  changedCard?: { id: string; present: boolean },
+) {
+  await page.waitForFunction((expected) => {
+    const replaced = !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh");
+    if (!replaced || !expected) return replaced;
+    return (document.querySelector(`article.issue[data-issue-id="${expected.id}"]`) !== null) === expected.present;
+  }, changedCard);
+}
+
+async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
+  await armReplacement(page);
+  await waitForArmedReplacement(page);
 }
 
 /** A dashboard server whose page, revision and response delay the test controls. */
@@ -326,7 +341,7 @@ describe("dashboard live refresh position", () => {
     const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => responseDelayMs });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       const baseUrl = `http://127.0.0.1:${server.port}`;
       await page.goto(`${baseUrl}/login`);
       await page.locator('input[name="username"]').fill("operator");
@@ -341,26 +356,28 @@ describe("dashboard live refresh position", () => {
       expect(before.scrollX).toBe(0);
 
       const inserted = Array.from({ length: 5 }, (_, index) => issue(`inserted-${index}`, index + 60));
+      await armReplacement(page);
       currentDashboard = dashboard(
         "revision-2",
         [...original, ...inserted, target, ...below],
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-2";
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page, { id: "inserted-0", present: true });
       const afterInsert = await cardPositions(page);
       expect(Math.abs(afterInsert.cardTop! - before.cardTop!)).toBeLessThanOrEqual(24);
       expect(Math.abs(afterInsert.stageLeft! - before.stageLeft!)).toBeLessThanOrEqual(24);
       expect(afterInsert.path).toBe(before.path);
 
       const priorOffsets = await cardPositions(page);
+      await armReplacement(page);
       currentDashboard = dashboard(
         "revision-3",
         [...original, ...inserted, ...below],
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-3";
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page, { id: "target", present: false });
       const afterRemoval = await page.evaluate(() => {
         const board = document.querySelector<HTMLElement>(".board");
         return {
