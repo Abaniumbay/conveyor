@@ -1598,6 +1598,7 @@ describe("ConveyorService dashboard", () => {
       state: string;
       enrolled: boolean;
       pullRequest: "merged" | "open" | null;
+      projectedStage?: string;
     }) => {
       const warning = `Action required for ${input.id}`;
       store.upsertIssue({
@@ -1615,7 +1616,7 @@ describe("ConveyorService dashboard", () => {
         ],
         sourceUpdatedAt: "2026-10-01T00:00:00Z",
       });
-      store.setIssueProjection(input.id, { stage: "deploy", state: input.state, warning });
+      store.setIssueProjection(input.id, { stage: input.projectedStage ?? "deploy", state: input.state, warning });
       store.setStageState({ issueId: input.id, stageId: "deploy", status: input.state, feedbackCycle: 0, configHash: config.hash });
       if (!input.enrolled) return;
       store.activateEnrollment(input.id);
@@ -1653,7 +1654,23 @@ describe("ConveyorService dashboard", () => {
     add({ id: "open-stopped", number: 6, sourceState: "open", state: "blocked", enrolled: true, pullRequest: null });
     add({ id: "closed-without-pr", number: 7, sourceState: "closed", state: "blocked", enrolled: true, pullRequest: null });
     add({ id: "closed-without-merge", number: 8, sourceState: "closed", state: "blocked", enrolled: true, pullRequest: "open" });
-    add({ id: "closed-without-workflow", number: 9, sourceState: "closed", state: "done", enrolled: true, pullRequest: "merged" });
+    add({
+      id: "closed-without-workflow",
+      number: 9,
+      sourceState: "closed",
+      state: "blocked",
+      enrolled: true,
+      pullRequest: "merged",
+      projectedStage: "retired",
+    });
+    store.openQuestion({
+      issueId: "closed-without-workflow",
+      runId: null,
+      prompt: "Should this retired work run?",
+      reason: "This must not be actionable outside the configured workflow",
+      options: [],
+      allowFreeText: true,
+    });
     add({ id: "paused", number: 10, sourceState: "closed", state: "blocked", enrolled: false, pullRequest: null });
     add({ id: "offboarded", number: 11, sourceState: "closed", state: "offboarded", enrolled: true, pullRequest: "merged" });
 
@@ -1672,10 +1689,10 @@ describe("ConveyorService dashboard", () => {
         : `Action required for closed-${state}`,
       url: `https://example.com/issues/${index + 1}`,
     }))));
-    expect(dashboard.needsYou.map((issue) => issue.id)).toEqual(expect.arrayContaining(["open-stopped"]));
-    expect(dashboard.needsYou.map((issue) => issue.id)).not.toEqual(expect.arrayContaining([
-      "closed-without-pr", "closed-without-merge", "closed-without-workflow", "paused", "offboarded",
-    ]));
+    expect(dashboard.needsYou.map((issue) => issue.id).sort()).toEqual([
+      ...stoppedStates.map((state) => `closed-${state}`),
+      "open-stopped",
+    ].sort());
     expect(dashboard.questions).toEqual([expect.objectContaining({ issueId: "closed-needs-input" })]);
     expect(dashboard.needsYou.filter((issue) => issue.id === "closed-needs-input")).toHaveLength(1);
     expect(filtered.needsYou).toEqual(dashboard.needsYou);
