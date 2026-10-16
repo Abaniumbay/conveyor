@@ -3085,10 +3085,12 @@ export class ConveyorService {
         issues: (complete ? columnIssues : columnIssues.slice(offset, offset + DASHBOARD_PAGE_SIZE)).map(issueCard),
       };
     };
-    // Needs you lists only what the owner can act on now: a closed or paused (unenrolled) item's
-    // question or stop is kept, and shows again when the item is reopened or resumed.
+    // A source-closed item remains actionable only when its correlated Conveyor PR merged and
+    // it still has configured workflow work after that merge.
     const awaitsOwner = (issue: StoredIssue): boolean =>
-      issue.sourceState !== "closed" && issue.labels.includes(this.config.labels.enrollment);
+      issue.labels.includes(this.config.labels.enrollment) &&
+      (issue.sourceState !== "closed" ||
+        (remainsInWorkflow(issue) && this.store.hasMergedPullRequest(issue.id)));
     const questions: QuestionViewModel[] = openQuestions.flatMap((question) => {
       const issue = byId.get(question.issueId);
       if (!issue || !awaitsOwner(issue)) return [];

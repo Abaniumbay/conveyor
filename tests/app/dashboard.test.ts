@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
+import { renderDashboard } from "../../src/web/render";
+import { configSchema } from "../../src/config/schema";
 import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
@@ -1537,6 +1539,150 @@ describe("ConveyorService dashboard", () => {
     expect(store.getIssue("stopped-needs-input")).toMatchObject({
       labels: ["conveyor"], projectedStage: "refinement", projectedState: "needs-input",
     });
+    store.close();
+  });
+
+  test("keeps closed post-merge stopped work in Needs you", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-post-merge-attention-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      ...configSchema.parse({
+        settings: {
+          database: path.join(root, "conveyor.sqlite"),
+          logs: path.join(root, "logs"),
+          workspaces: path.join(root, "workspaces"),
+          artifacts: path.join(root, "artifacts"),
+        },
+        web: {},
+        sources: {},
+        agents: {},
+        labels: {
+          enrollment: "conveyor",
+          stageTemplate: "conveyor:{stage}",
+          states: {
+            blocked: "conveyor:blocked",
+            error: "conveyor:error",
+            "needs-input": "conveyor:needs-input",
+            "needs-intervention": "conveyor:needs-intervention",
+            rejected: "conveyor:rejected",
+            done: "conveyor:done",
+          },
+          metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+        },
+        pipelines: {
+          default: {
+            successStatuses: ["done"],
+            failureStatuses: ["error"],
+            stages: [
+              { id: "implementation", run: { agent: "implementer" }, concurrency: 1 },
+              { id: "merge", run: { agent: "merger" }, concurrency: 1 },
+              { id: "deploy", run: { agent: "deployer" }, concurrency: 1 },
+            ],
+          },
+        },
+        repositories: { repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default" } },
+      }),
+      hash: "config-hash",
+      root,
+      plans: [],
+    } satisfies ConveyorConfig;
+    store.upsertRepository({
+      id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash,
+    });
+
+    const add = (input: {
+      id: string;
+      number: number;
+      sourceState: "open" | "closed";
+      state: string;
+      enrolled: boolean;
+      pullRequest: "merged" | "open" | null;
+    }) => {
+      const warning = `Action required for ${input.id}`;
+      store.upsertIssue({
+        id: input.id,
+        repositoryId: "repo",
+        sourceNumber: input.number,
+        sourceUrl: `https://example.com/issues/${input.number}`,
+        title: input.id,
+        body: "",
+        sourceState: input.sourceState,
+        labels: [
+          ...(input.enrolled ? ["conveyor"] : []),
+          "conveyor:deploy",
+          `conveyor:${input.state}`,
+        ],
+        sourceUpdatedAt: "2026-10-01T00:00:00Z",
+      });
+      store.setIssueProjection(input.id, { stage: "deploy", state: input.state, warning });
+      store.setStageState({ issueId: input.id, stageId: "deploy", status: input.state, feedbackCycle: 0, configHash: config.hash });
+      if (!input.enrolled) return;
+      store.activateEnrollment(input.id);
+      if (input.pullRequest) {
+        store.upsertPullRequest({
+          issueId: input.id,
+          id: `pr-${input.id}`,
+          number: 100 + input.number,
+          url: `https://example.com/pulls/${input.number}`,
+          state: input.pullRequest,
+          ...(input.pullRequest === "merged" ? { mergedAt: "2026-10-01T00:00:00Z" } : {}),
+        });
+      }
+    };
+
+    const stoppedStates = ["needs-intervention", "blocked", "error", "rejected", "needs-input"] as const;
+    for (const [index, state] of stoppedStates.entries()) {
+      add({
+        id: `closed-${state}`,
+        number: index + 1,
+        sourceState: "closed",
+        state,
+        enrolled: true,
+        pullRequest: "merged",
+      });
+    }
+    store.openQuestion({
+      issueId: "closed-needs-input",
+      runId: null,
+      prompt: "Which deployment target?",
+      reason: "A deployment decision is needed",
+      options: [],
+      allowFreeText: true,
+    });
+    add({ id: "open-stopped", number: 6, sourceState: "open", state: "blocked", enrolled: true, pullRequest: null });
+    add({ id: "closed-without-pr", number: 7, sourceState: "closed", state: "blocked", enrolled: true, pullRequest: null });
+    add({ id: "closed-without-merge", number: 8, sourceState: "closed", state: "blocked", enrolled: true, pullRequest: "open" });
+    add({ id: "closed-without-workflow", number: 9, sourceState: "closed", state: "done", enrolled: true, pullRequest: "merged" });
+    add({ id: "paused", number: 10, sourceState: "closed", state: "blocked", enrolled: false, pullRequest: null });
+    add({ id: "offboarded", number: 11, sourceState: "closed", state: "offboarded", enrolled: true, pullRequest: "merged" });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const dashboard = service.dashboard("csrf");
+    const filtered = service.dashboard("csrf", {
+      view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null,
+      repositoryIds: [], q: "not on this board", state: "running", recentTypes: [], recentCursor: null,
+    });
+
+    expect(dashboard.needsYou).toEqual(expect.arrayContaining(stoppedStates.map((state, index) => expect.objectContaining({
+      id: `closed-${state}`,
+      state,
+      reason: state === "needs-input"
+        ? "A deployment decision is needed. Answer needed: Which deployment target?"
+        : `Action required for closed-${state}`,
+      url: `https://example.com/issues/${index + 1}`,
+    }))));
+    expect(dashboard.needsYou.map((issue) => issue.id)).toEqual(expect.arrayContaining(["open-stopped"]));
+    expect(dashboard.needsYou.map((issue) => issue.id)).not.toEqual(expect.arrayContaining([
+      "closed-without-pr", "closed-without-merge", "closed-without-workflow", "paused", "offboarded",
+    ]));
+    expect(dashboard.questions).toEqual([expect.objectContaining({ issueId: "closed-needs-input" })]);
+    expect(dashboard.needsYou.filter((issue) => issue.id === "closed-needs-input")).toHaveLength(1);
+    expect(filtered.needsYou).toEqual(dashboard.needsYou);
+    expect(filtered.questions).toEqual(dashboard.questions);
+    const html = renderDashboard(dashboard);
+    expect(html).toContain('id="needs-you-heading">Needs you <span>(6)</span>');
+    expect(html).toContain('<a class="needs-you-action" href="/issues/repo/1">Open</a>');
     store.close();
   });
 

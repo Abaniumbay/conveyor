@@ -33,6 +33,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Enrollment labels and agent-visible issue text now require trusted GitHub provenance. Untrusted or unverifiable changes remain out of agent context and appear as board warnings instead.
 
+- **Needs you** now retains stopped post-merge work when its merged Conveyor pull request has
+  closed the source issue, so operators can act on its recorded reason.
 - A stage fenced while it is running now releases its stale worker state immediately, so the board
   and scheduler do not wait for a service restart before the item can continue.
 - Local and CI checks now keep Bubblewrap sandbox coverage visible while avoiding cleanup, socket-path, and shared-host timing flakes.
