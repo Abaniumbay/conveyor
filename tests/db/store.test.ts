@@ -157,6 +157,8 @@ describe("ConveyorStore", () => {
     expect(beforeBoundary).toEqual([]);
     expect([...firstPage, ...beforeBoundary]).toHaveLength(3);
     store.close();
+  });
+
   test("persists and independently replaces criterion test evidence", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-criterion-evidence-"));
     temporaryDirectories.push(directory);
