@@ -76,6 +76,14 @@ function mergeable(mergeState: string | null): boolean | null {
 export class GitHubCodeHost implements CodeHost {
   constructor(private readonly github: GitHubAdapter, private readonly git: GitRunner = runGit) {}
 
+  readFileAtRevision(input: { address: string; path: string; headSha: string }): Promise<string | null> {
+    return this.github.fileSource(input.address, input.path, input.headSha);
+  }
+
+  sourceFileUrl(input: { address: string; path: string; headSha: string; line: number }): string {
+    return `https://github.com/${input.address}/blob/${input.headSha}/${input.path.split("/").map(encodeURIComponent).join("/")}#L${input.line}`;
+  }
+
   async pushBranch(input: {
     address: string;
     workspace: { path: string; branch: string };

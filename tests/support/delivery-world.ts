@@ -80,6 +80,8 @@ function fakeHost(): FakeHost {
     },
     async ensureChange() { return change(); },
     async getChange() { return change(); },
+    async readFileAtRevision() { return "feature\n"; },
+    sourceFileUrl(input) { return `https://example.com/${input.headSha}/${input.path}#L${input.line}`; },
     async mergeChange(input) {
       host.merges.push({ id: input.id, ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}) });
       host.state = "merged";
@@ -219,6 +221,29 @@ export async function deliveryWorld(options: { requireDescription?: boolean } = 
           await git(input.workspace, "commit", "-m", "Add the feature");
           const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
           await git(input.workspace, "push", "--set-upstream", "origin", branch);
+          host.headSha = await git(input.workspace, "rev-parse", "HEAD");
+          const run = store.listRunsForStage("issue", "implementation", "producer")[0];
+          if (!run) throw new Error("the implementation tool call requires its active run");
+          const actor = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };
+          await dispatchTool(
+            {
+              name: "change.recordCriterionTests",
+              input: { headSha: host.headSha, criteria: [{ criterionId: "works", tests: [{ name: "feature", file: "feature.txt" }] }] },
+              actor,
+              grant: { runId: run.id, stageId: "implementation", issueScoped: true, actor, tasks: new Set(["change.recordCriterionTests"]) },
+            },
+            {
+              registry: createTaskRegistry(),
+              deps: () => ({
+                store, config, items: github as never,
+                repository: { id: "conveyor", address: "owner/conveyor", folder, baseBranch: "main" },
+                issueId: "issue", sourceGuidance: "", git: {} as never, workspaces: {} as never,
+                codeHost: host,
+              }),
+              liveHeadSha: async () => host.headSha,
+              store,
+            },
+          );
         } else if (options.requireDescription) {
           // kaveh: follows the criterion's request through the granted agent tool, not a human body edit.
           const run = store.listRunsForStage("issue", "implementation", "producer")[0];

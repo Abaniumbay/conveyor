@@ -42,7 +42,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(24);
+    expect(store.schemaVersion()).toBe(25);
 
     store.close();
   });
@@ -157,6 +157,27 @@ describe("ConveyorStore", () => {
     expect(beforeBoundary).toEqual([]);
     expect([...firstPage, ...beforeBoundary]).toHaveLength(3);
     store.close();
+  test("persists and independently replaces criterion test evidence", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-criterion-evidence-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    const store = await ConveyorStore.open(database);
+    store.upsertRepository({ id: "repo", configName: "sample", source: "github", address: "owner/sample", folder: "workspace/sample", configHash: "hash" });
+    store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.com/1", title: "Evidence", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00.000Z" });
+    store.replaceCriterionTestEvidence("issue", [
+      { criterionId: "a", manual: false, tests: [{ name: "keeps A", file: "tests/a.test.ts", line: 3, description: "A behavior" }], recordedHead: "record-a", sourceLinkHead: "record-a", recordedAt: "2026-01-01T00:00:00.000Z" },
+      { criterionId: "m", manual: true, tests: [], recordedHead: "record-m", sourceLinkHead: "record-m", recordedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    store.replaceCriterionTestEvidence("issue", [{ criterionId: "a", manual: false, tests: [{ name: "replaces A", file: "tests/a.test.ts" }], recordedHead: "record-b", sourceLinkHead: "record-b", recordedAt: "2026-01-02T00:00:00.000Z" }]);
+    store.refreshCriterionTestEvidence("issue", "verified", new Map([["a", [8]]]));
+    store.close();
+
+    const restarted = await ConveyorStore.open(database);
+    expect(restarted.criterionTestEvidence("issue")).toEqual([
+      { criterionId: "a", manual: false, tests: [{ name: "replaces A", file: "tests/a.test.ts", line: 8 }], recordedHead: "record-b", sourceLinkHead: "verified", recordedAt: "2026-01-02T00:00:00.000Z" },
+      { criterionId: "m", manual: true, tests: [], recordedHead: "record-m", sourceLinkHead: "record-m", recordedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    restarted.close();
   });
 
   test("seeds one superuser once and persists accounts, changed credentials, avatars, and session versions", async () => {
@@ -400,7 +421,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);");
+    store.sqlite().exec("DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25);");
     store.close();
 
     store = await ConveyorStore.open(database);

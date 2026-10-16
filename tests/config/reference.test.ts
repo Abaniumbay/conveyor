@@ -119,7 +119,7 @@ describe("reference configuration", () => {
     const { actions, gate, reviewActions, review } = gates("service");
     expect(actions).toContain("startCi");
     expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
-    expect(reviewActions).toEqual(["ciSettled", "review"]);
+    expect(reviewActions).toEqual(["ciSettled", "criterionTests", "review"]);
     expect(review).toContain("ciHead");
   });
 

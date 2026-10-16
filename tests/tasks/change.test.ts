@@ -33,6 +33,7 @@ function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
   merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
   artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean; descriptionFails?: boolean;
+  files?: Record<string, string>;
 } = {}) {
   let body = state.body ?? "";
   const calls: Array<[string, unknown]> = [];
@@ -40,6 +41,8 @@ function hostFake(state: {
     async pushBranch(input) { calls.push(["push", input]); return state.push ?? { pushed: true }; },
     async ensureChange(input) { calls.push(["ensure", input]); return state.change ?? request(); },
     async getChange(input) { calls.push(["get", input]); return { ...(state.change ?? request()), body }; },
+    async readFileAtRevision(input) { return state.files?.[input.path] ?? null; },
+    sourceFileUrl(input) { return `https://example.com/${input.headSha}/${input.path}#L${input.line}`; },
     async setChangeChecklist(input) {
       calls.push(["checklist", input]);
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
@@ -302,8 +305,66 @@ describe("change tools", () => {
   test("change.get returns the live delivery payload", async () => {
     const w = await world();
     const result = await run("change.get", { context: {}, deps: w.deps, input: {} }) as Pass;
-    expect(result.output).toEqual({ change: { n: 5 }, pullRequest: null, checks: [] });
+    expect(result.output).toEqual({ change: { n: 5 }, pullRequest: null, checks: [], criteria: [] });
     expect(registry.require("change.get").kind).toBe("tool");
+  });
+
+  test("recordCriterionTests replaces only supplied evidence and projects it into the checklist", async () => {
+    const w = await world({ body: PR_BODY }, true, BODY);
+    const result = await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", line: 4, description: "covers behavior" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store: w.store },
+    );
+    expect(result).toEqual({ headSha: "head1" });
+    expect(w.store.criterionTestEvidence("i1")).toMatchObject([{ criterionId: "a", manual: false, recordedHead: "head1", sourceLinkHead: "head1", tests: [{ name: "does work", file: "tests/a.test.ts", line: 4, description: "covers behavior" }] }]);
+    expect(lastChecklist(w)).toContain("tests: does work ([tests/a.test.ts:4](https://example.com/head1/tests/a.test.ts#L4) — covers behavior)");
+    const reviewerView = await run("change.get", { context: {}, deps: w.deps, input: {} }) as Pass;
+    expect((reviewerView.output as { criteria: Array<{ id: string }> }).criteria.find((criterion) => criterion.id === "a")).toMatchObject({ id: "a", tests: [{ name: "does work", file: "tests/a.test.ts", line: 4, description: "covers behavior" }], recordedHead: "head1", sourceLinkHead: "head1" });
+
+    const atomic = await run("change.recordCriterionTests", { context: {}, deps: w.deps, input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "replacement", file: "tests/a.test.ts" }] }, { criterionId: "unknown", tests: [{ name: "other", file: "tests/b.test.ts" }] }] } }) as Fail;
+    expect(atomic.status).toBe("fail");
+    expect(w.store.criterionTestEvidence("i1")).toMatchObject([{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }]);
+  });
+
+  test("criterionTestsVerified routes unlinked, stale, and renamed evidence to implementation and refreshes a moved line", async () => {
+    const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
+    const unlinked = await world({ body: PR_BODY }, true, BODY);
+    const missing = await run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: unlinked.deps }) as Fail;
+    expect(missing.status).toBe("fail");
+    expect(missing.message).toContain("a: no tests linked");
+    expect(missing.route).toEqual({ return: "implementation" });
+
+    const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": "\n\n\nit(\"does work\", () => {})" } }, true, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts", line: 1 }] }, { criterionId: "m", manual: true }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store: w.store },
+    );
+    const passed = await run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: w.deps });
+    expect(passed.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(4);
+    expect(w.store.criterionTestEvidence("i1")[0]!.sourceLinkHead).toBe("head1");
+    expect(lastChecklist(w)).toContain("[tests/a.test.ts:4](https://example.com/head1/tests/a.test.ts#L4)");
+
+    const absent = await world({ body: PR_BODY }, true, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/missing.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => absent.deps, liveHeadSha: async () => "head1", store: absent.store },
+    );
+    const missingFile = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: absent.deps }) as Fail;
+    expect(missingFile.message).toContain("a: file tests/missing.test.ts is missing at head1");
+
+    const stale = await world({ body: PR_BODY, files: { "tests/a.test.ts": "it(\"renamed test\", () => {})" } }, true, BODY);
+    await dispatchTool(
+      { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => stale.deps, liveHeadSha: async () => "head1", store: stale.store },
+    );
+    const renamed = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: stale.deps }) as Fail;
+    expect(renamed.message).toContain('a: test "does work" is not in tests/a.test.ts');
+
+    const moved = await world({ body: PR_BODY, change: request({ headSha: "head2" }) }, true, BODY);
+    const changedHead = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: moved.deps }) as Fail;
+    expect(changedHead.message).toContain("Change head moved from head1 to head2");
+    expect(changedHead.route).toEqual({ return: "implementation" });
   });
 
   const dispatchMetadata = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, tasks = new Set(["change.setMetadata"]), store = w.store) =>
@@ -405,14 +466,17 @@ describe("criterion approvals", () => {
     expect(result.status).toBe("pass");
     expect(lastChecklist(w)).toBe([
       "- [x] It works <!-- conveyor:criterion:a -->",
+      "  no tests linked",
       "- [ ] It is fast <!-- conveyor:criterion:b -->",
+      "  no tests linked",
       "- [ ] [Manual] Looks right <!-- conveyor:criterion:m -->",
+      "  no tests linked",
     ].join("\n"));
     const loaded = (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
-    expect(loaded.criteria).toEqual([
-      { id: "a", projectedChecked: true, approval: { reviewer: "reviewer-1", headSha: "head1", checkedAt: expect.any(String) } },
-      { id: "b", projectedChecked: false, approval: null },
-      { id: "m", projectedChecked: false, approval: null },
+    expect(loaded.criteria).toMatchObject([
+      { id: "a", manual: false, criterionManual: false, tests: [], recordedHead: null, sourceLinkHead: null, projectedChecked: true, approval: { reviewer: "reviewer-1", headSha: "head1", checkedAt: expect.any(String) } },
+      { id: "b", manual: false, criterionManual: false, tests: [], recordedHead: null, sourceLinkHead: null, projectedChecked: false, approval: null },
+      { id: "m", manual: false, criterionManual: true, tests: [], recordedHead: null, sourceLinkHead: null, projectedChecked: false, approval: null },
     ]);
     expect(loaded.projectedCriterionIds).toEqual(["a", "b", "m"]);
     const def = registry.require("change.checkCriterion");
