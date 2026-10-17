@@ -68,7 +68,7 @@ export class ManualGateApprovals {
         `INSERT INTO manual_gate_approvals(issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id, stage_id, gate_id, stage_epoch, attempt) DO NOTHING`,
       ).run(input.issueId, input.stageId, input.gateId, input.stageEpoch, input.attempt, input.accountId, input.accountName, input.approvedAt);
-      if (result.changes > 0) eventLog(this.database).append("gate.approved", { stageId: input.stageId, gateId: input.gateId }, { issueId: input.issueId });
+      if (result.changes > 0) eventLog(this.database).append("gate.approved", { stageId: input.stageId, gateId: input.gateId, stageEpoch: input.stageEpoch, attempt: input.attempt }, { issueId: input.issueId });
       return result.changes > 0;
     })();
   }

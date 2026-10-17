@@ -139,6 +139,27 @@ event sinks can react to it and the change can be traced.
 5. Run `bun run docs:events` and commit `docs/events.md`. `tests/events/docs.test.ts` fails
    otherwise.
 
+### Action (command)
+
+Every action a person or the CLI takes is a command. The dashboard and the control socket never call
+a service mutation directly.
+
+1. Declare the command in `src/commands/registry.ts`: the role it needs (`user` or `superuser`),
+   a description and a strict zod input. Add its result type to `CommandResults` in
+   `src/commands/bus.ts`.
+2. Register its handler in `ConveyorService.registerCommands` (or, for something only the process
+   owning the control socket can do, in `src/control/server.ts`). A handler that changes a
+   specific account checks that the actor owns it or is a superuser.
+3. The route or control endpoint parses, authenticates and checks CSRF, then calls `dispatch` with
+   the signed-in actor (`actorOf(session)`) or the CLI actor. Errors the bus raises
+   (`CommandInputError`, `CommandForbiddenError`, `CommandUnavailableError`) map to 400, 403 and
+   503; a handler's own error keeps the route's existing status.
+4. A handler never calls `schedule()` or wakes a parked item to react to its own change: it records
+   the change, and a subscriber in `ConveyorService.subscribeToEvents` reacts. A change that fences
+   in-flight work (`onStageChange`) stays in the handler, synchronous.
+5. Add a test that drives the route and reads `command.accepted` from the log
+   (`tests/web/server.test.ts`, "dashboard commands").
+
 ### Task (gate check, act or agent tool)
 
 1. Define it in the right group file in `src/tasks/` with `defineGroup`. Declare `kind`
@@ -168,8 +189,8 @@ event sinks can react to it and the change can be traced.
 1. Data for the page is built in `src/app/service.ts` into the view models in `src/web/types.ts`.
    `src/web/render.tsx` only renders; keep logic out of it.
 2. Routes and JSON endpoints live in `src/web/server.ts`. A route that changes state requires a
-   signed-in session and the CSRF token; a superuser-only action checks the role on the server,
-   not only by hiding a button.
+   signed-in session and the CSRF token, and sends a command (see above); a superuser-only action
+   checks the role on the server, not only by hiding a button.
 3. `src/web/client.ts` exports browser code inside a `String.raw` template (`dashboardClient`).
    Functions spliced in with `.toString()` must be self-contained: no imports, no references to
    module-level names. Inside the template, a backtick or `${` must be escaped.

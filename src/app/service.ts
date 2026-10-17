@@ -58,7 +58,9 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
+import { CommandBus, CommandForbiddenError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
+import type { EventType } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
@@ -158,6 +160,12 @@ const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
 const FULL_ISSUE_LISTING_MS = 60 * 60_000;
+/** Changes that can make an item runnable; the scheduler runs after them. */
+// Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
+// person's action makes that can let an item run.
+const SCHEDULING_EVENTS: readonly EventType[] = [
+  "task.woken", "item.requeued", "gate.requirementChanged", "command.accepted",
+];
 /** How often the GitHub request counts are logged, and the window they cover. */
 const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
 /** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
@@ -355,6 +363,9 @@ export class ConveyorService {
   readonly githubCalls: GitHubCallMeter;
   /** Every committed change, published in order after its transaction; subscribers react to them. */
   readonly events: EventBus;
+  /** The only way the dashboard and the CLI change anything. */
+  readonly commands: CommandBus;
+  #scheduleRequested = false;
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
@@ -375,6 +386,9 @@ export class ConveyorService {
     this.githubCalls = implementations.githubCalls ?? new GitHubCallMeter();
     this.events = new EventBus();
     store.events().attach(this.events);
+    this.commands = new CommandBus(store.events());
+    this.registerCommands();
+    this.subscribeToEvents();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
@@ -924,6 +938,107 @@ export class ConveyorService {
     return woken ? "wait" : "fallback";
   }
 
+  /** Registers the handler of every service command; release and restart are registered by the control socket. */
+  private registerCommands(): void {
+    const own = (actor: CommandActor, accountId: string) => {
+      if (actor.role !== "superuser" && actor.id !== accountId) throw new CommandForbiddenError("an account may change only itself");
+    };
+    const account = (actor: CommandActor) => ({ id: actor.id ?? actor.name, username: actor.name });
+    const commands = this.commands;
+    commands.handle("item.retry", (input, actor) => this.retryIssue(input.issueId, input.note, actor.name));
+    commands.handle("item.pause", (input, actor) => this.pauseIssue(input.issueId, actor.name));
+    commands.handle("item.resume", (input, actor) => this.resumeIssue(input.issueId, actor.name));
+    commands.handle("item.postMessage", (input, actor) => this.postIssueMessage(input.issueId, input.message, actor.name));
+    commands.handle("question.answer", (input, actor) => this.answerQuestion(input.questionId, input.answer, actor.name));
+    commands.handle("gate.approve", (input, actor) => this.approveManualGate(input.issueId, input.stageId, input.gateId, account(actor)));
+    commands.handle("gate.setRequirement", (input) => this.setManualGateRequirement(input.issueId, input.stageId, input.gateId, input.required));
+    commands.handle("finding.dismiss", (input, actor) => this.dismissFinding(input.issueId, input.findingId, input.reason, actor.name));
+    commands.handle("backlog.reorder", (input) => this.reorderBacklog(input.issueId, input.direction));
+    commands.handle("backlog.move", (input) => this.moveBacklogIssue(input.issueId, input.beforeIssueId));
+    commands.handle("steering.start", (input) => this.startSteering(input.prompt));
+    commands.handle("account.create", (input) => {
+      const created = this.store.createDashboardUser(input.username, input.passwordHash);
+      return { id: created.id, username: created.username, role: created.role, avatar: created.avatar };
+    });
+    commands.handle("account.setPassword", (input, actor) => {
+      own(actor, input.accountId);
+      this.store.changeDashboardPassword(input.accountId, input.passwordHash);
+    });
+    commands.handle("account.delete", (input) => this.store.deleteDashboardAccount(input.accountId));
+    commands.handle("account.setAvatar", (input, actor) => {
+      own(actor, input.accountId);
+      this.store.changeDashboardAvatar(input.accountId, input.avatar);
+    });
+    commands.handle("notifications.updateSettings", (input, actor) => {
+      own(actor, input.accountId);
+      this.store.setPushPreferences(input.accountId, input.preferences);
+    });
+    commands.handle("notifications.subscribe", (input, actor) => {
+      own(actor, input.accountId);
+      this.store.putPushSubscription(input.accountId, input.endpoint, input.keys);
+    });
+    commands.handle("notifications.unsubscribe", (input, actor) => {
+      own(actor, input.accountId);
+      this.store.deletePushSubscription(input.accountId, input.endpoint);
+    });
+    commands.handle("admission.drain", (input, actor) => this.drain(input.reason || `requested by ${actor.name}`));
+    commands.handle("admission.resume", () => this.resumeAdmission());
+    commands.handle("service.cleanup", (input) => {
+      const configured = this.config.settings.retention;
+      return this.applyRetention({
+        dryRun: input.dryRun,
+        policy: { runHistoryMs: input.runHistoryMs ?? configured.runHistoryMs, artifactsMs: input.artifactsMs ?? configured.artifactsMs },
+      });
+    });
+  }
+
+  /** Reactions to committed changes: waking parked items and scheduling. */
+  private subscribeToEvents(): void {
+    // A parked exit gate re-evaluates as soon as a person changes what it waits on.
+    const wakeParkedGate = (issueId: string | null, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
+      if (!issueId) return;
+      const cursor = this.store.executions().getCursor(issueId);
+      if (cursor?.state !== "pending" || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
+      // An approval belongs to one visit of the gate; a later visit waits for its own.
+      if (visit && (cursor.stageEpoch !== visit.stageEpoch || cursor.attempt !== visit.attempt)) return;
+      this.wakeParked(issueId);
+    };
+    this.events.subscribe("gate.approved", "wake the approved gate", (event) =>
+      wakeParkedGate(event.issueId, event.payload.gateId, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
+    this.events.subscribe("gate.requirementChanged", "wake the changed gate", (event) => wakeParkedGate(event.issueId, event.payload.gateId));
+    this.events.subscribe("finding.changed", "wake the review gate", (event) => {
+      if (event.payload.change === "dismissed") wakeParkedGate(event.issueId, null);
+    });
+    for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
+  }
+
+  /** Schedules once after the current burst of events instead of once per event. */
+  private requestSchedule(): void {
+    if (this.#scheduleRequested) return;
+    this.#scheduleRequested = true;
+    queueMicrotask(() => this.flushSchedule());
+  }
+
+  private flushSchedule(): void {
+    if (!this.#scheduleRequested) return;
+    this.#scheduleRequested = false;
+    // It runs after the event that asked for it, so nothing awaits it to report a failure.
+    try {
+      this.schedule();
+    } catch (error) {
+      log.error("Scheduling after an event failed", {}, error);
+    }
+  }
+
+  /**
+   * Resolves once every committed event has been published and the scheduling it asked for ran:
+   * a command that reports whether its item started reads that only after this.
+   */
+  async eventsSettled(): Promise<void> {
+    await this.store.events().settled();
+    this.flushSchedule();
+  }
+
   /** Makes a parked item due now and remembers that an event, not its wake-up time, woke it. */
   private wakeParked(issueId: string): boolean {
     const woken = this.store.executions().wakeNow(issueId);
@@ -1094,13 +1209,11 @@ export class ConveyorService {
     this.#manualGateApprovals.setRequirement({ issueId, stageId, gateId, required, changedAt: new Date().toISOString() });
     // A gate may have read its requirement immediately before this board action.
     // Starting a new epoch makes that in-flight decision stale before it can advance.
+    // The fence must be synchronous: a subscriber would leave a window for the stale decision.
+    // Waking a gate parked on this requirement, and scheduling, follow from the change's event.
     if (required && !wasRequired && stageId === issue.projectedStage && cursor?.stage === stageId && cursor.list === "exit-gate") {
       journal.onStageChange(issueId);
-      this.schedule();
-      return;
     }
-    if (cursor?.stage === stageId && cursor.list === "exit-gate" && cursor.taskInstanceId === gateId && cursor.state === "pending" &&
-      this.wakeParked(issueId)) this.schedule();
   }
 
   /** Records a human receipt only for the current manual gate visit, then wakes that item. */
@@ -1133,7 +1246,7 @@ export class ConveyorService {
         message: `Approved manual gate \"${gateId}\".`,
       });
     }
-    if (this.wakeParked(issueId)) this.schedule();
+    // The gate.approved event wakes the item.
   }
 
   /** Log correlation for an item: its repository and <repository>:<number>. */
@@ -1421,6 +1534,7 @@ export class ConveyorService {
     await this.backfillCiIndicators(repositoryId);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
+    this.store.events().append("repository.reconciled", { issueNumbers: options.includeIssueNumbers ? [...options.includeIssueNumbers] : null }, { repositoryId });
   }
 
   /**
@@ -2283,6 +2397,7 @@ export class ConveyorService {
   /** Resolves once every accepted webhook delivery has been processed. */
   async webhooksSettled(): Promise<void> {
     while (this.#webhookWork.size > 0) await Promise.all([...this.#webhookWork]);
+    await this.eventsSettled();
   }
 
   /**
@@ -2524,7 +2639,6 @@ export class ConveyorService {
         ...metadata,
       ], [this.config.labels.metadata.noSplit]);
     }
-    this.schedule();
     this.#trackAnswerFollowUp(this.#answerFollowUp(issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source));
   }
 
@@ -2539,6 +2653,7 @@ export class ConveyorService {
   /** Resolves once every answer's background work (comment, re-sync, status) has finished. */
   async answerFollowUpsSettled(): Promise<void> {
     while (this.#answerFollowUps.size > 0) await Promise.all([...this.#answerFollowUps]);
+    await this.eventsSettled();
   }
 
   async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string): Promise<void> {
@@ -2582,7 +2697,7 @@ export class ConveyorService {
       log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issueId), error);
     }
     await this.updateStatusComment(issueId);
-    this.schedule();
+    this.store.events().append("item.requeued", { reason: "answer" }, { issueId });
   }
 
   /** Tests shorten the pauses between answer-mirror retries. */
@@ -4115,12 +4230,14 @@ export class ConveyorService {
       await this.reconcileRepository(issue.repositoryId);
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
-      this.schedule();
+      this.store.events().append("item.requeued", { reason: "message" }, { issueId });
+      await this.eventsSettled();
       await this.updateStatusComment(issueId).catch((error) => {
         log.error("Status comment update failed after conversation resume", this.itemFields(issueId), error);
       });
     }
 
+    await this.eventsSettled();
     const status = this.#active.has(issueId) ? "started" : "queued";
     this.store.appendConversationMessage({
       issueId,
@@ -4209,7 +4326,8 @@ export class ConveyorService {
       await this.reconcileRepository(issue.repositoryId);
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
-      this.schedule();
+      this.store.events().append("item.requeued", { reason: "retry" }, { issueId });
+      await this.eventsSettled();
       const status = this.#active.has(issueId) ? "started" : "queued";
       this.store.appendConversationMessage({
         issueId, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
@@ -4286,7 +4404,8 @@ export class ConveyorService {
     const labels = [...this.conveyorLabels(live.labels), this.config.labels.enrollment];
     await this.replaceLabelsRecorded(issue, repository, "issue.labels.resume", labels);
     await this.reconcileRepository(issue.repositoryId);
-    this.schedule();
+    this.store.events().append("item.requeued", { reason: "resume" }, { issueId });
+    await this.eventsSettled();
     const refreshed = this.store.getIssue(issueId);
     const status = this.#active.has(issueId) ? "started" : "queued";
     this.store.appendConversationMessage({
@@ -4353,9 +4472,7 @@ export class ConveyorService {
       liveHeadSha: async () => null,
       store: this.store,
     });
-    // An item parked on its review gate re-evaluates now instead of at the next poll.
-    const cursor = this.store.executions().getCursor(issueId);
-    if (cursor?.state === "pending" && cursor.list === "exit-gate" && this.wakeParked(issueId)) this.schedule();
+    // The finding.changed event wakes an item parked on its review gate.
     await this.updateStatusComment(issue.id);
   }
 
@@ -4367,9 +4484,6 @@ export class ConveyorService {
       listAccounts: () => this.store.dashboardAccounts().map(({ id, username, role, avatar }) => ({ id, username, role, avatar })),
       getAccount: (id) => this.store.dashboardAccountById(id),
       getPushPreferences: (id) => this.store.getPushPreferences(id),
-      setPushPreferences: (id, preferences) => this.store.setPushPreferences(id, preferences),
-      putPushSubscription: (id, endpoint, keys) => this.store.putPushSubscription(id, endpoint, keys),
-      deletePushSubscription: (id, endpoint) => this.store.deletePushSubscription(id, endpoint),
       pushPublicKey: push?.publicKey ?? null,
       dispatchPushEvents: () => deliverPushEvents(this.store, async (issueId) => {
         const target = this.store.getIssue(issueId);
@@ -4377,10 +4491,9 @@ export class ConveyorService {
           ? `/issues/${encodeURIComponent(target.repositoryId)}/${target.sourceNumber}`
           : null;
       }, push),
-      createAccount: (name, passwordHash) => this.store.createDashboardUser(name, passwordHash),
-      changePassword: (id, passwordHash) => this.store.changeDashboardPassword(id, passwordHash),
-      deleteAccount: (id) => this.store.deleteDashboardAccount(id),
-      changeAvatar: (id, avatar) => this.store.changeDashboardAvatar(id, avatar),
+      dispatch: (name, input, actor) => this.commands.dispatch(name, input, actor),
+      recordSession: (change, accountId) => withEventContext({ actor: { kind: "user", id: accountId } }, () =>
+        this.store.events().append(change === "signedIn" ? "session.signedIn" : "session.signedOut", { accountId })),
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getIssueDetails: (csrfToken, issueId) => this.issueDetails(csrfToken, issueId),
       getDashboardRevision: () => this.dashboardRevision(),
@@ -4389,14 +4502,8 @@ export class ConveyorService {
       getSystemStatus: () => this.systemStatus(),
       isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
-      answerQuestion: (id, answer, username) => this.answerQuestion(id, answer, username),
-      setManualGateRequirement: (issueId, stageId, gateId, required) => this.setManualGateRequirement(issueId, stageId, gateId, required),
-      approveManualGate: (issueId, stageId, gateId, account) => this.approveManualGate(issueId, stageId, gateId, account),
-      reorderBacklog: (id, direction) => this.reorderBacklog(id, direction),
-      moveBacklogIssue: (id, beforeId) => this.moveBacklogIssue(id, beforeId),
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
       handleMcp: (body, token, callId) => this.handleMcp(body, token, callId),
-      startSteering: (prompt) => this.startSteering(prompt),
       getSteeringRun: (runId) => this.getSteeringRun(runId),
       getSteeringEvents: (runId, after) => this.getSteeringEvents(runId, after),
       getIssueActivity: (issueId, before) => this.issueActivity(issueId, before),
@@ -4410,9 +4517,6 @@ export class ConveyorService {
         if (!issue) return null;
         return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
       },
-      postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),
-      retryIssue: (issueId, note, actor) => this.retryIssue(issueId, note, actor),
-      dismissFinding: (issueId, findingId, reason, username) => this.dismissFinding(issueId, findingId, reason, username),
       getAgentProfiles: () => buildAgentProfiles(this.config),
       getReport: ({ period, repository }) => (repository !== null && !this.config.repositories[repository]
         ? null

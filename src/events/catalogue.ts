@@ -33,6 +33,9 @@ export const EVENT_CATALOGUE = {
   "item.stageChanged": define("Items", "An item's projected stage or state changed.", z.object({
     fromStage: stage, fromState: z.string().nullable(), toStage: stage, toState: z.string().nullable(),
   }).strict()),
+  "item.requeued": define("Items", "A person asked for an item's stage to run again: a retry, a message, a resume or an answer.", z.object({
+    reason: z.enum(["retry", "message", "resume", "answer"]),
+  }).strict()),
   "item.queueChanged": define("Items", "An item's backlog position changed; null rank leaves the queue.", z.object({ rank: z.number().nullable() }).strict()),
   "item.relationshipsChanged": define("Items", "An item's stored parent or blockers changed.", z.object({
     parentId: nullableId, dependencies: z.array(id),
@@ -54,6 +57,7 @@ export const EVENT_CATALOGUE = {
   }).strict()),
   "task.passed": define("Execution", "A task passed.", z.object({ executionId: id, taskInstanceId: id }).strict()),
   "task.failed": define("Execution", "A task failed.", z.object({ executionId: id, taskInstanceId: id }).strict()),
+  "item.fenced": define("Execution", "The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts.", z.object({ epoch: z.number().int().positive() }).strict()),
   "task.woken": define("Execution", "A parked task was made due before its wake-up time.", z.object({}).strict()),
 
   // Runs
@@ -66,7 +70,9 @@ export const EVENT_CATALOGUE = {
   "message.posted": define("Conversation", "A conversation message was stored.", z.object({ messageId: id, role: z.string() }).strict()),
 
   // Gates and review
-  "gate.approved": define("Gates and review", "A person approved a manual gate.", z.object({ stageId: id, gateId: id }).strict()),
+  "gate.approved": define("Gates and review", "A person approved a manual gate for one visit (stage epoch and attempt) of its stage.", z.object({
+    stageId: id, gateId: id, stageEpoch: z.number().int().nonnegative(), attempt: z.number().int().positive(),
+  }).strict()),
   "gate.requirementChanged": define("Gates and review", "A manual gate was made required or optional.", z.object({ stageId: id, gateId: id, required: z.boolean() }).strict()),
   "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` says which.", z.object({
     findingId: id, change: z.enum(FINDING_CHANGES),
@@ -109,6 +115,15 @@ export const EVENT_CATALOGUE = {
   "notifications.settingsChanged": define("System", "An account's push notification preferences changed.", z.object({ accountId: id }).strict()),
   "notifications.subscribed": define("System", "A browser subscribed to push notifications.", z.object({ accountId: id }).strict()),
   "notifications.unsubscribed": define("System", "A browser's push subscription was removed.", z.object({ accountId: nullableId }).strict()),
+  "session.signedIn": define("System", "A dashboard account signed in.", z.object({ accountId: nullableId }).strict()),
+  "session.signedOut": define("System", "A dashboard account signed out.", z.object({ accountId: nullableId }).strict()),
+  "repository.reconciled": define("System", "Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all.", z.object({
+    issueNumbers: z.array(number).nullable(),
+  }).strict()),
+
+  // Commands
+  "command.accepted": define("Commands", "A command from the dashboard or the CLI succeeded; its events share its correlation id.", z.object({ command: z.string() }).strict()),
+  "command.rejected": define("Commands", "A command was refused or failed; `reason` says why.", z.object({ command: z.string(), reason: z.string() }).strict()),
 } as const satisfies Record<string, Definition<z.ZodType>>;
 
 export type EventType = keyof typeof EVENT_CATALOGUE;

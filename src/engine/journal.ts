@@ -164,6 +164,7 @@ export class ExecutionStore {
          RETURNING stage_epoch`,
       )
       .get(issueId, this.#timestamp()) as { stage_epoch: number };
+    this.#events.append("item.fenced", { epoch: row.stage_epoch }, { issueId });
     return row.stage_epoch;
   }
 

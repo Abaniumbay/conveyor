@@ -3,8 +3,9 @@ import packageMetadata from "../../package.json";
 import { ToolRequestError } from "../../src/tasks/errors";
 import { BUILD } from "../../src/version";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
-import { createWebHandler } from "../../src/web/server";
+import { createWebHandler, PROFILE_AVATARS } from "../../src/web/server";
 import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
+import { withCommands } from "../support/web-commands";
 
 const model: DashboardViewModel = {
   title: "Test board",
@@ -214,7 +215,8 @@ function setup(overrides: Record<string, unknown> = {}) {
     approveManualGate: async (...args: unknown[]) => { calls.manualApprovals.push(args); },
     ...overrides,
   };
-  return { handler: createWebHandler(dependencies as never), auth, calls };
+  const { dependencies: withDispatch, events } = withCommands(dependencies);
+  return { handler: createWebHandler(withDispatch as never), auth, calls, events };
 }
 
 async function login(handler: (request: Request) => Promise<Response>) {
@@ -726,7 +728,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ issueId: "i-2", direction: "down", csrf }),
     }));
     expect(scripted.status).toBe(200);
-    expect(await scripted.json()).toEqual({ ok: true });
+    expect(await scripted.json()).toEqual({ ok: true, correlationId: expect.any(String) });
   });
 
   test("limits manual gate requirements and approvals to superuser CSRF requests", async () => {
@@ -798,7 +800,7 @@ describe("createWebHandler", () => {
       body: new URLSearchParams({ answer: "current-main", csrf }),
     }));
     expect(answer.status).toBe(200);
-    expect(await answer.json()).toEqual({ ok: true });
+    expect(await answer.json()).toEqual({ ok: true, correlationId: expect.any(String) });
     expect(calls.answers).toEqual([["q-1", "current-main", "operator"]]);
   });
 
@@ -814,7 +816,7 @@ describe("createWebHandler", () => {
     expect((await post({ issueId: "i-3", beforeIssueId: "i-1" })).status).toBe(403);
     const before = await post({ issueId: "i-3", beforeIssueId: "i-1", csrf });
     expect(before.status).toBe(200);
-    expect(await before.json()).toEqual({ ok: true });
+    expect(await before.json()).toEqual({ ok: true, correlationId: expect.any(String) });
     expect((await post({ issueId: "i-1", beforeIssueId: "", csrf })).status).toBe(200);
     expect((await post({ csrf })).status).toBe(400);
     expect(calls.moves).toEqual([["i-3", "i-1"], ["i-1", null]]);
@@ -1301,7 +1303,7 @@ describe("createWebHandler", () => {
     expect(calls.dismissals).toEqual([]);
     const ok = await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ reason: "Not applicable" }));
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true });
+    expect(await ok.json()).toEqual({ ok: true, correlationId: expect.any(String) });
     expect(calls.dismissals).toEqual([["github:owner/repo#1", "F-1", "Not applicable", "operator"]]);
   });
 
@@ -1424,5 +1426,73 @@ describe("createWebHandler", () => {
 
     expect((await handler(new Request("http://localhost/agents/nobody", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request("http://localhost/agents/kaveh", { method: "POST", headers: { cookie } }))).status).toBe(405);
+  });
+});
+
+describe("dashboard commands", () => {
+  const ISSUE = encodeURIComponent("github:owner/repo#1");
+  const p256dh = Buffer.alloc(65, 1).toString("base64url");
+  const authKey = Buffer.alloc(16, 2).toString("base64url");
+
+  test("every route that changes state sends exactly its command", async () => {
+    const passwordHash = hashPassword("correct horse", { salt: "0123456789abcdef" });
+    const { handler, auth, events } = setup({
+      maxBodyBytes: 8_192,
+      pushPublicKey: "public-key",
+      getAccount: (id: string) => ({ id, username: id === "user-2" ? "someone" : "operator", role: id === "user-2" ? "user" : "superuser", avatar: "fox", sessionVersion: 0, passwordHash }),
+      createAccount: () => ({ id: "user-3", username: "new-user", role: "user", avatar: "fox", sessionVersion: 0 }),
+      changePassword: () => {},
+      deleteAccount: () => "deleted",
+      changeAvatar: () => {},
+      setPushPreferences: () => {},
+      putPushSubscription: () => {},
+      deletePushSubscription: () => {},
+    });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const form = (path: string, fields: Record<string, string>) => handler(new Request(`http://localhost${path}`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ ...fields, csrf }),
+    }));
+    const json = (path: string, body: unknown, method = "POST") => handler(new Request(`http://localhost${path}`, {
+      method, headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify(body),
+    }));
+    const routes: Array<[string, () => Promise<Response>]> = [
+      ["question.answer", () => form("/questions/q-1/answer", { answer: "yes" })],
+      ["gate.setRequirement", () => form("/manual-gates/requirement", { issueId: "i-1", stageId: "review", gateId: "gate", required: "true" })],
+      ["gate.approve", () => form("/manual-gates/approve", { issueId: "i-1", stageId: "review", gateId: "gate" })],
+      ["backlog.reorder", () => form("/backlog/reorder", { issueId: "i-1", direction: "up" })],
+      ["backlog.move", () => form("/backlog/move", { issueId: "i-1", beforeIssueId: "" })],
+      ["item.postMessage", () => form(`/api/issues/${ISSUE}/conversation`, { message: "Please continue" })],
+      ["item.retry", () => form(`/api/issues/${ISSUE}/retry`, { note: "" })],
+      ["finding.dismiss", () => json(`/api/issues/${ISSUE}/findings/f-1/dismiss`, { reason: "Not applicable" })],
+      ["steering.start", () => form("/steering", { prompt: "Check the board" })],
+      ["notifications.updateSettings", () => json("/api/notifications/settings", { questions: true, stopped: false, done: false })],
+      ["notifications.subscribe", () => json("/api/notifications/subscriptions", { endpoint: "https://push.example.com/1", keys: { p256dh, auth: authKey } })],
+      ["notifications.unsubscribe", () => json("/api/notifications/subscriptions", { endpoint: "https://push.example.com/1" }, "DELETE")],
+      ["account.create", () => form("/api/accounts", { username: "new-user", password: "a long enough password" })],
+      ["account.setPassword", () => form("/api/accounts/user-2/password", { password: "a long enough password" })],
+      ["account.delete", () => form("/api/accounts/user-2/delete", { confirmation: "someone" })],
+      ["account.setAvatar", () => form("/api/profile/avatar", { avatar: PROFILE_AVATARS[0]! })],
+    ];
+    for (const [command, send] of routes) {
+      const after = events.latestSeq();
+      const response = await send();
+      expect({ command, status: response.status < 400 }).toEqual({ command, status: true });
+      expect(events.read({ afterSeq: after }).map((event) => [event.type, event.payload])).toEqual([["command.accepted", { command }]]);
+    }
+  });
+
+  test("a command refused by the bus is recorded and answered with its status", async () => {
+    const { handler, auth, events } = setup();
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    // No account-management fake: the command has no handler in this process.
+    const response = await handler(new Request("http://localhost/api/profile/avatar", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ avatar: PROFILE_AVATARS[0]!, csrf }),
+    }));
+    expect(response.status).toBe(503);
+    expect(events.read({ type: "command.rejected" }).map((event) => event.payload)).toEqual([{ command: "account.setAvatar", reason: "account.setAvatar is unavailable" }]);
   });
 });

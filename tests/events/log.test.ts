@@ -122,7 +122,7 @@ describe("EventLog", () => {
     const { store } = await open();
     store.upsertIssue(issue(1));
     store.activateEnrollment("issue-1");
-    expect(new Set(store.events().read({ type: "item." }).map((event) => event.type))).toEqual(new Set(["item.discovered", "item.enrolled"]));
+    expect(new Set(store.events().read({ type: "item." }).map((event) => event.type))).toEqual(new Set(["item.discovered", "item.fenced", "item.enrolled"]));
     store.close();
   });
 

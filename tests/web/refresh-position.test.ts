@@ -3,6 +3,7 @@ import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
 import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import { fakeCommandBus } from "../support/web-commands";
 
 const password = "correct horse";
 let browser: Browser | null = null;
@@ -176,6 +177,10 @@ function startDashboard(state: {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
+  const { commands } = fakeCommandBus({
+    answerQuestion: () => state.answerQuestion?.(), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
+    postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
+  });
   const handler = createWebHandler({
     auth,
     username: "operator",
@@ -205,12 +210,9 @@ function startDashboard(state: {
     }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
-    answerQuestion: () => state.answerQuestion?.(),
-    reorderBacklog: () => {},
-    moveBacklogIssue: () => {},
+    dispatch: (name, input, actor) => commands.dispatch(name, input, actor),
     handleWebhook: () => ({}),
     handleMcp: () => ({}),
-    startSteering: () => "run-1",
     getSteeringRun: () => null,
     getSteeringEvents: () => [],
     getIssueActivity: () => null,
@@ -218,9 +220,6 @@ function startDashboard(state: {
     getIssueConversation: () => null,
     getIssueJourney: () => null,
     getIssueRoute: () => null,
-    postIssueMessage: () => ({}),
-    retryIssue: () => ({}),
-    dismissFinding: () => {},
     getAgentProfiles: () => [],
     getAgentProfile: () => null,
   });

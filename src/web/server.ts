@@ -3,6 +3,8 @@ import plexSans400 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400
 import plexSans500 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2" with { type: "file" };
 import plexSans600 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2" with { type: "file" };
 import { timingSafeEqual } from "node:crypto";
+import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor, type CommandOutcome } from "../commands/bus";
+import type { CommandInput, CommandName } from "../commands/registry";
 import { ToolRequestError } from "../tasks/errors";
 import { BUILD } from "../version";
 import { PROFILE_AVATARS } from "./account-pages";
@@ -27,15 +29,12 @@ export interface WebHandlerDependencies {
   listAccounts?: () => readonly Omit<WebAccountIdentity, "sessionVersion">[];
   getAccount?: (id: string) => (WebAccountIdentity & { passwordHash: string }) | null;
   getPushPreferences?: (accountId: string) => { questions: boolean; stopped: boolean; done: boolean };
-  setPushPreferences?: (accountId: string, preferences: { questions: boolean; stopped: boolean; done: boolean }) => void;
-  putPushSubscription?: (accountId: string, endpoint: string, keys: { p256dh: string; auth: string }) => void;
-  deletePushSubscription?: (accountId: string, endpoint: string) => void;
   pushPublicKey?: string | null;
   dispatchPushEvents?: () => void | Promise<void>;
-  createAccount?: (username: string, passwordHash: string) => WebAccountIdentity;
-  changePassword?: (id: string, passwordHash: string) => void;
-  deleteAccount?: (id: string) => "deleted" | "not_found" | "superuser";
-  changeAvatar?: (id: string, avatar: string) => void;
+  /** Sends a command; every route that changes state goes through it. */
+  dispatch: <N extends CommandName>(name: N, input: CommandInput<N>, actor: CommandActor) => Promise<CommandOutcome<N>>;
+  /** Records a sign-in or sign-out (never its credentials). */
+  recordSession?: (change: "signedIn" | "signedOut", accountId: string | null) => void;
   getDashboard: (
     csrfToken: string,
     pagination: DashboardPageSelection,
@@ -48,15 +47,8 @@ export interface WebHandlerDependencies {
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
-  answerQuestion: (questionId: string, answer: string, username: string) => void | Promise<void>;
-  /** Superuser-only board controls for native manual exit gates. */
-  setManualGateRequirement?: (issueId: string, stageId: string, gateId: string, required: boolean) => void | Promise<void>;
-  approveManualGate?: (issueId: string, stageId: string, gateId: string, account: { id: string; username: string }) => void | Promise<void>;
-  reorderBacklog: (issueId: string, direction: BacklogDirection) => void | Promise<void>;
-  moveBacklogIssue: (issueId: string, beforeIssueId: string | null) => void | Promise<void>;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
   handleMcp: (body: unknown, bearerToken: string, callId?: string) => unknown | Promise<unknown>;
-  startSteering: (prompt: string) => string | Promise<string>;
   getSteeringRun: (runId: string) => { id: string; status: string } | null | Promise<{ id: string; status: string } | null>;
   getSteeringEvents: (runId: string, after: number) => Array<{
     sequence: number;
@@ -69,14 +61,6 @@ export interface WebHandlerDependencies {
   getIssueConversation: (issueId: string) => IssueConversationViewModel | null | Promise<IssueConversationViewModel | null>;
   getIssueJourney: (issueId: string) => IssueJourneyViewModel | null | Promise<IssueJourneyViewModel | null>;
   getIssueRoute: (reference: IssueRouteReference) => IssueRouteTarget | null | Promise<IssueRouteTarget | null>;
-  postIssueMessage: (
-    issueId: string,
-    message: string,
-    username: string,
-  ) => unknown | Promise<unknown>;
-  retryIssue: (issueId: string, note: string, username: string) => unknown | Promise<unknown>;
-  /** Dismisses an open review finding on behalf of the signed-in operator; rejects when it cannot be dismissed. */
-  dismissFinding: (issueId: string, findingId: string, reason: string, username: string) => void | Promise<void>;
   /** Read-only profiles of the configured agents. */
   getAgentProfiles: () => readonly AgentProfileViewModel[] | Promise<readonly AgentProfileViewModel[]>;
   /** The Reports view for a period, across every repository or drilled into one; null for an unknown repository. */
@@ -524,6 +508,22 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     return !current ? json({ error: "unauthorized" }, 401) : current.account.role !== "superuser" ? json({ error: "forbidden" }, 403) : null;
   }
 
+  /** The signed-in account as the sender of a command. */
+  function actorOf(current: NonNullable<ReturnType<typeof session>>): CommandActor {
+    return { kind: "user", id: current.account.id, name: current.account.username, role: current.account.role };
+  }
+
+  /**
+   * The response for an error the command bus raised itself, or null for a handler's own error.
+   * `unavailable` is the route's answer when this process has no handler for the command.
+   */
+  function commandError(error: unknown, unavailable?: Response): Response | null {
+    if (error instanceof CommandInputError) return json({ error: error.message }, 400);
+    if (error instanceof CommandForbiddenError) return json({ error: "forbidden" }, 403);
+    if (error instanceof CommandUnavailableError) return unavailable ?? text(error.message, 503);
+    return null;
+  }
+
   const handle = async (request: Request): Promise<Response> => {
     let url: URL;
     try {
@@ -628,6 +628,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const account = dependencies.auth.findAccount(username);
       const created = dependencies.auth.createSession(account ?? undefined);
       if (!created) return text("Unable to create session", 503);
+      dependencies.recordSession?.("signedIn", account?.id ?? null);
       return redirect(requestedReturnTo ?? "/board", { "set-cookie": created.cookie });
     }
 
@@ -638,10 +639,12 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const form = await readForm(request, maxBodyBytes);
       if (form instanceof Response) return form;
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      const current = session(request)!;
       const pushEndpoint = oneValue(form, "pushEndpoint");
       if (pushEndpoint && isHttpsEndpoint(pushEndpoint)) {
-        dependencies.deletePushSubscription?.(session(request)!.account.id, pushEndpoint);
+        await dependencies.dispatch("notifications.unsubscribe", { accountId: current.account.id, endpoint: pushEndpoint }, actorOf(current)).catch(() => {});
       }
+      dependencies.recordSession?.("signedOut", current.account.id);
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
     }
 
@@ -654,10 +657,16 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const input = await readNotificationJson(request);
       if (input instanceof Response) return input;
       if (Object.keys(input).some((key) => !["questions", "stopped", "done"].includes(key)) || ["questions", "stopped", "done"].some((key) => typeof input[key] !== "boolean")) return json({ error: "Invalid notification preferences" }, 400);
-      if (!dependencies.setPushPreferences) return json({ error: "Notification settings are unavailable" }, 503);
       const preferences = { questions: input.questions as boolean, stopped: input.stopped as boolean, done: input.done as boolean };
-      dependencies.setPushPreferences(current.account.id, preferences);
-      return json({ preferences });
+      try {
+        const { correlationId } = await dependencies.dispatch("notifications.updateSettings", { accountId: current.account.id, preferences }, actorOf(current));
+        return json({ preferences, correlationId });
+      } catch (error) {
+        const unavailable = json({ error: "Notification settings are unavailable" }, 503);
+        const handled = commandError(error, unavailable);
+        if (handled) return handled;
+        throw error;
+      }
     }
 
     if (path === "/api/notifications/subscriptions") {
@@ -669,12 +678,20 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (input instanceof Response) return input;
       if (!isHttpsEndpoint(input.endpoint)) return json({ error: "Invalid subscription endpoint" }, 400);
       if (request.method === "DELETE") {
-        dependencies.deletePushSubscription?.(current.account.id, input.endpoint);
+        try {
+          await dependencies.dispatch("notifications.unsubscribe", { accountId: current.account.id, endpoint: input.endpoint }, actorOf(current));
+        } catch (error) {
+          return commandError(error) ?? json({ error: "Unable to remove the subscription" }, 409);
+        }
         return json({ removed: true });
       }
       const keys = input.keys as Record<string, unknown> | undefined;
       if (!dependencies.pushPublicKey || !keys || !isBase64UrlOfLength(keys.p256dh, 65) || !isBase64UrlOfLength(keys.auth, 16) || (input.expirationTime !== undefined && input.expirationTime !== null && typeof input.expirationTime !== "number") || Object.keys(input).some((key) => !["endpoint", "expirationTime", "keys"].includes(key)) || Object.keys(keys).some((key) => !["p256dh", "auth"].includes(key))) return json({ error: dependencies.pushPublicKey ? "Invalid subscription data" : "Server push is not configured" }, 400);
-      dependencies.putPushSubscription?.(current.account.id, input.endpoint, { p256dh: keys.p256dh, auth: keys.auth });
+      try {
+        await dependencies.dispatch("notifications.subscribe", { accountId: current.account.id, endpoint: input.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }, actorOf(current));
+      } catch (error) {
+        return commandError(error) ?? json({ error: "Unable to register the subscription" }, 409);
+      }
       return json({ registered: true }, 201);
     }
 
@@ -697,8 +714,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (accountAction[2] === "password") {
         const password = oneValue(form, "password");
         if (!password || password.length < 12 || password.length > 1024) return json({ error: "Password must be 12 to 1024 characters." }, 400);
-        if (!dependencies.changePassword) return json({ error: "Account management is unavailable" }, 503);
-        await dependencies.changePassword(target.id, hashPassword(password));
+        try {
+          await dependencies.dispatch("account.setPassword", { accountId: target.id, passwordHash: hashPassword(password) }, actorOf(current));
+        } catch (error) {
+          const unavailable = json({ error: "Account management is unavailable" }, 503);
+          const handled = commandError(error, unavailable);
+        if (handled) return handled;
+        throw error;
+        }
         if (target.id === current.account.id) return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
         return json({ passwordChanged: true });
       }
@@ -706,8 +729,15 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (target.id === current.account.id) return json({ error: "You cannot delete your own account." }, 400);
       if (target.role === "superuser") return json({ error: "Superuser accounts cannot be deleted." }, 400);
       if (oneValue(form, "confirmation") !== target.username) return json({ error: `Type ${target.username} to confirm deletion.` }, 400);
-      if (!dependencies.deleteAccount) return json({ error: "Account management is unavailable" }, 503);
-      const deleted = await dependencies.deleteAccount(target.id);
+      let deleted: "deleted" | "not_found" | "superuser";
+      try {
+        deleted = (await dependencies.dispatch("account.delete", { accountId: target.id }, actorOf(current))).result;
+      } catch (error) {
+        const unavailable = json({ error: "Account management is unavailable" }, 503);
+        const handled = commandError(error, unavailable);
+        if (handled) return handled;
+        throw error;
+      }
       if (deleted === "not_found") return json({ error: "Account not found." }, 404);
       if (deleted === "superuser") return json({ error: "Superuser accounts cannot be deleted." }, 400);
       return json({ deleted: true });
@@ -727,12 +757,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!username || username.length > 64 || !/^[\p{L}\p{N}_.@-]+$/u.test(username) || !password || password.length < 12 || password.length > 1024) {
         return json({ error: "Username must be 1–64 letters, numbers, or ._@-; password must be at least 12 characters." }, 400);
       }
-      if (!dependencies.createAccount) return json({ error: "Account management is unavailable" }, 503);
       try {
-        const created = await dependencies.createAccount(username, hashPassword(password));
+        const { result: created } = await dependencies.dispatch("account.create", { username, passwordHash: hashPassword(password) }, actorOf(session(request)!));
         return json({ account: { id: created.id, username: created.username, role: created.role, avatar: created.avatar } }, 201);
-      } catch {
-        return json({ error: "That username is already in use." }, 409);
+      } catch (error) {
+        return commandError(error, json({ error: "Account management is unavailable" }, 503)) ?? json({ error: "That username is already in use." }, 409);
       }
     }
 
@@ -749,8 +778,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const account = dependencies.getAccount?.(current.account.id);
       if (!oldPassword || !newPassword || newPassword.length < 12 || newPassword.length > 1024) return json({ error: "New password must be at least 12 characters." }, 400);
       if (!account || !verifyPassword(oldPassword, account.passwordHash)) return json({ error: "Current password was not accepted." }, 403);
-      if (!dependencies.changePassword) return json({ error: "Password changes are unavailable" }, 503);
-      await dependencies.changePassword(current.account.id, hashPassword(newPassword));
+      try {
+        await dependencies.dispatch("account.setPassword", { accountId: current.account.id, passwordHash: hashPassword(newPassword) }, actorOf(current));
+      } catch (error) {
+        const unavailable = json({ error: "Password changes are unavailable" }, 503);
+        const handled = commandError(error, unavailable);
+        if (handled) return handled;
+        throw error;
+      }
       return redirect("/login", { "set-cookie": dependencies.auth.clearCookie() });
     }
 
@@ -764,9 +799,15 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
       const avatar = oneValue(form, "avatar");
       if (!avatar || !(PROFILE_AVATARS as readonly string[]).includes(avatar)) return json({ error: "Choose an available avatar." }, 400);
-      if (!dependencies.changeAvatar) return json({ error: "Profile updates are unavailable" }, 503);
-      await dependencies.changeAvatar(current.account.id, avatar);
-      return json({ ok: true, avatar });
+      try {
+        const { correlationId } = await dependencies.dispatch("account.setAvatar", { accountId: current.account.id, avatar }, actorOf(current));
+        return json({ ok: true, avatar, correlationId });
+      } catch (error) {
+        const unavailable = json({ error: "Profile updates are unavailable" }, 503);
+        const handled = commandError(error, unavailable);
+        if (handled) return handled;
+        throw error;
+      }
     }
 
     const legacyDashboardQuery = path === "/" && ["view", "issue", "tab", "agent", "run"]
@@ -1003,9 +1044,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         const message = oneValue(form, "message")?.trim();
         if (!message || message.length > 4_000) return text("Invalid conversation message", 400);
         try {
-          const result = await dependencies.postIssueMessage(issueId, message, currentSession.account.username);
-          return json({ accepted: true, result: result ?? null }, 201);
+          const { result, correlationId } = await dependencies.dispatch("item.postMessage", { issueId, message }, actorOf(currentSession));
+          return json({ accepted: true, result: result ?? null, correlationId }, 201);
         } catch (error) {
+          const handled = commandError(error);
+          if (handled) return handled;
           const message = error instanceof Error ? error.message : "Unable to add conversation message";
           return text(message, message === "issue not found" ? 404 : 409);
         }
@@ -1028,9 +1071,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const noteValues = form.getAll("note");
       if (noteValues.length > 1 || (noteValues[0]?.length ?? 0) > 4_000) return text("Invalid retry note", 400);
       try {
-        const result = await dependencies.retryIssue(issueId, (noteValues[0] ?? "").trim(), currentSession.account.username);
-        return json({ accepted: true, result: result ?? null }, 202);
+        const { result, correlationId } = await dependencies.dispatch("item.retry", { issueId, note: (noteValues[0] ?? "").trim() }, actorOf(currentSession));
+        return json({ accepted: true, result: result ?? null, correlationId }, 202);
       } catch (error) {
+        const handled = commandError(error);
+        if (handled) return handled;
         const message = error instanceof Error ? error.message : "Unable to retry issue";
         return text(message, message === "issue not found" ? 404 : 409);
       }
@@ -1114,10 +1159,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json({ error: "a reason is required" }, 400);
       }
       try {
-        await dependencies.dismissFinding(issueId, findingId, reason.trim(), session(request)!.account.username);
-        return json({ ok: true });
+        const { correlationId } = await dependencies.dispatch("finding.dismiss", { issueId, findingId, reason: reason.trim() }, actorOf(session(request)!));
+        return json({ ok: true, correlationId });
       } catch (error) {
-        return json({ error: error instanceof Error ? error.message : "Unable to dismiss finding" }, 409);
+        return commandError(error) ?? json({ error: error instanceof Error ? error.message : "Unable to dismiss finding" }, 409);
       }
     }
 
@@ -1133,10 +1178,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const prompt = oneValue(form, "prompt")?.trim();
       if (!prompt || prompt.length > 12_000) return text("Invalid steering prompt", 400);
       try {
-        const runId = await dependencies.startSteering(prompt);
+        const { result: runId } = await dependencies.dispatch("steering.start", { prompt }, actorOf(currentSession));
         return redirect(`/operator/runs/${encodeURIComponent(runId)}`);
       } catch (error) {
-        return text(error instanceof Error ? error.message : "Unable to start steering agent", 409);
+        return commandError(error) ?? text(error instanceof Error ? error.message : "Unable to start steering agent", 409);
       }
     }
 
@@ -1215,10 +1260,12 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const answer = oneValue(form, "answer");
       if (answer === null || answer.trim().length === 0) return text("An answer is required", 400);
       try {
-        await dependencies.answerQuestion(questionId, answer, currentSession.account.username);
-        if (wantsJson(request)) return json({ ok: true });
+        const { correlationId } = await dependencies.dispatch("question.answer", { questionId, answer }, actorOf(currentSession));
+        if (wantsJson(request)) return json({ ok: true, correlationId });
         return redirect("/board");
       } catch (error) {
+        const handled = commandError(error);
+        if (handled) return handled;
         const message = error instanceof Error ? error.message : "Unable to record answer";
         return wantsJson(request) ? json({ error: message }, 409) : text(message, 409);
       }
@@ -1243,15 +1290,13 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         if (path === "/manual-gates/requirement") {
           const required = oneValue(form, "required");
           if (required !== "true" && required !== "false") return text("Invalid manual gate request", 400);
-          if (!dependencies.setManualGateRequirement) return text("Manual gate controls are unavailable", 503);
-          await dependencies.setManualGateRequirement(issueId, stageId, gateId, required === "true");
+          await dependencies.dispatch("gate.setRequirement", { issueId, stageId, gateId, required: required === "true" }, actorOf(currentSession));
         } else {
-          if (!dependencies.approveManualGate) return text("Manual gate controls are unavailable", 503);
-          await dependencies.approveManualGate(issueId, stageId, gateId, currentSession.account);
+          await dependencies.dispatch("gate.approve", { issueId, stageId, gateId }, actorOf(currentSession));
         }
         return redirect("/board");
       } catch (error) {
-        return text(error instanceof Error ? error.message : "Unable to update manual gate", 409);
+        return commandError(error, text("Manual gate controls are unavailable", 503)) ?? text(error instanceof Error ? error.message : "Unable to update manual gate", 409);
       }
     }
 
@@ -1268,11 +1313,11 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const direction = oneValue(form, "direction");
       if (!issueId || issueId.length > 200 || (direction !== "up" && direction !== "down")) return text("Invalid reorder request", 400);
       try {
-        await dependencies.reorderBacklog(issueId, direction);
-        if (wantsJson(request)) return json({ ok: true });
+        const { correlationId } = await dependencies.dispatch("backlog.reorder", { issueId, direction }, actorOf(currentSession));
+        if (wantsJson(request)) return json({ ok: true, correlationId });
         return redirect("/board");
-      } catch {
-        return text("Unable to reorder backlog", 409);
+      } catch (error) {
+        return commandError(error) ?? text("Unable to reorder backlog", 409);
       }
     }
 
@@ -1291,10 +1336,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return text("Invalid move request", 400);
       }
       try {
-        await dependencies.moveBacklogIssue(issueId, beforeIssueId);
-        return json({ ok: true });
-      } catch {
-        return text("Unable to reorder backlog", 409);
+        const { correlationId } = await dependencies.dispatch("backlog.move", { issueId, beforeIssueId }, actorOf(currentSession));
+        return json({ ok: true, correlationId });
+      } catch (error) {
+        return commandError(error) ?? text("Unable to reorder backlog", 409);
       }
     }
 

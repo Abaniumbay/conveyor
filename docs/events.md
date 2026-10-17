@@ -26,6 +26,7 @@ Each event has:
 | `item.offboarded` | An item's active enrollment ended; `status` says how. | `status`: string |
 | `item.queueChanged` | An item's backlog position changed; null rank leaves the queue. | `rank`: number \| null |
 | `item.relationshipsChanged` | An item's stored parent or blockers changed. | `parentId`: string \| null<br>`dependencies`: string[] |
+| `item.requeued` | A person asked for an item's stage to run again: a retry, a message, a resume or an answer. | `reason`: `"retry"` \| `"message"` \| `"resume"` \| `"answer"` |
 | `item.stageChanged` | An item's projected stage or state changed. | `fromStage`: string \| null<br>`fromState`: string \| null<br>`toStage`: string \| null<br>`toState`: string \| null |
 | `item.updated` | A source issue's title, body, state, labels, parent or accepted text changed; `changed` names the fields. | `number`: integer<br>`changed`: (`"title"` \| `"body"` \| `"state"` \| `"labels"` \| `"parent"` \| `"acceptedText"`)[] |
 | `journey.recorded` | A journey entry (a stage transition, resume or restart) completed or failed. | `transitionId`: string<br>`kind`: string<br>`fromStage`: string \| null<br>`toStage`: string \| null<br>`status`: `"completed"` \| `"failed"` |
@@ -35,6 +36,7 @@ Each event has:
 
 | Event | Meaning | Payload |
 | --- | --- | --- |
+| `item.fenced` | The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts. | `epoch`: integer |
 | `task.failed` | A task failed. | `executionId`: string<br>`taskInstanceId`: string |
 | `task.passed` | A task passed. | `executionId`: string<br>`taskInstanceId`: string |
 | `task.pending` | A task is waiting; it runs again at `wakeAt` unless something wakes it earlier. | `executionId`: string<br>`taskInstanceId`: string<br>`wakeAt`: string \| null<br>`deadlineAt`: string \| null |
@@ -63,7 +65,7 @@ Each event has:
 | `criterion.approvalChanged` | A reviewer approved an acceptance criterion at a head, or withdrew the approval. | `criterionId`: string<br>`approved`: boolean<br>`headSha`: string \| null |
 | `criterion.testsRecorded` | Test evidence for acceptance criteria was recorded. | `criteria`: string[] |
 | `finding.changed` | A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` says which. | `findingId`: string<br>`change`: `"created"` \| `"resolved"` \| `"dismissed"` \| `"withdrawn"` \| `"edited"` \| `"reopened"` |
-| `gate.approved` | A person approved a manual gate. | `stageId`: string<br>`gateId`: string |
+| `gate.approved` | A person approved a manual gate for one visit (stage epoch and attempt) of its stage. | `stageId`: string<br>`gateId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
 | `gate.requirementChanged` | A manual gate was made required or optional. | `stageId`: string<br>`gateId`: string<br>`required`: boolean |
 | `todo.changed` | An item's to-do list changed. | - |
 
@@ -107,5 +109,15 @@ Each event has:
 | `notifications.subscribed` | A browser subscribed to push notifications. | `accountId`: string |
 | `notifications.unsubscribed` | A browser's push subscription was removed. | `accountId`: string \| null |
 | `repository.onboarded` | A configured repository was added to or updated in the local index. | `address`: string |
+| `repository.reconciled` | Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all. | `issueNumbers`: integer[] \| null |
 | `repository.removed` | An unconfigured repository and its history were removed. | - |
 | `repository.trustChanged` | A repository's observed visibility changed. | `visibility`: string |
+| `session.signedIn` | A dashboard account signed in. | `accountId`: string \| null |
+| `session.signedOut` | A dashboard account signed out. | `accountId`: string \| null |
+
+### Commands
+
+| Event | Meaning | Payload |
+| --- | --- | --- |
+| `command.accepted` | A command from the dashboard or the CLI succeeded; its events share its correlation id. | `command`: string |
+| `command.rejected` | A command was refused or failed; `reason` says why. | `command`: string<br>`reason`: string |

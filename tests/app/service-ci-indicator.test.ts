@@ -164,6 +164,7 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   expect(dashboard().needsYou).toEqual(expect.arrayContaining([expect.objectContaining({ id: "issue" })]));
 
   w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
+  await w.service.eventsSettled();
   expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
     gateId: "ciGate", waiting: false, approvedBy: "admin", approvedAt: expect.any(String),
   }]);
