@@ -4,6 +4,8 @@ import type {
   ChangeRequest,
   CodeHost,
   FindingVerdict,
+  MergeChangeResult,
+  MergeRefusal,
   ReviewArtifact,
 } from "../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "./adapter";
@@ -47,6 +49,19 @@ function reference(address: string, id: string): number {
 
 const findingMarker = (findingId: string) => `<!-- conveyor:finding:${findingId} -->`;
 const OWN_MARKER = "<!-- conveyor:finding:";
+
+function mergeRefusal(detail: string): MergeRefusal | null {
+  if (/head branch was modified|head.*(?:moved|changed|modified)/i.test(detail)) return "head-moved";
+  if (/HTTP 40[1345]|permission|forbidden|not authorized|protected branch|branch protection|required status check|required pull request review/i.test(detail)) return "blocked";
+  if (/behind|out[ -]?of[ -]?date|base branch/i.test(detail)) return "outdated";
+  if (/conflict|not mergeable|HTTP 409/i.test(detail)) return "conflict";
+  return null;
+}
+
+function refusalResult(detail: string): MergeChangeResult | null {
+  const refusal = mergeRefusal(detail);
+  return refusal ? { merged: false, refusal, reason: detail } : null;
+}
 
 function findingComment(findingId: string, body: string, where: string | null, resolution?: string): string {
   const heading = resolution ?? "**Review finding**";
@@ -206,13 +221,15 @@ export class GitHubCodeHost implements CodeHost {
     id: string;
     method: "squash";
     expectedHeadSha?: string;
-  }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }> {
+  }): Promise<MergeChangeResult> {
     try {
-      return await this.github.squashMerge(input.address, reference(input.address, input.id), input.expectedHeadSha);
+      const result = await this.github.squashMerge(input.address, reference(input.address, input.id), input.expectedHeadSha);
+      if (result.merged) return result.sha ? { merged: true, sha: result.sha } : { merged: true };
+      return refusalResult(result.message ?? "") ?? { merged: false, refusal: "blocked", ...(result.message ? { reason: result.message } : {}) };
     } catch (error) {
-      // GitHub answers HTTP 409 when the `sha` in the merge request is no longer the head.
-      if (input.expectedHeadSha && error instanceof GitHubTransportError && /HTTP 409|Head branch was modified/i.test(error.stderr)) {
-        return { merged: false, headMoved: true };
+      if (error instanceof GitHubTransportError) {
+        const result = refusalResult(error.stderr);
+        if (result) return result;
       }
       throw error;
     }

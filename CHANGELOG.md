@@ -16,6 +16,9 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- Merge conflicts, changed pull-request heads, and outdated bases discovered after review now
+  return through the bounded implementation repair path while retaining fresh CI and review gates
+  for the repaired head.
 - Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home
   failure.
 - Lease-protected workspace pushes now use the change head the agent observed and explain when a

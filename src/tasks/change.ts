@@ -18,6 +18,8 @@ type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 
 const NO_CHANGE = "No change request exists yet";
 const blocked = (message: string) => fail(message, { route: { stop: "blocked" } });
+const returnToImplementation = (message: string) => fail(message, { route: { return: "implementation" } });
+const recoverMerge = (message: string) => returnToImplementation(`${message} Return to implementation to update the branch, run CI, and obtain a fresh review for its current head.`);
 
 const ensureConfig = z.object({
   closingReference: z.boolean().optional(),
@@ -100,7 +102,7 @@ const ensure: TaskDefinition<z.output<typeof ensureConfig>, unknown, Deps> = {
 const merge: TaskDefinition<z.output<typeof mergeConfig>, unknown, Deps> = {
   name: "change.merge",
   kind: "act",
-  description: "Squash-merges the change only at the head that review passed (and CI, when CI is required); stops as blocked otherwise. An already merged change passes.",
+  description: "Squash-merges only the reviewed (and, when required, CI-passed) head. A changed, conflicting, or outdated branch returns to implementation for the bounded repair path; closed or policy-refused changes stop. An already merged change passes.",
   reads: ["repository", "change", "checkpoints"],
   writes: [],
   invalidates: ["change"],
@@ -112,25 +114,31 @@ const merge: TaskDefinition<z.output<typeof mergeConfig>, unknown, Deps> = {
     if (change.state === "closed") return blocked(`Change request #${change.ref.number} is closed without being merged`);
     const { reviewPassed, ciPassed } = context.checkpoints!;
     if (reviewPassed?.sha !== change.headSha) {
-      return blocked(reviewPassed
-        ? `Review passed at ${reviewPassed.sha}, but the change head is ${change.headSha}; it must be reviewed again before merging`
-        : "Review has not passed for this change, so it will not be merged");
+      return reviewPassed
+        ? recoverMerge(`Review passed at ${reviewPassed.sha}, but the change head is ${change.headSha}.`)
+        : blocked("Review has not passed for this change, so it will not be merged");
     }
     if (context.repository?.ciMode === "required" && ciPassed?.sha !== change.headSha) {
-      return blocked(ciPassed
-        ? `CI passed at ${ciPassed.sha}, but the change head is ${change.headSha}; CI must pass for the head before merging`
-        : "CI has not passed for this change, so it will not be merged");
+      return ciPassed
+        ? recoverMerge(`CI passed at ${ciPassed.sha}, but the change head is ${change.headSha}.`)
+        : blocked("CI has not passed for this change, so it will not be merged");
     }
     const host = codeHostOf(deps);
     const address = deps.repository.address;
     const live = await host.getChange({ address, id: change.ref.id });
     if (live.state === "merged") return pass();
     if (live.headSha !== change.headSha) {
-      return blocked(`The change head moved to ${live.headSha} after review at ${change.headSha}; it will not be merged`);
+      return recoverMerge(`The change head moved to ${live.headSha} after review at ${change.headSha}.`);
     }
+    if (live.mergeable === false) return recoverMerge(`Change request #${live.number} conflicts with its base branch.`);
     const merged = await host.mergeChange({ address, id: change.ref.id, method: config.method, expectedHeadSha: change.headSha });
-    if (merged.headMoved) return blocked(`The change head moved after review at ${change.headSha}; it will not be merged`);
-    if (!merged.merged) return fail(`The code host did not merge change request #${live.number}`);
+    if (!merged.merged) {
+      const reason = merged.reason ? ` ${merged.reason}` : "";
+      if (merged.refusal === "head-moved") return recoverMerge(`The change head moved after review at ${change.headSha}.${reason}`);
+      if (merged.refusal === "conflict") return recoverMerge(`Change request #${live.number} became conflicting during merge.${reason}`);
+      if (merged.refusal === "outdated") return recoverMerge(`Change request #${live.number} is outdated against its base branch.${reason}`);
+      return blocked(`The code host refused to merge change request #${live.number}.${reason} This is not a repairable conflict or changed head.`);
+    }
     deps.store.upsertPullRequest({
       issueId: deps.issueId, id: live.id, number: live.number, url: live.url, state: "merged", mergedAt: new Date().toISOString(),
     });
@@ -157,7 +165,7 @@ const headUnchanged: TaskDefinition<unknown, unknown, Deps> = {
 const mergeable: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.mergeable",
   kind: "check",
-  description: "Passes when the code host reports the change mergeable; pending while it is still computing, a failure when it conflicts.",
+  description: "Passes when the code host reports the change mergeable; pending while it is still computing, and otherwise tells implementation to update the branch, resolve conflicts, test, and publish a new head.",
   reads: ["change"],
   writes: [],
   invalidates: [],
@@ -168,7 +176,7 @@ const mergeable: TaskDefinition<unknown, unknown, Deps> = {
     if (change.state === "merged") return pass();
     if (change.state === "closed") return fail(`Change request #${change.ref.number} is closed`);
     if (change.mergeable === "unknown") return pending("Waiting for the code host to report whether the change is mergeable");
-    return change.mergeable === "yes" ? pass() : fail(`Change request #${change.ref.number} is not mergeable (conflicts or blocking requirements)`);
+    return change.mergeable === "yes" ? pass() : fail(`Change request #${change.ref.number} conflicts with its base branch. Return to implementation to update the branch, resolve conflicts, test, and publish a new head.`);
   },
 };
 
