@@ -2064,11 +2064,30 @@ export class ConveyorService {
       });
       this.recordClosedRollupParent(parent, closed);
     } catch (error) {
+      // GitHub can apply the close and still answer with an error (a 422 was seen in production), so
+      // the issue's state decides: a closed issue is a completed close, not a failure to retry.
+      const observed = await this.github.getIssue(address, parent.sourceNumber).catch(() => null);
+      if (observed?.state === "closed") {
+        this.store.completeSourceMutation(closeMutation.id, { state: observed.state, stateReason: observed.stateReason ?? null });
+        this.recordClosedRollupParent(parent, observed);
+        return;
+      }
       this.store.failSourceMutation(
         closeMutation.id,
         error instanceof Error ? error.message : String(error),
       );
       throw error;
+    }
+  }
+
+  /** Completes one roll-up parent; its failure is that parent's, so the rest of the repository still reconciles. */
+  private async completeRollupParentLogged(repositoryId: string, address: string, parent: StoredIssue, doneLabel: string | undefined): Promise<boolean> {
+    try {
+      await this.completeRollupParent(repositoryId, address, parent, doneLabel);
+      return true;
+    } catch (error) {
+      log.warn("Roll-up parent could not be closed; the next pass retries it", this.itemFields(parent.id), error);
+      return false;
     }
   }
 
@@ -2204,7 +2223,7 @@ export class ConveyorService {
         closeMutation &&
         closeMutation.status !== "succeeded"
       ) {
-        await this.completeRollupParent(repositoryId, address, parent, doneLabel);
+        await this.completeRollupParentLogged(repositoryId, address, parent, doneLabel);
         continue;
       }
       if (
@@ -2279,8 +2298,7 @@ export class ConveyorService {
           }
         }
       }
-      if (allChildrenSatisfied && doneLabel) {
-        await this.completeRollupParent(repositoryId, address, parent, doneLabel);
+      if (allChildrenSatisfied && doneLabel && await this.completeRollupParentLogged(repositoryId, address, parent, doneLabel)) {
         log.info("Parent roll-up completed", {
           ...this.itemFields(parent.id),
           sourceStage: parent.projectedStage,
