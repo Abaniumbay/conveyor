@@ -65,9 +65,11 @@ describe("versioning", () => {
 
   test("bun run changelog previews the repository fragments without changing files", async () => {
     const changes = path.join(ROOT, "changes");
+    // A release consumes every fragment, and Git keeps no empty directory.
+    const names = async () => (await readdir(changes).catch(() => [] as string[])).sort();
     const before = await Promise.all([
       readFile(path.join(ROOT, "CHANGELOG.md"), "utf8"),
-      Promise.all((await readdir(changes)).sort().map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
+      Promise.all((await names()).map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
     ]);
     const process = Bun.spawn(["bun", "run", "changelog"], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]);
@@ -76,7 +78,7 @@ describe("versioning", () => {
     expect(stdout).toBe(`${renderUnreleased(await readChangelogFragments(ROOT))}\n`);
     await expect(Promise.all([
       readFile(path.join(ROOT, "CHANGELOG.md"), "utf8"),
-      Promise.all((await readdir(changes)).sort().map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
+      Promise.all((await names()).map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
     ])).resolves.toEqual(before);
   });
 
@@ -121,11 +123,8 @@ describe("versioning", () => {
     const changelog = await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8");
     const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as { version: string };
     expect(changelogSection(changelog, "Unreleased")?.body).toBe("See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.");
-    // Later changes add fragments of their own; the migrated entries must still be among them.
-    const migrated = ["294-trust-safeguards.md", "302-lease-protected-pushes.md", "303-roll-up-stage.md", "305-run-home-cleanup.md", "307-completed-roll-ups.md", "308-review-repair-path.md"];
-    const fragments = await readChangelogFragments(ROOT);
-    expect(fragments.map((fragment) => fragment.filename)).toEqual(expect.arrayContaining([...migrated, "306-changelog-fragments.md"]));
-    expect(fragments.filter((fragment) => migrated.includes(fragment.filename)).map(({ filename, section, body }) => ({ filename, section, body }))).toEqual([
+    // Each former Unreleased entry is a fragment until a release consumes it into a dated section.
+    const migrated = [
       {
         filename: "294-trust-safeguards.md",
         section: "Added",
@@ -156,12 +155,18 @@ describe("versioning", () => {
         section: "Fixed",
         body: "Merge conflicts, changed pull-request heads, and outdated bases discovered after review now\nreturn through the bounded implementation repair path while retaining fresh CI and review gates\nfor the repaired head.",
       },
-    ]);
+    ];
+    const fragments = await readChangelogFragments(ROOT);
+    for (const entry of migrated) {
+      const fragment = fragments.find((candidate) => candidate.filename === entry.filename);
+      if (fragment) expect({ filename: fragment.filename, section: fragment.section as string, body: fragment.body }).toEqual(entry);
+      else expect(changelog).toContain(`- ${entry.body.replaceAll("\n", "\n  ")}\n`);
+    }
     if (changelogSection(changelog, manifest.version)) {
       expect(checkRelease(`v${manifest.version}`, manifest.version, changelog)).not.toBe("");
     } else {
       // Before the first release package.json has no section: the next one must be preparable.
-      expect((await readChangelogFragments(ROOT)).length).toBeGreaterThan(0);
+      expect(fragments.length).toBeGreaterThan(0);
       expect(isLater("0.2.0", manifest.version)).toBe(true);
       const prepared = prepareChangelog(changelog, "0.2.0", "2026-10-06");
       expect(checkRelease("v0.2.0", "0.2.0", prepared)).not.toBe("");

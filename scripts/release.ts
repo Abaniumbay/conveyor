@@ -79,8 +79,9 @@ export function prepareChangelogFromFragments(changelog: string, version: string
   const end = next < 0 ? changelog.length : next + 1;
   const summaryText = summary?.trim() ? `\n\n${summary.trim()}` : "";
   const replacement = `## [Unreleased]\n\nSee [changes/](changes/) and run \`bun run changelog\` to preview unreleased entries.\n\n## [${version}] - ${date}${summaryText}\n\n${entries}`;
-  const trailingNewline = next < 0 && changelog.endsWith("\n") ? "\n" : "";
-  return `${changelog.slice(0, start)}${replacement}${trailingNewline}${changelog.slice(end)}`;
+  // The entries end without a newline: a blank line separates them from the previous release.
+  const separator = next < 0 ? (changelog.endsWith("\n") ? "\n" : "") : "\n\n";
+  return `${changelog.slice(0, start)}${replacement}${separator}${changelog.slice(end)}`;
 }
 
 export interface PrepareOptions {
