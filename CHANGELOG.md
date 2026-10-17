@@ -10,6 +10,82 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.10.0] - 2026-10-17
+
+Conveyor now runs on an event log: every change is recorded as an event, dashboard and CLI actions are commands, and the live dashboard follows the events. With healthy webhooks it reads GitHub far less: waits for CI and blockers wake on webhook events, and the periodic reconcile becomes a light safety net. This release also adds a Graph view, GitHub call reporting, Sync now for a repository, and in-place manual gate controls.
+
+### Added
+
+- The dashboard now includes a read-only Graph view for following current item families and dependencies across repositories.
+
+- `conveyor doctor` and repository dashboards now show public-repository trust safeguards,
+  configured extra trusted logins, source-check uncertainty, and body-free skipped-review history
+  links.
+
+- Every change Conveyor makes is recorded in an event log ([events.md](docs/events.md)). `conveyor
+  events` prints it (`--issue`, `--type`, `--correlation`, `--since`, `--follow`), every dashboard
+  and CLI action shares one correlation id with the changes it caused, and `settings.events.sinks`
+  delivers the log to a JSON-lines file for an external analyzer. Events are kept for
+  `settings.events.retention` (30 days) and pruned by `conveyor cleanup`.
+
+- `conveyor doctor` shows the last hour of GitHub calls by source (periodic reconcile, webhook, wait,
+  fallback, agents, commands) with the remaining rate limit, and the service logs the same counts
+  hourly and warns when less than a fifth of the limit is left. The repository page shows whether its
+  webhook deliveries are healthy and its GitHub calls of the last hour. Conveyor also asks GitHub to
+  redeliver webhook deliveries that failed in the last day.
+
+- A **Sync now** button in the Setup section of a repository's page (superusers only) reads that
+  repository afresh at once: every issue, each enrolled item's provenance and author permissions, sub-
+  issues and blockers, pull request heads and CI, and the webhook's health. Use it after a change
+  GitHub sends no webhook for, such as granting or removing a collaborator's permission.
+
+### Changed
+
+- Conveyor reads GitHub far less while webhooks deliver. A task waiting for CI or for its blockers
+  now sleeps until the webhook event it waits for arrives (or its `settings.events.fallback`
+  deadline passes) instead of re-reading GitHub every minute, and continues within seconds of CI
+  finishing. Webhook deliveries read GitHub only for the issues they name, CI progress reads nothing,
+  and while a repository's webhooks are healthy the periodic reconcile becomes a safety net: every
+  30 minutes (`settings.events.reconcileInterval`) it reads only the issues changed since the last
+  read, and every 24 hours (`settings.events.fullReconcileInterval`) and at start it reads everything,
+  including each enrolled item's provenance and author permissions. In a 20-minute CI wait this cuts GitHub calls from 177 to
+  50; an idle repository goes from 68 calls an hour to 8. Repositories without healthy webhooks keep
+  polling as before.
+
+- The live dashboard updates from recorded events instead of re-checking the database every second
+  for each open page, and a page that reconnects catches up on what it missed.
+
+- Manual gate controls work in place. **Approve gate** shows that it is sending and the item refreshes
+  without leaving the page (it used to reload and jump to the board), and the item's own board
+  approval requirement is a switch. An open item dialog now also refreshes its manual gates when they
+  change.
+
+- Unreleased changelog entries now live in independently mergeable `changes/` fragments, and
+  `bun run changelog` previews the combined release notes.
+
+### Removed
+
+- New webhooks no longer subscribe to `deployment_status`, which nothing in Conveyor used; existing
+  webhooks may keep sending it and those deliveries are recorded and ignored.
+
+### Fixed
+
+- Lease-protected workspace pushes now use the change head the agent observed and explain when a
+  newer remote head must be fetched and reconciled before retrying.
+
+- Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed
+  children finish their post-merge work, keeping their family rows visible on the board.
+
+- Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home
+  failure.
+
+- Completed active roll-up parents now close with GitHub's completed reason once every descendant
+  finishes, instead of remaining open with a closable label.
+
+- Merge conflicts, changed pull-request heads, and outdated bases discovered after review now
+  return through the bounded implementation repair path while retaining fresh CI and review gates
+  for the repaired head.
+
 ## [0.9.0] - 2026-10-16
 
 Conveyor 0.9.0 makes delivery safer and the dashboard calmer. Agent context and enrollment now require trusted GitHub provenance, review findings come only from trusted accounts, and implementers record test evidence for each acceptance criterion before review. The dashboard gains a Recent page, board filters, live storage warnings and sticky navigation, and live updates no longer interrupt scrolling. Configuration changes restart parked work only when that stage's own plan changed, so editing one repository no longer discards approvals elsewhere, and stopped post-merge work stays in Needs you.

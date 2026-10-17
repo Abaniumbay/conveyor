@@ -195,3 +195,10 @@ test("suggests the next patch, minor and major versions", () => {
   expect(nextVersions("0.2.0")).toEqual({ patch: "0.2.1", minor: "0.3.0", major: "1.0.0" });
   expect(nextVersions("0.3.0-rc.1")).toEqual({ patch: "0.3.0", minor: "0.4.0", major: "1.0.0" });
 });
+
+test("prepare keeps a blank line between the new section and the previous release", async () => {
+  const { clone } = await repository();
+  await writeFile(path.join(clone, "CHANGELOG.md"), `${CHANGELOG}\n## [0.1.0] - 2026-10-01\n\n### Added\n\n- The first release.\n`);
+  await prepareRelease({ root: clone, version: "0.2.0", date: "2026-10-06" });
+  expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toContain("- The standalone release.\n\n## [0.1.0] - 2026-10-01\n");
+});
