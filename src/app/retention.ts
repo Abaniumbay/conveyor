@@ -3,7 +3,7 @@
 // homes are reclaimed independently, even for open items; running homes are never touched. Service
 // log retention is separate (settings.logging).
 
-import { lstat, readdir, rm, stat } from "node:fs/promises";
+import { chmod, lstat, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { ConveyorStore } from "../db/store";
@@ -41,6 +41,14 @@ async function homeSize(target: string): Promise<number> {
   return total;
 }
 
+/** Restores the owning service account's access without dereferencing links in a private home. */
+async function restoreDirectoryAccess(target: string): Promise<void> {
+  const info = await lstat(target);
+  if (!info.isDirectory()) return;
+  await chmod(target, (info.mode & 0o7777) | 0o700);
+  for (const entry of await readdir(target)) await restoreDirectoryAccess(path.join(target, entry));
+}
+
 function runHome(artifacts: string, runId: string): { directory: string; home: string } | null {
   const root = path.resolve(artifacts);
   const directory = path.resolve(root, runId);
@@ -64,6 +72,10 @@ export async function applyRetention(input: {
     homes: { directories: 0, bytes: 0, failures: [] },
   };
   const selectedHomeBytes = new Map<string, number>();
+  const reportHomeFailure = (runId: string, error: unknown) => {
+    const failure = `${runId}: ${error instanceof Error ? error.message : String(error)}`;
+    if (dryRun || input.store.recordTerminalHomeReclamationFailure(runId)) report.homes.failures.push(failure);
+  };
   let artifactEntries: string[];
   try {
     artifactEntries = await readdir(input.artifacts);
@@ -81,35 +93,42 @@ export async function applyRetention(input: {
     try {
       const directory = await lstat(selected.directory);
       if (!directory.isDirectory()) {
-        report.homes.failures.push(`${run.id}: run artifact directory is not a directory`);
+        reportHomeFailure(run.id, "run artifact directory is not a directory");
         continue;
       }
       await lstat(selected.home);
     } catch (error) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") continue;
-      report.homes.failures.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+        if (!dryRun) input.store.clearTerminalHomeReclamationFailure(run.id);
+        continue;
+      }
+      reportHomeFailure(run.id, error);
       continue;
     }
     const { home } = selected;
-    let bytes: number;
-    try {
-      bytes = await homeSize(home);
-    } catch (error) {
-      report.homes.failures.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
-      continue;
-    }
     if (dryRun) {
+      let bytes: number;
+      try {
+        bytes = await homeSize(home);
+      } catch (error) {
+        reportHomeFailure(run.id, error);
+        continue;
+      }
       report.homes.directories += 1;
       report.homes.bytes += bytes;
       selectedHomeBytes.set(selected.directory, bytes);
       continue;
     }
+    let bytes = 0;
     try {
+      await restoreDirectoryAccess(home);
+      bytes = await homeSize(home).catch(() => 0);
       await rm(home, { recursive: true, force: false });
       report.homes.directories += 1;
       report.homes.bytes += bytes;
+      input.store.clearTerminalHomeReclamationFailure(run.id);
     } catch (error) {
-      report.homes.failures.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+      reportHomeFailure(run.id, error);
     }
   }
   if (input.policy.runHistoryMs !== null) {

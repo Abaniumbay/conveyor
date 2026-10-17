@@ -14,6 +14,11 @@ Releases are published from tags by `.github/workflows/release.yml`; see
   configured extra trusted logins, source-check uncertainty, and body-free skipped-review history
   links.
 
+### Fixed
+
+- Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home
+  failure.
+
 ## [0.9.0] - 2026-10-16
 
 Conveyor 0.9.0 makes delivery safer and the dashboard calmer. Agent context and enrollment now require trusted GitHub provenance, review findings come only from trusted accounts, and implementers record test evidence for each acceptance criterion before review. The dashboard gains a Recent page, board filters, live storage warnings and sticky navigation, and live updates no longer interrupt scrolling. Configuration changes restart parked work only when that stage's own plan changed, so editing one repository no longer discards approvals elsewhere, and stopped post-merge work stays in Needs you.

@@ -328,9 +328,12 @@ describe("operating through the CLI", () => {
     log.configure({ sinks: [{ write: (record) => records.push(record) }] });
 
     const report = await service.applyRetention();
+    const repeated = await service.applyRetention();
 
     expect(report.homes.failures).toHaveLength(1);
-    expect(records).toContainEqual(expect.objectContaining({ level: "warn", message: "Could not reclaim some terminal run homes", homeFailures: 1 }));
+    expect(report.homes.failures[0]).toContain("unreclaimed:");
+    expect(repeated.homes.failures).toEqual([]);
+    expect(records.filter((record) => record.level === "warn" && record.message === "Could not reclaim some terminal run homes")).toHaveLength(1);
   });
 
   test("a drain stops admission and steering until it is lifted; the restart route needs systemd", async () => {

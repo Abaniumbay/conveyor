@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -126,6 +126,122 @@ describe("retention", () => {
       await chmod(locked, 0o700);
     }
     store.close();
+  });
+
+  test("reclaims completed, failed and interrupted homes with restricted directories", async () => {
+    const { store, artifacts } = await world();
+    const restricted = [
+      path.join(artifacts, "closed-old", "home"),
+      path.join(artifacts, "done-old", "home", "read-only"),
+      path.join(artifacts, "parked-old", "home", "execute-only"),
+      path.join(artifacts, "steering-old", "home", "hidden"),
+    ];
+    for (const directory of restricted) await mkdir(directory, { recursive: true });
+    await chmod(restricted[0]!, 0o500);
+    await chmod(restricted[1]!, 0o300);
+    await chmod(restricted[2]!, 0o400);
+    await chmod(restricted[3]!, 0o000);
+
+    try {
+      const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+
+      expect(report.homes).toEqual({ directories: 5, bytes: 5000, failures: [] });
+      for (const directory of restricted) await expect(lstat(directory)).rejects.toThrow();
+    } finally {
+      await Promise.all(restricted.map(async (directory) => {
+        const parent = path.dirname(directory);
+        if ((await lstat(parent).catch(() => null))?.isDirectory()) await chmod(parent, 0o700);
+      }));
+    }
+    store.close();
+  });
+
+  test("removes home links without traversing their targets", async () => {
+    const { store, artifacts, root } = await world();
+    const external = path.join(root, "external");
+    await mkdir(external);
+    await writeFile(path.join(external, "keep"), "outside");
+    await chmod(external, 0o500);
+    const home = path.join(artifacts, "closed-old", "home");
+    await rm(home, { recursive: true });
+    await symlink(external, home);
+    const nested = path.join(artifacts, "done-old", "home", "external");
+    await symlink(external, nested);
+
+    try {
+      await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW, dryRun: true });
+      expect((await lstat(home)).isSymbolicLink()).toBe(true);
+      expect(await readFile(path.join(external, "keep"), "utf8")).toBe("outside");
+      expect((await stat(external)).mode & 0o777).toBe(0o500);
+
+      await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+
+      await expect(lstat(home)).rejects.toThrow();
+      expect(await readFile(path.join(external, "keep"), "utf8")).toBe("outside");
+      expect((await stat(external)).mode & 0o777).toBe(0o500);
+    } finally {
+      await chmod(external, 0o700);
+    }
+    store.close();
+  });
+
+  test("leaves a running restricted home unchanged and keeps dry runs read-only", async () => {
+    const { store, artifacts } = await world();
+    const runningHome = path.join(artifacts, "running", "home");
+    const terminalHome = path.join(artifacts, "closed-old", "home");
+    await chmod(runningHome, 0o000);
+    await chmod(terminalHome, 0o000);
+    try {
+      const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW, dryRun: true });
+
+      expect(report.homes.directories).toBe(4);
+      expect(await lstat(runningHome)).toMatchObject({ mode: expect.any(Number) });
+      expect((await lstat(runningHome)).mode & 0o777).toBe(0);
+      expect((await lstat(terminalHome)).mode & 0o777).toBe(0);
+      expect(await lstat(terminalHome)).toMatchObject({ isDirectory: expect.any(Function) });
+    } finally {
+      await chmod(runningHome, 0o700);
+      await chmod(terminalHome, 0o700);
+    }
+    expect(await readFile(path.join(runningHome, "session.jsonl"), "utf8")).toHaveLength(1000);
+    expect(await readFile(path.join(terminalHome, "session.jsonl"), "utf8")).toHaveLength(1000);
+    store.close();
+  });
+
+  test("reports each unreclaimed terminal home only once across store restarts", async () => {
+    const { database, store, artifacts } = await world();
+    const createUnreclaimedRun = async (activeStore: ConveyorStore, id: string, attempt: number) => {
+      activeStore.createRun({ id, issueId: "closed", stageId: "review", attempt, kind: "producer", status: "completed", configHash: "h", startedAt: daysAgo(2) });
+      activeStore.sqlite().query("UPDATE runs SET finished_at = ? WHERE id = ?").run(daysAgo(1), id);
+      await mkdir(path.join(artifacts, id, "home"), { recursive: true });
+      await writeFile(path.join(artifacts, id, "home", "keep"), "unreclaimed");
+      await chmod(path.join(artifacts, id), 0o500);
+    };
+    await createUnreclaimedRun(store, "unreclaimed-one", 2);
+    try {
+      const first = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+
+      expect(first.homes.failures).toHaveLength(1);
+      expect(first.homes.failures[0]).toContain("unreclaimed-one:");
+      expect(first.homes.failures[0]).toContain("permission denied");
+      store.close();
+      const restarted = await ConveyorStore.open(database);
+      try {
+        expect((await applyRetention({ store: restarted, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).homes.failures).toEqual([]);
+        await createUnreclaimedRun(restarted, "unreclaimed-two", 3);
+        const next = await applyRetention({ store: restarted, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+        expect(next.homes.failures).toHaveLength(1);
+        expect(next.homes.failures[0]).toContain("unreclaimed-two:");
+      } finally {
+        await chmod(path.join(artifacts, "unreclaimed-one"), 0o700);
+        await chmod(path.join(artifacts, "unreclaimed-two"), 0o700).catch(() => {});
+        restarted.close();
+      }
+    } catch (error) {
+      await chmod(path.join(artifacts, "unreclaimed-one"), 0o700).catch(() => {});
+      store.close();
+      throw error;
+    }
   });
 });
 
