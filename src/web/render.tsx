@@ -8,10 +8,12 @@ import { IndicatorChips, IndicatorDetails } from "./indicators";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
-import { dashboardCss, quotaHeaderCss, stickyNavigationCss, stickyNavigationOverridesCss } from "./styles";
+import { dashboardCss, graphCss, quotaHeaderCss, stickyNavigationCss, stickyNavigationOverridesCss } from "./styles";
 import type {
   DashboardView,
   DashboardViewModel,
+  GraphNodeViewModel,
+  GraphRelationshipViewModel,
   IssueCardViewModel,
   IssueRelationViewModel,
   RecentActivityType,
@@ -38,6 +40,7 @@ function issueHref(repository: string, number: number, tab?: "conversation" | "j
 }
 
 function viewHref(view: DashboardView): string {
+  if (view === "graph") return "/graph";
   if (view === "recent") return "/recent";
   if (view === "attention") return "/attention";
   if (view === "team") return "/team";
@@ -863,6 +866,103 @@ function Board({ model }: { model: DashboardViewModel }) {
   );
 }
 
+function graphNodeAnchor(id: string): string {
+  return `graph-node-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function GraphNodeLink({ node }: { node: GraphNodeViewModel }) {
+  return <a href={`#${graphNodeAnchor(node.id)}`}>{node.repository} #{node.number}: {node.title}</a>;
+}
+
+function GraphRelationshipList({
+  label,
+  relationships,
+  nodesById,
+}: {
+  label: string;
+  relationships: GraphRelationshipViewModel[];
+  nodesById: Map<string, GraphNodeViewModel>;
+}) {
+  const related = relationships.flatMap((relationship) => {
+    const node = nodesById.get(relationship.from) ?? nodesById.get(relationship.to);
+    return node ? [{ relationship, node }] : [];
+  });
+  if (related.length === 0) return null;
+  return <div class="graph-node-relations">
+    <dt>{label}</dt>
+    <dd><ul>{related.map(({ relationship, node }) => <li key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
+      <GraphNodeLink node={node} />
+      {relationship.kind === "dependency" && <span> — {relationship.status} prerequisite</span>}
+    </li>)}</ul></dd>
+  </div>;
+}
+
+/** A read-only, relationship-first view of the current workflow. */
+function Graph({ model }: { model: DashboardViewModel }) {
+  const nodesById = new Map(model.graph.nodes.map((node) => [node.id, node]));
+  if (model.graph.nodes.length === 0) return <section class="graph-view" aria-labelledby="graph-heading">
+    <header class="graph-header"><h2 id="graph-heading">Workflow graph</h2><p>Relationships between current workflow items appear here.</p></header>
+    <p class="graph-empty">There are no current workflow items to show.</p>
+  </section>;
+  return <section class="graph-view" aria-labelledby="graph-heading">
+    <header class="graph-header">
+      <h2 id="graph-heading">Workflow graph</h2>
+      <p>Nodes show current workflow items and directly related context. Stage is a tag, not a graph grouping.</p>
+    </header>
+    <section class="graph-relationships" aria-labelledby="graph-relationships-heading">
+      <h3 id="graph-relationships-heading">Directed relationships</h3>
+      <ol>{model.graph.relationships.flatMap((relationship) => {
+        const from = nodesById.get(relationship.from);
+        const to = nodesById.get(relationship.to);
+        if (!from || !to) return [];
+        const description = relationship.kind === "parent-child"
+          ? <><strong>Parent #{from.number} → child #{to.number}</strong><span> Family relationship</span></>
+          : <><strong>Issue #{to.number} waits for prerequisite #{from.number}</strong><span> Status: {relationship.status} prerequisite</span></>;
+        const statusClass = relationship.kind === "dependency" && relationship.status
+          ? ` graph-relationship--${relationship.status}`
+          : "";
+        return <li class={`graph-relationship graph-relationship--${relationship.kind}${statusClass}`} key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
+          {description}
+        </li>;
+      })}</ol>
+    </section>
+    <ol class="graph-nodes" aria-label="Workflow items">
+      {model.graph.nodes.map((node) => {
+        const parents = model.graph.relationships.filter((relationship) => relationship.kind === "parent-child" && relationship.to === node.id)
+          .map((relationship) => ({ ...relationship, to: relationship.from }));
+        const children = model.graph.relationships.filter((relationship) => relationship.kind === "parent-child" && relationship.from === node.id)
+          .map((relationship) => ({ ...relationship, from: relationship.to }));
+        const prerequisites = model.graph.relationships.filter((relationship) => relationship.kind === "dependency" && relationship.to === node.id)
+          .map((relationship) => ({ ...relationship, to: relationship.from }));
+        const dependents = model.graph.relationships.filter((relationship) => relationship.kind === "dependency" && relationship.from === node.id)
+          .map((relationship) => ({ ...relationship, from: relationship.to }));
+        return <li key={node.id}>
+          <article id={graphNodeAnchor(node.id)} class={`graph-node${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id}>
+            <header>
+              <a class="graph-node-reference" href={issueHref(node.repository, node.number)}>{node.repository} #{node.number}</a>
+              <span class="graph-node-state">State: {node.state}</span>
+            </header>
+            <h3><a href={issueHref(node.repository, node.number)}>{node.title}</a></h3>
+            <p class="graph-node-tags">
+              {node.stage && <span>Stage: {node.stage}</span>}
+              {node.context && <span>Context item</span>}
+              {node.signal === "stop" && <span>Stopped</span>}
+              {node.signal === "wait" && <span>Waiting</span>}
+              {node.signal === "run" && <span>Running</span>}
+            </p>
+            <dl>
+              <GraphRelationshipList label="Parents" relationships={parents} nodesById={nodesById} />
+              <GraphRelationshipList label="Children" relationships={children} nodesById={nodesById} />
+              <GraphRelationshipList label="Prerequisites" relationships={prerequisites} nodesById={nodesById} />
+              <GraphRelationshipList label="Dependents" relationships={dependents} nodesById={nodesById} />
+            </dl>
+          </article>
+        </li>;
+      })}
+    </ol>
+  </section>;
+}
+
 function NeedsYou({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   const { stopped, total } = needsYouItems(model);
@@ -920,6 +1020,7 @@ function needsYouItems(model: DashboardViewModel) {
 function Navigation({ model }: { model: DashboardViewModel }) {
   const tabs: Array<{ view: DashboardView; label: string; count: number | null }> = [
     { view: "board", label: "Board", count: model.counts.board },
+    { view: "graph", label: "Graph", count: null },
     { view: "recent", label: "Recent", count: null },
     { view: "team", label: "Team", count: null },
     { view: "reports", label: "Reports", count: null },
@@ -1373,6 +1474,7 @@ function viewTitle(model: DashboardViewModel): string {
   if (model.view === "reports" && model.report?.repository) return `Reports · ${model.report.repository}`;
   const names: Record<Exclude<DashboardView, "repository">, string> = {
     board: "Board",
+    graph: "Graph",
     recent: "Recent",
     attention: "Label problems",
     agent: "Operator",
@@ -1390,7 +1492,8 @@ function viewTitle(model: DashboardViewModel): string {
 function Page({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
-  if (model.view === "recent" && model.recent) content = <Recent model={model} />;
+  if (model.view === "graph") content = <Graph model={model} />;
+  else if (model.view === "recent" && model.recent) content = <Recent model={model} />;
   else if (model.view === "attention") content = <Attention model={model} />;
   else if (model.view === "agent") content = <AgentPanel model={model} />;
   else if (model.view === "team") content = <Team agents={model.team ?? []} />;
@@ -1414,7 +1517,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <title>{pageTitle(model)} · {model.title}</title>
         <script src="/assets/theme.js" />
-        <style dangerouslySetInnerHTML={{ __html: dashboardCss + quotaHeaderCss + stickyNavigationCss + stickyNavigationOverridesCss }} />
+        <style dangerouslySetInnerHTML={{ __html: dashboardCss + graphCss + quotaHeaderCss + stickyNavigationCss + stickyNavigationOverridesCss }} />
         <script src="/assets/dashboard.js" defer />
         <script src="/assets/notifications.js" defer />
       </head>

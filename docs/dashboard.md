@@ -2,7 +2,7 @@
 
 The dashboard is where you watch and steer delivery: the board, each item's story, the agents, reports and the operator. It is served by `conveyor serve` (default `http://127.0.0.1:7788`) and needs a signed-in account (`conveyor init` creates the first).
 
-The shared header is followed by the view navigation: **Board**, **Recent**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
+The shared header is followed by the view navigation: **Board**, **Graph**, **Recent**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
 
 An enrolled item can still need attention after its source issue closes: if a correlated Conveyor pull request merged and configured post-merge work remains stopped or needs input, **Needs you** keeps the item with its current reason and link. A source-closed item without that merged pull request or continuing workflow does not appear there, nor do done, paused, or offboarded items.
 
@@ -38,6 +38,14 @@ The compact filter bar narrows the cards already on the board by repository, tex
 ![The Board after a long phone scroll, retaining its compact navigation](screenshots/board-phone-scrolled.png)
 
 ![The Board with active filters on a phone](screenshots/board-phone-filtered.png)
+
+## Graph
+
+**Graph** (`/graph`) is a read-only relationship-first view across configured repositories. It shows every current workflow item, including backlog, roll-up, child, and label-problem items, as a node; a completed or offboarded item appears only when it is a direct parent, child, prerequisite, or dependent of a current item. Unrelated history is not imported. A node gives its repository, issue number, title, state, and stage tag. Stages do not create graph columns or groups.
+
+The directed relationship list says **Parent → child** for family links and “issue waits for prerequisite” for dependencies. Dependencies say whether the prerequisite is satisfied, outstanding, or stopped. Each node repeats its immediate parents, children, prerequisites, and dependents as keyboard-accessible links, and opens the existing item details when selected. Context nodes use a labelled dashed treatment; stopped nodes and stopped prerequisites are labelled as such, so the meaning does not depend on color. The graph refreshes with the dashboard's live updates and remains a single column on phones.
+
+![The Graph showing directed family and dependency relationships](screenshots/graph.png)
 
 ## Recent activity
 

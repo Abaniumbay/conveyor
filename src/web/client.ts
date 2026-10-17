@@ -161,7 +161,9 @@ export function morphDashboard(current: any, next: any): void {
     if (own) return node.tagName + "#" + own;
     const card = node.tagName === "LI" ? node.firstElementChild : null;
     const inner = card && card.getAttribute("data-issue-id");
-    return inner ? "LI#" + inner : null;
+    if (inner) return "LI#" + inner;
+    const graphNode = card && card.getAttribute("data-graph-node");
+    return graphNode ? "LI#graph-" + graphNode : null;
   };
   const held = (placeholder: any): any => {
     const card = [...current.querySelectorAll("article[data-issue-id]")].find((candidate: any) =>

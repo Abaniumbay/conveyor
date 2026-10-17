@@ -15,6 +15,7 @@ const model: DashboardViewModel = {
   revision: "revision-1",
   view: "board",
   repositoryId: null,
+  graph: { nodes: [], relationships: [] },
   counts: { board: 0, attention: 0 },
   activeWork: { runnerCount: 0, runnerCapacity: 2, runs: [] },
   selectedIssue: null,
@@ -409,6 +410,9 @@ describe("createWebHandler", () => {
     const recentUnauthenticated = await handler(new Request("http://localhost/recent?type=done"));
     expect(recentUnauthenticated.status).toBe(303);
     expect(recentUnauthenticated.headers.get("location")).toBe("/login?returnTo=%2Frecent%3Ftype%3Ddone");
+    const graphUnauthenticated = await handler(new Request("http://localhost/graph"));
+    expect(graphUnauthenticated.status).toBe(303);
+    expect(graphUnauthenticated.headers.get("location")).toBe("/login?returnTo=%2Fgraph");
     expect((await handler(new Request("http://localhost/login"))).headers.get("content-type")).toContain("text/html");
   });
 
@@ -594,7 +598,7 @@ describe("createWebHandler", () => {
     const { cookie } = await login(handler);
     const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
 
-    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/recent", "recent"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
+    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/graph", "graph"], ["/recent", "recent"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
       expect((await get(path)).status).toBe(200);
       expect(dashboardCalls.at(-1)?.view).toBe(view);
     }

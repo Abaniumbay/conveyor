@@ -827,4 +827,11 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 30,
+    sql: `
+      -- The relationship graph follows a prerequisite to its current and historical dependents.
+      CREATE INDEX dependencies_blocker_idx ON dependencies(blocker_id, issue_id);
+    `,
+  },
 ];

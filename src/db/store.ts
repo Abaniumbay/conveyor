@@ -1081,6 +1081,15 @@ export class ConveyorStore {
     return rows.map((row) => row.blocker_id);
   }
 
+  listDependents(blockerId: string): string[] {
+    const rows = this.#database
+      .query(
+        "SELECT issue_id FROM dependencies WHERE blocker_id = ? ORDER BY issue_id",
+      )
+      .all(blockerId) as Array<{ issue_id: string }>;
+    return rows.map((row) => row.issue_id);
+  }
+
   listChildren(parentId: string): Array<{
     issueId: string;
     siblingOrder: number | null;

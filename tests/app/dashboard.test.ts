@@ -484,10 +484,14 @@ describe("ConveyorService dashboard", () => {
       web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
       labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [stage("refinement"), { ...stage("implementation"), description: "Writes the change.", icon: "🛠️" }, stage("review")] } },
-      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      repositories: {
+        repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+        other: { source: "github", address: "owner/other", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+      },
       agents: {},
     } as unknown as ConveyorConfig;
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    store.upsertRepository({ id: "other", configName: "other", source: "github", address: "owner/other", folder: root, configHash: config.hash });
     for (const item of [
       { id: "parent", number: 1, stage: "implementation", state: "active", sourceState: "open" as const },
       { id: "working", number: 2, stage: "implementation", state: "active", sourceState: "open" as const },
@@ -495,8 +499,12 @@ describe("ConveyorService dashboard", () => {
       { id: "finished", number: 4, stage: "review", state: "done", sourceState: "closed" as const },
       { id: "unrelated", number: 5, stage: "implementation", state: "active", sourceState: "open" as const },
       { id: "mislabelled", number: 6, stage: "implementation", state: "inconsistent", sourceState: "open" as const },
+      { id: "unrelated-history", number: 7, stage: "review", state: "done", sourceState: "closed" as const },
+      { id: "completed-dependent", number: 8, stage: "review", state: "done", sourceState: "closed" as const },
+      { id: "other", repository: "other", number: 1, stage: "implementation", state: "active", sourceState: "open" as const },
     ]) {
-      store.upsertIssue({ id: item.id, repositoryId: "repo", sourceNumber: item.number, sourceUrl: `https://github.com/owner/repo/issues/${item.number}`, title: item.id, body: "", sourceState: item.sourceState, sourceStateReason: item.sourceState === "closed" ? "completed" : null, labels: ["conveyor", `conveyor:${item.stage}`], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+      const repository = item.repository ?? "repo";
+      store.upsertIssue({ id: item.id, repositoryId: repository, sourceNumber: item.number, sourceUrl: `https://github.com/owner/${repository}/issues/${item.number}`, title: item.id, body: "", sourceState: item.sourceState, sourceStateReason: item.sourceState === "closed" ? "completed" : null, labels: ["conveyor", `conveyor:${item.stage}`], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
       store.setQueueRank(item.id, item.number);
       store.setIssueProjection(item.id, { stage: item.stage, state: item.state, warning: null });
       store.setStageState({ issueId: item.id, stageId: item.stage, status: "ready", feedbackCycle: 0, configHash: config.hash });
@@ -504,6 +512,8 @@ describe("ConveyorService dashboard", () => {
     ["working", "stopped", "finished"].forEach((child, index) => store.replaceRelationships(child, { parentId: "parent", siblingOrder: index + 1 }, []));
     // "unrelated" waits on a stopped item and on a finished one.
     store.replaceRelationships("unrelated", null, ["stopped", "finished", "mislabelled"]);
+    // A completed dependent is context for its still-current prerequisite.
+    store.replaceRelationships("completed-dependent", null, ["working"]);
 
     const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
     const cards = [...model.stages.flatMap((column) => column.issues), ...model.done.issues];
@@ -528,6 +538,25 @@ describe("ConveyorService dashboard", () => {
       { id: "mislabelled", satisfied: false, signal: "stop", state: "Inconsistent" },
       { id: "stopped", satisfied: false, signal: "stop", state: "Blocked" },
     ]);
+    expect(model.graph.nodes.map((node) => node.id).sort()).toEqual([
+      "completed-dependent", "finished", "mislabelled", "other", "parent", "stopped", "unrelated", "working",
+    ]);
+    expect(model.graph.nodes.find((node) => node.id === "other")).toMatchObject({ repository: "other", context: false });
+    expect(model.graph.relationships.some((relationship) => relationship.from === "other" || relationship.to === "other")).toBe(false);
+    expect(model.graph.nodes.find((node) => node.id === "finished")).toMatchObject({ context: true, state: "Done" });
+    expect(model.graph.nodes.find((node) => node.id === "completed-dependent")).toMatchObject({ context: true, state: "Done" });
+    expect(model.graph.nodes.find((node) => node.id === "stopped")).toMatchObject({ signal: "stop", context: false });
+    expect(model.graph.nodes.some((node) => node.id === "unrelated-history")).toBe(false);
+    expect(model.graph.relationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "parent-child", from: "parent", to: "working" }),
+      expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated", status: "stopped" }),
+      expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }),
+      expect.objectContaining({ kind: "dependency", from: "working", to: "completed-dependent", status: "outstanding" }),
+    ]));
+    store.replaceRelationships("unrelated", null, ["finished"]);
+    const refreshed = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    expect(refreshed.graph.relationships).not.toContainEqual(expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated" }));
+    expect(refreshed.graph.relationships).toContainEqual(expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }));
     store.close();
   });
 

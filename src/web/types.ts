@@ -268,7 +268,34 @@ export interface DashboardPageSelection {
   recentCursor?: { occurredAt: string; id: string | null } | null;
 }
 
-export type DashboardView = "board" | "recent" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
+export type DashboardView = "board" | "graph" | "recent" | "attention" | "agent" | "team" | "reports" | "repositories" | "repository" | "about" | "accounts" | "profile" | "notifications";
+
+/** An item in the relationship graph. Context nodes are non-current items reached from a current item. */
+export interface GraphNodeViewModel {
+  id: string;
+  repository: string;
+  repositoryColor: number;
+  number: number;
+  title: string;
+  state: string;
+  stage: string | null;
+  context: boolean;
+  signal: "run" | "wait" | "stop" | null;
+}
+
+export interface GraphRelationshipViewModel {
+  /** Parent-to-child links point from parent to child; dependency links point from prerequisite to waiting item. */
+  kind: "parent-child" | "dependency";
+  from: string;
+  to: string;
+  /** Dependency state; family links have no completion state. */
+  status: "satisfied" | "outstanding" | "stopped" | null;
+}
+
+export interface GraphViewModel {
+  nodes: readonly GraphNodeViewModel[];
+  relationships: readonly GraphRelationshipViewModel[];
+}
 
 export type RecentActivityType = "done" | "stopped" | "sent-back" | "moved-forward" | "new" | "resumed" | "rollup";
 
@@ -410,6 +437,8 @@ export interface DashboardViewModel {
   repositoryId: string | null;
   boardFilters?: { repositories: readonly string[]; q: string; state: string | null };
   recent?: RecentActivityViewModel;
+  /** Reconciled workflow items and their one-hop relationship context. */
+  graph: GraphViewModel;
   counts: { board: number; attention: number };
   activeWork: {
     runnerCount: number;

@@ -431,6 +431,8 @@ async function seedDemo(home: string): Promise<void> {
         configHash: "demo-config",
       });
     }
+    store.replaceRelationships("demo#2", null, ["demo#4"]);
+    store.replaceRelationships("demo#5", null, ["demo#2"]);
 
     store.createRun({
       id: "demo-implementation-run",
@@ -1030,6 +1032,11 @@ async function main(): Promise<void> {
       "Ship a reliable dashboard overview",
     ]);
     await expectReachableElement(page.locator("[data-sticky-filter-summary]"), "Sticky filter summary");
+    await capture(page, baseUrl, "graph", "/graph", [
+      "Workflow graph",
+      "Issue #2 waits for prerequisite #4",
+      "Status: stopped prerequisite",
+    ]);
     await capture(page, baseUrl, "repositories", "/repositories", [
       "Repositories",
       PHONE_OVERFLOW_REPOSITORY,

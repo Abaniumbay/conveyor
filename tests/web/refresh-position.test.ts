@@ -61,6 +61,7 @@ function dashboard(
     revision,
     view: "board",
     repositoryId: null,
+    graph: { nodes: [], relationships: [] },
     counts: { board: middleIssues.length, attention: 0 },
     activeWork: { runnerCount: 0, runnerCapacity: 1, runs: [] },
     stages: [
@@ -267,6 +268,104 @@ describe("dashboard live refresh position", () => {
       ]);
       expect(await page.locator(".recent-load-more").count()).toBe(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("keeps the Graph usable at 360 px without horizontal page scrolling", async () => {
+    const server = startDashboard({
+      dashboard: (selection) => ({
+        ...dashboard("graph-1", []),
+        view: selection.view,
+        graph: {
+          nodes: [
+            { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", context: false, signal: "run" },
+            { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "A deliberately long child title that must also wrap inside a phone viewport", state: "Blocked", stage: "Review", context: false, signal: "stop" },
+          ],
+          relationships: [
+            { kind: "parent-child", from: "parent", to: "child", status: null },
+            { kind: "dependency", from: "parent", to: "child", status: "stopped" },
+          ],
+        },
+      }),
+      revision: () => "graph-1",
+      delayMs: () => 0,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/graph`);
+
+      expect(await page.locator(".graph-node").count()).toBe(2);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: stopped prerequisite");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("refreshes Graph nodes and relationship status in place without duplicates", async () => {
+    let revision = "graph-live-1";
+    let currentDashboard: DashboardViewModel = {
+      ...dashboard(revision, []),
+      view: "graph",
+      graph: {
+        nodes: [
+          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Active", stage: "Review", context: false, signal: "run" },
+          { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Blocked", stage: "Implementation", context: false, signal: "stop" },
+          { id: "retired", repository: "foundation", repositoryColor: 2, number: 8, title: "Removed context", state: "Done", stage: null, context: true, signal: null },
+        ],
+        relationships: [
+          { kind: "dependency", from: "prerequisite", to: "waiting", status: "outstanding" },
+          { kind: "parent-child", from: "retired", to: "waiting", status: null },
+        ],
+      },
+    };
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/graph`);
+      expect(await page.locator('[data-graph-node="retired"]').count()).toBe(1);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: outstanding prerequisite");
+
+      let navigations = 0;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) navigations += 1;
+      });
+      await armReplacement(page);
+      revision = "graph-live-2";
+      currentDashboard = {
+        ...dashboard(revision, []),
+        view: "graph",
+        graph: {
+          nodes: [
+            { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Active", stage: "Implementation", context: false, signal: "run" },
+            { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Done", stage: "Review", context: false, signal: "run" },
+            { id: "added", repository: "sample", repositoryColor: 1, number: 43, title: "New dependent", state: "Active", stage: "Implementation", context: false, signal: "run" },
+          ],
+          relationships: [
+            { kind: "dependency", from: "prerequisite", to: "waiting", status: "satisfied" },
+          ],
+        },
+      };
+
+      await page.waitForFunction(() =>
+        document.querySelector('[data-graph-node="added"]') !== null &&
+        document.querySelector('[data-graph-node="retired"]') === null &&
+        document.querySelector(".graph-relationship--dependency")?.textContent?.includes("Status: satisfied prerequisite"),
+      );
+
+      const graphIds = await page.locator("[data-graph-node]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-graph-node")));
+      expect(await page.locator('[data-graph-node="retired"]').count()).toBe(0);
+      expect(await page.locator('[data-graph-node="added"]').count()).toBe(1);
+      expect(await page.locator(".graph-relationship--parent-child").count()).toBe(0);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: satisfied prerequisite");
+      expect(new Set(graphIds).size).toBe(graphIds.length);
+      expect(navigations).toBe(0);
     } finally {
       server.stop(true);
     }
