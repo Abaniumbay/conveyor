@@ -355,6 +355,10 @@ export interface RepositoryDashboardSummary {
     baseBranch: string;
     itemProvider: string;
     itemSync: "webhook" | "polling";
+    /** For webhook sync: whether deliveries arrive, so waits rely on them; null while polling. */
+    webhooks: "healthy" | "unhealthy" | null;
+    /** GitHub requests made for this repository in the last hour, as "source count" pairs, busiest first. */
+    githubCalls: { total: number; bySource: ReadonlyArray<{ source: string; count: number }> };
     ciProvider: string | null;
     ciMode: "required" | "advisory" | "disabled";
     systemLabels: readonly string[];

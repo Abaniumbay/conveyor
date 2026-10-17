@@ -86,6 +86,14 @@ async function running() {
 }
 
 describe("control socket", () => {
+  test("reports the last hour's GitHub calls of the running service", async () => {
+    const { service } = await running();
+    service.githubCalls.record({ method: "GET", route: "repos/:repo/issues", repository: "owner/app", source: "tick", durationMs: 1, ok: true, status: null });
+    const handler = createControlHandler(service, { supervised: false } as never);
+    const report = await (await handler(new Request("http://x/v1/github-calls"))).json() as { total: number; bySource: Record<string, number>; rateLimit: unknown };
+    expect(report).toMatchObject({ total: 1, bySource: { tick: 1 }, rateLimit: null });
+  });
+
   test("CLI actions are commands sent by the CLI, and a retry's changes share its correlation id", async () => {
     const { store, cli } = await running();
     const after = store.events().latestSeq();

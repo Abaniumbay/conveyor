@@ -647,7 +647,7 @@ describe("createWebHandler", () => {
       backlog: 0, stages: [], done: 0, items: [], deliveries: [],
       skippedReviewItems: [],
       capacity: { busy: 0, slots: 1 },
-      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
       trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     };

@@ -647,7 +647,7 @@ describe("renderDashboard", () => {
       addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
       backlog: 1, stages: [{ id: "implementation", name: "Implementation", count: 1 }], done: 2, items,
       deliveries: [], skippedReviewItems: [], capacity: { busy: 1, slots: 2 },
-      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, webhooks: "healthy" as const, githubCalls: { total: 0, bySource: [] }, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
       trust: { visibility: "public" as const, checkedAt: "2026-10-01T00:00:00.000Z", warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 2, inputTokens: 20, outputTokens: 10, agentMs: 60_000 },
     });
@@ -707,7 +707,7 @@ describe("renderDashboard", () => {
       deliveries: [{ number: 6, title: "Delivered item", deliveredAt: "2026-10-01T00:00:00.000Z" }],
       skippedReviewItems: [{ number: 7, title: "Current item", count: 1 }],
       capacity: { busy: 1, slots: 2 },
-      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
       trust: { visibility: "unknown" as const, checkedAt: null, warning: "<img src=x onerror=alert(1)>", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: ["reviewer[bot]", "<unsafe-login>"], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 8, inputTokens: 120, outputTokens: 30, agentMs: 180_000 },
     };
@@ -722,6 +722,10 @@ describe("renderDashboard", () => {
     expect(reader).toContain("Last checked");
     expect(reader).toContain("Slots");
     expect(reader).toContain("1 of 2");
+    expect(reader).toContain("<dt>GitHub calls, last hour</dt><dd>0</dd>");
+    const webhooks = renderDashboard({ ...base, repositories: [{ ...repository, setup: { ...repository.setup, itemSync: "webhook" as const, webhooks: "unhealthy" as const, githubCalls: { total: 7, bySource: [{ source: "tick", count: 5 }, { source: "webhook", count: 2 }] } } }] });
+    expect(webhooks).toContain("github · webhook (deliveries unhealthy: waits poll)");
+    expect(webhooks).toContain("<dt>GitHub calls, last hour</dt><dd>7 (tick 5, webhook 2)</dd>");
     // Counts, not nine links to the same Board page.
     expect(reader).toContain("<p>4 backlog · 2 Implementation · 8 completed all-time</p>");
     expect(reader).toContain("Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.");

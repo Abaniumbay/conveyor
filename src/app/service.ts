@@ -66,7 +66,7 @@ import { withEventContext } from "../events/context";
 import { normalizeGitHubEvent } from "../source/github/events";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
-import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
+import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
 
@@ -89,6 +89,14 @@ interface McpGrant {
   actor: { id: string; name: string; title: string } | null;
   /** Responses, including in-flight ones, keyed by the client's transport-retry token. */
   calls: Map<string, Promise<unknown>>;
+}
+
+/** What `conveyor doctor` and the dashboard show of the service's GitHub requests. */
+export interface GitHubCallReport extends GitHubCallSummary {
+  /** When counting started; a window reaching further back covers only the time since. */
+  countingSince: string;
+  windowMs: number;
+  rateLimit: { limit: number; remaining: number; resetAt: string } | null;
 }
 
 interface ServiceImplementations {
@@ -743,6 +751,14 @@ export class ConveyorService {
   async sinksIdle(): Promise<void> {
     await this.eventsSettled();
     await Promise.all(this.#sinks.map((sink) => sink.idle()));
+  }
+
+  /** The last hour of GitHub requests by source and repository, with the token's remaining rate limit. */
+  async githubCallReport(): Promise<GitHubCallReport> {
+    let rateLimit: GitHubCallReport["rateLimit"] = null;
+    try { rateLimit = (await this.github.rateLimit()).core; }
+    catch { rateLimit = null; }
+    return { countingSince: this.githubCalls.startedAt, windowMs: GITHUB_CALL_SUMMARY_MS, ...this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS), rateLimit };
   }
 
   /**
@@ -3231,6 +3247,8 @@ export class ConveyorService {
       onboardingErrors: this.#onboardingErrors,
       reconciliationErrors: this.#repositoryErrors,
       lastReconciledAt: this.#lastReconciledAt,
+      webhookHealth: this.#webhookHealth,
+      githubCalls: this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS),
     });
   }
 

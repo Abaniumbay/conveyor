@@ -116,6 +116,13 @@ describe("buildRepositorySummaries", () => {
       },
       report30d: { delivered: 12, inputTokens: 100, outputTokens: 50, agentMs: 3_600_000 },
     });
+    expect(alpha.setup).toMatchObject({ webhooks: "unhealthy", githubCalls: { total: 0, bySource: [] } });
+    const withCalls = buildRepositorySummaries({
+      store, config, now: NOW,
+      webhookHealth: new Map([["alpha", true]]),
+      githubCalls: { total: 5, bySource: { tick: 3, webhook: 2 }, byRepository: { "owner/alpha": { webhook: 2, tick: 3 } }, byRoute: {} },
+    }).repositories[0]!;
+    expect(withCalls.setup).toMatchObject({ webhooks: "healthy", githubCalls: { total: 5, bySource: [{ source: "tick", count: 3 }, { source: "webhook", count: 2 }] } });
     expect(alpha.items).toEqual([
       { number: 1, title: "Item 1", stage: "implementation", state: "Running" },
       { number: 2, title: "Item 2", stage: "review", state: "Needs you" },

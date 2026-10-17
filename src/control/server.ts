@@ -184,6 +184,7 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
     try {
       if (route === "GET /v1/status") return json(status(service, info));
       if (route === "GET /v1/board") return json(board(service));
+      if (route === "GET /v1/github-calls") return json(await service.githubCallReport());
       if (route === "GET /v1/questions") {
         return json(service.store.listOpenQuestions()
           .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
