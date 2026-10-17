@@ -142,6 +142,35 @@ does not change permissions or remove homes. If a selected home still cannot be 
 warns once with its run ID and failure reason; the receipt survives service restarts, while a newly
 failing home still produces its own warning.
 
+## Periodic Operator checks
+
+`web.steering.periodic.interval` opts the configured Operator into periodic checks.
+It uses the existing `web.steering.agent` and its configured model and effort. Set
+the interval as a duration, for example:
+
+```yaml
+web:
+  steering:
+    periodic:
+      interval: 15m
+```
+
+On each interval, Conveyor first reconciles the board. It starts a scheduled
+Operator run only when at least one enrolled, configured board item is stopped
+(`blocked`, `error`, `needs-input`, `needs-intervention`, or `rejected`). Empty,
+healthy, paused-only, completed-only, and offboarded boards do not start a run.
+After a restart, the first check waits for the next interval; missed intervals
+are not replayed in a burst.
+
+Scheduled checks never overlap another scheduled or owner-started Operator run;
+an owner request takes precedence, and shutdown or drain admits no new check.
+Their authority is deliberately narrower than an owner-started Operator: they
+can inspect the board and stopped-item history, retry only an eligible item with
+new supporting evidence, answer an open question only from unambiguous current
+evidence, and report the result. They cannot move backlog items or take
+unrelated board actions. Failed source writes remain visible and are retried
+without recording a successful answer prematurely.
+
 ## Events
 
 Every change Conveyor makes is recorded in its event log ([events.md](events.md) lists them). The

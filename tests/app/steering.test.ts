@@ -181,6 +181,10 @@ describe("ConveyorService steering", () => {
         stoppedSource.body = `${stoppedSource.body}\nThe accepted release may be stable or beta.`;
         await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release may be stable or beta." } }, context.control.token)).rejects.toThrow("ambiguous");
         stoppedSource.body = stoppedSource.body.replace("\nThe accepted release may be stable or beta.", "");
+        stoppedSource.body = `${stoppedSource.body}\nThe accepted release is not stable.`;
+        await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is not stable." } }, context.control.token)).rejects.toThrow("must state the submitted answer");
+        expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
+        stoppedSource.body = stoppedSource.body.replace("\nThe accepted release is not stable.", "");
         await service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token);
         await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "retryable" } }, context.control.token);
         service.drain("Keep the retry queued while this check records its outcome.");

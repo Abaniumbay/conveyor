@@ -110,6 +110,7 @@ describe("structured questions", () => {
     expect(scheduledQuestionAnswerEvidence(question, "stable", "The accepted release is stable.")).toBe("stable");
     expect(() => scheduledQuestionAnswerEvidence(question, "beta", "The accepted release is stable.")).toThrow("must state the submitted answer");
     expect(() => scheduledQuestionAnswerEvidence(question, "stable", "The accepted release may be stable or beta.")).toThrow("ambiguous");
+    expect(() => scheduledQuestionAnswerEvidence(question, "stable", "The accepted release is not stable.")).toThrow("must state the submitted answer");
   });
 
   test("does not permit scheduled operators to infer free-text answers", () => {
