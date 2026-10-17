@@ -43,6 +43,10 @@ export interface SimulatedRepository {
   checkRuns: Map<string, SimulatedCheckRun[]>;
   labels: Set<string>;
   hooks: Array<{ id: number; active: boolean; events: string[]; config: { url: string }; last_response: { code: number | null; status: string } }>;
+  /** Delivery attempts per hook, newest first, as GitHub lists them. */
+  hookDeliveries: Map<number, Array<{ id: number; guid: string; delivered_at: string; status_code: number; redelivery: boolean }>>;
+  /** Delivery attempts the simulator was asked to send again. */
+  redeliveries: number[];
   /** Pull request conversations, which GitHub serves through the issues API. */
   pullConversations: Map<number, SimulatedIssue>;
 }
@@ -63,7 +67,7 @@ export class GitHubSimulator implements GitHubTransport {
   repository(address: string): SimulatedRepository {
     let repository = this.repositories.get(address.toLowerCase());
     if (!repository) {
-      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map() };
+      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map(), hookDeliveries: new Map(), redeliveries: [] };
       this.repositories.set(address.toLowerCase(), repository);
     }
     return repository;
@@ -249,6 +253,11 @@ export class GitHubSimulator implements GitHubTransport {
         repository.hooks.push(hook);
         return hook;
       }
+    }
+    if ((match = /^hooks\/(\d+)\/deliveries$/.exec(rest)) && method === "GET") return repository.hookDeliveries.get(Number(match[1]!)) ?? [];
+    if ((match = /^hooks\/(\d+)\/deliveries\/(\d+)\/attempts$/.exec(rest)) && method === "POST") {
+      repository.redeliveries.push(Number(match[2]!));
+      return null;
     }
     if ((match = /^pulls\/(\d+)$/.exec(rest))) {
       const pull = repository.pulls.get(Number(match[1]!));

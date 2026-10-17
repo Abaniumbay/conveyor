@@ -159,6 +159,7 @@ settings:
       ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
       change: 10m           # waiting for a pull request (change.mergeable)
       dependencies: 30m     # waiting for blockers (item.dependenciesMet)
+    reconcileInterval: 30m  # the safety-net reconcile while webhooks are healthy
 ```
 
 A task that waits for something GitHub reports by webhook (CI finishing, a new pull request
@@ -173,6 +174,14 @@ with a `web.publicUrl`), GitHub reports it active, and its last delivery succeed
 yet. Conveyor checks at start and hourly; any delivery received counts as healthy at once. While a
 repository's webhooks are unhealthy, or it uses polling, every wait polls at its `wait.poll`
 interval as before.
+
+While a repository's webhooks are healthy, its deliveries keep Conveyor current and the periodic
+reconcile is only a safety net: it reads the repository every `settings.events.reconcileInterval`
+instead of every `settings.reconcileInterval`, and reuses an unchanged issue's sub-issues and
+blockers for six hours instead of one. At start and hourly Conveyor also lists the webhook's recent
+deliveries and asks GitHub to send again, at most 50 at a time, those of the last day that failed
+and never arrived. This needs the same permission as configuring the webhook; without it Conveyor
+warns once and relies on the safety-net reconcile.
 
 A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
 Each sink keeps its own position in the database: it receives every event at least once and in

@@ -235,6 +235,16 @@ interface GitHubHook {
   last_response?: { code?: number | null; status?: string | null } | null;
 }
 
+/** One delivery attempt of a webhook, newest first in GitHub's list. */
+export interface GitHubHookDelivery {
+  id: number;
+  /** The delivery's id (`X-GitHub-Delivery`); a redelivery keeps it. */
+  guid: string;
+  deliveredAt: string;
+  statusCode: number;
+  redelivery: boolean;
+}
+
 /** Conveyor's webhook on a repository as GitHub reports it. */
 export interface GitHubWebhookStatus {
   id: number;
@@ -471,6 +481,22 @@ export class GitHubAdapter {
     if (!hook) return null;
     const code = hook.last_response?.code;
     return { id: hook.id, active: hook.active, lastResponseCode: typeof code === "number" ? code : null };
+  }
+
+  /** The latest delivery attempts of a webhook (one page, newest first). */
+  async listHookDeliveries(address: string, hookId: number): Promise<GitHubHookDelivery[]> {
+    const deliveries = await this.transport.request<Array<{ id: number; guid: string; delivered_at: string; status_code: number; redelivery: boolean }>>({
+      method: "GET",
+      path: `repos/${address}/hooks/${hookId}/deliveries?per_page=100`,
+    });
+    return deliveries.map((delivery) => ({
+      id: delivery.id, guid: delivery.guid, deliveredAt: delivery.delivered_at, statusCode: delivery.status_code, redelivery: delivery.redelivery,
+    }));
+  }
+
+  /** Asks GitHub to send a delivery again. */
+  async redeliverHookDelivery(address: string, hookId: number, deliveryId: number): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/hooks/${hookId}/deliveries/${deliveryId}/attempts` });
   }
 
   async getIssue(address: string, issueNumber: number): Promise<SourceIssue> {

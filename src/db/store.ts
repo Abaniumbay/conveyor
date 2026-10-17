@@ -1773,6 +1773,11 @@ export class ConveyorStore {
     }
   }
 
+  /** Whether a webhook delivery with this id was stored. */
+  hasSourceEvent(source: string, deliveryId: string): boolean {
+    return this.#database.query("SELECT 1 FROM source_events WHERE source = ? AND delivery_id = ?").get(source, deliveryId) !== null;
+  }
+
   beginSourceMutation(input: {
     idempotencyKey: string;
     source: string;

@@ -18,7 +18,7 @@ import { ConveyorStore, type StoredIssue } from "../db/store";
 import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
-import { GitHubAdapter, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
+import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
 import { GitHubRepositoryTrust } from "../source/github/trust";
 import type { SourceIssue } from "../source/types";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
@@ -164,6 +164,8 @@ const ACTIVITY_EVENT_PAGE_SIZE = 5;
 const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
 /** How long an unchanged issue's sub-issues and blockers are reused before they are read again. */
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
+/** The same while the repository's webhooks are healthy and report relationship changes. */
+const HEALTHY_RELATIONSHIP_REUSE_MS = 6 * 60 * 60_000;
 /** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
 const FULL_ISSUE_LISTING_MS = 60 * 60_000;
 /** A reconnecting dashboard replays at most this many missed events; with more it reloads. */
@@ -180,6 +182,9 @@ function streamEvent(event: StoredEvent): DashboardStreamEvent {
 const SCHEDULING_EVENTS: readonly EventType[] = [
   "task.woken", "item.requeued", "gate.requirementChanged", "command.accepted",
 ];
+/** How far back missed webhook deliveries are redelivered, and at most how many per pass. */
+const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
+const REDELIVERY_LIMIT = 50;
 /** How often each repository's webhook is asked how its deliveries go. */
 const WEBHOOK_HEALTH_CHECK_MS = 60 * 60_000;
 /** How often the GitHub request counts are logged, and the window they cover. */
@@ -385,6 +390,11 @@ export class ConveyorService {
   readonly #sinks: SinkRunner[];
   /** Per repository: whether its webhook delivers, as last checked or shown by a delivery. */
   readonly #webhookHealth = new Map<string, boolean>();
+  readonly #webhookIds = new Map<string, number>();
+  /** Repositories whose deliveries Conveyor may not list; warned about once. */
+  readonly #redeliveryDenied = new Set<string>();
+  /** When each repository was last read by a full pass (startup or tick). */
+  readonly #repositoryReconciledAt = new Map<string, number>();
   #webhookHealthTimer: ReturnType<typeof setInterval> | null = null;
   readonly #waitDispatcher: WaitDispatcher;
   #scheduleRequested = false;
@@ -514,6 +524,7 @@ export class ConveyorService {
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
           await this.checkWebhookHealth(id);
+          await this.redeliverMissed(id);
         }
         if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
@@ -549,12 +560,55 @@ export class ConveyorService {
     let healthy = false;
     try {
       const status = await this.github.webhookStatus({ address, url });
+      if (status) this.#webhookIds.set(repositoryId, status.id);
       healthy = status !== null && status.active && (status.lastResponseCode === null || (status.lastResponseCode >= 200 && status.lastResponseCode < 300));
     } catch (error) {
       log.warn("Could not read the repository's webhook; waits poll until it can be read", { repository: repositoryId }, error);
     }
     this.setWebhookHealth(repositoryId, healthy);
     return healthy;
+  }
+
+  /**
+   * Asks GitHub to send again the recent deliveries Conveyor never received: those of the last day
+   * that no attempt delivered and that are not stored. At most REDELIVERY_LIMIT per pass. Without the
+   * permission to list deliveries it warns once and leaves them to the safety-net reconcile.
+   */
+  async redeliverMissed(repositoryId: string): Promise<number> {
+    const address = this.config.repositories[repositoryId]?.address;
+    const hookId = this.#webhookIds.get(repositoryId);
+    if (!address || hookId === undefined || this.#redeliveryDenied.has(repositoryId)) return 0;
+    let deliveries: Awaited<ReturnType<GitHubAdapter["listHookDeliveries"]>>;
+    try {
+      deliveries = await this.github.listHookDeliveries(address, hookId);
+    } catch (error) {
+      if (error instanceof GitHubTransportError && /\(HTTP 40[34]\)/.test(`${error.stderr} ${error.message}`)) {
+        this.#redeliveryDenied.add(repositoryId);
+        log.warn("Cannot list webhook deliveries; missed deliveries are not redelivered", { repository: repositoryId }, error);
+      } else {
+        log.warn("Could not list webhook deliveries", { repository: repositoryId }, error);
+      }
+      return 0;
+    }
+    const cutoff = Date.now() - REDELIVERY_WINDOW_MS;
+    const attempts = new Map<string, typeof deliveries>();
+    for (const delivery of deliveries) attempts.set(delivery.guid, [...(attempts.get(delivery.guid) ?? []), delivery]);
+    const missed = [...attempts.entries()].flatMap(([guid, tries]) => {
+      const delivered = tries.some((attempt) => attempt.statusCode >= 200 && attempt.statusCode < 300);
+      const latest = tries.reduce((newest, attempt) => (Date.parse(attempt.deliveredAt) > Date.parse(newest.deliveredAt) ? attempt : newest));
+      return delivered || Date.parse(latest.deliveredAt) < cutoff || this.store.hasSourceEvent("github", guid) ? [] : [latest];
+    }).slice(0, REDELIVERY_LIMIT);
+    let redelivered = 0;
+    for (const delivery of missed) {
+      try {
+        await this.github.redeliverHookDelivery(address, hookId, delivery.id);
+        redelivered += 1;
+      } catch (error) {
+        log.warn("Could not ask GitHub to redeliver a webhook delivery", { repository: repositoryId, delivery: delivery.guid }, error);
+      }
+    }
+    if (redelivered > 0) log.info("Asked GitHub to redeliver missed webhook deliveries", { repository: repositoryId, deliveries: redelivered });
+    return redelivered;
   }
 
   private setWebhookHealth(repositoryId: string, healthy: boolean): void {
@@ -589,9 +643,20 @@ export class ConveyorService {
     }
   }
 
-  async reconcileAll(): Promise<void> {
+  /**
+   * Reads every repository. With `skipFresh` (the periodic tick), a repository whose webhooks are
+   * healthy is read only every settings.events.reconcileInterval: its deliveries keep it current,
+   * and this pass is the safety net.
+   */
+  async reconcileAll(options: { skipFresh?: boolean } = {}): Promise<void> {
     for (const [id, repository] of Object.entries(this.config.repositories)) {
       const pipeline = this.config.pipelines[repository.pipeline]!;
+      if (options.skipFresh && this.webhooksHealthy(id)) {
+        const last = this.#repositoryReconciledAt.get(id);
+        const interval = this.config.settings.events?.reconcileIntervalMs ?? this.config.settings.reconcileIntervalMs;
+        if (last !== undefined && Date.now() - last < interval) continue;
+      }
+      this.#repositoryReconciledAt.set(id, Date.now());
       try {
         const listing = this.issueListing(id, false);
         await reconcileRepository({
@@ -669,7 +734,7 @@ export class ConveyorService {
     for (const sink of this.#sinks) sink.start(this.events);
     this.#webhookHealthTimer = setInterval(() => {
       for (const repositoryId of Object.keys(this.config.repositories)) {
-        if (this.webhookUrl(repositoryId)) void this.checkWebhookHealth(repositoryId);
+        if (this.webhookUrl(repositoryId)) void this.checkWebhookHealth(repositoryId).then(() => this.redeliverMissed(repositoryId));
       }
     }, WEBHOOK_HEALTH_CHECK_MS);
   }
@@ -769,7 +834,7 @@ export class ConveyorService {
     if (this.#shuttingDown || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
-      await withGitHubCallSource("tick", () => this.reconcileAll());
+      await withGitHubCallSource("tick", () => this.reconcileAll({ skipFresh: true }));
       this.schedule();
     } finally {
       this.#tickRunning = false;
@@ -1670,7 +1735,9 @@ export class ConveyorService {
     const cached = this.#relationships.get(issue.id);
     // A pass scoped to some issues reuses what it knows of the others, however old.
     if (cached && !refresh) return cached;
-    if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < RELATIONSHIP_REUSE_MS) return cached;
+    // Healthy webhooks report relationship changes, so a read is trusted for longer.
+    const reuseMs = this.webhooksHealthy(issue.repositoryId) ? HEALTHY_RELATIONSHIP_REUSE_MS : RELATIONSHIP_REUSE_MS;
+    if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < reuseMs) return cached;
     const children = await this.github.listSubIssues(address, issue.sourceNumber);
     const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
     const read = { updatedAt: issue.sourceUpdatedAt, readAt: Date.now(), children, dependencies };
