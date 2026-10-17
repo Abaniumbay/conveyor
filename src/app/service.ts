@@ -221,17 +221,29 @@ function resultReason(value: unknown): string | null {
 }
 
 /** The durable stop record survives after the transient issue warning is cleared. */
-function latestStop(store: ConveyorStore, issueId: string): { reason: string | null; stoppedAt: string | null } {
+function latestStop(store: ConveyorStore, issueId: string): {
+  reason: string | null;
+  stoppedAt: string | null;
+  sourceSnapshot: { title: string; body: string } | null;
+} {
   const latestTransition = [...store.listStageTransitions(issueId)].reverse().find(
     (candidate) => candidate.status === "completed",
   );
   if (latestTransition) {
     return latestTransition.kind === "stopped"
-      ? { reason: latestTransition.reason, stoppedAt: latestTransition.completedAt ?? latestTransition.createdAt }
-      : { reason: null, stoppedAt: null };
+      ? {
+          reason: latestTransition.reason,
+          stoppedAt: latestTransition.completedAt ?? latestTransition.createdAt,
+          sourceSnapshot: latestTransition.sourceSnapshot ?? null,
+        }
+      : { reason: null, stoppedAt: null, sourceSnapshot: null };
   }
   const latestRun = store.listIssueRuns(issueId)[0];
-  return { reason: resultReason(latestRun?.result), stoppedAt: latestRun?.finishedAt ?? null };
+  return {
+    reason: resultReason(latestRun?.result),
+    stoppedAt: latestRun?.finishedAt ?? null,
+    sourceSnapshot: null,
+  };
 }
 
 /** The durable stop reason survives after the transient issue warning is cleared. */
@@ -3092,7 +3104,7 @@ export class ConveyorService {
       "This is a scheduled Operator check, not an owner request.",
       `Consider only these stopped items: ${targets.map((issue) => issue.id).join(", ")}.`,
       "Inspect the board and each target's history before acting. Record a concise outcome for every target.",
-      "You may retry only a target after quoting source evidence changed after its recorded stop, or non-Operator conversation recorded after that stop.",
+      "You may retry only a target after quoting source content added after its recorded stop, or non-Operator conversation recorded after that stop.",
       "You may answer only an open target question when its answer is unambiguous and you quote the current issue, acceptance criteria, or recorded conversation evidence.",
       "For every inspected target you cannot safely retry or answer, use the outcome-reporting tool to record why it remains stopped. Do not move backlog items, inspect or act on unrelated items, or make up owner preferences.",
     ].join("\n");
@@ -4706,14 +4718,17 @@ export class ConveyorService {
     const stoppedAt = recordedStop.stoppedAt ? Date.parse(recordedStop.stoppedAt) : Number.NaN;
     if (!Number.isFinite(stoppedAt)) throw new Error("scheduled retry requires a recorded stopped attempt");
     const sourceChangedAfterStop = Date.parse(live.updatedAt) > stoppedAt;
-    const sourceEvidence = sourceChangedAfterStop && [live.title, live.body].some((text) => text.includes(evidenceText));
+    const sourceEvidence = sourceChangedAfterStop &&
+      recordedStop.sourceSnapshot !== null &&
+      [live.title, live.body].some((text) => text.includes(evidenceText)) &&
+      ![recordedStop.sourceSnapshot.title, recordedStop.sourceSnapshot.body].some((text) => text.includes(evidenceText));
     const conversationEvidence = this.store.listConversationMessages(issueId).some((message) =>
       message.actorId !== "scheduled-operator" &&
       Date.parse(message.createdAt) > stoppedAt &&
       message.message.includes(evidenceText)
     );
     if (!sourceEvidence && !conversationEvidence) {
-      throw new Error("scheduled retry evidence must quote source changed after the recorded stop or a non-Operator conversation recorded after it");
+      throw new Error("scheduled retry evidence must quote source content added after the recorded stop or a non-Operator conversation recorded after it");
     }
     const outcome = await this.retryIssue(issueId, note, "Scheduled Operator", true);
     this.store.appendConversationMessage({

@@ -170,7 +170,11 @@ describe("ConveyorService steering", () => {
         expect(board.items.map((item) => item.id)).toContain("stopped");
         await expect(service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "healthy" } }, context.control.token)).rejects.toThrow("only for their stopped targets");
         await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "stopped" } }, context.control.token);
-        await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "stopped", note: "retry", evidence: "awaiting owner" } }, context.control.token)).rejects.toThrow("changed after the recorded stop");
+        await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "stopped", note: "retry", evidence: "awaiting owner" } }, context.control.token)).rejects.toThrow("source content added after the recorded stop");
+        const stoppedSource = sourceIssues.get(2)!;
+        stoppedSource.body = `${stoppedSource.body}\nA typo elsewhere was corrected.`;
+        stoppedSource.updatedAt = "2027-01-02T00:00:00Z";
+        await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "stopped", note: "retry", evidence: "The accepted release is stable." } }, context.control.token)).rejects.toThrow("source content added after the recorded stop");
         await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "owner preference", evidence: "The accepted release is stable." } }, context.control.token)).rejects.toThrow("Choose one of the available answers");
         await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "not present in the source" } }, context.control.token)).rejects.toThrow("unambiguous quote");
         await service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token);
@@ -220,7 +224,7 @@ describe("ConveyorService steering", () => {
     store.setIssueProjection("stopped", { stage: null, state: "blocked", warning: "awaiting owner" });
     store.beginStageTransition({
       id: "stopped-transition", issueId: "stopped", fromStage: "implementation", toStage: "implementation", kind: "stopped", sourceMutationId: null,
-      detail: { reason: "awaiting owner", requiredFixes: [], resultStatus: "blocked" },
+      detail: { reason: "awaiting owner", requiredFixes: [], resultStatus: "blocked", sourceSnapshot: { title: "Stopped", body: "The accepted release is stable." } },
     });
     store.completeStageTransition("stopped-transition");
     sourceIssues.set(2, { id: "stopped", number: 2, url: "https://example.test/2", title: "Stopped", body: "The accepted release is stable.", state: "open", stateReason: null, labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], updatedAt: "2026-01-01T00:00:00Z" });
@@ -229,7 +233,7 @@ describe("ConveyorService steering", () => {
     store.setStageState({ issueId: "retryable", stageId: "implementation", status: "blocked", feedbackCycle: 0, configHash: config.hash });
     store.beginStageTransition({
       id: "retryable-transition", issueId: "retryable", fromStage: "implementation", toStage: "implementation", kind: "stopped", sourceMutationId: null,
-      detail: { reason: "awaiting release note", requiredFixes: [], resultStatus: "blocked" },
+      detail: { reason: "awaiting release note", requiredFixes: [], resultStatus: "blocked", sourceSnapshot: { title: "Retryable", body: "" } },
     });
     store.completeStageTransition("retryable-transition");
     sourceIssues.set(4, { id: "retryable", number: 4, url: "https://example.test/4", title: "Retryable", body: "The missing release note is now present.", state: "open", stateReason: null, labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], updatedAt: "2027-01-01T00:00:00Z" });
@@ -240,7 +244,14 @@ describe("ConveyorService steering", () => {
     for (const [id, reason] of [["stopped", "awaiting owner"], ["retryable", "awaiting release note"]] as const) {
       store.beginStageTransition({
         id: `${id}-recorded-stop`, issueId: id, fromStage: "implementation", toStage: "implementation", kind: "stopped", sourceMutationId: null,
-        detail: { reason, requiredFixes: [], resultStatus: "blocked" },
+        detail: {
+          reason,
+          requiredFixes: [],
+          resultStatus: "blocked",
+          sourceSnapshot: id === "stopped"
+            ? { title: "Stopped", body: "The accepted release is stable." }
+            : { title: "Retryable", body: "" },
+        },
       });
       store.completeStageTransition(`${id}-recorded-stop`);
     }
@@ -280,6 +291,119 @@ describe("ConveyorService steering", () => {
     expect(sourceComments).toContainEqual(expect.stringContaining("Scheduled Operator answer"));
     await service.close();
     expect(await service.runScheduledOperatorCheck()).toBeNull();
+  });
+
+  test("runs a cadence tick after restart without replaying elapsed intervals", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-periodic-restart-"));
+    temporaryDirectories.push(root);
+    const database = path.join(root, "conveyor.sqlite");
+    const instructions = path.join(root, "operator.md");
+    await writeFile(instructions, "Inspect the scheduled targets.");
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: {
+        workspaces: path.join(root, "worktrees"),
+        artifacts: path.join(root, "artifacts"),
+        interruptGraceMs: 100,
+        reconcileIntervalMs: 1_000,
+        labelPrefix: "conveyor",
+        retention: { runHistoryMs: null, artifactsMs: null },
+      },
+      web: { listen: "127.0.0.1:4300", steering: { agent: "operator", workspace: root, periodic: { intervalMs: 60_000 } } },
+      runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { blocked: "conveyor:blocked" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+      },
+      agents: {
+        operator: {
+          runner: "codex", model: "gpt-5", effort: "high", instructions, workspaceAccess: "read-only",
+          tasks: ["operator.getBoard", "operator.getItemHistory", "operator.reportStoppedItemOutcome"],
+        },
+      },
+      pipelines: { default: { stages: [{ id: "implementation" }] } },
+      repositories: { repo: { source: "github", address: "owner/my-app", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      sources: { github: { type: "github" } }, checks: {}, ci: {},
+    } as unknown as ConveyorConfig;
+    const sourceIssue = {
+      id: "stopped", number: 1, url: "https://example.com/1", title: "Stopped", body: "", state: "open" as const,
+      stateReason: null, labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], updatedAt: "2026-01-01T00:00:00Z",
+    };
+    const github = {
+      async listIssues() { return [sourceIssue]; },
+      async getIssue() { return sourceIssue; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; },
+      async collaboratorPermission() { return "write" as const; },
+      async repositoryVisibility() { return "private" as const; },
+    };
+    let scheduledCalls = 0;
+    let scheduledStarted: (() => void) | null = null;
+    const runSteering = async (input: { prompt: string }) => {
+      if (input.prompt.includes("scheduled Operator check")) {
+        scheduledCalls += 1;
+        scheduledStarted?.();
+      }
+      return { summary: "Inspected stopped", sessionId: "scheduled", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+    };
+    const startService = (store: ConveyorStore) => new ConveyorService(config, store, github as never, { steering: runSteering });
+    const firstStore = await ConveyorStore.open(database);
+    firstStore.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    const first = startService(firstStore);
+    await first.reconcileAll();
+
+    const timers: Array<{
+      handle: ReturnType<typeof globalThis.setInterval>;
+      handler: TimerHandler;
+      interval: number;
+      cleared: boolean;
+    }> = [];
+    const setInterval = globalThis.setInterval;
+    const clearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((handler: TimerHandler, interval?: number) => {
+      const handle = {} as ReturnType<typeof globalThis.setInterval>;
+      const timer = { handle, handler, interval: Number(interval), cleared: false };
+      timers.push(timer);
+      return handle;
+    }) as unknown as typeof globalThis.setInterval;
+    globalThis.clearInterval = ((timer: ReturnType<typeof globalThis.setInterval>) => {
+      const recorded = timers.find((candidate) => candidate.handle === timer);
+      if (recorded) recorded.cleared = true;
+    }) as typeof globalThis.clearInterval;
+    try {
+      first.start();
+      const firstCadence = timers.find((timer) => timer.interval === 60_000)!;
+      expect(scheduledCalls).toBe(0);
+      const firstRun = new Promise<void>((resolve) => { scheduledStarted = resolve; });
+      if (typeof firstCadence.handler !== "function") throw new Error("expected cadence callback");
+      firstCadence.handler();
+      await firstRun;
+      expect(scheduledCalls).toBe(1);
+      await first.close();
+      expect(firstCadence.cleared).toBe(true);
+
+      const restartedStore = await ConveyorStore.open(database);
+      const restarted = startService(restartedStore);
+      await restarted.reconcileAll();
+      restarted.start();
+      const cadenceTimers = timers.filter((timer) => timer.interval === 60_000);
+      expect(cadenceTimers).toHaveLength(2);
+      expect(scheduledCalls).toBe(1);
+      const restartedRun = new Promise<void>((resolve) => { scheduledStarted = resolve; });
+      const restartedCadence = cadenceTimers[1]!;
+      if (typeof restartedCadence.handler !== "function") throw new Error("expected cadence callback");
+      restartedCadence.handler();
+      await restartedRun;
+      expect(scheduledCalls).toBe(2);
+      await restarted.close();
+    } finally {
+      globalThis.setInterval = setInterval;
+      globalThis.clearInterval = clearInterval;
+    }
   });
 
   test("gives a fresh Operator run scoped board diagnostics, durable controls, and skill guidance", async () => {
