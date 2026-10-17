@@ -36,7 +36,7 @@ async function service(options: { webhooks?: boolean; status?: () => GitHubWebho
     sources: { github: { type: "github", webhookPath: "/hooks/github", webhookSecret: "secret", autoConfigureWebhook: options.webhooks !== false } },
     labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { orderTemplate: "conveyor:order:{number}" } },
     pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "work", concurrency: 1 }] } }, agents: {},
-    repositories: { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default" } },
+    repositories: { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default", systemLabels: [] } },
   } as unknown as ConveyorConfig;
   store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: root, configHash: "h" });
   const calls = { redelivered: [] as number[], listings: 0, deliveryListings: 0, since: [] as Array<string | undefined>, visibility: 0, subIssues: 0, hookChecks: 0, permissions: 0 };
@@ -52,6 +52,8 @@ async function service(options: { webhooks?: boolean; status?: () => GitHubWebho
     },
     async collaboratorPermission() { return "write" as const; },
     async upsertStatusComment() { return 1; },
+    async ensureLabels() {},
+    async ensureWebhook() {},
     async listDependencies() { return []; },
     async repositoryVisibility() { calls.visibility += 1; return "private" as const; },
     async webhookStatus() {
@@ -150,6 +152,24 @@ describe("webhook health", () => {
 
 describe("missed deliveries", () => {
   const recent = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+
+  test("onboarding, before the server listens, does not ask for them again", async () => {
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
+    await conveyor.onboardRepositories();
+    // It got as far as checking the webhook.
+    expect(calls.hookChecks).toBe(1);
+    expect(calls.redelivered).toEqual([]);
+    store.close();
+  });
+
+  test("starting, once the server listens, asks for the deliveries missed while it was down", async () => {
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
+    conveyor.start();
+    for (let attempt = 0; attempt < 100 && calls.redelivered.length === 0; attempt += 1) await Bun.sleep(10);
+    expect(calls.redelivered).toEqual([11]);
+    await conveyor.close();
+    store.close();
+  });
 
   test("a recent delivery that failed and was never received is redelivered", async () => {
     const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(5), statusCode: 502, redelivery: false }] });

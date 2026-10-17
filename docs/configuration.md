@@ -188,10 +188,13 @@ While a repository's webhooks are unhealthy, every periodic reconcile is a full 
 GitHub sends no event for some changes, such as a collaborator's permission or a repository's
 visibility. A superuser can read one repository afresh at once with **Sync now** on its page, in
 the Setup section: a full pass that also forgets the cached relationships and re-checks the
-webhook. At start and hourly Conveyor also lists the webhook's recent
-deliveries and asks GitHub to send again, at most 50 at a time, those of the last day that failed
-and never arrived. This needs the same permission as configuring the webhook; without it Conveyor
-warns once and relies on the safety-net reconcile.
+webhook.
+
+Deliveries GitHub could not make, for example while Conveyor was restarting, are asked for again:
+once Conveyor listens after a start, and hourly, it lists the webhook's recent deliveries and asks
+GitHub to send again, at most 50 at a time, those of the last day that failed and never arrived.
+This needs the same permission as configuring the webhook; without it Conveyor warns once and
+relies on the safety-net reconcile.
 
 A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
 Each sink keeps its own position in the database: it receives every event at least once and in

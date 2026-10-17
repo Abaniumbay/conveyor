@@ -537,8 +537,8 @@ export class ConveyorService {
           if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
+          // Missed deliveries are asked for again in start(), once the server listens for them.
           await this.checkWebhookHealth(id);
-          await this.redeliverMissed(id);
         }
         if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
@@ -808,11 +808,15 @@ export class ConveyorService {
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
     this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
     for (const sink of this.#sinks) sink.start(this.events);
-    this.#webhookHealthTimer = setInterval(() => {
+    const checkWebhooks = () => {
       for (const repositoryId of Object.keys(this.config.repositories)) {
         if (this.webhookUrl(repositoryId)) void this.checkWebhookHealth(repositoryId).then(() => this.redeliverMissed(repositoryId));
       }
-    }, WEBHOOK_HEALTH_CHECK_MS);
+    };
+    // The server listens from here on, so the deliveries GitHub could not make while Conveyor was
+    // starting (or stopped, during an upgrade) are asked for now rather than at the next hourly check.
+    checkWebhooks();
+    this.#webhookHealthTimer = setInterval(checkWebhooks, WEBHOOK_HEALTH_CHECK_MS);
   }
 
   /** Resolves once every event sink has received every recorded event (or a delivery failed). */
