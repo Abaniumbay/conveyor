@@ -14,7 +14,7 @@ import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyRollupTransition, applyStageTransition } from "../core/transition";
-import { ConveyorStore, type StoredIssue } from "../db/store";
+import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
 import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
@@ -56,7 +56,13 @@ import { buildRepositorySummaries, type RepositorySummaries } from "./repository
 import { isLightweightRepositoryStage } from "./stage-capacity";
 import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
-import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
+import {
+  conversationQuestionAnswer,
+  questionConfigurationError,
+  questionOptions,
+  scheduledQuestionAnswerEvidence,
+  validatedQuestionAnswer,
+} from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
 import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
@@ -358,6 +364,19 @@ function metadataLabels(sourceLabels: readonly string[], config: ConveyorConfig)
     label === config.labels.metadata.noSplit ||
     label.startsWith(orderPrefix),
   );
+}
+
+function questionAnswerText(answer: unknown): string | null {
+  if (typeof answer === "string") return answer;
+  if (!answer || typeof answer !== "object") return null;
+  const value = (answer as { answer?: unknown }).answer;
+  return typeof value === "string" ? value : null;
+}
+
+function questionAnswerEvidence(answer: unknown): string | null {
+  if (!answer || typeof answer !== "object") return null;
+  const value = (answer as { evidence?: unknown }).evidence;
+  return typeof value === "string" ? value : null;
 }
 
 /** The run-scoped MCP server: this executable's internal `__mcp` subcommand. */
@@ -707,6 +726,7 @@ export class ConveyorService {
     this.#lastReconciledAt = new Date().toISOString();
     this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
+    this.#recoverPendingScheduledAnswers();
   }
 
   /** What the periodic tick does for a repository now. */
@@ -2940,29 +2960,53 @@ export class ConveyorService {
         ? (question.answer as { answer?: unknown }).answer
         : question.answer;
       if (prior !== response) throw new Error("This question already has a pending answer; retry the same answer.");
+      if (source.startsWith("scheduled-operator:") && !question.answerSource?.startsWith("scheduled-operator:")) {
+        throw new Error("This question already has a pending owner answer.");
+      }
+      if (!source.startsWith("scheduled-operator:") && question.answerSource?.startsWith("scheduled-operator:")) {
+        throw new Error("This question has a scheduled answer pending its source mirror.");
+      }
     }
-    const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
-    this.store.recordQuestionAnswerWithConversation({
-      questionId,
-      source,
-      answer: { answer: response },
-      stageId: runStage ?? issue?.projectedStage ?? null,
-      message: source.startsWith("scheduled-operator:")
-        ? `**Scheduled Operator question answer:** ${question.prompt}\n\n**Accepted answer:** ${response}\n\n**Evidence:** ${evidence ?? "recorded by scheduled Operator"}`
-        : `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
-      ...(source.startsWith("scheduled-operator:") ? {
-        actor: { type: "conveyor" as const, id: source, name: "Scheduled Operator", title: "Conveyor Operator" },
-      } : {}),
-    });
+    const scheduled = source.startsWith("scheduled-operator:");
+    if (scheduled) {
+      // The source mutation must succeed before this becomes an accepted, resume-worthy answer.
+      // Keep the response and its evidence durable so reconciliation can finish that mutation later.
+      this.store.recordQuestionAnswer(questionId, source, { answer: response, evidence: evidence ?? null });
+    } else {
+      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
+      this.store.recordQuestionAnswerWithConversation({
+        questionId,
+        source,
+        answer: { answer: response },
+        stageId: runStage ?? issue?.projectedStage ?? null,
+        message: `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
+      });
+    }
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
+    if (scheduled) {
+      await this.#completeScheduledAnswer(question, issue, repository, response);
+      return;
+    }
+    await this.#finalizeQuestionAnswer(question, issue, repository);
+    this.#trackAnswerFollowUp(this.#answerFollowUp(
+      issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source,
+    ).then(() => undefined));
+  }
+
+  async #finalizeQuestionAnswer(
+    question: StoredQuestion,
+    issue: StoredIssue,
+    repository: ConveyorConfig["repositories"][string],
+  ): Promise<void> {
     // Before replying, only what resuming needs: the source's needs-input label goes first (a sync
     // that still saw it would stop the item again), then the parked agent wakes. Mirroring the answer
     // as a comment, re-syncing the repository and the status comment follow in the background.
     const needsInput = this.config.labels.states["needs-input"];
     const hadNeedsInput = Boolean(needsInput && issue.labels.includes(needsInput));
     if (hadNeedsInput) {
+      const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
       const stage = runStage ?? issue.projectedStage;
       const metadata = metadataLabels(issue.labels, this.config);
       try {
@@ -2978,6 +3022,7 @@ export class ConveyorService {
     this.store.completeQuestionAnswer(question.id);
     // A stage parked on an agent's question continues where it stopped; legacy stages restart.
     const parkedAgentWoken = this.wakeParkedAgent(question);
+    const runStage = question.runId ? this.store.getRun(question.runId)?.stageId : null;
     const resumedStage = runStage ?? issue.projectedStage;
     if (resumedStage) {
       // A native agent can park without first writing needs-input to the source. Clear its local
@@ -2993,10 +3038,51 @@ export class ConveyorService {
       ], [this.config.labels.metadata.noSplit]);
     }
     this.schedule();
-    this.#trackAnswerFollowUp(this.#answerFollowUp(
-      issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source,
-      source.startsWith("scheduled-operator:"),
-    ));
+  }
+
+  readonly #scheduledAnswerCompletions = new Map<string, Promise<void>>();
+
+  async #completeScheduledAnswer(
+    question: StoredQuestion,
+    issue: StoredIssue,
+    repository: ConveyorConfig["repositories"][string],
+    response: string,
+  ): Promise<void> {
+    const existing = this.#scheduledAnswerCompletions.get(question.id);
+    if (existing) return existing;
+    const completion = (async () => {
+      const mirrored = await this.#answerFollowUp(
+        issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source, true,
+      );
+      if (!mirrored) {
+        throw new Error("Scheduled answer is pending source mirror; it will retry after reconciliation.");
+      }
+      const current = this.store.getQuestion(question.id);
+      if (!current || current.status !== "open") return;
+      const evidence = questionAnswerEvidence(current.answer);
+      this.store.recordQuestionAnswerWithConversation({
+        questionId: current.id,
+        source: current.answerSource ?? "scheduled-operator:recovery",
+        answer: current.answer,
+        stageId: current.runId ? this.store.getRun(current.runId)?.stageId ?? issue.projectedStage : issue.projectedStage,
+        message: `**Scheduled Operator question answer:** ${current.prompt}\n\n**Accepted answer:** ${response}\n\n**Evidence:** ${evidence ?? "recorded by scheduled Operator"}`,
+        actor: { type: "conveyor", id: current.answerSource ?? "scheduled-operator:recovery", name: "Scheduled Operator", title: "Conveyor Operator" },
+      });
+      await this.#finalizeQuestionAnswer(current, issue, repository);
+    })().finally(() => this.#scheduledAnswerCompletions.delete(question.id));
+    this.#scheduledAnswerCompletions.set(question.id, completion);
+    return completion;
+  }
+
+  #recoverPendingScheduledAnswers(): void {
+    for (const question of this.store.listOpenQuestions()) {
+      if (!question.answerSource?.startsWith("scheduled-operator:")) continue;
+      const response = questionAnswerText(question.answer);
+      const issue = this.store.getIssue(question.issueId);
+      const repository = issue && this.config.repositories[issue.repositoryId];
+      if (!response || !issue || !repository || issue.projectedState === "offboarded") continue;
+      this.#trackAnswerFollowUp(this.#completeScheduledAnswer(question, issue, repository, response));
+    }
   }
 
   /** Background work after an answer: settled before the service closes, and awaitable in tests. */
@@ -3013,7 +3099,7 @@ export class ConveyorService {
     await this.eventsSettled();
   }
 
-  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<void> {
+  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<boolean> {
     // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
     const mirrorKey = `question-answer:${questionId}`;
     if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
@@ -3045,6 +3131,7 @@ export class ConveyorService {
         this.#answerMirrorsInFlight.delete(mirrorKey);
       }
     }
+    const mirrored = this.store.getSourceMutationByKey(mirrorKey)?.status === "succeeded";
     try {
       // Reconciliation is needed after every answer, not only when the stale source snapshot happened
       // to include the needs-input label.
@@ -3054,7 +3141,9 @@ export class ConveyorService {
       log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issueId), error);
     }
     await this.updateStatusComment(issueId);
+    this.schedule();
     this.store.events().append("item.requeued", { reason: "answer" }, { issueId });
+    return mirrored;
   }
 
   /** Tests shorten the pauses between answer-mirror retries. */
@@ -4753,20 +4842,31 @@ export class ConveyorService {
     const issue = this.store.getIssue(question.issueId);
     const repository = issue && this.config.repositories[issue.repositoryId];
     if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("question belongs to an ineligible board item");
-    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
-    const evidenceText = evidence.trim();
-    if (!evidenceText) throw new Error("scheduled answer evidence must not be blank");
-    const sources = [live.title, live.body, ...criteriaOf(live.body).map((criterion) => criterion.text), ...this.store.listConversationMessages(issue.id).map((message) => message.message)];
-    if (!sources.some((text) => text.includes(evidenceText))) {
-      throw new Error("scheduled answers require an unambiguous quote from current issue content, acceptance criteria, or recorded conversation");
+    let evidenceText: string | undefined;
+    try {
+      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      evidenceText = evidence.trim();
+      if (!evidenceText) throw new Error("scheduled answer evidence must not be blank");
+      const sources = [live.title, live.body, ...criteriaOf(live.body).map((criterion) => criterion.text), ...this.store.listConversationMessages(issue.id).map((message) => message.message)];
+      if (!sources.some((text) => text.includes(evidenceText!))) {
+        throw new Error("scheduled answers require an unambiguous quote from current issue content, acceptance criteria, or recorded conversation");
+      }
+      const response = scheduledQuestionAnswerEvidence(question, answer, evidenceText);
+      await this.answerQuestion(questionId, response, `scheduled-operator:${runId}`, evidenceText);
+      this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
+      check.outcomes.set(issue.id, {
+        outcome: "answered",
+        reason: `Answered question ${questionId} from recorded evidence.`,
+        evidence: evidenceText,
+      });
+    } catch (error) {
+      check.outcomes.set(issue.id, {
+        outcome: "unresolved",
+        reason: error instanceof Error ? error.message : String(error),
+        ...(evidenceText ? { evidence: evidenceText } : {}),
+      });
+      throw error;
     }
-    await this.answerQuestion(questionId, answer, `scheduled-operator:${runId}`, evidenceText);
-    this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
-    check.outcomes.set(issue.id, {
-      outcome: "answered",
-      reason: `Answered question ${questionId} from recorded evidence.`,
-      evidence: evidenceText,
-    });
   }
 
   private reportScheduledOutcome(runId: string, issueId: string, reason: string): void {
