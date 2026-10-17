@@ -80,6 +80,12 @@ A missing key is a validation error that names the key and never prints a secret
 from `!secret` are redacted from `config show`, the stored configuration snapshot, service logs and
 diagnostics exports.
 
+If `secrets.yaml` is malformed, Conveyor reports only its file name and YAML parser position, for
+example `cannot parse secrets.yaml: invalid YAML at line 2, column 1`. It never includes a secret
+value, source excerpt, or parser token from that file. Malformed ordinary configuration YAML,
+including an entrypoint or `!include` file, keeps the YAML parser's detailed diagnostic to help
+troubleshoot configuration syntax.
+
 The environment variables `CONVEYOR_GITHUB_WEBHOOK_SECRET`, `CONVEYOR_SESSION_SECRET` and
 `CONVEYOR_VAPID_*` still work as fallbacks.
 

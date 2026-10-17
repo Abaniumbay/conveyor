@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { builtinDigest, builtinResolver } from "../../src/config/builtin";
 import { composeConfig, redactSecrets } from "../../src/config/compose";
-import { ConfigError, loadConfig } from "../../src/config/load";
+import { ConfigError, loadConfig, readConfiguration } from "../../src/config/load";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -184,6 +184,44 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(shown).not.toContain("hook-value-123");
     expect(shown).not.toContain("s".repeat(40));
     expect(shown).toContain("<redacted>");
+  });
+
+  test("a malformed secret source reports only its file and parser position", async () => {
+    const marker = "known-secret-marker";
+    const paths = await home({
+      "conveyor.yaml": "web: { sessionSecret: !secret session }\n",
+      "secrets.yaml": `{}\nsession: "${marker}"\n`,
+    });
+
+    const message = await failure(composeConfig(paths.entrypoint));
+    expect(message).toBe("cannot parse secrets.yaml: invalid YAML at line 2, column 1");
+    expect(message).not.toContain(marker);
+    expect(message).not.toContain("Unexpected");
+  });
+
+  test("a malformed secrets.yaml is safe in the deprecated configuration-directory mode", async () => {
+    const marker = "known-secret-marker";
+    const paths = await home({ "secrets.yaml": `{}\nsession: "${marker}"\n` });
+
+    const message = await failure(readConfiguration(paths.config));
+    expect(message).toContain("secrets.yaml: invalid YAML at line 2, column 1");
+    expect(message).not.toContain(marker);
+    expect(message).not.toContain("Unexpected");
+  });
+
+  test("ordinary configuration parse errors retain the YAML parser detail", async () => {
+    const marker = "ordinary-parser-detail";
+    const entrypoint = await home({ "conveyor.yaml": `{}\nvalue: "${marker}"\n` });
+    const included = await home({
+      "conveyor.yaml": "web: !include web.yaml\n",
+      "web.yaml": `{}\nvalue: "${marker}"\n`,
+    });
+
+    for (const [name, paths] of [["conveyor.yaml", entrypoint], ["web.yaml", included]] as const) {
+      const message = await failure(composeConfig(paths.entrypoint));
+      expect(message).toContain(`cannot parse ${name}: Unexpected scalar at node end`);
+      expect(message).toContain(marker);
+    }
   });
 
   test("a missing secret names the key and never prints any secret value", async () => {
