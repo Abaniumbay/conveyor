@@ -42,7 +42,7 @@ export interface SimulatedRepository {
   pulls: Map<number, SimulatedPullRequest>;
   checkRuns: Map<string, SimulatedCheckRun[]>;
   labels: Set<string>;
-  hooks: Array<{ id: number; active: boolean; events: string[]; config: { url: string } }>;
+  hooks: Array<{ id: number; active: boolean; events: string[]; config: { url: string }; last_response: { code: number | null; status: string } }>;
   /** Pull request conversations, which GitHub serves through the issues API. */
   pullConversations: Map<number, SimulatedIssue>;
 }
@@ -245,7 +245,7 @@ export class GitHubSimulator implements GitHubTransport {
       if (method === "GET") return repository.hooks;
       if (method === "POST") {
         const body = request.body as { events: string[]; config: { url: string } };
-        const hook = { id: this.#nextId++, active: true, events: body.events, config: { url: body.config.url } };
+        const hook = { id: this.#nextId++, active: true, events: body.events, config: { url: body.config.url }, last_response: { code: null, status: "unused" } };
         repository.hooks.push(hook);
         return hook;
       }

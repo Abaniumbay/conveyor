@@ -201,14 +201,31 @@ describe("settings for task chains", () => {
 describe("event settings", () => {
   const withEvents = (events: string) => ({ header: HEADER.replace("  artifacts: /tmp/artifacts\n", `  artifacts: /tmp/artifacts\n  events:\n${events}`) });
 
-  test("keep events for 30 days and deliver to no sink by default", async () => {
+  test("defaults: 30 days of events, no sink, fallbacks by kind of wait and a 30 minute healthy reconcile", async () => {
     const { config } = await load("");
-    expect(config.settings.events).toEqual({ retentionMs: 30 * 86_400_000, sinks: [] });
+    expect(config.settings.events).toEqual({
+      retentionMs: 30 * 86_400_000,
+      sinks: [],
+      fallbackMs: { default: 15 * 60_000, ci: 5 * 60_000, change: 10 * 60_000, dependencies: 30 * 60_000 },
+      reconcileIntervalMs: 30 * 60_000,
+    });
   });
 
   test("a retention and a JSON-lines sink", async () => {
     const { config } = await load("", withEvents("    retention: 7d\n    sinks: [{ type: jsonl, path: /var/log/conveyor/events.jsonl }]\n"));
-    expect(config.settings.events).toEqual({ retentionMs: 7 * 86_400_000, sinks: [{ type: "jsonl", path: "/var/log/conveyor/events.jsonl" }] });
+    expect(config.settings.events).toMatchObject({ retentionMs: 7 * 86_400_000, sinks: [{ type: "jsonl", path: "/var/log/conveyor/events.jsonl" }] });
+  });
+
+  test("fallbacks and the healthy reconcile interval are configurable", async () => {
+    const { config } = await load("", withEvents("    fallback: { ci: 2m, dependencies: 1h }\n    reconcileInterval: 1h\n"));
+    expect(config.settings.events).toMatchObject({
+      fallbackMs: { default: 15 * 60_000, ci: 2 * 60_000, change: 10 * 60_000, dependencies: 60 * 60_000 },
+      reconcileIntervalMs: 60 * 60_000,
+    });
+  });
+
+  test("an unknown kind of wait is an error", async () => {
+    await expect(load("", withEvents("    fallback: { deploy: 5m }\n"))).rejects.toThrow(/deploy/);
   });
 
   test("a sink path must be absolute", async () => {

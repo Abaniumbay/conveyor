@@ -7,6 +7,7 @@ import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
+import type { WaitKind } from "../../src/events/topics";
 import type { CiContext, TaskContext } from "../../src/tasks/context";
 import {
   defineGroup,
@@ -161,7 +162,7 @@ function pipeline(...stages: CompiledStage[]): CompiledPipeline {
   return { id: "p", repositoryId: "repo-1", stages };
 }
 
-async function harness(options: { maxReturns?: number } = {}) {
+async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitKind) => number | null } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-stage-"));
   directories.push(directory);
   const store = await ConveyorStore.open(path.join(directory, "conveyor.sqlite"));
@@ -193,6 +194,7 @@ async function harness(options: { maxReturns?: number } = {}) {
       notify: (m) => { notes.push(m); },
       setStatus: async (m) => { statuses.push(m); await onStatus(m); },
       manualGate: (input) => manualGate(input),
+      ...(options.fallbackMs ? { fallbackMs: options.fallbackMs } : {}),
       settings: { maxReturns: options.maxReturns ?? 5 },
     });
   const run = (plan: CompiledPipeline, stageId: string, exec = executorFor()): Promise<StageOutcome> =>
@@ -681,6 +683,38 @@ describe("pending exit gate", () => {
     h.advance(60_000);
     await h.run(plan, "implementation");
     expect(h.journal.subscriptions("issue-1")).toEqual([]);
+  });
+
+  describe("wake-up time", () => {
+    const FIVE_MINUTES = 5 * 60_000;
+    const waitFor = { topics: ["ci:owner/sample:sha-1"], kind: "ci" as const };
+    const parkedAt = async (fallbackMs: ((kind: WaitKind) => number | null) | undefined, result: () => ReturnType<typeof pending>) => {
+      const h = await harness(fallbackMs ? { fallbackMs } : {});
+      h.activate();
+      h.world.checkResult.gate = result;
+      const out = await h.run(simple(h, [ct(h.registry, "gate", "test.check", { wait: { timeoutMs: null, pollMs: 60_000 } })]), "implementation");
+      return out.kind === "parked" && out.wakeAt ? Date.parse(out.wakeAt) - h.now().getTime() : null;
+    };
+    const healthy = (kind: WaitKind) => (kind === "ci" ? FIVE_MINUTES : null);
+
+    test("healthy webhooks: a wait for events sleeps until its fallback", async () => {
+      expect(await parkedAt(healthy, () => pending("ci running", { waitFor }))).toBe(FIVE_MINUTES);
+    });
+    test("healthy webhooks: an earlier `after` still wins", async () => {
+      expect(await parkedAt(healthy, () => pending("settling", { waitFor, after: 30_000 }))).toBe(30_000);
+    });
+    test("healthy webhooks: a later `after` is cut to the fallback", async () => {
+      expect(await parkedAt(healthy, () => pending("slow", { waitFor, after: 3_600_000 }))).toBe(FIVE_MINUTES);
+    });
+    test("healthy webhooks: a wait without events polls as before", async () => {
+      expect(await parkedAt(healthy, () => pending("computing"))).toBe(60_000);
+    });
+    test("unhealthy or polling webhooks: a wait for events polls as before", async () => {
+      expect(await parkedAt(() => null, () => pending("ci running", { waitFor }))).toBe(60_000);
+    });
+    test("no fallback lookup at all: a wait for events polls as before", async () => {
+      expect(await parkedAt(undefined, () => pending("ci running", { waitFor }))).toBe(60_000);
+    });
   });
 
   test("a gate check that stays pending past its deadline fails and retries", async () => {

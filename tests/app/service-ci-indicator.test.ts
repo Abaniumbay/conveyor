@@ -430,3 +430,36 @@ test("an item without a change has no indicator", async () => {
   expect(w.store.listIndicators("lone")).toEqual([]);
   await w.service.close();
 });
+
+test("a completed workflow run for the waiting head wakes the parked gate at once", async () => {
+  const w = await setup();
+  const journal = w.store.executions();
+  const epoch = journal.stageEpoch("issue");
+  const { record } = journal.planExecution({ itemId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, list: "exit-gate", taskInstanceId: "ciGate" });
+  const later = new Date(Date.now() + 5 * 60_000).toISOString();
+  journal.markPending(record.id, { wakeAt: later, deadlineAt: null, waitFor: { topics: ["ci:owner/repo:head1"], kind: "ci" } }, epoch);
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: later, deadlineAt: null,
+  }, epoch);
+  const delivered = Date.now();
+  await w.deliver("workflow_run", workflowRun("head1"));
+  expect(Date.parse(journal.getCursor("issue")!.wakeAt!) - delivered).toBeLessThan(5_000);
+  await w.service.close();
+});
+
+test("CI progress for the waiting head leaves the parked gate asleep", async () => {
+  const w = await setup();
+  const journal = w.store.executions();
+  const epoch = journal.stageEpoch("issue");
+  const { record } = journal.planExecution({ itemId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, list: "exit-gate", taskInstanceId: "ciGate" });
+  const later = new Date(Date.now() + 5 * 60_000).toISOString();
+  journal.markPending(record.id, { wakeAt: later, deadlineAt: null, waitFor: { topics: ["ci:owner/repo:head1"], kind: "ci" } }, epoch);
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: later, deadlineAt: null,
+  }, epoch);
+  await w.deliver("workflow_run", { action: "in_progress", workflow_run: { head_sha: "head1", pull_requests: [{ number: 5 }] } });
+  expect(journal.getCursor("issue")!.wakeAt).toBe(later);
+  await w.service.close();
+});

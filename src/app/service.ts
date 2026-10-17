@@ -64,6 +64,8 @@ import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { normalizeGitHubEvent } from "../source/github/events";
+import type { WaitKind } from "../events/topics";
+import { WaitDispatcher } from "./wait-dispatcher";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
@@ -178,6 +180,8 @@ function streamEvent(event: StoredEvent): DashboardStreamEvent {
 const SCHEDULING_EVENTS: readonly EventType[] = [
   "task.woken", "item.requeued", "gate.requirementChanged", "command.accepted",
 ];
+/** How often each repository's webhook is asked how its deliveries go. */
+const WEBHOOK_HEALTH_CHECK_MS = 60 * 60_000;
 /** How often the GitHub request counts are logged, and the window they cover. */
 const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
 /** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
@@ -379,6 +383,10 @@ export class ConveyorService {
   readonly commands: CommandBus;
   /** Configured event sinks, delivered from their own cursors while the service runs. */
   readonly #sinks: SinkRunner[];
+  /** Per repository: whether its webhook delivers, as last checked or shown by a delivery. */
+  readonly #webhookHealth = new Map<string, boolean>();
+  #webhookHealthTimer: ReturnType<typeof setInterval> | null = null;
+  readonly #waitDispatcher: WaitDispatcher;
   #scheduleRequested = false;
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
@@ -401,6 +409,12 @@ export class ConveyorService {
     this.events = new EventBus();
     store.events().attach(this.events);
     this.commands = new CommandBus(store.events());
+    this.#waitDispatcher = new WaitDispatcher({
+      journal: store.executions(),
+      addressOf: (repositoryId) => config.repositories[repositoryId]?.address ?? null,
+      numberOf: (issueId) => store.getIssue(issueId)?.sourceNumber ?? null,
+      wake: (issueId) => { this.wakeParked(issueId); },
+    });
     this.registerCommands();
     this.subscribeToEvents();
     const logging = config.settings.logging;
@@ -497,6 +511,7 @@ export class ConveyorService {
           if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
+          await this.checkWebhookHealth(id);
         }
         if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
@@ -506,6 +521,52 @@ export class ConveyorService {
         log.error("Repository onboarding failed", { repository: id }, error);
       }
     }
+  }
+
+  /** The URL GitHub delivers a repository's webhook events to, when Conveyor manages its webhook. */
+  private webhookUrl(repositoryId: string): string | null {
+    const repository = this.config.repositories[repositoryId];
+    const source = repository ? this.config.sources[repository.source] : undefined;
+    if (source?.type !== "github" || !source.autoConfigureWebhook || !this.config.web.publicUrl) return null;
+    return new URL(source.webhookPath, this.config.web.publicUrl).href;
+  }
+
+  /** Whether a repository's webhook delivers events, so waits may rely on them. */
+  webhooksHealthy(repositoryId: string): boolean {
+    return this.#webhookHealth.get(repositoryId) === true;
+  }
+
+  /**
+   * Asks GitHub how the repository's webhook is doing: healthy while it is active and its last
+   * delivery succeeded (or none was made yet). A failed read counts as unhealthy, so waits poll.
+   */
+  async checkWebhookHealth(repositoryId: string): Promise<boolean> {
+    const url = this.webhookUrl(repositoryId);
+    const address = this.config.repositories[repositoryId]?.address;
+    if (!url || !address) return false;
+    let healthy = false;
+    try {
+      const status = await this.github.webhookStatus({ address, url });
+      healthy = status !== null && status.active && (status.lastResponseCode === null || (status.lastResponseCode >= 200 && status.lastResponseCode < 300));
+    } catch (error) {
+      log.warn("Could not read the repository's webhook; waits poll until it can be read", { repository: repositoryId }, error);
+    }
+    this.setWebhookHealth(repositoryId, healthy);
+    return healthy;
+  }
+
+  private setWebhookHealth(repositoryId: string, healthy: boolean): void {
+    if (this.#webhookHealth.get(repositoryId) === healthy) return;
+    this.#webhookHealth.set(repositoryId, healthy);
+    this.store.events().append("webhook.healthChanged", { healthy }, { repositoryId });
+    if (healthy) log.info("Webhook deliveries are healthy; waits rely on them", { repository: repositoryId });
+    else log.warn("Webhook deliveries are unhealthy; waits poll", { repository: repositoryId });
+  }
+
+  /** How long an event wait sleeps without its event: its fallback while webhooks are healthy, else null (poll). */
+  waitFallbackMs(repositoryId: string, kind: WaitKind): number | null {
+    if (!this.webhooksHealthy(repositoryId)) return null;
+    return this.config.settings.events?.fallbackMs[kind] ?? null;
   }
 
   /** Records source visibility for operators without changing any trust decision. */
@@ -604,6 +665,11 @@ export class ConveyorService {
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
     this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
     for (const sink of this.#sinks) sink.start(this.events);
+    this.#webhookHealthTimer = setInterval(() => {
+      for (const repositoryId of Object.keys(this.config.repositories)) {
+        if (this.webhookUrl(repositoryId)) void this.checkWebhookHealth(repositoryId);
+      }
+    }, WEBHOOK_HEALTH_CHECK_MS);
   }
 
   /** Resolves once every event sink has received every recorded event (or a delivery failed). */
@@ -679,6 +745,8 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
     this.#githubCallTimer = null;
+    if (this.#webhookHealthTimer) clearInterval(this.#webhookHealthTimer);
+    this.#webhookHealthTimer = null;
     await Promise.all(this.#sinks.map((sink) => sink.stop()));
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
@@ -1048,6 +1116,13 @@ export class ConveyorService {
     for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {
       this.events.subscribe(type, "webhook projection", (event) => this.reactToGitHubEvent(event));
     }
+    for (const type of ["github.ciUpdated", "github.changeUpdated", "item.updated", "item.stageChanged"] as const) {
+      this.events.subscribe(type, "wake waiting tasks", (event) => this.#waitDispatcher.handle(event));
+    }
+    // A delivery that arrives shows the webhook works, whatever the last check said.
+    this.events.subscribe("webhook.received", "webhook health", (event) => {
+      if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.setWebhookHealth(event.repositoryId, true);
+    });
   }
 
   /** Schedules once after the current burst of events instead of once per event. */
@@ -1073,6 +1148,8 @@ export class ConveyorService {
    * a command that reports whether its item started reads that only after this.
    */
   async eventsSettled(): Promise<void> {
+    await this.store.events().settled();
+    this.#waitDispatcher.flush();
     await this.store.events().settled();
     this.flushSchedule();
   }
@@ -1316,6 +1393,7 @@ export class ConveyorService {
       sourceGuidance: SOURCE_GUIDANCE,
       taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository, signal),
       manualGate: this.manualGateStatus,
+      waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,

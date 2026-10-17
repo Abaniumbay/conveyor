@@ -232,6 +232,15 @@ interface GitHubHook {
   active: boolean;
   events?: string[];
   config: { url?: string };
+  last_response?: { code?: number | null; status?: string | null } | null;
+}
+
+/** Conveyor's webhook on a repository as GitHub reports it. */
+export interface GitHubWebhookStatus {
+  id: number;
+  active: boolean;
+  /** The HTTP status of the last delivery; null before the first one. */
+  lastResponseCode: number | null;
 }
 
 const WEBHOOK_EVENTS = [
@@ -449,6 +458,19 @@ export class GitHubAdapter {
         },
       },
     });
+  }
+
+  /** Conveyor's webhook (the one delivering to `url`) and how its last delivery went; null when there is none. */
+  async webhookStatus(input: { address: string; url: string }): Promise<GitHubWebhookStatus | null> {
+    const hooks = await this.transport.request<GitHubHook[]>({
+      method: "GET",
+      path: `repos/${input.address}/hooks?per_page=100`,
+      paginate: true,
+    });
+    const hook = hooks.find((candidate) => candidate.config.url === input.url);
+    if (!hook) return null;
+    const code = hook.last_response?.code;
+    return { id: hook.id, active: hook.active, lastResponseCode: typeof code === "number" ? code : null };
   }
 
   async getIssue(address: string, issueNumber: number): Promise<SourceIssue> {

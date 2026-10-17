@@ -111,10 +111,30 @@ const settingsSchema = z
         retention: durationSchema.prefault("30d"),
         /** Consumers outside Conveyor; each receives every event at least once, in order. */
         sinks: z.array(eventSinkSchema).default([]),
+        /**
+         * How long a task waiting for a webhook event sleeps when none comes, by kind of wait.
+         * Used only while the repository's webhooks are healthy; otherwise tasks poll.
+         */
+        fallback: z
+          .object({
+            default: durationSchema.prefault("15m"),
+            ci: durationSchema.prefault("5m"),
+            change: durationSchema.prefault("10m"),
+            dependencies: durationSchema.prefault("30m"),
+          })
+          .strict()
+          .prefault({}),
+        /** The periodic reconcile interval while webhooks are healthy; settings.reconcileInterval otherwise. */
+        reconcileInterval: durationSchema.prefault("30m"),
       })
       .strict()
       .prefault({})
-      .transform(({ retention, sinks }) => ({ retentionMs: retention, sinks })),
+      .transform(({ retention, sinks, fallback, reconcileInterval }) => ({
+        retentionMs: retention,
+        sinks,
+        fallbackMs: { default: fallback.default, ci: fallback.ci, change: fallback.change, dependencies: fallback.dependencies },
+        reconcileIntervalMs: reconcileInterval,
+      })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z
       .object({

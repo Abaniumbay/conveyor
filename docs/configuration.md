@@ -154,7 +154,25 @@ settings:
     retention: 30d          # how long the log keeps events (default 30d); cleanup prunes older ones
     sinks:                  # default none
       - { type: jsonl, path: /var/log/conveyor/events.jsonl }
+    fallback:               # how long a wait for a webhook event sleeps when none comes
+      default: 15m          # any event wait without its own value
+      ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
+      change: 10m           # waiting for a pull request (change.mergeable)
+      dependencies: 30m     # waiting for blockers (item.dependenciesMet)
 ```
+
+A task that waits for something GitHub reports by webhook (CI finishing, a new pull request
+head, a blocker closing) names those events. While the repository's webhooks are healthy, the task
+sleeps until one of them arrives and runs again within seconds; when none comes, it looks again
+after its fallback. A lost delivery therefore delays a wait by at most its fallback and never
+changes its result. Waits that GitHub announces no event for, such as a pull request's mergeability
+being computed, keep their `wait.poll` interval.
+
+Webhooks count as healthy when Conveyor manages the repository's webhook (`autoConfigureWebhook`
+with a `web.publicUrl`), GitHub reports it active, and its last delivery succeeded or none was made
+yet. Conveyor checks at start and hourly; any delivery received counts as healthy at once. While a
+repository's webhooks are unhealthy, or it uses polling, every wait polls at its `wait.poll`
+interval as before.
 
 A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
 Each sink keeps its own position in the database: it receives every event at least once and in

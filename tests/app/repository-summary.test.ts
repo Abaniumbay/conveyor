@@ -251,7 +251,7 @@ describe("buildRepositorySummaries", () => {
     expect(store.dashboardRevision()).toBe(storedRevision);
     expect(degraded.revision).not.toBe(updated.revision);
     // The live dashboard learns of the failing repository from its event, and of every pass.
-    const health = () => store.events().read({ type: "repository.healthChanged" }).map((event) => [event.repositoryId, event.payload]);
+    const health = () => store.events().read({ type: "repository.healthChanged" }).map((event): unknown[] => [event.repositoryId, event.payload]);
     expect(health()).toContainEqual(["alpha", { check: "reconcile", healthy: false }]);
     expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
     const passes = store.events().read({ type: "service.reconciled" }).length;
