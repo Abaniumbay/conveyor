@@ -93,7 +93,6 @@ repositories:
   const internals = service as unknown as {
     ciProvider: () => CiProvider;
     codeHostFor: () => CodeHost;
-    applyCiWebhook(repositoryId: string, eventType: string, payload: unknown): Promise<void>;
     backfillCiIndicators(id: string): Promise<void>;
     updateStatusComment(id: string): Promise<void>;
     wakeupReached(issueId: string): boolean;
@@ -361,7 +360,7 @@ test("a late completion for a cached head is ignored after the change advances",
   const before = w.indicator();
   w.state.listed.length = 0;
 
-  await w.internals.applyCiWebhook("repo", "workflow_run", workflowRun("head1"));
+  await w.deliver("workflow_run", workflowRun("head1"));
 
   expect(w.indicator()).toEqual(before);
   expect(w.card()?.waiting?.reason).toBe("Waiting for CI at head1: build.");

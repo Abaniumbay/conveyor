@@ -61,8 +61,9 @@ import { ManualGateApprovals } from "../engine/manual-gates";
 import { CommandBus, CommandForbiddenError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
-import type { EventType, StoredEvent } from "../events/catalogue";
+import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
+import { normalizeGitHubEvent } from "../source/github/events";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
@@ -1044,6 +1045,9 @@ export class ConveyorService {
       if (event.payload.change === "dismissed") wakeParkedGate(event.issueId, null);
     });
     for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
+    for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {
+      this.events.subscribe(type, "webhook projection", (event) => this.reactToGitHubEvent(event));
+    }
   }
 
   /** Schedules once after the current burst of events instead of once per event. */
@@ -2407,22 +2411,30 @@ export class ConveyorService {
     // Conveyor's own status-comment writes come back as deliveries; they carry nothing to read, and
     // reconciling on them made every write trigger more writes.
     if (eventType === "issue_comment" && isStatusComment(fields(fields(payload).comment).body)) return;
+    // The delivery and what it means are recorded together; subscribers react once it committed.
+    const normalized = repository ? normalizeGitHubEvent(eventType, payload) : null;
     const recorded = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () =>
-      this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload, repositoryId: repository?.[0] ?? null }));
+      this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload, repositoryId: repository?.[0] ?? null, normalized }));
     if (!recorded) return;
     if (typeof repositoryAddress !== "string") return;
-    if (!repository) {
-      this.schedule();
-      return;
-    }
-    // Processed after the response: GitHub counts a delivery as failed after 10 seconds and never retries it.
-    const repositoryId = repository[0];
-    const work = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () => withGitHubCallSource("webhook", async () => {
-      // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
-      await this.applyCiWebhook(repositoryId, eventType, payload)
-        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: eventType }, error));
-      if (eventType === "sub_issues" || eventType === "issue_dependencies") this.#relationships.clear();
-      await this.queueWebhookReconcile(repositoryId, this.webhookIssueNumbers(repositoryId, eventType, payload));
+    if (!repository) this.schedule();
+  }
+
+  /**
+   * The projection's reaction to a GitHub event: the CI indicator first, so the board shows a
+   * finished run within seconds, then a reconcile of the issues the event names. It runs in the
+   * background: GitHub counts a delivery as failed after ten seconds, and the event bus must not
+   * wait for GitHub either.
+   */
+  private reactToGitHubEvent(event: StoredEvent): void {
+    const repositoryId = event.repositoryId;
+    if (!repositoryId || !this.config.repositories[repositoryId]) return;
+    const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
+      await this.applyCiEvent(repositoryId, event)
+        .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
+      if (event.type === "github.relationshipChanged") this.#relationships.clear();
+      const issueNumbers = this.issueNumbersFor(repositoryId, event);
+      if (issueNumbers.length > 0) await this.queueWebhookReconcile(repositoryId, issueNumbers);
     }));
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
@@ -2430,54 +2442,28 @@ export class ConveyorService {
 
   /** Resolves once every accepted webhook delivery has been processed. */
   async webhooksSettled(): Promise<void> {
-    while (this.#webhookWork.size > 0) await Promise.all([...this.#webhookWork]);
-    await this.eventsSettled();
+    // A delivery's work starts from its event, and that work records events of its own.
+    for (;;) {
+      await this.eventsSettled();
+      if (this.#webhookWork.size === 0) return;
+      await Promise.all([...this.#webhookWork]);
+    }
   }
 
-  /**
-   * The issue numbers whose status a delivery may change, or null when it may concern any item.
-   * A pull request or CI event names the item through the pull request Conveyor opened for it.
-   */
-  private webhookIssueNumbers(repositoryId: string, eventType: string, payload: unknown): number[] | null {
-    const body = fields(payload);
-    const number = (value: unknown) => typeof fields(value).number === "number" ? [fields(value).number as number] : [];
-    const belongsToRepository = (value: unknown) => {
-      const address = fields(value).full_name;
-      const repositoryAddress = this.config.repositories[repositoryId]?.address;
-      return typeof address !== "string" || address.toLowerCase() === repositoryAddress?.toLowerCase();
-    };
-    const forPullRequests = (numbers: number[]) => {
+  /** The issue numbers whose status a GitHub event may change; a pull request names its item's issue. */
+  private issueNumbersFor(repositoryId: string, event: StoredEvent): number[] {
+    const forPullRequests = (numbers: readonly number[]) => {
       const wanted = new Set(numbers);
       return this.store.listIssues(repositoryId).flatMap((issue) => {
         const pullRequest = this.store.getCurrentPullRequest(issue.id);
         return pullRequest && wanted.has(pullRequest.number) ? [issue.sourceNumber] : [];
       });
     };
-    switch (eventType) {
-      case "issues":
-      case "issue_comment":
-        // A comment on a pull request arrives as an issue_comment whose issue is the pull request.
-        return fields(body.issue).pull_request !== undefined ? forPullRequests(number(body.issue)) : number(body.issue);
-      case "sub_issues":
-        return [
-          ...(belongsToRepository(body.parent_issue_repo) ? number(body.parent_issue) : []),
-          ...(belongsToRepository(body.sub_issue_repo) ? number(body.sub_issue) : []),
-        ];
-      case "issue_dependencies":
-        return [
-          ...number(body.blocked_issue),
-          ...(belongsToRepository(body.blocking_issue_repo) ? number(body.blocking_issue) : []),
-        ];
-      case "pull_request":
-        return forPullRequests(number(body.pull_request));
-      case "workflow_run":
-      case "check_suite": {
-        const pullRequests = fields(body[eventType]).pull_requests;
-        return forPullRequests(Array.isArray(pullRequests) ? pullRequests.flatMap(number) : []);
-      }
-      default:
-        return null;
-    }
+    if (isEventOf(event, "github.issueUpdated")) return event.payload.pullRequest ? forPullRequests([event.payload.number]) : [event.payload.number];
+    if (isEventOf(event, "github.relationshipChanged")) return event.payload.numbers;
+    if (isEventOf(event, "github.changeUpdated")) return forPullRequests([event.payload.number]);
+    if (isEventOf(event, "github.ciUpdated")) return forPullRequests(event.payload.pullRequests);
+    return [];
   }
 
   /**
@@ -2520,27 +2506,25 @@ export class ConveyorService {
   }
 
   /**
-   * Updates the stored CI indicator from a `workflow_run`, `check_suite` or `pull_request` delivery.
+   * Updates the stored CI indicator from a CI event or a pull request that opened or got a new head.
    * Only the change's current head counts: an event for another head is dropped unless the code
    * host confirms it is the head now (then it replaces the old head's indicator).
    */
-  private async applyCiWebhook(repositoryId: string, eventType: string, payload: unknown): Promise<void> {
+  private async applyCiEvent(repositoryId: string, event: StoredEvent): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository || repository.ci?.mode === "disabled") return;
-    const body = object(payload);
-    let head: unknown;
-    let pullRequests: unknown[] = [];
-    if (eventType === "workflow_run" || eventType === "check_suite") {
-      const run = object(body[eventType]);
-      head = run.head_sha;
-      pullRequests = Array.isArray(run.pull_requests) ? run.pull_requests : [];
-    } else if (eventType === "pull_request" && ["opened", "reopened", "synchronize"].includes(String(body.action))) {
-      const pullRequest = object(body.pull_request);
-      head = object(pullRequest.head).sha;
-      pullRequests = [pullRequest];
+    let head: string;
+    let numbers: readonly number[];
+    let newHead: boolean;
+    if (isEventOf(event, "github.ciUpdated")) {
+      head = event.payload.sha;
+      numbers = event.payload.pullRequests;
+      newHead = false;
+    } else if (isEventOf(event, "github.changeUpdated") && ["opened", "reopened", "synchronize"].includes(event.payload.action) && event.payload.headSha) {
+      head = event.payload.headSha;
+      numbers = [event.payload.number];
+      newHead = true;
     } else return;
-    if (typeof head !== "string" || !head) return;
-    const numbers = pullRequests.map((entry) => object(entry).number).filter((value): value is number => typeof value === "number");
     const issueIds = new Set([
       ...numbers.flatMap((number) => this.store.findIssueIdsByPullRequest(repositoryId, number)),
       ...this.store.findIssueIdsByIndicatorHead(repositoryId, CI_INDICATOR_ID, head),
@@ -2550,13 +2534,13 @@ export class ConveyorService {
       if (!stored || stored.state === "merged" || stored.mergedAt) continue;
       const indicator = this.store.listIndicators(issueId).find((entry) => entry.id === CI_INDICATOR_ID);
       const known = indicator?.headSha === head;
-      if (eventType === "pull_request" && known) continue;
+      if (newHead && known) continue;
       // A completion can arrive after the change advanced but before its synchronize
       // delivery. Do not let a cached indicator make that old head look current.
       if ((await this.currentChangeHead(repositoryId, stored.id)) !== head) continue;
       const change = { repository: repository.address, changeId: String(stored.number), url: stored.url };
       const input = { issueId, headSha: head, changeUrl: stored.url, ignoreChecks: repository.ci?.ignoreChecks ?? [], now: new Date(), authoritative: !known };
-      if (eventType === "pull_request") { startCiForHead(this.store, input); continue; }
+      if (newHead) { startCiForHead(this.store, input); continue; }
       let runs: CiRun[];
       try { runs = await this.ciProvider(repositoryId).list(change, head); }
       catch (error) { observeCiError(this.store, { ...input, error }); continue; }

@@ -87,6 +87,11 @@ Each event has:
 
 | Event | Meaning | Payload |
 | --- | --- | --- |
+| `github.changeUpdated` | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null |
+| `github.ciUpdated` | GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished. | `repository`: string<br>`sha`: string<br>`pullRequests`: integer[]<br>`completed`: boolean |
+| `github.issueUpdated` | GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean |
+| `github.ping` | GitHub confirmed the webhook (a ping). | `repository`: string |
+| `github.relationshipChanged` | GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved. | `repository`: string<br>`numbers`: integer[] |
 | `source.mutationCompleted` | A source change completed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationFailed` | A source change failed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationStarted` | Conveyor recorded a change it is about to make at the source. | `mutationId`: string<br>`operation`: string |

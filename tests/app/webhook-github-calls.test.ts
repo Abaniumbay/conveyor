@@ -91,6 +91,29 @@ async function service() {
 }
 
 describe("GitHub calls made for webhook deliveries", () => {
+  test("a delivery is recorded together with what it means, by the webhook", async () => {
+    const { conveyor, store, deliver } = await service();
+    const after = store.events().latestSeq();
+    await deliver("issues", { action: "labeled", issue: { number: 1 } });
+    await conveyor.webhooksSettled();
+    const recorded = store.events().read({ afterSeq: after }).filter((event) => event.type === "webhook.received" || event.type.startsWith("github."));
+    expect(recorded.map((event) => [event.type, event.actor.kind, event.repositoryId])).toEqual([
+      ["webhook.received", "webhook", "repo"],
+      ["github.issueUpdated", "webhook", "repo"],
+    ]);
+    store.close();
+  });
+
+  test("a delivery nothing reacts to is recorded and reads nothing from GitHub", async () => {
+    const { conveyor, store, calls, deliver } = await service();
+    await deliver("deployment_status", { action: "created", deployment_status: { state: "success" } });
+    await conveyor.webhooksSettled();
+    expect(store.events().read({ type: "webhook.received" }).map((event) => event.payload)).toEqual([{ deliveryId: "d1", eventType: "deployment_status" }]);
+    expect({ listed: calls.listed, fetched: calls.fetched, statusWrites: calls.statusWrites }).toEqual({ listed: [], fetched: [], statusWrites: [] });
+    store.close();
+  });
+
+
   test("Conveyor's own status-comment edits are ignored: nothing is recorded, read or written", async () => {
     const { conveyor, store, calls, deliver } = await service();
     await deliver("issue_comment", { action: "edited", issue: { number: 1 }, comment: { id: 42, body: "<!-- conveyor:status -->\n## Conveyor status" } });

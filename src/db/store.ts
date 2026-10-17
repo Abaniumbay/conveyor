@@ -7,6 +7,7 @@ import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
 import { eventLog, type EventLog } from "../events/log";
 import { EventThrottle } from "../events/throttle";
+import type { NormalizedGitHubEvent } from "../source/github/events";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {
@@ -1741,6 +1742,8 @@ export class ConveyorStore {
     payload: unknown;
     /** The configured repository the delivery is for, when it is for one. */
     repositoryId?: string | null;
+    /** What the delivery means for Conveyor, recorded with it; absent when nothing reacts to it. */
+    normalized?: NormalizedGitHubEvent | null;
   }): boolean {
     return this.#database.transaction(() => {
       const result = this.#database
@@ -1751,9 +1754,23 @@ export class ConveyorStore {
         )
         .run(event.source, event.deliveryId, event.eventType, json(event.payload), now());
       if (result.changes !== 1) return false;
-      this.#events.append("webhook.received", { deliveryId: event.deliveryId, eventType: event.eventType }, { repositoryId: event.repositoryId ?? null });
+      const scope = { repositoryId: event.repositoryId ?? null };
+      this.#events.append("webhook.received", { deliveryId: event.deliveryId, eventType: event.eventType }, scope);
+      const normalized = event.normalized;
+      if (normalized) this.#appendGitHubEvent(normalized, scope);
       return true;
     })();
+  }
+
+  #appendGitHubEvent(event: NormalizedGitHubEvent, scope: { repositoryId: string | null }): void {
+    // Each branch narrows the payload to its own type.
+    switch (event.type) {
+      case "github.issueUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.relationshipChanged": return this.#events.append(event.type, event.payload, scope);
+      case "github.changeUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.ciUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.ping": return this.#events.append(event.type, event.payload, scope);
+    }
   }
 
   beginSourceMutation(input: {

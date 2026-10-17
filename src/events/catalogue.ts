@@ -96,6 +96,19 @@ export const EVENT_CATALOGUE = {
 
   // GitHub
   "webhook.received": define("GitHub", "A verified webhook delivery was stored.", z.object({ deliveryId: id, eventType: z.string() }).strict()),
+  "github.issueUpdated": define("GitHub", "GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request.", z.object({
+    repository: z.string(), number, action: z.string(), pullRequest: z.boolean(),
+  }).strict()),
+  "github.relationshipChanged": define("GitHub", "GitHub reported changed sub-issues or blockers; `numbers` are the issues of this repository involved.", z.object({
+    repository: z.string(), numbers: z.array(number),
+  }).strict()),
+  "github.changeUpdated": define("GitHub", "GitHub reported a change to a pull request (opened, synchronize, closed, ...).", z.object({
+    repository: z.string(), number, action: z.string(), headSha: sha.nullable(),
+  }).strict()),
+  "github.ciUpdated": define("GitHub", "GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished.", z.object({
+    repository: z.string(), sha, pullRequests: z.array(number), completed: z.boolean(),
+  }).strict()),
+  "github.ping": define("GitHub", "GitHub confirmed the webhook (a ping).", z.object({ repository: z.string() }).strict()),
   "source.mutationStarted": define("GitHub", "Conveyor recorded a change it is about to make at the source.", z.object({ mutationId: id, operation: z.string() }).strict()),
   "source.mutationCompleted": define("GitHub", "A source change completed.", z.object({ mutationId: id, operation: z.string() }).strict()),
   "source.mutationFailed": define("GitHub", "A source change failed.", z.object({ mutationId: id, operation: z.string() }).strict()),
@@ -146,6 +159,11 @@ export interface StoredEvent<T extends EventType = EventType> {
   actor: { kind: string; id: string | null };
   correlationId: string | null;
   payload: EventPayload<T>;
+}
+
+/** Narrows a stored event to one type, and with it its payload. */
+export function isEventOf<T extends EventType>(event: StoredEvent, type: T): event is StoredEvent<T> {
+  return event.type === type;
 }
 
 export function isEventType(value: string): value is EventType {

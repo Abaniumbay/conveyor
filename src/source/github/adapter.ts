@@ -240,7 +240,6 @@ const WEBHOOK_EVENTS = [
   "pull_request",
   "workflow_run",
   "check_suite",
-  "deployment_status",
   "sub_issues",
   "issue_dependencies",
 ];
