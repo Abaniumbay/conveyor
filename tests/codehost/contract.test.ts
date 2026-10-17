@@ -87,6 +87,21 @@ describe("CodeHost contract: GitHub", () => {
         .resolves.toMatchObject({ merged: false, refusal, reason: message });
     }
 
+    for (const [stderr, refusal] of [
+      ["gh: Pull Request is not mergeable (HTTP 405)", "conflict"],
+      ["gh: Base branch was modified. Review and try the merge again. (HTTP 405)", "outdated"],
+      ["gh: Branch protection rules prevent this merge. (HTTP 405)", "blocked"],
+      ["gh: Resource not accessible by integration (HTTP 403)", "blocked"],
+      ["gh: Bad credentials (HTTP 401)", "blocked"],
+    ] as const) {
+      const host = new GitHubCodeHost(new GitHubAdapter(
+        new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, stderr)]),
+        "conveyor",
+      ));
+      await expect(host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+        .resolves.toMatchObject({ merged: false, refusal, reason: stderr });
+    }
+
     const unavailable = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "HTTP 502")]), "conveyor"));
     await expect(unavailable.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
       .rejects.toThrow("gh failed");

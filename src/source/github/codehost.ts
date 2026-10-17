@@ -52,9 +52,11 @@ const OWN_MARKER = "<!-- conveyor:finding:";
 
 function mergeRefusal(detail: string): MergeRefusal | null {
   if (/head branch was modified|head.*(?:moved|changed|modified)/i.test(detail)) return "head-moved";
-  if (/HTTP 40[1345]|permission|forbidden|not authorized|protected branch|branch protection|required status check|required pull request review/i.test(detail)) return "blocked";
-  if (/behind|out[ -]?of[ -]?date|base branch/i.test(detail)) return "outdated";
-  if (/conflict|not mergeable|HTTP 409/i.test(detail)) return "conflict";
+  const policyRefusal = /permission|forbidden|not authorized|protected branch|branch protection|required status check|required pull request review/i.test(detail);
+  if (!policyRefusal && /conflict|not mergeable/i.test(detail)) return "conflict";
+  if (!policyRefusal && /behind|out[ -]?of[ -]?date|base branch (?:was )?modified/i.test(detail)) return "outdated";
+  if (policyRefusal || /HTTP 40[13]/.test(detail)) return "blocked";
+  if (/HTTP 409/.test(detail)) return "conflict";
   return null;
 }
 
