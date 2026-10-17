@@ -218,6 +218,8 @@ describe("GitHub calls per scenario", () => {
         await deliver(service, "workflow_run", run("in_progress", "in_progress", null));
         await advance(19 * MINUTE);
         simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "completed", conclusion: "success", startedAt: START.toISOString(), completedAt: new Date().toISOString() }]);
+        // Each check run finishes (and is delivered) before the workflow run that contains it.
+        for (const checkRun of simulator.checkRunsJson(ADDRESS, SHA_1)) await deliver(service, "check_run", { action: "completed", check_run: { ...checkRun, pull_requests: [{ number: 150 }] } });
         await deliver(service, "workflow_run", run("completed", "completed", "success"));
         const completedAt = Date.now();
         await deliver(service, "check_suite", { action: "completed", check_suite: { head_sha: SHA_1, status: "completed", conclusion: "success", pull_requests: [{ number: 150 }] } });
@@ -352,6 +354,8 @@ describe("GitHub calls per scenario", () => {
         await deliver(service, "workflow_run", run("in_progress", "in_progress", null));
         await advance(9 * MINUTE);
         simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "completed", conclusion: "success", startedAt: START.toISOString(), completedAt: new Date().toISOString() }]);
+        // Each check run finishes (and is delivered) before the workflow run that contains it.
+        for (const checkRun of simulator.checkRunsJson(ADDRESS, SHA_1)) await deliver(service, "check_run", { action: "completed", check_run: { ...checkRun, pull_requests: [{ number: 150 }] } });
         await deliver(service, "workflow_run", run("completed", "completed", "success"));
         await deliver(service, "check_suite", { action: "completed", check_suite: { head_sha: SHA_1, status: "completed", conclusion: "success", pull_requests: [{ number: 150 }] } });
         const done = () => service.store.getIssue(ITEM_50)?.projectedState === "done" || service.store.getIssue(ITEM_50)?.projectedStage === null;

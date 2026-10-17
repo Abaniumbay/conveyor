@@ -268,8 +268,12 @@ const WEBHOOK_EVENTS = [
   "issues",
   "issue_comment",
   "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
   "workflow_run",
   "check_suite",
+  "check_run",
   "sub_issues",
   "issue_dependencies",
 ];

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../../src/source/github/adapter";
-import { GitHubActionsCiProvider } from "../../../src/source/github/ci-provider";
+import { DeliveredCheckRuns, GitHubActionsCiProvider } from "../../../src/source/github/ci-provider";
 import { ciProviderContract } from "../../app/ci-provider.contract";
 
 class FakeTransport implements GitHubTransport {
@@ -162,5 +162,66 @@ describe("GitHub Actions CI definitions", () => {
     expect(transport.requests).toHaveLength(first);
     await instance.definitions(change, "sha2");
     expect(transport.requests.length).toBeGreaterThan(first);
+  });
+});
+
+describe("check runs from webhook deliveries", () => {
+  const checkRunReads = (transport: FakeTransport) => transport.requests.filter((request) => request.path.includes("/check-runs")).length;
+  const withDeliveries = (transport: FakeTransport, delivered: DeliveredCheckRuns) => new GitHubActionsCiProvider(new GitHubAdapter(transport, "conveyor"), [], delivered);
+
+  test("a commit whose delivered runs all finished is answered with no read", async () => {
+    const transport = new FakeTransport();
+    const delivered = new DeliveredCheckRuns();
+    delivered.remember("owner/repo", "commit-1", [check(1, "Tests", "completed", "success"), check(2, "Lint", "completed", "success")]);
+    expect((await withDeliveries(transport, delivered).list(change, "commit-1")).map((run) => [run.name, run.state])).toEqual([["Lint", "passed"], ["Tests", "passed"]]);
+    expect(checkRunReads(transport)).toBe(0);
+  });
+
+  test("a failed delivered run is answered with no read too", async () => {
+    const transport = new FakeTransport();
+    const delivered = new DeliveredCheckRuns();
+    delivered.remember("owner/repo", "commit-1", [check(1, "Tests", "completed", "failure")]);
+    expect((await withDeliveries(transport, delivered).list(change, "commit-1")).map((run) => run.state)).toEqual(["failed"]);
+    expect(checkRunReads(transport)).toBe(0);
+  });
+
+  test("while a known run is still running, the commit is read", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(1, "Tests", "completed", "success")];
+    const delivered = new DeliveredCheckRuns();
+    delivered.remember("owner/repo", "commit-1", [check(1, "Tests", "in_progress", null)]);
+    expect((await withDeliveries(transport, delivered).list(change, "commit-1")).map((run) => run.state)).toEqual(["passed"]);
+    expect(checkRunReads(transport)).toBe(1);
+  });
+
+  test("a read is remembered, and a later delivery of a finish completes it without another read", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(1, "Tests", "in_progress", null)];
+    const delivered = new DeliveredCheckRuns();
+    const ci = withDeliveries(transport, delivered);
+    await ci.list(change, "commit-1");
+    delivered.remember("owner/repo", "commit-1", [check(1, "Tests", "completed", "success")]);
+    expect((await ci.list(change, "commit-1")).map((run) => run.state)).toEqual(["passed"]);
+    expect(checkRunReads(transport)).toBe(1);
+  });
+
+  test("a re-run that finished counts, not the earlier run of the same name", async () => {
+    const transport = new FakeTransport();
+    const delivered = new DeliveredCheckRuns();
+    delivered.remember("owner/repo", "commit-1", [check(1, "Tests", "in_progress", null), check(2, "Tests", "completed", "success")]);
+    expect((await withDeliveries(transport, delivered).list(change, "commit-1")).map((run) => [run.id, run.state])).toEqual([["2", "passed"]]);
+    expect(checkRunReads(transport)).toBe(0);
+  });
+
+  test("a commit nothing reported is read", async () => {
+    const transport = new FakeTransport();
+    await withDeliveries(transport, new DeliveredCheckRuns()).list(change, "commit-2");
+    expect(checkRunReads(transport)).toBe(1);
+  });
+
+  test("only the most recent commits are kept", () => {
+    const delivered = new DeliveredCheckRuns(2);
+    for (const sha of ["a", "b", "c"]) delivered.remember("owner/repo", sha, [check(1, "Tests", "completed", "success")]);
+    expect(["a", "b", "c"].map((sha) => delivered.get("owner/repo", sha) !== null)).toEqual([false, true, true]);
   });
 });

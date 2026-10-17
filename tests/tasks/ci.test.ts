@@ -270,8 +270,8 @@ describe("ci.passed", () => {
     });
   });
 
-  test("is pending during the settle window even with no runs, then passes", async () => {
-    const early = ci({ firstSeenAt: new Date(T0 - 30_000).toISOString() });
+  test("is pending during the settle window (30 s by default) even with no runs, then passes", async () => {
+    const early = ci({ firstSeenAt: new Date(T0 - 10_000).toISOString() });
     const result = await run("ci.passed", { context: gateCtx(early) }) as Pending;
     expect(result.status).toBe("pending");
     expect(result.message).toContain("head1");
@@ -301,8 +301,8 @@ describe("ci.passed", () => {
   });
 
   test("with nothing unfinished, only the settle window remains and it looks again when that ends", async () => {
-    const settling = await run("ci.passed", { context: gateCtx(ci({ firstSeenAt: new Date(T0 - 30_000).toISOString(), runs: [crun("Tests", "passed")] })) }) as Pending;
-    expect({ waitFor: settling.waitFor, after: settling.after }).toEqual({ waitFor: { kind: "ci", topics: ["ci:o/r:head1", "change:o/r:5"] }, after: 90_000 });
+    const settling = await run("ci.passed", { context: gateCtx(ci({ firstSeenAt: new Date(T0 - 10_000).toISOString(), runs: [crun("Tests", "passed")] })) }) as Pending;
+    expect({ waitFor: settling.waitFor, after: settling.after }).toEqual({ waitFor: { kind: "ci", topics: ["ci:o/r:head1", "change:o/r:5"] }, after: 20_000 });
   });
 
   test("fails with focused logs and a retry route when a run failed", async () => {

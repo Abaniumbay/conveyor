@@ -116,6 +116,14 @@ export class GitHubSimulator implements GitHubTransport {
     return structuredClone(result) as T;
   }
 
+  /** A commit's check runs as GitHub's REST API and `check_run` deliveries show them. */
+  checkRunsJson(address: string, sha: string) {
+    return (this.repository(address).checkRuns.get(sha) ?? []).map((run) => ({
+      id: run.id, name: run.name, head_sha: sha, status: run.status, conclusion: run.conclusion, app: { slug: "github-actions" },
+      details_url: `https://github.com/${address}/actions/runs/${run.id}`, started_at: run.startedAt, completed_at: run.completedAt,
+    }));
+  }
+
   /** An issue as GitHub's REST API and webhook payloads show it. */
   issueJson(address: string, number: number) {
     const issue = this.repository(address).issues.get(number);
@@ -295,14 +303,8 @@ export class GitHubSimulator implements GitHubTransport {
         .map((pull) => this.#pullJson(address, pull));
     }
     if ((match = /^commits\/([0-9a-z]+)\/check-runs$/.exec(rest)) && method === "GET") {
-      const runs = repository.checkRuns.get(match[1]!) ?? [];
-      const page = {
-        total_count: runs.length,
-        check_runs: runs.map((run) => ({
-          id: run.id, name: run.name, status: run.status, conclusion: run.conclusion, app: { slug: "github-actions" },
-          details_url: `https://github.com/${address}/actions/runs/${run.id}`, started_at: run.startedAt, completed_at: run.completedAt,
-        })),
-      };
+      const runs = this.checkRunsJson(address, match[1]!);
+      const page = { total_count: runs.length, check_runs: runs };
       return request.paginate ? [page] : page;
     }
     if (/^contents\//.test(rest) && method === "GET") return notFound(request);

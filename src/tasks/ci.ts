@@ -20,7 +20,7 @@ type Deps = TaskDeps;
 type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 
 const NO_CHANGE = "No change request exists yet";
-const SETTLE_SECONDS = 120;
+const SETTLE_SECONDS = 30;
 const LOG_LINES = 60;
 /**
  * Logs are read once at load time with this bound; `ci.passed` keeps their failing-test blocks and
@@ -169,7 +169,7 @@ const defined: TaskDefinition<unknown, unknown, Deps> = {
 const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.passed",
   kind: "check",
-  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed.",
+  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed.",
   reads: ["change", "ci", "repository"],
   writes: [],
   invalidates: [],
