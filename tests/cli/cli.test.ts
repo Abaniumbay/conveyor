@@ -199,6 +199,25 @@ describe("conveyor config", () => {
     expect(result.err).toContain("- repositories/broken.yaml: ");
   });
 
+  test("secret-source parse errors do not expose values through config check or serve", async () => {
+    const marker = "known-secret-marker";
+    const home = await initialisedHome();
+    const config = path.join(home, "config/conveyor.yaml");
+    await writeFile(config, (await readFile(config, "utf8")).replace("web:\n", "web:\n  sessionSecret: !secret session\n"));
+    await writeFile(path.join(home, "config/secrets.yaml"), `{}\nsession: "${marker}"\n`);
+
+    for (const command of [["config", "check"], ["serve"]] as const) {
+      const result = await cli(...command, "--home", home);
+      expect(result.code).toBe(EXIT.config);
+      expect(result.err).toContain("cannot parse secrets.yaml: invalid YAML at line 2, column 1");
+      expect(result.err).not.toContain(marker);
+      expect(result.err).not.toContain("Unexpected");
+    }
+
+    const startupLog = await readFile(path.join(home, "logs/conveyor.log"), "utf8").catch(() => "");
+    expect(startupLog).not.toContain(marker);
+  });
+
   test("builtin lists and prints the packaged defaults", async () => {
     const list = await cli("config", "builtin");
     expect(list.out.split("\n")).toContain("builtin:agents.yaml");
