@@ -210,6 +210,8 @@ a service mutation directly.
 - Tests run offline with no credentials. Use temporary directories (`mkdtemp(path.join(tmpdir(), …))`),
   a temporary SQLite database and real `git` on local bare repositories. Never call GitHub or any
   network service.
+- Never assert on the repository checkout's `changes/` contents or `CHANGELOG.md`. Test release
+  tooling against a temporary repository so release preparation can consume its fragments safely.
 - Fake only the outer edges: the code host, the CI provider, the GitHub issue adapter, the agent
   harness. `tests/support/delivery-world.ts` already wires these; reuse it for anything that
   crosses stages.
