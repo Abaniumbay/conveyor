@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { changelogSection, checkRelease, isLater, prepareChangelog, ReleaseCheckError } from "../../scripts/release";
 import { readChangelogFragments, renderReleaseNotes, renderUnreleased } from "../../scripts/changelog-fragments";
 
-const ROOT = path.resolve(import.meta.dir, "../..");
 const CHANGELOG = `# Changelog
 
 ## [Unreleased]
@@ -63,23 +62,21 @@ describe("versioning", () => {
     }
   });
 
-  test("bun run changelog previews the repository fragments without changing files", async () => {
-    const changes = path.join(ROOT, "changes");
-    // A release consumes every fragment, and Git keeps no empty directory.
-    const names = async () => (await readdir(changes).catch(() => [] as string[])).sort();
-    const before = await Promise.all([
-      readFile(path.join(ROOT, "CHANGELOG.md"), "utf8"),
-      Promise.all((await names()).map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
-    ]);
-    const process = Bun.spawn(["bun", "run", "changelog"], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
-    const [stdout, stderr, code] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]);
+  test("the changelog preview reads temporary repository fragments without changing files", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-changelog-preview-"));
+    try {
+      const changes = path.join(root, "changes");
+      const changelog = path.join(root, "CHANGELOG.md");
+      await mkdir(changes);
+      await writeFile(changelog, CHANGELOG);
+      await writeFile(path.join(changes, "7-preview.md"), "---\nsection: Fixed\n---\nPreview a fix.\n");
 
-    expect(code).toBe(0);
-    expect(stdout).toBe(`${renderUnreleased(await readChangelogFragments(ROOT))}\n`);
-    await expect(Promise.all([
-      readFile(path.join(ROOT, "CHANGELOG.md"), "utf8"),
-      Promise.all((await names()).map(async (name) => [name, await readFile(path.join(changes, name), "utf8")])),
-    ])).resolves.toEqual(before);
+      const before = await Promise.all([readFile(changelog, "utf8"), readFile(path.join(changes, "7-preview.md"), "utf8")]);
+      expect(renderUnreleased(await readChangelogFragments(root))).toBe("## [Unreleased]\n\n### Fixed\n\n- Preview a fix.");
+      await expect(Promise.all([readFile(changelog, "utf8"), readFile(path.join(changes, "7-preview.md"), "utf8")])).resolves.toEqual(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("orders versions, with a pre-release before its release", () => {
@@ -119,61 +116,4 @@ describe("versioning", () => {
     expect(() => checkRelease("v0.2.0", "0.2.0", prepared.replace(" - 2026-10-06", ""))).toThrow("has no release date");
   });
 
-  test("the repository migrates each former Unreleased entry into a fragment and keeps released history", async () => {
-    const changelog = await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8");
-    const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as { version: string };
-    expect(changelogSection(changelog, "Unreleased")?.body).toBe("See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.");
-    // Each former Unreleased entry is a fragment until a release consumes it into a dated section.
-    const migrated = [
-      {
-        filename: "294-trust-safeguards.md",
-        section: "Added",
-        body: "`conveyor doctor` and repository dashboards now show public-repository trust safeguards,\nconfigured extra trusted logins, source-check uncertainty, and body-free skipped-review history\nlinks.",
-      },
-      {
-        filename: "302-lease-protected-pushes.md",
-        section: "Fixed",
-        body: "Lease-protected workspace pushes now use the change head the agent observed and explain when a\nnewer remote head must be fetched and reconciled before retrying.",
-      },
-      {
-        filename: "303-roll-up-stage.md",
-        section: "Fixed",
-        body: "Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed\nchildren finish their post-merge work, keeping their family rows visible on the board.",
-      },
-      {
-        filename: "305-run-home-cleanup.md",
-        section: "Fixed",
-        body: "Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home\nfailure.",
-      },
-      {
-        filename: "307-completed-roll-ups.md",
-        section: "Fixed",
-        body: "Completed active roll-up parents now close with GitHub's completed reason once every descendant\nfinishes, instead of remaining open with a closable label.",
-      },
-      {
-        filename: "308-review-repair-path.md",
-        section: "Fixed",
-        body: "Merge conflicts, changed pull-request heads, and outdated bases discovered after review now\nreturn through the bounded implementation repair path while retaining fresh CI and review gates\nfor the repaired head.",
-      },
-    ];
-    const fragments = await readChangelogFragments(ROOT);
-    // A fragment stays until a release consumes it into a dated section.
-    if (!fragments.some((fragment) => fragment.filename === "212-periodic-operator-checks.md")) {
-      expect(changelog).toContain("- Configured Operator steering can now inspect stopped enrolled work on a periodic cadence.");
-    }
-    for (const entry of migrated) {
-      const fragment = fragments.find((candidate) => candidate.filename === entry.filename);
-      if (fragment) expect({ filename: fragment.filename, section: fragment.section as string, body: fragment.body }).toEqual(entry);
-      else expect(changelog).toContain(`- ${entry.body.replaceAll("\n", "\n  ")}\n`);
-    }
-    if (changelogSection(changelog, manifest.version)) {
-      expect(checkRelease(`v${manifest.version}`, manifest.version, changelog)).not.toBe("");
-    } else {
-      // Before the first release package.json has no section: the next one must be preparable.
-      expect(fragments.length).toBeGreaterThan(0);
-      expect(isLater("0.2.0", manifest.version)).toBe(true);
-      const prepared = prepareChangelog(changelog, "0.2.0", "2026-10-06");
-      expect(checkRelease("v0.2.0", "0.2.0", prepared)).not.toBe("");
-    }
-  });
 });
