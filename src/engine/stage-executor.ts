@@ -260,7 +260,7 @@ export class StageExecutor {
     const now = clock().getTime();
     const wakeAt = new Date(now + (validAfter(result.after) ?? task.wait.pollMs)).toISOString();
     const deadlineAt = task.wait.timeoutMs === null ? null : new Date(now + task.wait.timeoutMs).toISOString();
-    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt, message: result.message }, run.epoch);
+    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt, message: result.message, waitFor: result.waitFor ?? null }, run.epoch);
     await this.#save(run, {
       state: "pending", pendingSince: pendingRecord.pendingSince, wakeAt, deadlineAt: pendingRecord.deadlineAt,
     });

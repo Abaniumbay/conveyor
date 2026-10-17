@@ -862,4 +862,24 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 32,
+    sql: `
+      -- What a parked task waits for (a commit's CI, a pull request, an issue). An event for a
+      -- topic wakes the item; its cursor's wake_at is the fallback when the event never comes.
+      -- Rows belong to one execution of one stage epoch and go when the wait ends.
+      CREATE TABLE wait_subscriptions (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        topic TEXT NOT NULL,
+        fallback_kind TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX wait_subscriptions_topic ON wait_subscriptions(topic);
+      CREATE INDEX wait_subscriptions_issue ON wait_subscriptions(issue_id);
+      CREATE INDEX wait_subscriptions_execution ON wait_subscriptions(execution_id);
+    `,
+  },
 ];

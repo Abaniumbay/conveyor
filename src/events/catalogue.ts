@@ -5,6 +5,8 @@
 
 import { z } from "zod";
 
+import { WAIT_KINDS } from "./topics";
+
 interface Definition<S extends z.ZodType> {
   group: string;
   description: string;
@@ -52,8 +54,9 @@ export const EVENT_CATALOGUE = {
   "task.planned": define("Execution", "The executor recorded that it will run a task.", z.object({
     executionId: id, stage: id, list: z.string(), taskInstanceId: id, attempt: z.number().int().positive(), epoch: z.number().int().nonnegative(),
   }).strict()),
-  "task.pending": define("Execution", "A task is waiting; it runs again at `wakeAt` unless something wakes it earlier.", z.object({
+  "task.pending": define("Execution", "A task is waiting; it runs again at `wakeAt` unless an event it waits for (`waitFor`) wakes it earlier.", z.object({
     executionId: id, taskInstanceId: id, wakeAt: z.string().nullable(), deadlineAt: z.string().nullable(),
+    waitFor: z.object({ topics: z.array(z.string()), kind: z.enum(WAIT_KINDS) }).strict().nullable(),
   }).strict()),
   "task.passed": define("Execution", "A task passed.", z.object({ executionId: id, taskInstanceId: id }).strict()),
   "task.failed": define("Execution", "A task failed.", z.object({ executionId: id, taskInstanceId: id }).strict()),

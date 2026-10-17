@@ -41,7 +41,7 @@ Each event has:
 | `item.fenced` | The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts. | `epoch`: integer |
 | `task.failed` | A task failed. | `executionId`: string<br>`taskInstanceId`: string |
 | `task.passed` | A task passed. | `executionId`: string<br>`taskInstanceId`: string |
-| `task.pending` | A task is waiting; it runs again at `wakeAt` unless something wakes it earlier. | `executionId`: string<br>`taskInstanceId`: string<br>`wakeAt`: string \| null<br>`deadlineAt`: string \| null |
+| `task.pending` | A task is waiting; it runs again at `wakeAt` unless an event it waits for (`waitFor`) wakes it earlier. | `executionId`: string<br>`taskInstanceId`: string<br>`wakeAt`: string \| null<br>`deadlineAt`: string \| null<br>`waitFor`: object \| null |
 | `task.planned` | The executor recorded that it will run a task. | `executionId`: string<br>`stage`: string<br>`list`: string<br>`taskInstanceId`: string<br>`attempt`: integer<br>`epoch`: integer |
 | `task.woken` | A parked task was made due before its wake-up time. | - |
 

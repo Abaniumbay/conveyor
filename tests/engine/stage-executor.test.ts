@@ -670,6 +670,19 @@ describe("pending exit gate", () => {
     }
   });
 
+  test("a pending gate records what it waits for, and passing ends the wait", async () => {
+    const h = await harness();
+    h.activate();
+    let polls = 0;
+    h.world.checkResult.gate = () => (++polls < 2 ? pending("ci running", { waitFor: { topics: ["ci:owner/sample:sha-1"], kind: "ci" } }) : pass());
+    const plan = simple(h);
+    await h.run(plan, "implementation");
+    expect(h.journal.subscriptions("issue-1").map((row) => [row.topic, row.kind])).toEqual([["ci:owner/sample:sha-1", "ci"]]);
+    h.advance(60_000);
+    await h.run(plan, "implementation");
+    expect(h.journal.subscriptions("issue-1")).toEqual([]);
+  });
+
   test("a gate check that stays pending past its deadline fails and retries", async () => {
     const h = await harness();
     h.activate();
