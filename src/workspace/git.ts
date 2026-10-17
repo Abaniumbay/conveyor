@@ -12,7 +12,21 @@ export interface GitOps {
   /** HEAD against the local remote-tracking ref `origin/<branch>`; null when that ref does not exist. */
   aheadBehind(path: string, branch: string): Promise<{ ahead: number; behind: number } | null>;
   fetch(path: string, remote: string, branch: string): Promise<void>;
-  push(path: string, branch: string, options: { forceWithLease: boolean }): Promise<void>;
+  /** True when ancestor is in descendant's history. */
+  isAncestor(path: string, ancestor: string, descendant: string): Promise<boolean>;
+  push(path: string, branch: string, options: PushOptions): Promise<void>;
+}
+
+export type PushOptions =
+  | { forceWithLease: false }
+  | { forceWithLease: true; expectedRemoteHead: string };
+
+/** A lease push was refused because the remote branch no longer has the observed head. */
+export class GitPushRejectedError extends Error {
+  constructor(readonly currentHeadSha: string) {
+    super(`The remote branch moved to ${currentHeadSha}; read change.get, use workspace.fetch, and rebase before pushing.`);
+    this.name = "GitPushRejectedError";
+  }
 }
 
 async function run(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -34,6 +48,17 @@ async function mustRun(cwd: string, args: string[]): Promise<string> {
   const result = await run(cwd, args);
   if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || `exit ${result.exitCode}`}`);
   return result.stdout;
+}
+
+function isPushRejection(result: { stdout: string; stderr: string }): boolean {
+  return /stale info|fetch first|non-fast-forward|\[rejected\]|failed to push some refs/i.test(`${result.stdout}\n${result.stderr}`);
+}
+
+async function remoteBranchHead(path: string, branch: string): Promise<string> {
+  const output = await mustRun(path, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
+  const match = output.match(/^([0-9a-f]{40})\s/m);
+  if (!match?.[1]) throw new Error("git ls-remote did not return the remote branch head");
+  return match[1];
 }
 
 /**
@@ -88,8 +113,29 @@ export const cliGit: GitOps = {
   async fetch(path, remote, branch) {
     await mustRun(path, ["fetch", remote, branch]);
   },
-  async push(path, branch, { forceWithLease }) {
-    await mustRun(path, ["push", "--set-upstream", ...(forceWithLease ? ["--force-with-lease"] : []), "origin", branch]);
+  async isAncestor(path, ancestor, descendant) {
+    // An observed head can be valid on the code host but absent until the workspace fetches it.
+    // Treat that as unreconciled so the caller can return its actionable recovery error.
+    const object = await run(path, ["rev-parse", "--verify", "--quiet", `${ancestor}^{commit}`]);
+    if (object.exitCode === 1) return false;
+    if (object.exitCode !== 0) {
+      throw new Error(`git rev-parse failed: ${object.stderr || `exit ${object.exitCode}`}`);
+    }
+    const result = await run(path, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    if (result.exitCode === 0) return true;
+    if (result.exitCode === 1) return false;
+    throw new Error(`git merge-base failed: ${result.stderr || `exit ${result.exitCode}`}`);
+  },
+  async push(path, branch, options) {
+    const args = ["push", "--set-upstream"];
+    if (options.forceWithLease) args.push(`--force-with-lease=${branch}:${options.expectedRemoteHead}`);
+    args.push("origin", branch);
+    const result = await run(path, args);
+    if (result.exitCode === 0) return;
+    if (options.forceWithLease && isPushRejection(result)) {
+      throw new GitPushRejectedError(await remoteBranchHead(path, branch));
+    }
+    throw new Error(`git push failed: ${result.stderr || `exit ${result.exitCode}`}`);
   },
 };
 

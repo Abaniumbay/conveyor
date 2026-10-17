@@ -1034,7 +1034,7 @@ describe("ConveyorService dashboard", () => {
         },
       },
       repositories: {
-        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+        repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default" },
       },
     } as unknown as ConveyorConfig;
     store.upsertRepository({
@@ -1148,6 +1148,138 @@ describe("ConveyorService dashboard", () => {
       sourceStage: "refinement",
       targetStage: "implementation",
       reason: "Following the earliest unfinished child stage: implementation",
+    }));
+    store.close();
+  });
+
+  test("keeps merge-closed descendants in roll-ups through post-merge work", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-rollup-completion-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash",
+      root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: { done: "conveyor:done", "needs-intervention": "conveyor:needs-intervention" },
+        metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+      },
+      pipelines: {
+        default: {
+          stages: ["implementation", "review", "deploy"].map((id) => ({
+            id,
+            run: { type: "agent", agent: "worker" },
+          })),
+        },
+      },
+      repositories: {
+        repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default" },
+      },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    store.upsertIssue({
+      id: "merged-child",
+      repositoryId: "repo",
+      sourceNumber: 3,
+      sourceUrl: "https://example.com/3",
+      title: "Merged child",
+      body: "",
+      sourceState: "closed",
+      sourceStateReason: null,
+      labels: ["conveyor", "conveyor:deploy", "conveyor:needs-intervention"],
+      sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("merged-child", { stage: "deploy", state: "needs-intervention", warning: null });
+    store.activateEnrollment("merged-child");
+    store.upsertPullRequest({
+      issueId: "merged-child",
+      id: "pr-3",
+      number: 30,
+      url: "https://example.com/pull/30",
+      state: "closed",
+      mergedAt: "2026-10-01T00:00:00Z",
+    });
+    const sourceIssues = [
+      { id: "parent", number: 1, title: "Parent", state: "open" as const, labels: ["conveyor", "conveyor:review", "conveyor:done", "conveyor:closable"] },
+      { id: "intermediate", number: 2, title: "Intermediate", state: "closed" as const, labels: ["conveyor", "conveyor:review", "conveyor:done"] },
+      { id: "merged-child", number: 3, title: "Merged child", state: "closed" as const, labels: ["conveyor", "conveyor:deploy", "conveyor:needs-intervention"] },
+      { id: "manual-child", number: 4, title: "Manual child", state: "closed" as const, labels: ["conveyor", "conveyor:review"] },
+      { id: "dependent", number: 5, title: "Dependent", state: "open" as const, labels: ["conveyor", "conveyor:implementation"] },
+    ].map((issue) => ({
+      ...issue,
+      url: `https://example.com/${issue.number}`,
+      body: "",
+      stateReason: null,
+      updatedAt: "2026-10-01T00:00:00Z",
+    }));
+    const replacements: Array<{ number: number; labels: readonly string[] }> = [];
+    const source = {
+      async listIssues() { return sourceIssues; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "admin" as const; },
+      async repositoryVisibility() { return "private" as const; },
+      async listSubIssues(_address: string, number: number) {
+        if (number === 1) return sourceIssues.filter((issue) => [2, 4].includes(issue.number));
+        if (number === 2) return sourceIssues.filter((issue) => issue.number === 3);
+        return [];
+      },
+      async listDependencies(_address: string, number: number) {
+        return number === 5 ? sourceIssues.filter((issue) => issue.number === 3) : [];
+      },
+      async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
+        replacements.push({ number, labels });
+        const issue = sourceIssues.find((candidate) => candidate.number === number);
+        if (issue) issue.labels = [...labels];
+      },
+    };
+    const service = new ConveyorService(config, store, source as never);
+
+    await service.reconcileAll();
+
+    expect(replacements).toEqual([{ number: 1, labels: ["conveyor", "conveyor:deploy"] }]);
+    expect(store.getStageState("parent")).toMatchObject({ stageId: "deploy", status: "awaiting-source" });
+
+    await service.reconcileAll();
+
+    expect(replacements).toHaveLength(1);
+    expect(store.getIssue("parent")).toMatchObject({
+      projectedStage: "deploy",
+      labels: ["conveyor", "conveyor:deploy"],
+    });
+    expect(store.listStageTransitions("parent").filter((transition) => transition.kind === "rollup")).toHaveLength(1);
+
+    const board = service.dashboard("csrf");
+    const deploy = board.stages.find((column) => column.id === "stage:deploy")!;
+    expect(deploy.issues.find((card) => card.id === "parent")).toMatchObject({
+      state: "active",
+      closable: false,
+      children: expect.arrayContaining([
+        expect.objectContaining({ id: "intermediate", satisfied: false }),
+        expect.objectContaining({ id: "manual-child", satisfied: true }),
+      ]),
+    });
+    expect(deploy.issues.find((card) => card.id === "merged-child")).toMatchObject({
+      state: "needs-intervention",
+      parent: expect.objectContaining({ id: "intermediate", satisfied: false }),
+    });
+    expect(board.done.issues.some((card) => card.id === "parent")).toBe(false);
+
+    const intermediateDetails = service.issueDetails("csrf", "intermediate")!;
+    expect(intermediateDetails.children).toContainEqual(expect.objectContaining({
+      id: "merged-child",
+      satisfied: false,
+      signal: "stop",
+      station: expect.objectContaining({ name: "Deploy" }),
+    }));
+    const dependentDetails = service.issueDetails("csrf", "dependent")!;
+    expect(dependentDetails.dependencies).toContainEqual(expect.objectContaining({
+      id: "merged-child",
+      satisfied: true,
     }));
     store.close();
   });
@@ -1999,7 +2131,7 @@ describe("ConveyorService dashboard", () => {
     expect(dashboard.stages.map((column) => column.name)).toEqual(["Refinement", "Build", "CI"]);
     expect(implementation).toMatchObject({
       actors: [{ type: "agent", name: "Implementer", title: "Senior Developer" }],
-      totalIssues: 3,
+      totalIssues: 4,
       page: 1,
       totalPages: 1,
     });
@@ -2007,13 +2139,16 @@ describe("ConveyorService dashboard", () => {
       { type: "agent", name: "Implementer", title: "Senior Developer" },
       { type: "agent", name: "Refiner", title: "Product Owner" },
     ]);
-    expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29, 31]);
+    expect(implementation?.issues.map((issue) => issue.number)).toEqual([27, 29, 30, 31]);
     expect(implementation?.issues[0]).toMatchObject({
       dependencies: [{ number: 1, satisfied: true }],
       working: true,
     });
     expect(implementation?.issues[1]).toMatchObject({ working: true });
     expect(implementation?.issues[2]).toMatchObject({
+      children: [expect.objectContaining({ number: 27, satisfied: false })],
+    });
+    expect(implementation?.issues[3]).toMatchObject({
       activity: "implementation › ciGate",
       waiting: {
         reason: "Waiting for CI for 7c0ea55",
@@ -2115,19 +2250,19 @@ describe("ConveyorService dashboard", () => {
     expect(dashboard.done).toMatchObject({ totalIssues: 26 });
     expect(dashboard.done.issues).toHaveLength(20);
     expect(dashboard.done.issues[0]).toMatchObject({
-      number: 30,
-      state: "done",
+      number: 25,
+      state: "completed",
       tone: "success",
       inconsistent: false,
-      noSplit: true,
-      children: [{ number: 27 }],
+      noSplit: false,
     });
+    expect(dashboard.done.issues.some((issue) => issue.number === 30)).toBe(false);
     expect(dashboard.attention).toMatchObject({ name: "Label problems", totalIssues: 1 });
     expect(dashboard.attention.issues[0]).toMatchObject({
       number: 28,
       reason: "No valid configured stage label is present.",
     });
-    expect(dashboard.counts).toEqual({ board: 4, attention: 1 });
+    expect(dashboard.counts).toEqual({ board: 5, attention: 1 });
 
     const expanded = service.dashboard("csrf", {
       view: "board",
@@ -2137,7 +2272,7 @@ describe("ConveyorService dashboard", () => {
       runId: null,
       issueId: null,
     });
-    expect(expanded.done.issues).toHaveLength(26);
+    expect(expanded.done.issues).toHaveLength(25);
     store.close();
   });
 

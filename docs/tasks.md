@@ -203,9 +203,9 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | --- | --- | --- | --- | --- |
 | `workspace.cleanup` | act | repository | invalidates workspace | Removes the worktree and deletes the local branch and its remote-tracking ref, then marks the workspace removed; also deletes the remote branch when it is still there and no open change uses it (best effort). A missing workspace is already done. |
 | `workspace.ensure` | act | repository | invalidates workspace | Creates the issue's workspace (worktree and branch) when none is recorded; re-attaches the recorded path to its existing branch when the directory went missing; otherwise does nothing. |
-| `workspace.fetch` | tool | - | - | Fetch the repository base branch from origin into the workspace. |
+| `workspace.fetch` | tool | - | - | Fetch the repository base branch and scoped workspace branch from origin into the workspace. |
 | `workspace.get` | tool | - | - | Read scoped workspace metadata (path and branch). |
 | `workspace.load` | load | - | writes workspace | Loads the stored workspace with local git facts: clean, ahead/behind and head SHAs against origin/<branch> as last fetched or pushed (no network). |
-| `workspace.push` | tool | - | invalidates workspace | Push the workspace branch to origin, optionally with --force-with-lease. |
+| `workspace.push` | tool | - | invalidates workspace | Push the workspace branch to origin. For a lease push, first read change.get, use workspace.fetch to fetch the observed branch head, and rebase that head into HEAD; then provide forceWithLease: true and that headSha. When the remote moves, repeat those recovery steps before retrying. |
 | `workspace.pushed` | check | workspace | - | Passes when the workspace is clean, not ahead of origin/<branch>, and its head equals the remote head; the failure names the condition that failed. |
 | `workspace.removed` | check | workspace | - | Passes when no workspace exists. |
