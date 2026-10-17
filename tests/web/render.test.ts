@@ -300,10 +300,14 @@ describe("renderDashboard", () => {
           { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "Parent <safe>", state: "Active", stage: "Implementation", context: false, signal: "run" },
           { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "Child", state: "Blocked", stage: "Review", context: false, signal: "stop" },
           { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Finished prerequisite", state: "Done", stage: null, context: true, signal: null },
+          { id: "outstanding", repository: "foundation", repositoryColor: 2, number: 8, title: "Outstanding prerequisite", state: "Active", stage: null, context: true, signal: "run" },
+          { id: "stopped", repository: "foundation", repositoryColor: 2, number: 9, title: "Stopped prerequisite", state: "Stopped", stage: null, context: true, signal: "stop" },
         ],
         relationships: [
           { kind: "parent-child", from: "parent", to: "child", status: null },
           { kind: "dependency", from: "prerequisite", to: "child", status: "satisfied" },
+          { kind: "dependency", from: "outstanding", to: "child", status: "outstanding" },
+          { kind: "dependency", from: "stopped", to: "child", status: "stopped" },
         ],
       },
     });
@@ -318,6 +322,9 @@ describe("renderDashboard", () => {
     expect(html).toContain("Parent #41 → child #42");
     expect(html).toContain("Issue #42 waits for prerequisite #7");
     expect(html).toContain("Status: satisfied prerequisite");
+    expect(html).toContain("graph-relationship--satisfied");
+    expect(html).toContain("graph-relationship--outstanding");
+    expect(html).toContain("graph-relationship--stopped");
     expect(html).toContain("Context item");
     expect(html).toContain("Stopped");
   });

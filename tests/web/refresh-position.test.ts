@@ -306,6 +306,71 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
+  test("refreshes Graph nodes and relationship status in place without duplicates", async () => {
+    let revision = "graph-live-1";
+    let currentDashboard: DashboardViewModel = {
+      ...dashboard(revision, []),
+      view: "graph",
+      graph: {
+        nodes: [
+          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Active", stage: "Review", context: false, signal: "run" },
+          { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Blocked", stage: "Implementation", context: false, signal: "stop" },
+          { id: "retired", repository: "foundation", repositoryColor: 2, number: 8, title: "Removed context", state: "Done", stage: null, context: true, signal: null },
+        ],
+        relationships: [
+          { kind: "dependency", from: "prerequisite", to: "waiting", status: "outstanding" },
+          { kind: "parent-child", from: "retired", to: "waiting", status: null },
+        ],
+      },
+    };
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/graph`);
+      expect(await page.locator('[data-graph-node="retired"]').count()).toBe(1);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: outstanding prerequisite");
+
+      let navigations = 0;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) navigations += 1;
+      });
+      await armReplacement(page);
+      revision = "graph-live-2";
+      currentDashboard = {
+        ...dashboard(revision, []),
+        view: "graph",
+        graph: {
+          nodes: [
+            { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Active", stage: "Implementation", context: false, signal: "run" },
+            { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Done", stage: "Review", context: false, signal: "run" },
+            { id: "added", repository: "sample", repositoryColor: 1, number: 43, title: "New dependent", state: "Active", stage: "Implementation", context: false, signal: "run" },
+          ],
+          relationships: [
+            { kind: "dependency", from: "prerequisite", to: "waiting", status: "satisfied" },
+          ],
+        },
+      };
+
+      await page.waitForFunction(() =>
+        document.querySelector('[data-graph-node="added"]') !== null &&
+        document.querySelector('[data-graph-node="retired"]') === null &&
+        document.querySelector(".graph-relationship--dependency")?.textContent?.includes("Status: satisfied prerequisite"),
+      );
+
+      const graphIds = await page.locator("[data-graph-node]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-graph-node")));
+      expect(await page.locator('[data-graph-node="retired"]').count()).toBe(0);
+      expect(await page.locator('[data-graph-node="added"]').count()).toBe(1);
+      expect(await page.locator(".graph-relationship--parent-child").count()).toBe(0);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: satisfied prerequisite");
+      expect(new Set(graphIds).size).toBe(graphIds.length);
+      expect(navigations).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("shows a distinct storage warning from a live status event without reloading", async () => {
     let status: SystemStatusViewModel = {
       memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },

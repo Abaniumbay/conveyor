@@ -918,7 +918,10 @@ function Graph({ model }: { model: DashboardViewModel }) {
         const description = relationship.kind === "parent-child"
           ? <><strong>Parent #{from.number} → child #{to.number}</strong><span> Family relationship</span></>
           : <><strong>Issue #{to.number} waits for prerequisite #{from.number}</strong><span> Status: {relationship.status} prerequisite</span></>;
-        return <li class={`graph-relationship graph-relationship--${relationship.kind}`} key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
+        const statusClass = relationship.kind === "dependency" && relationship.status
+          ? ` graph-relationship--${relationship.status}`
+          : "";
+        return <li class={`graph-relationship graph-relationship--${relationship.kind}${statusClass}`} key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
           {description}
         </li>;
       })}</ol>
