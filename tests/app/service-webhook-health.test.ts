@@ -19,7 +19,7 @@ afterEach(async () => {
 
 const FALLBACK = { default: 15 * 60_000, ci: 5 * 60_000, change: 10 * 60_000, dependencies: 30 * 60_000 };
 
-interface Delivery { id: number; guid: string; deliveredAt: string; statusCode: number; redelivery: boolean }
+interface Delivery { id: string; guid: string; deliveredAt: string; statusCode: number; redelivery: boolean }
 
 async function service(options: { webhooks?: boolean; status?: () => GitHubWebhookStatus | null; deliveries?: () => Delivery[]; issues?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-health-"));
@@ -39,11 +39,11 @@ async function service(options: { webhooks?: boolean; status?: () => GitHubWebho
     repositories: { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default", systemLabels: [] } },
   } as unknown as ConveyorConfig;
   store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: root, configHash: "h" });
-  const calls = { redelivered: [] as number[], listings: 0, deliveryListings: 0, since: [] as Array<string | undefined>, visibility: 0, subIssues: 0, hookChecks: 0, permissions: 0 };
+  const calls = { redelivered: [] as string[], listings: 0, deliveryListings: 0, since: [] as Array<string | undefined>, visibility: 0, subIssues: 0, hookChecks: 0, permissions: 0 };
   const issue = { id: "1", number: 1, url: "https://example.com/1", title: "Open", body: "", state: "open" as const, labels: ["conveyor"], updatedAt: "2026-10-17T00:00:00Z" };
   const github = {
     async listHookDeliveries() { calls.deliveryListings += 1; return options.deliveries?.() ?? []; },
-    async redeliverHookDelivery(_address: string, _hook: number, id: number) { calls.redelivered.push(id); },
+    async redeliverHookDelivery(_address: string, _hook: number, id: string) { calls.redelivered.push(id); },
     async listIssues(_address: string, listing: { since?: string } = {}) { calls.listings += 1; calls.since.push(listing.since); return options.issues ? [issue] : []; },
     async listSubIssues() { calls.subIssues += 1; return []; },
     async getIssueProvenance() {
@@ -154,7 +154,7 @@ describe("missed deliveries", () => {
   const recent = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 
   test("onboarding, before the server listens, does not ask for them again", async () => {
-    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
     await conveyor.onboardRepositories();
     // It got as far as checking the webhook.
     expect(calls.hookChecks).toBe(1);
@@ -163,26 +163,26 @@ describe("missed deliveries", () => {
   });
 
   test("starting, once the server listens, asks for the deliveries missed while it was down", async () => {
-    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(1), statusCode: 502, redelivery: false }] });
     conveyor.start();
     for (let attempt = 0; attempt < 100 && calls.redelivered.length === 0; attempt += 1) await Bun.sleep(10);
-    expect(calls.redelivered).toEqual([11]);
+    expect(calls.redelivered).toEqual(["11"]);
     await conveyor.close();
     store.close();
   });
 
   test("a recent delivery that failed and was never received is redelivered", async () => {
-    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(5), statusCode: 502, redelivery: false }] });
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(5), statusCode: 502, redelivery: false }] });
     await conveyor.checkWebhookHealth("app");
     expect(await conveyor.redeliverMissed("app")).toBe(1);
-    expect(calls.redelivered).toEqual([11]);
+    expect(calls.redelivered).toEqual(["11"]);
     store.close();
   });
 
   test("a delivery that one attempt delivered is not redelivered", async () => {
     const { conveyor, store, calls } = await service({ deliveries: () => [
-      { id: 12, guid: "g-1", deliveredAt: recent(4), statusCode: 200, redelivery: true },
-      { id: 11, guid: "g-1", deliveredAt: recent(5), statusCode: 502, redelivery: false },
+      { id: "12", guid: "g-1", deliveredAt: recent(4), statusCode: 200, redelivery: true },
+      { id: "11", guid: "g-1", deliveredAt: recent(5), statusCode: 502, redelivery: false },
     ] });
     await conveyor.checkWebhookHealth("app");
     await conveyor.redeliverMissed("app");
@@ -191,7 +191,7 @@ describe("missed deliveries", () => {
   });
 
   test("a delivery Conveyor stored is not redelivered", async () => {
-    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(5), statusCode: 504, redelivery: false }] });
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(5), statusCode: 504, redelivery: false }] });
     store.recordSourceEvent({ source: "github", deliveryId: "g-1", eventType: "issues", payload: {} });
     await conveyor.checkWebhookHealth("app");
     await conveyor.redeliverMissed("app");
@@ -200,7 +200,7 @@ describe("missed deliveries", () => {
   });
 
   test("a delivery older than a day is left alone", async () => {
-    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: 11, guid: "g-1", deliveredAt: recent(25 * 60), statusCode: 502, redelivery: false }] });
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(25 * 60), statusCode: 502, redelivery: false }] });
     await conveyor.checkWebhookHealth("app");
     await conveyor.redeliverMissed("app");
     expect(calls.redelivered).toEqual([]);
@@ -208,7 +208,7 @@ describe("missed deliveries", () => {
   });
 
   test("at most fifty are redelivered in one pass", async () => {
-    const many = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, guid: `g-${index}`, deliveredAt: recent(5), statusCode: 502, redelivery: false }));
+    const many = Array.from({ length: 60 }, (_, index) => ({ id: String(index + 1), guid: `g-${index}`, deliveredAt: recent(5), statusCode: 502, redelivery: false }));
     const { conveyor, store, calls } = await service({ deliveries: () => many });
     await conveyor.checkWebhookHealth("app");
     await conveyor.redeliverMissed("app");

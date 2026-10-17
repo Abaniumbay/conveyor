@@ -1001,3 +1001,20 @@ describe("GitHubAdapter.rateLimit", () => {
     expect(await new GitHubAdapter(new FakeTransport({ resources: {} }), "conveyor").rateLimit()).toEqual({ core: null, graphql: null });
   });
 });
+
+describe("webhook deliveries", () => {
+  // GitHub's delivery ids are past Number.MAX_SAFE_INTEGER; a rounded id names no delivery.
+  const LARGE_ID = "3848834007148003328";
+
+  test("keeps a delivery id exact", async () => {
+    const transport = new FakeTransport(`[{"id":${LARGE_ID},"guid":"g-1","delivered_at":"2026-10-17T16:08:05Z","status_code":502,"redelivery":false}]`);
+    const deliveries = await new GitHubAdapter(transport, "conveyor").listHookDeliveries("owner/my-app", 7);
+    expect(deliveries).toEqual([{ id: LARGE_ID, guid: "g-1", deliveredAt: "2026-10-17T16:08:05Z", statusCode: 502, redelivery: false }]);
+  });
+
+  test("asks for a redelivery by that exact id", async () => {
+    const transport = new FakeTransport(null);
+    await new GitHubAdapter(transport, "conveyor").redeliverHookDelivery("owner/my-app", 7, LARGE_ID);
+    expect(transport.requests[0]).toMatchObject({ method: "POST", path: `repos/owner/my-app/hooks/7/deliveries/${LARGE_ID}/attempts` });
+  });
+});

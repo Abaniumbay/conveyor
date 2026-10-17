@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { z } from "zod";
+
 import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../types";
 import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "./issue-metadata";
 import {
@@ -235,9 +237,18 @@ interface GitHubHook {
   last_response?: { code?: number | null; status?: string | null } | null;
 }
 
+const hookDeliveriesSchema = z.array(z.object({
+  id: z.string().regex(/^\d+$/),
+  guid: z.string(),
+  delivered_at: z.string(),
+  status_code: z.number(),
+  redelivery: z.boolean(),
+}));
+
 /** One delivery attempt of a webhook, newest first in GitHub's list. */
 export interface GitHubHookDelivery {
-  id: number;
+  /** Kept as text: GitHub's delivery ids are larger than a JavaScript number holds exactly. */
+  id: string;
   /** The delivery's id (`X-GitHub-Delivery`); a redelivery keeps it. */
   guid: string;
   deliveredAt: string;
@@ -485,17 +496,20 @@ export class GitHubAdapter {
 
   /** The latest delivery attempts of a webhook (one page, newest first). */
   async listHookDeliveries(address: string, hookId: number): Promise<GitHubHookDelivery[]> {
-    const deliveries = await this.transport.request<Array<{ id: number; guid: string; delivered_at: string; status_code: number; redelivery: boolean }>>({
+    // Read as text and quote the ids before parsing: JSON.parse would round them to a wrong id.
+    const text = await this.transport.request<string>({
       method: "GET",
       path: `repos/${address}/hooks/${hookId}/deliveries?per_page=100`,
+      raw: true,
     });
+    const deliveries = hookDeliveriesSchema.parse(JSON.parse(text.replace(/("id"\s*:\s*)(\d+)/g, '$1"$2"')));
     return deliveries.map((delivery) => ({
       id: delivery.id, guid: delivery.guid, deliveredAt: delivery.delivered_at, statusCode: delivery.status_code, redelivery: delivery.redelivery,
     }));
   }
 
   /** Asks GitHub to send a delivery again. */
-  async redeliverHookDelivery(address: string, hookId: number, deliveryId: number): Promise<void> {
+  async redeliverHookDelivery(address: string, hookId: number, deliveryId: string): Promise<void> {
     await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/hooks/${hookId}/deliveries/${deliveryId}/attempts` });
   }
 
