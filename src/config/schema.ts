@@ -126,14 +126,17 @@ const settingsSchema = z
           .prefault({}),
         /** The periodic reconcile interval while webhooks are healthy; settings.reconcileInterval otherwise. */
         reconcileInterval: durationSchema.prefault("30m"),
+        /** How often the periodic reconcile reads everything while webhooks are healthy. */
+        fullReconcileInterval: durationSchema.prefault("24h"),
       })
       .strict()
       .prefault({})
-      .transform(({ retention, sinks, fallback, reconcileInterval }) => ({
+      .transform(({ retention, sinks, fallback, reconcileInterval, fullReconcileInterval }) => ({
         retentionMs: retention,
         sinks,
         fallbackMs: { default: fallback.default, ci: fallback.ci, change: fallback.change, dependencies: fallback.dependencies },
         reconcileIntervalMs: reconcileInterval,
+        fullReconcileIntervalMs: fullReconcileInterval,
       })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z

@@ -1298,6 +1298,31 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
+    const repositorySyncPath = /^\/repositories\/([^/]{1,200})\/sync$/.exec(path);
+    if (repositorySyncPath) {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      let repositoryId: string;
+      try {
+        repositoryId = decodeURIComponent(repositorySyncPath[1]!);
+      } catch {
+        return text("Invalid repository", 400);
+      }
+      try {
+        const { result, correlationId } = await dependencies.dispatch("repository.sync", { repositoryId }, actorOf(currentSession));
+        if (wantsJson(request)) return json({ ok: !result.failed, ...result, correlationId });
+        return redirect(`/repositories/${encodeURIComponent(repositoryId)}`);
+      } catch (error) {
+        return commandError(error) ?? text("Unable to sync the repository", 409);
+      }
+    }
+
     if (path === "/backlog/reorder") {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;

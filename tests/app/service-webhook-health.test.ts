@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { GitHubTransportError, type GitHubWebhookStatus } from "../../src/source
 
 const directories: string[] = [];
 afterEach(async () => {
+  setSystemTime();
   log.configure({ sinks: [new ConsoleSink()] });
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -20,7 +21,7 @@ const FALLBACK = { default: 15 * 60_000, ci: 5 * 60_000, change: 10 * 60_000, de
 
 interface Delivery { id: number; guid: string; deliveredAt: string; statusCode: number; redelivery: boolean }
 
-async function service(options: { webhooks?: boolean; status?: () => GitHubWebhookStatus | null; deliveries?: () => Delivery[] } = {}) {
+async function service(options: { webhooks?: boolean; status?: () => GitHubWebhookStatus | null; deliveries?: () => Delivery[]; issues?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-health-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -29,24 +30,32 @@ async function service(options: { webhooks?: boolean; status?: () => GitHubWebho
     hash: "h", root,
     settings: {
       artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "worktrees"), runners: 1, labelPrefix: "conveyor",
-      events: { retentionMs: null, sinks: [], fallbackMs: FALLBACK, reconcileIntervalMs: 30 * 60_000 },
+      events: { retentionMs: null, sinks: [], fallbackMs: FALLBACK, reconcileIntervalMs: 30 * 60_000, fullReconcileIntervalMs: 24 * 60 * 60_000 },
     },
     web: options.webhooks === false ? {} : { publicUrl: "https://conveyor.example.com" },
     sources: { github: { type: "github", webhookPath: "/hooks/github", webhookSecret: "secret", autoConfigureWebhook: options.webhooks !== false } },
-    labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: {} },
+    labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { orderTemplate: "conveyor:order:{number}" } },
     pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "work", concurrency: 1 }] } }, agents: {},
     repositories: { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default" } },
   } as unknown as ConveyorConfig;
   store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: root, configHash: "h" });
-  const calls = { redelivered: [] as number[], listings: 0, deliveryListings: 0 };
+  const calls = { redelivered: [] as number[], listings: 0, deliveryListings: 0, since: [] as Array<string | undefined>, visibility: 0, subIssues: 0, hookChecks: 0, permissions: 0 };
+  const issue = { id: "1", number: 1, url: "https://example.com/1", title: "Open", body: "", state: "open" as const, labels: ["conveyor"], updatedAt: "2026-10-17T00:00:00Z" };
   const github = {
     async listHookDeliveries() { calls.deliveryListings += 1; return options.deliveries?.() ?? []; },
     async redeliverHookDelivery(_address: string, _hook: number, id: number) { calls.redelivered.push(id); },
-    async listIssues() { calls.listings += 1; return []; },
-    async listSubIssues() { return []; },
+    async listIssues(_address: string, listing: { since?: string } = {}) { calls.listings += 1; calls.since.push(listing.since); return options.issues ? [issue] : []; },
+    async listSubIssues() { calls.subIssues += 1; return []; },
+    async getIssueProvenance() {
+      calls.permissions += 1;
+      return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+    },
+    async collaboratorPermission() { return "write" as const; },
+    async upsertStatusComment() { return 1; },
     async listDependencies() { return []; },
-    async repositoryVisibility() { return "private" as const; },
+    async repositoryVisibility() { calls.visibility += 1; return "private" as const; },
     async webhookStatus() {
+      calls.hookChecks += 1;
       return options.status ? options.status() : { id: 1, active: true, lastResponseCode: null };
     },
   };
@@ -224,6 +233,112 @@ describe("the safety-net reconcile", () => {
     await conveyor.reconcileAll({ skipFresh: true });
     await conveyor.reconcileAll();
     expect(calls.listings).toBe(2);
+    store.close();
+  });
+
+  test("while healthy, a tick after events.reconcileInterval is a light pass: only changed issues, no visibility read", async () => {
+    setSystemTime(new Date("2026-10-17T10:00:00Z"));
+    const { conveyor, store, calls } = await service();
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    setSystemTime(new Date("2026-10-17T10:31:00Z"));
+    await conveyor.reconcileAll({ skipFresh: true });
+    // The listing overlaps the previous read by a margin for GitHub's clock.
+    expect(calls.since).toEqual([undefined, "2026-10-17T09:58:00.000Z"]);
+    expect(calls.visibility).toBe(1);
+    store.close();
+  });
+
+  test("while healthy, a tick after events.fullReconcileInterval is a full pass", async () => {
+    setSystemTime(new Date("2026-10-17T10:00:00Z"));
+    const { conveyor, store, calls } = await service();
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    setSystemTime(new Date("2026-10-18T10:00:00Z"));
+    await conveyor.reconcileAll({ skipFresh: true });
+    expect(calls.since).toEqual([undefined, undefined]);
+    expect(calls.visibility).toBe(2);
+    store.close();
+  });
+
+  test("while unhealthy, every tick is a full pass", async () => {
+    setSystemTime(new Date("2026-10-17T10:00:00Z"));
+    const { conveyor, store, calls } = await service({ status: () => ({ id: 1, active: true, lastResponseCode: 500 }) });
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    setSystemTime(new Date("2026-10-17T10:31:00Z"));
+    await conveyor.reconcileAll({ skipFresh: true });
+    expect(calls.since).toEqual([undefined, undefined]);
+    store.close();
+  });
+});
+
+describe("repository sync", () => {
+  const superuser = { kind: "user" as const, id: "admin-1", name: "admin", role: "superuser" as const };
+
+  test("reads every issue again, even right after a full pass", async () => {
+    const { conveyor, store, calls } = await service();
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    await conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser);
+    expect(calls.since).toEqual([undefined, undefined]);
+    expect(calls.visibility).toBe(2);
+    store.close();
+  });
+
+  test("reads relationships again instead of reusing the cache", async () => {
+    const { conveyor, store, calls } = await service({ issues: true });
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    expect(calls.subIssues).toBe(1);
+    await conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser);
+    expect(calls.subIssues).toBe(2);
+    store.close();
+  });
+
+  test("re-checks an enrolled item's provenance and author permissions", async () => {
+    const { conveyor, store, calls } = await service({ issues: true });
+    await conveyor.checkWebhookHealth("app");
+    await conveyor.reconcileAll();
+    expect(calls.permissions).toBe(1);
+    await conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser);
+    expect(calls.permissions).toBe(2);
+    store.close();
+  });
+
+  test("checks the webhook again", async () => {
+    const { conveyor, store, calls } = await service();
+    await conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser);
+    expect(calls.hookChecks).toBe(1);
+    store.close();
+  });
+
+  test("reports whether GitHub could be read", async () => {
+    const { conveyor, store } = await service();
+    expect((await conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser)).result).toEqual({ issues: 0, failed: false });
+    store.close();
+  });
+
+  test("two syncs at once read GitHub once", async () => {
+    const { conveyor, store, calls } = await service();
+    await Promise.all([
+      conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser),
+      conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, superuser),
+    ]);
+    expect(calls.listings).toBe(1);
+    store.close();
+  });
+
+  test("an unknown repository is refused", async () => {
+    const { conveyor, store } = await service();
+    await expect(conveyor.commands.dispatch("repository.sync", { repositoryId: "missing" }, superuser)).rejects.toThrow(/unknown repository/);
+    store.close();
+  });
+
+  test("a user who is not a superuser may not sync", async () => {
+    const { conveyor, store, calls } = await service();
+    await expect(conveyor.commands.dispatch("repository.sync", { repositoryId: "app" }, { ...superuser, role: "user" })).rejects.toThrow();
+    expect(calls.listings).toBe(0);
     store.close();
   });
 });

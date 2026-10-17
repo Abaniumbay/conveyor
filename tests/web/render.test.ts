@@ -749,6 +749,10 @@ describe("renderDashboard", () => {
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(superuser).toContain("/sentinel/local-folder");
     expect(superuser).toContain("sentinel.egress.example");
+    // Sync now is one repository's, and only for superusers.
+    expect(superuser).toContain('<form class="repository-sync" method="post" action="/repositories/space%2Fname/sync">');
+    expect(superuser).toContain(">Sync now</button>");
+    expect(reader).not.toContain("Sync now");
 
     const unreconciled = renderDashboard({ ...base, repositories: [{ ...repository, lastReconciledAt: null }] });
     expect(unreconciled).not.toContain("Last checked");

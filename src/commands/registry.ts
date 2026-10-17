@@ -49,6 +49,9 @@ export const COMMANDS = {
   }).strict()),
   "notifications.unsubscribe": define("user", "Remove a browser's push subscription.", z.object({ accountId: id, endpoint: z.string().max(2_000) }).strict()),
 
+  // Repositories
+  "repository.sync": define("superuser", "Read one repository afresh now: every issue, provenance, permissions, relationships, pull request heads and CI.", z.object({ repositoryId: id }).strict()),
+
   // Service
   "admission.drain": define("superuser", "Stop admitting new work; running work continues.", z.object({ reason: text(500) }).strict()),
   "admission.resume": define("superuser", "Admit new work again.", z.object({}).strict()),

@@ -201,13 +201,14 @@ describe("settings for task chains", () => {
 describe("event settings", () => {
   const withEvents = (events: string) => ({ header: HEADER.replace("  artifacts: /tmp/artifacts\n", `  artifacts: /tmp/artifacts\n  events:\n${events}`) });
 
-  test("defaults: 30 days of events, no sink, fallbacks by kind of wait and a 30 minute healthy reconcile", async () => {
+  test("defaults: 30 days of events, no sink, fallbacks by kind of wait and a 30 minute light and 24 hour full healthy reconcile", async () => {
     const { config } = await load("");
     expect(config.settings.events).toEqual({
       retentionMs: 30 * 86_400_000,
       sinks: [],
       fallbackMs: { default: 15 * 60_000, ci: 5 * 60_000, change: 10 * 60_000, dependencies: 30 * 60_000 },
       reconcileIntervalMs: 30 * 60_000,
+      fullReconcileIntervalMs: 24 * 60 * 60_000,
     });
   });
 
@@ -217,10 +218,11 @@ describe("event settings", () => {
   });
 
   test("fallbacks and the healthy reconcile interval are configurable", async () => {
-    const { config } = await load("", withEvents("    fallback: { ci: 2m, dependencies: 1h }\n    reconcileInterval: 1h\n"));
+    const { config } = await load("", withEvents("    fallback: { ci: 2m, dependencies: 1h }\n    reconcileInterval: 1h\n    fullReconcileInterval: 12h\n"));
     expect(config.settings.events).toMatchObject({
       fallbackMs: { default: 15 * 60_000, ci: 2 * 60_000, change: 10 * 60_000, dependencies: 60 * 60_000 },
       reconcileIntervalMs: 60 * 60_000,
+      fullReconcileIntervalMs: 12 * 60 * 60_000,
     });
   });
 

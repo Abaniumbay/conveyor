@@ -1088,6 +1088,7 @@ describe("createWebHandler", () => {
       ["/backlog/reorder", { issueId: "i-1", direction: "up" }],
       ["/backlog/move", { issueId: "i-1", beforeIssueId: "i-2" }],
       ["/steering", { prompt: "inspect" }],
+      ["/repositories/app/sync", {}],
     ] as const) expect((await formPost(path, fields)).status).toBe(403);
     const dismissal = await handler(new Request("http://localhost/api/issues/i-1/findings/f-1/dismiss", {
       method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ reason: "resolved" }),
@@ -1450,6 +1451,7 @@ describe("dashboard commands", () => {
       setPushPreferences: () => {},
       putPushSubscription: () => {},
       deletePushSubscription: () => {},
+      syncRepository: () => ({ issues: 3, failed: false }),
     });
     const { cookie } = await login(handler);
     const csrf = auth.getSession(cookie)!.csrfToken;
@@ -1466,6 +1468,7 @@ describe("dashboard commands", () => {
       ["gate.approve", () => form("/manual-gates/approve", { issueId: "i-1", stageId: "review", gateId: "gate" })],
       ["backlog.reorder", () => form("/backlog/reorder", { issueId: "i-1", direction: "up" })],
       ["backlog.move", () => form("/backlog/move", { issueId: "i-1", beforeIssueId: "" })],
+      ["repository.sync", () => form("/repositories/app/sync", {})],
       ["item.postMessage", () => form(`/api/issues/${ISSUE}/conversation`, { message: "Please continue" })],
       ["item.retry", () => form(`/api/issues/${ISSUE}/retry`, { note: "" })],
       ["finding.dismiss", () => json(`/api/issues/${ISSUE}/findings/f-1/dismiss`, { reason: "Not applicable" })],
@@ -1551,5 +1554,41 @@ describe("live dashboard stream", () => {
     expect(streamListeners.size).toBe(1);
     await reader.cancel();
     expect(streamListeners.size).toBe(0);
+  });
+});
+
+describe("repository sync", () => {
+  test("a superuser syncs one repository and is sent back to its page", async () => {
+    const synced: string[] = [];
+    const { handler, auth } = setup({ syncRepository: (id: string) => { synced.push(id); return { issues: 3, failed: false }; } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const response = await handler(new Request("http://localhost/repositories/my-app/sync", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }),
+    }));
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/repositories/my-app");
+    expect(synced).toEqual(["my-app"]);
+  });
+
+  test("a sync without the CSRF token is refused", async () => {
+    const synced: string[] = [];
+    const { handler } = setup({ syncRepository: (id: string) => { synced.push(id); return { issues: 3, failed: false }; } });
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/repositories/my-app/sync", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({}),
+    }));
+    expect(response.status).toBe(403);
+    expect(synced).toEqual([]);
+  });
+
+  test("a sync that could not read GitHub answers JSON callers with its outcome", async () => {
+    const { handler, auth } = setup({ syncRepository: () => ({ issues: 3, failed: true }) });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const response = await handler(new Request("http://localhost/repositories/my-app/sync", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ csrf }),
+    }));
+    expect(await response.json()).toMatchObject({ ok: false, issues: 3, failed: true });
   });
 });

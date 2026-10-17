@@ -30,6 +30,7 @@ export function fakeCommandBus(service: Record<string, unknown>): { commands: Co
   register("gate.approve", "approveManualGate", (fn, input, actor) => fn(input.issueId, input.stageId, input.gateId, { id: actor.id, username: actor.name }));
   register("backlog.reorder", "reorderBacklog", (fn, input) => fn(input.issueId, input.direction));
   register("backlog.move", "moveBacklogIssue", (fn, input) => fn(input.issueId, input.beforeIssueId));
+  register("repository.sync", "syncRepository", (fn, input) => fn(input.repositoryId));
   register("steering.start", "startSteering", (fn, input) => fn(input.prompt));
   register("item.postMessage", "postIssueMessage", (fn, input, actor) => fn(input.issueId, input.message, actor.name));
   register("item.retry", "retryIssue", (fn, input, actor) => fn(input.issueId, input.note, actor.name));

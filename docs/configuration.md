@@ -159,7 +159,8 @@ settings:
       ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
       change: 10m           # waiting for a pull request (change.mergeable)
       dependencies: 30m     # waiting for blockers (item.dependenciesMet)
-    reconcileInterval: 30m  # the safety-net reconcile while webhooks are healthy
+    reconcileInterval: 30m  # the light safety-net reconcile while webhooks are healthy
+    fullReconcileInterval: 24h  # the full reconcile while webhooks are healthy
 ```
 
 A task that waits for something GitHub reports by webhook (CI finishing, a new pull request
@@ -176,9 +177,18 @@ repository's webhooks are unhealthy, or it uses polling, every wait polls at its
 interval as before.
 
 While a repository's webhooks are healthy, its deliveries keep Conveyor current and the periodic
-reconcile is only a safety net: it reads the repository every `settings.events.reconcileInterval`
-instead of every `settings.reconcileInterval`, and reuses an unchanged issue's sub-issues and
-blockers for six hours instead of one. At start and hourly Conveyor also lists the webhook's recent
+reconcile is only a safety net. Every `settings.events.reconcileInterval` it does a light pass: it
+lists only the issues changed since the last read and reads relationships, pull request heads and
+CI for those alone. Every `settings.events.fullReconcileInterval`, and at start, it does a full
+pass: every issue, every enrolled item's provenance and author permissions, and the repository's
+visibility. An unchanged issue's sub-issues and blockers are reused for six hours instead of one.
+While a repository's webhooks are unhealthy, every periodic reconcile is a full pass every
+`settings.reconcileInterval`.
+
+GitHub sends no event for some changes, such as a collaborator's permission or a repository's
+visibility. A superuser can read one repository afresh at once with **Sync now** on its page, in
+the Setup section: a full pass that also forgets the cached relationships and re-checks the
+webhook. At start and hourly Conveyor also lists the webhook's recent
 deliveries and asks GitHub to send again, at most 50 at a time, those of the last day that failed
 and never arrived. This needs the same permission as configuring the webhook; without it Conveyor
 warns once and relies on the safety-net reconcile.

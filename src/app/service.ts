@@ -58,7 +58,7 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
-import { CommandBus, CommandForbiddenError, type CommandActor } from "../commands/bus";
+import { CommandBus, CommandForbiddenError, CommandInputError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
 import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
@@ -174,6 +174,8 @@ const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** The same while the repository's webhooks are healthy and report relationship changes. */
 const HEALTHY_RELATIONSHIP_REUSE_MS = 6 * 60 * 60_000;
+/** How often a full pass runs while webhooks are healthy, when configuration does not say. */
+const DEFAULT_FULL_RECONCILE_MS = 24 * 60 * 60_000;
 /** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
 const FULL_ISSUE_LISTING_MS = 60 * 60_000;
 /** A reconnecting dashboard replays at most this many missed events; with more it reloads. */
@@ -401,7 +403,11 @@ export class ConveyorService {
   readonly #webhookIds = new Map<string, number>();
   /** Repositories whose deliveries Conveyor may not list; warned about once. */
   readonly #redeliveryDenied = new Set<string>();
-  /** When each repository was last read by a full pass (startup or tick). */
+  /** When each repository was last fully read: every issue listed and every enrolled item re-checked. */
+  readonly #repositoryFullReconciledAt = new Map<string, number>();
+  /** Operator syncs in progress, by repository. */
+  readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
+  /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
   readonly #repositoryReconciledAt = new Map<string, number>();
   #webhookHealthTimer: ReturnType<typeof setInterval> | null = null;
   readonly #waitDispatcher: WaitDispatcher;
@@ -652,56 +658,118 @@ export class ConveyorService {
   }
 
   /**
-   * Reads every repository. With `skipFresh` (the periodic tick), a repository whose webhooks are
-   * healthy is read only every settings.events.reconcileInterval: its deliveries keep it current,
-   * and this pass is the safety net.
+   * Reads every repository. Startup (and any caller without `skipFresh`) does a full pass. The
+   * periodic tick does one per repository too while its webhooks are unhealthy; while they are
+   * healthy, its deliveries keep it current and the tick is a safety net: a light pass (only the
+   * issues changed since the last read) every settings.events.reconcileInterval, and a full pass,
+   * which also re-checks every enrolled item's provenance and author permissions, every
+   * settings.events.fullReconcileInterval.
    */
   async reconcileAll(options: { skipFresh?: boolean } = {}): Promise<void> {
-    for (const [id, repository] of Object.entries(this.config.repositories)) {
-      const pipeline = this.config.pipelines[repository.pipeline]!;
-      if (options.skipFresh && this.webhooksHealthy(id)) {
-        const last = this.#repositoryReconciledAt.get(id);
-        const interval = this.config.settings.events?.reconcileIntervalMs ?? this.config.settings.reconcileIntervalMs;
-        if (last !== undefined && Date.now() - last < interval) continue;
-      }
-      this.#repositoryReconciledAt.set(id, Date.now());
-      try {
-        const listing = this.issueListing(id, false);
-        await reconcileRepository({
-          store: this.store,
-          configHash: this.config.hash,
-          repository: {
-            id,
-            configName: id,
-            source: repository.source,
-            address: repository.address,
-            folder: repository.folder,
-          },
-          stages: pipeline.stages.map((stage) => stage.id),
-          labels: this.config.labels,
-          source: this.github,
-          trust: this.#issueTrust,
-          extraTrustedLogins: repository.extraTrustedLogins ?? [],
-          expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
-        });
-        listing.finish();
-        await this.reconcileRelationships(id, repository.address);
-        await this.syncIssueFields(id, repository);
-        this.restorePendingStatus(id);
-        if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
-        this.store.events().append("repository.reconciled", { issueNumbers: null }, { repositoryId: id });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
-        this.#repositoryErrors.set(id, message);
-        log.error("Repository reconciliation failed", { repository: id }, error);
-      } finally {
-        await this.recordRepositoryTrustStatus(id, repository.address);
-      }
+    for (const id of Object.keys(this.config.repositories)) {
+      const kind = options.skipFresh ? this.reconcileKind(id) : "full";
+      if (kind !== "skip") await this.reconcileOne(id, kind);
     }
     this.#lastReconciledAt = new Date().toISOString();
     this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
+  }
+
+  /** What the periodic tick does for a repository now. */
+  private reconcileKind(repositoryId: string): "full" | "light" | "skip" {
+    if (!this.webhooksHealthy(repositoryId)) return "full";
+    const now = Date.now();
+    const events = this.config.settings.events;
+    const lastFull = this.#repositoryFullReconciledAt.get(repositoryId);
+    if (lastFull === undefined || now - lastFull >= (events?.fullReconcileIntervalMs ?? DEFAULT_FULL_RECONCILE_MS)) return "full";
+    const last = this.#repositoryReconciledAt.get(repositoryId);
+    const interval = events?.reconcileIntervalMs ?? this.config.settings.reconcileIntervalMs;
+    return last !== undefined && now - last < interval ? "skip" : "light";
+  }
+
+  /**
+   * Reads one repository. A full pass lists every issue and re-checks each enrolled one; a light
+   * pass lists only the issues changed since the last read and reads relationships for those alone.
+   */
+  private async reconcileOne(id: string, kind: "full" | "light"): Promise<void> {
+    const repository = this.config.repositories[id];
+    if (!repository) return;
+    const pipeline = this.config.pipelines[repository.pipeline]!;
+    const startedAt = Date.now();
+    this.#repositoryReconciledAt.set(id, startedAt);
+    try {
+      const listing = this.issueListing(id, kind === "full" ? "full" : "light");
+      await reconcileRepository({
+        store: this.store,
+        configHash: this.config.hash,
+        repository: {
+          id,
+          configName: id,
+          source: repository.source,
+          address: repository.address,
+          folder: repository.folder,
+        },
+        stages: pipeline.stages.map((stage) => stage.id),
+        labels: this.config.labels,
+        source: this.github,
+        trust: this.#issueTrust,
+        extraTrustedLogins: repository.extraTrustedLogins ?? [],
+        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+        ...(listing.since !== undefined ? { since: listing.since } : {}),
+      });
+      listing.finish();
+      const since = listing.since;
+      const scope = since === undefined
+        ? null
+        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since).map((issue) => issue.sourceNumber));
+      await this.reconcileRelationships(id, repository.address, scope);
+      if (scope !== null) await this.backfillCiIndicators(id, scope);
+      await this.syncIssueFields(id, repository);
+      this.restorePendingStatus(id);
+      if (since === undefined) this.#repositoryFullReconciledAt.set(id, startedAt);
+      if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
+      this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
+      this.#repositoryErrors.set(id, message);
+      log.error("Repository reconciliation failed", { repository: id }, error);
+    } finally {
+      // Visibility only informs operators, so a light pass leaves it to the next full one.
+      if (kind === "full") await this.recordRepositoryTrustStatus(id, repository.address);
+    }
+  }
+
+  /**
+   * Reads one repository afresh, now: every issue, every enrolled item's provenance and author
+   * permissions, relationships, pull request heads and CI, and the webhook's health. For an operator
+   * who changed something GitHub sends no event for, such as a collaborator's permission.
+   */
+  syncRepository(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
+    // A second click while a sync runs joins it rather than reading everything twice.
+    const running = this.#repositorySyncs.get(repositoryId);
+    if (running) return running;
+    const sync = this.runRepositorySync(repositoryId).finally(() => this.#repositorySyncs.delete(repositoryId));
+    this.#repositorySyncs.set(repositoryId, sync);
+    return sync;
+  }
+
+  private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
+    // A sync must not reuse cached sub-issues and blockers: that is what it is asked to re-read.
+    this.forgetRelationships(repositoryId, this.store.listIssues(repositoryId).map((issue) => issue.sourceNumber));
+    await this.reconcileOne(repositoryId, "full");
+    await this.backfillCiIndicators(repositoryId);
+    if (this.webhookUrl(repositoryId)) {
+      await this.checkWebhookHealth(repositoryId);
+      await this.redeliverMissed(repositoryId);
+    }
+    this.interruptIneligibleRuns();
+    this.schedule();
+    const issues = this.store.listIssues(repositoryId);
+    this.refreshStatusComments(issues.map((issue) => issue.id));
+    const failed = this.#repositoryErrors.has(repositoryId);
+    log.info("Repository synced", { repository: repositoryId, issues: issues.length, failed });
+    return { issues: issues.length, failed };
   }
 
   private issueFieldValues(issue: StoredIssue): Array<{ name: string; value: string }> {
@@ -1166,6 +1234,10 @@ export class ConveyorService {
     commands.handle("notifications.unsubscribe", (input, actor) => {
       own(actor, input.accountId);
       this.store.deletePushSubscription(input.accountId, input.endpoint);
+    });
+    commands.handle("repository.sync", (input) => {
+      if (!this.config.repositories[input.repositoryId]) throw new CommandInputError(`unknown repository ${input.repositoryId}`);
+      return this.syncRepository(input.repositoryId);
     });
     commands.handle("admission.drain", (input, actor) => this.drain(input.reason || `requested by ${actor.name}`));
     commands.handle("admission.resume", () => this.resumeAdmission());
@@ -1693,14 +1765,15 @@ export class ConveyorService {
   }
 
   /**
-   * A webhook reconcile (`partial`) reads only the issues changed since the previous read, unless the
-   * last full read is over an hour old; every other reconcile reads the whole list. `finish` records a
+   * `full` lists every issue. `partial` (a webhook pass) lists the issues changed since the previous
+   * read, unless the last full read is over an hour old. `light` (the safety net while webhooks are
+   * healthy) lists only the changes; its full passes come on their own schedule. `finish` records a
    * successful read.
    */
-  private issueListing(repositoryId: string, partial: boolean): { since?: string; finish(): void } {
+  private issueListing(repositoryId: string, mode: "full" | "partial" | "light"): { since?: string; finish(): void } {
     const startedAt = Date.now();
     const previous = this.#issueListings.get(repositoryId);
-    const since = partial && previous && startedAt - previous.fullAt < FULL_ISSUE_LISTING_MS ? previous.since : undefined;
+    const since = previous && (mode === "light" || (mode === "partial" && startedAt - previous.fullAt < FULL_ISSUE_LISTING_MS)) ? previous.since : undefined;
     return {
       ...(since !== undefined ? { since } : {}),
       finish: () => this.#issueListings.set(repositoryId, {
@@ -1714,7 +1787,7 @@ export class ConveyorService {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
-    const listing = this.issueListing(repositoryId, options.partial === true);
+    const listing = this.issueListing(repositoryId, options.partial === true ? "partial" : "full");
     await reconcileRepository({
       store: this.store,
       configHash: this.config.hash,
