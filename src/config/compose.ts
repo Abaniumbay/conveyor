@@ -5,9 +5,9 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { parseDocument, type ScalarTag } from "yaml";
+import { LineCounter, parseDocument, type ScalarTag } from "yaml";
 
-import { ConfigError } from "./errors";
+import { ConfigError, safeYamlDiagnostic } from "./errors";
 
 const TAGS = ["!include", "!include_dir_named", "!include_dir_merge_named", "!secret"] as const;
 type TagName = (typeof TAGS)[number];
@@ -93,7 +93,7 @@ class Composer {
     throw new ConfigError(`${this.display(at.file)}: ${keyPath(segments.slice(at.root.length))}: ${message}`);
   }
 
-  async parse(file: string, chain: readonly string[]): Promise<unknown> {
+  async parse(file: string, chain: readonly string[], safeDiagnostic = false): Promise<unknown> {
     let text: string;
     try {
       text = await readFile(file, "utf8");
@@ -102,9 +102,13 @@ class Composer {
       const included = chain.length > 0 ? ` (included from ${chain.map((entry) => this.display(entry)).join(" -> ")})` : "";
       throw new ConfigError(`cannot read ${this.display(file)}${included}: ${code === "ENOENT" ? "file does not exist" : error instanceof Error ? error.message : String(error)}`);
     }
-    const document = parseDocument(text, { customTags, prettyErrors: false });
+    const lineCounter = new LineCounter();
+    const document = parseDocument(text, { customTags, lineCounter, prettyErrors: false });
     if (document.errors.length > 0) {
-      throw new ConfigError(`cannot parse ${this.display(file)}: ${document.errors.map((error) => error.message).join("; ")}`);
+      const detail = safeDiagnostic
+        ? safeYamlDiagnostic(lineCounter.linePos(document.errors[0]!.pos[0]))
+        : document.errors.map((error) => error.message).join("; ");
+      throw new ConfigError(`cannot parse ${this.display(file)}: ${detail}`);
     }
     return document.toJS({ maxAliasCount: -1 });
   }
@@ -144,7 +148,7 @@ class Composer {
     if (!this.#secretValues) {
       const exists = await stat(secretsFile).catch(() => undefined);
       if (!exists) this.fail(at, segments, `!secret ${key}: ${this.display(secretsFile)} does not exist`);
-      const parsed = await this.parse(secretsFile, []);
+      const parsed = await this.parse(secretsFile, [], true);
       if (!isObject(parsed)) throw new ConfigError(`${this.display(secretsFile)} must contain a YAML map of secret names to values`);
       this.#secretValues = parsed;
     }
