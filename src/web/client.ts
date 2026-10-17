@@ -1802,6 +1802,40 @@ export const dashboardClient = String.raw`(() => {
       }
       return;
     }
+    if (form instanceof HTMLFormElement && form.matches('[data-repository-sync]')) {
+      event.preventDefault();
+      const button = form.querySelector('[data-repository-sync-submit]');
+      const status = document.querySelector('[data-repository-sync-status]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Syncing…';
+      if (status instanceof HTMLElement) {
+        status.textContent = 'Reading the repository from GitHub…';
+        delete status.dataset.error;
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+          body: new URLSearchParams({ csrf: body.dataset.csrfToken || '' }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'The sync could not start.');
+        if (payload && payload.failed) throw new Error('GitHub could not be read; the repository status shows why.');
+        if (status instanceof HTMLElement) status.textContent = 'Synced ' + (payload && typeof payload.issues === 'number' ? payload.issues + ' issues' : 'the repository') + ' just now.';
+      } catch (error) {
+        if (status instanceof HTMLElement) {
+          status.textContent = 'Sync failed: ' + (error instanceof Error ? error.message : 'unknown error');
+          status.dataset.error = 'true';
+        }
+      } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = 'Sync now';
+      }
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('[data-retry-form]')) {
       event.preventDefault();
       const url = form.getAttribute('data-retry-url');

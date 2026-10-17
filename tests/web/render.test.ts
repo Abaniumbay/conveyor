@@ -750,7 +750,7 @@ describe("renderDashboard", () => {
     expect(superuser).toContain("/sentinel/local-folder");
     expect(superuser).toContain("sentinel.egress.example");
     // Sync now is one repository's, and only for superusers.
-    expect(superuser).toContain('<form class="repository-sync" method="post" action="/repositories/space%2Fname/sync">');
+    expect(superuser).toContain('<div class="repository-section-heading"><h3>Setup</h3><form class="repository-sync" method="post" action="/repositories/space%2Fname/sync" data-repository-sync="true">');
     expect(superuser).toContain(">Sync now</button>");
     expect(reader).not.toContain("Sync now");
 
