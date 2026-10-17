@@ -170,6 +170,16 @@ const DASHBOARD_PAGE_SIZE = 20;
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
 const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
+type ScheduledOperatorOutcome = {
+  outcome: "retried" | "answered" | "unresolved";
+  reason: string;
+  evidence?: string;
+};
+type ScheduledOperatorCheck = {
+  targets: Set<string>;
+  inspected: Set<string>;
+  outcomes: Map<string, ScheduledOperatorOutcome>;
+};
 /** How long an unchanged issue's sub-issues and blockers are reused before they are read again. */
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** The same while the repository's webhooks are healthy and report relationship changes. */
@@ -210,15 +220,23 @@ function resultReason(value: unknown): string | null {
   return nested === value ? null : resultReason(nested);
 }
 
-/** The durable stop reason survives after the transient issue warning is cleared. */
-function latestStopReason(store: ConveyorStore, issueId: string): string | null {
+/** The durable stop record survives after the transient issue warning is cleared. */
+function latestStop(store: ConveyorStore, issueId: string): { reason: string | null; stoppedAt: string | null } {
   const latestTransition = [...store.listStageTransitions(issueId)].reverse().find(
     (candidate) => candidate.status === "completed",
   );
   if (latestTransition) {
-    return latestTransition.kind === "stopped" ? latestTransition.reason : null;
+    return latestTransition.kind === "stopped"
+      ? { reason: latestTransition.reason, stoppedAt: latestTransition.completedAt ?? latestTransition.createdAt }
+      : { reason: null, stoppedAt: null };
   }
-  return resultReason(store.listIssueRuns(issueId)[0]?.result);
+  const latestRun = store.listIssueRuns(issueId)[0];
+  return { reason: resultReason(latestRun?.result), stoppedAt: latestRun?.finishedAt ?? null };
+}
+
+/** The durable stop reason survives after the transient issue warning is cleared. */
+function latestStopReason(store: ConveyorStore, issueId: string): string | null {
+  return latestStop(store, issueId).reason;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -363,8 +381,9 @@ export class ConveyorService {
   readonly #webhookWork = new Set<Promise<void>>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
+  readonly #steeringCompletions = new Map<string, Promise<void>>();
   /** A scheduled check may act only on these snapshots; history reads are tracked per run. */
-  readonly #scheduledOperatorChecks = new Map<string, { targets: Set<string>; inspected: Set<string> }>();
+  readonly #scheduledOperatorChecks = new Map<string, ScheduledOperatorCheck>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   /** Consecutive infrastructure failures per issue, for the stage they happened in. */
   readonly #infrastructureFailures = new Map<string, {
@@ -2500,6 +2519,7 @@ export class ConveyorService {
               retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
               scheduledRetry: (itemId, note, evidence) => this.scheduledRetryIssue(grant.runId, itemId, note, evidence),
               answerQuestion: (questionId, answer, evidence) => this.scheduledAnswerQuestion(grant.runId, questionId, answer, evidence),
+              scheduledOutcome: (itemId, reason) => this.reportScheduledOutcome(grant.runId, itemId, reason),
               moveBacklog: (input) => this.operatorMoveBacklog(input),
             },
           } as TaskDeps);
@@ -3049,6 +3069,7 @@ export class ConveyorService {
     if (!runner || runner.type !== "codex") throw new Error("The steering agent must use a Codex runner");
     const allowed = agent.tasks.filter((task) => new Set([
       "operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion",
+      "operator.reportStoppedItemOutcome",
     ]).has(task));
     if (!allowed.includes("operator.getBoard") || !allowed.includes("operator.getItemHistory")) {
       throw new Error("The scheduled Operator requires operator.getBoard and operator.getItemHistory grants");
@@ -3060,29 +3081,44 @@ export class ConveyorService {
       configHash: this.config.hash, startedAt: new Date().toISOString(),
     });
     this.store.appendRunEvent(runId, "operator.scheduled", { itemIds: targets.map((issue) => issue.id), cadenceMs: steering.periodic.intervalMs });
-    this.#scheduledOperatorChecks.set(runId, { targets: new Set(targets.map((issue) => issue.id)), inspected: new Set() });
+    this.#scheduledOperatorChecks.set(runId, {
+      targets: new Set(targets.map((issue) => issue.id)),
+      inspected: new Set(),
+      outcomes: new Map(),
+    });
     const controller = new AbortController();
     this.#steeringActive.set(runId, controller);
     const prompt = [
       "This is a scheduled Operator check, not an owner request.",
       `Consider only these stopped items: ${targets.map((issue) => issue.id).join(", ")}.`,
-      "Inspect the board and each target's history before acting. Report a concise outcome for every target.",
-      "You may retry only a target after quoting current evidence that its recorded blocker is resolved or a new attempt is warranted.",
+      "Inspect the board and each target's history before acting. Record a concise outcome for every target.",
+      "You may retry only a target after quoting source evidence changed after its recorded stop, or non-Operator conversation recorded after that stop.",
       "You may answer only an open target question when its answer is unambiguous and you quote the current issue, acceptance criteria, or recorded conversation evidence.",
-      "Do not move backlog items, inspect or act on unrelated items, or make up owner preferences. Leave uncertain items stopped and explain why owner input is needed.",
+      "For every inspected target you cannot safely retry or answer, use the outcome-reporting tool to record why it remains stopped. Do not move backlog items, inspect or act on unrelated items, or make up owner preferences.",
     ].join("\n");
-    void this.executeSteering(runId, prompt, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
+    const completion = this.executeSteering(runId, prompt, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
       .finally(() => {
         const check = this.#scheduledOperatorChecks.get(runId);
+        const run = this.store.getRun(runId);
         for (const issue of targets) {
+          const outcome = check?.outcomes.get(issue.id);
           this.store.appendRunEvent(runId, "operator.outcome", {
             issueId: issue.id,
-            outcome: check?.inspected.has(issue.id) ? "considered" : "not-inspected",
+            outcome: outcome?.outcome ?? "unresolved",
+            reason: outcome?.reason ??
+              (check?.inspected.has(issue.id)
+                ? `Scheduled check ${run?.status ?? "ended"} before recording a disposition.`
+                : `Scheduled check ${run?.status ?? "ended"} before inspecting this target.`),
+            runStatus: run?.status ?? "unknown",
+            ...(outcome?.evidence ? { evidence: outcome.evidence } : {}),
           });
         }
         this.#scheduledOperatorChecks.delete(runId);
         this.#steeringActive.delete(runId);
+        this.#steeringCompletions.delete(runId);
       });
+    this.#steeringCompletions.set(runId, completion);
+    void completion;
     return runId;
   }
 
@@ -3097,10 +3133,10 @@ export class ConveyorService {
     if (!steering) throw new Error("The steering agent is not configured");
     // A human request wins over a cadence check. Abort and wait for its lease to close so their
     // grants cannot overlap; another owner request still receives the existing busy response.
-    for (const [runId, controller] of this.#steeringActive) {
-      if (this.#scheduledOperatorChecks.has(runId)) controller.abort();
-    }
-    while ([...this.#steeringActive].some(([runId]) => this.#scheduledOperatorChecks.has(runId))) await Bun.sleep(10);
+    const scheduled = [...this.#steeringActive]
+      .filter(([runId]) => this.#scheduledOperatorChecks.has(runId));
+    for (const [, controller] of scheduled) controller.abort();
+    await Promise.all(scheduled.map(([runId]) => this.#steeringCompletions.get(runId)));
     if (this.#steeringActive.size > 0) {
       throw new Error("A steering agent is already running");
     }
@@ -3126,9 +3162,19 @@ export class ConveyorService {
     this.store.appendRunEvent(runId, "user", { text: request });
     const controller = new AbortController();
     this.#steeringActive.set(runId, controller);
-    void this.executeSteering(runId, request, agent, runner, steering.workspace, controller.signal)
-      .finally(() => this.#steeringActive.delete(runId));
+    const completion = this.executeSteering(runId, request, agent, runner, steering.workspace, controller.signal)
+      .finally(() => {
+        this.#steeringActive.delete(runId);
+        this.#steeringCompletions.delete(runId);
+      });
+    this.#steeringCompletions.set(runId, completion);
+    void completion;
     return runId;
+  }
+
+  /** Wait for a currently running steering request to settle. */
+  async waitForSteeringRun(runId: string): Promise<void> {
+    await this.#steeringCompletions.get(runId);
   }
 
   private async executeSteering(
@@ -4654,17 +4700,31 @@ export class ConveyorService {
     const repository = issue && this.config.repositories[issue.repositoryId];
     if (!issue || !repository) throw new Error("item is not on this configured board");
     const live = await this.github.getIssue(repository.address, issue.sourceNumber);
-    const recordedBlocker = latestStopReason(this.store, issueId) ?? "";
+    const recordedStop = latestStop(this.store, issueId);
     const evidenceText = evidence.trim();
     if (!evidenceText) throw new Error("scheduled retry evidence must not be blank");
-    const currentEvidence = [live.title, live.body, ...this.store.listConversationMessages(issueId).map((message) => message.message), recordedBlocker]
-      .some((text) => text.includes(evidenceText));
-    if (!currentEvidence) throw new Error("scheduled retry evidence must quote current source or recorded history");
+    const stoppedAt = recordedStop.stoppedAt ? Date.parse(recordedStop.stoppedAt) : Number.NaN;
+    if (!Number.isFinite(stoppedAt)) throw new Error("scheduled retry requires a recorded stopped attempt");
+    const sourceChangedAfterStop = Date.parse(live.updatedAt) > stoppedAt;
+    const sourceEvidence = sourceChangedAfterStop && [live.title, live.body].some((text) => text.includes(evidenceText));
+    const conversationEvidence = this.store.listConversationMessages(issueId).some((message) =>
+      message.actorId !== "scheduled-operator" &&
+      Date.parse(message.createdAt) > stoppedAt &&
+      message.message.includes(evidenceText)
+    );
+    if (!sourceEvidence && !conversationEvidence) {
+      throw new Error("scheduled retry evidence must quote source changed after the recorded stop or a non-Operator conversation recorded after it");
+    }
     const outcome = await this.retryIssue(issueId, note, "Scheduled Operator", true);
     this.store.appendConversationMessage({
       issueId, runId, stageId: outcome.stageId, actorType: "conveyor", actorId: "scheduled-operator",
       actorName: "Scheduled Operator", actorTitle: "Conveyor Operator",
       message: `Scheduled retry started from evidence: ${evidenceText}`,
+    });
+    check.outcomes.set(issueId, {
+      outcome: "retried",
+      reason: `Scheduled retry ${outcome.status}.`,
+      evidence: evidenceText,
     });
     return outcome;
   }
@@ -4687,6 +4747,21 @@ export class ConveyorService {
     }
     await this.answerQuestion(questionId, answer, `scheduled-operator:${runId}`, evidenceText);
     this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
+    check.outcomes.set(issue.id, {
+      outcome: "answered",
+      reason: `Answered question ${questionId} from recorded evidence.`,
+      evidence: evidenceText,
+    });
+  }
+
+  private reportScheduledOutcome(runId: string, issueId: string, reason: string): void {
+    const check = this.#scheduledOperatorChecks.get(runId);
+    if (!check?.targets.has(issueId)) throw new Error("scheduled checks may report only their stopped targets");
+    if (!check.inspected.has(issueId)) throw new Error("inspect the item's history before reporting its outcome");
+    if (check.outcomes.has(issueId)) throw new Error("scheduled outcome is already recorded for this target");
+    const message = reason.trim();
+    if (!message) throw new Error("scheduled outcome reason must not be blank");
+    check.outcomes.set(issueId, { outcome: "unresolved", reason: message });
   }
 
   async retryIssue(issueId: string, note: string, username: string, automated = false): Promise<{ status: "started" | "queued"; stageId: string }> {

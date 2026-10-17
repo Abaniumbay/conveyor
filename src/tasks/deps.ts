@@ -83,6 +83,7 @@ export interface TaskDeps {
     retry: (itemId: string, note: string) => Promise<{ status: "started" | "queued"; stageId: string }>;
     scheduledRetry?: (itemId: string, note: string, evidence: string) => Promise<{ status: "started" | "queued"; stageId: string }>;
     answerQuestion?: (questionId: string, answer: string, evidence: string) => Promise<void>;
+    scheduledOutcome?: (itemId: string, reason: string) => void;
     moveBacklog: (input: { itemId: string; position: "up" | "down" | "before" | "end"; beforeItemId?: string }) => unknown;
   };
 }
