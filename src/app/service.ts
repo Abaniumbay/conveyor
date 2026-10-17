@@ -4851,7 +4851,7 @@ export class ConveyorService {
       if (!sources.some((text) => text.includes(evidenceText!))) {
         throw new Error("scheduled answers require an unambiguous quote from current issue content, acceptance criteria, or recorded conversation");
       }
-      const response = scheduledQuestionAnswerEvidence(question, answer, evidenceText);
+      const response = scheduledQuestionAnswerEvidence(question, answer, evidenceText, sources);
       await this.answerQuestion(questionId, response, `scheduled-operator:${runId}`, evidenceText);
       this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
       check.outcomes.set(issue.id, {

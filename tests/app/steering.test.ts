@@ -129,6 +129,7 @@ describe("ConveyorService steering", () => {
     let scheduledCalls = 0;
     let holdScheduledRun = false;
     let leaveNegatedAnswerUnresolved = false;
+    let leaveConflictingAnswerUnresolved = false;
     let scheduledRunEntered: (() => void) | null = null;
     const github = {
       async listIssues() {
@@ -187,6 +188,13 @@ describe("ConveyorService steering", () => {
         expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
         stoppedSource.body = stoppedSource.body.replace("\nThe accepted release is not stable.", "");
         if (leaveNegatedAnswerUnresolved) {
+          return { summary: "Inspected stopped", sessionId: "scheduled", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+        }
+        stoppedSource.body = `${stoppedSource.body}\n\n<!-- conveyor:acceptance-criteria:start -->\n## Acceptance Criteria\n- The accepted release is beta.\n<!-- conveyor:acceptance-criteria:end -->`;
+        await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token)).rejects.toThrow("conflicts with current configured choices");
+        expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
+        stoppedSource.body = stoppedSource.body.replace("\n\n<!-- conveyor:acceptance-criteria:start -->\n## Acceptance Criteria\n- The accepted release is beta.\n<!-- conveyor:acceptance-criteria:end -->", "");
+        if (leaveConflictingAnswerUnresolved) {
           return { summary: "Inspected stopped", sessionId: "scheduled", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
         }
         await service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token);
@@ -290,12 +298,21 @@ describe("ConveyorService steering", () => {
       payload: expect.objectContaining({ issueId: "stopped", outcome: "unresolved", reason: expect.stringContaining("must state the submitted answer"), runStatus: "succeeded" }),
     }));
     leaveNegatedAnswerUnresolved = false;
+    leaveConflictingAnswerUnresolved = true;
+    const conflictingAnswerRun = await service.runScheduledOperatorCheck();
+    expect(conflictingAnswerRun).not.toBeNull();
+    await service.waitForSteeringRun(conflictingAnswerRun!);
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
+    expect(store.listRunEvents(conflictingAnswerRun!).filter((event) => event.type === "operator.outcome")).toContainEqual(expect.objectContaining({
+      payload: expect.objectContaining({ issueId: "stopped", outcome: "unresolved", reason: expect.stringContaining("conflicts with current configured choices"), runStatus: "succeeded" }),
+    }));
+    leaveConflictingAnswerUnresolved = false;
     const runId = await service.runScheduledOperatorCheck();
     expect(runId).not.toBeNull();
     expect(await service.runScheduledOperatorCheck()).toBeNull();
     await service.waitForSteeringRun(runId!);
     await service.answerFollowUpsSettled();
-    expect(scheduledCalls).toBe(4);
+    expect(scheduledCalls).toBe(5);
     expect(store.getRun(runId!)).toMatchObject({ status: "succeeded" });
     expect(store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome")).toContainEqual(expect.objectContaining({
       payload: expect.objectContaining({ issueId: "stopped", outcome: "answered", runStatus: "succeeded" }),

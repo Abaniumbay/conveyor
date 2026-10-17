@@ -89,6 +89,7 @@ export function scheduledQuestionAnswerEvidence(
   question: { options: readonly unknown[]; allowFreeText: boolean },
   answer: string,
   evidence: string,
+  currentEvidence: readonly string[] = [evidence],
 ): string {
   const response = validatedQuestionAnswer(question, answer);
   if (question.allowFreeText) throw new Error("Scheduled Operators cannot submit free-text answers.");
@@ -101,6 +102,12 @@ export function scheduledQuestionAnswerEvidence(
   }
   if (stated.some((option) => option.id !== response)) {
     throw new Error("Scheduled answer evidence is ambiguous between configured choices.");
+  }
+  const currentChoices = questionOptions(question.options).filter((option) =>
+    currentEvidence.some((source) => quotedChoice(source, option.id) || quotedChoice(source, option.label)),
+  );
+  if (currentChoices.some((option) => option.id !== response)) {
+    throw new Error("Scheduled answer evidence conflicts with current configured choices.");
   }
   const selected = questionOptions(question.options).find((option) => option.id === response);
   if (
