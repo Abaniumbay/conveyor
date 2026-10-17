@@ -25,13 +25,20 @@ function gitFake(state: {
   clean?: boolean; head?: string | null; remote?: string | null; ahead?: number; behind?: number;
   ancestor?: boolean;
   pushError?: Error;
+  /** Branches origin does not have. */
+  missingOnRemote?: string[];
+  fetchError?: Error;
 } = {}) {
   const calls: Array<[string, ...unknown[]]> = [];
   const git: GitOps = {
     status: async (p) => { calls.push(["status", p]); return { clean: state.clean ?? true }; },
     revParse: async (p, ref) => { calls.push(["revParse", p, ref]); return ref === "HEAD" ? (state.head ?? "aaa") : (state.remote === undefined ? "aaa" : state.remote); },
     aheadBehind: async (p, branch) => { calls.push(["aheadBehind", p, branch]); return { ahead: state.ahead ?? 0, behind: state.behind ?? 0 }; },
-    fetch: async (p, remote, branch) => { calls.push(["fetch", p, remote, branch]); },
+    fetch: async (p, remote, branch) => {
+      calls.push(["fetch", p, remote, branch]);
+      if (state.fetchError) throw state.fetchError;
+      return !(state.missingOnRemote ?? []).includes(branch);
+    },
     isAncestor: async (p, ancestor, descendant) => {
       calls.push(["isAncestor", p, ancestor, descendant]);
       return state.ancestor ?? true;
@@ -253,6 +260,21 @@ describe("workspace tools", () => {
       ["fetch", p, "origin", "main"],
       ["fetch", p, "origin", "conveyor/7-r1-x"],
     ]);
+  });
+  test("workspace.fetch reports an item branch that was never pushed instead of failing", async () => {
+    const w = await world({ missingOnRemote: ["conveyor/7-r1-x"] });
+    await w.record();
+    expect(((await tool("workspace.fetch", w)) as Pass).output).toEqual({ accepted: true, branchOnRemote: false });
+  });
+  test("workspace.fetch reports a pushed item branch as on the remote", async () => {
+    const w = await world();
+    await w.record();
+    expect(((await tool("workspace.fetch", w)) as Pass).output).toEqual({ accepted: true, branchOnRemote: true });
+  });
+  test("workspace.fetch gives the agent git's reason when a fetch fails", async () => {
+    const w = await world({ fetchError: new Error("git fetch failed: fatal: unable to access origin") });
+    await w.record();
+    await expect(tool("workspace.fetch", w)).rejects.toMatchObject({ name: "ToolRequestError", message: "git fetch failed: fatal: unable to access origin" });
   });
   test("workspace.push accepts an observed head only for a lease push", () => {
     expect(pushInput.safeParse({ forceWithLease: true }).success).toBe(false);

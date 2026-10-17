@@ -11,7 +11,8 @@ export interface GitOps {
   revParse(path: string, ref: string): Promise<string | null>;
   /** HEAD against the local remote-tracking ref `origin/<branch>`; null when that ref does not exist. */
   aheadBehind(path: string, branch: string): Promise<{ ahead: number; behind: number } | null>;
-  fetch(path: string, remote: string, branch: string): Promise<void>;
+  /** Fetches a remote branch; false when the remote has no such branch (an item branch before its first push). */
+  fetch(path: string, remote: string, branch: string): Promise<boolean>;
   /** True when ancestor is in descendant's history. */
   isAncestor(path: string, ancestor: string, descendant: string): Promise<boolean>;
   push(path: string, branch: string, options: PushOptions): Promise<void>;
@@ -111,7 +112,10 @@ export const cliGit: GitOps = {
     return { ahead: Number(ahead), behind: Number(behind) };
   },
   async fetch(path, remote, branch) {
-    await mustRun(path, ["fetch", remote, branch]);
+    const result = await run(path, ["fetch", remote, branch]);
+    if (result.exitCode === 0) return true;
+    if (/couldn't find remote ref/i.test(result.stderr)) return false;
+    throw new Error(`git fetch failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
   },
   async isAncestor(path, ancestor, descendant) {
     // An observed head can be valid on the code host but absent until the workspace fetches it.
