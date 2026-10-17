@@ -213,6 +213,9 @@ describe("roll-up parent completion", () => {
       status: "failed",
       error: "temporary source outage",
     });
+    // The parent's failure is its own: the repository's reconcile did not fail.
+    expect(store.events().read({ type: "repository.healthChanged" }).map((event) => event.payload)).not.toContainEqual({ check: "reconcile", healthy: false });
+    expect(store.events().read({ type: "repository.reconciled" })).toHaveLength(1);
 
     await service.reconcileAll();
 
@@ -234,10 +237,10 @@ describe("roll-up parent completion", () => {
       sourceIssue(2, "open", ["conveyor", "conveyor:implementation", "conveyor:done"]),
     ], new Map([[1, [2]]]), 1, true);
 
+    // GitHub closed the issue but answered with an error: the state read afterwards decides.
     await service.reconcileAll();
     expect(store.getLatestSourceMutationByKeyPrefix("rollup-completion-close:github:owner/my-app#1:")).toMatchObject({
-      status: "failed",
-      error: "temporary source outage",
+      status: "succeeded",
     });
 
     await service.reconcileAll();
