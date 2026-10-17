@@ -745,7 +745,7 @@ export class ConveyorService {
    * Reads one repository. A full pass lists every issue and re-checks each enrolled one; a light
    * pass lists only the issues changed since the last read and reads relationships for those alone.
    */
-  private async reconcileOne(id: string, kind: "full" | "light"): Promise<void> {
+  private async reconcileOne(id: string, kind: "full" | "light", options: { verifyTrust?: boolean } = {}): Promise<void> {
     const repository = this.config.repositories[id];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -769,6 +769,7 @@ export class ConveyorService {
         trust: this.#issueTrust,
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+        ...(options.verifyTrust ? { verifyTrust: true } : {}),
         ...(listing.since !== undefined ? { since: listing.since } : {}),
       });
       listing.finish();
@@ -811,7 +812,7 @@ export class ConveyorService {
   private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
     // A sync must not reuse cached sub-issues and blockers: that is what it is asked to re-read.
     this.forgetRelationships(repositoryId, this.store.listIssues(repositoryId).map((issue) => issue.sourceNumber));
-    await this.reconcileOne(repositoryId, "full");
+    await this.reconcileOne(repositoryId, "full", { verifyTrust: true });
     await this.backfillCiIndicators(repositoryId);
     if (this.webhookUrl(repositoryId)) {
       await this.checkWebhookHealth(repositoryId);
@@ -1644,7 +1645,8 @@ export class ConveyorService {
         this.restorePendingStatus(issue.repositoryId);
         if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);
       } else {
-        await this.reconcileRepository(issue.repositoryId);
+        // The item's own step changed its state; nothing else in the repository did.
+        await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
         await this.updateStatusComment(issue.id);
       }
       this.schedule();
@@ -1849,9 +1851,17 @@ export class ConveyorService {
     };
   }
 
-  private async reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[] } = {}): Promise<void> {
+  /**
+   * Reads the source into the projection. `only` reads just those issues (one request each) and
+   * touches nothing else, for work on one item; otherwise a listing, partial for a webhook pass.
+   */
+  private async reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] } = {}): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
+    if (options.only) {
+      await this.refreshIssues(repositoryId, options.only);
+      return;
+    }
     const pipeline = this.config.pipelines[repository.pipeline]!;
     const listing = this.issueListing(repositoryId, options.partial === true ? "partial" : "full");
     await reconcileRepository({
@@ -1880,6 +1890,31 @@ export class ConveyorService {
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: options.includeIssueNumbers ? [...options.includeIssueNumbers] : null }, { repositoryId });
+  }
+
+  /** Reads the named issues of a repository and updates only them: one request per issue, no listing. */
+  private async refreshIssues(repositoryId: string, numbers: readonly number[]): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return;
+    const pipeline = this.config.pipelines[repository.pipeline]!;
+    const issues = await Promise.all([...new Set(numbers)].map((number) => this.github.getIssue(repository.address, number)));
+    await reconcileRepository({
+      store: this.store,
+      configHash: this.config.hash,
+      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
+      stages: pipeline.stages.map((stage) => stage.id),
+      labels: this.config.labels,
+      source: this.github,
+      trust: this.#issueTrust,
+      extraTrustedLogins: repository.extraTrustedLogins ?? [],
+      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      issues,
+    });
+    const scope = new Set(numbers);
+    await this.reconcileRelationships(repositoryId, repository.address, scope);
+    this.restorePendingStatus(repositoryId);
+    this.interruptIneligibleRuns();
+    this.store.events().append("repository.reconciled", { issueNumbers: [...scope] }, { repositoryId });
   }
 
   /**
@@ -3153,8 +3188,8 @@ export class ConveyorService {
     try {
       // Reconciliation is needed after every answer, not only when the stale source snapshot happened
       // to include the needs-input label.
-      const repositoryId = this.store.getIssue(issueId)?.repositoryId;
-      if (repositoryId) await this.reconcileRepository(repositoryId);
+      const answered = this.store.getIssue(issueId);
+      if (answered) await this.reconcileRepository(answered.repositoryId, { only: [answered.sourceNumber] });
     } catch (error) {
       log.warn("Question answer reconciliation failed; the parked run remains resumable", this.itemFields(issueId), error);
     }
@@ -4784,7 +4819,7 @@ export class ConveyorService {
           throw error;
         }
       }
-      await this.reconcileRepository(issue.repositoryId);
+      await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "message" }, { issueId });
@@ -4966,7 +5001,7 @@ export class ConveyorService {
           actorName: username, actorTitle: automated ? "Conveyor Operator" : null, message: note.trim(),
         });
       }
-      await this.reconcileRepository(issue.repositoryId);
+      await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "retry" }, { issueId });
@@ -5032,7 +5067,7 @@ export class ConveyorService {
     if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is already paused");
     const labels = this.conveyorLabels(live.labels).filter((label) => label !== this.config.labels.enrollment);
     await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
-    await this.reconcileRepository(issue.repositoryId);
+    await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
     this.interruptIneligibleRuns();
     this.store.appendConversationMessage({
       issueId, runId: null, stageId: issue.projectedStage, actorType: "conveyor", actorId: "conveyor",
@@ -5048,7 +5083,7 @@ export class ConveyorService {
     if (live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is not paused");
     const labels = [...this.conveyorLabels(live.labels), this.config.labels.enrollment];
     await this.replaceLabelsRecorded(issue, repository, "issue.labels.resume", labels);
-    await this.reconcileRepository(issue.repositoryId);
+    await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
     this.store.events().append("item.requeued", { reason: "resume" }, { issueId });
     await this.eventsSettled();
     const refreshed = this.store.getIssue(issueId);

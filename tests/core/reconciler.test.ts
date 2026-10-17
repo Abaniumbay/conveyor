@@ -644,20 +644,74 @@ describe("reconcileRepository", () => {
     expect(store.getIssue(live.id)).toMatchObject({ title: "Untrusted author's title", body: "Untrusted author's body", projectedState: "active", warning: null });
 
     const activeEnrollment = store.activateEnrollment(live.id);
+    // Re-applying the label moves the issue's updated_at, as GitHub does.
     labeler = "outsider";
+    live = { ...live, updatedAt: "2026-10-17T01:00:00Z" };
     await reconcileRepository({ ...common, source });
     expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
     expect(store.getEnrollment(activeEnrollment.id)).toMatchObject({ status: "trust-blocked" });
 
     labeler = "maintainer";
+    live = { ...live, updatedAt: "2026-10-17T02:00:00Z" };
     await reconcileRepository({ ...common, source });
 
-    live = { ...live, labels: ["backend"] };
+    live = { ...live, labels: ["backend"], updatedAt: "2026-10-17T03:00:00Z" };
     await reconcileRepository({ ...common, source });
     labeler = "outsider";
-    live = { ...live, labels: ["conveyor", "conveyor:refinement"] };
+    live = { ...live, labels: ["conveyor", "conveyor:refinement"], updatedAt: "2026-10-17T04:00:00Z" };
     await reconcileRepository({ ...common, source });
     expect(store.getIssue(live.id)).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+    store.close();
+  });
+
+  test("does not re-read provenance for a trusted enrolled issue GitHub reports unchanged", async () => {
+    const store = await openStore();
+    let provenanceReads = 0;
+    let live = issue(1, ["conveyor", "conveyor:refinement"]);
+    const input = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels,
+      trust: { async isTrusted() { return true; } },
+      extraTrustedLogins: [],
+      source: {
+        async listIssues() { return [live]; },
+        async getIssueProvenance() { provenanceReads += 1; return { enrollment: { login: "maintainer" }, title: null, body: null }; },
+      },
+    };
+    await reconcileRepository(input);
+    expect(provenanceReads).toBe(1);
+    await reconcileRepository(input);
+    expect(provenanceReads).toBe(1);
+    // Any change on GitHub moves updated_at: the actors are read again.
+    live = { ...live, updatedAt: "2026-10-17T01:00:00Z" };
+    await reconcileRepository(input);
+    expect(provenanceReads).toBe(2);
+    // An explicit verification (Sync now) reads them whatever changed.
+    await reconcileRepository({ ...input, verifyTrust: true });
+    expect(provenanceReads).toBe(3);
+    store.close();
+  });
+
+  test("updates only the given issues, without a listing, and marks nothing else missing", async () => {
+    const store = await openStore();
+    let listings = 0;
+    const input = {
+      store, configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement"], labels,
+      trust: { async isTrusted() { return true; } },
+      extraTrustedLogins: [],
+      source: {
+        async listIssues() { listings += 1; return [issue(1, ["conveyor", "conveyor:refinement"]), issue(2, ["conveyor", "conveyor:refinement"])]; },
+        async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: null, body: null }; },
+      },
+    };
+    await reconcileRepository(input);
+    await reconcileRepository({ ...input, issues: [{ ...issue(1, ["conveyor", "conveyor:refinement", "backend"]), updatedAt: "2026-10-17T01:00:00Z" }] });
+    expect(listings).toBe(1);
+    expect(store.getIssue("github:owner/repo#1")?.labels).toContain("backend");
+    expect(store.getIssue("github:owner/repo#2")?.projectedState).not.toBe("missing");
     store.close();
   });
 

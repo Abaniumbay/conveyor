@@ -23,6 +23,13 @@ export interface ReconcileRepositoryInput {
   since?: string;
   /** Issue numbers named by a webhook, whose current source state must be read even if a recent listing omits them. */
   includeIssueNumbers?: readonly number[];
+  /** Exactly these issues, already read: no listing, and nothing else is marked missing. */
+  issues?: readonly SourceIssue[];
+  /**
+   * Re-read every enrolled issue's provenance and re-check its actors' permissions. Otherwise an
+   * issue whose enrollment and accepted text are unchanged keeps its earlier trust decision.
+   */
+  verifyTrust?: boolean;
 }
 
 export interface ReconcileRepositoryResult {
@@ -93,6 +100,15 @@ async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: So
   if (!enrolled) {
     return { title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null, enrollmentTrusted: true, warnings: [] };
   }
+  // Provenance answers who enrolled the issue and who wrote its text. An issue GitHub reports
+  // unchanged since a trusted decision (same updated_at) cannot have a new labeler or editor, so
+  // reading it again (three requests per issue) learns nothing.
+  if (!input.verifyTrust && prior && prior.acceptedTextAt !== null && prior.acceptedTextAt !== undefined &&
+    prior.sourceUpdatedAt === sourceIssue.updatedAt &&
+    prior.labels.includes(input.labels.enrollment) && !(prior.warning ?? "").includes("Enrollment blocked") &&
+    sourceIssue.title === prior.title && sourceIssue.body === prior.body) {
+    return { title: prior.title, body: prior.body, acceptedTextAt: prior.acceptedTextAt, enrollmentTrusted: true, warnings: [] };
+  }
   // Source-event lookup is evidence, not a negative trust decision.  Propagate
   // an outage so the caller retries without replacing the existing projection.
   const provenance = await input.source.getIssueProvenance(
@@ -144,7 +160,9 @@ export async function reconcileRepository(
     configHash: input.configHash,
   });
 
-  let sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
+  let sourceIssues = input.issues
+    ? [...input.issues]
+    : await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
   if (input.includeIssueNumbers && input.includeIssueNumbers.length > 0) {
     if (!input.source.getIssue) throw new Error("source adapter cannot refresh webhook-named issues");
     const refreshed = (await Promise.all(
@@ -292,7 +310,7 @@ export async function reconcileRepository(
 
   let missing = 0;
   for (const issue of existing.values()) {
-    if (input.since !== undefined || seen.has(issue.id)) continue;
+    if (input.since !== undefined || input.issues !== undefined || seen.has(issue.id)) continue;
     input.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "missing",

@@ -672,6 +672,7 @@ describe("ConveyorService dashboard", () => {
         sourceIssues[0]!.labels = [...labels];
       },
       async listIssues() { return sourceIssues; },
+      async getIssue(_address: string, number: number) { return sourceIssues.find((candidate) => candidate.number === number)!; },
       async getIssueProvenance() {
         return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
       },
