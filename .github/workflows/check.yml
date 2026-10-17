@@ -64,9 +64,9 @@ jobs:
           fi
           cd "$scratch"
           bun install --frozen-lockfile
-          version="$(bun -e 'const manifest = await Bun.file("package.json").json(); console.log(`${Number(manifest.version.split(".")[0]) + 1}.0.0`);')"
+          version="$(bun -e 'const manifest = await Bun.file("package.json").json(); const [major, minor] = manifest.version.split(".").map(Number); console.log(`${major}.${minor + 1}.0`);')"
           bun run scripts/release.ts prepare "$version"
-          bun test tests/release
+          bun run check
           test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain)"
       - name: Report skipped Bubblewrap tests
         if: always() && steps.bwrap.outputs.available != 'true'
