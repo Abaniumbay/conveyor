@@ -154,11 +154,19 @@ const unjournaled = <I>(definition: TaskDefinition<unknown, I, Deps>): TaskDefin
 const get = tool("workspace.get", "Read scoped workspace metadata (path and branch).", emptyInput, false,
   async (_args, workspace) => ({ path: workspace.path, branch: workspace.branch }));
 
-const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base branch and scoped workspace branch from origin into the workspace.", emptyInput, true,
+const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base branch and scoped workspace branch from origin into the workspace. `branchOnRemote` is false while the workspace branch has not been pushed yet; that is not an error.", emptyInput, true,
   async ({ deps }, workspace) => {
-    await deps.git.fetch(workspace.path, "origin", deps.repository.baseBranch);
-    await deps.git.fetch(workspace.path, "origin", workspace.branch);
-    return { accepted: true };
+    try {
+      if (!(await deps.git.fetch(workspace.path, "origin", deps.repository.baseBranch))) {
+        throw new ToolRequestError(`The base branch ${deps.repository.baseBranch} does not exist on origin.`);
+      }
+      const branchOnRemote = await deps.git.fetch(workspace.path, "origin", workspace.branch);
+      return { accepted: true, branchOnRemote };
+    } catch (error) {
+      // The agent needs git's reason to recover; an unexplained failure reads as a broken workspace.
+      if (error instanceof ToolRequestError) throw error;
+      throw new ToolRequestError(error instanceof Error ? error.message : String(error));
+    }
   }));
 
 const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push, first read change.get, use workspace.fetch to fetch the observed branch head, and rebase that head into HEAD; then provide forceWithLease: true and that headSha. When the remote moves, repeat those recovery steps before retrying.", pushInput, true,

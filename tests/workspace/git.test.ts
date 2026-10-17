@@ -184,3 +184,20 @@ test("ensureGitExcludes does nothing outside a git checkout or without patterns"
   await ensureGitExcludes(root, [".serena/"]);
   await ensureGitExcludes(root, []);
 });
+
+test("cliGit fetch reports a branch the remote does not have, and fails for other reasons", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  const remote = path.join(root, "remote.git");
+  const work = path.join(root, "work");
+  await sh(root, "init", "--bare", "-b", "main", remote);
+  await sh(root, "clone", remote, work);
+  await writeFile(path.join(work, "a"), "1");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "one");
+  await sh(work, "push", "origin", "main");
+
+  expect(await cliGit.fetch(work, "origin", "main")).toBe(true);
+  expect(await cliGit.fetch(work, "origin", "conveyor/7-never-pushed")).toBe(false);
+  await sh(work, "remote", "set-url", "origin", path.join(root, "missing.git"));
+  await expect(cliGit.fetch(work, "origin", "main")).rejects.toThrow(/git fetch failed/);
+});
