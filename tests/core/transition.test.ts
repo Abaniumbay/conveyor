@@ -389,6 +389,7 @@ describe("applyStageTransition", () => {
     expect(store.listStageTransitions("issue").at(-1)).toMatchObject({
       id: "run-unlabelled",
       reason: "Stopped as changes-requested (no label is configured for that state): A seeded win path is not reachable",
+      sourceSnapshot: { title: "Feature", body: "" },
     });
     expect(store.listStageTransitions("issue").find((transition) => transition.id === "run-correction")).toMatchObject({
       id: "run-correction",

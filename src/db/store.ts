@@ -216,6 +216,7 @@ export interface StageTransitionDetail {
   requiredFixes: string[];
   resultStatus: string | null;
   actor?: { name: string; title: string | null } | null;
+  sourceSnapshot?: { title: string; body: string } | null;
 }
 
 export interface StoredStageTransition extends StageTransitionDetail {
@@ -1693,6 +1694,12 @@ export class ConveyorStore {
                 title: typeof detail.actor.title === "string" ? detail.actor.title : null,
               }
             : null,
+        sourceSnapshot:
+          detail.sourceSnapshot &&
+          typeof detail.sourceSnapshot.title === "string" &&
+          typeof detail.sourceSnapshot.body === "string"
+            ? { title: detail.sourceSnapshot.title, body: detail.sourceSnapshot.body }
+            : null,
         createdAt: String(row.created_at),
         completedAt: row.completed_at === null ? null : String(row.completed_at),
       };
@@ -2566,6 +2573,7 @@ export class ConveyorStore {
     answer: unknown;
     stageId: string | null;
     message: string;
+    actor?: { type: "user" | "conveyor"; id: string; name: string; title: string | null };
   }): void {
     this.#database.transaction(() => {
       const question = this.getQuestion(input.questionId);
@@ -2589,10 +2597,10 @@ export class ConveyorStore {
           question.runId,
           input.stageId,
           question.id,
-          "user",
-          source,
-          source,
-          null,
+          input.actor?.type ?? "user",
+          input.actor?.id ?? source,
+          input.actor?.name ?? source,
+          input.actor?.title ?? null,
           input.message,
           now(),
         );

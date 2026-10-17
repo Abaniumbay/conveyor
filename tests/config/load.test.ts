@@ -40,6 +40,8 @@ web:
   steering:
     agent: checker
     workspace: ../
+    periodic:
+      interval: 15m
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
@@ -118,6 +120,7 @@ sources:
     expect(config.web.steering).toEqual({
       agent: "checker",
       workspace: path.resolve(directory, "../"),
+      periodic: { intervalMs: 900_000 },
     });
     expect(config.agents.checker?.instructions).toBe(
       path.join(directory, "instructions/checker.md"),

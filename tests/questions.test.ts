@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../src/questions";
+import {
+  conversationQuestionAnswer,
+  questionConfigurationError,
+  questionOptions,
+  scheduledQuestionAnswerEvidence,
+  validatedQuestionAnswer,
+} from "../src/questions";
 
 describe("structured questions", () => {
   test("keeps persisted string options answerable", () => {
@@ -96,5 +102,26 @@ describe("structured questions", () => {
     expect(conversationQuestionAnswer(question, "explicit choice")).toBe("explicit");
     expect(conversationQuestionAnswer(question, "label-only choice")).toBe("Label-only choice");
     expect(conversationQuestionAnswer(question, "LEGACY STRING")).toBe("legacy string");
+  });
+
+  test("requires scheduled answers to be stated by non-conflicting quoted evidence", () => {
+    const question = { options: ["stable", "beta"], allowFreeText: false };
+
+    expect(scheduledQuestionAnswerEvidence(question, "stable", "The accepted release is stable.")).toBe("stable");
+    expect(() => scheduledQuestionAnswerEvidence(question, "beta", "The accepted release is stable.")).toThrow("must state the submitted answer");
+    expect(() => scheduledQuestionAnswerEvidence(question, "stable", "The accepted release may be stable or beta.")).toThrow("ambiguous");
+    expect(() => scheduledQuestionAnswerEvidence(question, "stable", "The accepted release is not stable.")).toThrow("must state the submitted answer");
+    expect(() => scheduledQuestionAnswerEvidence(
+      question,
+      "stable",
+      "The accepted release is stable.",
+      ["The accepted release is stable.", "The acceptance criteria say the answer is beta."],
+    )).toThrow("conflicts with current configured choices");
+  });
+
+  test("does not permit scheduled operators to infer free-text answers", () => {
+    const question = { options: [], allowFreeText: true };
+
+    expect(() => scheduledQuestionAnswerEvidence(question, "Ship it", "The plan says: Ship it.")).toThrow("cannot submit free-text answers");
   });
 });

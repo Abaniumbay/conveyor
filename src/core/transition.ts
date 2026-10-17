@@ -152,6 +152,9 @@ export async function applyStageTransition(
           stageResult?.status ??
           (input.result.kind === "stopped" ? input.result.state : "changes-requested"),
         actor: input.actor ?? null,
+        ...(input.result.kind === "stopped"
+          ? { sourceSnapshot: { title: input.issue.title, body: input.issue.body } }
+          : {}),
       };
   const labels = [...new Set(target.labels)].sort((left, right) =>
     left.localeCompare(right),

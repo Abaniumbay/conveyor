@@ -80,6 +80,60 @@ export function conversationQuestionAnswer(question: { options: readonly unknown
   return choice.id;
 }
 
+/**
+ * Confirms that an autonomous answer is the only configured choice stated by
+ * the quoted source evidence. Free-text answers need an owner to supply the
+ * missing intent, so a scheduled operator may not infer them.
+ */
+export function scheduledQuestionAnswerEvidence(
+  question: { options: readonly unknown[]; allowFreeText: boolean },
+  answer: string,
+  evidence: string,
+  currentEvidence: readonly string[] = [evidence],
+): string {
+  const response = validatedQuestionAnswer(question, answer);
+  if (question.allowFreeText) throw new Error("Scheduled Operators cannot submit free-text answers.");
+
+  const stated = questionOptions(question.options).filter((option) =>
+    quotedChoice(evidence, option.id) || quotedChoice(evidence, option.label),
+  );
+  if (!stated.some((option) => option.id === response)) {
+    throw new Error("Scheduled answer evidence must state the submitted answer.");
+  }
+  if (stated.some((option) => option.id !== response)) {
+    throw new Error("Scheduled answer evidence is ambiguous between configured choices.");
+  }
+  const currentChoices = questionOptions(question.options).filter((option) =>
+    currentEvidence.some((source) => quotedChoice(source, option.id) || quotedChoice(source, option.label)),
+  );
+  if (currentChoices.some((option) => option.id !== response)) {
+    throw new Error("Scheduled answer evidence conflicts with current configured choices.");
+  }
+  const selected = questionOptions(question.options).find((option) => option.id === response);
+  if (
+    selected === undefined ||
+    ![selected.id, selected.label].some((choice) => affirmativelyQuotedChoice(evidence, choice))
+  ) {
+    throw new Error("Scheduled answer evidence must state the submitted answer.");
+  }
+  return response;
+}
+
+function quotedChoice(evidence: string, choice: string): boolean {
+  const escaped = choice.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escaped) return false;
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(evidence);
+}
+
+function affirmativelyQuotedChoice(evidence: string, choice: string): boolean {
+  const escaped = choice.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escaped) return false;
+  return new RegExp(
+    `(?:\\b(?:is|are|was|were|equals?|means)\\s+|\\b(?:answer|choice|option|selection|decision)\\s*(?::|=|\\bis\\b)\\s*)${escaped}(?=$|[^\\p{L}\\p{N}_])`,
+    "iu",
+  ).test(evidence);
+}
+
 function selectedQuestionOption(options: readonly QuestionOption[], answer: string, caseInsensitiveLabel: boolean): QuestionOption | null {
   const id = options.find((option) => option.id === answer);
   if (id) return id;

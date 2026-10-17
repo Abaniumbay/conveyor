@@ -24,6 +24,18 @@ const retryInput = z.object({
   itemId: z.string().min(1),
   note: z.string().max(4_000).default(""),
 }).strict();
+const scheduledRetryInput = retryInput.extend({
+  evidence: z.string().min(12).max(4_000),
+}).strict();
+const answerInput = z.object({
+  questionId: z.string().min(1),
+  answer: z.string().min(1).max(4_000),
+  evidence: z.string().min(12).max(4_000),
+}).strict();
+const scheduledOutcomeInput = z.object({
+  itemId: z.string().min(1),
+  reason: z.string().min(1).max(4_000),
+}).strict();
 const moveInput = z.object({
   itemId: z.string().min(1),
   position: z.enum(["up", "down", "before", "end"]),
@@ -119,11 +131,66 @@ const moveBacklog: TaskDefinition<unknown, z.infer<typeof moveInput>, Deps> = {
   },
 };
 
+const scheduledRetry: TaskDefinition<unknown, z.infer<typeof scheduledRetryInput>, Deps> = {
+  name: "operator.retryStoppedItem",
+  kind: "tool",
+  description: "Retry a scheduled-check target only after inspecting its history and quoting current evidence that the blocker is resolved or a new attempt is warranted.",
+  reads: [], writes: [], invalidates: [], input: scheduledRetryInput, mutating: true,
+  async run({ deps, input }) {
+    if (!operator(deps).scheduled || !operator(deps).scheduledRetry) throw new Error("operator.retryStoppedItem requires a scheduled Operator check");
+    const outcome = await operator(deps).scheduledRetry!(input!.itemId, input!.note, input!.evidence);
+    const result = { issueId: input!.itemId, action: "scheduled-retry", ...outcome };
+    audit(deps, "scheduled-retry", { issueId: input!.itemId, evidence: input!.evidence }, result);
+    return pass(result);
+  },
+};
+
+const answerQuestion: TaskDefinition<unknown, z.infer<typeof answerInput>, Deps> = {
+  name: "operator.answerItemQuestion",
+  kind: "tool",
+  description: "Answer an open question for a scheduled-check target only when the answer follows unambiguously from the quoted current source or recorded conversation evidence.",
+  reads: [], writes: [], invalidates: [], input: answerInput, mutating: true,
+  async run({ deps, input }) {
+    if (!operator(deps).scheduled || !operator(deps).answerQuestion) throw new Error("operator.answerItemQuestion requires a scheduled Operator check");
+    await operator(deps).answerQuestion!(input!.questionId, input!.answer, input!.evidence);
+    const result = { questionId: input!.questionId, action: "scheduled-answer", status: "answered" };
+    audit(deps, "scheduled-answer", { questionId: input!.questionId, evidence: input!.evidence }, result);
+    return pass(result);
+  },
+};
+
+const reportStoppedItemOutcome: TaskDefinition<unknown, z.infer<typeof scheduledOutcomeInput>, Deps> = {
+  name: "operator.reportStoppedItemOutcome",
+  kind: "tool",
+  description: "Record why an inspected scheduled-check target remains stopped when the Operator cannot safely retry it or answer its question.",
+  reads: [], writes: [], invalidates: [], input: scheduledOutcomeInput, mutating: true,
+  run({ deps, input }) {
+    if (!operator(deps).scheduled || !operator(deps).scheduledOutcome) {
+      throw new Error("operator.reportStoppedItemOutcome requires a scheduled Operator check");
+    }
+    operator(deps).scheduledOutcome!(input!.itemId, input!.reason);
+    const result = { issueId: input!.itemId, action: "scheduled-unresolved", reason: input!.reason };
+    audit(deps, "scheduled-unresolved", { issueId: input!.itemId }, result);
+    return pass(result);
+  },
+};
+
 export const OPERATOR_STEERING_TOOLS = new Set([
   "operator.getBoard",
   "operator.getItemHistory",
   "operator.retryItem",
   "operator.moveBacklogItem",
+  "operator.retryStoppedItem",
+  "operator.answerItemQuestion",
+  "operator.reportStoppedItemOutcome",
 ]);
 
-export const operatorGroup = defineGroup("operator", [board, itemHistory, retry, moveBacklog]);
+export const operatorGroup = defineGroup("operator", [
+  board,
+  itemHistory,
+  retry,
+  moveBacklog,
+  scheduledRetry,
+  answerQuestion,
+  reportStoppedItemOutcome,
+]);

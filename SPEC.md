@@ -350,6 +350,10 @@ web:
   steering:
     agent: operator
     workspace: /srv/conveyor/operator
+    # Optional: inspect stopped enrolled items on this cadence. The scheduled grant is
+    # restricted to diagnostics, eligible retries, and evidenced question answers.
+    periodic:
+      interval: 15m
 
 sources:
   github:
