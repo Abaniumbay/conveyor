@@ -189,22 +189,43 @@ describe("retention", () => {
     const { store, artifacts } = await world();
     const runningHome = path.join(artifacts, "running", "home");
     const terminalHome = path.join(artifacts, "closed-old", "home");
-    await chmod(runningHome, 0o000);
+    const hidden = path.join(runningHome, "tmp", "hidden");
+    const readOnly = path.join(runningHome, "cache", "read-only");
+    await mkdir(hidden, { recursive: true });
+    await mkdir(readOnly, { recursive: true });
+    await writeFile(path.join(hidden, "keep"), "hidden");
+    await writeFile(path.join(readOnly, "keep"), "read-only");
+    await chmod(hidden, 0o000);
+    await chmod(readOnly, 0o400);
+    await chmod(runningHome, 0o500);
     await chmod(terminalHome, 0o000);
     try {
       const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW, dryRun: true });
 
       expect(report.homes.directories).toBe(4);
       expect(await lstat(runningHome)).toMatchObject({ mode: expect.any(Number) });
-      expect((await lstat(runningHome)).mode & 0o777).toBe(0);
+      expect((await lstat(runningHome)).mode & 0o777).toBe(0o500);
+      expect((await lstat(hidden)).mode & 0o777).toBe(0);
+      expect((await lstat(readOnly)).mode & 0o777).toBe(0o400);
       expect((await lstat(terminalHome)).mode & 0o777).toBe(0);
       expect(await lstat(terminalHome)).toMatchObject({ isDirectory: expect.any(Function) });
+
+      const actual = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW });
+
+      expect(actual.homes).toEqual({ directories: 5, bytes: 5000, failures: [] });
+      expect((await lstat(runningHome)).mode & 0o777).toBe(0o500);
+      expect((await lstat(hidden)).mode & 0o777).toBe(0);
+      expect((await lstat(readOnly)).mode & 0o777).toBe(0o400);
+      await expect(lstat(terminalHome)).rejects.toThrow();
     } finally {
-      await chmod(runningHome, 0o700);
-      await chmod(terminalHome, 0o700);
+      await chmod(runningHome, 0o700).catch(() => {});
+      await chmod(hidden, 0o700).catch(() => {});
+      await chmod(readOnly, 0o700).catch(() => {});
+      await chmod(terminalHome, 0o700).catch(() => {});
     }
     expect(await readFile(path.join(runningHome, "session.jsonl"), "utf8")).toHaveLength(1000);
-    expect(await readFile(path.join(terminalHome, "session.jsonl"), "utf8")).toHaveLength(1000);
+    expect(await readFile(path.join(hidden, "keep"), "utf8")).toBe("hidden");
+    expect(await readFile(path.join(readOnly, "keep"), "utf8")).toBe("read-only");
     store.close();
   });
 
