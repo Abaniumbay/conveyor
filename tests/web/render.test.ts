@@ -422,7 +422,7 @@ describe("renderDashboard", () => {
     expect(superuser).toContain('action="/manual-gates/approve"');
     expect(superuser).toContain('name="csrf" value="csrf-token"');
     expect(superuser).toContain("Remove item requirement");
-    expect(superuser).toContain("Approve gate");
+    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve gate</button>');
   });
 
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
