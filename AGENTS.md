@@ -206,9 +206,11 @@ sends work back.
 1. `bun run check` passes.
 2. Generated docs are regenerated if you touched tasks (`docs:tasks`) or the CLI (`docs:cli`).
 3. Screenshots are regenerated if you changed dashboard layout.
-4. A user-visible change adds a line under `## [Unreleased]` in `CHANGELOG.md`, in the section
-   Added, Changed, Deprecated, Removed or Fixed. Write it for an operator: what changed for them,
-   not how the code changed.
+4. A user-visible change adds a Markdown fragment under `changes/`, named with its positive issue
+   number and a short slug. Its frontmatter selects Added, Changed, Deprecated, Removed or Fixed;
+   use `breaking: true` when applicable. Write it for an operator: what changed for them, not how
+   the code changed. Preview the combined notes with `bun run changelog`; do not edit Unreleased in
+   `CHANGELOG.md`.
 5. A change to documented behaviour updates `docs/` and, where it describes it, `SPEC.md`.
 6. No hostname, login, private repository address, machine path or secret anywhere in the diff.
 7. Never change `version` in `package.json`; releases are cut by maintainers.

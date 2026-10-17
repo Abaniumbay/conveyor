@@ -13,9 +13,10 @@
 //
 // See docs/releasing.md.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { readChangelogFragments, renderReleaseNotes, renderUnreleased } from "./changelog-fragments";
 import { compareVersions } from "../src/release/semver";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -65,6 +66,47 @@ export function prepareChangelog(changelog: string, version: string, date: strin
   if (changelogSection(changelog, version)) throw new ReleaseCheckError(`CHANGELOG.md already has a section for ${version}`);
   const opening = summary?.trim() ? `\n\n${summary.trim()}` : "";
   return changelog.replace(unreleased.heading, `## [Unreleased]\n\n## [${version}] - ${date}${opening}`);
+}
+
+/** Inserts rendered fragment entries into a dated section and restores the Unreleased pointer. */
+export function prepareChangelogFromFragments(changelog: string, version: string, date: string, entries: string, summary?: string): string {
+  const unreleased = changelogSection(changelog, "Unreleased");
+  if (!unreleased) throw new ReleaseCheckError("CHANGELOG.md has no Unreleased section");
+  if (changelogSection(changelog, version)) throw new ReleaseCheckError(`CHANGELOG.md already has a section for ${version}`);
+  const start = changelog.indexOf(unreleased.heading);
+  const after = start + unreleased.heading.length;
+  const next = changelog.indexOf("\n## [", after);
+  const end = next < 0 ? changelog.length : next + 1;
+  const summaryText = summary?.trim() ? `\n\n${summary.trim()}` : "";
+  const replacement = `## [Unreleased]\n\nSee [changes/](changes/) and run \`bun run changelog\` to preview unreleased entries.\n\n## [${version}] - ${date}${summaryText}\n\n${entries}`;
+  const trailingNewline = next < 0 && changelog.endsWith("\n") ? "\n" : "";
+  return `${changelog.slice(0, start)}${replacement}${trailingNewline}${changelog.slice(end)}`;
+}
+
+export interface PrepareOptions {
+  root: string;
+  version: string;
+  date: string;
+  summary?: string;
+}
+
+/** Writes a release section from fragments and removes precisely those fragments. */
+export async function prepareRelease(options: PrepareOptions): Promise<{ notes: string; fragmentFiles: string[] }> {
+  const packageFile = path.join(options.root, "package.json");
+  const changelogFile = path.join(options.root, "CHANGELOG.md");
+  const manifestText = await readFile(packageFile, "utf8");
+  const current = (JSON.parse(manifestText) as { version: string }).version;
+  if (!isLater(options.version, current)) throw new ReleaseCheckError(`${options.version} is not later than the current version ${current}`);
+  const fragments = await readChangelogFragments(options.root);
+  if (fragments.length === 0) throw new ReleaseCheckError("No Unreleased changes to release: add a fragment in changes/");
+  const notes = renderReleaseNotes(fragments);
+  const changelog = await readFile(changelogFile, "utf8");
+  const prepared = prepareChangelogFromFragments(changelog, options.version, options.date, notes, options.summary);
+
+  await writeFile(changelogFile, prepared);
+  await writeFile(packageFile, manifestText.replace(`"version": "${current}"`, `"version": "${options.version}"`));
+  await Promise.all(fragments.map((fragment) => rm(path.join(options.root, "changes", fragment.filename))));
+  return { notes: [options.summary?.trim(), notes].filter((part): part is string => Boolean(part)).join("\n\n"), fragmentFiles: fragments.map((fragment) => path.join("changes", fragment.filename)) };
 }
 
 /** Verifies `tag` (vX.Y.Z) against package.json and CHANGELOG.md and returns the release notes. */
@@ -128,12 +170,11 @@ export interface StartOptions {
 export async function startRelease(options: StartOptions, io: ReleaseIo): Promise<string> {
   await requireCleanMain(io);
   const packageFile = path.join(options.root, "package.json");
-  const changelogFile = path.join(options.root, "CHANGELOG.md");
   const manifestText = await readFile(packageFile, "utf8");
   const current = (JSON.parse(manifestText) as { version: string }).version;
-  const changelog = await readFile(changelogFile, "utf8");
-  const unreleased = changelogSection(changelog, "Unreleased");
-  if (!unreleased?.body) throw new ReleaseCheckError("CHANGELOG.md has no Unreleased changes to release: add them first");
+  const fragments = await readChangelogFragments(options.root);
+  if (fragments.length === 0) throw new ReleaseCheckError("No Unreleased changes to release: add a fragment in changes/");
+  const releaseNotes = renderReleaseNotes(fragments);
 
   let version = options.version;
   if (!version) {
@@ -148,7 +189,7 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   const branch = `release/${tag}`;
   if ((await io.run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch])).code === 0) throw new ReleaseCheckError(`branch ${branch} already exists on origin: is a release pull request already open?`);
 
-  io.print(`\nChanges in ${tag} (the Unreleased section of CHANGELOG.md):\n\n${unreleased.body}\n`);
+  io.print(`\nChanges in ${tag}:\n\n${releaseNotes}\n`);
   let summary = options.summary?.trim();
   if (!summary) {
     const answer = await io.askText("Release summary: a few sentences on what this release is about, shown first in the release notes. End with an empty line:\n");
@@ -157,15 +198,13 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   }
   if (!summary) throw new ReleaseCheckError("the release summary is required");
 
-  const prepared = prepareChangelog(changelog, version, io.today(), summary);
-  const notes = checkRelease(tag, version, prepared);
+  const notes = [summary, releaseNotes].join("\n\n");
   io.print(`\nRelease notes for ${tag}:\n\n${notes}\n`);
   await confirm(io, `Open the release pull request for ${tag}?`, options.yes === true);
 
   await must(io, ["git", "switch", "--create", branch], "git switch");
-  await writeFile(changelogFile, prepared);
-  await writeFile(packageFile, manifestText.replace(`"version": "${current}"`, `"version": "${version}"`));
-  await must(io, ["git", "add", "package.json", "CHANGELOG.md"], "git add");
+  const prepared = await prepareRelease({ root: options.root, version, date: io.today(), summary });
+  await must(io, ["git", "add", "package.json", "CHANGELOG.md", ...prepared.fragmentFiles], "git add");
   await must(io, ["git", "commit", "--quiet", "--message", `chore(release): ${tag}`], "git commit");
   await must(io, ["git", "push", "--quiet", "--set-upstream", "origin", branch], "git push");
   const body = [
@@ -278,20 +317,22 @@ async function main(args: string[]): Promise<void> {
     await tagRelease({ root: ROOT, version: value, yes: args.includes("--yes"), watch: args.includes("--watch") }, io);
     return;
   }
+  if (command === "changelog") {
+    console.log(renderUnreleased(await readChangelogFragments(ROOT)));
+    return;
+  }
   const packageFile = path.join(ROOT, "package.json");
-  const changelogFile = path.join(ROOT, "CHANGELOG.md");
   const manifest = JSON.parse(await readFile(packageFile, "utf8")) as { version: string };
-  const changelog = await readFile(changelogFile, "utf8");
   if (command === "prepare" && value) {
-    if (!isLater(value, manifest.version)) throw new ReleaseCheckError(`${value} is not later than the current version ${manifest.version}`);
+    const summaryFile = option(args, "--summary-file");
+    const summary = option(args, "--summary") ?? (summaryFile ? (summaryFile === "-" ? await Bun.stdin.text() : await readFile(summaryFile, "utf8")) : undefined);
     const date = new Date().toISOString().slice(0, 10);
-    await writeFile(changelogFile, prepareChangelog(changelog, value, date));
-    await writeFile(packageFile, (await readFile(packageFile, "utf8")).replace(`"version": "${manifest.version}"`, `"version": "${value}"`));
-    console.log(`Prepared ${value} (${date}): package.json and CHANGELOG.md updated.`);
+    await prepareRelease({ root: ROOT, version: value, date, ...(summary ? { summary } : {}) });
+    console.log(`Prepared ${value} (${date}): package.json and CHANGELOG.md updated; consumed changelog fragments.`);
     return;
   }
   if (command === "check" && value) {
-    const notes = checkRelease(value, manifest.version, changelog);
+    const notes = checkRelease(value, manifest.version, await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8"));
     const notesFile = option(args, "--notes");
     if (notesFile) await writeFile(notesFile, `${notes}\n`);
     else console.log(notes);
@@ -299,9 +340,10 @@ async function main(args: string[]): Promise<void> {
   }
   throw new ReleaseCheckError([
     "usage: bun run release <command>",
+    "  changelog                                                                  print the combined Unreleased fragment preview",
     "  start [<version>] [--summary <text> | --summary-file <file|->] [--yes]   prepare the release and open its pull request",
     "  tag <version> [--yes] [--watch]                                          tag the merged release and publish it",
-    "  prepare <version>                                                        only bump package.json and date the changelog",
+    "  prepare <version> [--summary <text> | --summary-file <file|->]          only bump package.json and date the changelog",
     "  check <tag> [--notes <file>]                                             verify a tag and print or write its notes",
   ].join("\n"));
 }

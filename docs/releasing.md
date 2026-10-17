@@ -14,11 +14,13 @@ attaches every asset to a draft before publishing for that reason.
 
 ## Every release
 
-### 0. Keep the changelog current
+### 0. Keep changelog fragments current
 
-Every pull request that changes behaviour adds a line under `## [Unreleased]` in `CHANGELOG.md`
-(Added, Changed, Deprecated, Removed, Fixed; mark breaking changes). That section becomes the
-release notes, so what is not there is not announced.
+Every pull request that changes behaviour adds its own Markdown file in `changes/`, named
+`<issue-number>-<short-slug>.md`. Its frontmatter has `section: Added`, `Changed`, `Deprecated`,
+`Removed`, or `Fixed`, plus optional `breaking: true`. Preview the combined Unreleased notes with
+`bun run changelog`. Do not edit Unreleased in `CHANGELOG.md`; the release command writes its dated
+section and consumes the fragments.
 
 ### 1. Start the release
 
@@ -33,11 +35,11 @@ It checks that `gh` is signed in and that `main` is clean and level with `origin
 
 1. Asks for the version, suggesting the next patch, minor and major versions. It must be later than
    the current one.
-2. Shows the Unreleased changes and asks for a **release summary**: a few sentences on what the
+2. Shows the combined fragment preview and asks for a **release summary**: a few sentences on what the
    release is about. Finish it with an empty line. The summary opens the release notes.
 3. Shows the complete release notes and asks for confirmation.
-4. Creates `release/vX.Y.Z`, sets the version in `package.json`, and moves the Unreleased changes
-   into `## [X.Y.Z] - <today>` under your summary.
+4. Creates `release/vX.Y.Z`, sets the version in `package.json`, writes the combined fragment
+   entries into `## [X.Y.Z] - <today>` under your summary, and deletes the consumed fragments.
 5. Commits as `chore(release): vX.Y.Z`, pushes, and opens the pull request "Release vX.Y.Z" with the
    notes.
 
@@ -45,8 +47,9 @@ Nothing is changed if you decline or anything fails before that.
 
 ### 2. Merge the release pull request
 
-Review the notes in the pull request (edit `CHANGELOG.md` on the branch if needed) and merge it once
-CI passes.
+Review the notes in the pull request and merge it once CI passes. If a note needs correction before
+starting the release, correct its source fragment in a normal pull request; the release command owns
+the dated `CHANGELOG.md` section.
 
 ### 3. Tag it
 
@@ -90,7 +93,7 @@ with `conveyor upgrade --version vX.Y.Z`.
 ## When something goes wrong
 
 - **`start` refuses:** read the message. It names the problem: a dirty tree, not on `main`, `main`
-  behind `origin/main`, no Unreleased changes, a version that is not newer, or a branch or tag that
+  behind `origin/main`, no changelog fragments, a version that is not newer, or a branch or tag that
   already exists.
 - **The Release workflow failed:** nothing was published. Fix the cause on `main` (a normal pull
   request), delete the tag, and tag again:

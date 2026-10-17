@@ -39,9 +39,10 @@ A pull request is ready when:
 1. **`bun run check` passes.** It runs every test and the typecheck, and it is what the Check
    workflow runs on the pull request.
 2. **Behaviour changes have tests.** A bug fix comes with a test that fails without it.
-3. **The changelog is current.** A change that users can notice adds a line under
-   `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) (Added, Changed, Deprecated, Removed or Fixed),
-   with breaking changes marked. That section becomes the release notes.
+3. **The changelog is current.** A change that users can notice adds its own Markdown fragment in
+   [`changes/`](changes/), named `<issue-number>-<short-slug>.md`, with frontmatter selecting
+   Added, Changed, Deprecated, Removed or Fixed (and `breaking: true` when needed). Preview the
+   combined release notes with `bun run changelog`; do not edit Unreleased in `CHANGELOG.md`.
 4. **Dashboard layout changes regenerate the screenshots.** Run `bun run docs:screenshots` and
    commit the regenerated images in `docs/screenshots/` in the same pull request. The Check workflow
    regenerates them twice and fails when they differ.

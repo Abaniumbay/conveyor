@@ -167,8 +167,9 @@ bun run build && bun run smoke    # build the release archive and test it outsid
 bun run docs:screenshots          # regenerate dashboard screenshots when layout changes
 ```
 
-Tests use temporary repositories and databases and need no credentials. Changes are recorded in
-[CHANGELOG.md](CHANGELOG.md); releases are cut from tags ([docs/releasing.md](docs/releasing.md)).
+Tests use temporary repositories and databases and need no credentials. User-visible changes are
+recorded as [changelog fragments](changes/) and releases are cut from tags
+([docs/releasing.md](docs/releasing.md)).
 [CONTRIBUTING.md](CONTRIBUTING.md) describes how to report problems and what a pull request needs.
 
 After installing dependencies and Playwright Chromium, run `bun run docs:screenshots` from the
