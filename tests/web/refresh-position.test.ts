@@ -458,6 +458,7 @@ describe("dashboard live refresh position", () => {
         isMobile: true,
       });
       await signIn(page, server.port);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
 
       const tabPosition = await page.evaluate(() => {
         const tabs = document.querySelector<HTMLElement>(".tabs");
