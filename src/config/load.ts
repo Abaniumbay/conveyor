@@ -594,6 +594,14 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
     mergeDocument(merged, document, origins, filename);
   }
 
+  // Repositories with a managed webhook are no longer read periodically; these settings did that.
+  const events = (merged.settings as Record<string, unknown> | undefined)?.events as Record<string, unknown> | undefined;
+  for (const key of ["reconcileInterval", "fullReconcileInterval"]) {
+    if (events && key in events) {
+      warnings.push(`settings.events.${key} is deprecated and has no effect: a repository with a managed webhook is read when an item enters a stage and from its deliveries`);
+    }
+  }
+
   // A deprecated configuration directory keeps the v0.1 defaults: state under <root>/data and the
   // dashboard on port 4300.
   if (mode === "directory") {

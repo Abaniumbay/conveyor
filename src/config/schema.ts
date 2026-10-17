@@ -124,19 +124,17 @@ const settingsSchema = z
           })
           .strict()
           .prefault({}),
-        /** The periodic reconcile interval while webhooks are healthy; settings.reconcileInterval otherwise. */
-        reconcileInterval: durationSchema.prefault("30m"),
-        /** How often the periodic reconcile reads everything while webhooks are healthy. */
-        fullReconcileInterval: durationSchema.prefault("24h"),
+        /** Deprecated, no effect: managed-webhook repositories are not read periodically. */
+        reconcileInterval: durationSchema.optional(),
+        /** Deprecated, no effect. */
+        fullReconcileInterval: durationSchema.optional(),
       })
       .strict()
       .prefault({})
-      .transform(({ retention, sinks, fallback, reconcileInterval, fullReconcileInterval }) => ({
+      .transform(({ retention, sinks, fallback }) => ({
         retentionMs: retention,
         sinks,
         fallbackMs: { default: fallback.default, ci: fallback.ci, change: fallback.change, dependencies: fallback.dependencies },
-        reconcileIntervalMs: reconcileInterval,
-        fullReconcileIntervalMs: fullReconcileInterval,
       })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z

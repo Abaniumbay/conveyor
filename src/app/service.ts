@@ -190,10 +190,6 @@ type ScheduledOperatorCheck = {
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** The same while the repository's webhooks are healthy and report relationship changes. */
 const HEALTHY_RELATIONSHIP_REUSE_MS = 6 * 60 * 60_000;
-/** How often a full pass runs while webhooks are healthy, when configuration does not say. */
-const DEFAULT_FULL_RECONCILE_MS = 24 * 60 * 60_000;
-/** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
-const FULL_ISSUE_LISTING_MS = 60 * 60_000;
 /** A reconnecting dashboard replays at most this many missed events; with more it reloads. */
 const REPLAY_LIMIT = 1_000;
 
@@ -212,7 +208,12 @@ const SCHEDULING_EVENTS: readonly EventType[] = [
 const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
 const REDELIVERY_LIMIT = 50;
 /** How often each repository's webhook is asked how its deliveries go. */
-const WEBHOOK_HEALTH_CHECK_MS = 60 * 60_000;
+/** How often Conveyor looks at whether deliveries arrive. */
+const WEBHOOK_CHECK_MS = 5 * 60_000;
+/** A repository without any delivery for this long gets a ping, to tell a quiet repository from a broken webhook. */
+const WEBHOOK_QUIET_MS = 60 * 60_000;
+/** A ping that has not arrived after this long means deliveries do not arrive. */
+const WEBHOOK_PING_TIMEOUT_MS = 5 * 60_000;
 /** How often the GitHub request counts are logged, and the window they cover. */
 const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
 /** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
@@ -403,8 +404,8 @@ export class ConveyorService {
   readonly #liveChangeHeads = new Map<string, string>();
   /** Sub-issues and blockers last read per issue, reused while the issue is unchanged (see `relationshipsOf`). */
   readonly #relationships = new Map<string, { updatedAt: string; readAt: number; children: SourceIssue[]; dependencies: SourceIssue[] }>();
-  /** Per repository: when its issue list was last read in full, and the time a later partial read may start from. */
-  readonly #issueListings = new Map<string, { fullAt: number; since: string }>();
+  /** Per repository: the time the next listing of changed issues may start from. */
+  readonly #issueListings = new Map<string, { since: string }>();
   /** Webhook reconciles per repository: the one running or queued last, and one not yet started that later deliveries join. */
   readonly #webhookReconciles = new Map<string, Promise<void>>();
   readonly #queuedWebhookReconciles = new Map<string, { issueNumbers: Set<number> | null; done: Promise<void> }>();
@@ -453,11 +454,12 @@ export class ConveyorService {
   readonly #sinks: SinkRunner[];
   /** Per repository: whether its webhook delivers, as last checked or shown by a delivery. */
   readonly #webhookHealth = new Map<string, boolean>();
+  /** When each repository last received a delivery, and when Conveyor last pinged its webhook. */
+  readonly #webhookDeliveredAt = new Map<string, number>();
+  readonly #webhookPingedAt = new Map<string, number>();
   readonly #webhookIds = new Map<string, number>();
   /** Repositories whose deliveries Conveyor may not list; warned about once. */
   readonly #redeliveryDenied = new Set<string>();
-  /** When each repository was last fully read: every issue listed and every enrolled item re-checked. */
-  readonly #repositoryFullReconciledAt = new Map<string, number>();
   /** Operator syncs in progress, by repository. */
   readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
   /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
@@ -589,9 +591,8 @@ export class ConveyorService {
           const secret = this.webhookSecretFor(repository.source);
           if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
-          await this.github.ensureWebhook({ address: repository.address, url, secret });
-          // Missed deliveries are asked for again in start(), once the server listens for them.
-          await this.checkWebhookHealth(id);
+          // Missed deliveries are asked for, and the webhook pinged, in start(), once the server listens.
+          this.#webhookIds.set(id, await this.github.ensureWebhook({ address: repository.address, url, secret }));
         }
         if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
@@ -606,34 +607,56 @@ export class ConveyorService {
   /** The URL GitHub delivers a repository's webhook events to, when Conveyor manages its webhook. */
   private webhookUrl(repositoryId: string): string | null {
     const repository = this.config.repositories[repositoryId];
-    const source = repository ? this.config.sources[repository.source] : undefined;
-    if (source?.type !== "github" || !source.autoConfigureWebhook || !this.config.web.publicUrl) return null;
+    const source = repository ? this.config.sources?.[repository.source] : undefined;
+    if (source?.type !== "github" || !source.autoConfigureWebhook || !this.config.web?.publicUrl) return null;
     return new URL(source.webhookPath, this.config.web.publicUrl).href;
   }
 
   /** Whether a repository's webhook delivers events, so waits may rely on them. */
+  /** Whether the repository's deliveries are known to arrive; false only after a ping went undelivered. */
   webhooksHealthy(repositoryId: string): boolean {
-    return this.#webhookHealth.get(repositoryId) === true;
+    return this.#webhookHealth.get(repositoryId) !== false;
   }
 
   /**
-   * Asks GitHub how the repository's webhook is doing: healthy while it is active and its last
-   * delivery succeeded (or none was made yet). A failed read counts as unhealthy, so waits poll.
+   * Asks GitHub to send the repository's webhook a ping; its arrival shows deliveries work. A failed
+   * request (an outage, the rate limit) changes nothing: health is decided by deliveries alone.
    */
-  async checkWebhookHealth(repositoryId: string): Promise<boolean> {
-    const url = this.webhookUrl(repositoryId);
+  async pingWebhook(repositoryId: string): Promise<boolean> {
     const address = this.config.repositories[repositoryId]?.address;
-    if (!url || !address) return false;
-    let healthy = false;
+    const hookId = this.#webhookIds.get(repositoryId);
+    if (!this.webhookUrl(repositoryId) || !address || hookId === undefined) return false;
     try {
-      const status = await this.github.webhookStatus({ address, url });
-      if (status) this.#webhookIds.set(repositoryId, status.id);
-      healthy = status !== null && status.active && (status.lastResponseCode === null || (status.lastResponseCode >= 200 && status.lastResponseCode < 300));
+      await this.github.pingHook(address, hookId);
+      this.#webhookPingedAt.set(repositoryId, Date.now());
+      return true;
     } catch (error) {
-      log.warn("Could not read the repository's webhook; waits poll until it can be read", { repository: repositoryId }, error);
+      log.warn("Could not ask GitHub to ping the webhook", { repository: repositoryId }, error);
+      return false;
     }
-    this.setWebhookHealth(repositoryId, healthy);
-    return healthy;
+  }
+
+  /**
+   * Webhook health from deliveries: a repository quiet for an hour gets a ping, and only a ping that
+   * does not arrive marks it unhealthy, for an admin to investigate. Nothing else changes with it.
+   */
+  async superviseWebhooks(now = Date.now()): Promise<void> {
+    for (const repositoryId of Object.keys(this.config.repositories)) {
+      if (!this.webhookUrl(repositoryId)) continue;
+      const delivered = this.#webhookDeliveredAt.get(repositoryId) ?? 0;
+      const pinged = this.#webhookPingedAt.get(repositoryId);
+      const awaitingPing = pinged !== undefined && delivered < pinged;
+      if (awaitingPing && now - pinged >= WEBHOOK_PING_TIMEOUT_MS) this.setWebhookHealth(repositoryId, false);
+      if (now - Math.max(delivered, pinged ?? 0) >= WEBHOOK_QUIET_MS) await this.pingWebhook(repositoryId);
+    }
+  }
+
+  /** A delivery arrived: the webhook works. One after an outage also asks for what was missed. */
+  private webhookDelivered(repositoryId: string): void {
+    this.#webhookDeliveredAt.set(repositoryId, Date.now());
+    const recovered = this.#webhookHealth.get(repositoryId) === false;
+    this.setWebhookHealth(repositoryId, true);
+    if (recovered) void this.redeliverMissed(repositoryId);
   }
 
   /**
@@ -682,13 +705,13 @@ export class ConveyorService {
     if (this.#webhookHealth.get(repositoryId) === healthy) return;
     this.#webhookHealth.set(repositoryId, healthy);
     this.store.events().append("webhook.healthChanged", { healthy }, { repositoryId });
-    if (healthy) log.info("Webhook deliveries are healthy; waits rely on them", { repository: repositoryId });
-    else log.warn("Webhook deliveries are unhealthy; waits poll", { repository: repositoryId });
+    if (healthy) log.info("Webhook deliveries arrive", { repository: repositoryId });
+    else log.warn("Webhook deliveries stop arriving: a ping was not delivered; check the repository's webhook", { repository: repositoryId });
   }
 
-  /** How long an event wait sleeps without its event: its fallback while webhooks are healthy, else null (poll). */
+  /** How long an event wait sleeps without its event: its fallback where Conveyor manages a webhook, else null (poll). */
   waitFallbackMs(repositoryId: string, kind: WaitKind): number | null {
-    if (!this.webhooksHealthy(repositoryId)) return null;
+    if (!this.webhookUrl(repositoryId)) return null;
     return this.config.settings.events?.fallbackMs[kind] ?? null;
   }
 
@@ -711,48 +734,40 @@ export class ConveyorService {
   }
 
   /**
-   * Reads every repository. Startup (and any caller without `skipFresh`) does a full pass. The
-   * periodic tick does one per repository too while its webhooks are unhealthy; while they are
-   * healthy, its deliveries keep it current and the tick is a safety net: a light pass (only the
-   * issues changed since the last read) every settings.events.reconcileInterval, and a full pass,
-   * which also re-checks every enrolled item's provenance and author permissions, every
-   * settings.events.fullReconcileInterval.
+   * Reads every repository. A repository whose webhook Conveyor manages is read only at startup, and
+   * then only the issues changed since Conveyor last saw it: its deliveries keep it current from there.
+   * A repository without one (polling) is read in full at startup and on every periodic tick.
    */
   async reconcileAll(options: { skipFresh?: boolean } = {}): Promise<void> {
+    let read = 0;
     for (const id of Object.keys(this.config.repositories)) {
-      const kind = options.skipFresh ? this.reconcileKind(id) : "full";
-      if (kind !== "skip") await this.reconcileOne(id, kind);
+      const managed = this.webhookUrl(id) !== null;
+      if (options.skipFresh && managed) continue;
+      await this.reconcileOne(id, managed ? "changed" : "full");
+      read += 1;
     }
+    if (read === 0) return;
     this.#lastReconciledAt = new Date().toISOString();
     this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
     this.#recoverPendingScheduledAnswers();
   }
 
-  /** What the periodic tick does for a repository now. */
-  private reconcileKind(repositoryId: string): "full" | "light" | "skip" {
-    if (!this.webhooksHealthy(repositoryId)) return "full";
-    const now = Date.now();
-    const events = this.config.settings.events;
-    const lastFull = this.#repositoryFullReconciledAt.get(repositoryId);
-    if (lastFull === undefined || now - lastFull >= (events?.fullReconcileIntervalMs ?? DEFAULT_FULL_RECONCILE_MS)) return "full";
-    const last = this.#repositoryReconciledAt.get(repositoryId);
-    const interval = events?.reconcileIntervalMs ?? this.config.settings.reconcileIntervalMs;
-    return last !== undefined && now - last < interval ? "skip" : "light";
-  }
-
   /**
-   * Reads one repository. A full pass lists every issue and re-checks each enrolled one; a light
-   * pass lists only the issues changed since the last read and reads relationships for those alone.
+   * Reads one repository. A full pass lists every issue; a `changed` pass lists only the issues
+   * changed since Conveyor last saw the repository and reads relationships for those alone.
    */
-  private async reconcileOne(id: string, kind: "full" | "light", options: { verifyTrust?: boolean } = {}): Promise<void> {
+  private async reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<void> {
     const repository = this.config.repositories[id];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
     const startedAt = Date.now();
     this.#repositoryReconciledAt.set(id, startedAt);
     try {
-      const listing = this.issueListing(id, kind === "full" ? "full" : "light");
+      // What Conveyor held before the read, so a `changed` pass re-reads relationships only for issues
+      // GitHub reports changed (the listing overlaps the last read and returns some unchanged ones).
+      const before = new Map(this.store.listIssues(id).map((issue) => [issue.sourceNumber, issue.sourceUpdatedAt]));
+      const listing = this.issueListing(id, kind);
       await reconcileRepository({
         store: this.store,
         configHash: this.config.hash,
@@ -776,12 +791,11 @@ export class ConveyorService {
       const since = listing.since;
       const scope = since === undefined
         ? null
-        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since).map((issue) => issue.sourceNumber));
+        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.sourceNumber) !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
       await this.reconcileRelationships(id, repository.address, scope);
       if (scope !== null) await this.backfillCiIndicators(id, scope);
       await this.syncIssueFields(id, repository);
       this.restorePendingStatus(id);
-      if (since === undefined) this.#repositoryFullReconciledAt.set(id, startedAt);
       if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
       this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
     } catch (error) {
@@ -815,8 +829,8 @@ export class ConveyorService {
     await this.reconcileOne(repositoryId, "full", { verifyTrust: true });
     await this.backfillCiIndicators(repositoryId);
     if (this.webhookUrl(repositoryId)) {
-      await this.checkWebhookHealth(repositoryId);
       await this.redeliverMissed(repositoryId);
+      await this.pingWebhook(repositoryId);
     }
     this.interruptIneligibleRuns();
     this.schedule();
@@ -869,15 +883,12 @@ export class ConveyorService {
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
     this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
     for (const sink of this.#sinks) sink.start(this.events);
-    const checkWebhooks = () => {
-      for (const repositoryId of Object.keys(this.config.repositories)) {
-        if (this.webhookUrl(repositoryId)) void this.checkWebhookHealth(repositoryId).then(() => this.redeliverMissed(repositoryId));
-      }
-    };
-    // The server listens from here on, so the deliveries GitHub could not make while Conveyor was
-    // starting (or stopped, during an upgrade) are asked for now rather than at the next hourly check.
-    checkWebhooks();
-    this.#webhookHealthTimer = setInterval(checkWebhooks, WEBHOOK_HEALTH_CHECK_MS);
+    // The server listens from here on: ask for the deliveries GitHub could not make while Conveyor was
+    // starting or stopped, and ping each webhook so its arrival shows deliveries work.
+    for (const repositoryId of Object.keys(this.config.repositories)) {
+      if (this.webhookUrl(repositoryId)) void this.redeliverMissed(repositoryId).then(() => this.pingWebhook(repositoryId));
+    }
+    this.#webhookHealthTimer = setInterval(() => void this.superviseWebhooks(), WEBHOOK_CHECK_MS);
   }
 
   /** Resolves once every event sink has received every recorded event (or a delivery failed). */
@@ -1347,9 +1358,9 @@ export class ConveyorService {
         void this.pollAdvisoryCi().catch((error) => log.warn("Advisory CI poll failed", {}, error));
       }
     });
-    // A delivery that arrives shows the webhook works, whatever the last check said.
+    // A delivery that arrives shows the webhook works.
     this.events.subscribe("webhook.received", "webhook health", (event) => {
-      if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.setWebhookHealth(event.repositoryId, true);
+      if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.webhookDelivered(event.repositoryId);
     });
   }
 
@@ -1833,22 +1844,24 @@ export class ConveyorService {
   }
 
   /**
-   * `full` lists every issue. `partial` (a webhook pass) lists the issues changed since the previous
-   * read, unless the last full read is over an hour old. `light` (the safety net while webhooks are
-   * healthy) lists only the changes; its full passes come on their own schedule. `finish` records a
-   * successful read.
+   * `full` lists every issue. `changed` lists the issues changed since Conveyor last saw the
+   * repository: since its previous listing in this run, or after a restart since the newest change it
+   * stored. `finish` records a successful read.
    */
-  private issueListing(repositoryId: string, mode: "full" | "partial" | "light"): { since?: string; finish(): void } {
+  private issueListing(repositoryId: string, mode: "full" | "changed"): { since?: string; finish(): void } {
     const startedAt = Date.now();
-    const previous = this.#issueListings.get(repositoryId);
-    const since = previous && (mode === "light" || (mode === "partial" && startedAt - previous.fullAt < FULL_ISSUE_LISTING_MS)) ? previous.since : undefined;
+    const since = mode === "changed" ? this.#issueListings.get(repositoryId)?.since ?? this.storedSince(repositoryId) : undefined;
     return {
       ...(since !== undefined ? { since } : {}),
-      finish: () => this.#issueListings.set(repositoryId, {
-        fullAt: since === undefined ? startedAt : previous!.fullAt,
-        since: new Date(startedAt - ISSUE_LISTING_OVERLAP_MS).toISOString(),
-      }),
+      finish: () => this.#issueListings.set(repositoryId, { since: new Date(startedAt - ISSUE_LISTING_OVERLAP_MS).toISOString() }),
     };
+  }
+
+  /** Just before the newest change Conveyor stored for a repository; undefined when it stored none. */
+  private storedSince(repositoryId: string): string | undefined {
+    let newest = Number.NEGATIVE_INFINITY;
+    for (const issue of this.store.listIssues(repositoryId)) newest = Math.max(newest, Date.parse(issue.sourceUpdatedAt));
+    return Number.isFinite(newest) ? new Date(newest - ISSUE_LISTING_OVERLAP_MS).toISOString() : undefined;
   }
 
   /**
@@ -1863,7 +1876,7 @@ export class ConveyorService {
       return;
     }
     const pipeline = this.config.pipelines[repository.pipeline]!;
-    const listing = this.issueListing(repositoryId, options.partial === true ? "partial" : "full");
+    const listing = this.issueListing(repositoryId, options.partial === true ? "changed" : "full");
     await reconcileRepository({
       store: this.store,
       configHash: this.config.hash,
@@ -1923,16 +1936,32 @@ export class ConveyorService {
    */
   private async relationshipsOf(address: string, issue: StoredIssue, refresh = true): Promise<{ children: SourceIssue[]; dependencies: SourceIssue[] }> {
     const cached = this.#relationships.get(issue.id);
-    // A pass scoped to some issues reuses what it knows of the others, however old.
+    // A pass scoped to some issues reuses what it knows of the others, however old: the read of
+    // this run, or after a restart the relationships it stored.
     if (cached && !refresh) return cached;
+    if (!refresh) return this.storedRelationships(issue);
     // Healthy webhooks report relationship changes, so a read is trusted for longer.
-    const reuseMs = this.webhooksHealthy(issue.repositoryId) ? HEALTHY_RELATIONSHIP_REUSE_MS : RELATIONSHIP_REUSE_MS;
+    const reuseMs = this.webhookUrl(issue.repositoryId) ? HEALTHY_RELATIONSHIP_REUSE_MS : RELATIONSHIP_REUSE_MS;
     if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < reuseMs) return cached;
     const children = await this.github.listSubIssues(address, issue.sourceNumber);
     const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
     const read = { updatedAt: issue.sourceUpdatedAt, readAt: Date.now(), children, dependencies };
     this.#relationships.set(issue.id, read);
     return read;
+  }
+
+  /** The sub-issues and blockers Conveyor stored for an issue, in the shape a GitHub read returns. */
+  private storedRelationships(issue: StoredIssue): { children: SourceIssue[]; dependencies: SourceIssue[] } {
+    const asSource = (id: string): SourceIssue[] => {
+      const stored = this.store.getIssue(id);
+      return stored ? [{
+        id: stored.id, number: stored.sourceNumber, url: stored.sourceUrl, title: stored.title, body: stored.body,
+        state: stored.sourceState === "closed" ? "closed" : "open", stateReason: stored.sourceStateReason ?? null,
+        labels: stored.labels, updatedAt: stored.sourceUpdatedAt,
+      }] : [];
+    };
+    const children = [...this.store.listChildren(issue.id)].sort((left, right) => (left.siblingOrder ?? 0) - (right.siblingOrder ?? 0));
+    return { children: children.flatMap((child) => asSource(child.issueId)), dependencies: this.store.listDependencies(issue.id).flatMap(asSource) };
   }
 
   /** Whether an item and all of its descendants meet the roll-up completion rule. */

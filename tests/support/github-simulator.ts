@@ -47,6 +47,8 @@ export interface SimulatedRepository {
   hookDeliveries: Map<number, Array<{ id: string; guid: string; delivered_at: string; status_code: number; redelivery: boolean }>>;
   /** Delivery attempts the simulator was asked to send again. */
   redeliveries: string[];
+  /** Ping requests for the repository's webhooks. */
+  pings: number;
   /** Pull request conversations, which GitHub serves through the issues API. */
   pullConversations: Map<number, SimulatedIssue>;
 }
@@ -67,7 +69,7 @@ export class GitHubSimulator implements GitHubTransport {
   repository(address: string): SimulatedRepository {
     let repository = this.repositories.get(address.toLowerCase());
     if (!repository) {
-      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map(), hookDeliveries: new Map(), redeliveries: [] };
+      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map(), hookDeliveries: new Map(), redeliveries: [], pings: 0 };
       this.repositories.set(address.toLowerCase(), repository);
     }
     return repository;
@@ -258,6 +260,10 @@ export class GitHubSimulator implements GitHubTransport {
       // As GitHub sends it: ids are bare numbers in the text, however large.
       const deliveries = repository.hookDeliveries.get(Number(match[1]!)) ?? [];
       return JSON.stringify(deliveries).replace(/"id":"(\d+)"/g, '"id":$1');
+    }
+    if ((match = /^hooks\/(\d+)\/pings$/.exec(rest)) && method === "POST") {
+      repository.pings += 1;
+      return null;
     }
     if ((match = /^hooks\/(\d+)\/deliveries\/(\d+)\/attempts$/.exec(rest)) && method === "POST") {
       repository.redeliveries.push(match[2]!);
