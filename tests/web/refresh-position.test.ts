@@ -1194,7 +1194,7 @@ describe("dashboard live refresh position", () => {
     });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
       await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
       await page.locator('article.issue[data-issue-id="card-1"] .card-open').click();
