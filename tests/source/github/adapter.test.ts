@@ -984,3 +984,21 @@ describe("GitHub calls Conveyor avoids", () => {
     }
   });
 });
+
+describe("GitHubAdapter.rateLimit", () => {
+  test("reads the REST and GraphQL limits with their reset time", async () => {
+    const transport = new FakeTransport({ resources: {
+      core: { limit: 5000, remaining: 4100, reset: 1_792_000_000 },
+      graphql: { limit: 5000, remaining: 4990, reset: 1_792_000_600 },
+    } });
+    expect(await new GitHubAdapter(transport, "conveyor").rateLimit()).toEqual({
+      core: { limit: 5000, remaining: 4100, resetAt: new Date(1_792_000_000_000).toISOString() },
+      graphql: { limit: 5000, remaining: 4990, resetAt: new Date(1_792_000_600_000).toISOString() },
+    });
+    expect(transport.requests).toEqual([{ method: "GET", path: "rate_limit" }]);
+  });
+
+  test("a resource GitHub does not report is null", async () => {
+    expect(await new GitHubAdapter(new FakeTransport({ resources: {} }), "conveyor").rateLimit()).toEqual({ core: null, graphql: null });
+  });
+});

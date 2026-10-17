@@ -21,6 +21,17 @@ export interface GitHubTransport {
   request<T>(request: GitHubTransportRequest): Promise<T>;
 }
 
+export interface GitHubRateLimit {
+  limit: number;
+  remaining: number;
+  resetAt: string;
+}
+
+export interface GitHubRateLimits {
+  core: GitHubRateLimit | null;
+  graphql: GitHubRateLimit | null;
+}
+
 export class GitHubTransportError extends Error {
   override readonly name = "GitHubTransportError";
 
@@ -963,6 +974,20 @@ export class GitHubAdapter {
     const result = await this.transport.request<{ login?: unknown }>({ method: "GET", path: "user" });
     if (typeof result.login === "string" && result.login.length > 0) return result.login;
     throw new Error("GitHub returned no usable authenticated login");
+  }
+
+  /** The REST and GraphQL rate limits of the token; reading them does not count against them. */
+  async rateLimit(): Promise<GitHubRateLimits> {
+    const result = await this.transport.request<{ resources?: Record<string, { limit?: unknown; remaining?: unknown; reset?: unknown }> }>({
+      method: "GET",
+      path: "rate_limit",
+    });
+    const read = (name: string): GitHubRateLimit | null => {
+      const resource = result.resources?.[name];
+      if (!resource || typeof resource.limit !== "number" || typeof resource.remaining !== "number" || typeof resource.reset !== "number") return null;
+      return { limit: resource.limit, remaining: resource.remaining, resetAt: new Date(resource.reset * 1_000).toISOString() };
+    };
+    return { core: read("core"), graphql: read("graphql") };
   }
 
   /** The repository's visibility, read from GitHub rather than the local projection. */

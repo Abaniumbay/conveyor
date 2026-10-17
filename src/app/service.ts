@@ -58,6 +58,7 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
+import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
 
@@ -87,6 +88,8 @@ interface ServiceImplementations {
   codeHosts?: CodeHostRegistry;
   /** Agent harnesses by runner type; defaults to Codex. */
   harnesses?: Record<string, Harness>;
+  /** Counts the GitHub requests of the adapter's transport; a fresh meter when it has none. */
+  githubCalls?: GitHubCallMeter;
 }
 
 type StatfsReader = (location: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
@@ -153,6 +156,8 @@ const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
 const FULL_ISSUE_LISTING_MS = 60 * 60_000;
+/** How often the GitHub request counts are logged, and the window they cover. */
+const GITHUB_CALL_SUMMARY_MS = 60 * 60_000;
 /** A partial issue list starts this much before the previous read began, so clock skew and in-flight edits are not missed. */
 const ISSUE_LISTING_OVERLAP_MS = 2 * 60_000;
 
@@ -343,6 +348,11 @@ export class ConveyorService {
   /** While set, no new work is admitted; work already running finishes. */
   #drain: { since: string; reason: string } | null = null;
   #retentionTimer: ReturnType<typeof setInterval> | null = null;
+  #githubCallTimer: ReturnType<typeof setInterval> | null = null;
+  /** Counts every GitHub request this service makes, by why it was made. */
+  readonly githubCalls: GitHubCallMeter;
+  /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
+  readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
   readonly #runSteering: (input: CodexSteeringInput) => ReturnType<typeof runCodexSteering>;
   readonly #manualGateApprovals: ManualGateApprovals;
@@ -358,6 +368,7 @@ export class ConveyorService {
     this.github = github;
     this.#issueTrust = new GitHubRepositoryTrust(github);
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
+    this.githubCalls = implementations.githubCalls ?? new GitHubCallMeter();
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
@@ -390,6 +401,7 @@ export class ConveyorService {
     config: ConveyorConfig,
     github: GitHubAdapter,
     codeHosts: CodeHostRegistry,
+    githubCalls?: GitHubCallMeter,
   ): Promise<ConveyorService> {
     await ensureRuntimeDirectories(config);
     const store = await ConveyorStore.open(config.settings.database);
@@ -403,7 +415,7 @@ export class ConveyorService {
       config,
       store,
       github,
-      { codeHosts },
+      { codeHosts, ...(githubCalls ? { githubCalls } : {}) },
     );
     const recovered = store.recoverInterruptedExecutions(config.hash);
     if (recovered.runs > 0 || recovered.stages > 0) {
@@ -412,9 +424,11 @@ export class ConveyorService {
         log.info("Stage queued after restart", { ...service.itemFields(stage.issueId), stage: stage.stageId });
       }
     }
-    await service.recoverWorkspaceScratch();
-    await service.onboardRepositories();
-    await service.reconcileAll();
+    await withGitHubCallSource("startup", async () => {
+      await service.recoverWorkspaceScratch();
+      await service.onboardRepositories();
+      await service.reconcileAll();
+    });
     return service;
   }
 
@@ -542,6 +556,33 @@ export class ConveyorService {
     const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
     prune();
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
+    this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
+  }
+
+  /**
+   * Logs the last hour of GitHub requests per source, overall and per repository, with the token's
+   * remaining rate limit; warns when less than a fifth of it is left.
+   */
+  async logGitHubCalls(): Promise<void> {
+    const summary = this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS);
+    const counts = (bySource: Partial<Record<GitHubCallSource, number>>) =>
+      Object.fromEntries(GITHUB_CALL_SOURCES.filter((source) => bySource[source]).map((source) => [source, bySource[source]!]));
+    let limits: Awaited<ReturnType<GitHubAdapter["rateLimit"]>> | null = null;
+    try { limits = await this.github.rateLimit(); }
+    catch (error) { log.warn("Could not read the GitHub rate limit", {}, error); }
+    const core = limits?.core ?? null;
+    log.info("GitHub calls in the last hour", {
+      total: summary.total, ...counts(summary.bySource),
+      ...(core ? { remaining: core.remaining, limit: core.limit, resetAt: core.resetAt } : {}),
+      ...(Date.parse(this.githubCalls.startedAt) > Date.now() - GITHUB_CALL_SUMMARY_MS ? { since: this.githubCalls.startedAt } : {}),
+    });
+    for (const [id, repository] of Object.entries(this.config.repositories)) {
+      const bySource = summary.byRepository[repository.address.toLowerCase()];
+      if (bySource) log.info("GitHub calls in the last hour for a repository", { repository: id, ...counts(bySource) });
+    }
+    if (core && core.remaining < core.limit * 0.2) {
+      log.warn("GitHub rate limit is running low", { remaining: core.remaining, limit: core.limit, resetAt: core.resetAt });
+    }
   }
 
   private async recoverWorkspaceScratch(): Promise<void> {
@@ -582,6 +623,8 @@ export class ConveyorService {
     this.#wakeTimer = null;
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
+    if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
+    this.#githubCallTimer = null;
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
     for (const [issueId, active] of this.#active) {
@@ -601,7 +644,7 @@ export class ConveyorService {
     if (this.#shuttingDown || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
-      await this.reconcileAll();
+      await withGitHubCallSource("tick", () => this.reconcileAll());
       this.schedule();
     } finally {
       this.#tickRunning = false;
@@ -655,7 +698,7 @@ export class ConveyorService {
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       let rescheduleAfterRelease = false;
-      void this.execute(issue, active.controller.signal).then((reschedule) => {
+      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal)).then((reschedule) => {
         rescheduleAfterRelease = reschedule;
       }).finally(() => {
         this.#active.delete(issue.id);
@@ -856,7 +899,7 @@ export class ConveyorService {
   private async pollAdvisoryCi(): Promise<void> {
     if (this.#shuttingDown || this.#advisoryPolling) return;
     this.#advisoryPolling = true;
-    try { await this.#advisoryWatches.pollDueWatches(Date.now()); }
+    try { await withGitHubCallSource("advisory", () => this.#advisoryWatches.pollDueWatches(Date.now())); }
     finally { this.#advisoryPolling = false; }
     if (this.#advisoryTimer) clearTimeout(this.#advisoryTimer);
     this.#advisoryTimer = null;
@@ -866,6 +909,20 @@ export class ConveyorService {
       this.#advisoryTimer = null;
       void this.pollAdvisoryCi().catch(() => {});
     }, Math.max(0, Date.parse(next) - Date.now()) + 50);
+  }
+
+  /** Why a stage run starts: an early wake of a parked task, its wake-up time passing, or other stage work. */
+  private executionCallSource(issueId: string): GitHubCallSource {
+    const woken = this.#wokenEarly.delete(issueId);
+    if (this.store.executions().getCursor(issueId)?.state !== "pending") return "stage";
+    return woken ? "wait" : "fallback";
+  }
+
+  /** Makes a parked item due now and remembers that an event, not its wake-up time, woke it. */
+  private wakeParked(issueId: string): boolean {
+    const woken = this.store.executions().wakeNow(issueId);
+    if (woken) this.#wokenEarly.add(issueId);
+    return woken;
   }
 
   /** A parked item is schedulable only once its persisted wake-up time has passed. */
@@ -1037,7 +1094,7 @@ export class ConveyorService {
       return;
     }
     if (cursor?.stage === stageId && cursor.list === "exit-gate" && cursor.taskInstanceId === gateId && cursor.state === "pending" &&
-      journal.wakeNow(issueId)) this.schedule();
+      this.wakeParked(issueId)) this.schedule();
   }
 
   /** Records a human receipt only for the current manual gate visit, then wakes that item. */
@@ -1070,7 +1127,7 @@ export class ConveyorService {
         message: `Approved manual gate \"${gateId}\".`,
       });
     }
-    if (journal.wakeNow(issueId)) this.schedule();
+    if (this.wakeParked(issueId)) this.schedule();
   }
 
   /** Log correlation for an item: its repository and <repository>:<number>. */
@@ -1976,11 +2033,11 @@ export class ConveyorService {
     if (callId) {
       const prior = grant.calls.get(callId);
       if (prior) return prior;
-      const call = this.handleMcpRequest(payload, grant);
+      const call = withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant));
       grant.calls.set(callId, call);
       return call;
     }
-    return this.handleMcpRequest(payload, grant);
+    return withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant));
   }
 
   private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
@@ -2204,13 +2261,13 @@ export class ConveyorService {
     }
     // Processed after the response: GitHub counts a delivery as failed after 10 seconds and never retries it.
     const repositoryId = repository[0];
-    const work = (async () => {
+    const work = withGitHubCallSource("webhook", async () => {
       // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
       await this.applyCiWebhook(repositoryId, eventType, payload)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: eventType }, error));
       if (eventType === "sub_issues" || eventType === "issue_dependencies") this.#relationships.clear();
       await this.queueWebhookReconcile(repositoryId, this.webhookIssueNumbers(repositoryId, eventType, payload));
-    })();
+    });
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
   }
@@ -2395,7 +2452,7 @@ export class ConveyorService {
     const run = question.runId ? this.store.getRun(question.runId) : null;
     const issue = this.store.getIssue(question.issueId);
     if (!cursor || run?.stageId !== cursor.stage || !issue || !this.hasResumableQuestionExecution(question.issueId)) return false;
-    return journal.wakeNow(question.issueId);
+    return this.wakeParked(question.issueId);
   }
 
   async answerQuestion(questionId: string, answer: string, source = "web"): Promise<void> {
@@ -4290,7 +4347,7 @@ export class ConveyorService {
     });
     // An item parked on its review gate re-evaluates now instead of at the next poll.
     const cursor = this.store.executions().getCursor(issueId);
-    if (cursor?.state === "pending" && cursor.list === "exit-gate" && this.store.executions().wakeNow(issueId)) this.schedule();
+    if (cursor?.state === "pending" && cursor.list === "exit-gate" && this.wakeParked(issueId)) this.schedule();
     await this.updateStatusComment(issue.id);
   }
 

@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "check": "bun test && bun run benchmark:dashboard && tsc --noEmit",
     "benchmark:dashboard": "bun run scripts/benchmark-dashboard.ts",
+    "benchmark:github-calls": "bun test ./tests/benchmarks/github-calls.bench.ts",
     "benchmark:dashboard:timed": "CONVEYOR_BENCHMARK_ASSERT_TIMING=1 bun run scripts/benchmark-dashboard.ts",
     "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "docs:cli": "bun run scripts/generate-cli-docs.ts",

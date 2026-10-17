@@ -5,6 +5,7 @@ import { createControlHandler, serveControlSocket } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
 import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
+import { GitHubCallMeter, MeteredGitHubTransport } from "../../source/github/call-meter";
 import { createGitHubCodeHostRegistry } from "../../source/github/codehost-registry";
 import { BUILD, versionLine } from "../../version";
 import { createWebAuth } from "../../web/auth";
@@ -86,8 +87,9 @@ export const serve: Command = {
       sinks: [new ConsoleSink(logging.format), new FileSink(config.settings.logs, logging.maxFileMegabytes * 1024 * 1024, logging.keepFiles)],
     });
     for (const warning of config.warnings ?? []) log.warn(warning);
-    const github = new GitHubAdapter(new GhCliTransport(), config.settings.labelPrefix);
-    const service = await ConveyorService.create(config, github, createGitHubCodeHostRegistry(config, github));
+    const githubCalls = new GitHubCallMeter();
+    const github = new GitHubAdapter(new MeteredGitHubTransport(new GhCliTransport(), githubCalls), config.settings.labelPrefix);
+    const service = await ConveyorService.create(config, github, createGitHubCodeHostRegistry(config, github), githubCalls);
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
     const bootstrapHash = process.env.CONVEYOR_PASSWORD_HASH;
     if (bootstrapUsername && bootstrapHash) service.seedDashboardSuperuser(bootstrapUsername, bootstrapHash);
