@@ -419,7 +419,7 @@ describe("conveyor serve", () => {
     try {
       let live = false;
       for (let attempt = 0; attempt < 100 && !live; attempt += 1) {
-        live = await fetch(`http://127.0.0.1:${port}/health/live`).then((response) => response.ok, () => false);
+        live = await fetch(`http://127.0.0.1:${port}/health/live`, { signal: AbortSignal.timeout(100) }).then((response) => response.ok, () => false);
         if (!live) await Bun.sleep(100);
       }
       expect(live).toBe(true);
