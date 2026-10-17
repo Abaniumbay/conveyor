@@ -922,6 +922,7 @@ Primary views:
 - GitHub's close reason is projected independently: `completed` renders as Completed; non-completion or absent close reasons render as Closed. Both remain in Done and require no attention.
 - A separate needs-attention view contains only open enrolled issues with a missing, unknown, or conflicting stage label that are not valid untouched backlog items. Such issues never disappear from the UI and are not guessed into a stage.
 - Hierarchical parent/child roll-ups.
+- A read-only Graph view shows every current workflow item across configured repositories plus only relationship endpoints needed as context. It represents parent-to-child and prerequisite-to-dependent links with text-labelled direction; prerequisites are satisfied, outstanding, or stopped. A node gives its repository, issue number, title, state, and optional stage tag, but stage does not group the graph. Nodes link to the existing item detail, and the Graph uses the same authenticated live-update flow as the Board.
 - Waiting for input.
 - Blocked, rejected, needs-intervention, done, closable, paused, and source-closed status presentation on cards.
 - Run, stage, repository, issue, agent, and total cost summaries.

@@ -128,6 +128,7 @@ const dashboard: DashboardViewModel = {
   revision: "revision-1",
   view: "board",
   repositoryId: null,
+  graph: { nodes: [], relationships: [] },
   counts: { board: 43, attention: 1 },
   activeWork: {
     runnerCount: 1,
@@ -290,6 +291,44 @@ describe("issue type and fields", () => {
 });
 
 describe("renderDashboard", () => {
+  test("renders an accessible Graph view with directed, text-labelled relationships", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      view: "graph",
+      graph: {
+        nodes: [
+          { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "Parent <safe>", state: "Active", stage: "Implementation", context: false, signal: "run" },
+          { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "Child", state: "Blocked", stage: "Review", context: false, signal: "stop" },
+          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Finished prerequisite", state: "Done", stage: null, context: true, signal: null },
+        ],
+        relationships: [
+          { kind: "parent-child", from: "parent", to: "child", status: null },
+          { kind: "dependency", from: "prerequisite", to: "child", status: "satisfied" },
+        ],
+      },
+    });
+
+    expect(html).toContain("<title>Graph · Conveyor</title>");
+    expect(html).toContain('<a href="/graph" class="tab tab--active" aria-current="page">Graph</a>');
+    expect(html).toContain('<a href="/board" class="tab">Board<span class="tab-count">43</span></a>');
+    expect(html).toContain('data-graph-node="parent"');
+    expect(html).toContain('Parent &lt;safe>');
+    expect(html).not.toContain("Parent <safe>");
+    expect(html).toContain('href="/issues/sample/41"');
+    expect(html).toContain("Parent #41 → child #42");
+    expect(html).toContain("Issue #42 waits for prerequisite #7");
+    expect(html).toContain("Status: satisfied prerequisite");
+    expect(html).toContain("Context item");
+    expect(html).toContain("Stopped");
+  });
+
+  test("renders an empty Graph without board columns", () => {
+    const html = renderDashboard({ ...dashboard, view: "graph", graph: { nodes: [], relationships: [] } });
+
+    expect(html).toContain("There are no current workflow items to show.");
+    expect(html).not.toContain('class="board board--rows"');
+  });
+
   test("renders a bookmarkable, read-only recent activity feed with safe long content", () => {
     const title = "A realistic issue title that is intentionally long enough to wrap on a phone without widening the document";
     const reason = "A realistic transition reason that remains on one summary line until expanded and has enough detail to make wrapping behaviour observable.";

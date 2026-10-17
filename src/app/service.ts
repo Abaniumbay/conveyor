@@ -33,7 +33,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -2974,6 +2974,11 @@ export class ConveyorService {
       if (!dependenciesByIssue.has(issueId)) dependenciesByIssue.set(issueId, this.store.listDependencies(issueId));
       return dependenciesByIssue.get(issueId)!;
     };
+    const dependentsByIssue = new Map<string, ReturnType<ConveyorStore["listDependents"]>>();
+    const dependentsFor = (issueId: string) => {
+      if (!dependentsByIssue.has(issueId)) dependentsByIssue.set(issueId, this.store.listDependents(issueId));
+      return dependentsByIssue.get(issueId)!;
+    };
     const costsByIssue = new Map<string, ReturnType<ConveyorStore["costSummary"]>>();
     const costFor = (issueId: string) => {
       if (!costsByIssue.has(issueId)) costsByIssue.set(issueId, this.store.costSummary({ issueId }));
@@ -3248,6 +3253,89 @@ export class ConveyorService {
     const attentionIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) && !stagedIds.has(issue.id),
     );
+    // The graph starts with every current workflow item, then adds only direct relationship
+    // endpoints. That retains the context needed to understand a current item without turning
+    // historical completed work into a second, unbounded archive view.
+    const graphCurrentIds = new Set(workflowIssues.map((issue) => issue.id));
+    const graphContextIds = new Set<string>();
+    const addGraphContext = (issueId: string | null | undefined) => {
+      if (issueId && !graphCurrentIds.has(issueId) && listedById.has(issueId)) graphContextIds.add(issueId);
+    };
+    for (const issue of workflowIssues) {
+      addGraphContext(issue.parentId);
+      childrenFor(issue.id).forEach(({ issueId }) => addGraphContext(issueId));
+      dependenciesFor(issue.id).forEach(addGraphContext);
+      dependentsFor(issue.id).forEach(addGraphContext);
+    }
+    const graphIds = new Set([...graphCurrentIds, ...graphContextIds]);
+    const graphStatus = (issue: StoredIssue) => {
+      const itemRelation = childrenFor(issue.id).length > 0 ? rollupRelation(issue) : relation(issue);
+      if (itemRelation.satisfied) return { satisfied: true, signal: null } as const;
+      const state = issue.projectedState ?? issue.sourceState;
+      const signal = activeIssueIds.has(issue.id)
+        ? "run"
+        : questionIssueIds.has(issue.id) || STOPPED_ISSUE_STATES.has(state) || state === "inconsistent" ? "stop" : "wait";
+      return { satisfied: false, signal } as const;
+    };
+    const graphNodes: GraphNodeViewModel[] = [...graphIds]
+      .flatMap((issueId) => {
+        const issue = listedById.get(issueId);
+        if (!issue) return [];
+        const status = graphStatus(issue);
+        return [{
+          id: issue.id,
+          repository: issue.repositoryId,
+          repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
+          number: issue.sourceNumber,
+          title: issue.title,
+          state: displayName(issue.projectedState ?? issue.sourceState),
+          stage: issue.projectedStage ? stageNames.get(issue.projectedStage) ?? displayName(issue.projectedStage) : null,
+          context: graphContextIds.has(issue.id),
+          signal: status.signal,
+        }];
+      })
+      .sort((left, right) =>
+        left.repository.localeCompare(right.repository) || left.number - right.number || left.id.localeCompare(right.id)
+      );
+    const graphRelationships = new Map<string, GraphRelationshipViewModel>();
+    const addGraphRelationship = (relationship: GraphRelationshipViewModel) => {
+      if (!graphIds.has(relationship.from) || !graphIds.has(relationship.to)) return;
+      graphRelationships.set(`${relationship.kind}:${relationship.from}:${relationship.to}`, relationship);
+    };
+    for (const issue of workflowIssues) {
+      if (issue.parentId) addGraphRelationship({ kind: "parent-child", from: issue.parentId, to: issue.id, status: null });
+      childrenFor(issue.id).forEach(({ issueId }) => {
+        addGraphRelationship({ kind: "parent-child", from: issue.id, to: issueId, status: null });
+      });
+      dependenciesFor(issue.id).forEach((prerequisiteId) => {
+        const prerequisite = listedById.get(prerequisiteId);
+        if (!prerequisite) return;
+        const prerequisiteStatus = graphStatus(prerequisite);
+        addGraphRelationship({
+          kind: "dependency",
+          from: prerequisite.id,
+          to: issue.id,
+          status: prerequisiteStatus.satisfied ? "satisfied" : prerequisiteStatus.signal === "stop" ? "stopped" : "outstanding",
+        });
+      });
+      dependentsFor(issue.id).forEach((dependentId) => {
+        const dependent = listedById.get(dependentId);
+        if (!dependent) return;
+        const prerequisiteStatus = graphStatus(issue);
+        addGraphRelationship({
+          kind: "dependency",
+          from: issue.id,
+          to: dependent.id,
+          status: prerequisiteStatus.satisfied ? "satisfied" : prerequisiteStatus.signal === "stop" ? "stopped" : "outstanding",
+        });
+      });
+    }
+    const graph = {
+      nodes: graphNodes,
+      relationships: [...graphRelationships.values()].sort((left, right) =>
+        left.kind.localeCompare(right.kind) || left.from.localeCompare(right.from) || left.to.localeCompare(right.to)
+      ),
+    };
     const column = (
       id: string,
       name: string,
@@ -3336,6 +3424,7 @@ export class ConveyorService {
         state: pagination.state ?? null,
       },
       ...(recent ? { recent } : {}),
+      graph,
       counts: {
         board: backlogIssues.length + stagedIssues.length,
         attention: attentionIssues.length,

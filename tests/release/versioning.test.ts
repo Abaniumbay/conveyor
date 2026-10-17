@@ -123,6 +123,7 @@ describe("versioning", () => {
     expect(changelogSection(changelog, "Unreleased")?.body).toBe("See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.");
     const fragments = await readChangelogFragments(ROOT);
     expect(fragments.map((fragment) => fragment.filename)).toEqual([
+      "290-graph-view.md",
       "294-trust-safeguards.md",
       "306-changelog-fragments.md",
       "302-lease-protected-pushes.md",
@@ -132,6 +133,11 @@ describe("versioning", () => {
       "308-review-repair-path.md",
     ]);
     expect(fragments.filter((fragment) => fragment.issue !== 306).map(({ filename, section, body }) => ({ filename, section, body }))).toEqual([
+      {
+        filename: "290-graph-view.md",
+        section: "Added",
+        body: "The dashboard now includes a read-only Graph view for following current item families and dependencies across repositories.",
+      },
       {
         filename: "294-trust-safeguards.md",
         section: "Added",

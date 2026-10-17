@@ -61,6 +61,7 @@ function dashboard(
     revision,
     view: "board",
     repositoryId: null,
+    graph: { nodes: [], relationships: [] },
     counts: { board: middleIssues.length, attention: 0 },
     activeWork: { runnerCount: 0, runnerCapacity: 1, runs: [] },
     stages: [
@@ -266,6 +267,39 @@ describe("dashboard live refresh position", () => {
         page.locator(".recent-load-more").click(),
       ]);
       expect(await page.locator(".recent-load-more").count()).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("keeps the Graph usable at 360 px without horizontal page scrolling", async () => {
+    const server = startDashboard({
+      dashboard: (selection) => ({
+        ...dashboard("graph-1", []),
+        view: selection.view,
+        graph: {
+          nodes: [
+            { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", context: false, signal: "run" },
+            { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "A deliberately long child title that must also wrap inside a phone viewport", state: "Blocked", stage: "Review", context: false, signal: "stop" },
+          ],
+          relationships: [
+            { kind: "parent-child", from: "parent", to: "child", status: null },
+            { kind: "dependency", from: "parent", to: "child", status: "stopped" },
+          ],
+        },
+      }),
+      revision: () => "graph-1",
+      delayMs: () => 0,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/graph`);
+
+      expect(await page.locator(".graph-node").count()).toBe(2);
+      expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: stopped prerequisite");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {
       server.stop(true);

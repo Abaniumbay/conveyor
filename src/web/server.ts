@@ -778,6 +778,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     const repositoryPath = /^\/repositories\/([^/]{1,200})$/.exec(path);
     const dashboardView = path === "/" || path === "/board"
       ? "board"
+      : path === "/graph"
+        ? "graph"
       : path === "/recent"
         ? "recent"
       : path === "/attention"
@@ -806,7 +808,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       const currentSession = session(request);
-      if (!currentSession) return redirect(issuePagePath || repositoryPath || dashboardView === "recent" ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
+      if (!currentSession) return redirect(issuePagePath || repositoryPath || dashboardView === "recent" || dashboardView === "graph" ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
       if (dashboardView === "accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
       try {
         if (legacyDashboardQuery) {
