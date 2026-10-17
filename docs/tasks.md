@@ -129,7 +129,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `ci.defined` | check | change, ci | - | Passes when CI is defined for the change head. Fails as blocked when no workflow applies or the provider cannot tell, so required CI never passes by having nothing to run. |
 | `ci.getLogs` | tool | - | - | Read the failing (or named) CI job logs for the change head, bounded to 20-1000 lines (default 200). |
 | `ci.load` | load | change | writes ci | Loads the CI runs of the change's current head from the provider (ignoring `ci.ignoreChecks`), whether CI is defined for it, and the durable gate facts; null until a change request exists. |
-| `ci.passed` | check | change, ci | - | Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running; fails with focused logs when a run failed. |
+| `ci.passed` | check | change, ci, repository | - | Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed. |
 | `ci.settled` | act | change | - | Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it. |
 | `ci.start` | act | repository, change, ci | invalidates ci | Starts label-triggered CI runs for the change head, reruns a cancelled run once per head, announces CI once per head and, in advisory mode, starts the durable watch. |
 
@@ -147,7 +147,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
 | `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first. |
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
-| `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. |
+| `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once. |
 | `item.get` | tool | - | - | Read the accepted source snapshot of the current issue, including whether it must remain one item. |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |
 | `item.labelsValid` | check | item, repository | - | Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones). |

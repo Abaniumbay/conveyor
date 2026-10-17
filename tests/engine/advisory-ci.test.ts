@@ -204,3 +204,42 @@ describe("AdvisoryCiWatches", () => {
     expect(posted).toHaveLength(1);
   });
 });
+
+describe("AdvisoryCiWatches and events", () => {
+  async function withPoll(pollMs: (repositoryId: string) => number) {
+    const base = await setup();
+    const watches = new AdvisoryCiWatches(base.store.sqlite(), base.store.executions(), {
+      resolve: () => ({ provider: base.provider, address: "owner/sample", ignoreChecks: [] }),
+      post: (itemId, stage, message) => { base.posted.push({ itemId, stage, message }); },
+      pollMs,
+    });
+    return { ...base, watches };
+  }
+
+  test("the poll interval comes from the repository, so healthy webhooks can make it a fallback", async () => {
+    const { watches } = await withPoll(() => 5 * MIN);
+    expect(Date.parse(ensure(watches, "head1").wakeAt) - T0).toBe(5 * MIN);
+  });
+
+  test("a finished run makes the head's watch due at once", async () => {
+    const { watches } = await withPoll(() => 5 * MIN);
+    ensure(watches, "head1");
+    expect(watches.wakeHead("repo-1", "head1", T0 + MIN)).toBe(1);
+    expect(watches.nextWakeAt()).toBe(new Date(T0 + MIN).toISOString());
+  });
+
+  test("a finished run of another head wakes nothing", async () => {
+    const { watches } = await withPoll(() => 5 * MIN);
+    ensure(watches, "head1");
+    expect(watches.wakeHead("repo-1", "head2", T0 + MIN)).toBe(0);
+  });
+
+  test("with every run finished, only the settle window remains and it looks again when that ends", async () => {
+    const { watches, provider } = await withPoll(() => 5 * MIN);
+    provider.runs = [run("build", "passed")];
+    ensure(watches, "head1", T0, { settleMs: 150_000 });
+    watches.wakeHead("repo-1", "head1", T0 + MIN);
+    await watches.pollDueWatches(T0 + MIN);
+    expect(watches.nextWakeAt()).toBe(new Date(T0 + 150_000).toISOString());
+  });
+});

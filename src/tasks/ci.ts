@@ -11,6 +11,7 @@ import { observeCi, observeCiError } from "../app/indicators";
 import { boundLog, boundSnapshotLogs, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
+import { changeTopic, ciTopic } from "../events/topics";
 import type { ChangeContext, CiContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -168,8 +169,8 @@ const defined: TaskDefinition<unknown, unknown, Deps> = {
 const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.passed",
   kind: "check",
-  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running; fails with focused logs when a run failed.",
-  reads: ["change", "ci"],
+  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 120 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed.",
+  reads: ["change", "ci", "repository"],
   writes: [],
   invalidates: [],
   config: passedConfig,
@@ -197,11 +198,23 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const waitingOn = [...snapshot.awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
     const elapsedMs = Date.parse(snapshot.observedAt) - Date.parse(snapshot.firstSeenAt);
     if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
-      return pending(`Waiting for CI at ${sha}: ${waitingOn.join(", ") || "checks to register"}.`);
+      return pending(`Waiting for CI at ${sha}: ${waitingOn.join(", ") || "checks to register"}.`, ciWait(context.repository!.address, change, snapshot.headSha, waitingOn.length, config.settleSeconds * 1_000 - elapsedMs));
     }
     return pass();
   },
 };
+
+/**
+ * What a CI wait waits for: the head's CI finishing, or the change moving to another head. While
+ * nothing runs, only the settle window remains, so it looks again when that ends.
+ */
+function ciWait(address: string, change: ChangeContext, head: string, unfinished: number, settleRemainingMs: number) {
+  const topics = [ciTopic(address, head), ...(change.ref.number !== null ? [changeTopic(address, change.ref.number)] : [])];
+  return {
+    waitFor: { topics, kind: "ci" as const },
+    ...(unfinished === 0 && settleRemainingMs > 0 ? { after: Math.ceil(settleRemainingMs) } : {}),
+  };
+}
 
 const settled: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.settled",
@@ -240,7 +253,7 @@ const settled: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const waitingOn = [...awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
     const elapsedMs = Date.parse(observedAt) - Date.parse(firstSeenAt);
     if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
-      return pending(`Waiting for CI at ${short(head)}: ${waitingOn.join(", ") || "checks to register"}.`);
+      return pending(`Waiting for CI at ${short(head)}: ${waitingOn.join(", ") || "checks to register"}.`, ciWait(deps.repository.address, change, head, waitingOn.length, config.settleSeconds * 1_000 - elapsedMs));
     }
     return pass();
   },

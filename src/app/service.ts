@@ -49,7 +49,7 @@ import { CriterionApprovals, isCriterionApprovedAt } from "../engine/review-reco
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
-import { AdvisoryCiWatches } from "../engine/advisory-ci";
+import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "../engine/advisory-ci";
 import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
@@ -450,6 +450,8 @@ export class ConveyorService {
         else observeCiError(this.store, { ...base, error: observation.error });
       },
       onError: (watch, error) => log.warn("Advisory CI watch failed", { ...this.itemFields(watch.itemId), commit: watch.headSha.slice(0, 7) }, error),
+      // A finished run wakes a watch; while webhooks deliver, reading CI on a timer is only the fallback.
+      pollMs: (repositoryId) => this.waitFallbackMs(repositoryId, "ci") ?? ADVISORY_POLL_MS,
     });
   }
 
@@ -1119,6 +1121,12 @@ export class ConveyorService {
     for (const type of ["github.ciUpdated", "github.changeUpdated", "item.updated", "item.stageChanged"] as const) {
       this.events.subscribe(type, "wake waiting tasks", (event) => this.#waitDispatcher.handle(event));
     }
+    this.events.subscribe("github.ciUpdated", "wake advisory CI watches", (event) => {
+      if (!event.payload.completed || !event.repositoryId) return;
+      if (this.#advisoryWatches.wakeHead(event.repositoryId, event.payload.sha, Date.now()) > 0) {
+        void this.pollAdvisoryCi().catch((error) => log.warn("Advisory CI poll failed", {}, error));
+      }
+    });
     // A delivery that arrives shows the webhook works, whatever the last check said.
     this.events.subscribe("webhook.received", "webhook health", (event) => {
       if (event.repositoryId && this.webhookUrl(event.repositoryId)) this.setWebhookHealth(event.repositoryId, true);

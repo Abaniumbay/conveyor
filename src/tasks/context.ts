@@ -51,7 +51,8 @@ export interface ItemContext {
     labels?: string[];
     dependsOn?: number[];
   }>;
-  dependencies: Array<{ id: string; number: number; satisfied: boolean }>;
+  /** `address` is the blocker's repository; absent in snapshots stored before it was recorded. */
+  dependencies: Array<{ id: string; number: number; satisfied: boolean; address?: string }>;
   systemLabels: string[];
   /** Present only when the item carries the configured metadata label that prevents decomposition. */
   noSplit?: {
