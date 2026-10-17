@@ -2,7 +2,7 @@ import { CryptoHasher } from "bun";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { parse } from "yaml";
+import { parse, YAMLParseError } from "yaml";
 import type { ZodIssue } from "zod";
 
 import { createTaskRegistry } from "../tasks/catalogue";
@@ -12,7 +12,7 @@ import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 
 import { builtinResolver } from "./builtin";
 import { composeConfig, originOf, type ConfigOrigin } from "./compose";
-import { ConfigError } from "./errors";
+import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
 import { normalizeRoleDocuments } from "./roles";
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
@@ -398,11 +398,16 @@ function configurationHash(config: ConveyorConfigData, pinnedSha?: string): stri
   return hasher.digest("hex");
 }
 
-async function readDocument(filename: string): Promise<ConfigurationDocument> {
+async function readDocument(filename: string, safeDiagnostic = false): Promise<ConfigurationDocument> {
   let parsed: unknown;
   try {
     parsed = parse(await readFile(filename, "utf8"));
   } catch (error) {
+    if (safeDiagnostic) {
+      throw new ConfigError(
+        `cannot parse ${filename}: ${safeYamlDiagnostic(error instanceof YAMLParseError ? error.linePos?.[0] : undefined)}`,
+      );
+    }
     throw new ConfigError(
       `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -509,7 +514,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
     rawLocal = [];
     for (const filename of files) {
       const directory = path.dirname(filename);
-      rawLocal.push({ filename, document: await readDocument(filename), baseOf: () => directory });
+      rawLocal.push({ filename, document: await readDocument(filename, path.basename(filename) === "secrets.yaml"), baseOf: () => directory });
     }
   } else {
     const builtin = options.home ? builtinResolver(path.join(options.home, "state/builtin")) : undefined;

@@ -156,6 +156,11 @@ describe("versioning", () => {
         section: "Fixed",
         body: "Merge conflicts, changed pull-request heads, and outdated bases discovered after review now\nreturn through the bounded implementation repair path while retaining fresh CI and review gates\nfor the repaired head.",
       },
+      {
+        filename: "313-safe-secret-yaml-errors.md",
+        section: "Fixed",
+        body: "Malformed secret configuration files now report only their file name and YAML position, so parser\ndiagnostics cannot expose secret values.",
+      },
     ]);
     if (changelogSection(changelog, manifest.version)) {
       expect(checkRelease(`v${manifest.version}`, manifest.version, changelog)).not.toBe("");
