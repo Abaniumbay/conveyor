@@ -1285,16 +1285,21 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return text("Invalid manual gate request", 400);
       }
       try {
+        let correlationId: string;
         if (path === "/manual-gates/requirement") {
           const required = oneValue(form, "required");
           if (required !== "true" && required !== "false") return text("Invalid manual gate request", 400);
-          await dependencies.dispatch("gate.setRequirement", { issueId, stageId, gateId, required: required === "true" }, actorOf(currentSession));
+          ({ correlationId } = await dependencies.dispatch("gate.setRequirement", { issueId, stageId, gateId, required: required === "true" }, actorOf(currentSession)));
         } else {
-          await dependencies.dispatch("gate.approve", { issueId, stageId, gateId }, actorOf(currentSession));
+          ({ correlationId } = await dependencies.dispatch("gate.approve", { issueId, stageId, gateId }, actorOf(currentSession)));
         }
+        if (wantsJson(request)) return json({ ok: true, correlationId });
         return redirect("/board");
       } catch (error) {
-        return commandError(error, text("Manual gate controls are unavailable", 503)) ?? text(error instanceof Error ? error.message : "Unable to update manual gate", 409);
+        const handled = commandError(error, wantsJson(request) ? json({ error: "Manual gate controls are unavailable" }, 503) : text("Manual gate controls are unavailable", 503));
+        if (handled) return handled;
+        const message = error instanceof Error ? error.message : "Unable to update manual gate";
+        return wantsJson(request) ? json({ error: message }, 409) : text(message, 409);
       }
     }
 

@@ -421,7 +421,11 @@ describe("renderDashboard", () => {
     expect(superuser).toContain('action="/manual-gates/requirement"');
     expect(superuser).toContain('action="/manual-gates/approve"');
     expect(superuser).toContain('name="csrf" value="csrf-token"');
-    expect(superuser).toContain("Remove item requirement");
+    // The switch shows this item's own requirement and turns it off.
+    expect(superuser).toContain('<input type="hidden" name="required" value="false"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="true">');
+    expect(superuser).toContain("Require board approval for this item");
+    const optional = renderDashboard({ ...base, selectedIssue: { ...selectedIssue, manualGates: [{ ...selectedIssue.manualGates[0]!, itemSpecific: false }] }, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
+    expect(optional).toContain('<input type="hidden" name="required" value="true"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="false">');
     expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve gate</button>');
   });
 

@@ -170,6 +170,8 @@ function startDashboard(state: {
   delayMs: () => number;
   detailsDelayMs?: (issueId: string) => number;
   answerQuestion?: () => Promise<void>;
+  approveManualGate?: () => Promise<void>;
+  setManualGateRequirement?: (required: boolean) => void;
   systemStatus?: () => SystemStatusViewModel;
 }) {
   const auth = createWebAuth({
@@ -189,7 +191,8 @@ function startDashboard(state: {
     for (const listener of listeners) listener({ seq, type: "item.updated", repositoryId: "repo", issueId: null, correlationId: null });
   }, 50);
   const { commands } = fakeCommandBus({
-    answerQuestion: () => state.answerQuestion?.(), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
+    answerQuestion: () => state.answerQuestion?.(), approveManualGate: () => state.approveManualGate?.(),
+    setManualGateRequirement: (_issueId: string, _stageId: string, _gateId: string, required: boolean) => state.setManualGateRequirement?.(required), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
     postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
@@ -1169,6 +1172,49 @@ describe("dashboard live refresh position", () => {
       finishAnswer?.();
       await page.waitForFunction(() => !document.querySelector(".needs-you-item--question"));
       // Patched in place: the page was not reloaded.
+      expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+  test("approving a manual gate shows that it is sending, then the open item refreshes in place", async () => {
+    let finishApproval: (() => void) | undefined;
+    let revision = "gate-1";
+    let approved = false;
+    let itemSpecific = false;
+    const build = () => {
+      const card = issue("card-1", 3, "Card");
+      card.manualGates = [{ stageId: "review", gateId: "approval", configured: true, itemSpecific, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
+      return dashboard(revision, [card]);
+    };
+    const server = startDashboard({
+      dashboard: build, revision: () => revision, delayMs: () => 0,
+      approveManualGate: () => new Promise<void>((resolve) => { finishApproval = () => { approved = true; revision = "gate-2"; resolve(); }; }),
+      setManualGateRequirement: (required) => { itemSpecific = required; revision = `gate-switch-${String(required)}`; },
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await signIn(page, server.port);
+      await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
+      await page.locator('article.issue[data-issue-id="card-1"] .card-open').click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve"));
+      await page.locator("dialog.issue-details[open] .manual-gate-approve").click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve")?.textContent === "Approving…");
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-approve").isDisabled()).toBe(true);
+      finishApproval?.();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]")?.textContent?.includes("Approved by operator"));
+      // Patched in place: the page was not reloaded and the dialog stayed open.
+      expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-approve").count()).toBe(0);
+
+      // The requirement is a switch: it moves at once and stays where the server put it.
+      const toggle = page.locator("dialog.issue-details[open] .manual-gate-switch");
+      expect(await toggle.getAttribute("aria-checked")).toBe("false");
+      await toggle.click();
+      expect(await toggle.getAttribute("aria-checked")).toBe("true");
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-switch").getAttribute("aria-checked")).toBe("true");
       expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
     } finally {
       server.stop(true);

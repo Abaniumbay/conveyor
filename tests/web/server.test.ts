@@ -1592,3 +1592,31 @@ describe("repository sync", () => {
     expect(await response.json()).toMatchObject({ ok: false, issues: 3, failed: true });
   });
 });
+
+describe("manual gate routes", () => {
+  test("a script gets the command's correlation id instead of a redirect", async () => {
+    const approvals: string[] = [];
+    const { handler, auth } = setup({ approveManualGate: (issueId: string) => { approvals.push(issueId); } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const response = await handler(new Request("http://localhost/manual-gates/approve", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ csrf, issueId: "i-1", stageId: "review", gateId: "approval" }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, correlationId: expect.any(String) });
+    expect(approvals).toEqual(["i-1"]);
+  });
+
+  test("a script gets a refused change as JSON", async () => {
+    const { handler, auth } = setup({ approveManualGate: () => { throw new Error("Gate approval is not waiting"); } });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const response = await handler(new Request("http://localhost/manual-gates/approve", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({ csrf, issueId: "i-1", stageId: "review", gateId: "approval" }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Gate approval is not waiting" });
+  });
+});

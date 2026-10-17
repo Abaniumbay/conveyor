@@ -862,7 +862,7 @@ export const dashboardClient = String.raw`(() => {
 
   // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
   // so its live parts are swapped in place: the status line, criterion evidence, todo checklist and facts.
-  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts', '[data-criterion-evidence]'];
+  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '[data-manual-gates]', '.todos', '.details-facts', '[data-criterion-evidence]'];
   const scheduleSummaryRefresh = () => {
     if (summaryRefreshTimer !== null) return;
     summaryRefreshTimer = setTimeout(async () => {
@@ -887,7 +887,7 @@ export const dashboardClient = String.raw`(() => {
           else if (current) current.remove();
           else if (replacement) {
             // A part that appeared (a first todo list): place it where the server renders it.
-            const anchor = panel.querySelector(selector === '.todos' ? '.criteria' : '.relationships, .todos, .criteria');
+            const anchor = panel.querySelector(selector === '.todos' ? '[data-criterion-evidence]' : selector === '[data-manual-gates]' ? '.todos, [data-criterion-evidence]' : '.relationships, .todos, .criteria');
             if (anchor) anchor.before(document.importNode(replacement, true));
             else panel.append(document.importNode(replacement, true));
           }
@@ -1700,6 +1700,52 @@ export const dashboardClient = String.raw`(() => {
       }
       return;
     }
+    // A manual gate change is sent in the background; the item refreshes in place once it is recorded.
+    if (form instanceof HTMLFormElement && form.matches('[data-manual-gate-form]')) {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      const actions = form.closest('.manual-gate-actions');
+      const status = actions && actions.querySelector('[data-manual-gate-status]');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+      const label = button.innerHTML;
+      const fields = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) if (typeof value === 'string') fields.append(name, value);
+      // A dialog loaded on demand may carry no token of its own; the page's is the session's.
+      fields.set('csrf', body.dataset.csrfToken || fields.get('csrf') || '');
+      const buttons = actions ? Array.from(actions.querySelectorAll('button')) : [button];
+      for (const each of buttons) each.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      const isSwitch = button.getAttribute('role') === 'switch';
+      // A switch moves at once; the approve button says it is sending.
+      if (isSwitch) button.setAttribute('aria-checked', button.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+      else button.textContent = 'Approving…';
+      if (status instanceof HTMLElement) {
+        status.textContent = '';
+        delete status.dataset.error;
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+          body: fields,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'The gate could not be updated. Try again.');
+        await waitForCorrelation(result.correlationId);
+        // The same refresh a live update makes, so an open item dialog refreshes too.
+        refreshDashboardWhenSafe();
+      } catch (error) {
+        for (const each of buttons) each.disabled = false;
+        button.removeAttribute('aria-busy');
+        if (isSwitch) button.setAttribute('aria-checked', button.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+        else button.innerHTML = label;
+        if (status instanceof HTMLElement) {
+          status.textContent = error instanceof Error ? error.message : 'The gate could not be updated. Try again.';
+          status.dataset.error = 'true';
+        }
+      }
+      return;
+    }
     if (form instanceof HTMLFormElement && form.matches('.logout-form')) {
       event.preventDefault();
       const button = form.querySelector('button[type="submit"]');
@@ -1823,7 +1869,11 @@ export const dashboardClient = String.raw`(() => {
         const payload = await response.json().catch(() => null);
         if (!response.ok) throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'The sync could not start.');
         if (payload && payload.failed) throw new Error('GitHub could not be read; the repository status shows why.');
-        if (status instanceof HTMLElement) status.textContent = 'Synced ' + (payload && typeof payload.issues === 'number' ? payload.issues + ' issues' : 'the repository') + ' just now.';
+        await waitForCorrelation(payload && payload.correlationId);
+        await replaceDashboard(new URL(location.href), { preservePosition: true });
+        // The refresh rendered a fresh status line; report on that one.
+        const fresh = document.querySelector('[data-repository-sync-status]');
+        if (fresh instanceof HTMLElement) fresh.textContent = 'Synced ' + (payload && typeof payload.issues === 'number' ? payload.issues + ' issues' : 'the repository') + ' just now.';
       } catch (error) {
         if (status instanceof HTMLElement) {
           status.textContent = 'Sync failed: ' + (error instanceof Error ? error.message : 'unknown error');

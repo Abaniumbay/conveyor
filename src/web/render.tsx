@@ -254,7 +254,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         <Relationships issue={issue} />
         <IndicatorDetails issue={issue} />
         {issue.manualGates && issue.manualGates.length > 0 && (
-          <section class="criteria" aria-label="Manual gate approvals">
+          <section class="criteria" aria-label="Manual gate approvals" data-manual-gates>
             <h3>Manual gate approvals</h3>
             <ul class="criteria-list">{issue.manualGates.map((gate) => (
               <li key={`${gate.stageId}:${gate.gateId}`}>
@@ -263,21 +263,23 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
                 {gate.waiting && <p>Waiting for board approval.</p>}
                 {gate.approvedBy && <p>Approved by {gate.approvedBy}{gate.approvedAt ? ` at ${new Date(gate.approvedAt).toLocaleString()}` : ""}.</p>}
                 {canManage && <div class="manual-gate-actions">
-                  {gate.waiting && <form method="post" action="/manual-gates/approve">
+                  <form method="post" action="/manual-gates/requirement" data-manual-gate-form>
+                    <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
+                    <input type="hidden" name="issueId" value={issue.id} />
+                    <input type="hidden" name="stageId" value={gate.stageId} />
+                    <input type="hidden" name="gateId" value={gate.gateId} />
+                    <input type="hidden" name="required" value={gate.itemSpecific ? "false" : "true"} />
+                    {/* Only this item's own requirement; a configured one is stated above and applies either way. */}
+                    <button type="submit" class="manual-gate-switch" role="switch" aria-checked={gate.itemSpecific ? "true" : "false"}><span class="switch-track" aria-hidden="true"><span class="switch-knob" /></span><span>Require board approval for this item</span></button>
+                  </form>
+                  {gate.waiting && <form method="post" action="/manual-gates/approve" data-manual-gate-form>
                     <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
                     <input type="hidden" name="issueId" value={issue.id} />
                     <input type="hidden" name="stageId" value={gate.stageId} />
                     <input type="hidden" name="gateId" value={gate.gateId} />
                     <button type="submit" class="manual-gate-approve">Approve gate</button>
                   </form>}
-                  <form method="post" action="/manual-gates/requirement">
-                    <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
-                    <input type="hidden" name="issueId" value={issue.id} />
-                    <input type="hidden" name="stageId" value={gate.stageId} />
-                    <input type="hidden" name="gateId" value={gate.gateId} />
-                    <input type="hidden" name="required" value={gate.itemSpecific ? "false" : "true"} />
-                    <button type="submit">{gate.itemSpecific ? "Remove item requirement" : "Require board approval"}</button>
-                  </form>
+                  <p class="manual-gate-status" role="status" data-manual-gate-status />
                 </div>}
               </li>
             ))}</ul>
