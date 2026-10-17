@@ -1654,8 +1654,9 @@ export class ConveyorService {
       ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
     listing.finish();
-    await this.reconcileRelationships(repositoryId, repository.address);
-    await this.backfillCiIndicators(repositoryId);
+    const scope = options.includeIssueNumbers ? new Set(options.includeIssueNumbers) : null;
+    await this.reconcileRelationships(repositoryId, repository.address, scope);
+    await this.backfillCiIndicators(repositoryId, scope);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: options.includeIssueNumbers ? [...options.includeIssueNumbers] : null }, { repositoryId });
@@ -1665,8 +1666,10 @@ export class ConveyorService {
    * The sub-issues and blockers of an issue. Every reconcile needs them, so an issue unchanged since
    * its last read reuses that read for up to an hour; sub-issue and dependency webhooks drop it sooner.
    */
-  private async relationshipsOf(address: string, issue: StoredIssue): Promise<{ children: SourceIssue[]; dependencies: SourceIssue[] }> {
+  private async relationshipsOf(address: string, issue: StoredIssue, refresh = true): Promise<{ children: SourceIssue[]; dependencies: SourceIssue[] }> {
     const cached = this.#relationships.get(issue.id);
+    // A pass scoped to some issues reuses what it knows of the others, however old.
+    if (cached && !refresh) return cached;
     if (cached && cached.updatedAt === issue.sourceUpdatedAt && Date.now() - cached.readAt < RELATIONSHIP_REUSE_MS) return cached;
     const children = await this.github.listSubIssues(address, issue.sourceNumber);
     const dependencies = await this.github.listDependencies(address, issue.sourceNumber);
@@ -1847,10 +1850,22 @@ export class ConveyorService {
     }
   }
 
+
+  /** Drops the remembered sub-issues and blockers of the named issues, so the next pass reads them. */
+  private forgetRelationships(repositoryId: string, numbers: readonly number[]): void {
+    const named = new Set(numbers);
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (named.has(issue.sourceNumber)) this.#relationships.delete(issue.id);
+    }
+  }
+
+  /** `scope` names the issues a webhook pass reads afresh; the others keep what was read before. Null reads all. */
   private async reconcileRelationships(
     repositoryId: string,
     address: string,
+    scope: ReadonlySet<number> | null = null,
   ): Promise<void> {
+    const refresh = (issue: StoredIssue) => scope === null || scope.has(issue.sourceNumber);
     const issues = this.store
       .listIssues(repositoryId)
       .filter(
@@ -1870,7 +1885,7 @@ export class ConveyorService {
     );
     const parents = new Map<string, { parentId: string; siblingOrder: number }>();
     for (const parent of issues) {
-      const { children } = await this.relationshipsOf(address, parent);
+      const { children } = await this.relationshipsOf(address, parent, refresh(parent));
       for (const [index, child] of children.entries()) {
         const storedChild = issueByNumber.get(child.number);
         if (storedChild) {
@@ -1888,7 +1903,7 @@ export class ConveyorService {
       );
     }
     for (const issue of issues) {
-      const { dependencies } = await this.relationshipsOf(address, issue);
+      const { dependencies } = await this.relationshipsOf(address, issue, refresh(issue));
       const blockerIds: string[] = [];
       for (const dependency of dependencies) {
         const storedDependency = issueByNumber.get(dependency.number);
@@ -2518,9 +2533,19 @@ export class ConveyorService {
     const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
-      if (event.type === "github.relationshipChanged") this.#relationships.clear();
       const issueNumbers = this.issueNumbersFor(repositoryId, event);
-      if (issueNumbers.length > 0) await this.queueWebhookReconcile(repositoryId, issueNumbers);
+      if (issueNumbers.length === 0) return;
+      // CI and pull request events change no issue data: the indicator is updated above, a waiting
+      // task reads the change itself, and the status comments of the items involved are refreshed.
+      if (isEventOf(event, "github.ciUpdated") || isEventOf(event, "github.changeUpdated")) {
+        // CI progress changes nothing the comment shows.
+        if (isEventOf(event, "github.ciUpdated") && !event.payload.completed) return;
+        const named = new Set(issueNumbers);
+        this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
+        return;
+      }
+      if (isEventOf(event, "github.relationshipChanged")) this.forgetRelationships(repositoryId, event.payload.numbers);
+      await this.queueWebhookReconcile(repositoryId, issueNumbers);
     }));
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
@@ -2603,6 +2628,9 @@ export class ConveyorService {
     let numbers: readonly number[];
     let newHead: boolean;
     if (isEventOf(event, "github.ciUpdated")) {
+      // Progress (requested, in progress) changes nothing a reader of the indicator acts on;
+      // ci.start already shows the head's CI as starting. Only a finished run is read.
+      if (!event.payload.completed) return;
       head = event.payload.sha;
       numbers = event.payload.pullRequests;
       newHead = false;
@@ -2643,12 +2671,14 @@ export class ConveyorService {
   }
 
   /** Existing open changes acquire a current-head CI indicator after a reconcile or restart. */
-  private async backfillCiIndicators(repositoryId: string): Promise<void> {
+  /** `scope` limits a webhook pass to the issues it names; null covers every open item. */
+  private async backfillCiIndicators(repositoryId: string, scope: ReadonlySet<number> | null = null): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository || repository.ci?.mode === "disabled") return;
     const stored = new Map(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => [entry.issueId, entry]));
     for (const issue of this.store.listIssues(repositoryId)) {
       if (issue.sourceState !== "open") continue;
+      if (scope !== null && !scope.has(issue.sourceNumber)) continue;
       const pullRequest = this.store.getCurrentPullRequest(issue.id);
       if (!pullRequest || pullRequest.state !== "open" || pullRequest.mergedAt) continue;
       try {

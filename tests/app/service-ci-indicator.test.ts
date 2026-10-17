@@ -64,7 +64,7 @@ repositories:
   store.activateEnrollment("issue");
   store.upsertPullRequest({ issueId: "issue", id: "pr-5", number: 5, url: "https://x/pull/5", state: "open" });
 
-  const state = { head: "head1", runsHead: null as string | null, runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false };
+  const state = { head: "head1", runsHead: null as string | null, runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false, issueListings: 0, headReads: 0 };
   const provider = {
     async list(_change: unknown, commit: string) {
       state.listed.push(commit);
@@ -75,6 +75,7 @@ repositories:
   const statusComments: string[] = [];
   const github = {
     async listIssues() {
+      state.issueListings += 1;
       return [{ id: "issue", number: 1, url: "u", title: "F", body: "", state: "open", labels: ["conveyor"], updatedAt: "2026-01-01T00:00:00Z" }];
     },
     async getIssueProvenance() {
@@ -98,7 +99,7 @@ repositories:
     wakeupReached(issueId: string): boolean;
   };
   internals.ciProvider = () => provider;
-  internals.codeHostFor = () => ({ async getChange() { return { headSha: state.head }; } }) as unknown as CodeHost;
+  internals.codeHostFor = () => ({ async getChange() { state.headReads += 1; return { headSha: state.head }; } }) as unknown as CodeHost;
 
   let delivery = 0;
   const deliver = (event: string, payload: Record<string, unknown>, id = `d${(delivery += 1)}`) => {
@@ -328,7 +329,7 @@ test("a check_suite webhook without pull requests finds the item by its stored h
   await w.internals.backfillCiIndicators("repo");
   parkCiGate(w.store, new Date(Date.now() + 60_000).toISOString());
   w.state.runs = [run("build", "failed")];
-  await w.deliver("check_suite", { check_suite: { head_sha: "head1", pull_requests: [] } });
+  await w.deliver("check_suite", { action: "completed", check_suite: { head_sha: "head1", pull_requests: [] } });
   expect(w.indicator()).toMatchObject({ state: "failed", progress: "1 failed" });
   expect(w.card()?.waiting).toMatchObject({ kind: "waiting", reason: "CI failed at head1: 1 failed · 0/1 passed." });
   await w.service.close();
@@ -461,5 +462,35 @@ test("CI progress for the waiting head leaves the parked gate asleep", async () 
   }, epoch);
   await w.deliver("workflow_run", { action: "in_progress", workflow_run: { head_sha: "head1", pull_requests: [{ number: 5 }] } });
   expect(journal.getCursor("issue")!.wakeAt).toBe(later);
+  await w.service.close();
+});
+
+test("CI progress reads nothing from GitHub", async () => {
+  const w = await setup();
+  w.state.listed.length = 0;
+  w.state.headReads = 0;
+  await w.deliver("workflow_run", { action: "in_progress", workflow_run: { head_sha: "head1", pull_requests: [{ number: 5 }] } });
+  await w.deliver("check_suite", { action: "requested", check_suite: { head_sha: "head1", pull_requests: [{ number: 5 }] } });
+  expect({ listed: w.state.listed, headReads: w.state.headReads }).toEqual({ listed: [], headReads: 0 });
+  await w.service.close();
+});
+
+test("a finished CI run updates the indicator and the status comment without reconciling the repository", async () => {
+  const w = await setup();
+  const listings = w.state.issueListings;
+  const comments = w.statusComments.length;
+  w.state.runs = [run("build", "passed")];
+  await w.deliver("workflow_run", workflowRun("head1"));
+  await Bun.sleep(20);
+  expect({ indicator: w.indicator()?.state, listings: w.state.issueListings - listings, commented: w.statusComments.length > comments })
+    .toEqual({ indicator: "passing", listings: 0, commented: true });
+  await w.service.close();
+});
+
+test("a pull request delivery does not reconcile the repository", async () => {
+  const w = await setup();
+  const listings = w.state.issueListings;
+  await w.deliver("pull_request", { action: "edited", pull_request: { number: 5, head: { sha: "head1" } } });
+  expect(w.state.issueListings - listings).toBe(0);
   await w.service.close();
 });
