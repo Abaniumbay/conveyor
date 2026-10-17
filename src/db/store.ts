@@ -16,6 +16,16 @@ export interface RepositoryRecord {
   configHash: string;
 }
 
+export type RepositoryVisibility = "public" | "private" | "unknown";
+
+/** Last observed source visibility for operator-facing repository trust status. */
+export interface RepositoryTrustStatus {
+  repositoryId: string;
+  visibility: RepositoryVisibility;
+  checkedAt: string;
+  warning: string | null;
+}
+
 /** The GitHub issue type and the organization issue-field values Conveyor shows beside labels. */
 export interface IssueMetadata {
   type: string | null;
@@ -623,6 +633,35 @@ export class ConveyorStore {
         timestamp,
         timestamp,
       );
+  }
+
+  setRepositoryTrustStatus(status: RepositoryTrustStatus): void {
+    this.#database
+      .query(
+        `INSERT INTO repository_trust_statuses(repository_id, visibility, checked_at, warning)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(repository_id) DO UPDATE SET
+           visibility = excluded.visibility,
+           checked_at = excluded.checked_at,
+           warning = excluded.warning`,
+      )
+      .run(status.repositoryId, status.visibility, status.checkedAt, status.warning);
+  }
+
+  repositoryTrustStatus(repositoryId: string): RepositoryTrustStatus | null {
+    const row = this.#database
+      .query("SELECT repository_id, visibility, checked_at, warning FROM repository_trust_statuses WHERE repository_id = ?")
+      .get(repositoryId) as { repository_id: string; visibility: string; checked_at: string; warning: string | null } | null;
+    if (!row) return null;
+    if (row.visibility !== "public" && row.visibility !== "private" && row.visibility !== "unknown") {
+      throw new Error(`Invalid repository trust visibility for ${repositoryId}`);
+    }
+    return {
+      repositoryId: row.repository_id,
+      visibility: row.visibility,
+      checkedAt: row.checked_at,
+      warning: row.warning,
+    };
   }
 
   removeRepositoriesExcept(configuredIds: readonly string[]): string[] {

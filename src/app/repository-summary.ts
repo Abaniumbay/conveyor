@@ -5,6 +5,8 @@ import { buildReport } from "./reports";
 import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore, StoredIssue } from "../db/store";
+import { ReviewFindings } from "../engine/review-findings";
+import { publicRepositoryTrustPolicy } from "../source/github/trust";
 import { concise, displayName } from "../tasks/agent-support";
 
 export type RepositoryItemState = "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";
@@ -22,6 +24,12 @@ export interface RepositoryDeliverySummary {
   deliveredAt: string;
 }
 
+export interface RepositorySkippedReviewItem {
+  number: number;
+  title: string;
+  count: number;
+}
+
 export interface RepositorySummary {
   id: string;
   address: string;
@@ -36,6 +44,7 @@ export interface RepositorySummary {
   done: number;
   items: RepositorySummaryItem[];
   deliveries: RepositoryDeliverySummary[];
+  skippedReviewItems: RepositorySkippedReviewItem[];
   capacity: { busy: number; slots: number };
   setup: {
     pipeline: string;
@@ -45,6 +54,14 @@ export interface RepositorySummary {
     ciProvider: string | null;
     ciMode: "required" | "advisory" | "disabled";
     systemLabels: string[];
+  };
+  trust: {
+    visibility: "public" | "private" | "unknown";
+    checkedAt: string | null;
+    warning: string | null;
+    permissionThreshold: string;
+    extraTrustedLogins: string[];
+    ignoredInputCategories: string[];
   };
   report30d: {
     delivered: number;
@@ -133,17 +150,22 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
   const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
   const questionIssueIds = new Set(store.listOpenQuestions().map((question) => question.issueId));
   const issuesByRepository = new Map<string, StoredIssue[]>();
+  const allIssuesByRepository = new Map<string, StoredIssue[]>();
   for (const issue of input.issues ?? store.listIssues()) {
-    if (!config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") continue;
+    if (!config.repositories[issue.repositoryId]) continue;
+    allIssuesByRepository.set(issue.repositoryId, [...(allIssuesByRepository.get(issue.repositoryId) ?? []), issue]);
+    if (issue.projectedState === "offboarded") continue;
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }
   const recordedDeliveries = deliveryRows(store);
   const reportByRepository = new Map(
     buildReport({ store, config, period: "30d", repository: null, now }).byRepository.map((report) => [report.id, report]),
   );
+  const reviewFindings = new ReviewFindings(store.sqlite());
 
   const repositories = Object.entries(config.repositories).map(([id, repository], index) => {
     const issues = issuesByRepository.get(id) ?? [];
+    const issuesWithHistory = allIssuesByRepository.get(id) ?? [];
     const nonDone = issues.filter(isActiveWork);
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
@@ -156,6 +178,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     const ci = repository.ci ?? { mode: "disabled" as const };
     const ciProvider = ci.provider ? config.ci?.[ci.provider]?.type ?? null : null;
     const report = reportByRepository.get(id)!;
+    const observedTrust = store.repositoryTrustStatus(id);
 
     return {
       id,
@@ -183,6 +206,10 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         .filter((delivery) => delivery.repository_id === id && doneIssueIds.has(delivery.issue_id))
         .slice(0, 10)
         .map((delivery) => ({ number: delivery.source_number, title: delivery.title, deliveredAt: delivery.delivered_at })),
+      skippedReviewItems: issuesWithHistory.flatMap((issue) => {
+        const count = reviewFindings.skippedNative(issue.id).length;
+        return count === 0 ? [] : [{ number: issue.sourceNumber, title: issue.title, count }];
+      }),
       capacity: {
         busy: new Set(activeRuns
           .filter((run) => run.repository === id && !isLightweightRepositoryStage(config, run.repository, run.stageId))
@@ -197,6 +224,14 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         ciProvider,
         ciMode: ci.mode,
         systemLabels: [...(repository.systemLabels ?? [])],
+      },
+      trust: {
+        visibility: observedTrust?.visibility ?? "unknown",
+        checkedAt: observedTrust?.checkedAt ?? null,
+        warning: observedTrust ? observedTrust.warning : "Repository visibility has not yet been checked.",
+        permissionThreshold: publicRepositoryTrustPolicy.permissionThreshold,
+        extraTrustedLogins: [...(repository.extraTrustedLogins ?? [])],
+        ignoredInputCategories: [...publicRepositoryTrustPolicy.ignoredInputCategories],
       },
       report30d: {
         delivered: report.delivered,

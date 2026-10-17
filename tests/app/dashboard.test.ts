@@ -11,6 +11,7 @@ import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { ItemTodos } from "../../src/engine/todos";
 import { ConsoleSink, type LogRecord, log } from "../../src/log/logger";
 import { parseManagedSections } from "../../src/source/github/managed-sections";
@@ -1737,8 +1738,9 @@ describe("ConveyorService dashboard", () => {
       },
       repositories: {
         earlier: { source: "github", address: "owner/earlier", folder: root, pipeline: "default" },
-        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+        repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", extraTrustedLogins: ["reviewer[bot]"] },
       },
+      sources: { github: { type: "github" } },
     } as unknown as ConveyorConfig;
     store.upsertRepository({
       id: "repo",
@@ -1930,6 +1932,22 @@ describe("ConveyorService dashboard", () => {
       feedbackCycle: 0,
       configHash: config.hash,
     });
+    store.setRepositoryTrustStatus({
+      repositoryId: "repo",
+      visibility: "public",
+      checkedAt: "2026-09-29T03:00:00Z",
+      warning: null,
+    });
+    new ReviewFindings(store.sqlite()).importNative("github:owner/repo#31", [{
+      providerKey: "review-1",
+      author: "outside-reviewer",
+      trusted: false,
+      body: "Never expose this skipped review body",
+      url: "https://example.com/reviews/1",
+      path: null,
+      line: null,
+      resolved: false,
+    }], "head", "2026-09-29T03:00:00Z");
     const journal = store.executions();
     const epoch = journal.stageEpoch("github:owner/repo#31");
     const pending = journal.planExecution({
@@ -2011,6 +2029,63 @@ describe("ConveyorService dashboard", () => {
         reason: "Waiting for CI for 7c0ea55",
         since: "2026-09-29T03:02:00Z",
       },
+      skippedReviews: [{
+        author: "outside-reviewer",
+        url: "https://example.com/reviews/1",
+        skippedAt: "2026-09-29T03:00:00Z",
+        active: true,
+      }],
+    });
+    expect(JSON.stringify(service.issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
+    store.setIssueProjection("github:owner/repo#31", {
+      stage: null,
+      state: "offboarded",
+      warning: null,
+    });
+    const repositoryDetail = service.dashboard("csrf", {
+      view: "repository",
+      repositoryId: "repo",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+      runId: null,
+      issueId: null,
+    }).repositories.find((repository) => repository.id === "repo");
+    expect(repositoryDetail?.skippedReviewItems).toContainEqual({
+      number: 31,
+      title: "Waiting for CI",
+      count: 1,
+    });
+    expect(service.issueJourney("github:owner/repo#31")).toMatchObject({
+      skippedReviews: [{ author: "outside-reviewer", url: "https://example.com/reviews/1" }],
+    });
+    expect(await service.webDependencies({} as never, "operator").getIssueRoute({ repository: "repo", number: 31 }))
+      .toEqual({ id: "github:owner/repo#31", repository: "repo", number: 31 });
+    const offboardedDashboard = service.dashboard("csrf", {
+      view: "repository",
+      repositoryId: "repo",
+      column: null,
+      page: 1,
+      doneLimit: 20,
+      runId: null,
+      issueId: "github:owner/repo#31",
+    });
+    expect(offboardedDashboard.selectedIssue).toMatchObject({
+      id: "github:owner/repo#31",
+      historyOnly: true,
+    });
+    expect(service.issueDetails("csrf", "github:owner/repo#31")).toMatchObject({ historyOnly: true });
+    const offboardedHtml = renderDashboard(offboardedDashboard);
+    expect(offboardedHtml).toContain("This item is no longer enrolled. Its history is read-only.");
+    expect(offboardedHtml).toContain('data-detail-tab="journey"');
+    expect(offboardedHtml).not.toContain('data-conversation-form');
+    expect(dashboard.repositories.find((repository) => repository.id === "repo")?.trust).toEqual({
+      visibility: "public",
+      checkedAt: "2026-09-29T03:00:00Z",
+      warning: null,
+      permissionThreshold: "write, maintain, or admin",
+      extraTrustedLogins: ["reviewer[bot]"],
+      ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"],
     });
     expect(dashboard.activeWork).toMatchObject({
       runnerCount: 2,

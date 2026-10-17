@@ -600,8 +600,9 @@ describe("renderDashboard", () => {
       id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
       addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
       backlog: 1, stages: [{ id: "implementation", name: "Implementation", count: 1 }], done: 2, items,
-      deliveries: [], capacity: { busy: 1, slots: 2 },
+      deliveries: [], skippedReviewItems: [], capacity: { busy: 1, slots: 2 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      trust: { visibility: "public" as const, checkedAt: "2026-10-01T00:00:00.000Z", warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 2, inputTokens: 20, outputTokens: 10, agentMs: 60_000 },
     });
     const repositories = [
@@ -658,8 +659,10 @@ describe("renderDashboard", () => {
       stages: [{ id: "implementation", name: "Implementation", count: 2 }], done: 8,
       items: [{ number: 7, title: "Current item", stage: "implementation", state: "Running" as const }],
       deliveries: [{ number: 6, title: "Delivered item", deliveredAt: "2026-10-01T00:00:00.000Z" }],
+      skippedReviewItems: [{ number: 7, title: "Current item", count: 1 }],
       capacity: { busy: 1, slots: 2 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
+      trust: { visibility: "unknown" as const, checkedAt: null, warning: "<img src=x onerror=alert(1)>", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: ["reviewer[bot]", "<unsafe-login>"], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 8, inputTokens: 120, outputTokens: 30, agentMs: 180_000 },
     };
     const base = { ...dashboard, view: "repository" as const, repositoryId: repository.id, repositories: [repository], restrictedRepositories: [{ id: repository.id, folder: "/sentinel/local-folder", agentEgressHosts: ["sentinel.egress.example"] }] };
@@ -678,7 +681,19 @@ describe("renderDashboard", () => {
     expect(reader).toContain("Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.");
     expect(reader).toContain('href="/reports/space%2Fname?period=30d"');
     expect(reader).toContain("Full report →");
-    for (const heading of ["Line", "Now", "Recently delivered", "Setup", "Last 30 days"]) expect(reader).toContain(`<h3>${heading}</h3>`);
+    for (const heading of ["Line", "Now", "Recently delivered", "Public repository trust", "Setup", "Last 30 days"]) expect(reader).toContain(`<h3>${heading}</h3>`);
+    expect(reader).toContain("Repository visibility is uncertain");
+    expect(reader).toContain("Default permission threshold");
+    expect(reader).toContain("write, maintain, or admin");
+    expect(reader).toContain("native review findings");
+    expect(reader).toContain("post-enrollment issue title and body edits");
+    expect(reader).toContain("enrollment labels");
+    expect(reader).toContain("reviewer[bot]");
+    expect(reader).toContain("&lt;unsafe-login>");
+    expect(reader).toContain("&lt;img src=x onerror=alert(1)>");
+    expect(reader).not.toContain('<img src=x onerror=alert(1)>');
+    expect(reader).toContain('href="/issues/space%2Fname/7/journey"');
+    expect(reader).toContain("Ignored native reviews");
     expect(reader).not.toContain("/sentinel/local-folder");
     expect(reader).not.toContain("sentinel.egress.example");
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
@@ -690,6 +705,14 @@ describe("renderDashboard", () => {
 
     const idle = renderDashboard({ ...base, repositories: [{ ...repository, capacity: { busy: 0, slots: 2 } }] });
     expect(idle).toContain("<dt>Slots</dt><dd>0 of 2</dd>");
+
+    const publicRepository = renderDashboard({ ...base, repositories: [{ ...repository, trust: { ...repository.trust, visibility: "public", warning: null } }] });
+    expect(publicRepository).toContain("GitHub reports this repository is public.");
+
+    const privateRepository = renderDashboard({ ...base, repositories: [{ ...repository, trust: { ...repository.trust, visibility: "private", warning: null } }] });
+    expect(privateRepository).toContain("GitHub reports this repository is private; the public-source safeguards are not required.");
+    expect(privateRepository).not.toContain("GitHub reports this repository is public.");
+    expect(privateRepository).not.toContain("Public repository safeguards are active.");
   });
 
   test("renders legacy string choices and an actionable error instead of an empty answer form", () => {

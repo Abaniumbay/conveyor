@@ -946,6 +946,25 @@ export class GitHubAdapter {
     throw new Error(`GitHub returned no usable repository permission for ${login}`);
   }
 
+  /** The authenticated login, used for capability probes that need a valid user account. */
+  async authenticatedLogin(): Promise<string> {
+    const result = await this.transport.request<{ login?: unknown }>({ method: "GET", path: "user" });
+    if (typeof result.login === "string" && result.login.length > 0) return result.login;
+    throw new Error("GitHub returned no usable authenticated login");
+  }
+
+  /** The repository's visibility, read from GitHub rather than the local projection. */
+  async repositoryVisibility(address: string): Promise<"public" | "private"> {
+    const result = await this.transport.request<{ private?: unknown; visibility?: unknown }>({
+      method: "GET",
+      path: `repos/${address}`,
+    });
+    if (result.visibility === "public" || result.visibility === "private") return result.visibility;
+    if (result.private === false) return "public";
+    if (result.private === true) return "private";
+    throw new Error(`GitHub returned no usable repository visibility for ${address}`);
+  }
+
   async updateManagedSection(input: {
     address: string;
     issueNumber: number;

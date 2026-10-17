@@ -110,6 +110,21 @@ sudo ~/.local/bin/conveyor service start
 The full walkthrough, including a private configuration repository, troubleshooting and upgrades, is
 [docs/operations.md](docs/operations.md).
 
+## Public-repository trust safeguards
+
+For a public repository, Conveyor accepts native review findings, enrollment labels, and
+post-enrollment issue title or body edits only when GitHub reports their author has `write`,
+`maintain`, or `admin` permission, or when the login is listed in the repository's
+[`extraTrustedLogins`](docs/configuration.md) setting. An untrusted review is recorded only as its
+author and link in the item's history; its body is not exposed to an agent or repeated by
+`conveyor doctor` or the dashboard. Doctor and the repository dashboard show the effective
+threshold, extra trusted logins, ignored input categories, and any uncertainty while source checks
+are unavailable.
+
+GitHub repository interaction and protection settings remain an additional, operator-controlled
+layer. Conveyor observes and applies its own trust policy; it does not configure those GitHub
+settings for you.
+
 ## Everyday commands
 
 ```sh

@@ -111,6 +111,8 @@ export interface IssueCardViewModel {
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;
   retryable: boolean;
+  /** An offboarded item exposes its immutable journey history only. */
+  historyOnly?: boolean;
 }
 
 export interface ActiveRunViewModel {
@@ -208,6 +210,13 @@ export interface IssueJourneyTransitionViewModel {
   completedAt: string | null;
 }
 
+export interface SkippedReviewViewModel {
+  author: string | null;
+  url: string;
+  skippedAt: string;
+  active: boolean;
+}
+
 export interface IssueJourneyViewModel {
   issueId: string;
   now: {
@@ -217,6 +226,7 @@ export interface IssueJourneyViewModel {
     since: string | null;
   };
   transitions: readonly IssueJourneyTransitionViewModel[];
+  skippedReviews: readonly SkippedReviewViewModel[];
 }
 
 export interface StageActorViewModel {
@@ -291,6 +301,12 @@ export interface RepositoryDashboardItem {
   state: "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";
 }
 
+export interface RepositorySkippedReviewItemViewModel {
+  number: number;
+  title: string;
+  count: number;
+}
+
 export interface RepositoryDashboardSummary {
   id: string;
   address: string;
@@ -305,6 +321,7 @@ export interface RepositoryDashboardSummary {
   done: number;
   items: readonly RepositoryDashboardItem[];
   deliveries: readonly { number: number; title: string; deliveredAt: string }[];
+  skippedReviewItems: readonly RepositorySkippedReviewItemViewModel[];
   capacity: { busy: number; slots: number };
   setup: {
     pipeline: string;
@@ -314,6 +331,14 @@ export interface RepositoryDashboardSummary {
     ciProvider: string | null;
     ciMode: "required" | "advisory" | "disabled";
     systemLabels: readonly string[];
+  };
+  trust: {
+    visibility: "public" | "private" | "unknown";
+    checkedAt: string | null;
+    warning: string | null;
+    permissionThreshold: string;
+    extraTrustedLogins: readonly string[];
+    ignoredInputCategories: readonly string[];
   };
   report30d: { delivered: number; inputTokens: number; outputTokens: number; agentMs: number };
 }

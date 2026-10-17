@@ -58,6 +58,7 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
+import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
 
 interface ActiveRun {
@@ -427,6 +428,7 @@ export class ConveyorService {
         folder: repository.folder,
         configHash: this.config.hash,
       });
+      await this.recordRepositoryTrustStatus(id, repository.address);
       try {
         await this.github.ensureLabels(repository.address, labelDefinitions(this.config, id));
         const source = this.config.sources[repository.source];
@@ -446,6 +448,24 @@ export class ConveyorService {
         this.#onboardingErrors.set(id, message);
         log.error("Repository onboarding failed", { repository: id }, error);
       }
+    }
+  }
+
+  /** Records source visibility for operators without changing any trust decision. */
+  private async recordRepositoryTrustStatus(id: string, address: string): Promise<void> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const visibility = await this.github.repositoryVisibility(address);
+      this.store.setRepositoryTrustStatus({ repositoryId: id, visibility, checkedAt, warning: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRepositoryTrustStatus({
+        repositoryId: id,
+        visibility: "unknown",
+        checkedAt,
+        warning: `Could not determine repository visibility: ${message}`,
+      });
+      log.warn("Repository trust status could not be determined", { repository: id }, error);
     }
   }
 
@@ -480,6 +500,8 @@ export class ConveyorService {
         const message = error instanceof Error ? error.message : String(error);
         this.#repositoryErrors.set(id, message);
         log.error("Repository reconciliation failed", { repository: id }, error);
+      } finally {
+        await this.recordRepositoryTrustStatus(id, repository.address);
       }
     }
     this.#lastReconciledAt = new Date().toISOString();
@@ -2898,6 +2920,7 @@ export class ConveyorService {
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
         ].includes(projectedState),
         retryable,
+        ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
       };
     };
     const stageNames = new Map<string, string>();
@@ -3218,8 +3241,8 @@ export class ConveyorService {
         selected: selectedSteering,
         recent: recentSteeringRuns,
       },
-      selectedIssue: pagination.issueId && byId.has(pagination.issueId)
-        ? card(byId.get(pagination.issueId)!)
+      selectedIssue: pagination.issueId && listedById.has(pagination.issueId)
+        ? card(listedById.get(pagination.issueId)!)
         : null,
       csrfToken,
     };
@@ -3335,7 +3358,7 @@ export class ConveyorService {
     // one card, so rebuilding every board column, rollup, and repository summary here would make
     // the on-demand endpoint proportional to the board rather than to the item being opened.
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue) return null;
     const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
       [repositoryId, (index % 8) + 1],
     ));
@@ -3549,6 +3572,7 @@ export class ConveyorService {
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
+      ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
     };
   }
 
@@ -3598,7 +3622,7 @@ export class ConveyorService {
 
   issueJourney(issueId: string): IssueJourneyViewModel | null {
     const issue = this.store.getIssue(issueId);
-    if (!issue || issue.projectedState === "offboarded") return null;
+    if (!issue) return null;
     const repository = this.config.repositories[issue.repositoryId]
       ?? Object.values(this.config.repositories).find((candidate) =>
         candidate.address === issue.repositoryId
@@ -3648,6 +3672,12 @@ export class ConveyorService {
           : actorFor(transition.fromStage ?? transition.toStage),
         createdAt: transition.createdAt,
         completedAt: transition.completedAt,
+      })),
+      skippedReviews: new ReviewFindings(this.store.sqlite()).skippedNative(issueId).map((review) => ({
+        author: review.author,
+        url: review.url,
+        skippedAt: review.skippedAt,
+        active: review.active,
       })),
     };
   }
@@ -4055,7 +4085,7 @@ export class ConveyorService {
         const issue = "id" in reference
           ? this.store.getIssue(reference.id)
           : this.store.listIssues(reference.repository).find((candidate) => candidate.sourceNumber === reference.number) ?? null;
-        if (!issue || issue.projectedState === "offboarded") return null;
+        if (!issue) return null;
         return { id: issue.id, repository: issue.repositoryId, number: issue.sourceNumber };
       },
       postIssueMessage: (issueId, message, actor) => this.postIssueMessage(issueId, message, actor),

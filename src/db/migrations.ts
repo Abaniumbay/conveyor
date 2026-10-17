@@ -804,4 +804,16 @@ export const migrations: readonly Migration[] = [
       UPDATE issues SET accepted_text_at = source_updated_at;
     `,
   },
+  {
+    version: 28,
+    sql: `
+      -- This is observational status only; it never decides whether source input is trusted.
+      CREATE TABLE repository_trust_statuses (
+        repository_id TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+        visibility TEXT NOT NULL CHECK (visibility IN ('public', 'private', 'unknown')),
+        checked_at TEXT NOT NULL,
+        warning TEXT
+      );
+    `,
+  },
 ];

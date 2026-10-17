@@ -96,8 +96,9 @@ function recentDashboard(selection: DashboardPageSelection): DashboardViewModel 
     repositories: [{
       id: "sample", address: "owner/sample", addressUrl: "https://github.com/owner/sample", color: 1,
       health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, backlog: 0,
-      stages: [], done: 0, items: [], deliveries: [], capacity: { busy: 0, slots: 1 },
+      stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", ciProvider: null, ciMode: "disabled", systemLabels: [] },
+      trust: { visibility: "unknown", checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     }],
     recent: {
@@ -723,8 +724,9 @@ describe("dashboard live refresh position", () => {
     ];
     const repository = (id: string, color: number) => ({
       id, address: `owner/${id}`, addressUrl: null, color, health: "healthy" as const, error: null, errorSummary: null,
-      lastReconciledAt: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [], capacity: { busy: 0, slots: 1 },
+      lastReconciledAt: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
       setup: { pipeline: "default", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     });
     let revision = "filters-1";
