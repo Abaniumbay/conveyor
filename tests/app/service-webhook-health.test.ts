@@ -23,7 +23,7 @@ const MINUTE = 60_000;
 interface Delivery { id: string; guid: string; deliveredAt: string; statusCode: number; redelivery: boolean }
 
 /** One repository, onboarded: Conveyor knows its webhook's id unless `webhooks` is false. */
-async function service(options: { webhooks?: boolean; deliveries?: () => Delivery[]; issues?: boolean; pingFails?: boolean; storedIssueChangedAt?: string } = {}) {
+async function service(options: { webhooks?: boolean; deliveries?: () => Delivery[]; issues?: boolean; pingFails?: boolean; storedIssueChangedAt?: string; noRepositories?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-health-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -38,7 +38,7 @@ async function service(options: { webhooks?: boolean; deliveries?: () => Deliver
     sources: { github: { type: "github", webhookPath: "/hooks/github", webhookSecret: "secret", autoConfigureWebhook: options.webhooks !== false } },
     labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { orderTemplate: "conveyor:order:{number}" } },
     pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "work", concurrency: 1 }] } }, agents: {},
-    repositories: { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default", systemLabels: [] } },
+    repositories: options.noRepositories ? {} : { app: { source: "github", address: "owner/app", folder: root, baseBranch: "main", pipeline: "default", systemLabels: [] } },
   } as unknown as ConveyorConfig;
   const calls = { redelivered: [] as string[], listings: 0, deliveryListings: 0, since: [] as Array<string | undefined>, visibility: 0, subIssues: 0, pings: 0, permissions: 0 };
   const issue = { id: "github:owner/app#1", number: 1, url: "https://example.com/1", title: "Open", body: "", state: "open" as const, labels: ["conveyor"], updatedAt: options.storedIssueChangedAt ?? "2026-10-17T00:00:00Z" };
@@ -251,6 +251,14 @@ describe("missed deliveries", () => {
 });
 
 describe("reading repositories", () => {
+  test("startup makes the service ready, even with no repository to read", async () => {
+    const { conveyor, store } = await service({ noRepositories: true });
+    expect(conveyor.isReady()).toBe(false);
+    await conveyor.reconcileAll();
+    expect(conveyor.isReady()).toBe(true);
+    store.close();
+  });
+
   test("the periodic tick does not read a repository with a managed webhook", async () => {
     const { conveyor, store, calls } = await service();
     await conveyor.reconcileAll({ skipFresh: true });

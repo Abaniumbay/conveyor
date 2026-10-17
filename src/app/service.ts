@@ -780,7 +780,8 @@ export class ConveyorService {
       await this.reconcileOne(id, managed ? "changed" : "full");
       read += 1;
     }
-    if (read === 0) return;
+    // A tick that read nothing changed nothing; startup always completes, even with no repository to read.
+    if (options.skipFresh && read === 0) return;
     this.#lastReconciledAt = new Date().toISOString();
     this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
