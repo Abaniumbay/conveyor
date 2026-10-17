@@ -816,4 +816,15 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 29,
+    sql: `
+      -- Terminal-home cleanup can fail permanently when an artifact directory is externally altered.
+      -- Keep a per-run receipt so automatic cleanup warns once without hiding new failures.
+      CREATE TABLE terminal_home_reclamation_failures (
+        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        reported_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

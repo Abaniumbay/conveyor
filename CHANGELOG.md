@@ -16,6 +16,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ### Fixed
 
+- Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home
+  failure.
 - Lease-protected workspace pushes now use the change head the agent observed and explain when a
   newer remote head must be fetched and reconciled before retrying.
 - Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed

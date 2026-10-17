@@ -1838,6 +1838,18 @@ export class ConveyorStore {
     };
   }
 
+  /** Records the first unreclaimed terminal home for a run and returns whether it needs a warning. */
+  recordTerminalHomeReclamationFailure(runId: string): boolean {
+    return this.#database
+      .query("INSERT OR IGNORE INTO terminal_home_reclamation_failures(run_id, reported_at) VALUES (?, ?)")
+      .run(runId, now()).changes > 0;
+  }
+
+  /** Clears the one-time warning receipt after a home is reclaimed or disappears. */
+  clearTerminalHomeReclamationFailure(runId: string): void {
+    this.#database.query("DELETE FROM terminal_home_reclamation_failures WHERE run_id = ?").run(runId);
+  }
+
   /** Runs of a kind in a stage, newest first. */
   listRunsForStage(issueId: string, stageId: string, kind: string): StoredRun[] {
     const rows = this.#database

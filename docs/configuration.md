@@ -134,7 +134,13 @@ items are closed, done or offboarded, and to finished steering runs. Independent
 every terminal run's private `home` directory is reclaimed, including runs of open, parked and
 stopped items; a running run's home is never selected. Recorded results, events and artifacts outside
 that private home remain subject to the configured retention policy. The service checks at start and
-daily; `conveyor cleanup` applies the same operations on demand.
+daily; `conveyor cleanup` applies the same operations on demand. Before deleting a selected home,
+cleanup restores the service owner's read, write and execute access to its real directories so that
+restricted caches and temporary directories can be removed. Symbolic links, including a link used as
+the home itself, are removed as links and their targets are never inspected or changed. A dry run
+does not change permissions or remove homes. If a selected home still cannot be reclaimed, Conveyor
+warns once with its run ID and failure reason; the receipt survives service restarts, while a newly
+failing home still produces its own warning.
 
 ## Operator scripts
 
