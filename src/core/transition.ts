@@ -214,11 +214,17 @@ export async function applyStageTransition(
 export async function applyRollupTransition(
   input: ApplyRollupTransitionInput,
 ): Promise<boolean> {
-  // Any configured state label is a stopped state according to
-  // evaluateIssueState(), so a roll-up must never overwrite one.
-  const stopLabels = Object.values(input.labels.states);
+  // A done label on a parent can be stale when a descendant resumes post-merge
+  // work. Other configured state labels still stop a roll-up from overwriting
+  // an operator-visible state.
+  const stopLabels = Object.entries(input.labels.states).flatMap(([state, label]) =>
+    state === "done" ? [] : [label],
+  );
   if (input.issue.labels.some((label) => stopLabels.includes(label))) return false;
-  const retained = metadataLabels(input.issue.labels, input.labels);
+  // Closeness is earned only after every descendant is complete, so a repair
+  // from a stale done parent must remove it with the stage transition.
+  const retained = metadataLabels(input.issue.labels, input.labels)
+    .filter((label) => label !== input.labels.metadata.closable);
   const labels = [...new Set([
     input.labels.enrollment,
     ...retained,

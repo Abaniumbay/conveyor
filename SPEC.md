@@ -781,9 +781,9 @@ When a pipeline uses reviewed work breakdown:
 - Children are independently releasable, each with its own worktree, branch, and PR.
 - Nested subissues are supported.
 - Sibling order is stored in `conveyor:order:<number>` labels and is not draggable in the global backlog.
-- A parent becomes done when all descendants are closed or have `conveyor:done`.
+- A parent becomes done only when every descendant has `conveyor:done`, or is closed without a correlated merged Conveyor pull request. A child closed by its own merged pull request remains unfinished until its post-merge stages record `conveyor:done`; this applies through closed or done intermediate roll-ups.
 
-GitHub-native issue dependencies are used when supported and mirrored in a managed issue section for human visibility. Unsupported cross-repository relationships fail refinement verification rather than being silently stored only in SQLite. A dependency is satisfied when its issue is closed or labeled `conveyor:done`. A closed dependency without the done label is accepted but shown as an inconsistency.
+GitHub-native issue dependencies are used when supported and mirrored in a managed issue section for human visibility. Unsupported cross-repository relationships fail refinement verification rather than being silently stored only in SQLite. A dependency is satisfied when its issue is closed or labeled `conveyor:done`, regardless of whether its closure followed a merged Conveyor pull request. A closed dependency without the done label is accepted but shown as an inconsistency.
 
 Parent roll-up mutations run only while the parent retains its active base label. A paused or fully offboarded parent can be shown as logically complete in the UI, but Conveyor does not label it done/closable until it is active again.
 
