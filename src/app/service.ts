@@ -719,9 +719,11 @@ export class ConveyorService {
 
   private hasRollupStopLabel(issue: StoredIssue): boolean {
     // A source refresh can lag the recorded result. Keep any configured
-    // stopped state intact until the ordinary item path has cleared it.
-    const stoppedStates = new Set(Object.keys(this.config.labels.states));
-    const stopLabels = new Set(Object.values(this.config.labels.states));
+    // stopped state intact until the ordinary item path has cleared it. A
+    // stale done label is the exception: an unfinished descendant repairs it.
+    const stoppedStates = new Set(Object.keys(this.config.labels.states).filter((state) => state !== "done"));
+    const stopLabels = new Set(Object.entries(this.config.labels.states)
+      .flatMap(([state, label]) => state === "done" ? [] : [label]));
     return (issue.projectedState !== null && stoppedStates.has(issue.projectedState)) ||
       issue.labels.some((label) => stopLabels.has(label));
   }
@@ -1372,6 +1374,21 @@ export class ConveyorService {
     return read;
   }
 
+  /** Whether an item and all of its descendants meet the roll-up completion rule. */
+  private isRollupSatisfied(issueId: string, visited = new Set<string>()): boolean {
+    if (visited.has(issueId)) return false;
+    const issue = this.store.getIssue(issueId);
+    if (!issue) return false;
+    const children = this.store.listChildren(issueId);
+    const next = new Set(visited).add(issueId);
+    if (children.length > 0) {
+      return children.every((child) => this.isRollupSatisfied(child.issueId, next));
+    }
+    const doneLabel = this.config.labels.states.done;
+    return (doneLabel !== undefined && issue.labels.includes(doneLabel)) ||
+      (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issue.id));
+  }
+
   private async reconcileRelationships(
     repositoryId: string,
     address: string,
@@ -1380,11 +1397,13 @@ export class ConveyorService {
       .listIssues(repositoryId)
       .filter(
         (issue) =>
-          issue.sourceState === "open" &&
+          // A closed enrolled intermediate can still contain descendants that
+          // decide its open ancestor's roll-up state.
+          (issue.sourceState === "open" || issue.labels.includes(this.config.labels.enrollment)) &&
           // Stopped items too: the board must show the dependencies a person
           // added while an item was blocked, and the scheduler needs them the
           // moment it is unblocked.
-          !["offboarded", "missing", "done"].includes(issue.projectedState ?? ""),
+          !["offboarded", "missing"].includes(issue.projectedState ?? ""),
       );
     const issueByNumber = new Map(
       this.store
@@ -1451,19 +1470,6 @@ export class ConveyorService {
       );
     }
     const doneLabel = this.config.labels.states.done;
-    const satisfied = (issueId: string, visited = new Set<string>()): boolean => {
-      if (visited.has(issueId)) return false;
-      const issue = this.store.getIssue(issueId);
-      if (!issue) return false;
-      if (
-        issue.sourceState === "closed" ||
-        (doneLabel !== undefined && issue.labels.includes(doneLabel))
-      ) return true;
-      const children = this.store.listChildren(issueId);
-      if (children.length === 0) return false;
-      const next = new Set(visited).add(issueId);
-      return children.every((child) => satisfied(child.issueId, next));
-    };
     const pipeline = this.config.pipelines[
       this.config.repositories[repositoryId]!.pipeline
     ]!;
@@ -1477,7 +1483,7 @@ export class ConveyorService {
       const next = new Set(visited).add(issueId);
       const unfinishedChildren = this.store
         .listChildren(issueId)
-        .filter((child) => !satisfied(child.issueId));
+        .filter((child) => !this.isRollupSatisfied(child.issueId));
       const childStages = unfinishedChildren.flatMap((child) => {
         const nestedStage = rollupStage(child.issueId, next);
         const stage = nestedStage ?? this.store.getIssue(child.issueId)?.projectedStage;
@@ -1521,13 +1527,14 @@ export class ConveyorService {
         });
       }
 
-      const allChildrenSatisfied = children.every((child) => satisfied(child.issueId));
+      const allChildrenSatisfied = children.every((child) => this.isRollupSatisfied(child.issueId));
       const targetStage = rollupStage(parent.id);
       if (!allChildrenSatisfied && targetStage) {
         const desiredLabels = [
           this.config.labels.enrollment,
           this.config.labels.stageTemplate.replace("{stage}", targetStage),
-          ...metadataLabels(parent.labels, this.config),
+          ...metadataLabels(parent.labels, this.config)
+            .filter((label) => label !== this.config.labels.metadata.closable),
         ].sort((left, right) => left.localeCompare(right));
         const currentLabels = parent.labels
           .filter(
@@ -2754,10 +2761,14 @@ export class ConveyorService {
         issue.projectedState === "done" ||
         issue.projectedState === "completed",
     });
+    const rollupRelation = (issue: StoredIssue): IssueRelationViewModel => ({
+      ...relation(issue),
+      satisfied: this.isRollupSatisfied(issue.id),
+    });
     // A parent card places each child on the line: Backlog, each configured stage, then Done.
     // Called only while cards are built, after the stages and the backlog below are known.
     const childRelation = (child: StoredIssue): IssueRelationViewModel => {
-      const base = relation(child);
+      const base = rollupRelation(child);
       const names = ["Backlog", ...stages.map((stage) => stageNames.get(stage) ?? displayName(stage)), "Done"];
       const stageIndex = child.projectedStage ? stages.indexOf(child.projectedStage) : -1;
       const index = base.satisfied
@@ -2843,7 +2854,7 @@ export class ConveyorService {
       const siblings = parent
         ? childrenFor(parent.id).flatMap(({ issueId }) => {
             const sibling = byId.get(issueId);
-            return sibling ? [relation(sibling)] : [];
+            return sibling ? [rollupRelation(sibling)] : [];
           })
         : [];
       const cursor = this.store.executions().getCursor(issue.id);
@@ -2909,7 +2920,7 @@ export class ConveyorService {
         closable: issue.labels.includes(this.config.labels.metadata.closable),
         noSplit: issue.labels.includes(this.config.labels.metadata.noSplit),
         tone: tone(projectedState),
-        parent: parent ? relation(parent) : null,
+        parent: parent ? rollupRelation(parent) : null,
         parentProgress: parent && siblings.length > 0
           ? { done: siblings.filter((sibling) => sibling.satisfied).length, total: siblings.length }
           : null,
@@ -2996,6 +3007,7 @@ export class ConveyorService {
     const finishedRollupIds = new Set(issues
       .filter((issue) => ["done", "completed"].includes(issue.projectedState ?? ""))
       .filter((issue) => childrenFor(issue.id).length > 0)
+      .filter((issue) => this.isRollupSatisfied(issue.id))
       .map((issue) => issue.id));
     const filterRepositories = new Set(pagination.repositoryIds ?? []);
     const filterWords = (pagination.q ?? "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -3406,6 +3418,10 @@ export class ConveyorService {
       url: item.sourceUrl,
       satisfied: item.sourceState === "closed" || item.projectedState === "done" || item.projectedState === "completed",
     });
+    const rollupRelation = (item: StoredIssue): IssueRelationViewModel => ({
+      ...relation(item),
+      satisfied: this.isRollupSatisfied(item.id),
+    });
     const withProgress = (item: StoredIssue, base: IssueRelationViewModel): IssueRelationViewModel => {
       if (base.satisfied) return base;
       const state = item.projectedState ?? item.sourceState;
@@ -3432,7 +3448,7 @@ export class ConveyorService {
         : state?.status === item.projectedState || (item.projectedState === "needs-input" && state?.status === "ready");
     };
     const childRelation = (child: StoredIssue): IssueRelationViewModel => {
-      const base = relation(child);
+      const base = rollupRelation(child);
       const names = ["Backlog", ...stageNames, "Done"];
       const stageIndex = child.projectedStage ? stages.findIndex((stage) => stage.id === child.projectedStage) : -1;
       const index = base.satisfied ? names.length - 1 : isBacklog(child) || stageIndex < 0 ? 0 : stageIndex + 1;
@@ -3458,7 +3474,7 @@ export class ConveyorService {
     const siblings = parent
       ? childrenFor(parent.id).flatMap(({ issueId: siblingId }) => {
           const sibling = boardIssue(siblingId);
-          return sibling ? [relation(sibling)] : [];
+          return sibling ? [rollupRelation(sibling)] : [];
         })
       : [];
     const configuredStages = new Set(Object.values(this.config.pipelines).flatMap((itemPipeline) =>
@@ -3470,7 +3486,7 @@ export class ConveyorService {
       issue.projectedState !== "inconsistent" &&
       (sourceStages(issue).length === 1 || issue.projectedState === "active");
     const finishedRollup = ["done", "completed"].includes(issue.projectedState ?? "") &&
-      childrenFor(issue.id).length > 0;
+      childrenFor(issue.id).length > 0 && this.isRollupSatisfied(issue.id);
     const finished = (issue.sourceState === "closed" && !remainsInWorkflow) || finishedRollup;
     const doneState = finishedRollup
       ? issue.projectedState ?? "done"
@@ -3564,7 +3580,7 @@ export class ConveyorService {
       closable: issue.labels.includes(this.config.labels.metadata.closable),
       noSplit: issue.labels.includes(this.config.labels.metadata.noSplit),
       tone: tone(projectedState),
-      parent: parent ? relation(parent) : null,
+      parent: parent ? rollupRelation(parent) : null,
       parentProgress: parent && siblings.length > 0 ? { done: siblings.filter((sibling) => sibling.satisfied).length, total: siblings.length } : null,
       children,
       dependencies,
