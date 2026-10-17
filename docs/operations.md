@@ -181,6 +181,13 @@ conveyor questions answer <id> <answer>
 conveyor logs --level warn --since 1h --follow
 ```
 
+Conveyor leaves ordinary completed issues open and marks them `conveyor:closable` for an owner or
+normal pull-request closing reference. The only direct source close is an active roll-up parent
+after every nested descendant is complete; it receives GitHub's `completed` reason. A paused,
+offboarded, or already closed parent is never closed by this reconciliation. If an outage makes
+that close uncertain, the recorded source mutation remains visible in the item's history until a
+later reconciliation can verify the source state safely.
+
 These commands talk to the running service through `~/.conveyor/run/control.sock`. Only the service
 account (and root) can open it, and the commands use the same operations, with the same checks, as
 the dashboard. Under `sudo`, the `service`, `upgrade` and `rollback` commands find the home through

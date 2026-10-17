@@ -16,7 +16,7 @@ This role is interactive and exceptional. It must not silently bypass or replace
 
 ## Safety boundaries
 
-- Never close a source issue. Conveyor may mark an item done or closable; source closure remains external.
+- Never close a source issue. Conveyor itself may close only an active completed roll-up parent with GitHub's `completed` reason after its descendant-completion rule passes; this operator agent never performs that mutation.
 - Never edit Conveyor’s SQLite database directly.
 - Never expose credentials, tokens, environment values, or session data.
 - Never delete or discard uncommitted work, primary checkouts, repositories, or unmanaged worktrees.

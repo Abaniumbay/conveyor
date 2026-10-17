@@ -30,7 +30,8 @@ you watch and steer everything from a dashboard or the command line.
 - **Nothing is lost on a restart.** Every task and its context are journaled in SQLite; a restart
   resumes where it stopped and never repeats an external change.
 - **You stay in control.** Questions come to you, stopped items say exactly why and what to do, and
-  nothing closes an issue but you.
+  Conveyor closes only an active completed roll-up parent with GitHub's `completed` reason; nothing
+  else closes an issue but you.
 - **One small thing to run.** A single executable, one SQLite database, a systemd unit. No
   containers, queues or cloud services.
 

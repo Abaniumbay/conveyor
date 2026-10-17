@@ -18,10 +18,10 @@ Conveyor is not a second issue tracker and not a general workflow platform. The 
 ## 2. Non-negotiable rules
 
 1. Source issue state, content, labels, hierarchy, dependencies, changes, and checks are authoritative. In v0.1, that source is GitHub.
-2. Conveyor never changes an existing issue's open/closed state. It may create refined child issues, edit managed body sections, add comments, and manage labels.
+2. Conveyor never changes an ordinary existing issue's open/closed state. The sole exception is closing an active roll-up parent with GitHub's `completed` reason after every descendant satisfies the roll-up completion rule. It may otherwise create refined child issues, edit managed body sections, add comments, and manage labels.
 3. A Conveyor-created PR may close an issue through GitHub's normal closing-reference behavior.
-4. An issue that completed the configured pipeline receives `conveyor:done`. If it remains open, it also receives `conveyor:closable`.
-5. A parent issue is never closed by Conveyor. When all descendants are satisfied, it becomes done and, if open, closable.
+4. An ordinary issue that completed the configured pipeline receives `conveyor:done`. If it remains open, it also receives `conveyor:closable`.
+5. When all descendants are satisfied, an active open parent becomes done and Conveyor closes it with GitHub's `completed` reason in the same reconciliation. It is never closed before then, when paused or offboarded, or when already closed.
 6. The engine contains no hardcoded delivery stages. Stages, task chains, agents, scripts, retry limits, labels, and status presentation come from configuration.
 7. Source mutations made by agents go through Conveyor's MCP tools. Agents do not call the issue source directly.
 8. No container-per-issue isolation is used. Code work happens only in Git worktrees; the repository's primary checkout is never modified.
@@ -781,11 +781,11 @@ When a pipeline uses reviewed work breakdown:
 - Children are independently releasable, each with its own worktree, branch, and PR.
 - Nested subissues are supported.
 - Sibling order is stored in `conveyor:order:<number>` labels and is not draggable in the global backlog.
-- A parent becomes done only when every descendant has `conveyor:done`, or is closed without a correlated merged Conveyor pull request. A child closed by its own merged pull request remains unfinished until its post-merge stages record `conveyor:done`; this applies through closed or done intermediate roll-ups.
+- A parent becomes done only when every descendant has `conveyor:done`, or is closed without a correlated merged Conveyor pull request. A child closed by its own merged pull request remains unfinished until its post-merge stages record `conveyor:done`; this applies through closed or done intermediate roll-ups. When the rule passes for an active open parent, Conveyor records the done labels then closes only that parent with GitHub's `completed` reason.
 
 GitHub-native issue dependencies are used when supported and mirrored in a managed issue section for human visibility. Unsupported cross-repository relationships fail refinement verification rather than being silently stored only in SQLite. A dependency is satisfied when its issue is closed or labeled `conveyor:done`, regardless of whether its closure followed a merged Conveyor pull request. A closed dependency without the done label is accepted but shown as an inconsistency.
 
-Parent roll-up mutations run only while the parent retains its active base label. A paused or fully offboarded parent can be shown as logically complete in the UI, but Conveyor does not label it done/closable until it is active again.
+Parent roll-up mutations run only while the parent retains its active base label. A paused or fully offboarded parent can be shown as logically complete in the UI, but Conveyor neither marks nor closes it until it is active again. Reconciliation reads current GitHub state before each journaled label or close mutation, so a restart or retry does not duplicate a closure and an uncertain close remains recorded until it can be safely reconciled.
 
 ## 10. Scheduling and concurrency
 
@@ -903,7 +903,7 @@ Reconciliation compares GitHub with the SQLite projection. Source facts win. Con
 When source state and labels disagree, the UI shows both and an explicit warning. Examples include:
 
 - Closed issue carrying an active pre-merge stage label.
-- Done issue still open and therefore closable.
+- Ordinary done issue still open and therefore closable.
 - Multiple configured stage labels.
 - Missing parent, dependency, branch, or PR.
 - PR merged outside the expected pipeline.
@@ -1040,9 +1040,9 @@ V0.1 is complete when a configured GitHub issue can demonstrate this path after 
 6. `change.ensure` opens one PR after implementation, required CI gates it, and a read-only reviewer records criterion approvals and findings at the current head; the review gate checks findings, approvals, the CI head and mergeability.
 7. `change.merge` squash-merges only the reviewed head after the review gate passes.
 8. Repository-specific post-merge stages deploy/verify or explicitly skip.
-9. The issue becomes done, and becomes closable if GitHub did not close it.
+9. An ordinary issue becomes done, and becomes closable if GitHub did not close it. A completed active roll-up parent is instead closed with GitHub's `completed` reason.
 10. Parent roll-ups, dependency eligibility, label-state precedence, pause/reactivation, full offboarding/re-enrollment, crash recovery, status comments, live UI state, logs, cleanup, and cost totals behave as specified.
-11. Conveyor never closes an issue and never modifies the repository's primary checkout.
+11. Conveyor never closes an ordinary issue and never modifies the repository's primary checkout; it closes only active completed roll-up parents as specified above.
 
 ## 21. Implementation order
 

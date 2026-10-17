@@ -366,6 +366,60 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  test("closes an open issue with GitHub's completed reason", async () => {
+    const open = {
+      id: 107,
+      number: 7,
+      html_url: "https://example.com/issues/7",
+      title: "Roll-up",
+      body: "",
+      state: "open" as const,
+      labels: [{ name: "conveyor" }, { name: "conveyor:done" }],
+      updated_at: "2026-10-17T00:00:00Z",
+    };
+    const transport = new FakeTransport(open, {
+      ...open,
+      state: "closed" as const,
+      state_reason: "completed",
+      updated_at: "2026-10-17T00:01:00Z",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    expect(await adapter.closeIssue("owner/repo", 7)).toMatchObject({
+      state: "closed",
+      stateReason: "completed",
+    });
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/issues/7" },
+      {
+        method: "PATCH",
+        path: "repos/owner/repo/issues/7",
+        body: { state: "closed", state_reason: "completed" },
+      },
+    ]);
+  });
+
+  test("observes an already closed issue without closing it again", async () => {
+    const transport = new FakeTransport({
+      id: 107,
+      number: 7,
+      html_url: "https://example.com/issues/7",
+      title: "Roll-up",
+      body: "",
+      state: "closed",
+      state_reason: "completed",
+      labels: [{ name: "conveyor" }, { name: "conveyor:done" }],
+      updated_at: "2026-10-17T00:01:00Z",
+    });
+    const adapter = new GitHubAdapter(transport, "conveyor");
+
+    await adapter.closeIssue("owner/repo", 7);
+
+    expect(transport.requests).toEqual([
+      { method: "GET", path: "repos/owner/repo/issues/7" },
+    ]);
+  });
+
   test("preserves requested human-managed Conveyor labels from the live issue", async () => {
     const transport = new FakeTransport(
       {

@@ -1666,6 +1666,20 @@ export class ConveyorStore {
     return row ? this.mapSourceMutation(row) : null;
   }
 
+  /** Returns the newest mutation in a family of durable external operations. */
+  getLatestSourceMutationByKeyPrefix(prefix: string): SourceMutation | null {
+    const escapedPrefix = prefix.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const row = this.#database
+      .query(
+        `SELECT * FROM source_mutations
+         WHERE idempotency_key LIKE ? ESCAPE '\\'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(`${escapedPrefix}%`) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapSourceMutation(row) : null;
+  }
+
   private mapSourceMutation(row: Record<string, SQLQueryBindings>): SourceMutation {
     return {
       id: String(row.id),
