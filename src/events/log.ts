@@ -117,6 +117,12 @@ export class EventLog {
     return rows.map(toEvent);
   }
 
+  /** How many events occurred before `before`. */
+  countBefore(before: string): number {
+    const row = this.database.query("SELECT COUNT(*) AS count FROM events WHERE occurred_at < ?").get(before) as { count: number };
+    return row.count;
+  }
+
   /** Deletes events that occurred before `before`; returns how many. */
   prune(before: string): number {
     return this.database.query("DELETE FROM events WHERE occurred_at < ?").run(before).changes;

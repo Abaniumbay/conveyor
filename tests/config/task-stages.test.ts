@@ -198,6 +198,32 @@ describe("settings for task chains", () => {
   });
 });
 
+describe("event settings", () => {
+  const withEvents = (events: string) => ({ header: HEADER.replace("  artifacts: /tmp/artifacts\n", `  artifacts: /tmp/artifacts\n  events:\n${events}`) });
+
+  test("keep events for 30 days and deliver to no sink by default", async () => {
+    const { config } = await load("");
+    expect(config.settings.events).toEqual({ retentionMs: 30 * 86_400_000, sinks: [] });
+  });
+
+  test("a retention and a JSON-lines sink", async () => {
+    const { config } = await load("", withEvents("    retention: 7d\n    sinks: [{ type: jsonl, path: /var/log/conveyor/events.jsonl }]\n"));
+    expect(config.settings.events).toEqual({ retentionMs: 7 * 86_400_000, sinks: [{ type: "jsonl", path: "/var/log/conveyor/events.jsonl" }] });
+  });
+
+  test("a sink path must be absolute", async () => {
+    await expect(load("", withEvents("    sinks: [{ type: jsonl, path: events.jsonl }]\n"))).rejects.toThrow(/absolute path/);
+  });
+
+  test("an unknown sink type is an error", async () => {
+    await expect(load("", withEvents("    sinks: [{ type: kafka, path: /tmp/x }]\n"))).rejects.toThrow(/sinks/);
+  });
+
+  test("an unknown key is an error", async () => {
+    await expect(load("", withEvents("    keep: 7d\n"))).rejects.toThrow(/keep/);
+  });
+});
+
 describe("repository ci and overrides", () => {
   const pipeline = NATIVE_PIPELINE;
 

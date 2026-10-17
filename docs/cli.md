@@ -206,6 +206,21 @@ Agent transcripts are not in the service log: use conveyor item logs &lt;item>.
 | `--stage <stage>` | only records about this stage |
 | `--lines <n>` | print at most the last n matching records (default 200; 0 for all) |
 
+### `conveyor events`
+
+Print the event log (every recorded change), optionally following it.
+
+Reads the database directly, so it works whether or not the service is running. Payloads carry identifiers and states, never secrets or user-written text.
+
+| Option | Description |
+| --- | --- |
+| `--follow` | keep printing new events until interrupted |
+| `--issue <item>` | only events about this item, e.g. conveyor:90 |
+| `--type <type>` | only this event type, or a group ending in a dot, e.g. item. |
+| `--correlation <id>` | only the events one command caused |
+| `--since <duration>` | only events from this long ago, e.g. 30m, 1h, 7d |
+| `--lines <n>` | print at most the last n matching events (default 200; 0 for all) |
+
 ### `conveyor upgrade`
 
 Download, verify and switch to another release, draining running work first.

@@ -8,6 +8,8 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import type { StoredEvent } from "../../src/events/catalogue";
+import type { EventSink } from "../../src/events/sinks";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 
 const directories: string[] = [];
@@ -18,7 +20,7 @@ afterEach(async () => {
 
 const ISSUE = "issue";
 
-async function setup(options: { drained?: boolean } = {}) {
+async function setup(options: { drained?: boolean; sink?: EventSink } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-events-"));
   directories.push(root);
   const records: LogRecord[] = [];
@@ -60,7 +62,7 @@ repositories:
   store.setStageState({ issueId: ISSUE, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
   store.activateEnrollment(ISSUE);
   store.setQueueRank(ISSUE, 10);
-  const service = new ConveyorService(config, store, { async upsertStatusComment() { return 1; } } as never);
+  const service = new ConveyorService(config, store, { async upsertStatusComment() { return 1; } } as never, options.sink ? { eventSinks: [options.sink] } : {});
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
   /** Parks the item on its exit gate for one visit, as the executor does. */
@@ -231,6 +233,21 @@ describe("service state events", () => {
     service.drain("again");
     service.resumeAdmission();
     expect(store.events().read({ afterSeq: after, type: "admission." }).map((event) => event.type)).toEqual(["admission.paused", "admission.resumed"]);
+    await service.close();
+  });
+});
+
+describe("event sinks", () => {
+  test("a sink receives every event while the service runs, and stops with it", async () => {
+    const received: string[] = [];
+    const sink: EventSink = { name: "test-sink", async deliver(events: readonly StoredEvent[]) { received.push(...events.map((event) => event.type)); } };
+    const { service, store } = await setup({ sink });
+    service.start();
+    store.setQueueRank(ISSUE, 20);
+    await service.sinksIdle();
+    expect(received).toContain("item.queueChanged");
+    const queued = store.events().read({ type: "item.queueChanged" }).at(-1)!;
+    expect(store.events().consumerCursor("test-sink")).toBeGreaterThanOrEqual(queued.seq);
     await service.close();
   });
 });

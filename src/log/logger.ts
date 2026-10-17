@@ -104,21 +104,19 @@ export class ConsoleSink implements LogSink {
 }
 
 /** JSON lines in <directory>/conveyor.log; past `maxBytes` it becomes conveyor.log.1 and older files shift up to `keepFiles`. */
-export class FileSink implements LogSink {
-  readonly file: string;
+/** A file of JSON lines rotated by size: `<file>.1` … `<file>.<keepFiles>` hold the older lines. */
+export class RotatingFile {
   #size: number;
 
-  constructor(readonly directory: string, readonly maxBytes: number, readonly keepFiles: number) {
-    mkdirSync(directory, { recursive: true, mode: 0o750 });
-    this.file = path.join(directory, LOG_FILE);
+  constructor(readonly file: string, readonly maxBytes: number, readonly keepFiles: number) {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o750 });
     this.#size = statSync(this.file, { throwIfNoEntry: false })?.size ?? 0;
   }
 
-  write(record: LogRecord): void {
-    const line = `${JSON.stringify(record)}\n`;
-    const bytes = Buffer.byteLength(line);
+  append(text: string): void {
+    const bytes = Buffer.byteLength(text);
     if (this.#size > 0 && this.#size + bytes > this.maxBytes) this.rotate();
-    appendFileSync(this.file, line, { mode: 0o640 });
+    appendFileSync(this.file, text, { mode: 0o640 });
     this.#size += bytes;
   }
 
@@ -134,6 +132,24 @@ export class FileSink implements LogSink {
     if (this.keepFiles > 0) renameSync(this.file, `${this.file}.1`);
     else rmSync(this.file, { force: true });
     this.#size = 0;
+  }
+}
+
+export class FileSink implements LogSink {
+  readonly file: string;
+  readonly #output: RotatingFile;
+
+  constructor(readonly directory: string, readonly maxBytes: number, readonly keepFiles: number) {
+    this.file = path.join(directory, LOG_FILE);
+    this.#output = new RotatingFile(this.file, maxBytes, keepFiles);
+  }
+
+  write(record: LogRecord): void {
+    this.#output.append(`${JSON.stringify(record)}\n`);
+  }
+
+  rotate(): void {
+    this.#output.rotate();
   }
 }
 

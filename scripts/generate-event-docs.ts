@@ -21,6 +21,8 @@ Each event has:
 - \`correlationId\`: shared by every event one command caused.
 - \`payload\`: the fields listed below. Payloads carry identifiers and states, never secrets and never user-written text; read the text from the dashboard or the source.
 
+\`conveyor events\` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)). The log keeps events for \`settings.events.retention\` (30 days by default).
+
 `;
 
 type JsonSchema = { type?: string | string[]; enum?: unknown[]; items?: JsonSchema; anyOf?: JsonSchema[]; properties?: Record<string, JsonSchema> };

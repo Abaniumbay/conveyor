@@ -21,6 +21,8 @@ export interface RetentionReport {
   artifacts: { directories: number; bytes: number };
   /** Per-run sanitized homes, reclaimed independently of artifact and event retention. */
   homes: { directories: number; bytes: number; failures: string[] };
+  /** Recorded events older than `settings.events.retention`. */
+  eventLog: { events: number };
 }
 
 async function size(target: string): Promise<number> {
@@ -60,6 +62,8 @@ export async function applyRetention(input: {
   store: ConveyorStore;
   artifacts: string;
   policy: RetentionPolicy;
+  /** How long the event log keeps events; null keeps them all. */
+  eventsMs?: number | null;
   now?: Date;
   dryRun?: boolean;
 }): Promise<RetentionReport> {
@@ -70,6 +74,7 @@ export async function applyRetention(input: {
     runHistory: { runs: 0, events: 0 },
     artifacts: { directories: 0, bytes: 0 },
     homes: { directories: 0, bytes: 0, failures: [] },
+    eventLog: { events: 0 },
   };
   const selectedHomeBytes = new Map<string, number>();
   const reportHomeFailure = (runId: string, error: unknown) => {
@@ -147,6 +152,10 @@ export async function applyRetention(input: {
       report.artifacts.bytes += dryRun ? Math.max(0, bytes - (selectedHomeBytes.get(path.resolve(directory)) ?? 0)) : bytes;
       if (!dryRun) await rm(directory, { recursive: true, force: true });
     }
+  }
+  if (input.eventsMs !== undefined && input.eventsMs !== null) {
+    const before = new Date(now.getTime() - input.eventsMs).toISOString();
+    report.eventLog.events = dryRun ? input.store.events().countBefore(before) : input.store.events().prune(before);
   }
   return report;
 }

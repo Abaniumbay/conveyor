@@ -60,6 +60,7 @@ import { conversationQuestionAnswer, questionConfigurationError, questionOptions
 import { ManualGateApprovals } from "../engine/manual-gates";
 import { CommandBus, CommandForbiddenError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
+import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import type { EventType, StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
@@ -94,6 +95,8 @@ interface ServiceImplementations {
   harnesses?: Record<string, Harness>;
   /** Counts the GitHub requests of the adapter's transport; a fresh meter when it has none. */
   githubCalls?: GitHubCallMeter;
+  /** Event sinks beyond the configured ones (an embedding application's own consumers). */
+  eventSinks?: EventSink[];
 }
 
 type StatfsReader = (location: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
@@ -373,6 +376,8 @@ export class ConveyorService {
   readonly events: EventBus;
   /** The only way the dashboard and the CLI change anything. */
   readonly commands: CommandBus;
+  /** Configured event sinks, delivered from their own cursors while the service runs. */
+  readonly #sinks: SinkRunner[];
   #scheduleRequested = false;
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
@@ -397,6 +402,14 @@ export class ConveyorService {
     this.commands = new CommandBus(store.events());
     this.registerCommands();
     this.subscribeToEvents();
+    const logging = config.settings.logging;
+    const sinks: EventSink[] = [
+      ...(config.settings.events?.sinks ?? []).map((sink) => new JsonlEventSink(sink.path, {
+        maxBytes: (logging?.maxFileMegabytes ?? 10) * 1024 * 1024, keepFiles: logging?.keepFiles ?? 5,
+      })),
+      ...(implementations.eventSinks ?? []),
+    ];
+    this.#sinks = sinks.map((sink) => new SinkRunner(store.events(), sink));
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
@@ -589,6 +602,13 @@ export class ConveyorService {
     prune();
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
     this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
+    for (const sink of this.#sinks) sink.start(this.events);
+  }
+
+  /** Resolves once every event sink has received every recorded event (or a delivery failed). */
+  async sinksIdle(): Promise<void> {
+    await this.eventsSettled();
+    await Promise.all(this.#sinks.map((sink) => sink.idle()));
   }
 
   /**
@@ -634,10 +654,11 @@ export class ConveyorService {
       store: this.store,
       artifacts: this.config.settings.artifacts,
       policy: options.policy ?? this.config.settings.retention,
+      eventsMs: this.config.settings.events?.retentionMs ?? null,
       dryRun: options.dryRun === true,
     });
-    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0)) {
-      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes });
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0 || report.eventLog.events > 0)) {
+      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes, eventLog: report.eventLog.events });
     }
     if (!report.dryRun && report.homes.failures.length > 0) {
       log.warn("Could not reclaim some terminal run homes", { homeFailures: report.homes.failures.length, failures: report.homes.failures });
@@ -657,6 +678,7 @@ export class ConveyorService {
     this.#advisoryTimer = null;
     if (this.#githubCallTimer) clearInterval(this.#githubCallTimer);
     this.#githubCallTimer = null;
+    await Promise.all(this.#sinks.map((sink) => sink.stop()));
     for (const timer of this.#retryTimers) clearTimeout(timer);
     this.#retryTimers.clear();
     for (const [issueId, active] of this.#active) {

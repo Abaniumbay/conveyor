@@ -142,6 +142,27 @@ does not change permissions or remove homes. If a selected home still cannot be 
 warns once with its run ID and failure reason; the receipt survives service restarts, while a newly
 failing home still produces its own warning.
 
+## Events
+
+Every change Conveyor makes is recorded in its event log ([events.md](events.md) lists them). The
+dashboard updates live from it, `conveyor events` prints it, and event sinks deliver it outside
+Conveyor, for example to an analyzer or a log shipper.
+
+```yaml
+settings:
+  events:
+    retention: 30d          # how long the log keeps events (default 30d); cleanup prunes older ones
+    sinks:                  # default none
+      - { type: jsonl, path: /var/log/conveyor/events.jsonl }
+```
+
+A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
+Each sink keeps its own position in the database: it receives every event at least once and in
+order, resumes after a restart where it stopped, and retries a failed delivery with backoff (up to a
+minute) without slowing Conveyor down. A new sink starts with the events the log still holds. When
+retention removes events a sink has not received, the sink logs how many it missed and continues.
+Event payloads carry identifiers and states, never secrets or user-written text.
+
 ## Operator scripts
 
 `script.run` tasks, legacy script stages and check scripts run

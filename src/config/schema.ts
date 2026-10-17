@@ -56,6 +56,11 @@ const waitTimeoutSchema = z.union([z.literal("unlimited"), durationSchema]).tran
   value === "unlimited" ? null : value,
 );
 
+/** An event sink: `jsonl` appends each event as one JSON line to `path`, rotated like the service log. */
+const eventSinkSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("jsonl"), path: absolutePathSchema }).strict(),
+]);
+
 const settingsSchema = z
   .object({
     runners: z.number().int().positive().default(1),
@@ -100,6 +105,16 @@ const settingsSchema = z
       .strict()
       .prefault({})
       .transform(({ runHistory, artifacts }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts })),
+    /** The event log: how long it keeps events, and where else it delivers them. */
+    events: z
+      .object({
+        retention: durationSchema.prefault("30d"),
+        /** Consumers outside Conveyor; each receives every event at least once, in order. */
+        sinks: z.array(eventSinkSchema).default([]),
+      })
+      .strict()
+      .prefault({})
+      .transform(({ retention, sinks }) => ({ retentionMs: retention, sinks })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z
       .object({
