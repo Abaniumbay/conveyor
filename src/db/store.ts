@@ -2566,6 +2566,7 @@ export class ConveyorStore {
     answer: unknown;
     stageId: string | null;
     message: string;
+    actor?: { type: "user" | "conveyor"; id: string; name: string; title: string | null };
   }): void {
     this.#database.transaction(() => {
       const question = this.getQuestion(input.questionId);
@@ -2589,10 +2590,10 @@ export class ConveyorStore {
           question.runId,
           input.stageId,
           question.id,
-          "user",
-          source,
-          source,
-          null,
+          input.actor?.type ?? "user",
+          input.actor?.id ?? source,
+          input.actor?.name ?? source,
+          input.actor?.title ?? null,
           input.message,
           now(),
         );

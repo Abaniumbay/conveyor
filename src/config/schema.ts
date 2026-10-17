@@ -163,6 +163,14 @@ const steeringSchema = z
   .object({
     agent: identifierSchema,
     workspace: absolutePathSchema,
+    /** Optional autonomous health check for stopped board items. */
+    periodic: z
+      .object({
+        interval: durationSchema,
+      })
+      .strict()
+      .transform(({ interval }) => ({ intervalMs: interval }))
+      .optional(),
   })
   .strict();
 

@@ -104,6 +104,81 @@ describe("ConveyorService steering", () => {
     await service.close();
   });
 
+  test("runs a configured periodic Operator only for reconciled stopped board items", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-periodic-operator-"));
+    temporaryDirectories.push(root);
+    const instructions = path.join(root, "operator.md");
+    await writeFile(instructions, "Inspect the scheduled targets.");
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { workspaces: path.join(root, "worktrees"), artifacts: path.join(root, "artifacts"), interruptGraceMs: 100, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300", steering: { agent: "operator", workspace: root, periodic: { intervalMs: 60_000 } } },
+      runners: { codex: { type: "codex", command: "codex", sandbox: "workspace-write", automaticApprovals: true } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" } },
+      agents: { operator: { runner: "codex", model: "gpt-5", effort: "high", instructions, workspaceAccess: "read-only", tasks: ["operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion"] } },
+      pipelines: { default: { stages: [{ id: "implementation" }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      sources: { github: { type: "github" } }, checks: {}, ci: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const sourceIssues = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open"; stateReason: null; labels: string[]; updatedAt: string }>();
+    const sourceComments: string[] = [];
+    store.upsertIssue({ id: "healthy", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Healthy", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    store.setIssueProjection("healthy", { stage: null, state: "offboarded", warning: null });
+    sourceIssues.set(1, { id: "healthy", number: 1, url: "https://example.test/1", title: "Healthy", body: "", state: "open", stateReason: null, labels: [], updatedAt: "2026-01-01T00:00:00Z" });
+    let scheduledCalls = 0;
+    const github = {
+      async listIssues() { return [...sourceIssues.values()]; },
+      async getIssue(_address: string, number: number) { return sourceIssues.get(number)!; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; },
+      async collaboratorPermission() { return "write" as const; },
+      async repositoryVisibility() { return "private" as const; },
+      async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) { sourceIssues.get(number)!.labels = [...labels]; },
+      async hasCommentWithMarker() { return false; },
+      async addComment(_address: string, _number: number, body: string) { sourceComments.push(body); },
+      async upsertStatusComment() { return "status-comment"; },
+    };
+    const service = new ConveyorService(config, store, github as never, {
+      steering: async (input) => {
+        scheduledCalls += 1;
+        expect(input.model).toBe("gpt-5");
+        expect(input.effort).toBe("high");
+        expect(input.prompt).toContain("scheduled Operator check");
+        const contextIndex = input.mcp!.args.indexOf("--context") + 1;
+        const context = JSON.parse(await readFile(input.mcp!.args[contextIndex]!, "utf8")) as { control: { token: string } };
+        const board = await service.handleMcp({ tool: "operator.getBoard", input: {} }, context.control.token) as { items: Array<{ id: string }> };
+        expect(board.items.map((item) => item.id)).toContain("stopped");
+        await expect(service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "healthy" } }, context.control.token)).rejects.toThrow("only for their stopped targets");
+        await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "stopped" } }, context.control.token);
+        await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "stopped", note: "retry", evidence: "not present in the source" } }, context.control.token)).rejects.toThrow("current source or recorded history");
+        await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "not present in the source" } }, context.control.token)).rejects.toThrow("unambiguous quote");
+        await service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token);
+        return { summary: "Inspected stopped", sessionId: "scheduled", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+      },
+    });
+    await service.reconcileAll();
+    expect(await service.runScheduledOperatorCheck()).toBeNull();
+    store.upsertIssue({ id: "stopped", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Stopped", body: "The accepted release is stable.", sourceState: "open", labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    store.setIssueProjection("stopped", { stage: null, state: "blocked", warning: "awaiting owner" });
+    sourceIssues.set(2, { id: "stopped", number: 2, url: "https://example.test/2", title: "Stopped", body: "The accepted release is stable.", state: "open", stateReason: null, labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], updatedAt: "2026-01-01T00:00:00Z" });
+    const question = store.openQuestion({ issueId: "stopped", runId: null, prompt: "Which release track?", reason: "Needed before retrying", options: ["stable"] });
+    const runId = await service.runScheduledOperatorCheck();
+    expect(runId).not.toBeNull();
+    expect(await service.runScheduledOperatorCheck()).toBeNull();
+    for (let attempt = 0; attempt < 20 && service.getSteeringRun(runId!)?.status === "running"; attempt += 1) await Bun.sleep(5);
+    for (let attempt = 0; attempt < 20 && store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome").length === 0; attempt += 1) await Bun.sleep(5);
+    await service.answerFollowUpsSettled();
+    expect(scheduledCalls).toBe(1);
+    expect(store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome")).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ issueId: "stopped", outcome: "considered" }) }));
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "answered", answerSource: `scheduled-operator:${runId}` });
+    expect(store.listConversationMessages("stopped")).toContainEqual(expect.objectContaining({ actorName: "Scheduled Operator", message: expect.stringContaining("**Evidence:** The accepted release is stable.") }));
+    expect(sourceComments).toContainEqual(expect.stringContaining("Scheduled Operator answer"));
+    await service.close();
+  });
+
   test("gives a fresh Operator run scoped board diagnostics, durable controls, and skill guidance", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-operator-steering-"));
     temporaryDirectories.push(root);
@@ -236,12 +311,15 @@ describe("ConveyorService steering", () => {
           allowedTools: string[];
         };
         expect(context.allowedTools).toEqual(["operator.getBoard", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"]);
+        await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "retry-item", note: "owner asked", evidence: "clear source evidence" } }, context.control.token)).rejects.toThrow("not granted");
+        await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: "question", answer: "yes", evidence: "clear source evidence" } }, context.control.token)).rejects.toThrow("not granted");
         await expect(service.handleMcp({ tool: "operator.getBoard", input: {} }, "expired-token")).rejects.toThrow("expired MCP grant");
         const limitedLease = await (service as unknown as {
           steeringMcpLease(runId: string, workspace: string, allowedTools: string[]): Promise<{ configuration: { args: string[] }; close(): Promise<void> }>;
         }).steeringMcpLease("limited-operator-run", root, ["operator.getBoard"]);
         const limitedContext = JSON.parse(await readFile(limitedLease.configuration.args.at(-1)!, "utf8")) as { control: { token: string } };
         await expect(service.handleMcp({ tool: "operator.retryItem", input: { itemId: "retry-item", note: "owner asked" } }, limitedContext.control.token)).rejects.toThrow("not granted");
+        await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: "question", answer: "yes", evidence: "clear source evidence" } }, limitedContext.control.token)).rejects.toThrow("not granted");
         await limitedLease.close();
         await expect(service.handleMcp({ tool: "operator.getBoard", input: {} }, limitedContext.control.token)).rejects.toThrow("expired MCP grant");
         const board = await service.handleMcp({ tool: "operator.getBoard", input: {} }, context.control.token) as { repositories: Array<{ id: string; address: string; health: string; lastReconciledAt: string | null }>; items: Array<{ id: string; queue: { status: string; rank: number | null } }> };

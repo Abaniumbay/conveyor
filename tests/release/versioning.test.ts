@@ -157,6 +157,7 @@ describe("versioning", () => {
       },
     ];
     const fragments = await readChangelogFragments(ROOT);
+    expect(fragments.map((fragment) => fragment.filename)).toContain("212-periodic-operator-checks.md");
     for (const entry of migrated) {
       const fragment = fragments.find((candidate) => candidate.filename === entry.filename);
       if (fragment) expect({ filename: fragment.filename, section: fragment.section as string, body: fragment.body }).toEqual(entry);

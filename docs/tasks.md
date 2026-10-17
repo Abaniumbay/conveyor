@@ -177,10 +177,12 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
+| `operator.answerItemQuestion` | tool | - | - | Answer an open question for a scheduled-check target only when the answer follows unambiguously from the quoted current source or recorded conversation evidence. |
 | `operator.getBoard` | tool | - | - | Read the reconciled board, configured repository health, and item state without changing anything. |
 | `operator.getItemHistory` | tool | - | - | Read a bounded, pageable diagnostic history for one configured board item. |
 | `operator.moveBacklogItem` | tool | - | - | Move an eligible top-level backlog item up, down, before another item, or to the end. |
 | `operator.retryItem` | tool | - | - | Retry an eligible stopped board item after the owner explicitly requests it. |
+| `operator.retryStoppedItem` | tool | - | - | Retry a scheduled-check target only after inspecting its history and quoting current evidence that the blocker is resolved or a new attempt is warranted. |
 
 ### script
 

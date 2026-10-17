@@ -363,6 +363,8 @@ export class ConveyorService {
   readonly #webhookWork = new Set<Promise<void>>();
   readonly #retrying = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
+  /** A scheduled check may act only on these snapshots; history reads are tracked per run. */
+  readonly #scheduledOperatorChecks = new Map<string, { targets: Set<string>; inspected: Set<string> }>();
   readonly #mcpGrants = new Map<string, McpGrant>();
   /** Consecutive infrastructure failures per issue, for the stage they happened in. */
   readonly #infrastructureFailures = new Map<string, {
@@ -375,6 +377,7 @@ export class ConveyorService {
   /** Delayed infrastructure retries that must not outlive the service store. */
   readonly #retryTimers = new Set<ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setInterval> | null = null;
+  #periodicOperatorTimer: ReturnType<typeof setInterval> | null = null;
   readonly #ciMemory = createCiGateMemory();
   readonly #ciProviders = new Map<string, CiProvider>();
   /** Fires a schedule pass at the earliest persisted wake-up of a parked item. */
@@ -803,6 +806,12 @@ export class ConveyorService {
     if (this.#timer) return;
     void this.tick();
     this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
+    const periodic = this.config.web?.steering?.periodic;
+    if (periodic) {
+      this.#periodicOperatorTimer = setInterval(() => {
+        void this.runScheduledOperatorCheck().catch((error) => log.warn("Scheduled Operator check failed", {}, error));
+      }, periodic.intervalMs);
+    }
     const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
     prune();
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
@@ -892,6 +901,8 @@ export class ConveyorService {
     this.#shuttingDown = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#periodicOperatorTimer) clearInterval(this.#periodicOperatorTimer);
+    this.#periodicOperatorTimer = null;
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = null;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
@@ -2461,6 +2472,7 @@ export class ConveyorService {
 
   private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
     const context = grant.context;
+    const scheduled = this.#scheduledOperatorChecks.has(grant.runId);
     let tool = "unknown";
     try {
       const request = object(payload);
@@ -2475,9 +2487,19 @@ export class ConveyorService {
             config: this.config,
             issueId: "",
             operator: {
+              scheduled,
               board: () => this.operatorBoard(),
-              itemHistory: (input) => this.operatorItemHistory(input),
+              itemHistory: async (input) => {
+                if (scheduled && !this.#scheduledOperatorChecks.get(grant.runId)?.targets.has(input.itemId)) {
+                  throw new Error("scheduled checks may inspect history only for their stopped targets");
+                }
+                const history = await this.operatorItemHistory(input);
+                if (scheduled) this.#scheduledOperatorChecks.get(grant.runId)?.inspected.add(input.itemId);
+                return history;
+              },
               retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
+              scheduledRetry: (itemId, note, evidence) => this.scheduledRetryIssue(grant.runId, itemId, note, evidence),
+              answerQuestion: (questionId, answer, evidence) => this.scheduledAnswerQuestion(grant.runId, questionId, answer, evidence),
               moveBacklog: (input) => this.operatorMoveBacklog(input),
             },
           } as TaskDeps);
@@ -2872,7 +2894,7 @@ export class ConveyorService {
     return this.wakeParked(question.issueId);
   }
 
-  async answerQuestion(questionId: string, answer: string, source = "web"): Promise<void> {
+  async answerQuestion(questionId: string, answer: string, source = "web", evidence?: string): Promise<void> {
     const question = this.store.getQuestion(questionId);
     if (!question) throw new Error("question not found");
     const issue = this.store.getIssue(question.issueId);
@@ -2893,7 +2915,12 @@ export class ConveyorService {
       source,
       answer: { answer: response },
       stageId: runStage ?? issue?.projectedStage ?? null,
-      message: `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
+      message: source.startsWith("scheduled-operator:")
+        ? `**Scheduled Operator question answer:** ${question.prompt}\n\n**Accepted answer:** ${response}\n\n**Evidence:** ${evidence ?? "recorded by scheduled Operator"}`
+        : `**Question:** ${question.prompt}\n\n**Accepted answer:** ${response}`,
+      ...(source.startsWith("scheduled-operator:") ? {
+        actor: { type: "conveyor" as const, id: source, name: "Scheduled Operator", title: "Conveyor Operator" },
+      } : {}),
     });
     if (!issue) return;
     const repository = this.config.repositories[issue.repositoryId];
@@ -2933,7 +2960,11 @@ export class ConveyorService {
         ...metadata,
       ], [this.config.labels.metadata.noSplit]);
     }
-    this.#trackAnswerFollowUp(this.#answerFollowUp(issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source));
+    this.schedule();
+    this.#trackAnswerFollowUp(this.#answerFollowUp(
+      issue.id, question.id, response, repository.address, issue.sourceNumber, repository.source,
+      source.startsWith("scheduled-operator:"),
+    ));
   }
 
   /** Background work after an answer: settled before the service closes, and awaitable in tests. */
@@ -2950,7 +2981,7 @@ export class ConveyorService {
     await this.eventsSettled();
   }
 
-  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string): Promise<void> {
+  async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<void> {
     // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
     const mirrorKey = `question-answer:${questionId}`;
     if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
@@ -2963,14 +2994,14 @@ export class ConveyorService {
             idempotencyKey: mirrorKey,
             source,
             operation: "issue.comment.answer",
-            request: { issueId, questionId, answer: response },
+            request: { issueId, questionId, answer: response, actor: scheduled ? "scheduled-operator" : "owner" },
           });
           if (mirror.status === "succeeded") break;
           try {
             const marker = `<!-- conveyor:answer:${questionId} -->`;
             const sourceHasAnswer = typeof this.github.hasCommentWithMarker === "function" &&
               await this.github.hasCommentWithMarker(address, sourceNumber, marker);
-            if (!sourceHasAnswer) await this.github.addComment(address, sourceNumber, `${marker}\n**Conveyor answer:** ${response}`);
+            if (!sourceHasAnswer) await this.github.addComment(address, sourceNumber, `${marker}\n**${scheduled ? "Scheduled Operator answer" : "Conveyor answer"}:** ${response}`);
             this.store.completeSourceMutation(mirror.id, { questionId });
             break;
           } catch (error) {
@@ -2997,6 +3028,64 @@ export class ConveyorService {
   /** Tests shorten the pauses between answer-mirror retries. */
   answerRetryDelayMs: number | null = null;
 
+  /**
+   * Starts one cadence-triggered Operator run when the reconciled board contains stopped enrolled
+   * work. This deliberately does not queue missed intervals: a live steering run is the lock.
+   */
+  async runScheduledOperatorCheck(): Promise<string | null> {
+    const steering = this.config.web?.steering;
+    if (!steering?.periodic || !this.#lastReconciledAt || this.#repositoryErrors.size > 0 ||
+      this.#shuttingDown || this.#drain || this.#steeringActive.size > 0) return null;
+    const targets = this.store.listIssues().filter((issue) =>
+      Boolean(this.config.repositories[issue.repositoryId]) &&
+      issue.labels.includes(this.config.labels.enrollment) &&
+      issue.projectedState !== "offboarded" &&
+      issue.projectedState !== null && STOPPED_ISSUE_STATES.has(issue.projectedState),
+    );
+    if (targets.length === 0) return null;
+    const agent = this.config.agents[steering.agent];
+    if (!agent) throw new Error(`Unknown steering agent: ${steering.agent}`);
+    const runner = this.config.runners[agent.runner];
+    if (!runner || runner.type !== "codex") throw new Error("The steering agent must use a Codex runner");
+    const allowed = agent.tasks.filter((task) => new Set([
+      "operator.getBoard", "operator.getItemHistory", "operator.retryStoppedItem", "operator.answerItemQuestion",
+    ]).has(task));
+    if (!allowed.includes("operator.getBoard") || !allowed.includes("operator.getItemHistory")) {
+      throw new Error("The scheduled Operator requires operator.getBoard and operator.getItemHistory grants");
+    }
+
+    const runId = randomUUID();
+    this.store.createRun({
+      id: runId, issueId: null, stageId: "steering", attempt: 1, kind: "steering", status: "running",
+      configHash: this.config.hash, startedAt: new Date().toISOString(),
+    });
+    this.store.appendRunEvent(runId, "operator.scheduled", { itemIds: targets.map((issue) => issue.id), cadenceMs: steering.periodic.intervalMs });
+    this.#scheduledOperatorChecks.set(runId, { targets: new Set(targets.map((issue) => issue.id)), inspected: new Set() });
+    const controller = new AbortController();
+    this.#steeringActive.set(runId, controller);
+    const prompt = [
+      "This is a scheduled Operator check, not an owner request.",
+      `Consider only these stopped items: ${targets.map((issue) => issue.id).join(", ")}.`,
+      "Inspect the board and each target's history before acting. Report a concise outcome for every target.",
+      "You may retry only a target after quoting current evidence that its recorded blocker is resolved or a new attempt is warranted.",
+      "You may answer only an open target question when its answer is unambiguous and you quote the current issue, acceptance criteria, or recorded conversation evidence.",
+      "Do not move backlog items, inspect or act on unrelated items, or make up owner preferences. Leave uncertain items stopped and explain why owner input is needed.",
+    ].join("\n");
+    void this.executeSteering(runId, prompt, { ...agent, tasks: allowed }, runner, steering.workspace, controller.signal, true)
+      .finally(() => {
+        const check = this.#scheduledOperatorChecks.get(runId);
+        for (const issue of targets) {
+          this.store.appendRunEvent(runId, "operator.outcome", {
+            issueId: issue.id,
+            outcome: check?.inspected.has(issue.id) ? "considered" : "not-inspected",
+          });
+        }
+        this.#scheduledOperatorChecks.delete(runId);
+        this.#steeringActive.delete(runId);
+      });
+    return runId;
+  }
+
 
   async startSteering(prompt: string): Promise<string> {
     const request = prompt.trim();
@@ -3006,6 +3095,12 @@ export class ConveyorService {
     if (this.#drain) throw new Error("Conveyor is draining: no new work is admitted");
     const steering = this.config.web?.steering;
     if (!steering) throw new Error("The steering agent is not configured");
+    // A human request wins over a cadence check. Abort and wait for its lease to close so their
+    // grants cannot overlap; another owner request still receives the existing busy response.
+    for (const [runId, controller] of this.#steeringActive) {
+      if (this.#scheduledOperatorChecks.has(runId)) controller.abort();
+    }
+    while ([...this.#steeringActive].some(([runId]) => this.#scheduledOperatorChecks.has(runId))) await Bun.sleep(10);
     if (this.#steeringActive.size > 0) {
       throw new Error("A steering agent is already running");
     }
@@ -3043,6 +3138,7 @@ export class ConveyorService {
     runner: Extract<ConveyorConfig["runners"][string], { type: "codex" }>,
     workspace: string,
     signal: AbortSignal,
+    scheduled = false,
   ): Promise<void> {
     const started = performance.now();
     let lease: ScopedMcpLease | null = null;
@@ -3057,7 +3153,7 @@ export class ConveyorService {
           instructions.trim(),
           conveyorToolGuidance(agent.tasks),
           "",
-          "You are the authenticated Conveyor steering agent. Work only within the user's request.",
+          scheduled ? "You are the scheduled Conveyor Operator. Work only within the scheduled check." : "You are the authenticated Conveyor steering agent. Work only within the user's request.",
           "Inspect current state before changing it. Never close source issues. Finish with a concise report of actions, verification, and anything still unresolved.",
           "Use agent.reportProgress only for concise user-facing updates. Never expose private reasoning, raw command output, command names, or tool-call mechanics in those updates.",
           "",
@@ -4550,7 +4646,50 @@ export class ConveyorService {
     return { status, stageId };
   }
 
-  async retryIssue(issueId: string, note: string, username: string): Promise<{ status: "started" | "queued"; stageId: string }> {
+  private async scheduledRetryIssue(runId: string, issueId: string, note: string, evidence: string): Promise<{ status: "started" | "queued"; stageId: string }> {
+    const check = this.#scheduledOperatorChecks.get(runId);
+    if (!check?.targets.has(issueId)) throw new Error("scheduled checks may retry only their stopped targets");
+    if (!check.inspected.has(issueId)) throw new Error("inspect the item's history before retrying it");
+    const issue = this.store.getIssue(issueId);
+    const repository = issue && this.config.repositories[issue.repositoryId];
+    if (!issue || !repository) throw new Error("item is not on this configured board");
+    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+    const recordedBlocker = latestStopReason(this.store, issueId) ?? "";
+    const evidenceText = evidence.trim();
+    if (!evidenceText) throw new Error("scheduled retry evidence must not be blank");
+    const currentEvidence = [live.title, live.body, ...this.store.listConversationMessages(issueId).map((message) => message.message), recordedBlocker]
+      .some((text) => text.includes(evidenceText));
+    if (!currentEvidence) throw new Error("scheduled retry evidence must quote current source or recorded history");
+    const outcome = await this.retryIssue(issueId, note, "Scheduled Operator", true);
+    this.store.appendConversationMessage({
+      issueId, runId, stageId: outcome.stageId, actorType: "conveyor", actorId: "scheduled-operator",
+      actorName: "Scheduled Operator", actorTitle: "Conveyor Operator",
+      message: `Scheduled retry started from evidence: ${evidenceText}`,
+    });
+    return outcome;
+  }
+
+  private async scheduledAnswerQuestion(runId: string, questionId: string, answer: string, evidence: string): Promise<void> {
+    const question = this.store.getQuestion(questionId);
+    if (!question) throw new Error("question not found");
+    const check = this.#scheduledOperatorChecks.get(runId);
+    if (!check?.targets.has(question.issueId)) throw new Error("scheduled checks may answer only questions for their stopped targets");
+    if (!check.inspected.has(question.issueId)) throw new Error("inspect the item's history before answering it");
+    const issue = this.store.getIssue(question.issueId);
+    const repository = issue && this.config.repositories[issue.repositoryId];
+    if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("question belongs to an ineligible board item");
+    const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+    const evidenceText = evidence.trim();
+    if (!evidenceText) throw new Error("scheduled answer evidence must not be blank");
+    const sources = [live.title, live.body, ...criteriaOf(live.body).map((criterion) => criterion.text), ...this.store.listConversationMessages(issue.id).map((message) => message.message)];
+    if (!sources.some((text) => text.includes(evidenceText))) {
+      throw new Error("scheduled answers require an unambiguous quote from current issue content, acceptance criteria, or recorded conversation");
+    }
+    await this.answerQuestion(questionId, answer, `scheduled-operator:${runId}`, evidenceText);
+    this.store.appendRunEvent(runId, "operator.answer", { questionId, issueId: issue.id, evidence: evidenceText });
+  }
+
+  async retryIssue(issueId: string, note: string, username: string, automated = false): Promise<{ status: "started" | "queued"; stageId: string }> {
     if (this.#retrying.has(issueId)) throw new Error("retry already in progress");
     this.#retrying.add(issueId);
     try {
@@ -4615,8 +4754,8 @@ export class ConveyorService {
 
       if (note.trim()) {
         this.store.appendConversationMessage({
-          issueId, runId: null, stageId, actorType: "user", actorId: username,
-          actorName: username, actorTitle: null, message: note.trim(),
+          issueId, runId: null, stageId, actorType: automated ? "conveyor" : "user", actorId: automated ? "scheduled-operator" : username,
+          actorName: username, actorTitle: automated ? "Conveyor Operator" : null, message: note.trim(),
         });
       }
       await this.reconcileRepository(issue.repositoryId);
