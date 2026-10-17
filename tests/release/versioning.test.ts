@@ -121,7 +121,8 @@ describe("versioning", () => {
     const changelog = await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8");
     const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as { version: string };
     expect(changelogSection(changelog, "Unreleased")?.body).toBe("See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.");
-    expect((await readChangelogFragments(ROOT)).map((fragment) => fragment.filename)).toEqual([
+    const fragments = await readChangelogFragments(ROOT);
+    expect(fragments.map((fragment) => fragment.filename)).toEqual([
       "294-trust-safeguards.md",
       "306-changelog-fragments.md",
       "302-lease-protected-pushes.md",
@@ -129,6 +130,38 @@ describe("versioning", () => {
       "305-run-home-cleanup.md",
       "307-completed-roll-ups.md",
       "308-review-repair-path.md",
+    ]);
+    expect(fragments.filter((fragment) => fragment.issue !== 306).map(({ filename, section, body }) => ({ filename, section, body }))).toEqual([
+      {
+        filename: "294-trust-safeguards.md",
+        section: "Added",
+        body: "`conveyor doctor` and repository dashboards now show public-repository trust safeguards,\nconfigured extra trusted logins, source-check uncertainty, and body-free skipped-review history\nlinks.",
+      },
+      {
+        filename: "302-lease-protected-pushes.md",
+        section: "Fixed",
+        body: "Lease-protected workspace pushes now use the change head the agent observed and explain when a\nnewer remote head must be fetched and reconciled before retrying.",
+      },
+      {
+        filename: "303-roll-up-stage.md",
+        section: "Fixed",
+        body: "Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed\nchildren finish their post-merge work, keeping their family rows visible on the board.",
+      },
+      {
+        filename: "305-run-home-cleanup.md",
+        section: "Fixed",
+        body: "Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home\nfailure.",
+      },
+      {
+        filename: "307-completed-roll-ups.md",
+        section: "Fixed",
+        body: "Completed active roll-up parents now close with GitHub's completed reason once every descendant\nfinishes, instead of remaining open with a closable label.",
+      },
+      {
+        filename: "308-review-repair-path.md",
+        section: "Fixed",
+        body: "Merge conflicts, changed pull-request heads, and outdated bases discovered after review now\nreturn through the bounded implementation repair path while retaining fresh CI and review gates\nfor the repaired head.",
+      },
     ]);
     if (changelogSection(changelog, manifest.version)) {
       expect(checkRelease(`v${manifest.version}`, manifest.version, changelog)).not.toBe("");
