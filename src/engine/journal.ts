@@ -4,6 +4,7 @@
 import type { Database } from "bun:sqlite";
 
 import { boundSnapshotLogs } from "../app/ci-gate";
+import { eventLog, type EventLog } from "../events/log";
 import type { Feedback, TaskContext, TaskExecutionRecord } from "../tasks/context";
 
 export const DEFAULT_CONTEXT_SUMMARY_BYTES = 65536;
@@ -107,9 +108,11 @@ export class ExecutionStore {
   readonly #db: Database;
   readonly #limit: number;
   readonly #now: () => Date;
+  readonly #events: EventLog;
 
   constructor(database: Database, options: ExecutionStoreOptions = {}) {
     this.#db = database;
+    this.#events = eventLog(database);
     this.#limit = options.contextSummaryBytes ?? DEFAULT_CONTEXT_SUMMARY_BYTES;
     this.#now = options.now ?? (() => new Date());
   }
@@ -285,6 +288,9 @@ export class ExecutionStore {
           id, input.itemId, input.stage, input.stageEpoch, input.attempt, input.list,
           input.taskInstanceId, key, input.recoveryState ?? "not-needed", at, at,
         );
+      this.#events.append("task.planned", {
+        executionId: id, stage: input.stage, list: input.list, taskInstanceId: input.taskInstanceId, attempt: input.attempt, epoch: input.stageEpoch,
+      }, { issueId: input.itemId });
       return { record: this.#execution(id), resumed: false };
     });
   }
@@ -329,18 +335,26 @@ export class ExecutionStore {
     return record;
   }
 
-  #update(id: string, expectedEpoch: number, assignments: string, ...values: Array<string | null>): TaskExecutionRecord {
+  #update(
+    id: string,
+    expectedEpoch: number,
+    recorded: ((record: TaskExecutionRecord) => void) | null,
+    assignments: string,
+    ...values: Array<string | null>
+  ): TaskExecutionRecord {
     const current = this.#execution(id);
     return this.#fenced(current.itemId, expectedEpoch, () => {
       this.#db
         .query(`UPDATE task_executions SET ${assignments}, updated_at = ? WHERE id = ?`)
         .run(...values, this.#timestamp(), id);
-      return this.#execution(id);
+      const record = this.#execution(id);
+      recorded?.(record);
+      return record;
     });
   }
 
   markRunning(id: string, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'running'");
+    return this.#update(id, expectedEpoch, null, "state = 'running'");
   }
 
   /**
@@ -356,6 +370,9 @@ export class ExecutionStore {
     return this.#update(
       id,
       expectedEpoch,
+      (record) => this.#events.append("task.pending", {
+        executionId: id, taskInstanceId: record.taskInstanceId, wakeAt: times.wakeAt, deadlineAt: record.deadlineAt,
+      }, { issueId: record.itemId }),
       `state = 'pending', wake_at = ?,
        pending_since = COALESCE(pending_since, ?),
        deadline_at = COALESCE(deadline_at, ?),
@@ -368,11 +385,13 @@ export class ExecutionStore {
   }
 
   completeExecution(id: string, result: unknown, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'completed', result_json = ?", JSON.stringify(result ?? null));
+    return this.#update(id, expectedEpoch, (record) => this.#events.append("task.passed", { executionId: id, taskInstanceId: record.taskInstanceId }, { issueId: record.itemId }),
+      "state = 'completed', result_json = ?", JSON.stringify(result ?? null));
   }
 
   failExecution(id: string, result: unknown, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'failed', result_json = ?", JSON.stringify(result ?? null));
+    return this.#update(id, expectedEpoch, (record) => this.#events.append("task.failed", { executionId: id, taskInstanceId: record.taskInstanceId }, { issueId: record.itemId }),
+      "state = 'failed', result_json = ?", JSON.stringify(result ?? null));
   }
 
   // Stage cursor and wake-ups
@@ -440,10 +459,13 @@ export class ExecutionStore {
    * touched; its deadline is unchanged. Returns whether a parked cursor was woken.
    */
   wakeNow(issueId: string): boolean {
-    const result = this.#db
-      .query("UPDATE stage_cursors SET wake_at = ?, updated_at = ? WHERE issue_id = ? AND state = 'pending'")
-      .run(this.#timestamp(), this.#timestamp(), issueId);
-    return result.changes > 0;
+    return this.#db.transaction(() => {
+      const result = this.#db
+        .query("UPDATE stage_cursors SET wake_at = ?, updated_at = ? WHERE issue_id = ? AND state = 'pending'")
+        .run(this.#timestamp(), this.#timestamp(), issueId);
+      if (result.changes > 0) this.#events.append("task.woken", {}, { issueId });
+      return result.changes > 0;
+    })();
   }
 
   /** The earliest persisted wake-up strictly after `now`, or null. */

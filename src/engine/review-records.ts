@@ -4,6 +4,8 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 
+import { eventLog } from "../events/log";
+
 export interface CriterionApproval {
   criterionId: string;
   reviewer: string;
@@ -42,14 +44,20 @@ export class CriterionApprovals {
 
   /** Records the approval, replacing any earlier one for the same criterion. */
   approve(input: CriterionApproval & { issueId: string }): void {
-    this.#db
-      .query(`INSERT INTO criterion_approvals(issue_id, criterion_id, reviewer, head_sha, checked_at, text_hash) VALUES (?, ?, ?, ?, ?, ?)
-              ON CONFLICT(issue_id, criterion_id) DO UPDATE SET reviewer = excluded.reviewer, head_sha = excluded.head_sha, checked_at = excluded.checked_at, text_hash = excluded.text_hash`)
-      .run(input.issueId, input.criterionId, input.reviewer, input.headSha, input.checkedAt, input.textHash);
+    this.#db.transaction(() => {
+      this.#db
+        .query(`INSERT INTO criterion_approvals(issue_id, criterion_id, reviewer, head_sha, checked_at, text_hash) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(issue_id, criterion_id) DO UPDATE SET reviewer = excluded.reviewer, head_sha = excluded.head_sha, checked_at = excluded.checked_at, text_hash = excluded.text_hash`)
+        .run(input.issueId, input.criterionId, input.reviewer, input.headSha, input.checkedAt, input.textHash);
+      eventLog(this.#db).append("criterion.approvalChanged", { criterionId: input.criterionId, approved: true, headSha: input.headSha }, { issueId: input.issueId });
+    })();
   }
 
   withdraw(issueId: string, criterionId: string): void {
-    this.#db.query("DELETE FROM criterion_approvals WHERE issue_id = ? AND criterion_id = ?").run(issueId, criterionId);
+    this.#db.transaction(() => {
+      const removed = this.#db.query("DELETE FROM criterion_approvals WHERE issue_id = ? AND criterion_id = ?").run(issueId, criterionId);
+      if (removed.changes > 0) eventLog(this.#db).append("criterion.approvalChanged", { criterionId, approved: false, headSha: null }, { issueId });
+    })();
   }
 
   list(issueId: string): CriterionApproval[] {

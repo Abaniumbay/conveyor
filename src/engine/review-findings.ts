@@ -6,6 +6,11 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
+import type { FINDING_CHANGES } from "../events/catalogue";
+import { eventLog } from "../events/log";
+
+type FindingChange = (typeof FINDING_CHANGES)[number];
+
 export type FindingState = "open" | "resolved" | "dismissed" | "withdrawn";
 
 export interface Finding {
@@ -78,10 +83,12 @@ export class ReviewFindings {
     this.#db = database;
   }
 
-  #event(findingId: string, kind: string, actor: string, at: string, reason: string | null = null, detail: unknown = null): void {
+  #event(findingId: string, kind: FindingChange, actor: string, at: string, reason: string | null = null, detail: unknown = null): void {
     this.#db
       .query("INSERT INTO finding_events(finding_id, kind, actor, reason, at, detail_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(findingId, kind, actor, reason, at, detail === null ? null : JSON.stringify(detail));
+    const owner = this.#db.query("SELECT issue_id FROM findings WHERE id = ?").get(findingId) as { issue_id: string } | null;
+    eventLog(this.#db).append("finding.changed", { findingId, change: kind }, { issueId: owner?.issue_id ?? null });
   }
 
   #insert(input: {
@@ -99,10 +106,10 @@ export class ReviewFindings {
 
   /** An agent's finding: open, before any projection to the code host. */
   create(input: { issueId: string; runId: string | null; author: string; headSha: string; path?: string | null; line?: number | null; body: string; at?: string }): Finding {
-    return this.#insert({
+    return this.#db.transaction(() => this.#insert({
       issueId: input.issueId, runId: input.runId, providerKey: null, author: input.author, source: "agent", headSha: input.headSha,
       path: input.path ?? null, line: input.line ?? null, url: "", body: input.body, at: input.at ?? new Date().toISOString(),
-    });
+    }))();
   }
 
   get(issueId: string, id: string): Finding | null {
@@ -160,9 +167,11 @@ export class ReviewFindings {
 
   /** open -> dismissed with the person's reason; false when the finding is not open. */
   dismiss(issueId: string, id: string, dismissal: { actor: string; reason: string; at: string }): boolean {
-    const changed = this.#transition(issueId, id, "dismissed", dismissal.actor, dismissal.at, dismissal.reason);
-    if (changed) this.#db.query("UPDATE findings SET dismissal_json = ? WHERE id = ?").run(JSON.stringify(dismissal), id);
-    return changed;
+    return this.#db.transaction(() => {
+      const changed = this.#transition(issueId, id, "dismissed", dismissal.actor, dismissal.at, dismissal.reason);
+      if (changed) this.#db.query("UPDATE findings SET dismissal_json = ? WHERE id = ?").run(JSON.stringify(dismissal), id);
+      return changed;
+    })();
   }
 
   #resolvedByAgent(id: string): boolean {
@@ -170,11 +179,13 @@ export class ReviewFindings {
     return resolution !== undefined && resolution.actor !== "provider";
   }
 
-  #transition(issueId: string, id: string, state: FindingState, actor: string, at: string, reason: string | null = null): boolean {
-    const changes = this.#db.query("UPDATE findings SET state = ? WHERE issue_id = ? AND id = ? AND state = 'open'").run(state, issueId, id).changes;
-    if (changes === 0) return false;
-    this.#event(id, state, actor, at, reason);
-    return true;
+  #transition(issueId: string, id: string, state: "resolved" | "dismissed", actor: string, at: string, reason: string | null = null): boolean {
+    return this.#db.transaction(() => {
+      const changes = this.#db.query("UPDATE findings SET state = ? WHERE issue_id = ? AND id = ? AND state = 'open'").run(state, issueId, id).changes;
+      if (changes === 0) return false;
+      this.#event(id, state, actor, at, reason);
+      return true;
+    })();
   }
 
   #skipNative(issueId: string, artifact: NativeArtifact, at: string): void {
@@ -202,6 +213,10 @@ export class ReviewFindings {
    * artifact is gone is withdrawn. Dismissed findings and agent findings are never touched.
    */
   importNative(issueId: string, artifacts: readonly NativeArtifact[], headSha: string, at: string): void {
+    this.#db.transaction(() => this.#importNative(issueId, artifacts, headSha, at))();
+  }
+
+  #importNative(issueId: string, artifacts: readonly NativeArtifact[], headSha: string, at: string): void {
     const imported = new Map(this.list(issueId).filter((f) => f.providerKey !== null).map((f) => [f.providerKey!, f]));
     const seen = new Set<string>();
     for (const artifact of artifacts) {

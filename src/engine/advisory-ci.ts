@@ -8,6 +8,7 @@ import type { Database } from "bun:sqlite";
 import { ciAnnouncement, classifyRuns, describeCiFailure, readRunLog, type FailedRun } from "../app/ci-gate";
 import type { CiChange, CiProvider, CiRun } from "../app/ci-provider";
 import type { AdvisoryCiWatch } from "../tasks/context";
+import { eventLog } from "../events/log";
 import type { ExecutionStore } from "./journal";
 
 export const DEFAULT_SETTLE_MS = 120_000;
@@ -92,7 +93,7 @@ export class AdvisoryCiWatches {
       this.#db
         .query("UPDATE advisory_ci_watches SET state = 'superseded' WHERE item_id = ? AND head_sha != ? AND state = 'active'")
         .run(input.itemId, input.headSha);
-      this.#db
+      const inserted = this.#db
         .query(`INSERT OR IGNORE INTO advisory_ci_watches(id, repository_id, item_id, head_sha, stage, change_id, change_url, state,
                   started_at, settle_ms, wake_at, deadline_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
         .run(
@@ -107,6 +108,9 @@ export class AdvisoryCiWatches {
       const row = this.#db
         .query("SELECT * FROM advisory_ci_watches WHERE repository_id = ? AND item_id = ? AND head_sha = ?")
         .get(input.repositoryId, input.itemId, input.headSha) as Row;
+      if (inserted.changes > 0) {
+        eventLog(this.#db).append("advisoryCi.watchStarted", { watchId: row.id, headSha: input.headSha }, { repositoryId: input.repositoryId, issueId: input.itemId });
+      }
       return toWatch(row);
     })();
   }
@@ -203,7 +207,10 @@ export class AdvisoryCiWatches {
       const changed = this.#db
         .query("UPDATE advisory_ci_watches SET state = ?, final_message_at = ? WHERE id = ? AND state = 'active' AND final_message_at IS NULL")
         .run(state, iso(now), watch.id).changes;
-      if (changed > 0) this.#options.post(watch.itemId, watch.stage, message);
+      if (changed > 0) {
+        this.#options.post(watch.itemId, watch.stage, message);
+        eventLog(this.#db).append("advisoryCi.finished", { watchId: watch.id, state }, { repositoryId: watch.repositoryId, issueId: watch.itemId });
+      }
     })();
   }
 }

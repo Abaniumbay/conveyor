@@ -58,6 +58,8 @@ import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHe
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import { conversationQuestionAnswer, questionConfigurationError, questionOptions, validatedQuestionAnswer } from "../questions";
 import { ManualGateApprovals } from "../engine/manual-gates";
+import { EventBus } from "../events/bus";
+import { withEventContext } from "../events/context";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import type { ManualGateResolver } from "../engine/stage-executor";
@@ -351,6 +353,8 @@ export class ConveyorService {
   #githubCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Counts every GitHub request this service makes, by why it was made. */
   readonly githubCalls: GitHubCallMeter;
+  /** Every committed change, published in order after its transaction; subscribers react to them. */
+  readonly events: EventBus;
   /** Parked items made due by an answer, approval or other event, not by their wake-up time. */
   readonly #wokenEarly = new Set<string>();
   readonly #harnesses: Record<string, Harness>;
@@ -369,6 +373,8 @@ export class ConveyorService {
     this.#issueTrust = new GitHubRepositoryTrust(github);
     this.#codeHosts = implementations.codeHosts ?? new CodeHostRegistry();
     this.githubCalls = implementations.githubCalls ?? new GitHubCallMeter();
+    this.events = new EventBus();
+    store.events().attach(this.events);
     this.workspaceManager = new WorkspaceManager(config.settings.workspaces);
     this.#runSteering = implementations.steering ?? runCodexSteering;
     this.#harnesses = implementations.harnesses ?? { codex: codexHarness, "claude-code": claudeCodeHarness };
@@ -2033,11 +2039,11 @@ export class ConveyorService {
     if (callId) {
       const prior = grant.calls.get(callId);
       if (prior) return prior;
-      const call = withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant));
+      const call = withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant)));
       grant.calls.set(callId, call);
       return call;
     }
-    return withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant));
+    return withEventContext({ actor: { kind: "agent", id: grant.runId } }, () => withGitHubCallSource("agent", () => this.handleMcpRequest(payload, grant)));
   }
 
   private async handleMcpRequest(payload: unknown, grant: McpGrant): Promise<unknown> {
@@ -2253,7 +2259,9 @@ export class ConveyorService {
     // Conveyor's own status-comment writes come back as deliveries; they carry nothing to read, and
     // reconciling on them made every write trigger more writes.
     if (eventType === "issue_comment" && isStatusComment(fields(fields(payload).comment).body)) return;
-    if (!this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload })) return;
+    const recorded = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () =>
+      this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload, repositoryId: repository?.[0] ?? null }));
+    if (!recorded) return;
     if (typeof repositoryAddress !== "string") return;
     if (!repository) {
       this.schedule();
@@ -2261,13 +2269,13 @@ export class ConveyorService {
     }
     // Processed after the response: GitHub counts a delivery as failed after 10 seconds and never retries it.
     const repositoryId = repository[0];
-    const work = withGitHubCallSource("webhook", async () => {
+    const work = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () => withGitHubCallSource("webhook", async () => {
       // Before the reconcile, so the board shows a finished run within seconds; a failure never fails the delivery.
       await this.applyCiWebhook(repositoryId, eventType, payload)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: eventType }, error));
       if (eventType === "sub_issues" || eventType === "issue_dependencies") this.#relationships.clear();
       await this.queueWebhookReconcile(repositoryId, this.webhookIssueNumbers(repositoryId, eventType, payload));
-    });
+    }));
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
   }

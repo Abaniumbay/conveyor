@@ -19,6 +19,7 @@
     "benchmark:dashboard:timed": "CONVEYOR_BENCHMARK_ASSERT_TIMING=1 bun run scripts/benchmark-dashboard.ts",
     "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "docs:cli": "bun run scripts/generate-cli-docs.ts",
+    "docs:events": "bun run scripts/generate-event-docs.ts",
     "docs:screenshots": "bun run scripts/regenerate-screenshots.ts",
     "build": "bun run scripts/build.ts",
     "release": "bun run scripts/release.ts",

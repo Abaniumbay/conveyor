@@ -834,4 +834,32 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX dependencies_blocker_idx ON dependencies(blocker_id, issue_id);
     `,
   },
+  {
+    version: 31,
+    sql: `
+      -- The append-only event log: one row per state change, written in the change's transaction.
+      -- issue_id has no foreign key so an item's trail outlives it until retention prunes it.
+      CREATE TABLE events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        repository_id TEXT,
+        issue_id TEXT,
+        actor_kind TEXT NOT NULL,
+        actor_id TEXT,
+        correlation_id TEXT,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX events_issue_seq ON events(issue_id, seq);
+      CREATE INDEX events_type_seq ON events(type, seq);
+      CREATE INDEX events_occurred_at ON events(occurred_at);
+      CREATE INDEX events_correlation ON events(correlation_id) WHERE correlation_id IS NOT NULL;
+      -- Durable consumers (event sinks) resume from their own cursor after a restart.
+      CREATE TABLE event_consumers (
+        name TEXT PRIMARY KEY,
+        last_seq INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
