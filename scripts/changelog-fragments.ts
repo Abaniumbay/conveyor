@@ -24,7 +24,7 @@ export function parseChangelogFragment(filename: string, content: string): Chang
 
   const normalized = content.replace(/\r\n/g, "\n");
   const frontmatter = /^---\n([\s\S]*?)^---(?:\n|$)/m.exec(normalized);
-  if (!frontmatter) throw fragmentError(filename, "must start with --- frontmatter");
+  if (!frontmatter || frontmatter.index !== 0) throw fragmentError(filename, "must start with --- frontmatter");
 
   const values = new Map<string, string>();
   const fields = frontmatter[1]!.trimEnd();

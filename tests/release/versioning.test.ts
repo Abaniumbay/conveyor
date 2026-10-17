@@ -49,6 +49,7 @@ describe("versioning", () => {
       ["4-empty-body.md", "---\nsection: Added\n---\n   \n", "body must not be empty"],
       ["0-no-issue.md", "---\nsection: Added\n---\nEntry.", "filename must start with a positive issue number and hyphen"],
       ["5-invalid-breaking.md", "---\nsection: Added\nbreaking: false\n---\nEntry.", "breaking must be true when present"],
+      ["6-leading-content.md", "Preamble.\n---\nsection: Added\n---\nEntry.", "must start with --- frontmatter"],
     ] as const;
     for (const [name, content, message] of cases) {
       const root = await mkdtemp(path.join(tmpdir(), "conveyor-changelog-invalid-"));
