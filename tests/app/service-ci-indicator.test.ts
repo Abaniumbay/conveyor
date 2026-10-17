@@ -9,6 +9,7 @@ import { ConveyorService } from "../../src/app/service";
 import type { CodeHost } from "../../src/codehost/types";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { BOARD_APPROVAL_TASK_ID } from "../../src/engine/stage-executor";
 import { ConsoleSink, log } from "../../src/log/logger";
 import type { GitHubAdapter } from "../../src/source/github/adapter";
 
@@ -22,7 +23,7 @@ const run = (name: string, state: CiRun["state"], over: Partial<CiRun> = {}): Ci
   id: `id-${name}`, name, state, url: `https://ci/${name}`, canRerun: false, hasLog: false, startedAt: "2026-01-01T00:00:00Z", completedAt: null, ...over,
 });
 
-async function setup(ci = "", manual = false, reviewSettlement = false) {
+async function setup(ci = "", manual = false, reviewSettlement = false, laterNativeStage = false, legacyStage = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-ci-indicator-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -51,6 +52,14 @@ pipelines:
         actions: ${reviewSettlement ? "[{ id: ciSettled, task: ci.settled, with: { settleSeconds: 120 } }]" : "[]"}
         exit-gate:
           - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 }${manual ? ", manual: true" : ""} }
+${laterNativeStage ? `      - id: review
+        concurrency: 1
+        actions: []
+        exit-gate:
+          - { id: reviewGate, task: ci.passed, with: { settleSeconds: 120 } }` : ""}
+${legacyStage ? `      - id: deploy
+        concurrency: 1
+        run: { sourceAction: noop }` : ""}
 repositories:
   repo: { source: github, address: owner/repo, folder: ${repositoryPath}, pipeline: default${ci} }
 `);
@@ -151,6 +160,15 @@ function parkManualGate(store: ConveyorStore) {
   }, epoch);
 }
 
+function parkBoardApproval(store: ConveyorStore) {
+  const journal = store.executions();
+  const epoch = journal.stageEpoch("issue");
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+    taskInstanceId: BOARD_APPROVAL_TASK_ID, state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
+  }, epoch);
+}
+
 test("a configured manual gate records a fresh superuser approval and wakes only its current visit", async () => {
   const w = await setup("", true);
   parkManualGate(w.store);
@@ -158,27 +176,29 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   expect(w.internals.wakeupReached("issue")).toBe(false);
 
   const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
-  expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
-    stageId: "implementation", gateId: "ciGate", configured: true, itemSpecific: false, waiting: true,
-  }]);
+  expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      stageId: "implementation", gateId: "ciGate", kind: "configured", required: true, waiting: true,
+    }),
+  ]));
   expect(dashboard().needsYou).toEqual(expect.arrayContaining([expect.objectContaining({ id: "issue" })]));
 
   w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
   await w.service.eventsSettled();
-  expect(dashboard().selectedIssue?.manualGates).toMatchObject([{
-    gateId: "ciGate", waiting: false, approvedBy: "admin", approvedAt: expect.any(String),
-  }]);
-  expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({ actorType: "user", actorId: "admin-1", message: 'Approved manual gate "ciGate".' });
+  expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ gateId: "ciGate", waiting: false, approvedBy: "admin", approvedAt: expect.any(String) }),
+  ]));
+  expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({ actorType: "user", actorId: "admin-1", message: 'Approved configured manual gate "ciGate".' });
   expect(w.store.executions().getCursor("issue")?.wakeAt).toEqual(expect.any(String));
 
   expect(() => w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-2", username: "other" })).not.toThrow();
-  expect(() => w.service.approveManualGate("issue", "implementation", "missing", { id: "admin-1", username: "admin" })).toThrow("native stage exit gates");
+  expect(() => w.service.approveManualGate("issue", "implementation", "missing", { id: "admin-1", username: "admin" })).toThrow("configured manual gates");
 
   w.store.executions().saveCursor({
     issueId: "issue", stage: "implementation", stageEpoch: firstEpoch, attempt: 2, returns: 0, list: "exit-gate",
     taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
   }, firstEpoch);
-  expect(dashboard().selectedIssue?.manualGates?.[0]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
+  expect(dashboard().selectedIssue?.manualGates?.[1]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
   w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
 
   const nextEpoch = w.store.executions().onStageChange("issue");
@@ -186,7 +206,7 @@ test("a configured manual gate records a fresh superuser approval and wakes only
     issueId: "issue", stage: "implementation", stageEpoch: nextEpoch, attempt: 2, returns: 0, list: "exit-gate",
     taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
   }, nextEpoch);
-  expect(dashboard().selectedIssue?.manualGates?.[0]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
+  expect(dashboard().selectedIssue?.manualGates?.[1]).toMatchObject({ waiting: true, approvedBy: null, approvedAt: null });
   w.service.approveManualGate("issue", "implementation", "ciGate", { id: "admin-1", username: "admin" });
   const receipts = w.store.sqlite().query("SELECT stage_epoch, attempt FROM manual_gate_approvals WHERE issue_id = 'issue' ORDER BY stage_epoch, attempt").all() as Array<{ stage_epoch: number; attempt: number }>;
   expect(receipts).toEqual([{ stage_epoch: firstEpoch, attempt: 1 }, { stage_epoch: firstEpoch, attempt: 2 }, { stage_epoch: nextEpoch, attempt: 2 }]);
@@ -194,7 +214,7 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   await w.service.close();
 });
 
-test("adding a manual requirement fences an active gate and rejects a gate already advancing", async () => {
+test("adding a board approval fences an active gate and rejects a stage already advancing", async () => {
   const w = await setup();
   const journal = w.store.executions();
   const epoch = journal.stageEpoch("issue");
@@ -203,18 +223,68 @@ test("adding a manual requirement fences an active gate and rejects a gate alrea
     taskInstanceId: "ciGate", state: "running", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
   }, epoch);
 
-  w.service.setManualGateRequirement("issue", "implementation", "ciGate", true);
+  w.service.setBoardApprovalRequirement("issue", "implementation", true);
   expect(journal.stageEpoch("issue")).toBeGreaterThan(epoch);
   expect(journal.getCursor("issue")).toBeNull();
 
-  w.service.setManualGateRequirement("issue", "implementation", "ciGate", false);
+  w.service.setBoardApprovalRequirement("issue", "implementation", false);
   w.store.beginStageTransition({
     id: "advancing", issueId: "issue", fromStage: "implementation", toStage: "done", kind: "advance", sourceMutationId: null,
     detail: { reason: "Completed implementation", requiredFixes: [], resultStatus: null },
   });
-  expect(() => w.service.setManualGateRequirement("issue", "implementation", "ciGate", true))
+  expect(() => w.service.setBoardApprovalRequirement("issue", "implementation", true))
     .toThrow("current stage is advancing");
   await w.service.close();
+});
+
+test("a board approval can target a later native stage but not a past, legacy, completed, or offboarded item", async () => {
+  const w = await setup("", false, false, true, true);
+  w.service.setBoardApprovalRequirement("issue", "implementation", true);
+  w.service.setBoardApprovalRequirement("issue", "review", true);
+  const card = w.card();
+  if (!card) throw new Error("Expected the issue card");
+  expect((card.manualGates ?? []).filter((gate) => gate.kind === "board" && gate.required).map((gate) => gate.stageId))
+    .toEqual(["implementation", "review"]);
+
+  w.store.setIssueProjection("issue", { stage: "review", state: "active", warning: null });
+  expect(() => w.service.setBoardApprovalRequirement("issue", "implementation", false))
+    .toThrow("current or future stage");
+  expect(() => w.service.setBoardApprovalRequirement("issue", "deploy", true))
+    .toThrow("only for native stages");
+
+  w.store.setIssueProjection("issue", { stage: "review", state: "completed", warning: null });
+  expect(() => w.service.setBoardApprovalRequirement("issue", "review", false))
+    .toThrow("completed item");
+
+  w.store.setIssueProjection("issue", { stage: null, state: "offboarded", warning: null });
+  expect(() => w.service.setBoardApprovalRequirement("issue", "review", false)).toThrow("issue not found");
+  await w.service.close();
+});
+
+test("a board approval has its own receipt and removing it wakes its parked visit", async () => {
+  const w = await setup();
+  w.service.setBoardApprovalRequirement("issue", "implementation", true);
+  parkBoardApproval(w.store);
+  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "board", stageId: "implementation", waiting: true }),
+  ]));
+
+  w.service.approveManualGate("issue", "implementation", null, { id: "admin-1", username: "admin" });
+  await w.service.eventsSettled();
+  expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "board", waiting: false, approvedBy: "admin", approvedAt: expect.any(String) }),
+  ]));
+  expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({ message: "Approved board approval." });
+
+  const w2 = await setup();
+  w2.service.setBoardApprovalRequirement("issue", "implementation", true);
+  parkBoardApproval(w2.store);
+  w2.service.setBoardApprovalRequirement("issue", "implementation", false);
+  await w2.service.eventsSettled();
+  expect(w2.store.executions().getCursor("issue")?.wakeAt).toEqual(expect.any(String));
+  await w.service.close();
+  await w2.service.close();
 });
 
 test("existing changes acquire a current-head indicator on reconcile, shown on the card without a provider call", async () => {

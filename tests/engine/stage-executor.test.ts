@@ -6,7 +6,7 @@ import path from "node:path";
 import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
-import { StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
+import { BOARD_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
 import type { WaitKind } from "../../src/events/topics";
 import type { CiContext, TaskContext } from "../../src/tasks/context";
 import {
@@ -187,6 +187,8 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
   const statuses: Array<string | null> = [];
   let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; configured: boolean }) =>
     ({ required: false, approved: false, message: "" });
+  let boardApproval = (_input: { issueId: string; stageId: string; stageEpoch: number; attempt: number }) =>
+    ({ required: false, approved: false, message: "" });
   let onStatus: (message: string | null) => void | Promise<void> = () => {};
   const executorFor = (j: ExecutionStore = journal) =>
     new StageExecutor({
@@ -194,6 +196,7 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
       notify: (m) => { notes.push(m); },
       setStatus: async (m) => { statuses.push(m); await onStatus(m); },
       manualGate: (input) => manualGate(input),
+      boardApproval: (input) => boardApproval(input),
       ...(options.fallbackMs ? { fallbackMs: options.fallbackMs } : {}),
       settings: { maxReturns: options.maxReturns ?? 5 },
     });
@@ -202,6 +205,7 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
   return {
     store, journal, world, registry, notes, statuses, executorFor, run,
     setManualGate: (next: typeof manualGate) => { manualGate = next; },
+    setBoardApproval: (next: typeof boardApproval) => { boardApproval = next; },
     setStatusHook: (next: typeof onStatus) => { onStatus = next; },
     advance: (ms: number) => { now += ms; },
     now: () => new Date(now),
@@ -259,6 +263,42 @@ describe("happy path", () => {
     expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
   });
 
+  test("waits for the final board approval after configured manual gates pass", async () => {
+    const h = await harness();
+    h.activate();
+    let configuredApproved = false;
+    let boardApproved = false;
+    h.setManualGate(({ configured }) => ({ required: configured, approved: configuredApproved, message: "Waiting for configured approval" }));
+    h.setBoardApproval(() => ({ required: true, approved: boardApproved, message: "Waiting for board approval" }));
+    const plan = simple(h, [ct(h.registry, "human", "test.check", { manual: true })]);
+
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", stageId: "implementation" });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ taskInstanceId: "human" });
+
+    configuredApproved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", stageId: "implementation" });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ taskInstanceId: BOARD_APPROVAL_TASK_ID });
+
+    boardApproved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
+    expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
+  });
+
+  test("waits for board approval when the native stage has no configured exit tasks", async () => {
+    const h = await harness();
+    h.activate();
+    h.setBoardApproval(() => ({ required: true, approved: false, message: "Waiting for board approval" }));
+    const plan = pipeline(
+      stage("implementation", [ct(h.registry, "act", "test.act")], []),
+      stage("review", [ct(h.registry, "act2", "test.act")], []),
+    );
+
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", stageId: "implementation" });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "exit-gate", taskInstanceId: BOARD_APPROVAL_TASK_ID, state: "pending" });
+  });
+
   test("keeps the exit-gate cursor live through the final status clear", async () => {
     const h = await harness();
     h.activate();
@@ -269,7 +309,7 @@ describe("happy path", () => {
       expect(h.journal.getCursor("issue-1")).toMatchObject({
         stage: "implementation", list: "exit-gate", taskInstanceId: "gate",
       });
-      // This is the epoch fence setManualGateRequirement applies when a board
+      // This is the epoch fence setBoardApprovalRequirement applies when a board
       // operator makes the live gate manual while it is deciding to advance.
       h.journal.onStageChange("issue-1");
     });

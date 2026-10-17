@@ -24,26 +24,30 @@ async function setup() {
   return { store, approvals: new ManualGateApprovals(store.sqlite()) };
 }
 
-test("persists item requirements and keeps approvals distinct for every retry and stage visit", async () => {
+test("persists stage board requirements and keeps their approvals distinct from configured gates", async () => {
   const { store, approvals } = await setup();
-  approvals.setRequirement({ issueId: "issue", stageId: "review", gateId: "human", required: true, changedAt: "2026-01-01T00:00:00.000Z" });
+  approvals.setBoardApprovalRequirement({ issueId: "issue", stageId: "review", required: true, changedAt: "2026-01-01T00:00:00.000Z" });
 
-  expect(approvals.hasItemRequirement("issue", "review", "human")).toBe(true);
-  expect(approvals.approve({
-    issueId: "issue", stageId: "review", gateId: "human", stageEpoch: 4, attempt: 1,
+  expect(approvals.hasBoardApprovalRequirement("issue", "review")).toBe(true);
+  approvals.setBoardApprovalRequirement({ issueId: "issue", stageId: "review", required: true, changedAt: "2026-01-01T00:00:30.000Z" });
+  expect(approvals.listBoardApprovalRequirements("issue")).toEqual([
+    { issueId: "issue", stageId: "review", changedAt: "2026-01-01T00:00:00.000Z" },
+  ]);
+  expect(approvals.approveBoard({
+    issueId: "issue", stageId: "review", stageEpoch: 4, attempt: 1,
     accountId: "account-1", accountName: "operator", approvedAt: "2026-01-01T00:01:00.000Z",
   })).toBe(true);
-  expect(approvals.approve({
-    issueId: "issue", stageId: "review", gateId: "human", stageEpoch: 4, attempt: 1,
+  expect(approvals.approveBoard({
+    issueId: "issue", stageId: "review", stageEpoch: 4, attempt: 1,
     accountId: "account-2", accountName: "another", approvedAt: "2026-01-01T00:02:00.000Z",
   })).toBe(false);
-  expect(approvals.getApproval("issue", "review", "human", 4, 1)).toMatchObject({ accountId: "account-1", accountName: "operator" });
-  expect(approvals.getApproval("issue", "review", "human", 4, 2)).toBeNull();
-  expect(approvals.getApproval("issue", "review", "human", 5, 1)).toBeNull();
+  expect(approvals.getBoardApproval("issue", "review", 4, 1)).toMatchObject({ accountId: "account-1", accountName: "operator" });
+  expect(approvals.getBoardApproval("issue", "review", 4, 2)).toBeNull();
+  expect(approvals.getBoardApproval("issue", "review", 5, 1)).toBeNull();
 
-  approvals.setRequirement({ issueId: "issue", stageId: "review", gateId: "human", required: false, changedAt: "2026-01-01T00:03:00.000Z" });
-  expect(approvals.hasItemRequirement("issue", "review", "human")).toBe(false);
-  // The receipt remains an auditable history even after the per-item choice is removed.
-  expect(approvals.getApproval("issue", "review", "human", 4, 1)).toMatchObject({ approvedAt: "2026-01-01T00:01:00.000Z" });
+  approvals.setBoardApprovalRequirement({ issueId: "issue", stageId: "review", required: false, changedAt: "2026-01-01T00:03:00.000Z" });
+  expect(approvals.hasBoardApprovalRequirement("issue", "review")).toBe(false);
+  // The receipt remains auditable and a configured manual-gate receipt remains separate.
+  expect(approvals.getBoardApproval("issue", "review", 4, 1)).toMatchObject({ approvedAt: "2026-01-01T00:01:00.000Z" });
   store.close();
 });

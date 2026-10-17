@@ -5,7 +5,7 @@ import { isNativeStage } from "../config/schema";
 import type { PipelineDependencies } from "../core/pipeline";
 import { applyStageTransition, type TransitionSource } from "../core/transition";
 import type { ConveyorStore, StoredIssue } from "../db/store";
-import { StageExecutor, type ManualGateResolver, type StageOutcome } from "../engine/stage-executor";
+import { StageExecutor, type BoardApprovalResolver, type ManualGateResolver, type StageOutcome } from "../engine/stage-executor";
 import { CONTEXT_SCHEMA_VERSION, type TaskContext } from "../tasks/context";
 import { createTaskRegistry } from "../tasks/catalogue";
 import type { TaskDeps } from "../tasks/deps";
@@ -39,6 +39,8 @@ export interface IssueExecutorDependencies {
   ) => TaskDeps;
   /** Resolves the durable human-approval state for native exit gates. */
   manualGate?: ManualGateResolver;
+  /** Resolves the item-specific final board approval for native stages. */
+  boardApproval?: BoardApprovalResolver;
   /** The fallback deadline of an event wait in a repository; null while it must poll. */
   waitFallback?: (repositoryId: string, kind: WaitKind) => number | null;
   signal?: AbortSignal;
@@ -164,6 +166,7 @@ export class IssueExecutor {
           });
         },
         ...(this.dependencies.manualGate ? { manualGate: this.dependencies.manualGate } : {}),
+        ...(this.dependencies.boardApproval ? { boardApproval: this.dependencies.boardApproval } : {}),
         ...(this.dependencies.waitFallback ? { fallbackMs: (kind: WaitKind) => this.dependencies.waitFallback!(issue.repositoryId, kind) } : {}),
         settings: { maxReturns: config.settings.maxReturns },
       });

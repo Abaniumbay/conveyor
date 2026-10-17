@@ -882,4 +882,34 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX wait_subscriptions_execution ON wait_subscriptions(execution_id);
     `,
   },
+  {
+    version: 33,
+    sql: `
+      -- A board approval belongs to a stage, rather than to any one of its checks.
+      CREATE TABLE item_board_approval_requirements (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, stage_id)
+      );
+      CREATE TABLE board_approvals (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        stage_epoch INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        account_id TEXT NOT NULL,
+        account_name TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, stage_id, stage_epoch, attempt)
+      );
+      CREATE INDEX board_approvals_issue_idx
+        ON board_approvals(issue_id, stage_id, stage_epoch, attempt);
+      -- Old choices were per task. One requirement per stage preserves their intent,
+      -- while deliberately leaving their receipts in the configured-gate table.
+      INSERT INTO item_board_approval_requirements(issue_id, stage_id, changed_at)
+      SELECT issue_id, stage_id, MAX(changed_at)
+      FROM item_manual_gate_requirements
+      GROUP BY issue_id, stage_id;
+    `,
+  },
 ];

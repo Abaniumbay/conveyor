@@ -399,21 +399,22 @@ describe("renderDashboard", () => {
     expect(html).toContain("Keyboard usable");
   });
 
-  test("renders configured and item-specific manual gate approvals only for superusers", () => {
+  test("renders stage board approvals and configured manual gates only for superusers", () => {
     const selectedIssue = {
       ...parent,
       csrfToken: "csrf-token",
       manualGates: [
-        { stageId: "implementation", gateId: "ciGate", configured: true, itemSpecific: true, waiting: true, approvedBy: "admin", approvedAt: "2026-10-14T12:00:00Z" },
+        { stageId: "implementation", gateId: null, kind: "board", required: true, waiting: true, approvedBy: "admin", approvedAt: "2026-10-14T12:00:00Z" },
+        { stageId: "implementation", gateId: "ciGate", kind: "configured", required: true, waiting: false, approvedBy: null, approvedAt: null },
       ],
     } satisfies IssueCardViewModel;
     const base = { ...dashboard, selectedIssue };
 
     const reader = renderDashboard({ ...base, account: { id: "reader", username: "reader", role: "user", avatar: "🦊" } });
     expect(reader).toContain("Manual gate approvals");
-    expect(reader).toContain("implementation · ciGate");
-    expect(reader).toContain("Configured requirement · Item-specific requirement");
-    expect(reader).toContain("Waiting for board approval.");
+    expect(reader).toContain("implementation");
+    expect(reader).toContain("Configured manual requirement");
+    expect(reader).toContain("Waiting for board approval");
     expect(reader).toContain("Approved by admin");
     expect(reader).not.toContain("/manual-gates/requirement");
 
@@ -421,12 +422,12 @@ describe("renderDashboard", () => {
     expect(superuser).toContain('action="/manual-gates/requirement"');
     expect(superuser).toContain('action="/manual-gates/approve"');
     expect(superuser).toContain('name="csrf" value="csrf-token"');
-    // The switch shows this item's own requirement and turns it off.
+    // The switch shows the stage board approval and turns it off.
     expect(superuser).toContain('<input type="hidden" name="required" value="false"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="true">');
-    expect(superuser).toContain("Require board approval for this item");
-    const optional = renderDashboard({ ...base, selectedIssue: { ...selectedIssue, manualGates: [{ ...selectedIssue.manualGates[0]!, itemSpecific: false }] }, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
+    expect(superuser).toContain("Require board approval before leaving implementation");
+    const optional = renderDashboard({ ...base, selectedIssue: { ...selectedIssue, manualGates: [{ ...selectedIssue.manualGates[0]!, required: false }] }, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(optional).toContain('<input type="hidden" name="required" value="true"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="false">');
-    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve gate</button>');
+    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve</button>');
   });
 
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {

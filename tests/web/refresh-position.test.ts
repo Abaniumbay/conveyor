@@ -171,7 +171,7 @@ function startDashboard(state: {
   detailsDelayMs?: (issueId: string) => number;
   answerQuestion?: () => Promise<void>;
   approveManualGate?: () => Promise<void>;
-  setManualGateRequirement?: (required: boolean) => void;
+  setBoardApprovalRequirement?: (required: boolean) => void;
   systemStatus?: () => SystemStatusViewModel;
 }) {
   const auth = createWebAuth({
@@ -192,7 +192,7 @@ function startDashboard(state: {
   }, 50);
   const { commands } = fakeCommandBus({
     answerQuestion: () => state.answerQuestion?.(), approveManualGate: () => state.approveManualGate?.(),
-    setManualGateRequirement: (_issueId: string, _stageId: string, _gateId: string, required: boolean) => state.setManualGateRequirement?.(required), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
+    setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => state.setBoardApprovalRequirement?.(required), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
     postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
@@ -413,7 +413,7 @@ describe("dashboard live refresh position", () => {
     });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
       await page.waitForFunction(() => document.querySelector('[data-server-metrics]')?.textContent?.includes("artifacts 50% used"));
       expect(await page.locator('[data-storage-warning]').isVisible()).toBe(false);
@@ -1162,7 +1162,7 @@ describe("dashboard live refresh position", () => {
     });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
       await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
       await page.locator('input[name="answer"][value="postgres"]').check();
@@ -1181,20 +1181,20 @@ describe("dashboard live refresh position", () => {
     let finishApproval: (() => void) | undefined;
     let revision = "gate-1";
     let approved = false;
-    let itemSpecific = false;
+    let boardRequired = false;
     const build = () => {
       const card = issue("card-1", 3, "Card");
-      card.manualGates = [{ stageId: "review", gateId: "approval", configured: true, itemSpecific, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
+      card.manualGates = [{ stageId: "review", gateId: null, kind: "board", required: boardRequired, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
       return dashboard(revision, [card]);
     };
     const server = startDashboard({
       dashboard: build, revision: () => revision, delayMs: () => 0,
       approveManualGate: () => new Promise<void>((resolve) => { finishApproval = () => { approved = true; revision = "gate-2"; resolve(); }; }),
-      setManualGateRequirement: (required) => { itemSpecific = required; revision = `gate-switch-${String(required)}`; },
+      setBoardApprovalRequirement: (required) => { boardRequired = required; revision = `gate-switch-${String(required)}`; },
     });
     try {
       browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
       await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
       await page.locator('article.issue[data-issue-id="card-1"] .card-open').click();
@@ -1216,6 +1216,7 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
       expect(await page.locator("dialog.issue-details[open] .manual-gate-switch").getAttribute("aria-checked")).toBe("true");
       expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {
       server.stop(true);
     }

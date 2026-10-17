@@ -78,6 +78,10 @@ export const EVENT_CATALOGUE = {
     stageId: id, gateId: id, stageEpoch: z.number().int().nonnegative(), attempt: z.number().int().positive(),
   }).strict()),
   "gate.requirementChanged": define("Gates and review", "A manual gate was made required or optional.", z.object({ stageId: id, gateId: id, required: z.boolean() }).strict()),
+  "gate.boardApprovalChanged": define("Gates and review", "A board approval was made required or optional for one stage.", z.object({ stageId: id, required: z.boolean() }).strict()),
+  "gate.boardApproved": define("Gates and review", "A person approved the board gate for one stage visit.", z.object({
+    stageId: id, stageEpoch: z.number().int().nonnegative(), attempt: z.number().int().positive(),
+  }).strict()),
   "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` says which.", z.object({
     findingId: id, change: z.enum(FINDING_CHANGES),
   }).strict()),
