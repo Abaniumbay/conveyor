@@ -5,6 +5,7 @@ import { canonicalToolName, AGENT_DENIED_TOOLS } from "../../src/tasks/aliases";
 import { defineGroup, fail, pass, TaskInputError, TaskRegistry } from "../../src/tasks/contract";
 import { dispatchTool, type DispatchEnv, type ToolGrant } from "../../src/tasks/dispatch";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
+import { ToolRequestError } from "../../src/tasks/errors";
 
 const runs: string[] = [];
 
@@ -38,11 +39,11 @@ function registry(): TaskRegistry {
   return r;
 }
 
-function env(head: string | null = "abc"): DispatchEnv & { journal: Map<string, { status: string; response: unknown }> } {
+function env(head: string | null = "abc", taskRegistry: TaskRegistry = registry()): DispatchEnv & { journal: Map<string, { status: string; response: unknown }> } {
   const journal = new Map<string, { status: string; response: unknown }>();
   let id = 0;
   return {
-    registry: registry(),
+    registry: taskRegistry,
     deps: () => ({}) as never,
     liveHeadSha: async () => head,
     journal,
@@ -156,7 +157,9 @@ describe("dispatchTool", () => {
 
   test("an input headSha must equal the live change head", async () => {
     const g = grant(["item.setThing"]);
-    await expect(dispatchTool({ name: "item.setThing", input: { value: "a", headSha: "old" }, grant: g, actor }, env("new")))
+    const stale = dispatchTool({ name: "item.setThing", input: { value: "a", headSha: "old" }, grant: g, actor }, env("new"));
+    await expect(stale).rejects.toBeInstanceOf(ToolRequestError);
+    await expect(stale)
       .rejects.toThrow("headSha old is not the current change head new");
     runs.length = 0;
     await dispatchTool({ name: "item.setThing", input: { value: "a", headSha: "new" }, grant: g, actor }, env("new"));
@@ -164,7 +167,22 @@ describe("dispatchTool", () => {
   });
 
   test("a headSha with no change to compare against fails clearly", async () => {
-    await expect(dispatchTool({ name: "item.setThing", input: { value: "a", headSha: "x" }, grant: grant(["item.setThing"]), actor }, env(null)))
+    const missing = dispatchTool({ name: "item.setThing", input: { value: "a", headSha: "x" }, grant: grant(["item.setThing"]), actor }, env(null));
+    await expect(missing).rejects.toBeInstanceOf(ToolRequestError);
+    await expect(missing)
       .rejects.toThrow("has no change request");
+  });
+
+  test("a stale workspace.push head is an actionable tool request error", async () => {
+    const observedHead = "a".repeat(40);
+    const liveHead = "b".repeat(40);
+    const e = env(liveHead, createTaskRegistry());
+    const push = dispatchTool({
+      name: "workspace.push", input: { forceWithLease: true, headSha: observedHead }, grant: grant(["workspace.push"]), actor,
+    }, e);
+
+    await expect(push).rejects.toBeInstanceOf(ToolRequestError);
+    await expect(push).rejects.toThrow(`headSha ${observedHead} is not the current change head ${liveHead}; read change.get and retry`);
+    expect(e.journal.size).toBe(0);
   });
 });

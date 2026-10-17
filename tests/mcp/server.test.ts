@@ -150,6 +150,17 @@ describe("Conveyor MCP server", () => {
     expect(JSON.stringify(result.content)).toContain("headSha old is not the current change head new");
   });
 
+  test("returns a workspace push recovery reason to the agent", async () => {
+    const head = "a".repeat(40);
+    const control = new HttpControlClient("http://127.0.0.1:4311", "grant", async () =>
+      Response.json({ error: `The remote branch moved to ${head}; fetch and rebase before pushing.` }, { status: 422 }));
+    const client = await connectedClient(control, ["workspace.push"]);
+    const result = await client.callTool({ name: "workspace.push", arguments: { forceWithLease: true, headSha: head } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(`The remote branch moved to ${head}; fetch and rebase before pushing.`);
+    expect(JSON.stringify(result.content)).not.toContain("MCP request failed");
+  });
+
   test("rejects unknown or duplicate tool grants instead of silently weakening config", () => {
     const control: ControlClient = { async call() {} };
     expect(() => createConveyorMcpServer({ ...context, allowedTools: ["item.get", "source.typo"] }, control)).toThrow("unsupported MCP tool");
@@ -224,5 +235,14 @@ describe("HTTP control client", () => {
 
     await expect(client.call("item.get", {})).rejects.toThrow(`control request failed (${status})`);
     expect(attempts).toBe(1);
+  });
+
+  test("returns a redacted workspace push rejection from the service", async () => {
+    const head = "a".repeat(40);
+    const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () =>
+      Response.json({ error: `The remote branch moved to ${head}; fetch and rebase before pushing.` }, { status: 422 }));
+
+    await expect(client.call("workspace.push", { forceWithLease: true, headSha: head }))
+      .rejects.toThrow(`The remote branch moved to ${head}; fetch and rebase before pushing.`);
   });
 });

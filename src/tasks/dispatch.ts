@@ -9,6 +9,7 @@ import { canonicalToolName } from "./aliases";
 import type { AgentActor } from "./agent-support";
 import { runTask, TaskInputError, type TaskRegistry } from "./contract";
 import type { TaskDeps } from "./deps";
+import { ToolRequestError } from "./errors";
 import { OPERATOR_STEERING_TOOLS } from "./operator";
 
 export interface ToolGrant {
@@ -63,8 +64,8 @@ export async function dispatchTool(
   const headSha = (input as { headSha?: unknown }).headSha;
   if (typeof headSha === "string") {
     const live = await env.liveHeadSha();
-    if (live === null) throw new Error(`${name}: the item has no change request to check headSha ${headSha} against`);
-    if (live !== headSha) throw new Error(`${name}: headSha ${headSha} is not the current change head ${live}; read change.get and retry`);
+    if (live === null) throw new ToolRequestError(`${name}: the item has no change request to check headSha ${headSha} against`);
+    if (live !== headSha) throw new ToolRequestError(`${name}: headSha ${headSha} is not the current change head ${live}; read change.get and retry`);
   }
 
   const mutating = definition.mutating === true && definition.journal !== false;
