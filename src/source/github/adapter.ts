@@ -449,6 +449,18 @@ export class GitHubAdapter {
     return sourceIssue(address, issue);
   }
 
+  /** Close an issue only when GitHub still reports it as open. */
+  async closeIssue(address: string, issueNumber: number): Promise<SourceIssue> {
+    const current = await this.getIssue(address, issueNumber);
+    if (current.state === "closed") return current;
+    const issue = await this.transport.request<GitHubIssue>({
+      method: "PATCH",
+      path: `repos/${address}/issues/${issueNumber}`,
+      body: { state: "closed", state_reason: "completed" },
+    });
+    return sourceIssue(address, issue);
+  }
+
   async createChildIssue(input: {
     address: string;
     parentNumber: number;

@@ -74,7 +74,7 @@ describe("GitHub status comment renderer", () => {
       "- Created: 2026-03-01T10:00:00.000Z · Updated: 2026-03-02T11:00:00.000Z",
       "- Run started: 2026-03-02T10:00:00.000Z · Run finished: 2026-03-02T10:01:30.000Z",
       "",
-      "Conveyor never closes issues.",
+      "Conveyor closes only active completed roll-up parents; other issues remain open.",
     ].join("\n"));
   });
 
@@ -96,7 +96,7 @@ describe("GitHub status comment renderer", () => {
     expect(markdown).not.toContain("- Cost:");
     expect(markdown).not.toContain("### Acceptance criteria");
     expect(markdown).not.toContain("### Relationships");
-    expect(markdown).toContain("Conveyor never closes issues.");
+    expect(markdown).toContain("Conveyor closes only active completed roll-up parents; other issues remain open.");
   });
 
   test("escapes Markdown and HTML from untrusted text and rejects unsafe URLs", () => {

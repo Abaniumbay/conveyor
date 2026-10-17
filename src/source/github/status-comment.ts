@@ -218,5 +218,5 @@ export function renderStatusComment(input: StatusCommentInput): string {
   // Omit blank lines left behind by empty optional sections while keeping one separator.
   const compact = lines.filter((line, index) => line !== "" || (index > 0 && lines[index - 1] !== ""));
   while (compact.at(-1) === "") compact.pop();
-  return `${compact.join("\n")}\n\nConveyor never closes issues.`;
+  return `${compact.join("\n")}\n\nConveyor closes only active completed roll-up parents; other issues remain open.`;
 }

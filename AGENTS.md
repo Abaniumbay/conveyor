@@ -92,8 +92,9 @@ blocking review finding.
 5. **Domain failure vs infrastructure failure.** Return `fail(...)` for a domain failure (the work
    is not done). Throw `InfrastructureError` for a transient problem (network, GitHub outage,
    usage limit); the executor retries those with bounded backoff.
-6. **Humans stay in control.** Conveyor never closes an issue directly and never merges without
-   the gates passing.
+6. **Humans stay in control.** Conveyor never closes an ordinary issue directly and never merges
+   without the gates passing. The service may close only an active completed roll-up parent with
+   GitHub's `completed` reason after its descendant-completion rule passes.
 7. **Agents get least privilege.** Agents reach Conveyor only through the run-scoped MCP grant.
    Never give an agent a token, a secret, a wider filesystem or network view, or a tool outside its
    grant. Never weaken anything in `src/isolation/`.

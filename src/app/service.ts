@@ -144,7 +144,7 @@ export async function collectSystemStatus(options: {
   };
 }
 
-const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Never close an issue. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
+const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Agents never close source issues; Conveyor itself closes only an active completed roll-up parent after its descendant-completion rule passes. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
 const DASHBOARD_PAGE_SIZE = 20;
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
@@ -1389,6 +1389,152 @@ export class ConveyorService {
       (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issue.id));
   }
 
+  /** Reflect the successful, source-authoritative close without waiting for another poll. */
+  private recordClosedRollupParent(parent: StoredIssue, sourceIssue: SourceIssue): void {
+    this.store.upsertIssue({
+      id: parent.id,
+      repositoryId: parent.repositoryId,
+      sourceNumber: sourceIssue.number,
+      sourceUrl: sourceIssue.url,
+      title: parent.title,
+      body: parent.body,
+      sourceState: sourceIssue.state,
+      sourceStateReason: sourceIssue.stateReason ?? null,
+      labels: sourceIssue.labels,
+      sourceUpdatedAt: sourceIssue.updatedAt,
+      ...(parent.acceptedTextAt !== undefined ? { acceptedTextAt: parent.acceptedTextAt } : {}),
+      ...(sourceIssue.type !== undefined ? { issueType: sourceIssue.type } : {}),
+    });
+    this.store.setIssueProjection(parent.id, {
+      stage: parent.projectedStage,
+      state: "done",
+      warning: null,
+    });
+  }
+
+  /** Mark and close a completed active roll-up, recovering each source mutation independently. */
+  private async completeRollupParent(
+    repositoryId: string,
+    address: string,
+    parent: StoredIssue,
+    doneLabel: string | undefined,
+  ): Promise<void> {
+    const repository = this.config.repositories[repositoryId]!;
+    const stageLabel = parent.projectedStage
+      ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
+      : [];
+    const closeMutationKey = `rollup-completion-close:${parent.id}`;
+
+    let current = await this.github.getIssue(address, parent.sourceNumber);
+    const priorCloseMutation = this.store.getSourceMutationByKey(closeMutationKey);
+    if (
+      current.state === "closed" &&
+      current.stateReason === "completed" &&
+      priorCloseMutation &&
+      priorCloseMutation.status !== "succeeded"
+    ) {
+      // A request can reach GitHub even when its response is lost. Seeing the
+      // completed state on a later reconciliation is the authoritative proof
+      // that the planned mutation finished, so do not issue a second close.
+      this.store.completeSourceMutation(priorCloseMutation.id, {
+        state: current.state,
+        stateReason: current.stateReason,
+      });
+      this.recordClosedRollupParent(parent, current);
+      return;
+    }
+    if (
+      !doneLabel ||
+      current.state !== "open" ||
+      !current.labels.includes(this.config.labels.enrollment)
+    ) {
+      return;
+    }
+    const labels = [
+      this.config.labels.enrollment,
+      ...stageLabel,
+      doneLabel,
+      ...metadataLabels(current.labels, this.config)
+        .filter((label) => label !== this.config.labels.metadata.closable),
+    ].sort((left, right) => left.localeCompare(right));
+    const currentConveyorLabels = current.labels
+      .filter(
+        (label) =>
+          label === this.config.labels.enrollment ||
+          label.startsWith(`${this.config.labels.enrollment}:`) ||
+          label === this.config.labels.metadata.noSplit,
+      )
+      .sort((left, right) => left.localeCompare(right));
+    const needsLabelUpdate = labels.length !== currentConveyorLabels.length ||
+      labels.some((label, index) => label !== currentConveyorLabels[index]);
+
+    if (needsLabelUpdate) {
+      const labelMutation = this.store.beginSourceMutation({
+        idempotencyKey: `rollup-completion-labels:${parent.id}`,
+        source: repository.source,
+        operation: "issue.labels.replace",
+        request: { issueId: parent.id, issueNumber: parent.sourceNumber, labels },
+      });
+      if (labelMutation.status !== "succeeded") {
+        try {
+          await this.github.replaceConveyorLabels(
+            address,
+            parent.sourceNumber,
+            labels,
+            [this.config.labels.metadata.noSplit],
+          );
+          this.store.completeSourceMutation(labelMutation.id, { labels });
+        } catch (error) {
+          this.store.failSourceMutation(
+            labelMutation.id,
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      }
+      current = await this.github.getIssue(address, parent.sourceNumber);
+    }
+
+    if (
+      current.state !== "open" ||
+      !current.labels.includes(this.config.labels.enrollment)
+    ) {
+      return;
+    }
+    if (!current.labels.includes(doneLabel)) {
+      throw new Error("Completed roll-up parent no longer has its done label; refusing to close it.");
+    }
+
+    const closeMutation = this.store.beginSourceMutation({
+      idempotencyKey: closeMutationKey,
+      source: repository.source,
+      operation: "issue.close",
+      request: {
+        issueId: parent.id,
+        issueNumber: parent.sourceNumber,
+        stateReason: "completed",
+      },
+    });
+    if (closeMutation.status === "succeeded") return;
+    try {
+      const closed = await this.github.closeIssue(address, parent.sourceNumber);
+      if (closed.state !== "closed") {
+        throw new Error("GitHub did not confirm the completed roll-up parent as closed.");
+      }
+      this.store.completeSourceMutation(closeMutation.id, {
+        state: closed.state,
+        stateReason: closed.stateReason ?? null,
+      });
+      this.recordClosedRollupParent(parent, closed);
+    } catch (error) {
+      this.store.failSourceMutation(
+        closeMutation.id,
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
   private async reconcileRelationships(
     repositoryId: string,
     address: string,
@@ -1502,6 +1648,16 @@ export class ConveyorService {
     const repositoryIssues = this.store.listIssues(repositoryId);
     for (const parent of repositoryIssues) {
       const children = this.store.listChildren(parent.id);
+      const closeMutation = this.store.getSourceMutationByKey(`rollup-completion-close:${parent.id}`);
+      if (
+        children.length > 0 &&
+        parent.sourceState === "closed" &&
+        closeMutation &&
+        closeMutation.status !== "succeeded"
+      ) {
+        await this.completeRollupParent(repositoryId, address, parent, doneLabel);
+        continue;
+      }
       if (
         children.length === 0 ||
         parent.sourceState !== "open" ||
@@ -1574,23 +1730,8 @@ export class ConveyorService {
           }
         }
       }
-      if (
-        allChildrenSatisfied &&
-        doneLabel &&
-        (!parent.labels.includes(doneLabel) ||
-          !parent.labels.includes(this.config.labels.metadata.closable))
-      ) {
-        const metadata = metadataLabels(parent.labels, this.config);
-        const stageLabel = parent.projectedStage
-          ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
-          : [];
-        await this.github.replaceConveyorLabels(address, parent.sourceNumber, [
-          this.config.labels.enrollment,
-          ...stageLabel,
-          doneLabel,
-          this.config.labels.metadata.closable,
-          ...metadata,
-        ], [this.config.labels.metadata.noSplit]);
+      if (allChildrenSatisfied && doneLabel) {
+        await this.completeRollupParent(repositoryId, address, parent, doneLabel);
         log.info("Parent roll-up completed", {
           ...this.itemFields(parent.id),
           sourceStage: parent.projectedStage,
