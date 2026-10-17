@@ -142,6 +142,67 @@ does not change permissions or remove homes. If a selected home still cannot be 
 warns once with its run ID and failure reason; the receipt survives service restarts, while a newly
 failing home still produces its own warning.
 
+## Events
+
+Every change Conveyor makes is recorded in its event log ([events.md](events.md) lists them). The
+dashboard updates live from it, `conveyor events` prints it, and event sinks deliver it outside
+Conveyor, for example to an analyzer or a log shipper.
+
+```yaml
+settings:
+  events:
+    retention: 30d          # how long the log keeps events (default 30d); cleanup prunes older ones
+    sinks:                  # default none
+      - { type: jsonl, path: /var/log/conveyor/events.jsonl }
+    fallback:               # how long a wait for a webhook event sleeps when none comes
+      default: 15m          # any event wait without its own value
+      ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
+      change: 10m           # waiting for a pull request (change.mergeable)
+      dependencies: 30m     # waiting for blockers (item.dependenciesMet)
+    reconcileInterval: 30m  # the light safety-net reconcile while webhooks are healthy
+    fullReconcileInterval: 24h  # the full reconcile while webhooks are healthy
+```
+
+A task that waits for something GitHub reports by webhook (CI finishing, a new pull request
+head, a blocker closing) names those events. While the repository's webhooks are healthy, the task
+sleeps until one of them arrives and runs again within seconds; when none comes, it looks again
+after its fallback. A lost delivery therefore delays a wait by at most its fallback and never
+changes its result. Waits that GitHub announces no event for, such as a pull request's mergeability
+being computed, keep their `wait.poll` interval.
+
+Webhooks count as healthy when Conveyor manages the repository's webhook (`autoConfigureWebhook`
+with a `web.publicUrl`), GitHub reports it active, and its last delivery succeeded or none was made
+yet. Conveyor checks at start and hourly; any delivery received counts as healthy at once. While a
+repository's webhooks are unhealthy, or it uses polling, every wait polls at its `wait.poll`
+interval as before.
+
+While a repository's webhooks are healthy, its deliveries keep Conveyor current and the periodic
+reconcile is only a safety net. Every `settings.events.reconcileInterval` it does a light pass: it
+lists only the issues changed since the last read and reads relationships, pull request heads and
+CI for those alone. Every `settings.events.fullReconcileInterval`, and at start, it does a full
+pass: every issue, every enrolled item's provenance and author permissions, and the repository's
+visibility. An unchanged issue's sub-issues and blockers are reused for six hours instead of one.
+While a repository's webhooks are unhealthy, every periodic reconcile is a full pass every
+`settings.reconcileInterval`.
+
+GitHub sends no event for some changes, such as a collaborator's permission or a repository's
+visibility. A superuser can read one repository afresh at once with **Sync now** on its page, in
+the Setup section: a full pass that also forgets the cached relationships and re-checks the
+webhook.
+
+Deliveries GitHub could not make, for example while Conveyor was restarting, are asked for again:
+once Conveyor listens after a start, and hourly, it lists the webhook's recent deliveries and asks
+GitHub to send again, at most 50 at a time, those of the last day that failed and never arrived.
+This needs the same permission as configuring the webhook; without it Conveyor warns once and
+relies on the safety-net reconcile.
+
+A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
+Each sink keeps its own position in the database: it receives every event at least once and in
+order, resumes after a restart where it stopped, and retries a failed delivery with backoff (up to a
+minute) without slowing Conveyor down. A new sink starts with the events the log still holds. When
+retention removes events a sink has not received, the sink logs how many it missed and continues.
+Event payloads carry identifiers and states, never secrets or user-written text.
+
 ## Operator scripts
 
 `script.run` tasks, legacy script stages and check scripts run

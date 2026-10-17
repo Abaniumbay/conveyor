@@ -15,6 +15,7 @@ import { compilePipeline, stagePlanHash, type CompiledPipeline, type CompiledSta
 import { createWorkspace } from "../workspace/lifecycle";
 import type { WorkspaceManager } from "../workspace/manager";
 import type { RuntimeDeliveryState, RuntimeIssueContext } from "./runtime";
+import type { WaitKind } from "../events/topics";
 
 export interface IssueExecutorDependencies {
   config: ConveyorConfig;
@@ -38,6 +39,8 @@ export interface IssueExecutorDependencies {
   ) => TaskDeps;
   /** Resolves the durable human-approval state for native exit gates. */
   manualGate?: ManualGateResolver;
+  /** The fallback deadline of an event wait in a repository; null while it must poll. */
+  waitFallback?: (repositoryId: string, kind: WaitKind) => number | null;
   signal?: AbortSignal;
 }
 
@@ -161,6 +164,7 @@ export class IssueExecutor {
           });
         },
         ...(this.dependencies.manualGate ? { manualGate: this.dependencies.manualGate } : {}),
+        ...(this.dependencies.waitFallback ? { fallbackMs: (kind: WaitKind) => this.dependencies.waitFallback!(issue.repositoryId, kind) } : {}),
         settings: { maxReturns: config.settings.maxReturns },
       });
       const result = await executor.execute({

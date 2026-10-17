@@ -38,6 +38,21 @@ export function serverStatusHasPressure(status: SystemStatusViewModel): boolean 
     && measurement.usedBytes / measurement.totalBytes > 0.85);
 }
 
+/**
+ * The views a recorded event changes on the live dashboard: `board` (the current page),
+ * `conversation` and `activity` (an open item's tabs). Events that change nothing shown map to none.
+ * Spliced into the page script, so it must stay self-contained.
+ */
+export function dashboardViewsForEvent(type: string): string[] {
+  const views: string[] = [];
+  const group = type.slice(0, type.indexOf('.') + 1);
+  if (['item.', 'stage.', 'journey.', 'gate.', 'finding.', 'todo.', 'criterion.', 'change.', 'indicator.', 'advisoryCi.', 'repository.', 'service.', 'admission.', 'account.', 'question.', 'answer.', 'message.', 'workspace.'].includes(group) && type !== 'item.fenced') views.push('board');
+  if (type === 'run.started' || type === 'run.finished') views.push('board');
+  if (group === 'message.' || group === 'question.' || group === 'answer.') views.push('conversation');
+  if (group === 'run.') views.push('activity');
+  return views;
+}
+
 type DashboardEventSource = {
   readyState: number;
   onopen: ((event: Event) => void) | null;
@@ -71,7 +86,7 @@ export function createDashboardEventConnection(options: {
   const clearTimer = options.clearTimeout ?? ((timer) => clearTimeout(timer));
   const setWatchdog = options.setInterval ?? ((callback, delay) => setInterval(callback, delay));
   const clearWatchdog = options.clearInterval ?? ((timer) => clearInterval(timer));
-  const eventTypes = ['status', 'revision', 'conversation', 'activity'];
+  const eventTypes = ['status', 'conveyor', 'reset'];
   let source: DashboardEventSource | null = null;
   let retryTimer: any = null;
   let lastActivity = now();
@@ -255,6 +270,7 @@ export const dashboardClient = String.raw`(() => {
   const serverStatusMetrics = ${serverStatusMetrics.toString()};
   const serverStatusHasPressure = ${serverStatusHasPressure.toString()};
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
+  const dashboardViewsForEvent = ${dashboardViewsForEvent.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const morphDashboard = ${morphDashboard.toString()};
   const body = document.body;
@@ -846,7 +862,7 @@ export const dashboardClient = String.raw`(() => {
 
   // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
   // so its live parts are swapped in place: the status line, criterion evidence, todo checklist and facts.
-  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '.todos', '.details-facts', '[data-criterion-evidence]'];
+  const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '[data-manual-gates]', '.todos', '.details-facts', '[data-criterion-evidence]'];
   const scheduleSummaryRefresh = () => {
     if (summaryRefreshTimer !== null) return;
     summaryRefreshTimer = setTimeout(async () => {
@@ -871,7 +887,7 @@ export const dashboardClient = String.raw`(() => {
           else if (current) current.remove();
           else if (replacement) {
             // A part that appeared (a first todo list): place it where the server renders it.
-            const anchor = panel.querySelector(selector === '.todos' ? '.criteria' : '.relationships, .todos, .criteria');
+            const anchor = panel.querySelector(selector === '.todos' ? '[data-criterion-evidence]' : selector === '[data-manual-gates]' ? '.todos, [data-criterion-evidence]' : '.relationships, .todos, .criteria');
             if (anchor) anchor.before(document.importNode(replacement, true));
             else panel.append(document.importNode(replacement, true));
           }
@@ -1646,6 +1662,7 @@ export const dashboardClient = String.raw`(() => {
     void navigateDashboard(destination);
   }, true);
 
+  let waitForCorrelation = (_id) => Promise.resolve();
   document.addEventListener('submit', async (event) => {
     const form = event.target;
     // An answer is sent in the background: the button says so at once, and the board refreshes in place.
@@ -1672,6 +1689,7 @@ export const dashboardClient = String.raw`(() => {
         if (!response.ok) throw new Error(result.error || 'Your answer could not be recorded. Try again.');
         button.textContent = 'Answered';
         if (status instanceof HTMLElement) status.textContent = 'Answer recorded. The agent continues.';
+        await waitForCorrelation(result.correlationId);
         void replaceDashboard(new URL(location.href), { preservePosition: true });
       } catch (error) {
         button.disabled = false;
@@ -1679,6 +1697,52 @@ export const dashboardClient = String.raw`(() => {
         button.textContent = label;
         form.removeAttribute('data-answering');
         if (status instanceof HTMLElement) status.textContent = error instanceof Error ? error.message : 'Your answer could not be recorded. Try again.';
+      }
+      return;
+    }
+    // A manual gate change is sent in the background; the item refreshes in place once it is recorded.
+    if (form instanceof HTMLFormElement && form.matches('[data-manual-gate-form]')) {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      const actions = form.closest('.manual-gate-actions');
+      const status = actions && actions.querySelector('[data-manual-gate-status]');
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+      const label = button.innerHTML;
+      const fields = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) if (typeof value === 'string') fields.append(name, value);
+      // A dialog loaded on demand may carry no token of its own; the page's is the session's.
+      fields.set('csrf', body.dataset.csrfToken || fields.get('csrf') || '');
+      const buttons = actions ? Array.from(actions.querySelectorAll('button')) : [button];
+      for (const each of buttons) each.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      const isSwitch = button.getAttribute('role') === 'switch';
+      // A switch moves at once; the approve button says it is sending.
+      if (isSwitch) button.setAttribute('aria-checked', button.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+      else button.textContent = 'Approving…';
+      if (status instanceof HTMLElement) {
+        status.textContent = '';
+        delete status.dataset.error;
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+          body: fields,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'The gate could not be updated. Try again.');
+        await waitForCorrelation(result.correlationId);
+        // The same refresh a live update makes, so an open item dialog refreshes too.
+        refreshDashboardWhenSafe();
+      } catch (error) {
+        for (const each of buttons) each.disabled = false;
+        button.removeAttribute('aria-busy');
+        if (isSwitch) button.setAttribute('aria-checked', button.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+        else button.innerHTML = label;
+        if (status instanceof HTMLElement) {
+          status.textContent = error instanceof Error ? error.message : 'The gate could not be updated. Try again.';
+          status.dataset.error = 'true';
+        }
       }
       return;
     }
@@ -1781,6 +1845,44 @@ export const dashboardClient = String.raw`(() => {
         }
       } finally {
         if (button instanceof HTMLButtonElement) button.disabled = false;
+      }
+      return;
+    }
+    if (form instanceof HTMLFormElement && form.matches('[data-repository-sync]')) {
+      event.preventDefault();
+      const button = form.querySelector('[data-repository-sync-submit]');
+      const status = document.querySelector('[data-repository-sync-status]');
+      if (!(button instanceof HTMLButtonElement)) return;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Syncing…';
+      if (status instanceof HTMLElement) {
+        status.textContent = 'Reading the repository from GitHub…';
+        delete status.dataset.error;
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+          body: new URLSearchParams({ csrf: body.dataset.csrfToken || '' }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'The sync could not start.');
+        if (payload && payload.failed) throw new Error('GitHub could not be read; the repository status shows why.');
+        await waitForCorrelation(payload && payload.correlationId);
+        await replaceDashboard(new URL(location.href), { preservePosition: true });
+        // The refresh rendered a fresh status line; report on that one.
+        const fresh = document.querySelector('[data-repository-sync-status]');
+        if (fresh instanceof HTMLElement) fresh.textContent = 'Synced ' + (payload && typeof payload.issues === 'number' ? payload.issues + ' issues' : 'the repository') + ' just now.';
+      } catch (error) {
+        if (status instanceof HTMLElement) {
+          status.textContent = 'Sync failed: ' + (error instanceof Error ? error.message : 'unknown error');
+          status.dataset.error = 'true';
+        }
+      } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = 'Sync now';
       }
       return;
     }
@@ -2356,6 +2458,38 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('toggle', resumePendingRefresh, true);
   bindServerStatus();
   syncThemeControls();
+  // A command's response names its correlation id; its events arriving on the stream settle it.
+  const correlationWaiters = new Map();
+  const settleCorrelation = (id) => {
+    const waiter = correlationWaiters.get(id);
+    if (!waiter) return;
+    correlationWaiters.delete(id);
+    clearTimeout(waiter.timer);
+    waiter.resolve();
+  };
+  // Resolves when the command's events arrive, or after a short wait when the stream is down.
+  waitForCorrelation = (id) => new Promise((resolve) => {
+    if (typeof id !== 'string' || !id) return resolve();
+    const timer = setTimeout(() => settleCorrelation(id), 3000);
+    correlationWaiters.set(id, { resolve, timer });
+  });
+  // ?debug=events logs every live event and the views it refreshes to the console.
+  const debugEvents = new URLSearchParams(location.search).get('debug') === 'events';
+  // A burst of events refreshes each view once, on the next frame.
+  const pendingViews = new Set();
+  let viewFrame = null;
+  const scheduleViews = () => {
+    if (viewFrame !== null || pendingViews.size === 0) return;
+    viewFrame = requestAnimationFrame(() => {
+      viewFrame = null;
+      const views = [...pendingViews];
+      pendingViews.clear();
+      if (debugEvents) console.debug('[conveyor refresh]', views);
+      if (views.includes('board')) refreshDashboardWhenSafe();
+      if (views.includes('conversation')) scheduleConversationRefresh();
+      if (views.includes('activity')) scheduleActivityRefresh();
+    });
+  };
   const dashboardEvents = createDashboardEventConnection({
     onConnectionChange: setConnection,
     onReconnect: refreshDashboardWhenSafe,
@@ -2369,15 +2503,21 @@ export const dashboardClient = String.raw`(() => {
         }
         return;
       }
-      if (type === 'conversation') return scheduleConversationRefresh();
-      if (type === 'activity') return scheduleActivityRefresh();
-      try {
-        const next = JSON.parse(message.data);
-        if (typeof next.revision !== 'string' || next.revision === revision) return;
-        revision = next.revision;
-        body.dataset.dashboardRevision = revision;
-        refreshDashboardWhenSafe();
-      } catch {}
+      if (type === 'reset') {
+        // Events were missed and are no longer kept: every view re-reads.
+        for (const view of ['board', 'conversation', 'activity']) pendingViews.add(view);
+        return scheduleViews();
+      }
+      let event;
+      try { event = JSON.parse(message.data); } catch { return; }
+      if (!event || typeof event.type !== 'string') return;
+      // What the page has heard of, even while an open dialog holds its refresh back.
+      if (typeof event.seq === 'number') body.dataset.lastEventSeq = String(event.seq);
+      const views = dashboardViewsForEvent(event.type);
+      if (debugEvents) console.debug('[conveyor event]', event, views);
+      for (const view of views) pendingViews.add(view);
+      if (typeof event.correlationId === 'string') settleCorrelation(event.correlationId);
+      scheduleViews();
     },
   });
   document.addEventListener('visibilitychange', dashboardEvents.check);

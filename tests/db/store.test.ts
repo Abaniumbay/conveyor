@@ -33,7 +33,7 @@ describe("ConveyorStore", () => {
     expect(plan("SELECT COUNT(*) FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id WHERE r.issue_id = ?", "i1")).not.toMatch(/SCAN (u|r)\b/);
     // latestRunSummary(issueId).
     expect(plan("SELECT id FROM runs r WHERE r.issue_id = ? ORDER BY r.started_at DESC, r.id DESC LIMIT 1", "i1")).toContain("runs_issue_idx");
-    // activityRevision(), on every tick of every dashboard event stream.
+    // Run events by time, for retention.
     expect(plan("SELECT MAX(created_at) FROM run_events")).toContain("run_events_created_idx");
     store.close();
   });
@@ -43,7 +43,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(30);
+    expect(store.schemaVersion()).toBe(32);
 
     store.close();
   });
@@ -55,7 +55,7 @@ describe("ConveyorStore", () => {
     let store = await ConveyorStore.open(database);
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Paused title", body: "Paused body", sourceState: "open", labels: ["conveyor:refinement"], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
-    store.sqlite().exec("DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30);");
+    store.sqlite().exec("DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32);");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -451,7 +451,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30);");
+    store.sqlite().exec("DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32);");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -604,8 +604,6 @@ describe("ConveyorStore", () => {
     });
 
     const board = store.dashboardRevision();
-    const conversation = store.conversationRevision();
-    const activity = store.activityRevision();
     await Bun.sleep(2);
     store.upsertIssue(issue);
     store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
@@ -621,8 +619,8 @@ describe("ConveyorStore", () => {
 
     store.appendRunEvent("run-1", "progress", { message: "Editing" });
     expect(store.dashboardRevision()).toBe(board);
-    expect(store.activityRevision()).not.toBe(activity);
-    expect(store.conversationRevision()).toBe(conversation);
+    // A transcript line refreshes the logs, not the board.
+    expect(store.events().read({ type: "run.progressed" }).map((event) => event.payload)).toEqual([{ runId: "run-1" }]);
 
     store.appendConversationMessage({
       issueId: "issue-1",
@@ -635,7 +633,7 @@ describe("ConveyorStore", () => {
       message: "Running focused tests.",
     });
     expect(store.dashboardRevision()).toBe(board);
-    expect(store.conversationRevision()).not.toBe(conversation);
+    expect(store.events().read({ type: "message.posted" }).at(-1)?.issueId).toBe("issue-1");
 
     // A todo change shows on the card, so the board must refresh for it.
     new ItemTodos(store.sqlite()).set("issue-1", [{ id: "t1", text: "A", status: "in_progress" }], "run-1", "2026-01-01T00:00:02.000Z");

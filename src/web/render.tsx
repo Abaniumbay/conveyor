@@ -254,7 +254,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         <Relationships issue={issue} />
         <IndicatorDetails issue={issue} />
         {issue.manualGates && issue.manualGates.length > 0 && (
-          <section class="criteria" aria-label="Manual gate approvals">
+          <section class="criteria" aria-label="Manual gate approvals" data-manual-gates>
             <h3>Manual gate approvals</h3>
             <ul class="criteria-list">{issue.manualGates.map((gate) => (
               <li key={`${gate.stageId}:${gate.gateId}`}>
@@ -262,22 +262,24 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
                 <span>{gate.configured ? "Configured requirement" : "Not configured"}{gate.itemSpecific ? " · Item-specific requirement" : ""}</span>
                 {gate.waiting && <p>Waiting for board approval.</p>}
                 {gate.approvedBy && <p>Approved by {gate.approvedBy}{gate.approvedAt ? ` at ${new Date(gate.approvedAt).toLocaleString()}` : ""}.</p>}
-                {canManage && <div>
-                  <form method="post" action="/manual-gates/requirement">
+                {canManage && <div class="manual-gate-actions">
+                  <form method="post" action="/manual-gates/requirement" data-manual-gate-form>
                     <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
                     <input type="hidden" name="issueId" value={issue.id} />
                     <input type="hidden" name="stageId" value={gate.stageId} />
                     <input type="hidden" name="gateId" value={gate.gateId} />
                     <input type="hidden" name="required" value={gate.itemSpecific ? "false" : "true"} />
-                    <button type="submit">{gate.itemSpecific ? "Remove item requirement" : "Require board approval"}</button>
+                    {/* Only this item's own requirement; a configured one is stated above and applies either way. */}
+                    <button type="submit" class="manual-gate-switch" role="switch" aria-checked={gate.itemSpecific ? "true" : "false"}><span class="switch-track" aria-hidden="true"><span class="switch-knob" /></span><span>Require board approval for this item</span></button>
                   </form>
-                  {gate.waiting && <form method="post" action="/manual-gates/approve">
+                  {gate.waiting && <form method="post" action="/manual-gates/approve" data-manual-gate-form>
                     <input type="hidden" name="csrf" value={issue.csrfToken ?? ""} />
                     <input type="hidden" name="issueId" value={issue.id} />
                     <input type="hidden" name="stageId" value={gate.stageId} />
                     <input type="hidden" name="gateId" value={gate.gateId} />
-                    <button type="submit">Approve gate</button>
+                    <button type="submit" class="manual-gate-approve">Approve gate</button>
                   </form>}
+                  <p class="manual-gate-status" role="status" data-manual-gate-status />
                 </div>}
               </li>
             ))}</ul>
@@ -1226,7 +1228,7 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
       <section><h3>Line</h3><p>{line.join(" · ")}</p><p class="repository-empty">Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.</p></section>
       <section><h3>Now</h3>{repository.items.length > 0 ? <><p>{repository.capacity.busy} of {repository.capacity.slots} run slots busy</p><ol class="repository-items">{repository.items.map((item) => <li key={item.number}><a href={issueHref(repository.id, item.number)}>#{item.number} {item.title}</a><span>{item.stage ?? "Backlog"} · {item.state}</span></li>)}</ol></> : <p class="repository-empty">No work is in progress.</p>}</section>
       <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
-      <section><h3>Setup</h3><dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
+      <section><div class="repository-section-heading"><h3>Setup</h3>{canManageDashboard(model) && <form class="repository-sync" method="post" action={`${repositoryHref(repository.id)}/sync`} data-repository-sync><input type="hidden" name="csrf" value={model.csrfToken} /><button type="submit" data-repository-sync-submit>Sync now</button></form>}</div>{canManageDashboard(model) && <p class="repository-sync-status" role="status" data-repository-sync-status>Sync now reads every issue, permission, relationship and pull request again, for changes GitHub sends no webhook for.</p>}<dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}{repository.setup.webhooks ? ` (${repository.setup.webhooks === "healthy" ? "deliveries healthy" : "deliveries unhealthy: waits poll"})` : ""}</dd><dt>GitHub calls, last hour</dt><dd>{repository.setup.githubCalls.total}{repository.setup.githubCalls.bySource.length > 0 ? ` (${repository.setup.githubCalls.bySource.map((entry) => `${entry.source} ${entry.count}`).join(", ")})` : ""}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
       <section><h3>Last 30 days</h3><a href={`/reports/${encodeURIComponent(repository.id)}?period=30d`}>Full report →</a><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
       <section><h3>Public repository trust</h3><p>{trustStatus}</p><dl class="repository-facts"><dt>Default permission threshold</dt><dd>{repository.trust.permissionThreshold}</dd><dt>Extra trusted logins</dt><dd>{repository.trust.extraTrustedLogins.length > 0 ? repository.trust.extraTrustedLogins.join(", ") : "None"}</dd><dt>Ignored inputs</dt><dd><ul class="repository-trust-list">{repository.trust.ignoredInputCategories.map((category) => <li key={category}>{category}</li>)}</ul></dd></dl>{repository.skippedReviewItems.length > 0 ? <p class="repository-empty">Ignored native reviews: {repository.skippedReviewItems.map((item, index) => <span key={item.number}>{index > 0 && ", "}<a href={issueHref(repository.id, item.number, "journey")}>#{item.number} {item.title} Journey history</a> ({item.count})</span>)}</p> : <p class="repository-empty">No ignored native reviews have been recorded. Their text is never shown here.</p>}{repository.trust.warning && <p class="repository-error">Source checks uncertain: {repository.trust.warning}</p>}</section>
     </article>

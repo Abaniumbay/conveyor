@@ -4,6 +4,8 @@
 import type { Database } from "bun:sqlite";
 
 import { boundSnapshotLogs } from "../app/ci-gate";
+import { eventLog, type EventLog } from "../events/log";
+import type { WaitFor, WaitKind } from "../events/topics";
 import type { Feedback, TaskContext, TaskExecutionRecord } from "../tasks/context";
 
 export const DEFAULT_CONTEXT_SUMMARY_BYTES = 65536;
@@ -107,9 +109,11 @@ export class ExecutionStore {
   readonly #db: Database;
   readonly #limit: number;
   readonly #now: () => Date;
+  readonly #events: EventLog;
 
   constructor(database: Database, options: ExecutionStoreOptions = {}) {
     this.#db = database;
+    this.#events = eventLog(database);
     this.#limit = options.contextSummaryBytes ?? DEFAULT_CONTEXT_SUMMARY_BYTES;
     this.#now = options.now ?? (() => new Date());
   }
@@ -161,6 +165,7 @@ export class ExecutionStore {
          RETURNING stage_epoch`,
       )
       .get(issueId, this.#timestamp()) as { stage_epoch: number };
+    this.#events.append("item.fenced", { epoch: row.stage_epoch }, { issueId });
     return row.stage_epoch;
   }
 
@@ -285,6 +290,9 @@ export class ExecutionStore {
           id, input.itemId, input.stage, input.stageEpoch, input.attempt, input.list,
           input.taskInstanceId, key, input.recoveryState ?? "not-needed", at, at,
         );
+      this.#events.append("task.planned", {
+        executionId: id, stage: input.stage, list: input.list, taskInstanceId: input.taskInstanceId, attempt: input.attempt, epoch: input.stageEpoch,
+      }, { issueId: input.itemId });
       return { record: this.#execution(id), resumed: false };
     });
   }
@@ -329,18 +337,26 @@ export class ExecutionStore {
     return record;
   }
 
-  #update(id: string, expectedEpoch: number, assignments: string, ...values: Array<string | null>): TaskExecutionRecord {
+  #update(
+    id: string,
+    expectedEpoch: number,
+    recorded: ((record: TaskExecutionRecord) => void) | null,
+    assignments: string,
+    ...values: Array<string | null>
+  ): TaskExecutionRecord {
     const current = this.#execution(id);
     return this.#fenced(current.itemId, expectedEpoch, () => {
       this.#db
         .query(`UPDATE task_executions SET ${assignments}, updated_at = ? WHERE id = ?`)
         .run(...values, this.#timestamp(), id);
-      return this.#execution(id);
+      const record = this.#execution(id);
+      recorded?.(record);
+      return record;
     });
   }
 
   markRunning(id: string, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'running'");
+    return this.#update(id, expectedEpoch, null, "state = 'running'");
   }
 
   /**
@@ -350,12 +366,27 @@ export class ExecutionStore {
    */
   markPending(
     id: string,
-    times: { wakeAt: string | null; deadlineAt: string | null; message?: string },
+    times: { wakeAt: string | null; deadlineAt: string | null; message?: string; waitFor?: WaitFor | null },
     expectedEpoch: number,
   ): TaskExecutionRecord {
     return this.#update(
       id,
       expectedEpoch,
+      (record) => {
+        // Each pending result states what it waits for now; an earlier result's topics are gone.
+        this.#unsubscribe("execution_id = ?", id);
+        const waitFor = times.waitFor ?? null;
+        if (waitFor) {
+          const insert = this.#db.query(
+            `INSERT INTO wait_subscriptions(id, issue_id, execution_id, stage_epoch, topic, fallback_kind, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          );
+          for (const topic of new Set(waitFor.topics)) insert.run(crypto.randomUUID(), record.itemId, id, record.stageEpoch, topic, waitFor.kind, this.#timestamp());
+        }
+        this.#events.append("task.pending", {
+          executionId: id, taskInstanceId: record.taskInstanceId, wakeAt: times.wakeAt, deadlineAt: record.deadlineAt, waitFor,
+        }, { issueId: record.itemId });
+      },
       `state = 'pending', wake_at = ?,
        pending_since = COALESCE(pending_since, ?),
        deadline_at = COALESCE(deadline_at, ?),
@@ -368,11 +399,38 @@ export class ExecutionStore {
   }
 
   completeExecution(id: string, result: unknown, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'completed', result_json = ?", JSON.stringify(result ?? null));
+    return this.#update(id, expectedEpoch, (record) => {
+      this.#unsubscribe("execution_id = ?", id);
+      this.#events.append("task.passed", { executionId: id, taskInstanceId: record.taskInstanceId }, { issueId: record.itemId });
+    }, "state = 'completed', result_json = ?", JSON.stringify(result ?? null));
   }
 
+  /** A failure ends the wait, including a timeout, which fails the task with its last message. */
   failExecution(id: string, result: unknown, expectedEpoch: number): TaskExecutionRecord {
-    return this.#update(id, expectedEpoch, "state = 'failed', result_json = ?", JSON.stringify(result ?? null));
+    return this.#update(id, expectedEpoch, (record) => {
+      this.#unsubscribe("execution_id = ?", id);
+      this.#events.append("task.failed", { executionId: id, taskInstanceId: record.taskInstanceId }, { issueId: record.itemId });
+    }, "state = 'failed', result_json = ?", JSON.stringify(result ?? null));
+  }
+
+  #unsubscribe(where: "execution_id = ?" | "issue_id = ?", value: string): void {
+    this.#db.query(`DELETE FROM wait_subscriptions WHERE ${where}`).run(value);
+  }
+
+  /** The parked waits a topic would wake: one row per item and execution. */
+  subscribers(topic: string): Array<{ issueId: string; executionId: string; stageEpoch: number; kind: WaitKind }> {
+    const rows = this.#db
+      .query("SELECT DISTINCT issue_id, execution_id, stage_epoch, fallback_kind FROM wait_subscriptions WHERE topic = ? ORDER BY issue_id")
+      .all(topic) as Array<{ issue_id: string; execution_id: string; stage_epoch: number; fallback_kind: WaitKind }>;
+    return rows.map((row) => ({ issueId: row.issue_id, executionId: row.execution_id, stageEpoch: row.stage_epoch, kind: row.fallback_kind }));
+  }
+
+  /** The topics an item's parked task waits for. */
+  subscriptions(issueId: string): Array<{ topic: string; executionId: string; stageEpoch: number; kind: WaitKind }> {
+    const rows = this.#db
+      .query("SELECT topic, execution_id, stage_epoch, fallback_kind FROM wait_subscriptions WHERE issue_id = ? ORDER BY topic")
+      .all(issueId) as Array<{ topic: string; execution_id: string; stage_epoch: number; fallback_kind: WaitKind }>;
+    return rows.map((row) => ({ topic: row.topic, executionId: row.execution_id, stageEpoch: row.stage_epoch, kind: row.fallback_kind }));
   }
 
   // Stage cursor and wake-ups
@@ -422,9 +480,11 @@ export class ExecutionStore {
     });
   }
 
+  /** Drops the cursor and with it every wait of the item; `onStageChange` does this after a fence. */
   clearCursor(issueId: string, expectedEpoch: number): void {
     this.#fenced(issueId, expectedEpoch, () => {
       this.#db.query("DELETE FROM stage_cursors WHERE issue_id = ?").run(issueId);
+      this.#unsubscribe("issue_id = ?", issueId);
     });
   }
 
@@ -440,10 +500,13 @@ export class ExecutionStore {
    * touched; its deadline is unchanged. Returns whether a parked cursor was woken.
    */
   wakeNow(issueId: string): boolean {
-    const result = this.#db
-      .query("UPDATE stage_cursors SET wake_at = ?, updated_at = ? WHERE issue_id = ? AND state = 'pending'")
-      .run(this.#timestamp(), this.#timestamp(), issueId);
-    return result.changes > 0;
+    return this.#db.transaction(() => {
+      const result = this.#db
+        .query("UPDATE stage_cursors SET wake_at = ?, updated_at = ? WHERE issue_id = ? AND state = 'pending'")
+        .run(this.#timestamp(), this.#timestamp(), issueId);
+      if (result.changes > 0) this.#events.append("task.woken", {}, { issueId });
+      return result.changes > 0;
+    })();
   }
 
   /** The earliest persisted wake-up strictly after `now`, or null. */

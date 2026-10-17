@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 
 import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
+import { eventLog, type EventLog } from "../events/log";
+import { EventThrottle } from "../events/throttle";
+import type { NormalizedGitHubEvent } from "../source/github/events";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {
@@ -351,10 +354,18 @@ export function databaseSchemaVersion(filename: string): number {
 export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
+  readonly #events: EventLog;
+  /** Transcript lines are many: they are recorded as at most one `run.progressed` per run and second. */
+  readonly #runProgress: EventThrottle;
 
   private constructor(database: Database) {
     this.#database = database;
     this.#executions = new ExecutionStore(database);
+    this.#events = eventLog(database);
+    this.#runProgress = new EventThrottle(1_000, (runId) => {
+      const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
+      this.#events.append("run.progressed", { runId }, { issueId: owner?.issue_id ?? null });
+    });
   }
 
   /**
@@ -386,6 +397,11 @@ export class ConveyorStore {
   /** The durable task-chain journal: context, cursor, wake-ups and epochs. */
   executions(): ExecutionStore {
     return this.#executions;
+  }
+
+  /** The append-only event log every write of this database records its change in. */
+  events(): EventLog {
+    return this.#events;
   }
 
   /** The underlying database, shared with ExecutionStore. */
@@ -443,6 +459,7 @@ export class ConveyorStore {
         insertEvidence.run(issueId, entry.criterionId, entry.manual ? 1 : 0, entry.recordedHead, entry.sourceLinkHead, entry.recordedAt);
         entry.tests.forEach((test, ordinal) => insertTest.run(issueId, entry.criterionId, ordinal, test.name, test.file, test.line ?? null, test.description ?? null));
       }
+      if (entries.length > 0) this.#events.append("criterion.testsRecorded", { criteria: entries.map((entry) => entry.criterionId) }, { issueId });
     });
     replace();
   }
@@ -477,10 +494,13 @@ export class ConveyorStore {
   }
 
   setPushPreferences(accountId: string, preferences: PushPreferences): void {
-    this.#database.query(`INSERT INTO push_preferences(account_id, questions, stopped, done, updated_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(account_id) DO UPDATE SET questions = excluded.questions, stopped = excluded.stopped, done = excluded.done, updated_at = excluded.updated_at`)
-      .run(accountId, Number(preferences.questions), Number(preferences.stopped), Number(preferences.done), now());
-    if (!preferences.questions && !preferences.stopped && !preferences.done) this.deletePushSubscriptions(accountId);
+    this.#database.transaction(() => {
+      this.#database.query(`INSERT INTO push_preferences(account_id, questions, stopped, done, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET questions = excluded.questions, stopped = excluded.stopped, done = excluded.done, updated_at = excluded.updated_at`)
+        .run(accountId, Number(preferences.questions), Number(preferences.stopped), Number(preferences.done), now());
+      this.#events.append("notifications.settingsChanged", { accountId });
+      if (!preferences.questions && !preferences.stopped && !preferences.done) this.deletePushSubscriptions(accountId);
+    })();
   }
 
   putPushSubscription(accountId: string, endpoint: string, keys: { p256dh: string; auth: string }): void {
@@ -489,15 +509,22 @@ export class ConveyorStore {
       this.#database.query(`INSERT INTO push_subscriptions(id, account_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
         .run(randomUUID(), accountId, endpoint, keys.p256dh, keys.auth, now());
+      this.#events.append("notifications.subscribed", { accountId });
     })();
   }
 
   deletePushSubscription(accountId: string, endpoint: string): void {
-    this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ? AND endpoint = ?").run(accountId, endpoint);
+    this.#database.transaction(() => {
+      const removed = this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ? AND endpoint = ?").run(accountId, endpoint);
+      if (removed.changes > 0) this.#events.append("notifications.unsubscribed", { accountId });
+    })();
   }
 
   deletePushSubscriptions(accountId: string): void {
-    this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ?").run(accountId);
+    this.#database.transaction(() => {
+      const removed = this.#database.query("DELETE FROM push_subscriptions WHERE account_id = ?").run(accountId);
+      if (removed.changes > 0) this.#events.append("notifications.unsubscribed", { accountId });
+    })();
   }
 
   listPushSubscriptions(accountId: string): PushSubscription[] {
@@ -535,18 +562,28 @@ export class ConveyorStore {
   }
 
   seedDashboardSuperuser(username: string, passwordHash: string): void {
-    if (this.#database.query("SELECT 1 FROM dashboard_accounts LIMIT 1").get()) return;
-    this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'superuser', ?)`).run(randomUUID(), username, passwordHash, now());
+    this.#database.transaction(() => {
+      if (this.#database.query("SELECT 1 FROM dashboard_accounts LIMIT 1").get()) return;
+      const id = randomUUID();
+      this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'superuser', ?)`).run(id, username, passwordHash, now());
+      this.#events.append("account.created", { accountId: id, role: "superuser" });
+    })();
   }
 
   createDashboardUser(username: string, passwordHash: string): DashboardAccount {
     const id = randomUUID();
-    this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'user', ?)`).run(id, username, passwordHash, now());
+    this.#database.transaction(() => {
+      this.#database.query(`INSERT INTO dashboard_accounts(id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'user', ?)`).run(id, username, passwordHash, now());
+      this.#events.append("account.created", { accountId: id, role: "user" });
+    })();
     return this.dashboardAccountById(id)!;
   }
 
   changeDashboardPassword(id: string, passwordHash: string): void {
-    this.#database.query("UPDATE dashboard_accounts SET password_hash = ?, session_version = session_version + 1 WHERE id = ?").run(passwordHash, id);
+    this.#database.transaction(() => {
+      const changed = this.#database.query("UPDATE dashboard_accounts SET password_hash = ?, session_version = session_version + 1 WHERE id = ?").run(passwordHash, id);
+      if (changed.changes > 0) this.#events.append("account.passwordChanged", { accountId: id });
+    })();
   }
 
   deleteDashboardAccount(id: string): DashboardAccountDeletion {
@@ -555,12 +592,16 @@ export class ConveyorStore {
       if (!account) return "not_found";
       if (account.role === "superuser") return "superuser";
       this.#database.query("DELETE FROM dashboard_accounts WHERE id = ?").run(id);
+      this.#events.append("account.deleted", { accountId: id });
       return "deleted";
     })();
   }
 
   changeDashboardAvatar(id: string, avatar: string): void {
-    this.#database.query("UPDATE dashboard_accounts SET avatar = ? WHERE id = ?").run(avatar, id);
+    this.#database.transaction(() => {
+      const changed = this.#database.query("UPDATE dashboard_accounts SET avatar = ? WHERE id = ? AND avatar IS NOT ?").run(avatar, id, avatar);
+      if (changed.changes > 0) this.#events.append("account.avatarChanged", { accountId: id });
+    })();
   }
 
   /** Throws unless the database is new or already at this build's schema. */
@@ -599,18 +640,27 @@ export class ConveyorStore {
   }
 
   recordConfigSnapshot(hash: string, config: unknown): void {
-    this.#database
-      .query(
-        `INSERT INTO config_snapshots(hash, config_json, created_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(hash) DO NOTHING`,
-      )
-      .run(hash, json(config), now());
+    this.#database.transaction(() => {
+      const inserted = this.#database
+        .query(
+          `INSERT INTO config_snapshots(hash, config_json, created_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(hash) DO NOTHING`,
+        )
+        .run(hash, json(config), now());
+      if (inserted.changes > 0) this.#events.append("config.recorded", { hash });
+    })();
   }
 
   upsertRepository(repository: RepositoryRecord): void {
     const timestamp = now();
-    this.#database
+    const before = this.#database
+      .query("SELECT config_name, source, address, folder, config_hash FROM repositories WHERE id = ?")
+      .get(repository.id) as { config_name: string; source: string; address: string; folder: string; config_hash: string } | null;
+    const unchanged = before !== null && before.config_name === repository.configName && before.source === repository.source
+      && before.address === repository.address && before.folder === repository.folder && before.config_hash === repository.configHash;
+    if (unchanged) return;
+    this.#database.transaction(() => this.#database
       .query(
         `INSERT INTO repositories(
            id, config_name, source, address, folder, config_hash, created_at, updated_at
@@ -632,11 +682,14 @@ export class ConveyorStore {
         repository.configHash,
         timestamp,
         timestamp,
-      );
+      ))();
+    this.#events.append("repository.onboarded", { address: repository.address }, { repositoryId: repository.id });
   }
 
   setRepositoryTrustStatus(status: RepositoryTrustStatus): void {
-    this.#database
+    const previous = this.repositoryTrustStatus(status.repositoryId)?.visibility ?? null;
+    this.#database.transaction(() => {
+      this.#database
       .query(
         `INSERT INTO repository_trust_statuses(repository_id, visibility, checked_at, warning)
          VALUES (?, ?, ?, ?)
@@ -646,6 +699,8 @@ export class ConveyorStore {
            warning = excluded.warning`,
       )
       .run(status.repositoryId, status.visibility, status.checkedAt, status.warning);
+      if (previous !== status.visibility) this.#events.append("repository.trustChanged", { visibility: status.visibility }, { repositoryId: status.repositoryId });
+    })();
   }
 
   repositoryTrustStatus(repositoryId: string): RepositoryTrustStatus | null {
@@ -678,7 +733,10 @@ export class ConveyorStore {
 
     const remove = this.#database.transaction((repositoryIds: readonly string[]) => {
       const statement = this.#database.query("DELETE FROM repositories WHERE id = ?");
-      for (const repositoryId of repositoryIds) statement.run(repositoryId);
+      for (const repositoryId of repositoryIds) {
+        statement.run(repositoryId);
+        this.#events.append("repository.removed", {}, { repositoryId });
+      }
     });
     const removed = rows.map((row) => row.id);
     remove(removed);
@@ -686,8 +744,15 @@ export class ConveyorStore {
   }
 
   upsertIssue(issue: IssueProjection): void {
+    this.#database.transaction(() => this.#upsertIssue(issue))();
+  }
+
+  #upsertIssue(issue: IssueProjection): void {
     const timestamp = now();
     const labels = [...new Set(issue.labels)].sort((left, right) => left.localeCompare(right));
+    const before = this.#database
+      .query("SELECT title, body, source_state, source_state_reason, labels_json, parent_id, accepted_text_at FROM issues WHERE id = ?")
+      .get(issue.id) as { title: string; body: string; source_state: string; source_state_reason: string | null; labels_json: string; parent_id: string | null; accepted_text_at: string | null } | null;
     this.#database
       .query(
         `INSERT INTO issues(
@@ -736,6 +801,19 @@ export class ConveyorStore {
         timestamp,
         timestamp,
       );
+    const scope = { repositoryId: issue.repositoryId, issueId: issue.id };
+    if (!before) {
+      this.#events.append("item.discovered", { number: issue.sourceNumber }, scope);
+    } else {
+      const changed: Array<"title" | "body" | "state" | "labels" | "parent" | "acceptedText"> = [];
+      if (before.title !== issue.title) changed.push("title");
+      if (before.body !== issue.body) changed.push("body");
+      if (before.source_state !== issue.sourceState || before.source_state_reason !== (issue.sourceStateReason ?? null)) changed.push("state");
+      if (before.labels_json !== json(labels)) changed.push("labels");
+      if (issue.parentId != null && before.parent_id !== issue.parentId) changed.push("parent");
+      if (issue.acceptedTextAt != null && before.accepted_text_at !== issue.acceptedTextAt) changed.push("acceptedText");
+      if (changed.length > 0) this.#events.append("item.updated", { number: issue.sourceNumber, changed }, scope);
+    }
     if (issue.issueType !== undefined) this.setIssueMetadata(issue.id, { type: issue.issueType });
   }
 
@@ -753,14 +831,21 @@ export class ConveyorStore {
     const syncedAt = update.fieldsSyncedAt ?? current.fieldsSyncedAt;
     if (syncedAt !== undefined) next.fieldsSyncedAt = syncedAt;
     if (json(next) === json(current)) return;
-    this.#database.query("UPDATE issues SET metadata_json = ? WHERE id = ?").run(json(next), issueId);
+    this.#database.transaction(() => {
+      this.#database.query("UPDATE issues SET metadata_json = ? WHERE id = ?").run(json(next), issueId);
+      // A read that finds the same values only moves its sync time; that is not a change.
+      if (next.type !== current.type || json(next.fields) !== json(current.fields)) this.#events.append("item.metadataChanged", {}, { issueId });
+    })();
   }
 
   setQueueRank(issueId: string, rank: number): void {
     if (!Number.isFinite(rank)) throw new Error("queue rank must be finite");
-    this.#database
-      .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
-      .run(rank, now(), issueId);
+    this.#database.transaction(() => {
+      const changed = this.#database
+        .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ? AND queue_rank IS NOT ?")
+        .run(rank, now(), issueId, rank);
+      if (changed.changes > 0) this.#events.append("item.queueChanged", { rank }, { issueId });
+    })();
   }
 
   nextQueueRank(): number {
@@ -782,6 +867,11 @@ export class ConveyorStore {
       this.writeIssueProjection(issueId, projection);
       const changed = before !== null &&
         (before.projected_stage !== projection.stage || before.projected_state !== projection.state);
+      if (changed) {
+        this.#events.append("item.stageChanged", {
+          fromStage: before.projected_stage, fromState: before.projected_state, toStage: projection.stage, toState: projection.state,
+        }, { issueId });
+      }
       // Waiting for an answer and resuming after it is not a stage change: while the item's step is
       // parked on a question, moving between active and needs-input in the same stage keeps the
       // step, so the answer resumes it. Any other change fences the item.
@@ -1069,6 +1159,7 @@ export class ConveyorStore {
       for (const blockerId of normalizedBlockers) {
         insertDependency.run(issueId, blockerId);
       }
+      this.#events.append("item.relationshipsChanged", { parentId: parent?.parentId ?? null, dependencies: normalizedBlockers }, { issueId });
     })();
   }
 
@@ -1131,6 +1222,7 @@ export class ConveyorStore {
            VALUES (?, ?, ?, 'active', ?)`,
         )
         .run(id, issueId, Number(latest.generation) + 1, startedAt);
+      this.#events.append("item.enrolled", { generation: Number(latest.generation) + 1 }, { issueId });
       return this.getEnrollment(id)!;
     })();
   }
@@ -1159,7 +1251,10 @@ export class ConveyorStore {
            WHERE issue_id = ? AND status = 'active'`,
         )
         .run(status, timestamp, issueId);
-      if (ended.changes > 0) this.#executions.onStageChange(issueId);
+      if (ended.changes > 0) {
+        this.#executions.onStageChange(issueId);
+        this.#events.append("item.offboarded", { status }, { issueId });
+      }
     })();
   }
 
@@ -1170,20 +1265,31 @@ export class ConveyorStore {
     branch: string;
     status: string;
   }): void {
-    this.#database
-      .query(
-        `INSERT INTO workspaces(id, enrollment_id, path, branch, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET status = excluded.status`,
-      )
-      .run(
-        workspace.id,
-        workspace.enrollmentId,
-        workspace.path,
-        workspace.branch,
-        workspace.status,
-        now(),
-      );
+    this.#database.transaction(() => {
+      const before = this.#database.query("SELECT status FROM workspaces WHERE id = ?").get(workspace.id) as { status: string } | null;
+      this.#database
+        .query(
+          `INSERT INTO workspaces(id, enrollment_id, path, branch, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET status = excluded.status`,
+        )
+        .run(
+          workspace.id,
+          workspace.enrollmentId,
+          workspace.path,
+          workspace.branch,
+          workspace.status,
+          now(),
+        );
+      if (before?.status !== workspace.status) {
+        this.#events.append("workspace.recorded", { branch: workspace.branch, status: workspace.status }, { issueId: this.#enrollmentIssue(workspace.enrollmentId) });
+      }
+    })();
+  }
+
+  #enrollmentIssue(enrollmentId: string): string | null {
+    const row = this.#database.query("SELECT issue_id FROM enrollments WHERE id = ?").get(enrollmentId) as { issue_id: string } | null;
+    return row?.issue_id ?? null;
   }
 
   getActiveWorkspace(issueId: string): StoredWorkspace | null {
@@ -1230,11 +1336,16 @@ export class ConveyorStore {
   }
 
   markWorkspaceRemoved(workspaceId: string): void {
-    this.#database
-      .query(
-        `UPDATE workspaces SET status = 'removed', removed_at = ? WHERE id = ?`,
-      )
-      .run(now(), workspaceId);
+    this.#database.transaction(() => {
+      const removed = this.#database
+        .query(
+          `UPDATE workspaces SET status = 'removed', removed_at = ? WHERE id = ? AND status <> 'removed'`,
+        )
+        .run(now(), workspaceId);
+      if (removed.changes === 0) return;
+      const row = this.#database.query("SELECT enrollment_id FROM workspaces WHERE id = ?").get(workspaceId) as { enrollment_id: string } | null;
+      this.#events.append("workspace.removed", {}, { issueId: row ? this.#enrollmentIssue(row.enrollment_id) : null });
+    })();
   }
 
   upsertPullRequest(input: {
@@ -1252,7 +1363,9 @@ export class ConveyorStore {
       )
       .get(input.issueId) as { id: string } | null;
     if (!enrollment) throw new Error(`issue ${input.issueId} has no active enrollment`);
-    this.#database
+    const before = this.#database.query("SELECT state, merged_at FROM pull_requests WHERE id = ?").get(input.id) as { state: string; merged_at: string | null } | null;
+    this.#database.transaction(() => {
+      this.#database
       .query(
         `INSERT INTO pull_requests(
            id, enrollment_id, source_number, url, state, merged_at, updated_at
@@ -1271,6 +1384,10 @@ export class ConveyorStore {
         input.mergedAt ?? null,
         now(),
       );
+      const merged = before?.merged_at == null && input.mergedAt != null;
+      if (!before) this.#events.append("change.opened", { number: input.number, state: input.state }, { issueId: input.issueId });
+      else if (before.state !== input.state || merged) this.#events.append("change.stateChanged", { number: input.number, state: merged ? "merged" : input.state }, { issueId: input.issueId });
+    })();
   }
 
   getCurrentPullRequest(issueId: string): StoredPullRequest | null {
@@ -1417,6 +1534,9 @@ export class ConveyorStore {
     executionEpoch?: number | null;
   }): void {
     const executionEpoch = state.executionEpoch ?? null;
+    const before = this.#database
+      .query("SELECT stage_id, status, feedback_cycle FROM stage_states WHERE issue_id = ?")
+      .get(state.issueId) as { stage_id: string; status: string; feedback_cycle: number } | null;
     this.#database
       .query(
         `INSERT INTO stage_states(
@@ -1445,6 +1565,9 @@ export class ConveyorStore {
         executionEpoch,
         now(),
       );
+    if (before?.stage_id !== state.stageId || before.status !== state.status || before.feedback_cycle !== state.feedbackCycle) {
+      this.#events.append("stage.stateChanged", { stageId: state.stageId, status: state.status, feedbackCycle: state.feedbackCycle }, { issueId: state.issueId });
+    }
   }
 
   getStageState(issueId: string): StoredStageState | null {
@@ -1502,23 +1625,37 @@ export class ConveyorStore {
   }
 
   completeStageTransition(id: string): void {
-    this.#database
-      .query(
-        `UPDATE stage_transitions
-         SET status = 'completed', completed_at = ?
-         WHERE id = ? AND status <> 'completed'`,
-      )
-      .run(now(), id);
+    this.#database.transaction(() => {
+      const ended = this.#database
+        .query(
+          `UPDATE stage_transitions
+           SET status = 'completed', completed_at = ?
+           WHERE id = ? AND status <> 'completed'`,
+        )
+        .run(now(), id);
+      if (ended.changes > 0) this.#appendJourney(id, "completed");
+    })();
   }
 
   failStageTransition(id: string): void {
-    this.#database
-      .query(
-        `UPDATE stage_transitions
-         SET status = 'failed', completed_at = ?
-         WHERE id = ? AND status <> 'completed'`,
-      )
-      .run(now(), id);
+    this.#database.transaction(() => {
+      const ended = this.#database
+        .query(
+          `UPDATE stage_transitions
+           SET status = 'failed', completed_at = ?
+           WHERE id = ? AND status <> 'completed' AND status <> 'failed'`,
+        )
+        .run(now(), id);
+      if (ended.changes > 0) this.#appendJourney(id, "failed");
+    })();
+  }
+
+  #appendJourney(id: string, status: "completed" | "failed"): void {
+    const row = this.#database
+      .query("SELECT issue_id, kind, from_stage, to_stage FROM stage_transitions WHERE id = ?")
+      .get(id) as { issue_id: string; kind: string; from_stage: string | null; to_stage: string | null } | null;
+    if (!row) return;
+    this.#events.append("journey.recorded", { transitionId: id, kind: row.kind, fromStage: row.from_stage, toStage: row.to_stage, status }, { issueId: row.issue_id });
   }
 
   listStageTransitions(issueId: string): StoredStageTransition[] {
@@ -1603,15 +1740,42 @@ export class ConveyorStore {
     deliveryId: string;
     eventType: string;
     payload: unknown;
+    /** The configured repository the delivery is for, when it is for one. */
+    repositoryId?: string | null;
+    /** What the delivery means for Conveyor, recorded with it; absent when nothing reacts to it. */
+    normalized?: NormalizedGitHubEvent | null;
   }): boolean {
-    const result = this.#database
-      .query(
-        `INSERT INTO source_events(source, delivery_id, event_type, payload_json, received_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(source, delivery_id) DO NOTHING`,
-      )
-      .run(event.source, event.deliveryId, event.eventType, json(event.payload), now());
-    return result.changes === 1;
+    return this.#database.transaction(() => {
+      const result = this.#database
+        .query(
+          `INSERT INTO source_events(source, delivery_id, event_type, payload_json, received_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(source, delivery_id) DO NOTHING`,
+        )
+        .run(event.source, event.deliveryId, event.eventType, json(event.payload), now());
+      if (result.changes !== 1) return false;
+      const scope = { repositoryId: event.repositoryId ?? null };
+      this.#events.append("webhook.received", { deliveryId: event.deliveryId, eventType: event.eventType }, scope);
+      const normalized = event.normalized;
+      if (normalized) this.#appendGitHubEvent(normalized, scope);
+      return true;
+    })();
+  }
+
+  #appendGitHubEvent(event: NormalizedGitHubEvent, scope: { repositoryId: string | null }): void {
+    // Each branch narrows the payload to its own type.
+    switch (event.type) {
+      case "github.issueUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.relationshipChanged": return this.#events.append(event.type, event.payload, scope);
+      case "github.changeUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.ciUpdated": return this.#events.append(event.type, event.payload, scope);
+      case "github.ping": return this.#events.append(event.type, event.payload, scope);
+    }
+  }
+
+  /** Whether a webhook delivery with this id was stored. */
+  hasSourceEvent(source: string, deliveryId: string): boolean {
+    return this.#database.query("SELECT 1 FROM source_events WHERE source = ? AND delivery_id = ?").get(source, deliveryId) !== null;
   }
 
   beginSourceMutation(input: {
@@ -1624,41 +1788,50 @@ export class ConveyorStore {
     if (existing) return existing;
     const id = randomUUID();
     const timestamp = now();
-    this.#database
-      .query(
-        `INSERT INTO source_mutations(
-           id, idempotency_key, source, operation, status, request_json, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.idempotencyKey,
-        input.source,
-        input.operation,
-        json(input.request),
-        timestamp,
-        timestamp,
-      );
+    this.#database.transaction(() => {
+      this.#database
+        .query(
+          `INSERT INTO source_mutations(
+             id, idempotency_key, source, operation, status, request_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.idempotencyKey,
+          input.source,
+          input.operation,
+          json(input.request),
+          timestamp,
+          timestamp,
+        );
+      this.#events.append("source.mutationStarted", { mutationId: id, operation: input.operation });
+    })();
     return this.getSourceMutation(id)!;
   }
 
   completeSourceMutation(id: string, response: unknown): void {
-    this.#database
-      .query(
-        `UPDATE source_mutations
-         SET status = 'succeeded', response_json = ?, error = NULL, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(json(response), now(), id);
+    this.#database.transaction(() => {
+      const row = this.#database
+        .query(
+          `UPDATE source_mutations
+           SET status = 'succeeded', response_json = ?, error = NULL, updated_at = ?
+           WHERE id = ? RETURNING operation`,
+        )
+        .get(json(response), now(), id) as { operation: string } | null;
+      if (row) this.#events.append("source.mutationCompleted", { mutationId: id, operation: row.operation });
+    })();
   }
 
   failSourceMutation(id: string, error: string): void {
-    this.#database
-      .query(
-        `UPDATE source_mutations
-         SET status = 'failed', error = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(error, now(), id);
+    this.#database.transaction(() => {
+      const row = this.#database
+        .query(
+          `UPDATE source_mutations
+           SET status = 'failed', error = ?, updated_at = ? WHERE id = ? RETURNING operation`,
+        )
+        .get(error, now(), id) as { operation: string } | null;
+      if (row) this.#events.append("source.mutationFailed", { mutationId: id, operation: row.operation });
+    })();
   }
 
   getSourceMutation(id: string): SourceMutation | null {
@@ -1704,31 +1877,34 @@ export class ConveyorStore {
   }
 
   createRun(run: RunRecordInput): void {
-    this.#database
-      .query(
-        `INSERT INTO runs(
-           id, issue_id, stage_id, attempt, kind, status, config_hash, started_at, heartbeat_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        run.id,
-        run.issueId,
-        run.stageId,
-        run.attempt,
-        run.kind,
-        run.status,
-        run.configHash,
-        run.startedAt,
-        run.startedAt,
-      );
+    this.#database.transaction(() => {
+      this.#database
+        .query(
+          `INSERT INTO runs(
+             id, issue_id, stage_id, attempt, kind, status, config_hash, started_at, heartbeat_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          run.id,
+          run.issueId,
+          run.stageId,
+          run.attempt,
+          run.kind,
+          run.status,
+          run.configHash,
+          run.startedAt,
+          run.startedAt,
+        );
+      this.#events.append("run.started", { runId: run.id, kind: run.kind, stage: run.stageId }, { issueId: run.issueId });
+    })();
   }
 
   recoverInterruptedExecutions(configHash: string): { runs: number; stages: number; recoveredStages: Array<{ issueId: string; stageId: string }> } {
     return this.#database.transaction(() => {
       const timestamp = now();
       const interruptedRuns = this.#database
-        .query("SELECT id, started_at FROM runs WHERE status = 'running'")
-        .all() as Array<{ id: string; started_at: string }>;
+        .query("SELECT id, issue_id, started_at FROM runs WHERE status = 'running'")
+        .all() as Array<{ id: string; issue_id: string | null; started_at: string }>;
       const result = {
         reason: "Conveyor restarted before this run completed.",
       };
@@ -1751,11 +1927,12 @@ export class ConveyorStore {
              ) VALUES (?, ?, 0, 0, 0, 0, 'USD', 'unavailable', ?, ?)`,
           )
           .run(randomUUID(), run.id, durationMs, timestamp);
+        this.#events.append("run.finished", { runId: run.id, status: "interrupted" }, { issueId: run.issue_id });
       }
 
       const interruptedStages = this.#database
-        .query("SELECT issue_id, stage_id FROM stage_states WHERE status IN ('running', 'error', 'interrupted')")
-        .all() as Array<{ issue_id: string; stage_id: string }>;
+        .query("SELECT issue_id, stage_id, feedback_cycle FROM stage_states WHERE status IN ('running', 'error', 'interrupted')")
+        .all() as Array<{ issue_id: string; stage_id: string; feedback_cycle: number }>;
       // 'error' stages were waiting on an in-memory retry timer and 'interrupted' stages were
       // deliberately stopped during shutdown; neither has a live process after restart.
       this.#database
@@ -1764,6 +1941,9 @@ export class ConveyorStore {
            WHERE status IN ('running', 'error', 'interrupted')`,
         )
         .run(configHash, timestamp);
+      for (const stage of interruptedStages) {
+        this.#events.append("stage.stateChanged", { stageId: stage.stage_id, status: "ready", feedbackCycle: stage.feedback_cycle }, { issueId: stage.issue_id });
+      }
       return {
         runs: interruptedRuns.length,
         stages: interruptedStages.length,
@@ -1820,6 +2000,9 @@ export class ConveyorStore {
           runId,
         );
       if (updated.changes !== 1) throw new Error(`unknown run: ${runId}`);
+      this.#runProgress.forget(runId);
+      const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
+      this.#events.append("run.finished", { runId, status: finish.status }, { issueId: owner?.issue_id ?? null });
       this.#database
         .query(
           `INSERT INTO usage_cost_entries(
@@ -2049,6 +2232,7 @@ export class ConveyorStore {
              observed_at = excluded.observed_at, body_json = excluded.body_json, changed_at = excluded.changed_at`,
         )
         .run(issueId, indicator.id, headSha, indicator.label, indicator.state, indicator.detail, indicator.progress, indicator.url, indicator.observedAt, body, changedAt);
+      if (!same) this.#events.append("indicator.changed", { indicatorId: indicator.id, state: indicator.state, progress: indicator.progress, headSha }, { issueId });
       return true;
     })();
   }
@@ -2069,7 +2253,10 @@ export class ConveyorStore {
   }
 
   clearIndicator(issueId: string, indicatorId: string): void {
-    this.#database.query("DELETE FROM item_indicators WHERE issue_id = ? AND indicator_id = ?").run(issueId, indicatorId);
+    this.#database.transaction(() => {
+      const removed = this.#database.query("DELETE FROM item_indicators WHERE issue_id = ? AND indicator_id = ?").run(issueId, indicatorId);
+      if (removed.changes > 0) this.#events.append("indicator.cleared", { indicatorId }, { issueId });
+    })();
   }
 
   dashboardRevision(): string {
@@ -2123,30 +2310,6 @@ export class ConveyorStore {
            ), '|')
            FROM (SELECT * FROM criterion_test_evidence_tests ORDER BY issue_id, criterion_id, ordinal)
          ), '') FROM criterion_test_evidence_tests`,
-      )
-      .all() as Array<Record<string, SQLQueryBindings>>;
-    return rows
-      .map((row) => `${String(row.source)}:${Number(row.count)}:${String(row.updated)}`)
-      .join("|");
-  }
-
-  conversationRevision(): string {
-    const row = this.#database
-      .query(
-        `SELECT COUNT(*) AS count, COALESCE(MAX(created_at), '') AS updated
-         FROM conversation_messages`,
-      )
-      .get() as Record<string, SQLQueryBindings>;
-    return `${Number(row.count)}:${String(row.updated)}`;
-  }
-
-  activityRevision(): string {
-    const rows = this.#database
-      .query(
-        `SELECT 'runs' AS source, COUNT(*) AS count,
-           COALESCE(MAX(COALESCE(finished_at, started_at)), '') AS updated FROM runs
-         UNION ALL
-         SELECT 'run_events', COUNT(*), COALESCE(MAX(created_at), '') FROM run_events`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows
@@ -2269,6 +2432,8 @@ export class ConveyorStore {
       this.#database
         .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
         .run(current.queue_rank, timestamp, other.id);
+      this.#events.append("item.queueChanged", { rank: other.queue_rank }, { issueId: current.id });
+      this.#events.append("item.queueChanged", { rank: current.queue_rank }, { issueId: other.id });
     })();
   }
 
@@ -2313,6 +2478,7 @@ export class ConveyorStore {
       this.#database
         .query("UPDATE issues SET queue_rank = ?, updated_at = ? WHERE id = ?")
         .run(rank, now(), issueId);
+      this.#events.append("item.queueChanged", { rank }, { issueId });
     })();
   }
 
@@ -2352,6 +2518,7 @@ export class ConveyorStore {
           now(),
         );
       this.recordPushEvent({ id: `question:${id}`, category: "questions", target: input.issueId });
+      this.#events.append("question.asked", { questionId: id }, { issueId: input.issueId });
       return this.getQuestion(id)!;
     })();
   }
@@ -2371,6 +2538,7 @@ export class ConveyorStore {
       this.#database
         .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ?")
         .run(timestamp, questionId);
+      this.#events.append("answer.recorded", { questionId }, { issueId: question.issueId });
     })();
   }
 
@@ -2409,7 +2577,7 @@ export class ConveyorStore {
           .query(`INSERT INTO answers(id, question_id, source, answer_json, created_at) VALUES (?, ?, ?, ?, ?)`)
           .run(randomUUID(), question.id, source, json(input.answer), now());
       }
-      this.#database
+      const inserted = this.#database
         .query(
           `INSERT OR IGNORE INTO conversation_messages(
              issue_id, run_id, stage_id, question_id, actor_type, actor_id, actor_name,
@@ -2428,13 +2596,17 @@ export class ConveyorStore {
           input.message,
           now(),
         );
+      if (inserted.changes > 0) this.#events.append("message.posted", { messageId: String(inserted.lastInsertRowid), role: "user" }, { issueId: question.issueId });
     })();
   }
 
   completeQuestionAnswer(questionId: string): void {
-    this.#database
-      .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ? AND status = 'open'")
-      .run(now(), questionId);
+    this.#database.transaction(() => {
+      const row = this.#database
+        .query("UPDATE questions SET status = 'answered', answered_at = ? WHERE id = ? AND status = 'open' RETURNING issue_id")
+        .get(now(), questionId) as { issue_id: string } | null;
+      if (row) this.#events.append("answer.recorded", { questionId }, { issueId: row.issue_id });
+    })();
   }
 
   getQuestion(questionId: string): StoredQuestion | null {
@@ -2524,6 +2696,7 @@ export class ConveyorStore {
            VALUES (?, ?, ?, ?, ?)`,
         )
         .run(runId, row.sequence, type, json(payload), now());
+      this.#runProgress.note(runId);
       const eventPayload = payload !== null && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
         : null;
@@ -2692,7 +2865,8 @@ export class ConveyorStore {
       message = trimToLimit(message);
     }
     const createdAt = now();
-    const result = this.#database
+    const result = this.#database.transaction(() => {
+      const inserted = this.#database
       .query(
         `INSERT INTO conversation_messages(
            issue_id, run_id, stage_id, question_id, actor_type, actor_id, actor_name,
@@ -2711,6 +2885,9 @@ export class ConveyorStore {
         message,
         createdAt,
       );
+      this.#events.append("message.posted", { messageId: String(inserted.lastInsertRowid), role: input.actorType }, { issueId: input.issueId });
+      return inserted;
+    })();
     return {
       id: Number(result.lastInsertRowid),
       ...input,

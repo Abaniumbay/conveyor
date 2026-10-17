@@ -295,6 +295,16 @@ describe("ci.passed", () => {
     expect(awaiting.message).toContain("Web to start");
   });
 
+  test("while runs are unfinished, waits for the head's CI to finish or the change to move", async () => {
+    const running = await run("ci.passed", { context: gateCtx(ci({ runs: [crun("Tests", "running")] })) }) as Pending;
+    expect({ waitFor: running.waitFor, after: running.after }).toEqual({ waitFor: { kind: "ci", topics: ["ci:o/r:head1", "change:o/r:5"] }, after: undefined });
+  });
+
+  test("with nothing unfinished, only the settle window remains and it looks again when that ends", async () => {
+    const settling = await run("ci.passed", { context: gateCtx(ci({ firstSeenAt: new Date(T0 - 30_000).toISOString(), runs: [crun("Tests", "passed")] })) }) as Pending;
+    expect({ waitFor: settling.waitFor, after: settling.after }).toEqual({ waitFor: { kind: "ci", topics: ["ci:o/r:head1", "change:o/r:5"] }, after: 90_000 });
+  });
+
   test("fails with focused logs and a retry route when a run failed", async () => {
     const snapshot = ci({ runs: [crun("Tests", "failed", { log: "##[error]boom" }), crun("Lint", "running"), crun("Ext", "failed", { hasLog: false, url: null })] });
     const result = await run("ci.passed", { context: gateCtx(snapshot) }) as Fail;

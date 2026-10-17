@@ -785,7 +785,6 @@ describe("GitHubAdapter", () => {
           "pull_request",
           "workflow_run",
           "check_suite",
-          "deployment_status",
           "sub_issues",
           "issue_dependencies",
         ],
@@ -982,5 +981,40 @@ describe("GitHub calls Conveyor avoids", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("GitHubAdapter.rateLimit", () => {
+  test("reads the REST and GraphQL limits with their reset time", async () => {
+    const transport = new FakeTransport({ resources: {
+      core: { limit: 5000, remaining: 4100, reset: 1_792_000_000 },
+      graphql: { limit: 5000, remaining: 4990, reset: 1_792_000_600 },
+    } });
+    expect(await new GitHubAdapter(transport, "conveyor").rateLimit()).toEqual({
+      core: { limit: 5000, remaining: 4100, resetAt: new Date(1_792_000_000_000).toISOString() },
+      graphql: { limit: 5000, remaining: 4990, resetAt: new Date(1_792_000_600_000).toISOString() },
+    });
+    expect(transport.requests).toEqual([{ method: "GET", path: "rate_limit" }]);
+  });
+
+  test("a resource GitHub does not report is null", async () => {
+    expect(await new GitHubAdapter(new FakeTransport({ resources: {} }), "conveyor").rateLimit()).toEqual({ core: null, graphql: null });
+  });
+});
+
+describe("webhook deliveries", () => {
+  // GitHub's delivery ids are past Number.MAX_SAFE_INTEGER; a rounded id names no delivery.
+  const LARGE_ID = "3848834007148003328";
+
+  test("keeps a delivery id exact", async () => {
+    const transport = new FakeTransport(`[{"id":${LARGE_ID},"guid":"g-1","delivered_at":"2026-10-17T16:08:05Z","status_code":502,"redelivery":false}]`);
+    const deliveries = await new GitHubAdapter(transport, "conveyor").listHookDeliveries("owner/my-app", 7);
+    expect(deliveries).toEqual([{ id: LARGE_ID, guid: "g-1", deliveredAt: "2026-10-17T16:08:05Z", statusCode: 502, redelivery: false }]);
+  });
+
+  test("asks for a redelivery by that exact id", async () => {
+    const transport = new FakeTransport(null);
+    await new GitHubAdapter(transport, "conveyor").redeliverHookDelivery("owner/my-app", 7, LARGE_ID);
+    expect(transport.requests[0]).toMatchObject({ method: "POST", path: `repos/owner/my-app/hooks/7/deliveries/${LARGE_ID}/attempts` });
   });
 });

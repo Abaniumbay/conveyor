@@ -36,6 +36,7 @@ Run these from the repository root.
 | Typecheck only | `bun run typecheck` |
 | Regenerate `docs/tasks.md` | `bun run docs:tasks` |
 | Regenerate `docs/cli.md` | `bun run docs:cli` |
+| Regenerate `docs/events.md` | `bun run docs:events` |
 | Regenerate dashboard screenshots | `bun run docs:screenshots` (needs `bunx playwright install chromium` once) |
 | Run the CLI from source | `bun run src/cli.ts --help` |
 
@@ -47,6 +48,7 @@ Run these from the repository root.
 | --- | --- |
 | `src/app/` | The service (`service.ts`), issue execution, CI provider, retention, reports. |
 | `src/engine/` | Stage executor, execution journal (epochs, cursors), review findings, manual gates. |
+| `src/events/` | Event catalogue (`catalogue.ts`), the append-only event log (`log.ts`), the in-process bus (`bus.ts`), actor and correlation context. |
 | `src/tasks/` | Task contract (`contract.ts`), every task group (`item.ts`, `change.ts`, `agent.ts`, …), the registry (`catalogue.ts`), the plan compiler, MCP dispatch. |
 | `src/db/` | `migrations.ts` (schema) and `store.ts` (all SQL). |
 | `src/config/` | `schema.ts` (zod schemas), loader, packaged defaults, migration. |
@@ -59,7 +61,7 @@ Run these from the repository root.
 | `tests/` | Mirrors `src/`: the test for `src/x/y.ts` is `tests/x/y.test.ts`. |
 | `tests/support/` | Shared fixtures: `delivery-world.ts` (a full delivery with fakes at the edges), `bwrap.ts`. |
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
-| `docs/` | User and operator documentation. `tasks.md` and `cli.md` are generated; never edit them by hand. |
+| `docs/` | User and operator documentation. `tasks.md`, `cli.md` and `events.md` are generated; never edit them by hand. |
 
 Some files are very large: `src/app/service.ts` (~3,600 lines), `src/db/store.ts` (~2,200),
 `src/web/client.ts` (~2,000), `src/web/render.tsx` and `src/web/server.ts` (~1,250 each). Never
@@ -116,6 +118,47 @@ sends work back.
    reports in `src/app/reports.ts` and `src/app/repository-summary.ts`.
 3. Update the expected version in `tests/db/store.test.ts` (`expect(store.schemaVersion()).toBe(N)`).
 4. A new query that sorts or filters a large table needs an index in the same migration.
+5. A new write that changes state follows the event recipe below.
+
+### State change (event)
+
+Every change of Conveyor's state is recorded as an event, so the dashboard, the scheduler and
+event sinks can react to it and the change can be traced.
+
+1. Declare the event in `src/events/catalogue.ts` with its group, a one-line description and a
+   strict zod payload. Payloads carry identifiers and states only: never secrets, tokens,
+   passwords, hashes or user-written text.
+2. Append it from the store or engine method that makes the change
+   (`this.#events.append(...)` in `src/db/store.ts`, `eventLog(database).append(...)` in
+   `src/engine/`), inside the same transaction as the write. Append only when something actually
+   changed. Never append from a caller of that method.
+3. React to an event by subscribing to the service's `EventBus`; never publish to it directly.
+   Subscribers run after the transaction committed, in order.
+4. Add a test in `tests/db/store-events.test.ts`: the change records its event, and an unchanged
+   write records none.
+5. Run `bun run docs:events` and commit `docs/events.md`. `tests/events/docs.test.ts` fails
+   otherwise.
+
+### Action (command)
+
+Every action a person or the CLI takes is a command. The dashboard and the control socket never call
+a service mutation directly.
+
+1. Declare the command in `src/commands/registry.ts`: the role it needs (`user` or `superuser`),
+   a description and a strict zod input. Add its result type to `CommandResults` in
+   `src/commands/bus.ts`.
+2. Register its handler in `ConveyorService.registerCommands` (or, for something only the process
+   owning the control socket can do, in `src/control/server.ts`). A handler that changes a
+   specific account checks that the actor owns it or is a superuser.
+3. The route or control endpoint parses, authenticates and checks CSRF, then calls `dispatch` with
+   the signed-in actor (`actorOf(session)`) or the CLI actor. Errors the bus raises
+   (`CommandInputError`, `CommandForbiddenError`, `CommandUnavailableError`) map to 400, 403 and
+   503; a handler's own error keeps the route's existing status.
+4. A handler never calls `schedule()` or wakes a parked item to react to its own change: it records
+   the change, and a subscriber in `ConveyorService.subscribeToEvents` reacts. A change that fences
+   in-flight work (`onStageChange`) stays in the handler, synchronous.
+5. Add a test that drives the route and reads `command.accepted` from the log
+   (`tests/web/server.test.ts`, "dashboard commands").
 
 ### Task (gate check, act or agent tool)
 
@@ -146,8 +189,8 @@ sends work back.
 1. Data for the page is built in `src/app/service.ts` into the view models in `src/web/types.ts`.
    `src/web/render.tsx` only renders; keep logic out of it.
 2. Routes and JSON endpoints live in `src/web/server.ts`. A route that changes state requires a
-   signed-in session and the CSRF token; a superuser-only action checks the role on the server,
-   not only by hiding a button.
+   signed-in session and the CSRF token, and sends a command (see above); a superuser-only action
+   checks the role on the server, not only by hiding a button.
 3. `src/web/client.ts` exports browser code inside a `String.raw` template (`dashboardClient`).
    Functions spliced in with `.toString()` must be self-contained: no imports, no references to
    module-level names. Inside the template, a backtick or `${` must be escaped.
@@ -204,7 +247,8 @@ sends work back.
 ## 8. Before you finish
 
 1. `bun run check` passes.
-2. Generated docs are regenerated if you touched tasks (`docs:tasks`) or the CLI (`docs:cli`).
+2. Generated docs are regenerated if you touched tasks (`docs:tasks`), the CLI (`docs:cli`) or
+   events (`docs:events`).
 3. Screenshots are regenerated if you changed dashboard layout.
 4. A user-visible change adds a Markdown fragment under `changes/`, named with its positive issue
    number and a short slug. Its frontmatter selects Added, Changed, Deprecated, Removed or Fixed;

@@ -56,6 +56,11 @@ const waitTimeoutSchema = z.union([z.literal("unlimited"), durationSchema]).tran
   value === "unlimited" ? null : value,
 );
 
+/** An event sink: `jsonl` appends each event as one JSON line to `path`, rotated like the service log. */
+const eventSinkSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("jsonl"), path: absolutePathSchema }).strict(),
+]);
+
 const settingsSchema = z
   .object({
     runners: z.number().int().positive().default(1),
@@ -100,6 +105,39 @@ const settingsSchema = z
       .strict()
       .prefault({})
       .transform(({ runHistory, artifacts }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts })),
+    /** The event log: how long it keeps events, and where else it delivers them. */
+    events: z
+      .object({
+        retention: durationSchema.prefault("30d"),
+        /** Consumers outside Conveyor; each receives every event at least once, in order. */
+        sinks: z.array(eventSinkSchema).default([]),
+        /**
+         * How long a task waiting for a webhook event sleeps when none comes, by kind of wait.
+         * Used only while the repository's webhooks are healthy; otherwise tasks poll.
+         */
+        fallback: z
+          .object({
+            default: durationSchema.prefault("15m"),
+            ci: durationSchema.prefault("5m"),
+            change: durationSchema.prefault("10m"),
+            dependencies: durationSchema.prefault("30m"),
+          })
+          .strict()
+          .prefault({}),
+        /** The periodic reconcile interval while webhooks are healthy; settings.reconcileInterval otherwise. */
+        reconcileInterval: durationSchema.prefault("30m"),
+        /** How often the periodic reconcile reads everything while webhooks are healthy. */
+        fullReconcileInterval: durationSchema.prefault("24h"),
+      })
+      .strict()
+      .prefault({})
+      .transform(({ retention, sinks, fallback, reconcileInterval, fullReconcileInterval }) => ({
+        retentionMs: retention,
+        sinks,
+        fallbackMs: { default: fallback.default, ci: fallback.ci, change: fallback.change, dependencies: fallback.dependencies },
+        reconcileIntervalMs: reconcileInterval,
+        fullReconcileIntervalMs: fullReconcileInterval,
+      })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z
       .object({

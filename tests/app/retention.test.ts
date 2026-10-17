@@ -53,7 +53,7 @@ describe("retention", () => {
   test("prunes retired history by age while reclaiming every terminal run home", async () => {
     const { store, artifacts } = await world();
     const dry = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW, dryRun: true });
-    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] } });
+    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 } });
     expect(store.listRunEvents("closed-old")).toHaveLength(2);
 
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW });
@@ -71,7 +71,7 @@ describe("retention", () => {
 
   test("an unlimited retention policy keeps history but reclaims terminal homes", async () => {
     const { store, artifacts } = await world();
-    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] } });
+    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 } });
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: DAY }, now: NOW });
     expect(report.artifacts.directories).toBe(4);
     expect(store.listRunEvents("closed-new")).toHaveLength(2);
@@ -90,7 +90,7 @@ describe("retention", () => {
     const out: string[] = [];
     const code = await runCli(["cleanup", "--home", home, "--dry-run"], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(0);
-    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).\nWould delete 5 run homes (4.9 KB).");
+    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).\nWould delete 5 run homes (4.9 KB).\nWould delete 0 recorded events past the event log's retention.");
     const json: string[] = [];
     await runCli(["cleanup", "--home", home, "--artifacts", "30d", "--json"], { out: (text) => json.push(text), err: () => {}, environment: {}, interactive: false });
     expect(JSON.parse(json.join(""))).toMatchObject({ dryRun: false, runHistory: { events: 6 }, artifacts: { directories: 3 }, homes: { directories: 5, bytes: 5000, failures: [] } });

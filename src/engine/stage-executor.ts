@@ -19,6 +19,7 @@ import {
   snapshotReads, validAfter,
 } from "./stage-context";
 import { resolveRoute } from "./stage-routing";
+import type { WaitKind } from "../events/topics";
 
 export type StageOutcome =
   | StageExecutionResult
@@ -34,6 +35,11 @@ export interface StageExecutorOptions {
   setStatus: (message: string | null) => void | Promise<void>;
   /** Reads the human-approval state after an exit check has passed. */
   manualGate?: ManualGateResolver;
+  /**
+   * How long a task that waits for events sleeps when none comes; null when the repository's
+   * webhooks cannot be trusted to deliver them, and the task polls as before.
+   */
+  fallbackMs?: (kind: WaitKind) => number | null;
   settings: { maxReturns: number };
 }
 
@@ -258,9 +264,13 @@ export class StageExecutor {
       return { kind: "fail", message: result.message, details: result.details, route: result.route };
     }
     const now = clock().getTime();
-    const wakeAt = new Date(now + (validAfter(result.after) ?? task.wait.pollMs)).toISOString();
+    // A task that names the events it waits for sleeps until one of them, at most until its fallback.
+    const after = validAfter(result.after);
+    const fallback = result.waitFor ? this.#o.fallbackMs?.(result.waitFor.kind) ?? null : null;
+    const delay = fallback !== null ? Math.min(after ?? Number.POSITIVE_INFINITY, fallback) : (after ?? task.wait.pollMs);
+    const wakeAt = new Date(now + delay).toISOString();
     const deadlineAt = task.wait.timeoutMs === null ? null : new Date(now + task.wait.timeoutMs).toISOString();
-    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt, message: result.message }, run.epoch);
+    const pendingRecord = journal.markPending(record.id, { wakeAt, deadlineAt, message: result.message, waitFor: result.waitFor ?? null }, run.epoch);
     await this.#save(run, {
       state: "pending", pendingSince: pendingRecord.pendingSince, wakeAt, deadlineAt: pendingRecord.deadlineAt,
     });

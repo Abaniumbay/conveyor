@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { issueTopic } from "../events/topics";
 import type { ItemContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -237,7 +238,11 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       const blocker = store.getIssue(blockerId);
       if (!blocker) return [];
       // The scheduler's rule: a dependency is satisfied when closed or done.
-      return [{ id: blocker.id, number: blocker.sourceNumber, satisfied: blocker.sourceState === "closed" || blocker.projectedState === "done" }];
+      const address = config.repositories[blocker.repositoryId]?.address;
+      return [{
+        id: blocker.id, number: blocker.sourceNumber, satisfied: blocker.sourceState === "closed" || blocker.projectedState === "done",
+        ...(address !== undefined ? { address } : {}),
+      }];
     });
     const item: ItemContext = {
       id: issue.id,
@@ -331,11 +336,13 @@ const refinementComplete = check(
 
 const dependenciesMet = check(
   "item.dependenciesMet",
-  "Pending while any dependency is neither closed nor done; the message lists them.",
+  "Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once.",
   ({ context }) => {
     const waiting = context.item!.dependencies.filter((dependency) => !dependency.satisfied);
     if (waiting.length === 0) return pass();
-    return pending(`Waiting for dependencies: ${waiting.map((dependency) => `#${dependency.number}`).join(", ")}`);
+    // A blocker of a repository Conveyor does not track sends no event; the fallback covers it.
+    const topics = waiting.flatMap((dependency) => (dependency.address ? [issueTopic(dependency.address, dependency.number)] : []));
+    return pending(`Waiting for dependencies: ${waiting.map((dependency) => `#${dependency.number}`).join(", ")}`, { waitFor: { topics, kind: "dependencies" } });
   },
   { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 } },
 );

@@ -11,6 +11,7 @@ import { createControlHandler, serveControlSocket } from "../../src/control/serv
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+import { fakeCommandBus } from "../support/web-commands";
 
 const directories: string[] = [];
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -85,6 +86,30 @@ async function running() {
 }
 
 describe("control socket", () => {
+  test("reports the last hour's GitHub calls of the running service", async () => {
+    const { service } = await running();
+    service.githubCalls.record({ method: "GET", route: "repos/:repo/issues", repository: "owner/app", source: "tick", durationMs: 1, ok: true, status: null });
+    const handler = createControlHandler(service, { supervised: false } as never);
+    const report = await (await handler(new Request("http://x/v1/github-calls"))).json() as { total: number; bySource: Record<string, number>; rateLimit: unknown };
+    expect(report).toMatchObject({ total: 1, bySource: { tick: 1 }, rateLimit: null });
+  });
+
+  test("CLI actions are commands sent by the CLI, and a retry's changes share its correlation id", async () => {
+    const { store, cli } = await running();
+    const after = store.events().latestSeq();
+    expect((await cli("item", "pause", "app:2")).code).toBe(0);
+    expect((await cli("item", "retry", "app:1")).code).toBe(0);
+    const accepted = store.events().read({ afterSeq: after, type: "command.accepted" });
+    expect(accepted.map((event) => [event.payload, event.actor.kind])).toEqual([
+      [{ command: "item.pause" }, "cli"],
+      [{ command: "item.retry" }, "cli"],
+    ]);
+    const retry = store.events().read({ correlationId: accepted[1]!.correlationId! }).map((event) => event.type);
+    expect(retry).toContain("item.requeued");
+    expect(retry.at(-1)).toBe("command.accepted");
+  });
+
+
   test("is private to the service account and refuses a second live server; a stale socket is replaced", async () => {
     const { home, socket, service } = await running();
     expect((await stat(socket)).mode & 0o777).toBe(0o600);
@@ -139,7 +164,7 @@ describe("control socket", () => {
 describe("restart route", () => {
   test("a supervised service refuses to restart over running work unless forced", async () => {
     let restarts = 0;
-    const service = { activeWork: () => ({ items: [{ issueId: "i", repositoryId: "app", stageId: "implementation" }], steering: 0 }) };
+    const service = { activeWork: () => ({ items: [{ issueId: "i", repositoryId: "app", stageId: "implementation" }], steering: 0 }), commands: fakeCommandBus({}).commands };
     const handler = createControlHandler(service as never, { supervised: true } as never, { restart: () => { restarts += 1; } });
     const restart = (body: unknown) => handler(new Request("http://x/v1/restart", { method: "POST", body: JSON.stringify(body) }));
     const refused = await restart({});

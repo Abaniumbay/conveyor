@@ -8,6 +8,7 @@ import type { Database } from "bun:sqlite";
 import { ciAnnouncement, classifyRuns, describeCiFailure, readRunLog, type FailedRun } from "../app/ci-gate";
 import type { CiChange, CiProvider, CiRun } from "../app/ci-provider";
 import type { AdvisoryCiWatch } from "../tasks/context";
+import { eventLog } from "../events/log";
 import type { ExecutionStore } from "./journal";
 
 export const DEFAULT_SETTLE_MS = 120_000;
@@ -27,7 +28,8 @@ export interface AdvisoryCiOptions {
   resolve: (repositoryId: string) => AdvisoryCiTarget;
   /** Posts a Conveyor conversation message; runs inside the transaction that records a final message. */
   post: (itemId: string, stage: string, message: string) => void;
-  pollMs?: number;
+  /** How long a watch waits before reading CI again; by repository, since webhooks can make it longer. */
+  pollMs?: number | ((repositoryId: string) => number);
   /** Called with a provider error; the watch is simply polled again later. */
   onError?: (watch: AdvisoryCiWatch, error: unknown) => void;
   /** Told every provider read of a watch: the head's runs (before `ignoreChecks`), or the error. */
@@ -92,12 +94,12 @@ export class AdvisoryCiWatches {
       this.#db
         .query("UPDATE advisory_ci_watches SET state = 'superseded' WHERE item_id = ? AND head_sha != ? AND state = 'active'")
         .run(input.itemId, input.headSha);
-      this.#db
+      const inserted = this.#db
         .query(`INSERT OR IGNORE INTO advisory_ci_watches(id, repository_id, item_id, head_sha, stage, change_id, change_url, state,
                   started_at, settle_ms, wake_at, deadline_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
         .run(
           crypto.randomUUID(), input.repositoryId, input.itemId, input.headSha, input.stage, input.change.changeId, input.change.url,
-          at, input.settleMs ?? DEFAULT_SETTLE_MS, iso(input.now + (this.#options.pollMs ?? DEFAULT_POLL_MS)),
+          at, input.settleMs ?? DEFAULT_SETTLE_MS, iso(input.now + this.#pollMs(input.repositoryId)),
           iso(input.now + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS)),
         );
       // A head that comes back (A, B, A) resumes its own watch unless it already reported.
@@ -107,6 +109,9 @@ export class AdvisoryCiWatches {
       const row = this.#db
         .query("SELECT * FROM advisory_ci_watches WHERE repository_id = ? AND item_id = ? AND head_sha = ?")
         .get(input.repositoryId, input.itemId, input.headSha) as Row;
+      if (inserted.changes > 0) {
+        eventLog(this.#db).append("advisoryCi.watchStarted", { watchId: row.id, headSha: input.headSha }, { repositoryId: input.repositoryId, issueId: input.itemId });
+      }
       return toWatch(row);
     })();
   }
@@ -138,10 +143,24 @@ export class AdvisoryCiWatches {
     }
   }
 
-  #reschedule(watch: AdvisoryCiWatch, now: number): void {
+  #pollMs(repositoryId: string): number {
+    const pollMs = this.#options.pollMs;
+    return typeof pollMs === "function" ? pollMs(repositoryId) : pollMs ?? DEFAULT_POLL_MS;
+  }
+
+  /** Reads CI again after the poll interval, or sooner when `soonerMs` (the settle window's end) comes first. */
+  #reschedule(watch: AdvisoryCiWatch, now: number, soonerMs?: number): void {
+    const delay = Math.min(this.#pollMs(watch.repositoryId), soonerMs !== undefined && soonerMs > 0 ? soonerMs : Number.POSITIVE_INFINITY);
     this.#db
       .query("UPDATE advisory_ci_watches SET wake_at = ? WHERE id = ? AND state = 'active'")
-      .run(iso(now + (this.#options.pollMs ?? DEFAULT_POLL_MS)), watch.id);
+      .run(iso(now + delay), watch.id);
+  }
+
+  /** Makes the active watches of a head due now (its CI finished); returns how many. */
+  wakeHead(repositoryId: string, headSha: string, now: number): number {
+    return this.#db
+      .query("UPDATE advisory_ci_watches SET wake_at = ? WHERE repository_id = ? AND head_sha = ? AND state = 'active' AND wake_at > ?")
+      .run(iso(now), repositoryId, headSha, iso(now)).changes;
   }
 
   #isActive(id: string): boolean {
@@ -194,7 +213,8 @@ export class AdvisoryCiWatches {
       return this.#finish(watch, "timed-out", now, bounded(
         `CI for ${sha} did not finish within ${minutes} minutes; still waiting on ${waitingOn}. ${watch.changeUrl}/checks`));
     }
-    this.#reschedule(watch, now);
+    // With nothing unfinished, only the settle window remains: look again when it ends.
+    this.#reschedule(watch, now, unfinished.length === 0 ? Date.parse(watch.startedAt) + watch.settleMs - now : undefined);
   }
 
   /** The state change, `final_message_at` and the message itself commit together, so the message is sent exactly once. */
@@ -203,7 +223,10 @@ export class AdvisoryCiWatches {
       const changed = this.#db
         .query("UPDATE advisory_ci_watches SET state = ?, final_message_at = ? WHERE id = ? AND state = 'active' AND final_message_at IS NULL")
         .run(state, iso(now), watch.id).changes;
-      if (changed > 0) this.#options.post(watch.itemId, watch.stage, message);
+      if (changed > 0) {
+        this.#options.post(watch.itemId, watch.stage, message);
+        eventLog(this.#db).append("advisoryCi.finished", { watchId: watch.id, state }, { repositoryId: watch.repositoryId, issueId: watch.itemId });
+      }
     })();
   }
 }

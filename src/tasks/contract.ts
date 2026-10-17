@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { WaitFor } from "../events/topics";
 import { ToolRequestError } from "./errors";
 import {
   CAPTURED_KEYS,
@@ -15,17 +16,24 @@ export type Route = { retry: true } | { return: string } | { stop: string };
 
 export type TaskResult =
   | { status: "pass"; output?: unknown }
-  | { status: "pending"; message: string; after?: number }
+  | { status: "pending"; message: string; after?: number; waitFor?: WaitFor }
   | { status: "fail"; message: string; details?: unknown; route?: Route };
 
 export function pass(output?: unknown): TaskResult {
   return output === undefined ? { status: "pass" } : { status: "pass", output };
 }
 
-export function pending(message: string, options: { after?: number } = {}): TaskResult {
-  return options.after === undefined
-    ? { status: "pending", message }
-    : { status: "pending", message, after: options.after };
+/**
+ * Not yet. `after` is when to look again; `waitFor` names the events that should make the task look
+ * sooner (a commit's CI, a pull request, an issue), with a fallback deadline from configuration.
+ */
+export function pending(message: string, options: { after?: number; waitFor?: WaitFor } = {}): TaskResult {
+  return {
+    status: "pending",
+    message,
+    ...(options.after !== undefined ? { after: options.after } : {}),
+    ...(options.waitFor !== undefined && options.waitFor.topics.length > 0 ? { waitFor: options.waitFor } : {}),
+  };
 }
 
 export function fail(message: string, options: { details?: unknown; route?: Route } = {}): TaskResult {

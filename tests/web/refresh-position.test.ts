@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import { fakeCommandBus } from "../support/web-commands";
 
 const password = "correct horse";
 let browser: Browser | null = null;
@@ -98,7 +99,7 @@ function recentDashboard(selection: DashboardPageSelection): DashboardViewModel 
       id: "sample", address: "owner/sample", addressUrl: "https://github.com/owner/sample", color: 1,
       health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, backlog: 0,
       stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
-      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", ciProvider: null, ciMode: "disabled", systemLabels: [] },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled", systemLabels: [] },
       trust: { visibility: "unknown", checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     }],
@@ -169,12 +170,30 @@ function startDashboard(state: {
   delayMs: () => number;
   detailsDelayMs?: (issueId: string) => number;
   answerQuestion?: () => Promise<void>;
+  approveManualGate?: () => Promise<void>;
+  setManualGateRequirement?: (required: boolean) => void;
   systemStatus?: () => SystemStatusViewModel;
 }) {
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
+  });
+  // The test changes `revision` to simulate a change; like the core, publish an event for it.
+  const listeners = new Set<(event: DashboardStreamEvent) => void>();
+  let published = state.revision();
+  let seq = 0;
+  const watcher = setInterval(() => {
+    const current = state.revision();
+    if (current === published) return;
+    published = current;
+    seq += 1;
+    for (const listener of listeners) listener({ seq, type: "item.updated", repositoryId: "repo", issueId: null, correlationId: null });
+  }, 50);
+  const { commands } = fakeCommandBus({
+    answerQuestion: () => state.answerQuestion?.(), approveManualGate: () => state.approveManualGate?.(),
+    setManualGateRequirement: (_issueId: string, _stageId: string, _gateId: string, required: boolean) => state.setManualGateRequirement?.(required), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
+    postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
     auth,
@@ -194,9 +213,10 @@ function startDashboard(state: {
       const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
       return dashboardIssue(model, issueId);
     },
-    getDashboardRevision: () => state.revision(),
-    getConversationRevision: () => "conversation-1",
-    getActivityRevision: () => "activity-1",
+    subscribeEvents: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     getSystemStatus: () => state.systemStatus?.() ?? ({
       memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
       disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
@@ -205,12 +225,9 @@ function startDashboard(state: {
     }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
-    answerQuestion: () => state.answerQuestion?.(),
-    reorderBacklog: () => {},
-    moveBacklogIssue: () => {},
+    dispatch: (name, input, actor) => commands.dispatch(name, input, actor),
     handleWebhook: () => ({}),
     handleMcp: () => ({}),
-    startSteering: () => "run-1",
     getSteeringRun: () => null,
     getSteeringEvents: () => [],
     getIssueActivity: () => null,
@@ -218,13 +235,19 @@ function startDashboard(state: {
     getIssueConversation: () => null,
     getIssueJourney: () => null,
     getIssueRoute: () => null,
-    postIssueMessage: () => ({}),
-    retryIssue: () => ({}),
-    dismissFinding: () => {},
     getAgentProfiles: () => [],
     getAgentProfile: () => null,
   });
-  return Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const stop = server.stop.bind(server);
+  return Object.assign(server, {
+    stop: (force?: boolean) => { clearInterval(watcher); return stop(force); },
+    /** Resolves with the sequence number of the event published for the latest change. */
+    published: async () => {
+      while (published !== state.revision()) await Bun.sleep(10);
+      return seq;
+    },
+  });
 }
 
 async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined) {
@@ -526,7 +549,8 @@ describe("dashboard live refresh position", () => {
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-4";
-      await page.waitForFunction(() => document.body.dataset.dashboardRevision === "revision-4");
+      // The page hears of the change but keeps the dialog's draft: its refresh waits.
+      await page.waitForFunction((expected) => Number(document.body.dataset.lastEventSeq ?? 0) >= expected, await server.published());
       await page.waitForTimeout(1100);
       expect(await page.locator("main.dashboard").getAttribute("data-before-refresh")).toBe("true");
       expect(await page.locator("dialog[open]").count()).toBe(1);
@@ -825,7 +849,7 @@ describe("dashboard live refresh position", () => {
     const repository = (id: string, color: number) => ({
       id, address: `owner/${id}`, addressUrl: null, color, health: "healthy" as const, error: null, errorSummary: null,
       lastReconciledAt: null, backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
-      setup: { pipeline: "default", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      setup: { pipeline: "default", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, webhooks: "healthy" as const, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
       trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
       report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
     });
@@ -1148,6 +1172,49 @@ describe("dashboard live refresh position", () => {
       finishAnswer?.();
       await page.waitForFunction(() => !document.querySelector(".needs-you-item--question"));
       // Patched in place: the page was not reloaded.
+      expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+  test("approving a manual gate shows that it is sending, then the open item refreshes in place", async () => {
+    let finishApproval: (() => void) | undefined;
+    let revision = "gate-1";
+    let approved = false;
+    let itemSpecific = false;
+    const build = () => {
+      const card = issue("card-1", 3, "Card");
+      card.manualGates = [{ stageId: "review", gateId: "approval", configured: true, itemSpecific, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
+      return dashboard(revision, [card]);
+    };
+    const server = startDashboard({
+      dashboard: build, revision: () => revision, delayMs: () => 0,
+      approveManualGate: () => new Promise<void>((resolve) => { finishApproval = () => { approved = true; revision = "gate-2"; resolve(); }; }),
+      setManualGateRequirement: (required) => { itemSpecific = required; revision = `gate-switch-${String(required)}`; },
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await signIn(page, server.port);
+      await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
+      await page.locator('article.issue[data-issue-id="card-1"] .card-open').click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve"));
+      await page.locator("dialog.issue-details[open] .manual-gate-approve").click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve")?.textContent === "Approving…");
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-approve").isDisabled()).toBe(true);
+      finishApproval?.();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]")?.textContent?.includes("Approved by operator"));
+      // Patched in place: the page was not reloaded and the dialog stayed open.
+      expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-approve").count()).toBe(0);
+
+      // The requirement is a switch: it moves at once and stays where the server put it.
+      const toggle = page.locator("dialog.issue-details[open] .manual-gate-switch");
+      expect(await toggle.getAttribute("aria-checked")).toBe("false");
+      await toggle.click();
+      expect(await toggle.getAttribute("aria-checked")).toBe("true");
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
+      expect(await page.locator("dialog.issue-details[open] .manual-gate-switch").getAttribute("aria-checked")).toBe("true");
       expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
     } finally {
       server.stop(true);

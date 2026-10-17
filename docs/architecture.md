@@ -11,6 +11,7 @@ How Conveyor is built and why it behaves as it does. For using it, start with th
 - **Work is isolated.** Feature changes happen in Git worktrees; Conveyor does not edit a repository's primary checkout.
 - **Progress is durable.** SQLite journals runs, attempts, transitions, questions, costs, source mutations, conversation messages, and every task execution with the context it ran against.
 - **External mutations are idempotent.** Each act records a planned execution before it changes anything, observes external state first and does only the missing work, so a crash between a side effect and its record is repaired rather than repeated. For pull-request descriptions, recovery rereads the managed section before patching the provider, so a write that succeeded just before a crash is recorded without a second provider update.
+- **Commands in, events out.** The dashboard and the CLI send commands; every change of state is recorded as an event in the same transaction; reactions (scheduling, waking waits, the live dashboard, event sinks) subscribe to events. Any change can be traced, and a new consumer needs no change to the core.
 - **Humans stay in control.** Conveyor never directly closes an ordinary issue. Its only direct-close exception is an active roll-up parent after all descendants satisfy the completion rule; it first records the parent done and closes it with GitHub's `completed` reason. Other completed open issues remain closable for an owner or an ordinary PR reference.
 
 ## Components
@@ -33,7 +34,13 @@ flowchart LR
   MCP <--> SA
   EXE --> WT[Git worktrees]
   SVC --> WEB[Authenticated dashboard + SSE]
-  DB --> WEB
+  WEB -- commands --> CMD[Command bus]
+  CMD --> SVC
+  DB -- events --> BUS[Event bus]
+  BUS --> WEB
+  BUS --> WD[Wait dispatcher]
+  WD --> SCH
+  BUS --> SINK[Event sinks]
 ```
 
 ### Engine components
@@ -42,7 +49,10 @@ flowchart LR
 | --- | --- |
 | Configuration loader | Composes the `conveyor.yaml` entrypoint and the files its `!include` / `!secret` tags name, resolves paths relative to the file that declares them, validates cross-references with file-and-key-path errors, and computes a stable configuration hash. |
 | GitHub source adapter | Reads issues and relationships, manages only configured labels/body sections, observes pull requests and checks, verifies webhooks, and performs idempotent source actions. |
-| Reconciler | Rebuilds the local projection from GitHub, detects enrollment and label drift, and wakes work after webhook or polling changes. Polling reads every issue; a webhook is acknowledged at once and reconciled in the background, reading only the issues changed since the last read (the whole list at most hourly), with deliveries that arrive meanwhile joining one pass. Deliveries for Conveyor's own status comments are ignored. |
+| Reconciler | Rebuilds the local projection from GitHub and detects enrollment and label drift. Polling reads every issue; an issue or relationship delivery is acknowledged at once and reconciled in the background, reading only the issues it names, with deliveries that arrive meanwhile joining one pass. CI and pull request deliveries do not reconcile. Deliveries for Conveyor's own status comments are ignored. While a repository's webhooks are healthy the periodic pass is a slow safety net: a light pass of the changed issues, and a full pass daily and at start. A superuser can run a full pass of one repository with Sync now. |
+| Event log and bus | Records every change as an event in its transaction (`src/events`), publishes committed events in order to in-process subscribers and delivers them to sinks from durable cursors. |
+| Command bus | The one way in for dashboard and CLI actions (`src/commands`): validation, server-side role checks, correlation, accepted/rejected events. |
+| Wait dispatcher | Wakes parked tasks whose wait subscriptions match an event (a commit's CI finishing, a pull request changing, a tracked blocker changing); a fallback deadline covers a lost delivery. |
 | Scheduler | Selects eligible issues while enforcing global, repository, and stage concurrency plus parent/dependency constraints. |
 | Workspace manager | Creates issue-specific Git worktrees and branches without changing the primary checkout. |
 | Task registry | One registry of named tasks in the groups `item`, `workspace`, `change`, `ci`, `agent`, `script`, `conversation`, `todo` (and `legacy`). Each task declares its kind (`load`, `check`, `act`, `tool`), what it reads, writes and invalidates, and its schema. The MCP server, the stage executor and the generated [tasks.md](tasks.md) all read it. |
@@ -127,6 +137,8 @@ Every call goes through one dispatcher in the service that re-checks the grant, 
 - Infrastructure and usage-limit retries are separate and use configurable bounded backoff.
 - Source mutations carry idempotency keys.
 - Reconciliation repairs stale projections from GitHub and refuses ambiguous configuration drift.
+- A parked task's wait subscriptions are written with its pending result and belong to one stage epoch; they go when the task passes, fails, times out or the stage changes. A missed webhook delays a wait by at most its fallback; recent failed deliveries are asked to be redelivered.
+- Events are published only after their transaction committed. In-process subscribers are live reactions that start from the current end of the log; sinks resume from their own cursors after a restart.
 - Requirement changes do not interrupt an agent run. The exit gate and later review read the latest issue state and send outdated work back.
 - Full run activity is retained independently from the concise shared conversation.
 

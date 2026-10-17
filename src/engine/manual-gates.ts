@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 
+import { eventLog } from "../events/log";
+
 export interface ManualGateRequirement {
   issueId: string;
   stageId: string;
@@ -26,16 +28,23 @@ export class ManualGateApprovals {
   constructor(private readonly database: Database) {}
 
   setRequirement(input: ManualGateRequirement & { required: boolean }): void {
-    if (!input.required) {
-      this.database.query(
-        "DELETE FROM item_manual_gate_requirements WHERE issue_id = ? AND stage_id = ? AND gate_id = ?",
-      ).run(input.issueId, input.stageId, input.gateId);
-      return;
-    }
-    this.database.query(
-      `INSERT INTO item_manual_gate_requirements(issue_id, stage_id, gate_id, changed_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(issue_id, stage_id, gate_id) DO UPDATE SET changed_at = excluded.changed_at`,
-    ).run(input.issueId, input.stageId, input.gateId, input.changedAt);
+    this.database.transaction(() => {
+      const before = this.hasItemRequirement(input.issueId, input.stageId, input.gateId);
+      if (input.required) {
+        this.database.query(
+          `INSERT INTO item_manual_gate_requirements(issue_id, stage_id, gate_id, changed_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(issue_id, stage_id, gate_id) DO UPDATE SET changed_at = excluded.changed_at`,
+        ).run(input.issueId, input.stageId, input.gateId, input.changedAt);
+      } else {
+        this.database.query(
+          "DELETE FROM item_manual_gate_requirements WHERE issue_id = ? AND stage_id = ? AND gate_id = ?",
+        ).run(input.issueId, input.stageId, input.gateId);
+      }
+      const changed = before !== input.required;
+      if (changed) {
+        eventLog(this.database).append("gate.requirementChanged", { stageId: input.stageId, gateId: input.gateId, required: input.required }, { issueId: input.issueId });
+      }
+    })();
   }
 
   hasItemRequirement(issueId: string, stageId: string, gateId: string): boolean {
@@ -54,11 +63,14 @@ export class ManualGateApprovals {
 
   /** Returns false for a harmless duplicate receipt. */
   approve(input: ManualGateApproval): boolean {
-    const result = this.database.query(
-      `INSERT INTO manual_gate_approvals(issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id, stage_id, gate_id, stage_epoch, attempt) DO NOTHING`,
-    ).run(input.issueId, input.stageId, input.gateId, input.stageEpoch, input.attempt, input.accountId, input.accountName, input.approvedAt);
-    return result.changes > 0;
+    return this.database.transaction(() => {
+      const result = this.database.query(
+        `INSERT INTO manual_gate_approvals(issue_id, stage_id, gate_id, stage_epoch, attempt, account_id, account_name, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id, stage_id, gate_id, stage_epoch, attempt) DO NOTHING`,
+      ).run(input.issueId, input.stageId, input.gateId, input.stageEpoch, input.attempt, input.accountId, input.accountName, input.approvedAt);
+      if (result.changes > 0) eventLog(this.database).append("gate.approved", { stageId: input.stageId, gateId: input.gateId, stageEpoch: input.stageEpoch, attempt: input.attempt }, { issueId: input.issueId });
+      return result.changes > 0;
+    })();
   }
 
   getApproval(issueId: string, stageId: string, gateId: string, stageEpoch: number, attempt: number): ManualGateApproval | null {

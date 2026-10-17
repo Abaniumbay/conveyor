@@ -7,6 +7,7 @@ import { diagnosticsExport } from "./commands/diagnostics";
 import { configBuiltin, configCheck, configCompare, configMigrate, configShow } from "./commands/config";
 import { doctor } from "./commands/doctor";
 import { init } from "./commands/init";
+import { events } from "./commands/events";
 import { logs } from "./commands/logs";
 import { board, itemHistory, itemLogs, itemPause, itemResume, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
 import { rollback, upgrade } from "./commands/release";
@@ -66,6 +67,7 @@ export const COMMANDS: Command[] = [
   questionsList,
   questionsAnswer,
   logs,
+  events,
   upgrade,
   rollback,
   cleanup,

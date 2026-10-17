@@ -118,6 +118,12 @@ describe("item.dependenciesMet", () => {
     });
     expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #9" });
   });
+  test("waits for each unsatisfied blocker of a tracked repository to change", async () => {
+    const result = await run("item.dependenciesMet", {
+      context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: true, address: "o/r" }, { id: "b", number: 9, satisfied: false, address: "o/r" }, { id: "c", number: 3, satisfied: false }] }),
+    });
+    expect(result).toEqual({ status: "pending", message: "Waiting for dependencies: #9, #3", waitFor: { kind: "dependencies", topics: ["issue:o/r:9"] } });
+  });
   test("passes when all are satisfied or none exist, and waits without a timeout every five minutes", async () => {
     expect((await run("item.dependenciesMet", { context: ctx({ dependencies: [{ id: "a", number: 7, satisfied: true }] }) })).status).toBe("pass");
     expect((await run("item.dependenciesMet", { context: ctx() })).status).toBe("pass");
@@ -315,9 +321,9 @@ describe("item.load", () => {
         { id: "kid2", number: 3, state: "closed", enrolled: false, hasCriteria: false, hasChildren: false, title: "Issue 3", body: "", labels: [], dependsOn: [] },
       ],
       dependencies: [
-        { id: "dep-closed", number: 5, satisfied: true },
-        { id: "dep-done", number: 6, satisfied: true },
-        { id: "dep-open", number: 4, satisfied: false },
+        { id: "dep-closed", number: 5, satisfied: true, address: "o/r" },
+        { id: "dep-done", number: 6, satisfied: true, address: "o/r" },
+        { id: "dep-open", number: 4, satisfied: false, address: "o/r" },
       ],
       systemLabels: ["area:api"],
       refinement: { type: null, typesAvailable: false, fields: {}, definedFields: [], section: false },
@@ -594,7 +600,7 @@ describe("item tools", () => {
       expect.objectContaining({ number: 7, satisfied: false }),
       expect.objectContaining({ number: 8, satisfied: false }),
     ]));
-    expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pending", message: "Waiting for dependencies: #8, #7" });
+    expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pending", message: "Waiting for dependencies: #8, #7", waitFor: { kind: "dependencies", topics: ["issue:o/r:8", "issue:o/r:7"] } });
     w.add("sibling", 7, { state: "closed" });
     w.add("cross-parent", 8, { state: "closed" });
     const unblocked = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;

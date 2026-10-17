@@ -116,6 +116,13 @@ describe("buildRepositorySummaries", () => {
       },
       report30d: { delivered: 12, inputTokens: 100, outputTokens: 50, agentMs: 3_600_000 },
     });
+    expect(alpha.setup).toMatchObject({ webhooks: "unhealthy", githubCalls: { total: 0, bySource: [] } });
+    const withCalls = buildRepositorySummaries({
+      store, config, now: NOW,
+      webhookHealth: new Map([["alpha", true]]),
+      githubCalls: { total: 5, bySource: { tick: 3, webhook: 2 }, byRepository: { "owner/alpha": { webhook: 2, tick: 3 } }, byRoute: {} },
+    }).repositories[0]!;
+    expect(withCalls.setup).toMatchObject({ webhooks: "healthy", githubCalls: { total: 5, bySource: [{ source: "tick", count: 3 }, { source: "webhook", count: 2 }] } });
     expect(alpha.items).toEqual([
       { number: 1, title: "Item 1", stage: "implementation", state: "Running" },
       { number: 2, title: "Item 2", stage: "review", state: "Needs you" },
@@ -239,10 +246,7 @@ describe("buildRepositorySummaries", () => {
     for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
       expect(html).not.toContain("sentinel-webhook-secret");
     }
-    const dependencies = service.webDependencies({} as never, "operator");
     expect(boardHtml).toContain(`data-dashboard-revision="${board.revision}"`);
-    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
-    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
 
     store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
     const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
@@ -253,11 +257,15 @@ describe("buildRepositorySummaries", () => {
     const degraded = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     expect(store.dashboardRevision()).toBe(storedRevision);
     expect(degraded.revision).not.toBe(updated.revision);
-    expect(await dependencies.getDashboardRevision()).toBe(degraded.revision);
+    // The live dashboard learns of the failing repository from its event, and of every pass.
+    const health = () => store.events().read({ type: "repository.healthChanged" }).map((event): unknown[] => [event.repositoryId, event.payload]);
+    expect(health()).toContainEqual(["alpha", { check: "reconcile", healthy: false }]);
     expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
-    await Bun.sleep(2);
+    const passes = store.events().read({ type: "service.reconciled" }).length;
     await service.reconcileAll();
-    expect(await dependencies.getDashboardRevision()).not.toBe(degraded.revision);
+    expect(store.events().read({ type: "service.reconciled" })).toHaveLength(passes + 1);
+    // Failing again is not a new health change.
+    expect(health().filter(([repository]) => repository === "alpha")).toHaveLength(1);
     expect(degraded.systemWarnings).toEqual([]);
     // The board no longer lists repositories, but a repository that cannot sync is called out there.
     const degradedBoard = renderDashboard(degraded);

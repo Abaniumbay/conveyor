@@ -355,6 +355,10 @@ export interface RepositoryDashboardSummary {
     baseBranch: string;
     itemProvider: string;
     itemSync: "webhook" | "polling";
+    /** For webhook sync: whether deliveries arrive, so waits rely on them; null while polling. */
+    webhooks: "healthy" | "unhealthy" | null;
+    /** GitHub requests made for this repository in the last hour, as "source count" pairs, busiest first. */
+    githubCalls: { total: number; bySource: ReadonlyArray<{ source: string; count: number }> };
     ciProvider: string | null;
     ciMode: "required" | "advisory" | "disabled";
     systemLabels: readonly string[];
@@ -587,4 +591,13 @@ export interface ReportViewModel {
   /** Done items imported without a recorded delivery; left out of every figure. */
   importedWithoutHistory: number;
   generatedAt: string;
+}
+
+/** One recorded event as the live dashboard stream sends it: what changed, never its content. */
+export interface DashboardStreamEvent {
+  seq: number;
+  type: string;
+  repositoryId: string | null;
+  issueId: string | null;
+  correlationId: string | null;
 }

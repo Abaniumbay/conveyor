@@ -275,10 +275,106 @@ describe("migration", () => {
 
     const store = await ConveyorStore.open(file);
     expect(store.schemaVersion()).toBe(migrations.at(-1)!.version);
-    expect(migrations.at(-1)!.version).toBe(30);
+    expect(migrations.at(-1)!.version).toBe(32);
     seed(store);
     const journal = new ExecutionStore(store.sqlite());
     expect(journal.bumpStageEpoch("issue-1")).toBe(1);
+    store.close();
+  });
+});
+
+describe("wait subscriptions", () => {
+  const waitFor = { topics: ["ci:owner/sample:abc", "change:owner/sample:5"], kind: "ci" as const };
+
+  function parked(journal: ExecutionStore) {
+    const epoch = journal.stageEpoch("issue-1");
+    const { record } = journal.planExecution({ itemId: "issue-1", stage: "review", stageEpoch: epoch, attempt: 1, list: "exit-gate", taskInstanceId: "gate" });
+    journal.markPending(record.id, { wakeAt: "2026-01-01T00:05:00.000Z", deadlineAt: null, waitFor }, epoch);
+    journal.saveCursor({ issueId: "issue-1", stage: "review", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate", taskInstanceId: "gate", state: "pending", feedback: null, pendingSince: null, wakeAt: "2026-01-01T00:05:00.000Z", deadlineAt: null }, epoch);
+    return { epoch, id: record.id };
+  }
+  const topics = (journal: ExecutionStore) => journal.subscriptions("issue-1").map((row) => row.topic);
+
+  test("are written with the pending result, for its execution and epoch", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    expect(journal.subscribers("ci:owner/sample:abc")).toEqual([{ issueId: "issue-1", executionId: id, stageEpoch: epoch, kind: "ci" }]);
+    store.close();
+  });
+
+  test("a later pending result replaces what the task waits for", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    journal.markPending(id, { wakeAt: null, deadlineAt: null, waitFor: { topics: ["ci:owner/sample:def"], kind: "ci" } }, epoch);
+    expect(topics(journal)).toEqual(["ci:owner/sample:def"]);
+    store.close();
+  });
+
+  test("a pending result without topics waits for nothing", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    journal.markPending(id, { wakeAt: null, deadlineAt: null }, epoch);
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("are removed when the task passes", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    journal.completeExecution(id, { status: "pass" }, epoch);
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("are removed when the task fails or times out", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    journal.failExecution(id, { status: "fail", message: "did not finish within 3h" }, epoch);
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("are removed with the cursor", async () => {
+    const { store, journal } = await setup();
+    const { epoch } = parked(journal);
+    journal.clearCursor("issue-1", epoch);
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("are removed when the item's stage changes", async () => {
+    const { store, journal } = await setup();
+    parked(journal);
+    journal.onStageChange("issue-1");
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("survive pausing on a question and resuming in the same stage", async () => {
+    const { store, journal } = await setup();
+    store.setIssueProjection("issue-1", { stage: "review", state: "active", warning: null });
+    parked(journal);
+    store.setIssueProjection("issue-1", { stage: "review", state: "needs-input", warning: null });
+    store.setIssueProjection("issue-1", { stage: "review", state: "active", warning: null });
+    expect(topics(journal)).toEqual(["change:owner/sample:5", "ci:owner/sample:abc"]);
+    store.close();
+  });
+
+  test("a stale epoch writes none", async () => {
+    const { store, journal } = await setup();
+    const { epoch, id } = parked(journal);
+    journal.completeExecution(id, { status: "pass" }, epoch);
+    journal.onStageChange("issue-1");
+    expect(() => journal.markPending(id, { wakeAt: null, deadlineAt: null, waitFor }, epoch)).toThrow(StaleEpochError);
+    expect(topics(journal)).toEqual([]);
+    store.close();
+  });
+
+  test("go with the item", async () => {
+    const { store, journal } = await setup();
+    parked(journal);
+    store.removeRepositoriesExcept([]);
+    expect(journal.subscribers("ci:owner/sample:abc")).toEqual([]);
     store.close();
   });
 });

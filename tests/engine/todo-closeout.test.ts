@@ -6,7 +6,7 @@ import { migrations } from "../../src/db/migrations";
 describe("todo closeout", () => {
   test("skips unfinished entries once and leaves done and skipped entries alone", () => {
     const db = new Database(":memory:");
-    db.exec("CREATE TABLE item_todos (issue_id TEXT PRIMARY KEY, items_json TEXT NOT NULL, run_id TEXT, updated_at TEXT NOT NULL)");
+    for (const migration of migrations) db.exec(migration.sql);
     const todos = new ItemTodos(db);
     todos.set("i", [
       { id: "a", text: "A", status: "done", note: "kept" },

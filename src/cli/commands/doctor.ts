@@ -7,9 +7,11 @@ import { dashboardAccountCount } from "../../db/store";
 import { scriptCommand } from "../../self";
 import { GhCliTransport, GitHubAdapter, type GitHubTransport } from "../../source/github/adapter";
 import { publicRepositoryTrustPolicy } from "../../source/github/trust";
+import { GITHUB_CALL_SOURCES } from "../../source/github/call-meter";
+import type { GitHubCallReport } from "../../app/service";
 import { EXIT } from "../args";
 import { printJson, type Command } from "../command";
-import { serviceRunning } from "../control-client";
+import { control, serviceRunning } from "../control-client";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
 
 export interface DoctorCheck {
@@ -285,6 +287,19 @@ async function accountCount(database: string): Promise<number> {
   return dashboardAccountCount(database);
 }
 
+/** The doctor line for the running service's GitHub requests of the last hour and its rate limit. */
+export function githubCallCheck(report: GitHubCallReport): DoctorCheck {
+  const sources = GITHUB_CALL_SOURCES.filter((source) => report.bySource[source]).map((source) => `${source} ${report.bySource[source]}`);
+  const since = Date.parse(report.countingSince) > Date.now() - report.windowMs ? ` since the service started at ${report.countingSince}` : " in the last hour";
+  const calls = `${report.total} call${report.total === 1 ? "" : "s"}${since}${sources.length > 0 ? ` (${sources.join(", ")})` : ""}`;
+  const limit = report.rateLimit;
+  if (!limit) return { name: "GitHub calls", status: "ok", detail: `${calls}; the rate limit could not be read` };
+  const remaining = `${limit.remaining} of ${limit.limit} requests left until ${limit.resetAt}`;
+  return limit.remaining < limit.limit * 0.2
+    ? { name: "GitHub calls", status: "warn", detail: `${calls}; only ${remaining}`, fix: "find the busiest source above; with healthy webhooks, waits and the reconcile read GitHub far less" }
+    : { name: "GitHub calls", status: "ok", detail: `${calls}; ${remaining}` };
+}
+
 const SYMBOL = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
 
 export const doctor: Command = {
@@ -292,6 +307,8 @@ export const doctor: Command = {
   summary: "check the home, configuration, repository trust safeguards and external prerequisites, with fixes",
   async run(context) {
     const { checks, filesystems } = await doctorReport(context.paths.home, context.paths.config, () => serviceRunning(context));
+    const calls = await control<GitHubCallReport>(context, "GET", "/v1/github-calls").catch(() => null);
+    if (calls) checks.push(githubCallCheck(calls));
     const failed = checks.some((check) => check.status === "fail");
     if (context.json) printJson(context, { ok: !failed, checks, filesystems, warnings: filesystems.filter((filesystem) => filesystem.status === "warn") });
     else {

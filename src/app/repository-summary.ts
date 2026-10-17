@@ -6,6 +6,7 @@ import { isLightweightRepositoryStage } from "./stage-capacity";
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
+import type { GitHubCallSummary } from "../source/github/call-meter";
 import { publicRepositoryTrustPolicy } from "../source/github/trust";
 import { concise, displayName } from "../tasks/agent-support";
 
@@ -51,6 +52,10 @@ export interface RepositorySummary {
     baseBranch: string;
     itemProvider: string;
     itemSync: "webhook" | "polling";
+    /** For webhook sync: whether deliveries arrive, so waits rely on them; null while polling. */
+    webhooks: "healthy" | "unhealthy" | null;
+    /** GitHub requests made for this repository in the last hour, as "source count" pairs, busiest first. */
+    githubCalls: { total: number; bySource: Array<{ source: string; count: number }> };
     ciProvider: string | null;
     ciMode: "required" | "advisory" | "disabled";
     systemLabels: string[];
@@ -91,6 +96,10 @@ export interface BuildRepositorySummariesInput {
   onboardingErrors?: ReadonlyMap<string, string>;
   reconciliationErrors?: ReadonlyMap<string, string>;
   lastReconciledAt?: string | null;
+  /** Per repository: whether its webhook delivers; absent until checked. */
+  webhookHealth?: ReadonlyMap<string, boolean>;
+  /** The service's GitHub requests of the last hour. */
+  githubCalls?: GitHubCallSummary;
   now?: Date;
 }
 
@@ -100,6 +109,11 @@ interface DeliveryRow {
   source_number: number;
   title: string;
   delivered_at: string;
+}
+
+/** Webhook sync needs a GitHub source that configures its webhook and a public URL to deliver to. */
+function itemSyncOf(source: ConveyorConfig["sources"][string] | undefined, config: ConveyorConfig): "webhook" | "polling" {
+  return source?.type === "github" && source.autoConfigureWebhook && config.web.publicUrl ? "webhook" : "polling";
 }
 
 const DONE_STATES = new Set(["done", "completed"]);
@@ -220,7 +234,13 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
         pipeline: repository.pipeline,
         baseBranch: repository.baseBranch,
         itemProvider: source?.type ?? repository.source,
-        itemSync: source?.type === "github" && source.autoConfigureWebhook && config.web.publicUrl ? "webhook" : "polling",
+        itemSync: itemSyncOf(source, config),
+        webhooks: itemSyncOf(source, config) === "polling" ? null : input.webhookHealth?.get(id) === true ? "healthy" : "unhealthy",
+        githubCalls: (() => {
+          const bySource = input.githubCalls?.byRepository[repository.address.toLowerCase()] ?? {};
+          const entries = Object.entries(bySource).map(([callSource, count]) => ({ source: callSource, count: count ?? 0 })).sort((left, right) => right.count - left.count);
+          return { total: entries.reduce((sum, entry) => sum + entry.count, 0), bySource: entries };
+        })(),
         ciProvider,
         ciMode: ci.mode,
         systemLabels: [...(repository.systemLabels ?? [])],

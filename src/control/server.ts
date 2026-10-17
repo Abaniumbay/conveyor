@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { ConveyorService } from "../app/service";
+import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor } from "../commands/bus";
 import { MAX_SOCKET_PATH } from "../isolation/run-network";
 import { log } from "../log/logger";
 import { readReleaseState } from "../release/state";
@@ -148,13 +149,42 @@ function actor(request: Request): string {
   return `${name || "operator"} (CLI)`;
 }
 
+/** The CLI as the sender of a command: access to the control socket is operator access. */
+function cliActor(request: Request): CommandActor {
+  return { kind: "cli", id: null, name: actor(request), role: "superuser" };
+}
+
+/** Registers the commands only the process that owns the control socket can carry out. */
+function registerControlCommands(service: ConveyorService, info: ControlInfo, hooks: ControlHooks): void {
+  const commands = service.commands;
+  if (!commands.has("service.restart")) {
+    commands.handle("service.restart", (input) => {
+      if (!hooks.restart || !info.supervised) throw new ControlError("this Conveyor is not run by systemd, so it cannot restart itself; stop and start it instead", 409);
+      // force interrupts running work, which resumes after the restart (as with systemctl restart).
+      const work = service.activeWork();
+      if (!input.force && (work.items.length > 0 || work.steering > 0)) throw new ControlError("work is still running: drain first, or force the restart", 409);
+      setTimeout(() => hooks.restart?.(), 50);
+    });
+  }
+  const releases = hooks.releases;
+  if (releases && !commands.has("release.schedule")) {
+    commands.handle("release.schedule", (input) => releases.schedule({
+      kind: input.kind, prefix: input.prefix, drainTimeoutMs: input.drainTimeoutMs, restoreBackup: input.restoreBackup,
+      ...(input.version !== undefined ? { version: input.version } : {}),
+    }));
+    commands.handle("release.cancel", (_input, sender) => releases.cancel(`cancelled by ${sender.name}`));
+  }
+}
+
 export function createControlHandler(service: ConveyorService, info: ControlInfo, hooks: ControlHooks = {}) {
+  registerControlCommands(service, info, hooks);
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
     try {
       if (route === "GET /v1/status") return json(status(service, info));
       if (route === "GET /v1/board") return json(board(service));
+      if (route === "GET /v1/github-calls") return json(await service.githubCallReport());
       if (route === "GET /v1/questions") {
         return json(service.store.listOpenQuestions()
           .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")
@@ -170,9 +200,9 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         const question = service.store.getQuestion(decodeURIComponent(answer[1]!));
         if (!question) throw new ControlError("no such question", 404);
         if (question.status !== "open") throw new ControlError(`the question is ${question.status}`, 409);
-        const answeringActor = actor(request);
-        await service.answerQuestion(question.id, text.trim(), answeringActor);
-        log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: answeringActor });
+        const answeringActor = cliActor(request);
+        await service.commands.dispatch("question.answer", { questionId: question.id, answer: text.trim() }, answeringActor);
+        log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: answeringActor.name });
         return json({ answered: question.id, item: itemReference(service, question.issueId) });
       }
       const itemRoute = /^(GET|POST) \/v1\/items\/([^/]+)(?:\/(history|logs|retry|pause|resume))?$/.exec(route);
@@ -188,34 +218,34 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         }
         if (method === "POST" && action === "retry") {
           const note = (await body(request)).note;
-          const result = await service.retryIssue(issueId, typeof note === "string" ? note : "", actor(request));
+          const { result } = await service.commands.dispatch("item.retry", { issueId, note: typeof note === "string" ? note : "" }, cliActor(request));
           return json({ item: itemReference(service, issueId), ...result });
         }
-        if (method === "POST" && action === "pause") return json({ item: itemReference(service, issueId), ...(await service.pauseIssue(issueId, actor(request))) });
-        if (method === "POST" && action === "resume") return json({ item: itemReference(service, issueId), ...(await service.resumeIssue(issueId, actor(request))) });
+        if (method === "POST" && action === "pause") {
+          const { result } = await service.commands.dispatch("item.pause", { issueId }, cliActor(request));
+          return json({ item: itemReference(service, issueId), ...result });
+        }
+        if (method === "POST" && action === "resume") {
+          const { result } = await service.commands.dispatch("item.resume", { issueId }, cliActor(request));
+          return json({ item: itemReference(service, issueId), ...result });
+        }
       }
       if (route === "POST /v1/drain") {
         const reason = (await body(request)).reason;
-        return json({ draining: service.drain(typeof reason === "string" && reason ? reason : `requested by ${actor(request)}`), active: service.activeWork() });
+        const { result } = await service.commands.dispatch("admission.drain", { reason: typeof reason === "string" ? reason.slice(0, 500) : "" }, cliActor(request));
+        return json({ draining: result, active: service.activeWork() });
       }
-      if (route === "DELETE /v1/drain") return json({ resumed: service.resumeAdmission() });
+      if (route === "DELETE /v1/drain") return json({ resumed: (await service.commands.dispatch("admission.resume", {}, cliActor(request))).result });
       if (route === "POST /v1/restart") {
-        if (!hooks.restart || !info.supervised) throw new ControlError("this Conveyor is not run by systemd, so it cannot restart itself; stop and start it instead", 409);
-        // force interrupts running work, which resumes after the restart (as with systemctl restart).
-        const force = (await body(request)).force === true;
-        const work = service.activeWork();
-        if (!force && (work.items.length > 0 || work.steering > 0)) throw new ControlError("work is still running: drain first, or force the restart", 409);
-        setTimeout(() => hooks.restart?.(), 50);
+        await service.commands.dispatch("service.restart", { force: (await body(request)).force === true }, cliActor(request));
         return json({ restarting: true });
       }
       if (route === "POST /v1/cleanup") {
         const input = await body(request);
-        const configured = service.config.settings.retention;
-        const age = (value: unknown, fallback: number | null) => (typeof value === "number" && value > 0 ? value : fallback);
-        return json(await service.applyRetention({
-          dryRun: input.dryRun === true,
-          policy: { runHistoryMs: age(input.runHistoryMs, configured.runHistoryMs), artifactsMs: age(input.artifactsMs, configured.artifactsMs) },
-        }));
+        const age = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null);
+        return json((await service.commands.dispatch("service.cleanup", {
+          dryRun: input.dryRun === true, runHistoryMs: age(input.runHistoryMs), artifactsMs: age(input.artifactsMs),
+        }, cliActor(request))).result);
       }
       if (route === "GET /v1/releases") return json({ running: BUILD, ...(await readReleaseState(info.home)) });
       if (route === "POST /v1/releases" && hooks.releases) {
@@ -224,19 +254,22 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         if (!kind || typeof input.prefix !== "string" || (kind === "upgrade" && typeof input.version !== "string")) {
           throw new ControlError("kind (upgrade or rollback), prefix and, for an upgrade, version are required", 400);
         }
-        const drainTimeoutMs = typeof input.drainTimeoutMs === "number" && input.drainTimeoutMs > 0 ? input.drainTimeoutMs : 30 * 60_000;
-        const pending = await hooks.releases.schedule({
+        const drainTimeoutMs = typeof input.drainTimeoutMs === "number" && Number.isSafeInteger(input.drainTimeoutMs) && input.drainTimeoutMs > 0 ? input.drainTimeoutMs : 30 * 60_000;
+        const { result: pending } = await service.commands.dispatch("release.schedule", {
           kind, prefix: input.prefix, drainTimeoutMs, restoreBackup: input.restoreBackup === true,
           ...(typeof input.version === "string" ? { version: input.version } : {}),
-        });
+        }, cliActor(request));
         return json({ pending }, 202);
       }
       if (route === "DELETE /v1/releases/pending" && hooks.releases) {
-        return json({ cancelled: await hooks.releases.cancel(`cancelled by ${actor(request)}`) });
+        return json({ cancelled: (await service.commands.dispatch("release.cancel", {}, cliActor(request))).result });
       }
       return json({ error: `no route ${route}` }, 404);
     } catch (error) {
       if (error instanceof ControlError) return json({ error: error.message }, error.status);
+      if (error instanceof CommandInputError) return json({ error: error.message }, 400);
+      if (error instanceof CommandForbiddenError) return json({ error: error.message }, 403);
+      if (error instanceof CommandUnavailableError) return json({ error: error.message }, 404);
       if (error instanceof SwitchRefused) return json({ error: error.message }, 409);
       if (error instanceof SyntaxError) return json({ error: "the request body is not JSON" }, 400);
       // Service preconditions (already running, state changed, not paused, ...) are refusals, not crashes.

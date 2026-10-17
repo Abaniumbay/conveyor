@@ -3,6 +3,8 @@
 
 import type { Database } from "bun:sqlite";
 
+import { eventLog } from "../events/log";
+
 export type TodoStatus = "pending" | "in_progress" | "done" | "skipped";
 
 /** The stage whose agent owns the todo list; its exit gate closes the list out. */
@@ -49,10 +51,13 @@ export class ItemTodos {
 
   /** Replaces the whole list. */
   set(issueId: string, items: readonly TodoItem[], runId: string | null, at: string): void {
-    this.#db
-      .query(`INSERT INTO item_todos(issue_id, items_json, run_id, updated_at) VALUES (?, ?, ?, ?)
-              ON CONFLICT(issue_id) DO UPDATE SET items_json = excluded.items_json, run_id = excluded.run_id, updated_at = excluded.updated_at`)
-      .run(issueId, JSON.stringify(items), runId, at);
+    this.#db.transaction(() => {
+      this.#db
+        .query(`INSERT INTO item_todos(issue_id, items_json, run_id, updated_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(issue_id) DO UPDATE SET items_json = excluded.items_json, run_id = excluded.run_id, updated_at = excluded.updated_at`)
+        .run(issueId, JSON.stringify(items), runId, at);
+      eventLog(this.#db).append("todo.changed", {}, { issueId });
+    })();
   }
 
   /**
@@ -64,7 +69,10 @@ export class ItemTodos {
     if (!list || !list.items.some((item) => item.status === "pending" || item.status === "in_progress")) return;
     const items = list.items.map((item): TodoItem =>
       item.status === "pending" || item.status === "in_progress" ? { ...item, status: "skipped", note: TODO_CLOSEOUT_NOTE } : item);
-    this.#db.query("UPDATE item_todos SET items_json = ? WHERE issue_id = ?").run(JSON.stringify(items), issueId);
+    this.#db.transaction(() => {
+      this.#db.query("UPDATE item_todos SET items_json = ? WHERE issue_id = ?").run(JSON.stringify(items), issueId);
+      eventLog(this.#db).append("todo.changed", {}, { issueId });
+    })();
   }
 }
 
