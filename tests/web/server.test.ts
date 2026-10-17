@@ -98,7 +98,7 @@ interface CallLog {
   messages: unknown[][];
   retries: unknown[][];
   dismissals: unknown[][];
-  manualRequirements: unknown[][];
+  boardApprovals: unknown[][];
   manualApprovals: unknown[][];
 }
 
@@ -110,7 +110,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   });
   const streamListeners = new Set<(event: DashboardStreamEvent) => void>();
   const emit = (event: DashboardStreamEvent) => { for (const listener of streamListeners) listener(event); };
-  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [], manualRequirements: [], manualApprovals: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [], boardApprovals: [], manualApprovals: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -215,7 +215,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
-    setManualGateRequirement: async (...args: unknown[]) => { calls.manualRequirements.push(args); },
+    setBoardApprovalRequirement: async (...args: unknown[]) => { calls.boardApprovals.push(args); },
     approveManualGate: async (...args: unknown[]) => { calls.manualApprovals.push(args); },
     ...overrides,
   };
@@ -755,17 +755,19 @@ describe("createWebHandler", () => {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields),
     }));
 
-    const requirement = { issueId: "issue-1", stageId: "implementation", gateId: "human", required: "true" };
+    const requirement = { issueId: "issue-1", stageId: "implementation", required: "true" };
     expect((await post("/manual-gates/requirement", requirement, "")).status).toBe(401);
     expect((await post("/manual-gates/requirement", requirement, readerCookie)).status).toBe(403);
     expect((await post("/manual-gates/requirement", requirement)).status).toBe(403);
     expect((await post("/manual-gates/requirement", { ...requirement, csrf: adminSession.csrfToken })).status).toBe(303);
-    expect(calls.manualRequirements).toEqual([["issue-1", "implementation", "human", true]]);
+    expect(calls.boardApprovals).toEqual([["issue-1", "implementation", true]]);
 
     expect((await post("/manual-gates/approve", { issueId: "issue-1", stageId: "implementation", gateId: "human", csrf: adminSession.csrfToken })).status).toBe(303);
-    expect(calls.manualApprovals).toHaveLength(1);
+    expect((await post("/manual-gates/approve", { issueId: "issue-1", stageId: "implementation", csrf: adminSession.csrfToken })).status).toBe(303);
+    expect(calls.manualApprovals).toHaveLength(2);
     expect(calls.manualApprovals[0]?.slice(0, 3)).toEqual(["issue-1", "implementation", "human"]);
     expect(calls.manualApprovals[0]?.[3]).toMatchObject({ id: "admin-id", username: "admin" });
+    expect(calls.manualApprovals[1]?.slice(0, 3)).toEqual(["issue-1", "implementation", null]);
   });
 
   test("returns actionable validation errors for blank or rejected question answers", async () => {
@@ -1464,7 +1466,7 @@ describe("dashboard commands", () => {
     }));
     const routes: Array<[string, () => Promise<Response>]> = [
       ["question.answer", () => form("/questions/q-1/answer", { answer: "yes" })],
-      ["gate.setRequirement", () => form("/manual-gates/requirement", { issueId: "i-1", stageId: "review", gateId: "gate", required: "true" })],
+      ["gate.setItemApproval", () => form("/manual-gates/requirement", { issueId: "i-1", stageId: "review", required: "true" })],
       ["gate.approve", () => form("/manual-gates/approve", { issueId: "i-1", stageId: "review", gateId: "gate" })],
       ["backlog.reorder", () => form("/backlog/reorder", { issueId: "i-1", direction: "up" })],
       ["backlog.move", () => form("/backlog/move", { issueId: "i-1", beforeIssueId: "" })],

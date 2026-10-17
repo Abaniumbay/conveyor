@@ -66,11 +66,11 @@ repositories:
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
   /** Parks the item on its exit gate for one visit, as the executor does. */
-  const park = (attempt = 1) => {
+  const park = (attempt = 1, taskInstanceId = "ciGate") => {
     const epoch = journal.stageEpoch(ISSUE);
     journal.saveCursor({
       issueId: ISSUE, stage: "implementation", stageEpoch: epoch, attempt, returns: 0, list: "exit-gate",
-      taskInstanceId: "ciGate", state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
+      taskInstanceId, state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
     }, epoch);
     return epoch;
   };
@@ -95,6 +95,30 @@ describe("waking parked gates", () => {
     store.events().append("gate.approved", { stageId: "implementation", gateId: "ciGate", stageEpoch: earlier, attempt: 1 }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
+    await service.close();
+  });
+
+  test("a board approval wakes only its matching board-approval visit", async () => {
+    const { service, store, journal, park } = await setup();
+    const epoch = park(1, "board-approval");
+    store.events().append("gate.boardApproved", { stageId: "implementation", stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
+
+    journal.onStageChange(ISSUE);
+    park(1, "board-approval");
+    store.events().append("gate.boardApproved", { stageId: "implementation", stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
+    await service.close();
+  });
+
+  test("a board-approval requirement change wakes its matching parked gate", async () => {
+    const { service, store, journal, park } = await setup();
+    park(1, "board-approval");
+    store.events().append("gate.boardApprovalChanged", { stageId: "implementation", required: false }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
     await service.close();
   });
 

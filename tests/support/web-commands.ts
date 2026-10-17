@@ -26,7 +26,7 @@ export function fakeCommandBus(service: Record<string, unknown>): { commands: Co
     commands.handle(name, async (input, actor) => (await call(invoke, input, actor)) as CommandResults[N]);
   };
   register("question.answer", "answerQuestion", (fn, input, actor) => fn(input.questionId, input.answer, actor.name));
-  register("gate.setRequirement", "setManualGateRequirement", (fn, input) => fn(input.issueId, input.stageId, input.gateId, input.required));
+  register("gate.setItemApproval", "setBoardApprovalRequirement", (fn, input) => fn(input.issueId, input.stageId, input.required));
   register("gate.approve", "approveManualGate", (fn, input, actor) => fn(input.issueId, input.stageId, input.gateId, { id: actor.id, username: actor.name }));
   register("backlog.reorder", "reorderBacklog", (fn, input) => fn(input.issueId, input.direction));
   register("backlog.move", "moveBacklogIssue", (fn, input) => fn(input.issueId, input.beforeIssueId));

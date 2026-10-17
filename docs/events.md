@@ -69,6 +69,8 @@ Each event has:
 | `criterion.testsRecorded` | Test evidence for acceptance criteria was recorded. | `criteria`: string[] |
 | `finding.changed` | A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` says which. | `findingId`: string<br>`change`: `"created"` \| `"resolved"` \| `"dismissed"` \| `"withdrawn"` \| `"edited"` \| `"reopened"` |
 | `gate.approved` | A person approved a manual gate for one visit (stage epoch and attempt) of its stage. | `stageId`: string<br>`gateId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
+| `gate.boardApprovalChanged` | A board approval was made required or optional for one stage. | `stageId`: string<br>`required`: boolean |
+| `gate.boardApproved` | A person approved the board gate for one stage visit. | `stageId`: string<br>`stageEpoch`: integer<br>`attempt`: integer |
 | `gate.requirementChanged` | A manual gate was made required or optional. | `stageId`: string<br>`gateId`: string<br>`required`: boolean |
 | `todo.changed` | An item's to-do list changed. | - |
 

@@ -27,8 +27,8 @@ export const COMMANDS = {
 
   // Questions, gates and review
   "question.answer": define("superuser", "Answer an open question.", z.object({ questionId: id, answer: z.string().min(1).max(4_000) }).strict()),
-  "gate.approve": define("superuser", "Approve a manual gate the item is waiting on.", z.object({ issueId: id, stageId: id, gateId: id }).strict()),
-  "gate.setRequirement": define("superuser", "Make a manual gate required or optional for one item.", z.object({ issueId: id, stageId: id, gateId: id, required: z.boolean() }).strict()),
+  "gate.approve": define("superuser", "Approve the configured manual gate or board approval the item is waiting on.", z.object({ issueId: id, stageId: id, gateId: id.nullable() }).strict()),
+  "gate.setItemApproval": define("superuser", "Require or remove a final board approval for one item stage.", z.object({ issueId: id, stageId: id, required: z.boolean() }).strict()),
   "finding.dismiss": define("superuser", "Dismiss an open review finding with a reason.", z.object({ issueId: id, findingId: id, reason: z.string().trim().min(1).max(2_000) }).strict()),
 
   // Backlog

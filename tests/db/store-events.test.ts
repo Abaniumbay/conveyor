@@ -155,16 +155,17 @@ describe("run, conversation and review events", () => {
       type: "message.posted", payload: { role: "user" },
     });
   });
-  test("a manual gate approval and requirement change", async () => {
+  test("a configured manual gate and board approval changes", async () => {
     const { store, types } = await world();
     const gates = new ManualGateApprovals(store.sqlite());
-    expect(types(() => gates.setRequirement({ issueId: ISSUE, stageId: "review", gateId: "gate", changedAt: "2026-10-17T00:00:00Z", required: true }))).toEqual(["gate.requirementChanged"]);
     expect(types(() => gates.approve({ issueId: ISSUE, stageId: "review", gateId: "gate", stageEpoch: 1, attempt: 1, accountId: "a", accountName: "A", approvedAt: "2026-10-17T00:00:00Z" }))).toEqual(["gate.approved"]);
+    expect(types(() => gates.setBoardApprovalRequirement({ issueId: ISSUE, stageId: "review", changedAt: "2026-10-17T00:00:00Z", required: true }))).toEqual(["gate.boardApprovalChanged"]);
+    expect(types(() => gates.approveBoard({ issueId: ISSUE, stageId: "review", stageEpoch: 1, attempt: 1, accountId: "a", accountName: "A", approvedAt: "2026-10-17T00:00:00Z" }))).toEqual(["gate.boardApproved"]);
   });
-  test("an unchanged gate requirement records nothing", async () => {
+  test("an unchanged board approval requirement records nothing", async () => {
     const { store, types } = await world();
     const gates = new ManualGateApprovals(store.sqlite());
-    expect(types(() => gates.setRequirement({ issueId: ISSUE, stageId: "review", gateId: "gate", changedAt: "2026-10-17T00:00:00Z", required: false }))).toEqual([]);
+    expect(types(() => gates.setBoardApprovalRequirement({ issueId: ISSUE, stageId: "review", changedAt: "2026-10-17T00:00:00Z", required: false }))).toEqual([]);
   });
   test("a finding is created and dismissed", async () => {
     const { store, during } = await world();
