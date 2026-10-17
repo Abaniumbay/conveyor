@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -207,6 +207,19 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(message).toContain("secrets.yaml: invalid YAML at line 2, column 1");
     expect(message).not.toContain(marker);
     expect(message).not.toContain("Unexpected");
+  });
+
+  test("an unreadable deprecated secrets.yaml retains its file-read failure", async () => {
+    const paths = await home({ "secrets.yaml": "session: harmless\n" });
+    const secrets = path.join(paths.config, "secrets.yaml");
+    await chmod(secrets, 0o000);
+    try {
+      const message = await failure(readConfiguration(paths.config));
+      expect(message).toContain("EACCES");
+      expect(message).not.toContain("invalid YAML");
+    } finally {
+      await chmod(secrets, 0o600);
+    }
   });
 
   test("ordinary configuration parse errors retain the YAML parser detail", async () => {

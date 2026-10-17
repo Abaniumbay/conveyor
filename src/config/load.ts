@@ -399,9 +399,18 @@ function configurationHash(config: ConveyorConfigData, pinnedSha?: string): stri
 }
 
 async function readDocument(filename: string, safeDiagnostic = false): Promise<ConfigurationDocument> {
+  let text: string;
+  try {
+    text = await readFile(filename, "utf8");
+  } catch (error) {
+    throw new ConfigError(
+      `cannot parse ${filename}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   let parsed: unknown;
   try {
-    parsed = parse(await readFile(filename, "utf8"));
+    parsed = parse(text);
   } catch (error) {
     if (safeDiagnostic) {
       throw new ConfigError(
