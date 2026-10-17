@@ -64,7 +64,7 @@ describe("CodeHost contract: GitHub", () => {
       .rejects.toThrow("merge blocked");
   });
 
-  test("sends the expected head SHA with the merge and reports a moved head", async () => {
+  test("sends the expected head SHA with the merge and classifies a moved head", async () => {
     const fenced = new FakeTransport([pull(8), { merged: true, sha: "merge123" }]);
     const host = new GitHubCodeHost(new GitHubAdapter(fenced, "conveyor"));
     await host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" });
@@ -73,7 +73,38 @@ describe("CodeHost contract: GitHub", () => {
     const moved = new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "gh: Head branch was modified. Review and try the merge again. (HTTP 409)")]);
     const movedHost = new GitHubCodeHost(new GitHubAdapter(moved, "conveyor"));
     await expect(movedHost.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash", expectedHeadSha: "abc123" }))
-      .resolves.toEqual({ merged: false, headMoved: true });
+      .resolves.toMatchObject({ merged: false, refusal: "head-moved" });
+  });
+
+  test("classifies repairable and policy merge refusals without converting provider outages", async () => {
+    for (const [message, refusal] of [
+      ["Pull request is not mergeable because it has conflicts.", "conflict"],
+      ["This branch is out of date with the base branch.", "outdated"],
+      ["Pull request is not mergeable: required status check is expected.", "blocked"],
+    ] as const) {
+      const host = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), { merged: false, message }]), "conveyor"));
+      await expect(host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+        .resolves.toMatchObject({ merged: false, refusal, reason: message });
+    }
+
+    for (const [stderr, refusal] of [
+      ["gh: Pull Request is not mergeable (HTTP 405)", "conflict"],
+      ["gh: Base branch was modified. Review and try the merge again. (HTTP 405)", "outdated"],
+      ["gh: Branch protection rules prevent this merge. (HTTP 405)", "blocked"],
+      ["gh: Resource not accessible by integration (HTTP 403)", "blocked"],
+      ["gh: Bad credentials (HTTP 401)", "blocked"],
+    ] as const) {
+      const host = new GitHubCodeHost(new GitHubAdapter(
+        new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, stderr)]),
+        "conveyor",
+      ));
+      await expect(host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+        .resolves.toMatchObject({ merged: false, refusal, reason: stderr });
+    }
+
+    const unavailable = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "HTTP 502")]), "conveyor"));
+    await expect(unavailable.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+      .rejects.toThrow("gh failed");
   });
 
   test("maps GitHub mergeable_state to mergeable true, false or unknown (null)", async () => {

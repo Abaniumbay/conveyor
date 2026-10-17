@@ -1250,7 +1250,7 @@ export class GitHubAdapter {
     address: string,
     pullRequestNumber: number,
     expectedHeadSha?: string,
-  ): Promise<{ merged: boolean; sha?: string }> {
+  ): Promise<{ merged: boolean; sha?: string; message?: string }> {
     const current = await this.transport.request<GitHubPullRequest>({
       method: "GET",
       path: `repos/${address}/pulls/${pullRequestNumber}`,
@@ -1261,7 +1261,7 @@ export class GitHubAdapter {
         ...(current.merge_commit_sha ? { sha: current.merge_commit_sha } : {}),
       };
     }
-    return this.transport.request<{ merged: boolean; sha?: string }>({
+    return this.transport.request<{ merged: boolean; sha?: string; message?: string }>({
       method: "PUT",
       path: `repos/${address}/pulls/${pullRequestNumber}/merge`,
       body: expectedHeadSha ? { merge_method: "squash", sha: expectedHeadSha } : { merge_method: "squash" },

@@ -430,6 +430,18 @@ On the board, a signed-in superuser can also require or remove an item-specific 
 
 Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` section are not part of the native shape.
 
+### Merge recovery
+
+The default merge action observes the live pull request before merging. If review or required CI
+belongs to an older head, or the code host reports a changed head, merge conflict, or outdated
+base during the merge attempt, Conveyor returns the item to `implementation` with the repair
+reason. That uses the normal bounded `settings.maxReturns` route: the implementer updates and
+publishes the branch, then required CI and every non-manual criterion approval run again for the
+new head before a fresh review can pass. A stale checkpoint or approval therefore cannot
+authorize a merge. A pull request merged elsewhere still passes idempotently; a closed pull
+request, permission or branch-protection refusal stops with its distinct reason, while a
+transient code-host error uses infrastructure retry handling.
+
 ### Legacy configuration (deprecated, still supported)
 
 Existing configurations keep loading. A stage with `run: { agent | runner + script | sourceAction }`, `enterCheck`, `exitCheck`, `feedbackCycles`, `failurePolicies`, `failureState` and `afterSuccess`, together with the `checks:` section (a deterministic script plus an AI verifier agent), `sources`, `codeHosts`, `runners`, `workspaceAccess` and a top-level `labels`, is compiled by the compatibility compiler into a task plan (`legacy.produce`, `legacy.enterCheck`, `legacy.exitCheck`, `legacy.afterSuccess`, `legacy.succeeded`) with the same behaviour as before and runs through the same durable executor. A legacy stage cannot be mixed with `actions` / `exit-gate` in one stage, and a pipeline with legacy stages still needs `successStatuses` and `failureStatuses`. Legacy `process` stage scripts have no recovery mode, so they stay behind the legacy adapter until each is classified `replay-safe` or `reconcile`. The legacy shape and the AI verifier will be removed once every repository is migrated; do not write new configuration in it.

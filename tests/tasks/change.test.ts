@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
 import { dispatchTool } from "../../src/tasks/dispatch";
-import type { ChangeDelivery, ChangeRequest, CodeHost, ReviewArtifact } from "../../src/codehost/types";
+import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -31,7 +31,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
-  merge?: { merged: boolean; sha?: string; headMoved?: boolean }; mergeCommitSha?: string | null; body?: string;
+  merge?: MergeChangeResult; mergeCommitSha?: string | null; body?: string;
   artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean; descriptionFails?: boolean;
   files?: Record<string, string>;
 } = {}) {
@@ -213,19 +213,26 @@ describe("change.merge", () => {
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("refuses when the review was for a different head", async () => {
-    const w = await world();
-    const result = await run("change.merge", { context: ctx({ checkpoints: { ciPassed: cp("head1"), reviewPassed: cp("old") } }), deps: w.deps }) as Fail;
-    expect(result.route).toEqual({ stop: "blocked" });
+  test("returns an owner-updated head to implementation until CI and review pass for it", async () => {
+    const w = await world({ change: request({ headSha: "head2" }) });
+    const stale = await run("change.merge", { context: ctx({ change: change({ headSha: "head2" }), checkpoints: { ciPassed: cp("head1"), reviewPassed: cp("head1") } }), deps: w.deps }) as Fail;
+    expect(stale.route).toEqual({ return: "implementation" });
+    expect(stale.message).toContain("head2");
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
+
+    const repaired = await run("change.merge", {
+      context: ctx({ change: change({ headSha: "head2" }), checkpoints: { ciPassed: cp("head2"), reviewPassed: cp("head2") } }), deps: w.deps,
+    }) as Pass;
+    expect(repaired.status).toBe("pass");
+    expect(w.host.calls.find(([name]) => name === "merge")![1]).toMatchObject({ expectedHeadSha: "head2" });
   });
 
   test("requires CI for the head only when CI is required", async () => {
     const stale = { checkpoints: { ciPassed: cp("old"), reviewPassed: cp("head1") } };
     const w = await world();
-    const blocked = await run("change.merge", { context: ctx(stale), deps: w.deps }) as Fail;
-    expect(blocked.route).toEqual({ stop: "blocked" });
-    expect(blocked.message).toContain("CI");
+    const returned = await run("change.merge", { context: ctx(stale), deps: w.deps }) as Fail;
+    expect(returned.route).toEqual({ return: "implementation" });
+    expect(returned.message).toContain("CI");
     const advisory = await run("change.merge", { context: ctx({ ...stale, ...repository("advisory") }), deps: w.deps });
     expect(advisory.status).toBe("pass");
   });
@@ -239,20 +246,20 @@ describe("change.merge", () => {
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("observes the live change first: merged elsewhere passes, a moved head is blocked", async () => {
+  test("observes the live change first: merged elsewhere passes, a moved head returns to implementation", async () => {
     const merged = await world({ change: request({ state: "merged" }) });
     expect((await run("change.merge", { context: ctx(), deps: merged.deps })).status).toBe("pass");
     expect(merged.host.calls.some(([n]) => n === "merge")).toBe(false);
     const moved = await world({ change: request({ headSha: "head2" }) });
     const result = await run("change.merge", { context: ctx(), deps: moved.deps }) as Fail;
-    expect(result.route).toEqual({ stop: "blocked" });
+    expect(result.route).toEqual({ return: "implementation" });
     expect(moved.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("a head that moves during the merge is blocked with a clear message", async () => {
-    const w = await world({ merge: { merged: false, headMoved: true } });
+  test("a head that moves during the merge returns to implementation with a clear message", async () => {
+    const w = await world({ merge: { merged: false, refusal: "head-moved" } });
     const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
-    expect(result.route).toEqual({ stop: "blocked" });
+    expect(result.route).toEqual({ return: "implementation" });
     expect(result.message).toContain("head");
   });
 
@@ -265,7 +272,33 @@ describe("change.merge", () => {
 
   test("a merge the host did not perform fails", async () => {
     const w = await world({ merge: { merged: false } });
-    expect((await run("change.merge", { context: ctx(), deps: w.deps })).status).toBe("fail");
+    const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
+    expect(result.route).toEqual({ stop: "blocked" });
+    expect(result.message).toContain("not a repairable conflict");
+  });
+
+  test("returns merge-time conflicts and an outdated base to the bounded repair path", async () => {
+    for (const [refusal, expected] of [["conflict", "conflicting"], ["outdated", "outdated"]] as const) {
+      const w = await world({ merge: { merged: false, refusal } });
+      const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
+      expect(result.route).toEqual({ return: "implementation" });
+      expect(result.message).toContain(expected);
+    }
+  });
+
+  test("returns a conflict observed immediately before merge to implementation", async () => {
+    const w = await world({ change: request({ mergeable: false }) });
+    const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
+    expect(result.route).toEqual({ return: "implementation" });
+    expect(result.message).toContain("conflicts");
+    expect(w.host.calls.some(([name]) => name === "merge")).toBe(false);
+  });
+
+  test("stops a non-conflict code-host refusal instead of retrying the repair path", async () => {
+    const w = await world({ merge: { merged: false, refusal: "blocked", reason: "Branch protection denied this merge." } });
+    const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
+    expect(result.route).toEqual({ stop: "blocked" });
+    expect(result.message).toContain("Branch protection denied");
   });
 });
 
@@ -279,9 +312,11 @@ describe("change checks", () => {
     expect(await run("change.headUnchanged", { context: ctx({ change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
   });
 
-  test("mergeable is pending while unknown, fails on no, passes on yes", async () => {
+  test("mergeable is pending while unknown, tells implementation to resolve conflicts, and passes on yes", async () => {
     expect((await run("change.mergeable", { context: ctx({ change: change({ mergeable: "unknown" }) }) })).status).toBe("pending");
-    expect((await run("change.mergeable", { context: ctx({ change: change({ mergeable: "no" }) }) })).status).toBe("fail");
+    const conflict = await run("change.mergeable", { context: ctx({ change: change({ mergeable: "no" }) }) }) as Fail;
+    expect(conflict.status).toBe("fail");
+    expect(conflict.message).toContain("conflicts");
     expect((await run("change.mergeable", { context: ctx() })).status).toBe("pass");
     expect(await run("change.mergeable", { context: ctx({ change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
     expect(registry.require("change.mergeable").defaultWait).toEqual({ timeoutMs: 30 * 60_000, pollMs: 60_000 });

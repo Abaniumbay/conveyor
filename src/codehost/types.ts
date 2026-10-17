@@ -49,6 +49,16 @@ export type BranchPushResult =
   | { pushed: true }
   | { pushed: false; status: "changes-requested"; reason: string };
 
+/** Why a code host refused a merge after it observed the live change. */
+export type MergeRefusal = "head-moved" | "conflict" | "outdated" | "blocked";
+
+export interface MergeChangeResult {
+  merged: boolean;
+  sha?: string;
+  refusal?: MergeRefusal;
+  reason?: string;
+}
+
 /** A review artifact of the code host's native review (a thread or a changes-requested review), as a finding source. */
 export interface ReviewArtifact {
   /** Stable key of the artifact on the host; dedupes imports. */
@@ -89,7 +99,7 @@ export interface CodeHost {
     method: "squash";
     /** Only squash this head: the host refuses when the change's head has moved. */
     expectedHeadSha?: string;
-  }): Promise<{ merged: boolean; sha?: string; headMoved?: boolean }>;
+  }): Promise<MergeChangeResult>;
   /** Writes the criteria checklist into the change's description as a Conveyor-managed section; human text is kept. */
   setChangeChecklist(input: { address: string; id: string; markdown: string }): Promise<void>;
   /** Writes the agent's explanation into the change's description as a Conveyor-managed section; human text is kept. */
