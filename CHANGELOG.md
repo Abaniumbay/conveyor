@@ -18,6 +18,8 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 - Lease-protected workspace pushes now use the change head the agent observed and explain when a
   newer remote head must be fetched and reconciled before retrying.
+- Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed
+  children finish their post-merge work, keeping their family rows visible on the board.
 
 ## [0.9.0] - 2026-10-16
 
