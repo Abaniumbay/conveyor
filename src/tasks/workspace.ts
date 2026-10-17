@@ -154,13 +154,14 @@ const unjournaled = <I>(definition: TaskDefinition<unknown, I, Deps>): TaskDefin
 const get = tool("workspace.get", "Read scoped workspace metadata (path and branch).", emptyInput, false,
   async (_args, workspace) => ({ path: workspace.path, branch: workspace.branch }));
 
-const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base branch from origin into the workspace.", emptyInput, true,
+const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base branch and scoped workspace branch from origin into the workspace.", emptyInput, true,
   async ({ deps }, workspace) => {
     await deps.git.fetch(workspace.path, "origin", deps.repository.baseBranch);
+    await deps.git.fetch(workspace.path, "origin", workspace.branch);
     return { accepted: true };
   }));
 
-const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push, first read change.get, fetch and rebase the observed change head into HEAD, then provide forceWithLease: true and that headSha; a moved remote head must be fetched and reconciled before retrying.", pushInput, true,
+const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push, first read change.get, use workspace.fetch to fetch the observed branch head, and rebase that head into HEAD; then provide forceWithLease: true and that headSha. When the remote moves, repeat those recovery steps before retrying.", pushInput, true,
   async ({ deps, input }, workspace) => {
     if (input!.forceWithLease !== true) {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: false });
@@ -168,7 +169,7 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
     }
     const expectedRemoteHead = input!.headSha!;
     if (!await deps.git.isAncestor(workspace.path, expectedRemoteHead, "HEAD")) {
-      throw new ToolRequestError(`The workspace has not reconciled observed change head ${expectedRemoteHead}; fetch and rebase before pushing.`);
+      throw new ToolRequestError(`The workspace has not reconciled observed change head ${expectedRemoteHead}; read change.get, use workspace.fetch, and rebase before pushing.`);
     }
     try {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: true, expectedRemoteHead });

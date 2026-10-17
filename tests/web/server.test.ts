@@ -1353,6 +1353,9 @@ describe("createWebHandler", () => {
           throw new ToolRequestError("Invalid dependsOn value 166: it must identify an open, Conveyor-enrolled issue in this repository");
         }
         if (request.tool === "item.setFields") throw new ToolRequestError("This repository has no refinement configuration");
+        if (request.tool === "workspace.push") {
+          throw new ToolRequestError("workspace.push: headSha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is not the current change head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; read change.get and retry");
+        }
         throw new Error("database password leaked");
       },
     });
@@ -1368,6 +1371,9 @@ describe("createWebHandler", () => {
     const fields = await request("item.setFields", { fields: [{ name: "Effort", value: "Low" }] });
     expect(fields.status).toBe(422);
     expect(await fields.json()).toEqual({ error: "This repository has no refinement configuration" });
+    const stalePush = await request("workspace.push", { forceWithLease: true, headSha: "a".repeat(40) });
+    expect(stalePush.status).toBe(422);
+    expect(await stalePush.json()).toEqual({ error: "workspace.push: headSha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is not the current change head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; read change.get and retry" });
     const failure = await request("item.setTitle", { title: "Valid title" });
     expect(failure.status).toBe(500);
     expect(await failure.json()).toEqual({ error: "MCP request failed" });

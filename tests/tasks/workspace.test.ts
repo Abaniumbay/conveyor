@@ -245,11 +245,14 @@ describe("workspace tools", () => {
     const p = await w.record();
     expect(((await tool("workspace.get", w)) as Pass).output).toEqual({ path: p, branch: "conveyor/7-r1-x" });
   });
-  test("workspace.fetch fetches the base branch from origin inside the workspace", async () => {
+  test("workspace.fetch fetches the base and scoped branches from origin inside the workspace", async () => {
     const w = await world();
     const p = await w.record();
     await tool("workspace.fetch", w);
-    expect(w.git.calls).toEqual([["fetch", p, "origin", "main"]]);
+    expect(w.git.calls).toEqual([
+      ["fetch", p, "origin", "main"],
+      ["fetch", p, "origin", "conveyor/7-r1-x"],
+    ]);
   });
   test("workspace.push accepts an observed head only for a lease push", () => {
     expect(pushInput.safeParse({ forceWithLease: true }).success).toBe(false);
@@ -273,14 +276,14 @@ describe("workspace tools", () => {
     const unreconciled = await world({ ancestor: false });
     const p = await unreconciled.record();
     await expect(tool("workspace.push", unreconciled, { forceWithLease: true, headSha }))
-      .rejects.toThrow(`The workspace has not reconciled observed change head ${headSha}; fetch and rebase before pushing.`);
+      .rejects.toThrow(`The workspace has not reconciled observed change head ${headSha}; read change.get, use workspace.fetch, and rebase before pushing.`);
     expect(unreconciled.git.calls).toEqual([["isAncestor", p, headSha, "HEAD"]]);
 
     const movedHead = "b".repeat(40);
     const moved = await world({ pushError: new GitPushRejectedError(movedHead) });
     await moved.record();
     await expect(tool("workspace.push", moved, { forceWithLease: true, headSha }))
-      .rejects.toThrow(`The remote branch moved to ${movedHead}; fetch and rebase before pushing.`);
+      .rejects.toThrow(`The remote branch moved to ${movedHead}; read change.get, use workspace.fetch, and rebase before pushing.`);
   });
   test("tools fail without a workspace", async () => {
     const w = await world();

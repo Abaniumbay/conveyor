@@ -67,13 +67,37 @@ test("cliGit lease push honors an observed head after a server-side update despi
 
   await writeFile(path.join(work, "local"), "3");
   await sh(work, "add", "."); await sh(work, "commit", "-m", "local update");
-  await sh(work, "fetch", "origin", "refs/heads/feat:refs/conveyor/observed/feat");
-  await sh(work, "rebase", "refs/conveyor/observed/feat");
+  await cliGit.fetch(work, "origin", "feat");
+  expect(await cliGit.revParse(work, observedHead)).toBe(observedHead);
+  await sh(work, "rebase", observedHead);
   await sh(work, "update-ref", "refs/remotes/origin/feat", staleHead);
   expect(await cliGit.revParse(work, "refs/remotes/origin/feat")).toBe(staleHead);
 
   await cliGit.push(work, "feat", { forceWithLease: true, expectedRemoteHead: observedHead });
   expect(await sh(root, "--git-dir", remote, "rev-parse", "refs/heads/feat")).toBe(await sh(work, "rev-parse", "HEAD"));
+});
+
+test("cliGit treats an observed remote head that has not been fetched as unreconciled", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  const remote = path.join(root, "remote.git");
+  const work = path.join(root, "work");
+  const server = path.join(root, "server");
+  await sh(root, "init", "--bare", "-b", "main", remote);
+  await sh(root, "clone", remote, work);
+  await writeFile(path.join(work, "a"), "1");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "base");
+  await sh(work, "checkout", "-b", "feat");
+  await cliGit.push(work, "feat", { forceWithLease: false });
+  await sh(root, "clone", remote, server);
+  await sh(server, "checkout", "feat");
+  await writeFile(path.join(server, "server"), "2");
+  await sh(server, "add", "."); await sh(server, "commit", "-m", "server update");
+  await sh(server, "push", "origin", "feat");
+  const observedHead = await sh(server, "rev-parse", "HEAD");
+
+  expect(await cliGit.revParse(work, observedHead)).toBeNull();
+  expect(await cliGit.isAncestor(work, observedHead, "HEAD")).toBe(false);
 });
 
 test("cliGit lease push rejects an unseen remote head without overwriting it", async () => {

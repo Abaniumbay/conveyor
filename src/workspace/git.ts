@@ -24,7 +24,7 @@ export type PushOptions =
 /** A lease push was refused because the remote branch no longer has the observed head. */
 export class GitPushRejectedError extends Error {
   constructor(readonly currentHeadSha: string) {
-    super(`The remote branch moved to ${currentHeadSha}; fetch and rebase before pushing.`);
+    super(`The remote branch moved to ${currentHeadSha}; read change.get, use workspace.fetch, and rebase before pushing.`);
     this.name = "GitPushRejectedError";
   }
 }
@@ -114,6 +114,13 @@ export const cliGit: GitOps = {
     await mustRun(path, ["fetch", remote, branch]);
   },
   async isAncestor(path, ancestor, descendant) {
+    // An observed head can be valid on the code host but absent until the workspace fetches it.
+    // Treat that as unreconciled so the caller can return its actionable recovery error.
+    const object = await run(path, ["rev-parse", "--verify", "--quiet", `${ancestor}^{commit}`]);
+    if (object.exitCode === 1) return false;
+    if (object.exitCode !== 0) {
+      throw new Error(`git rev-parse failed: ${object.stderr || `exit ${object.exitCode}`}`);
+    }
     const result = await run(path, ["merge-base", "--is-ancestor", ancestor, descendant]);
     if (result.exitCode === 0) return true;
     if (result.exitCode === 1) return false;
