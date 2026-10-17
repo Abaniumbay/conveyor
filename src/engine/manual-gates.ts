@@ -31,17 +31,14 @@ export class ManualGateApprovals {
 
   setBoardApprovalRequirement(input: BoardApprovalRequirement & { required: boolean }): void {
     this.database.transaction(() => {
-      const before = this.hasBoardApprovalRequirement(input.issueId, input.stageId);
-      if (input.required) {
-        this.database.query(
+      const result = input.required
+        ? this.database.query(
           `INSERT INTO item_board_approval_requirements(issue_id, stage_id, changed_at) VALUES (?, ?, ?)
-           ON CONFLICT(issue_id, stage_id) DO UPDATE SET changed_at = excluded.changed_at`,
-        ).run(input.issueId, input.stageId, input.changedAt);
-      } else {
-        this.database.query("DELETE FROM item_board_approval_requirements WHERE issue_id = ? AND stage_id = ?")
+           ON CONFLICT(issue_id, stage_id) DO NOTHING`,
+        ).run(input.issueId, input.stageId, input.changedAt)
+        : this.database.query("DELETE FROM item_board_approval_requirements WHERE issue_id = ? AND stage_id = ?")
           .run(input.issueId, input.stageId);
-      }
-      if (before !== input.required) {
+      if (result.changes > 0) {
         eventLog(this.database).append("gate.boardApprovalChanged", { stageId: input.stageId, required: input.required }, { issueId: input.issueId });
       }
     })();

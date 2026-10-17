@@ -166,6 +166,8 @@ describe("run, conversation and review events", () => {
     const { store, types } = await world();
     const gates = new ManualGateApprovals(store.sqlite());
     expect(types(() => gates.setBoardApprovalRequirement({ issueId: ISSUE, stageId: "review", changedAt: "2026-10-17T00:00:00Z", required: false }))).toEqual([]);
+    expect(types(() => gates.setBoardApprovalRequirement({ issueId: ISSUE, stageId: "review", changedAt: "2026-10-17T00:00:00Z", required: true }))).toEqual(["gate.boardApprovalChanged"]);
+    expect(types(() => gates.setBoardApprovalRequirement({ issueId: ISSUE, stageId: "review", changedAt: "2026-10-17T00:01:00Z", required: true }))).toEqual([]);
   });
   test("a finding is created and dismissed", async () => {
     const { store, during } = await world();

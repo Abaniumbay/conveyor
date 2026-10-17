@@ -29,6 +29,10 @@ test("persists stage board requirements and keeps their approvals distinct from 
   approvals.setBoardApprovalRequirement({ issueId: "issue", stageId: "review", required: true, changedAt: "2026-01-01T00:00:00.000Z" });
 
   expect(approvals.hasBoardApprovalRequirement("issue", "review")).toBe(true);
+  approvals.setBoardApprovalRequirement({ issueId: "issue", stageId: "review", required: true, changedAt: "2026-01-01T00:00:30.000Z" });
+  expect(approvals.listBoardApprovalRequirements("issue")).toEqual([
+    { issueId: "issue", stageId: "review", changedAt: "2026-01-01T00:00:00.000Z" },
+  ]);
   expect(approvals.approveBoard({
     issueId: "issue", stageId: "review", stageEpoch: 4, attempt: 1,
     accountId: "account-1", accountName: "operator", approvedAt: "2026-01-01T00:01:00.000Z",

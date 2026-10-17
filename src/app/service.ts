@@ -1370,23 +1370,26 @@ export class ConveyorService {
   /** Reactions to committed changes: waking parked items and scheduling. */
   private subscribeToEvents(): void {
     // A parked exit gate re-evaluates as soon as a person changes what it waits on.
-    const wakeParkedGate = (issueId: string | null, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
+    const wakeParkedGate = (issueId: string | null, stageId: string, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
       if (!issueId) return;
       const cursor = this.store.executions().getCursor(issueId);
-      if (cursor?.state !== "pending" || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
+      if (cursor?.state !== "pending" || cursor.stage !== stageId || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
       // An approval belongs to one visit of the gate; a later visit waits for its own.
       if (visit && (cursor.stageEpoch !== visit.stageEpoch || cursor.attempt !== visit.attempt)) return;
       this.wakeParked(issueId);
     };
     this.events.subscribe("gate.approved", "wake the approved gate", (event) =>
-      wakeParkedGate(event.issueId, event.payload.gateId, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
-    this.events.subscribe("gate.requirementChanged", "wake the changed gate", (event) => wakeParkedGate(event.issueId, event.payload.gateId));
+      wakeParkedGate(event.issueId, event.payload.stageId, event.payload.gateId, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
+    this.events.subscribe("gate.requirementChanged", "wake the changed gate", (event) => wakeParkedGate(event.issueId, event.payload.stageId, event.payload.gateId));
     this.events.subscribe("gate.boardApproved", "wake the approved board gate", (event) =>
-      wakeParkedGate(event.issueId, BOARD_APPROVAL_TASK_ID, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
+      wakeParkedGate(event.issueId, event.payload.stageId, BOARD_APPROVAL_TASK_ID, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
     this.events.subscribe("gate.boardApprovalChanged", "wake the changed board gate", (event) =>
-      wakeParkedGate(event.issueId, BOARD_APPROVAL_TASK_ID));
+      wakeParkedGate(event.issueId, event.payload.stageId, BOARD_APPROVAL_TASK_ID));
     this.events.subscribe("finding.changed", "wake the review gate", (event) => {
-      if (event.payload.change === "dismissed") wakeParkedGate(event.issueId, null);
+      if (event.payload.change === "dismissed") {
+        const cursor = event.issueId ? this.store.executions().getCursor(event.issueId) : null;
+        if (cursor) wakeParkedGate(event.issueId, cursor.stage, null);
+      }
     });
     for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
     for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {

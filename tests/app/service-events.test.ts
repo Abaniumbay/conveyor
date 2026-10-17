@@ -122,6 +122,15 @@ describe("waking parked gates", () => {
     await service.close();
   });
 
+  test("a future-stage board-approval requirement change leaves the current board gate asleep", async () => {
+    const { service, store, journal, park } = await setup();
+    park(1, "board-approval");
+    store.events().append("gate.boardApprovalChanged", { stageId: "review", required: true }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
+    await service.close();
+  });
+
   test("gate.requirementChanged wakes the gate parked on that requirement", async () => {
     const { service, store, journal, park } = await setup();
     park();
