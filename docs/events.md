@@ -95,7 +95,7 @@ Each event has:
 | `source.mutationCompleted` | A source change completed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationFailed` | A source change failed. | `mutationId`: string<br>`operation`: string |
 | `source.mutationStarted` | Conveyor recorded a change it is about to make at the source. | `mutationId`: string<br>`operation`: string |
-| `webhook.healthChanged` | A repository's webhook started or stopped delivering reliably; while unhealthy, waits poll instead of relying on events. | `healthy`: boolean |
+| `webhook.healthChanged` | A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery. | `healthy`: boolean |
 | `webhook.received` | A verified webhook delivery was stored. | `deliveryId`: string<br>`eventType`: string |
 
 ### Workspaces

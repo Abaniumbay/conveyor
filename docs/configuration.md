@@ -194,42 +194,61 @@ settings:
       ci: 5m                # waiting for CI (ci.passed, ci.settled, advisory CI watches)
       change: 10m           # waiting for a pull request (change.mergeable)
       dependencies: 30m     # waiting for blockers (item.dependenciesMet)
-    reconcileInterval: 30m  # the light safety-net reconcile while webhooks are healthy
-    fullReconcileInterval: 24h  # the full reconcile while webhooks are healthy
 ```
 
-A task that waits for something GitHub reports by webhook (CI finishing, a new pull request
-head, a blocker closing) names those events. While the repository's webhooks are healthy, the task
-sleeps until one of them arrives and runs again within seconds; when none comes, it looks again
-after its fallback. A lost delivery therefore delays a wait by at most its fallback and never
-changes its result. Waits that GitHub announces no event for, such as a pull request's mergeability
-being computed, keep their `wait.poll` interval.
+### How Conveyor reads GitHub
 
-Webhooks count as healthy when Conveyor manages the repository's webhook (`autoConfigureWebhook`
-with a `web.publicUrl`), GitHub reports it active, and its last delivery succeeded or none was made
-yet. Conveyor checks at start and hourly; any delivery received counts as healthy at once. While a
-repository's webhooks are unhealthy, or it uses polling, every wait polls at its `wait.poll`
-interval as before.
+GitHub is the source of truth; Conveyor keeps a copy and does not read again what it already knows.
+For a repository whose webhook Conveyor manages (`autoConfigureWebhook` with a `web.publicUrl`):
 
-While a repository's webhooks are healthy, its deliveries keep Conveyor current and the periodic
-reconcile is only a safety net. Every `settings.events.reconcileInterval` it does a light pass: it
-lists only the issues changed since the last read and reads relationships, pull request heads and
-CI for those alone. Every `settings.events.fullReconcileInterval`, and at start, it does a full
-pass: every issue, every enrolled item's provenance and author permissions, and the repository's
-visibility. An unchanged issue's sub-issues and blockers are reused for six hours instead of one.
-While a repository's webhooks are unhealthy, every periodic reconcile is a full pass every
-`settings.reconcileInterval`.
+- **An item entering a stage** reads its issue once. Who enrolled it and who wrote its text are read
+  again only when GitHub reports the issue changed since the last decision (its `updated_at`).
+- **Deliveries update the copy.** An issue or comment delivery carries the whole issue and names who
+  made the change; Conveyor applies it with no read. A delivery older than the stored issue changes
+  nothing. Transfers and deletions are still read.
+- **CI is decided from deliveries.** Check-run deliveries report each check of a commit. When the
+  latest run of every check has finished, green or red, the CI gate decides with no read; only a
+  failure's logs are read, for the implementer. While a check still runs, an evaluation reads the
+  commit, so a lost delivery costs a read, never a wait that does not end. Branch protection on the
+  base branch is what keeps a check whose delivery was lost from making a merge unsafe. The settle
+  window for late-registering checks is 30 seconds by default (`ci.passed` `settleSeconds`).
+- **A task that waits** for something GitHub reports by webhook (CI finishing, a new pull request
+  head, a blocker closing) names those events and sleeps until one arrives; it then runs again
+  within seconds, reusing the pull request's last read state unless a delivery about it arrived. When
+  no event comes it looks again after its `settings.events.fallback`, reading fresh. Waits that
+  GitHub announces no event for, such as a pull request's mergeability being computed, keep their
+  `wait.poll` interval.
+- **No periodic reading.** The periodic tick does not read the repository.
+- **At start** Conveyor reads only the issues changed since the newest change it stored, and
+  sub-issues and blockers only for those; then it asks GitHub to redeliver what it missed while it
+  was stopped and pings the webhook.
+
+A repository without a managed webhook (polling) is read in full every `settings.reconcileInterval`,
+and its waits poll at their `wait.poll`.
+
+`settings.events.reconcileInterval` and `settings.events.fullReconcileInterval` are deprecated: they
+are accepted with a warning and have no effect.
+
+### Webhook health
+
+A webhook is healthy while deliveries arrive. When a repository has had no delivery for an hour,
+Conveyor asks GitHub to ping the webhook (one request); the ping arriving keeps it healthy. Only a
+ping that does not arrive within five minutes marks the repository unhealthy: the dashboard and
+`conveyor doctor` show it and a `webhook.healthChanged` event records it, for an admin to
+investigate. Nothing else changes with it: waits keep their deadlines and nothing switches to
+polling. A request GitHub refuses (an outage, the rate limit) never changes health. The next
+delivery marks it healthy again and asks GitHub for the deliveries it missed.
+
+Deliveries GitHub could not make, for example while Conveyor was restarting, are asked for again
+once Conveyor listens after a start and when deliveries resume after an outage: it lists the
+webhook's recent deliveries and asks GitHub to send again, at most 50 at a time, those of the last
+day that failed and never arrived. This needs the same permission as configuring the webhook;
+without it Conveyor warns once.
 
 GitHub sends no event for some changes, such as a collaborator's permission or a repository's
 visibility. A superuser can read one repository afresh at once with **Sync now** on its page, in
-the Setup section: a full pass that also forgets the cached relationships and re-checks the
-webhook.
-
-Deliveries GitHub could not make, for example while Conveyor was restarting, are asked for again:
-once Conveyor listens after a start, and hourly, it lists the webhook's recent deliveries and asks
-GitHub to send again, at most 50 at a time, those of the last day that failed and never arrived.
-This needs the same permission as configuring the webhook; without it Conveyor warns once and
-relies on the safety-net reconcile.
+the Setup section: every issue, every enrolled item's provenance and author permissions,
+relationships, pull request heads and CI, and a ping of the webhook.
 
 A `jsonl` sink appends each event as one JSON line, rotated with the `settings.logging` size rules.
 Each sink keeps its own position in the database: it receives every event at least once and in

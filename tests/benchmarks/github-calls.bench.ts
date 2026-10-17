@@ -56,7 +56,7 @@ async function flush(): Promise<void> {
   await readFile(import.meta.path);
 }
 
-async function world(options: { openIssues: number; pulls: number }) {
+async function world(options: { openIssues: number; pulls: number; enrolledParked?: number }) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-github-calls-bench-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -105,9 +105,18 @@ repositories:
   // Background issues: open, not enrolled, as in a real repository.
   for (let number = 1; number <= options.openIssues; number += 1) simulator.addIssue(ADDRESS, { number, labels: ["bug"] });
   for (let index = 0; index < options.pulls; index += 1) simulator.addPullRequest(ADDRESS, { number: 900 + index, headSha: SHA_2 });
+  // Enrolled items parked on a blocker that stays open, as a busy production repository has.
+  if (options.enrolledParked) {
+    simulator.addIssue(ADDRESS, { number: 999, labels: ["bug"] });
+    for (let index = 0; index < options.enrolledParked; index += 1) simulator.addIssue(ADDRESS, { number: 200 + index, labels: ["conveyor", "conveyor:ready"], blockedBy: [999] });
+  }
   let delivery = 0;
   const deliver = async (service: ConveyorService, event: string, payload: Record<string, unknown>) => {
-    const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: ADDRESS }, ...payload }));
+    // As GitHub sends them: an issue delivery carries the whole issue and who made the change.
+    const named = (payload.issue as { number?: number } | undefined)?.number;
+    const issue = (event === "issues" || event === "issue_comment") && named !== undefined && simulator.repository(ADDRESS).issues.has(named)
+      ? { issue: simulator.issueJson(ADDRESS, named) } : {};
+    const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: ADDRESS }, sender: { login: "maintainer" }, ...payload, ...issue }));
     const signature = `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
     await service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": `d${(delivery += 1)}`, "x-github-event": event }));
   };
@@ -118,7 +127,7 @@ repositories:
 async function scenario(
   name: string,
   description: string,
-  options: { openIssues: number; pulls: number },
+  options: { openIssues: number; pulls: number; enrolledParked?: number; includeStartup?: boolean; restart?: boolean },
   seed: (w: Awaited<ReturnType<typeof world>>, store: ConveyorStore) => void,
   script: (w: Awaited<ReturnType<typeof world>> & { service: ConveyorService; advance: (ms: number) => Promise<void> }) => Promise<string>,
 ): Promise<ScenarioResult> {
@@ -131,6 +140,17 @@ async function scenario(
   seeded.upsertRepository({ id: "app", configName: "app", source: "github", address: ADDRESS, folder: w.config.repositories.app!.folder, configHash: w.config.hash });
   seed(w, seeded);
   seeded.close();
+  if (options.restart) {
+    // A first run that onboards everything and stops, so the measured start is a restart.
+    const first = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
+    first.start();
+    await flush();
+    jest.advanceTimersByTime(MINUTE);
+    await flush();
+    await first.webhooksSettled();
+    await first.close();
+  }
+  const startupFrom = w.tap.calls.length;
   const service = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
   const advance = async (ms: number) => {
     const step = 5_000;
@@ -140,7 +160,7 @@ async function scenario(
     }
   };
   // Startup (onboarding, the first reconcile) is the same before and after; measure from here.
-  const measuredFrom = w.tap.calls.length;
+  const measuredFrom = options.includeStartup ? startupFrom : w.tap.calls.length;
   service.start();
   await flush();
   const outcome = await script({ ...w, service, advance });
@@ -198,6 +218,8 @@ describe("GitHub calls per scenario", () => {
         await deliver(service, "workflow_run", run("in_progress", "in_progress", null));
         await advance(19 * MINUTE);
         simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "completed", conclusion: "success", startedAt: START.toISOString(), completedAt: new Date().toISOString() }]);
+        // Each check run finishes (and is delivered) before the workflow run that contains it.
+        for (const checkRun of simulator.checkRunsJson(ADDRESS, SHA_1)) await deliver(service, "check_run", { action: "completed", check_run: { ...checkRun, pull_requests: [{ number: 150 }] } });
         await deliver(service, "workflow_run", run("completed", "completed", "success"));
         const completedAt = Date.now();
         await deliver(service, "check_suite", { action: "completed", check_suite: { head_sha: SHA_1, status: "completed", conclusion: "success", pull_requests: [{ number: 150 }] } });
@@ -271,10 +293,85 @@ describe("GitHub calls per scenario", () => {
       },
     );
   }, 120_000);
+
+  test("restart: a repository with 30 enrolled items parked on a blocker", async () => {
+    await scenario(
+      "restart-30-enrolled",
+      "Conveyor starts on a repository with 20 open issues, 4 pull requests and 30 enrolled items parked on an open blocker; the database already holds them from before the restart. Measured from the start of the service for two minutes, startup included.",
+      { openIssues: 20, pulls: 4, enrolledParked: 30, includeStartup: true, restart: true },
+      () => {},
+      async ({ advance }) => {
+        await advance(2 * MINUTE);
+        return "started";
+      },
+    );
+  }, 300_000);
+
+  test("idle hour: 30 enrolled items parked on a blocker, no deliveries", async () => {
+    await scenario(
+      "idle-hour-30-enrolled",
+      "Nothing happens for an hour on a repository with 20 open issues, 4 pull requests and 30 enrolled items parked on an open blocker.",
+      { openIssues: 20, pulls: 4, enrolledParked: 30 },
+      () => {},
+      async ({ advance }) => {
+        await advance(60 * MINUTE);
+        return "idle";
+      },
+    );
+  }, 300_000);
+
+  test("delivery: one item from implementation to done next to 30 parked items", async () => {
+    await scenario(
+      "delivery-30-enrolled",
+      "One item in implementation with its pull request, next to 30 enrolled items parked on an open blocker. CI runs for 10 minutes (workflow_run requested, in_progress, completed and check_suite completed), the item moves to merge, its pull request is mergeable, and it finishes. Every stage label Conveyor writes comes back as an issues labeled delivery. Measured until the item is done.",
+      { openIssues: 20, pulls: 4, enrolledParked: 30 },
+      (w, store) => {
+        const { simulator } = w;
+        simulator.addIssue(ADDRESS, { number: 50, labels: enrolled("implementation") });
+        simulator.addPullRequest(ADDRESS, { number: 150, headSha: SHA_1, headRef: "conveyor/50-work" });
+        store.upsertIssue({ id: ITEM_50, repositoryId: "app", sourceNumber: 50, sourceUrl: `https://github.com/${ADDRESS}/issues/50`, title: "Issue 50", body: "", sourceState: "open", labels: enrolled("implementation"), sourceUpdatedAt: START.toISOString() });
+        store.setIssueProjection(ITEM_50, { stage: "implementation", state: "active", warning: null });
+        store.setStageState({ issueId: ITEM_50, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: w.config.hash });
+        store.activateEnrollment(ITEM_50);
+        store.upsertPullRequest({ issueId: ITEM_50, id: `github:${ADDRESS}#pr-150`, number: 150, url: `https://github.com/${ADDRESS}/pull/150`, state: "open" });
+        simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "queued" }]);
+      },
+      async ({ service, simulator, deliver, advance }) => {
+        // Conveyor's own label writes come back as deliveries, as GitHub sends them.
+        let lastLabels = "";
+        const echoLabels = async () => {
+          const labels = simulator.repository(ADDRESS).issues.get(50)?.labels.join(",") ?? "";
+          if (labels === lastLabels) return;
+          lastLabels = labels;
+          await deliver(service, "issues", { action: "labeled", issue: { number: 50 }, label: { name: "conveyor" } });
+        };
+        const run = (action: string, status: string, conclusion: string | null) => ({
+          action, workflow_run: { head_sha: SHA_1, status, conclusion, pull_requests: [{ number: 150 }] },
+        });
+        await deliver(service, "workflow_run", run("requested", "queued", null));
+        await advance(MINUTE);
+        simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "in_progress", startedAt: new Date().toISOString() }]);
+        await deliver(service, "workflow_run", run("in_progress", "in_progress", null));
+        await advance(9 * MINUTE);
+        simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "completed", conclusion: "success", startedAt: START.toISOString(), completedAt: new Date().toISOString() }]);
+        // Each check run finishes (and is delivered) before the workflow run that contains it.
+        for (const checkRun of simulator.checkRunsJson(ADDRESS, SHA_1)) await deliver(service, "check_run", { action: "completed", check_run: { ...checkRun, pull_requests: [{ number: 150 }] } });
+        await deliver(service, "workflow_run", run("completed", "completed", "success"));
+        await deliver(service, "check_suite", { action: "completed", check_suite: { head_sha: SHA_1, status: "completed", conclusion: "success", pull_requests: [{ number: 150 }] } });
+        const done = () => service.store.getIssue(ITEM_50)?.projectedState === "done" || service.store.getIssue(ITEM_50)?.projectedStage === null;
+        for (let waited = 0; waited < 30 * MINUTE && !done(); waited += 5_000) {
+          await advance(5_000);
+          await echoLabels();
+        }
+        const issue = service.store.getIssue(ITEM_50);
+        return `item ${issue?.projectedStage ?? "-"}/${issue?.projectedState ?? "-"}`;
+      },
+    );
+  }, 300_000);
 });
 
 afterAll(async () => {
-  const lines = ["", "GitHub calls per scenario (excluding startup):", ""];
+  const lines = ["", "GitHub calls per scenario (startup excluded unless the scenario says so):", ""];
   for (const result of results) {
     lines.push(`${result.scenario} (${result.virtualMinutes} virtual min, ${result.outcome}): ${result.total} calls`);
     lines.push(`  by source: ${Object.entries(result.bySource).map(([source, count]) => `${source}=${count}`).join(", ")}`);

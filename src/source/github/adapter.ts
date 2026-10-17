@@ -134,7 +134,7 @@ interface GitHubLabel {
   name: string;
 }
 
-interface GitHubIssue {
+export interface GitHubIssue {
   id: number;
   number: number;
   html_url: string;
@@ -161,7 +161,7 @@ function eventActor(event: GitHubIssueEvent): SourceEventActor {
   return { login: typeof event.actor?.login === "string" ? event.actor.login : null };
 }
 
-function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
+export function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
   return {
     id: `github:${address}#${issue.number}`,
     number: issue.number,
@@ -268,8 +268,12 @@ const WEBHOOK_EVENTS = [
   "issues",
   "issue_comment",
   "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
   "workflow_run",
   "check_suite",
+  "check_run",
   "sub_issues",
   "issue_dependencies",
 ];
@@ -443,11 +447,12 @@ export class GitHubAdapter {
     }
   }
 
+  /** Makes sure Conveyor's webhook exists, is active and has every event it needs; returns its id. */
   async ensureWebhook(input: {
     address: string;
     url: string;
     secret: string;
-  }): Promise<void> {
+  }): Promise<number> {
     const hooks = await this.transport.request<GitHubHook[]>({
       method: "GET",
       path: `repos/${input.address}/hooks?per_page=100`,
@@ -455,16 +460,16 @@ export class GitHubAdapter {
     });
     const existing = hooks.find((hook) => hook.config.url === input.url);
     const missingEvents = existing ? WEBHOOK_EVENTS.filter((event) => !(existing.events ?? []).includes(event)) : [];
-    if (existing?.active && missingEvents.length === 0) return;
+    if (existing?.active && missingEvents.length === 0) return existing.id;
     if (existing) {
       await this.transport.request<GitHubHook>({
         method: "PATCH",
         path: `repos/${input.address}/hooks/${existing.id}`,
         body: { active: true, events: [...new Set([...(existing.events ?? []), ...WEBHOOK_EVENTS])] },
       });
-      return;
+      return existing.id;
     }
-    await this.transport.request<GitHubHook>({
+    const created = await this.transport.request<GitHubHook>({
       method: "POST",
       path: `repos/${input.address}/hooks`,
       body: {
@@ -479,6 +484,12 @@ export class GitHubAdapter {
         },
       },
     });
+    return created.id;
+  }
+
+  /** Asks GitHub to send the webhook a ping delivery, which shows that deliveries arrive. */
+  async pingHook(address: string, hookId: number): Promise<void> {
+    await this.transport.request<unknown>({ method: "POST", path: `repos/${address}/hooks/${hookId}/pings` });
   }
 
   /** Conveyor's webhook (the one delivering to `url`) and how its last delivery went; null when there is none. */

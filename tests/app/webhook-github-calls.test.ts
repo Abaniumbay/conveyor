@@ -253,3 +253,55 @@ describe("GitHub calls made for webhook deliveries", () => {
     store.close();
   });
 });
+
+describe("issue deliveries that carry the full issue", () => {
+  const fullIssue = (labels: string[], updatedAt: string) => ({
+    id: 1, number: 1, html_url: "https://github.com/owner/repo/issues/1", title: "One", body: "", state: "open", state_reason: null,
+    labels: labels.map((name) => ({ name })), updated_at: updatedAt,
+  });
+  const nothingRead = (calls: { listed: unknown[]; fetched: unknown[]; subIssues: number; dependencies: number }) =>
+    ({ listed: calls.listed, fetched: calls.fetched, subIssues: calls.subIssues, dependencies: calls.dependencies });
+
+  test("a label change is applied from the delivery, with no GitHub read", async () => {
+    const { conveyor, store, calls, deliver } = await service();
+    await conveyor.reconcileAll();
+    for (const key of ["listed", "fetched"] as const) calls[key].length = 0;
+    calls.subIssues = 0;
+    calls.dependencies = 0;
+    await deliver("issues", { action: "labeled", issue: fullIssue(["conveyor", "conveyor:work", "priority"], "2026-10-07T21:00:00Z"), label: { name: "priority" }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    expect(nothingRead(calls)).toEqual({ listed: [], fetched: [], subIssues: 0, dependencies: 0 });
+    expect(store.getIssue("github:owner/repo#1")?.labels).toContain("priority");
+    store.close();
+  });
+
+  test("a comment is applied from the delivery, with no GitHub read", async () => {
+    const { conveyor, store, calls, deliver } = await service();
+    await conveyor.reconcileAll();
+    for (const key of ["listed", "fetched"] as const) calls[key].length = 0;
+    await deliver("issue_comment", { action: "created", issue: fullIssue(["conveyor", "conveyor:work"], "2026-10-07T21:00:00Z"), comment: { id: 7, body: "Please cover the empty case" }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    expect({ listed: calls.listed, fetched: calls.fetched }).toEqual({ listed: [], fetched: [] });
+    store.close();
+  });
+
+  test("a delivery older than the stored issue changes nothing", async () => {
+    const { conveyor, store, deliver } = await service();
+    await conveyor.reconcileAll();
+    await deliver("issues", { action: "labeled", issue: fullIssue(["conveyor", "conveyor:work", "stale"], "2026-10-07T19:00:00Z"), label: { name: "stale" }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    expect(store.getIssue("github:owner/repo#1")?.labels).not.toContain("stale");
+    store.close();
+  });
+
+  test("a transfer is read from GitHub instead", async () => {
+    const { conveyor, store, calls, deliver } = await service();
+    await conveyor.reconcileAll();
+    calls.fetched.length = 0;
+    await deliver("issues", { action: "transferred", issue: fullIssue(["conveyor", "conveyor:work"], "2026-10-07T21:00:00Z"), sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    expect(calls.fetched).toEqual([1]);
+    store.close();
+  });
+});
+

@@ -23,6 +23,25 @@ export interface ReconcileRepositoryInput {
   since?: string;
   /** Issue numbers named by a webhook, whose current source state must be read even if a recent listing omits them. */
   includeIssueNumbers?: readonly number[];
+  /** Exactly these issues, already read: no listing, and nothing else is marked missing. */
+  issues?: readonly SourceIssue[];
+  /**
+   * Re-read every enrolled issue's provenance and re-check its actors' permissions. Otherwise an
+   * issue whose enrollment and accepted text are unchanged keeps its earlier trust decision.
+   */
+  verifyTrust?: boolean;
+  /**
+   * Per issue number, who made the change a webhook delivery reports. It stands in for the provenance
+   * read when it answers every trust question the change raises.
+   */
+  delivered?: ReadonlyMap<number, DeliveredActors>;
+}
+
+/** Who changed each trust-relevant part of an issue in one delivery; "unchanged" when it did not change it. */
+export interface DeliveredActors {
+  enrollment: SourceEventActor | "unchanged";
+  title: SourceEventActor | "unchanged";
+  body: SourceEventActor | "unchanged";
 }
 
 export interface ReconcileRepositoryResult {
@@ -93,19 +112,36 @@ async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: So
   if (!enrolled) {
     return { title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null, enrollmentTrusted: true, warnings: [] };
   }
+  // Provenance answers who enrolled the issue and who wrote its text. An issue GitHub reports
+  // unchanged since a trusted decision (same updated_at) cannot have a new labeler or editor, so
+  // reading it again (three requests per issue) learns nothing.
+  if (!input.verifyTrust && prior && prior.acceptedTextAt !== null && prior.acceptedTextAt !== undefined &&
+    prior.sourceUpdatedAt === sourceIssue.updatedAt &&
+    prior.labels.includes(input.labels.enrollment) && !(prior.warning ?? "").includes("Enrollment blocked") &&
+    sourceIssue.title === prior.title && sourceIssue.body === prior.body) {
+    return { title: prior.title, body: prior.body, acceptedTextAt: prior.acceptedTextAt, enrollmentTrusted: true, warnings: [] };
+  }
+  const priorTrusted = prior !== null && prior !== undefined && prior.acceptedTextAt !== null && prior.acceptedTextAt !== undefined &&
+    prior.labels.includes(input.labels.enrollment) && !(prior.warning ?? "").includes("Enrollment blocked");
+  // A delivery names who made its change. It answers every question when the enrollment is either
+  // its own change or an earlier trusted one, and each text that differs was its own change.
+  const delivered = input.verifyTrust ? undefined : input.delivered?.get(sourceIssue.number);
+  // Without accepted text yet, a trusted enrollment adopts the issue's text as it is.
+  const noAcceptedText = prior === null || prior === undefined || prior.acceptedTextAt === null || prior.acceptedTextAt === undefined;
+  const answered = delivered !== undefined &&
+    (delivered.enrollment !== "unchanged" || priorTrusted) &&
+    (noAcceptedText || (["title", "body"] as const).every((field) => sourceIssue[field] === prior[field] || delivered[field] !== "unchanged"));
   // Source-event lookup is evidence, not a negative trust decision.  Propagate
   // an outage so the caller retries without replacing the existing projection.
-  const provenance = await input.source.getIssueProvenance(
-    input.repository.address,
-    sourceIssue.number,
-    input.labels.enrollment,
-  );
-  const enrollment = await decideTrust(input, provenance.enrollment);
+  const provenance: { enrollment: SourceEventActor | "unchanged" | null; title: SourceEventActor | "unchanged" | null; body: SourceEventActor | "unchanged" | null } = answered
+    ? delivered
+    : await input.source.getIssueProvenance(input.repository.address, sourceIssue.number, input.labels.enrollment);
+  const enrollment = provenance.enrollment === "unchanged" ? { trusted: true, unavailable: false } : await decideTrust(input, provenance.enrollment);
   if (!enrollment.trusted) {
     return {
       title: prior?.title ?? "", body: prior?.body ?? "", acceptedTextAt: prior?.acceptedTextAt ?? null,
       enrollmentTrusted: false,
-      warnings: [enrollmentWarning(provenance.enrollment, enrollment.unavailable)],
+      warnings: [enrollmentWarning(provenance.enrollment === "unchanged" ? null : provenance.enrollment, enrollment.unavailable)],
     };
   }
   if (prior === null || prior === undefined || prior.acceptedTextAt === null || prior.acceptedTextAt === undefined) {
@@ -117,13 +153,15 @@ async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: So
   const warnings: string[] = [];
   for (const [field, value, actor] of [["title", sourceIssue.title, provenance.title], ["body", sourceIssue.body, provenance.body]] as const) {
     if (value === prior[field]) continue;
-    const decision = await decideTrust(input, actor);
+    // "unchanged" cannot reach here: a delivery answers only when each differing text was its own change.
+    const editor = actor === "unchanged" ? null : actor;
+    const decision = await decideTrust(input, editor);
     if (decision.trusted) {
       if (field === "title") title = value;
       else body = value;
       acceptedTextAt = sourceIssue.updatedAt;
     } else {
-      warnings.push(textWarning(field, actor, decision.unavailable));
+      warnings.push(textWarning(field, editor, decision.unavailable));
     }
   }
   return { title, body, acceptedTextAt: acceptedTextAt ?? null, enrollmentTrusted: true, warnings };
@@ -144,7 +182,9 @@ export async function reconcileRepository(
     configHash: input.configHash,
   });
 
-  let sourceIssues = await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
+  let sourceIssues = input.issues
+    ? [...input.issues]
+    : await input.source.listIssues(input.repository.address, input.since !== undefined ? { since: input.since } : {});
   if (input.includeIssueNumbers && input.includeIssueNumbers.length > 0) {
     if (!input.source.getIssue) throw new Error("source adapter cannot refresh webhook-named issues");
     const refreshed = (await Promise.all(
@@ -292,7 +332,7 @@ export async function reconcileRepository(
 
   let missing = 0;
   for (const issue of existing.values()) {
-    if (input.since !== undefined || seen.has(issue.id)) continue;
+    if (input.since !== undefined || input.issues !== undefined || seen.has(issue.id)) continue;
     input.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "missing",

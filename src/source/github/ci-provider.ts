@@ -2,7 +2,46 @@ import { parse as parseYaml } from "yaml";
 
 import { FOCUSED_LOG_BREAK } from "../../app/ci-gate";
 import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../app/ci-provider";
-import type { GitHubAdapter } from "./adapter";
+import type { GitHubAdapter, GitHubCheckRun } from "./adapter";
+
+/**
+ * The check runs a commit's webhook deliveries reported. A commit with deliveries is answered from
+ * them, with no read: GitHub's branch protection refuses a merge with a failing or missing required
+ * check, so a check whose delivery was lost cannot make a merge unsafe.
+ */
+export class DeliveredCheckRuns {
+  readonly #byCommit = new Map<string, Map<number, GitHubCheckRun>>();
+
+  constructor(private readonly maxCommits = 500) {}
+
+  /**
+   * The check runs of a commit once every one known has completed; null while any still runs or none
+   * is known, so a lost delivery of a finish costs a read rather than a wait that never ends.
+   */
+  get(address: string, sha: string): GitHubCheckRun[] | null {
+    const runs = [...this.#byCommit.get(DeliveredCheckRuns.#key(address, sha))?.values() ?? []];
+    // A re-run is a new run with the same name; the latest of each name is the one that counts.
+    const latest = new Map<string, GitHubCheckRun>();
+    for (const run of runs) if ((latest.get(run.name)?.id ?? -1) < run.id) latest.set(run.name, run);
+    return latest.size > 0 && [...latest.values()].every((run) => run.status === "completed") ? runs : null;
+  }
+
+  /** Records check runs from a delivery or a read; a later state of the same run replaces an earlier one. */
+  remember(address: string, sha: string, runs: readonly GitHubCheckRun[]): void {
+    const key = DeliveredCheckRuns.#key(address, sha);
+    const known = this.#byCommit.get(key) ?? new Map<number, GitHubCheckRun>();
+    this.#byCommit.delete(key);
+    for (const run of runs) known.set(run.id, run);
+    this.#byCommit.set(key, known);
+    // Commits are kept in insertion order; the oldest are dropped first.
+    for (const oldest of this.#byCommit.keys()) {
+      if (this.#byCommit.size <= this.maxCommits) break;
+      this.#byCommit.delete(oldest);
+    }
+  }
+
+  static #key(address: string, sha: string): string { return `${address.toLowerCase()}@${sha}`; }
+}
 
 export interface GitHubActionsTrigger {
   label: string;
@@ -101,6 +140,8 @@ export class GitHubActionsCiProvider implements CiProvider {
   constructor(
     private readonly github: GitHubAdapter,
     private readonly triggers: GitHubActionsTrigger[] = [],
+    /** Check runs from webhook deliveries; without it every list reads GitHub. */
+    private readonly delivered?: DeliveredCheckRuns,
   ) {}
 
   async start(change: CiChange, commit: string, retryWindowMs: number, now: number): Promise<string[]> {
@@ -127,7 +168,12 @@ export class GitHubActionsCiProvider implements CiProvider {
   }
 
   async list(change: CiChange, commit: string): Promise<CiRun[]> {
-    const runs = await this.github.listCheckRuns(change.repository, commit);
+    let runs = this.delivered?.get(change.repository, commit) ?? null;
+    if (runs === null) {
+      runs = await this.github.listCheckRuns(change.repository, commit);
+      // Later deliveries for these runs update what was read.
+      this.delivered?.remember(change.repository, commit, runs);
+    }
     const latest = new Map<string, { run: CiRun; skipped: boolean; order: number }>();
     for (const raw of runs) {
       const run: CiRun = {

@@ -1780,6 +1780,12 @@ export class ConveyorStore {
     }
   }
 
+  /** A stored webhook delivery: its event type and payload; null when there is none. */
+  sourceEvent(source: string, deliveryId: string): { eventType: string; payload: unknown } | null {
+    const row = this.#database.query("SELECT event_type, payload_json FROM source_events WHERE source = ? AND delivery_id = ?").get(source, deliveryId) as { event_type: string; payload_json: string } | null;
+    return row ? { eventType: row.event_type, payload: JSON.parse(row.payload_json) as unknown } : null;
+  }
+
   /** Whether a webhook delivery with this id was stored. */
   hasSourceEvent(source: string, deliveryId: string): boolean {
     return this.#database.query("SELECT 1 FROM source_events WHERE source = ? AND delivery_id = ?").get(source, deliveryId) !== null;

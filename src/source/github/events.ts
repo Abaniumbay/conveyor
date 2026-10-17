@@ -56,14 +56,20 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
       });
       return { type: "github.relationshipChanged", payload: { repository, numbers: [...new Set(numbers)] } };
     }
-    case "pull_request": {
+    case "pull_request":
+    case "pull_request_review":
+    case "pull_request_review_comment":
+    case "pull_request_review_thread": {
       const pullRequest = record(body.pull_request);
       const number = positive(pullRequest.number);
       if (number === null) return null;
-      return { type: "github.changeUpdated", payload: { repository, number, action, headSha: text(record(pullRequest.head).sha) } };
+      // A review's action (submitted, resolved) is kept apart from the pull request's own actions.
+      const changeAction = eventType === "pull_request" ? action : `${eventType.slice("pull_request_".length)}_${action}`;
+      return { type: "github.changeUpdated", payload: { repository, number, action: changeAction, headSha: text(record(pullRequest.head).sha) } };
     }
     case "workflow_run":
-    case "check_suite": {
+    case "check_suite":
+    case "check_run": {
       const run = record(body[eventType]);
       const sha = text(run.head_sha);
       if (!sha) return null;

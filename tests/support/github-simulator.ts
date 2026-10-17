@@ -47,6 +47,8 @@ export interface SimulatedRepository {
   hookDeliveries: Map<number, Array<{ id: string; guid: string; delivered_at: string; status_code: number; redelivery: boolean }>>;
   /** Delivery attempts the simulator was asked to send again. */
   redeliveries: string[];
+  /** Ping requests for the repository's webhooks. */
+  pings: number;
   /** Pull request conversations, which GitHub serves through the issues API. */
   pullConversations: Map<number, SimulatedIssue>;
 }
@@ -67,7 +69,7 @@ export class GitHubSimulator implements GitHubTransport {
   repository(address: string): SimulatedRepository {
     let repository = this.repositories.get(address.toLowerCase());
     if (!repository) {
-      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map(), hookDeliveries: new Map(), redeliveries: [] };
+      repository = { address, issues: new Map(), pulls: new Map(), checkRuns: new Map(), labels: new Set(), hooks: [], pullConversations: new Map(), hookDeliveries: new Map(), redeliveries: [], pings: 0 };
       this.repositories.set(address.toLowerCase(), repository);
     }
     return repository;
@@ -112,6 +114,21 @@ export class GitHubSimulator implements GitHubTransport {
     }
     if (result instanceof GitHubTransportError) throw result;
     return structuredClone(result) as T;
+  }
+
+  /** A commit's check runs as GitHub's REST API and `check_run` deliveries show them. */
+  checkRunsJson(address: string, sha: string) {
+    return (this.repository(address).checkRuns.get(sha) ?? []).map((run) => ({
+      id: run.id, name: run.name, head_sha: sha, status: run.status, conclusion: run.conclusion, app: { slug: "github-actions" },
+      details_url: `https://github.com/${address}/actions/runs/${run.id}`, started_at: run.startedAt, completed_at: run.completedAt,
+    }));
+  }
+
+  /** An issue as GitHub's REST API and webhook payloads show it. */
+  issueJson(address: string, number: number) {
+    const issue = this.repository(address).issues.get(number);
+    if (!issue) throw new Error(`no simulated issue ${address}#${number}`);
+    return this.#issueJson(address, issue);
   }
 
   #issueJson(address: string, issue: SimulatedIssue) {
@@ -259,6 +276,10 @@ export class GitHubSimulator implements GitHubTransport {
       const deliveries = repository.hookDeliveries.get(Number(match[1]!)) ?? [];
       return JSON.stringify(deliveries).replace(/"id":"(\d+)"/g, '"id":$1');
     }
+    if ((match = /^hooks\/(\d+)\/pings$/.exec(rest)) && method === "POST") {
+      repository.pings += 1;
+      return null;
+    }
     if ((match = /^hooks\/(\d+)\/deliveries\/(\d+)\/attempts$/.exec(rest)) && method === "POST") {
       repository.redeliveries.push(match[2]!);
       return null;
@@ -282,14 +303,8 @@ export class GitHubSimulator implements GitHubTransport {
         .map((pull) => this.#pullJson(address, pull));
     }
     if ((match = /^commits\/([0-9a-z]+)\/check-runs$/.exec(rest)) && method === "GET") {
-      const runs = repository.checkRuns.get(match[1]!) ?? [];
-      const page = {
-        total_count: runs.length,
-        check_runs: runs.map((run) => ({
-          id: run.id, name: run.name, status: run.status, conclusion: run.conclusion, app: { slug: "github-actions" },
-          details_url: `https://github.com/${address}/actions/runs/${run.id}`, started_at: run.startedAt, completed_at: run.completedAt,
-        })),
-      };
+      const runs = this.checkRunsJson(address, match[1]!);
+      const page = { total_count: runs.length, check_runs: runs };
       return request.paginate ? [page] : page;
     }
     if (/^contents\//.test(rest) && method === "GET") return notFound(request);

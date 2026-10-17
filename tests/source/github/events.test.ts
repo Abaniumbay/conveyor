@@ -56,6 +56,16 @@ describe("normalizeGitHubEvent", () => {
       .toEqual({ type: "github.ciUpdated", payload: { repository: "owner/my-app", sha: SHA, pullRequests: [9], completed: true } });
   });
 
+  test("a completed check run is a CI completion of its commit", () => {
+    expect(normalizeGitHubEvent("check_run", { action: "completed", repository, check_run: { head_sha: SHA, name: "Tests", pull_requests: [{ number: 9 }] } }))
+      .toEqual({ type: "github.ciUpdated", payload: { repository: "owner/my-app", sha: SHA, pullRequests: [9], completed: true } });
+  });
+
+  test("a submitted review is a change to its pull request, kept apart from the pull request's own actions", () => {
+    expect(normalizeGitHubEvent("pull_request_review", { action: "submitted", repository, pull_request: { number: 9, head: { sha: SHA } }, review: { body: "Looks good" } }))
+      .toEqual({ type: "github.changeUpdated", payload: { repository: "owner/my-app", number: 9, action: "review_submitted", headSha: SHA } });
+  });
+
   test("a ping confirms the webhook", () => {
     expect(normalizeGitHubEvent("ping", { zen: "Keep it logically awesome.", repository }))
       .toEqual({ type: "github.ping", payload: { repository: "owner/my-app" } });
