@@ -157,7 +157,10 @@ describe("versioning", () => {
       },
     ];
     const fragments = await readChangelogFragments(ROOT);
-    expect(fragments.map((fragment) => fragment.filename)).toContain("212-periodic-operator-checks.md");
+    // A fragment stays until a release consumes it into a dated section.
+    if (!fragments.some((fragment) => fragment.filename === "212-periodic-operator-checks.md")) {
+      expect(changelog).toContain("- Configured Operator steering can now inspect stopped enrolled work on a periodic cadence.");
+    }
     for (const entry of migrated) {
       const fragment = fragments.find((candidate) => candidate.filename === entry.filename);
       if (fragment) expect({ filename: fragment.filename, section: fragment.section as string, body: fragment.body }).toEqual(entry);

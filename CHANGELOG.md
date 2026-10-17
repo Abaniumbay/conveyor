@@ -10,6 +10,40 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.11.0] - 2026-10-17
+
+Conveyor now reads GitHub only when it needs to. For repositories whose webhook it manages, an item entering a stage reads its issue once, deliveries update issues and decide finished CI without reads, nothing is read periodically, and a restart reads only what changed while Conveyor was stopped. Webhook health comes from deliveries and a ping after a quiet hour. Also fixes roll-up parent closing and the implementer's first workspace fetch.
+
+### Added
+
+- Configured Operator steering can now inspect stopped enrolled work on a periodic cadence. Scheduled runs
+  are isolated from owner requests and may only retry or answer a target when they provide recorded evidence.
+
+### Changed
+
+- Conveyor reads GitHub only when it needs to. For a repository whose webhook it manages, an item
+  entering a stage reads its issue once (every step of every item used to re-read the whole
+  repository), issue and comment deliveries are applied from their payload, finished CI is decided
+  from check-run deliveries, nothing is read periodically, and a restart reads only the issues changed
+  while Conveyor was stopped. Webhook health now comes from deliveries: a quiet repository is pinged
+  after an hour, and only an undelivered ping marks it unhealthy, as an alert that changes no
+  behaviour. The CI settle window defaults to 30 seconds. `settings.events.reconcileInterval` and
+  `fullReconcileInterval` are deprecated and have no effect. On the offline benchmark with 30 enrolled
+  items, a restart goes from 158 GitHub calls to 6, an idle hour from 97 to 4, and one item's
+  delivery from 243 to 45.
+
+### Fixed
+
+- Malformed secret configuration files now report only their file name and YAML position, so parser
+  diagnostics cannot expose secret values.
+
+- Closing a completed roll-up parent no longer counts as failed when GitHub closed it but answered with
+  an error, and a parent that cannot be closed no longer fails the reconcile of its whole repository.
+
+- An implementation agent's `workspace.fetch` no longer fails before the item's branch is first
+  pushed (it reports that the branch is not on the remote yet), and a fetch that does fail tells the
+  agent git's reason instead of only "MCP request failed".
+
 ## [0.10.0] - 2026-10-17
 
 Conveyor now runs on an event log: every change is recorded as an event, dashboard and CLI actions are commands, and the live dashboard follows the events. With healthy webhooks it reads GitHub far less: waits for CI and blockers wake on webhook events, and the periodic reconcile becomes a light safety net. This release also adds a Graph view, GitHub call reporting, Sync now for a repository, and in-place manual gate controls.
