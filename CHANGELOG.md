@@ -8,25 +8,7 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 ## [Unreleased]
 
-### Added
-
-- `conveyor doctor` and repository dashboards now show public-repository trust safeguards,
-  configured extra trusted logins, source-check uncertainty, and body-free skipped-review history
-  links.
-
-### Fixed
-
-- Merge conflicts, changed pull-request heads, and outdated bases discovered after review now
-  return through the bounded implementation repair path while retaining fresh CI and review gates
-  for the repaired head.
-- Cleanup now reclaims restricted terminal run homes and warns once per unrecoverable run-home
-  failure.
-- Lease-protected workspace pushes now use the change head the agent observed and explain when a
-  newer remote head must be fetched and reconciled before retrying.
-- Completed active roll-up parents now close with GitHub's completed reason once every descendant
-  finishes, instead of remaining open with a closable label.
-- Roll-up parents now remain at the earliest unfinished descendant stage until merge-closed
-  children finish their post-merge work, keeping their family rows visible on the board.
+See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
 ## [0.9.0] - 2026-10-16
 

@@ -21,6 +21,7 @@
     "docs:screenshots": "bun run scripts/regenerate-screenshots.ts",
     "build": "bun run scripts/build.ts",
     "release": "bun run scripts/release.ts",
+    "changelog": "bun run scripts/release.ts changelog",
     "smoke": "bun run scripts/smoke-test.ts --dist dist",
     "deploy:when-idle": "bun run scripts/deploy-when-idle.ts",
     "start": "bun run src/cli.ts serve"

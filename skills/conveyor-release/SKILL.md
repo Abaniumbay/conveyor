@@ -9,11 +9,12 @@ agreed to, its version.
 
 1. **Confirm the request.** You need the version (`X.Y.Z`, later than `package.json`'s) and a
    release summary: two to four sentences on what the release is about, for the people installing
-   it. Write the summary from the `## [Unreleased]` section of `CHANGELOG.md` and the merged pull
-   requests. Do not invent changes that are not there. Show it to the person when you can.
-2. **Check the changelog.** Every user-visible change since the last release must be under
-   `## [Unreleased]`, with breaking changes marked. If something is missing, add it in a normal pull
-   request first; do not put it only in the summary.
+   it. Write the summary from `bun run changelog` and the merged pull requests. Do not invent
+   changes that are not there. Show it to the person when you can.
+2. **Check the changelog fragments.** Every user-visible change since the last release must have a
+   file in `changes/`, with a section and any breaking marker. Run `bun run changelog` to preview
+   the combined notes. If something is missing, add its fragment in a normal pull request first;
+   do not put it only in the summary or edit Unreleased in `CHANGELOG.md`.
 3. **Start from a clean, current `main`:** `git switch main && git pull --ff-only`, and
    `git status --short` must be empty.
 4. **Open the release pull request:**
@@ -23,9 +24,9 @@ agreed to, its version.
    ```
 
    It refuses, changing nothing, on a dirty tree, a branch other than `main`, `main` not level with
-   `origin/main`, empty Unreleased changes, a version that is not newer, or an existing branch or
-   tag. Fix the stated cause. Never bypass the check by editing `package.json` or the changelog by
-   hand. Report the pull request URL it prints.
+   `origin/main`, no changelog fragments, a version that is not newer, or an existing branch or
+   tag. Fix the stated cause. Never bypass the check by editing `package.json` or the dated
+   changelog by hand. Report the pull request URL it prints.
 5. **Wait for the merge.** The release pull request goes through review and CI like any other. Do
    not merge it yourself unless the person asked you to.
 6. **Tag only after it merged, and only when the person still wants it published:**

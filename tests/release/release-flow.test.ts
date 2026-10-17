@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { nextVersions, ReleaseCheckError, startRelease, tagRelease, type ReleaseIo } from "../../scripts/release";
+import { nextVersions, prepareRelease, ReleaseCheckError, startRelease, tagRelease, type ReleaseIo } from "../../scripts/release";
 
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-const CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- The standalone release.\n";
+const CHANGELOG = "# Changelog\n\n## [Unreleased]\n\nSee [changes/](changes/) and run `bun run changelog` to preview unreleased entries.\n";
+const FRAGMENT = "---\nsection: Added\n---\nThe standalone release.\n";
 
 function git(cwd: string, ...args: string[]): string {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -29,6 +30,8 @@ async function repository() {
   git(clone, "switch", "--quiet", "--create", "main");
   await writeFile(path.join(clone, "package.json"), '{\n  "name": "conveyor",\n  "version": "0.1.0"\n}\n');
   await writeFile(path.join(clone, "CHANGELOG.md"), CHANGELOG);
+  await mkdir(path.join(clone, "changes"));
+  await writeFile(path.join(clone, "changes", "7-standalone-release.md"), FRAGMENT);
   git(clone, "add", ".");
   git(clone, "commit", "--quiet", "--message", "initial");
   git(clone, "push", "--quiet", "--set-upstream", "origin", "main");
@@ -72,8 +75,10 @@ describe("bun run release start", () => {
     expect(git(origin, "rev-parse", "release/v0.2.0")).toBe(git(clone, "rev-parse", "HEAD"));
     expect(JSON.parse(await readFile(path.join(clone, "package.json"), "utf8"))).toEqual({ name: "conveyor", version: "0.2.0" });
     expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toBe(
-      "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-10-06\n\nThe first standalone release.\nInstall it with install.sh.\n\n### Added\n\n- The standalone release.\n",
+      "# Changelog\n\n## [Unreleased]\n\nSee [changes/](changes/) and run `bun run changelog` to preview unreleased entries.\n\n## [0.2.0] - 2026-10-06\n\nThe first standalone release.\nInstall it with install.sh.\n\n### Added\n\n- The standalone release.\n",
     );
+    expect(await Bun.file(path.join(clone, "changes", "7-standalone-release.md")).exists()).toBe(false);
+    expect(git(clone, "show", "--format=", "--name-status", "HEAD")).toContain("D\tchanges/7-standalone-release.md");
     expect(pullRequests[0]!.argv).toEqual(["gh", "pr", "create", "--base", "main", "--head", "release/v0.2.0", "--title", "Release v0.2.0", "--body-file", "-"]);
     expect(pullRequests[0]!.body).toContain("## Release notes\n\nThe first standalone release.");
     expect(pullRequests[0]!.body).toContain("bun run release tag 0.2.0");
@@ -121,11 +126,27 @@ describe("bun run release start", () => {
     await expect(run()).rejects.toThrow("not level with origin/main");
     git(clone, "pull", "--quiet", "--ff-only");
 
-    await writeFile(path.join(clone, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+    await rm(path.join(clone, "changes", "7-standalone-release.md"));
     git(clone, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--all", "--message", "empty");
     git(clone, "push", "--quiet");
-    await expect(run()).rejects.toThrow("no Unreleased changes");
+    await expect(run()).rejects.toThrow("No Unreleased changes to release");
   });
+});
+
+test("prepare writes fragment notes after an optional summary and deletes only its fragments", async () => {
+  const { clone } = await repository();
+  const result = await prepareRelease({ root: clone, version: "0.2.0", date: "2026-10-06", summary: "Prepared without Git." });
+  expect(result.notes).toBe("Prepared without Git.\n\n### Added\n\n- The standalone release.");
+  expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toContain("## [0.2.0] - 2026-10-06\n\nPrepared without Git.\n\n### Added");
+  expect(await Bun.file(path.join(clone, "changes", "7-standalone-release.md")).exists()).toBe(false);
+});
+
+test("prepare refuses an empty changes directory without changing release files", async () => {
+  const { clone } = await repository();
+  await rm(path.join(clone, "changes", "7-standalone-release.md"));
+  const before = await Promise.all([readFile(path.join(clone, "package.json"), "utf8"), readFile(path.join(clone, "CHANGELOG.md"), "utf8"), Bun.file(path.join(clone, "changes", "7-standalone-release.md")).exists()]);
+  await expect(prepareRelease({ root: clone, version: "0.2.0", date: "2026-10-06" })).rejects.toThrow("No Unreleased changes to release");
+  await expect(Promise.all([readFile(path.join(clone, "package.json"), "utf8"), readFile(path.join(clone, "CHANGELOG.md"), "utf8"), Bun.file(path.join(clone, "changes", "7-standalone-release.md")).exists()])).resolves.toEqual(before);
 });
 
 describe("bun run release tag", () => {
