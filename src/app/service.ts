@@ -1423,10 +1423,10 @@ export class ConveyorService {
     const stageLabel = parent.projectedStage
       ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
       : [];
-    const closeMutationKey = `rollup-completion-close:${parent.id}`;
+    const closeMutationKeyPrefix = `rollup-completion-close:${parent.id}:`;
 
     let current = await this.github.getIssue(address, parent.sourceNumber);
-    const priorCloseMutation = this.store.getSourceMutationByKey(closeMutationKey);
+    const priorCloseMutation = this.store.getLatestSourceMutationByKeyPrefix(closeMutationKeyPrefix);
     if (
       current.state === "closed" &&
       current.stateReason === "completed" &&
@@ -1469,8 +1469,15 @@ export class ConveyorService {
       labels.some((label, index) => label !== currentConveyorLabels[index]);
 
     if (needsLabelUpdate) {
+      const labelMutationDigest = createHash("sha256")
+        .update(`${parent.id}\0${current.updatedAt}\0${[...current.labels].sort().join("\0")}`)
+        .digest("hex")
+        .slice(0, 24);
       const labelMutation = this.store.beginSourceMutation({
-        idempotencyKey: `rollup-completion-labels:${parent.id}`,
+        // The source snapshot starts a completion episode. It remains stable
+        // while a failed label write is retried, but changes before a parent
+        // can be completed again after GitHub reopens or relabels it.
+        idempotencyKey: `rollup-completion-labels:${parent.id}:${labelMutationDigest}`,
         source: repository.source,
         operation: "issue.labels.replace",
         request: { issueId: parent.id, issueNumber: parent.sourceNumber, labels },
@@ -1505,8 +1512,12 @@ export class ConveyorService {
       throw new Error("Completed roll-up parent no longer has its done label; refusing to close it.");
     }
 
+    const closeMutationDigest = createHash("sha256")
+      .update(`${parent.id}\0${current.updatedAt}\0${[...current.labels].sort().join("\0")}`)
+      .digest("hex")
+      .slice(0, 24);
     const closeMutation = this.store.beginSourceMutation({
-      idempotencyKey: closeMutationKey,
+      idempotencyKey: `${closeMutationKeyPrefix}${closeMutationDigest}`,
       source: repository.source,
       operation: "issue.close",
       request: {
@@ -1648,7 +1659,7 @@ export class ConveyorService {
     const repositoryIssues = this.store.listIssues(repositoryId);
     for (const parent of repositoryIssues) {
       const children = this.store.listChildren(parent.id);
-      const closeMutation = this.store.getSourceMutationByKey(`rollup-completion-close:${parent.id}`);
+      const closeMutation = this.store.getLatestSourceMutationByKeyPrefix(`rollup-completion-close:${parent.id}:`);
       if (
         children.length > 0 &&
         parent.sourceState === "closed" &&

@@ -73,6 +73,7 @@ function completionSource(
 ) {
   const closeCalls: number[] = [];
   const labelCalls: Array<{ number: number; labels: readonly string[] }> = [];
+  let labelUpdates = 0;
   let remainingFailedCloses = failedCloses;
   const copy = (issue: SourceIssue): SourceIssue => ({ ...issue, labels: [...issue.labels] });
   const find = (number: number) => {
@@ -97,7 +98,10 @@ function completionSource(
       async listDependencies() { return []; },
       async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
         labelCalls.push({ number, labels: [...labels] });
-        find(number).labels = [...labels];
+        const issue = find(number);
+        issue.labels = [...labels];
+        labelUpdates += 1;
+        issue.updatedAt = `2026-10-17T00:0${labelUpdates}:00Z`;
       },
       async closeIssue(_address: string, number: number) {
         closeCalls.push(number);
@@ -205,7 +209,7 @@ describe("roll-up parent completion", () => {
     await service.reconcileAll();
     expect(fixture.closeCalls).toEqual([1]);
     expect(fixture.labelCalls).toHaveLength(1);
-    expect(store.getSourceMutationByKey("rollup-completion-close:github:owner/my-app#1")).toMatchObject({
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-completion-close:github:owner/my-app#1:")).toMatchObject({
       status: "failed",
       error: "temporary source outage",
     });
@@ -214,7 +218,7 @@ describe("roll-up parent completion", () => {
 
     expect(fixture.closeCalls).toEqual([1, 1]);
     expect(fixture.labelCalls).toHaveLength(1);
-    expect(store.getSourceMutationByKey("rollup-completion-close:github:owner/my-app#1")).toMatchObject({
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-completion-close:github:owner/my-app#1:")).toMatchObject({
       status: "succeeded",
     });
     expect(store.getIssue("github:owner/my-app#1")).toMatchObject({
@@ -231,7 +235,7 @@ describe("roll-up parent completion", () => {
     ], new Map([[1, [2]]]), 1, true);
 
     await service.reconcileAll();
-    expect(store.getSourceMutationByKey("rollup-completion-close:github:owner/my-app#1")).toMatchObject({
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-completion-close:github:owner/my-app#1:")).toMatchObject({
       status: "failed",
       error: "temporary source outage",
     });
@@ -240,12 +244,49 @@ describe("roll-up parent completion", () => {
 
     expect(fixture.closeCalls).toEqual([1]);
     expect(fixture.labelCalls).toHaveLength(1);
-    expect(store.getSourceMutationByKey("rollup-completion-close:github:owner/my-app#1")).toMatchObject({
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-completion-close:github:owner/my-app#1:")).toMatchObject({
       status: "succeeded",
     });
     expect(store.getIssue("github:owner/my-app#1")).toMatchObject({
       sourceState: "closed",
       sourceStateReason: "completed",
+    });
+    store.close();
+  });
+
+  test("closes a parent again after it is reopened for a later completion episode", async () => {
+    const issues = [
+      sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),
+      sourceIssue(2, "open", ["conveyor", "conveyor:implementation", "conveyor:done"]),
+    ];
+    const descendants = new Map<number, readonly number[]>([[1, [2]]]);
+    const { fixture, service, store } = await serviceFor(issues, descendants);
+
+    await service.reconcileAll();
+    expect(fixture.closeCalls).toEqual([1]);
+
+    const parent = issues[0]!;
+    parent.state = "open";
+    parent.stateReason = null;
+    parent.labels = ["conveyor", "conveyor:implementation"];
+    parent.updatedAt = "2026-10-17T00:02:00Z";
+    const laterChild = sourceIssue(3, "open", ["conveyor", "conveyor:implementation"]);
+    issues.push(laterChild);
+    descendants.set(1, [2, 3]);
+
+    await service.reconcileAll();
+    expect(fixture.closeCalls).toEqual([1]);
+
+    laterChild.labels = ["conveyor", "conveyor:implementation", "conveyor:done"];
+    laterChild.updatedAt = "2026-10-17T00:03:00Z";
+    await service.reconcileAll();
+
+    expect(fixture.labelCalls).toHaveLength(2);
+    expect(fixture.closeCalls).toEqual([1, 1]);
+    expect(store.getIssue("github:owner/my-app#1")).toMatchObject({
+      sourceState: "closed",
+      sourceStateReason: "completed",
+      projectedState: "done",
     });
     store.close();
   });
