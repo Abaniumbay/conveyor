@@ -38,6 +38,21 @@ export function serverStatusHasPressure(status: SystemStatusViewModel): boolean 
     && measurement.usedBytes / measurement.totalBytes > 0.85);
 }
 
+/**
+ * The views a recorded event changes on the live dashboard: `board` (the current page),
+ * `conversation` and `activity` (an open item's tabs). Events that change nothing shown map to none.
+ * Spliced into the page script, so it must stay self-contained.
+ */
+export function dashboardViewsForEvent(type: string): string[] {
+  const views: string[] = [];
+  const group = type.slice(0, type.indexOf('.') + 1);
+  if (['item.', 'stage.', 'journey.', 'gate.', 'finding.', 'todo.', 'criterion.', 'change.', 'indicator.', 'advisoryCi.', 'repository.', 'service.', 'admission.', 'account.', 'question.', 'answer.', 'message.', 'workspace.'].includes(group) && type !== 'item.fenced') views.push('board');
+  if (type === 'run.started' || type === 'run.finished') views.push('board');
+  if (group === 'message.' || group === 'question.' || group === 'answer.') views.push('conversation');
+  if (group === 'run.') views.push('activity');
+  return views;
+}
+
 type DashboardEventSource = {
   readyState: number;
   onopen: ((event: Event) => void) | null;
@@ -71,7 +86,7 @@ export function createDashboardEventConnection(options: {
   const clearTimer = options.clearTimeout ?? ((timer) => clearTimeout(timer));
   const setWatchdog = options.setInterval ?? ((callback, delay) => setInterval(callback, delay));
   const clearWatchdog = options.clearInterval ?? ((timer) => clearInterval(timer));
-  const eventTypes = ['status', 'revision', 'conversation', 'activity'];
+  const eventTypes = ['status', 'conveyor', 'reset'];
   let source: DashboardEventSource | null = null;
   let retryTimer: any = null;
   let lastActivity = now();
@@ -255,6 +270,7 @@ export const dashboardClient = String.raw`(() => {
   const serverStatusMetrics = ${serverStatusMetrics.toString()};
   const serverStatusHasPressure = ${serverStatusHasPressure.toString()};
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
+  const dashboardViewsForEvent = ${dashboardViewsForEvent.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const morphDashboard = ${morphDashboard.toString()};
   const body = document.body;
@@ -1646,6 +1662,7 @@ export const dashboardClient = String.raw`(() => {
     void navigateDashboard(destination);
   }, true);
 
+  let waitForCorrelation = (_id) => Promise.resolve();
   document.addEventListener('submit', async (event) => {
     const form = event.target;
     // An answer is sent in the background: the button says so at once, and the board refreshes in place.
@@ -1672,6 +1689,7 @@ export const dashboardClient = String.raw`(() => {
         if (!response.ok) throw new Error(result.error || 'Your answer could not be recorded. Try again.');
         button.textContent = 'Answered';
         if (status instanceof HTMLElement) status.textContent = 'Answer recorded. The agent continues.';
+        await waitForCorrelation(result.correlationId);
         void replaceDashboard(new URL(location.href), { preservePosition: true });
       } catch (error) {
         button.disabled = false;
@@ -2356,6 +2374,38 @@ export const dashboardClient = String.raw`(() => {
   document.addEventListener('toggle', resumePendingRefresh, true);
   bindServerStatus();
   syncThemeControls();
+  // A command's response names its correlation id; its events arriving on the stream settle it.
+  const correlationWaiters = new Map();
+  const settleCorrelation = (id) => {
+    const waiter = correlationWaiters.get(id);
+    if (!waiter) return;
+    correlationWaiters.delete(id);
+    clearTimeout(waiter.timer);
+    waiter.resolve();
+  };
+  // Resolves when the command's events arrive, or after a short wait when the stream is down.
+  waitForCorrelation = (id) => new Promise((resolve) => {
+    if (typeof id !== 'string' || !id) return resolve();
+    const timer = setTimeout(() => settleCorrelation(id), 3000);
+    correlationWaiters.set(id, { resolve, timer });
+  });
+  // ?debug=events logs every live event and the views it refreshes to the console.
+  const debugEvents = new URLSearchParams(location.search).get('debug') === 'events';
+  // A burst of events refreshes each view once, on the next frame.
+  const pendingViews = new Set();
+  let viewFrame = null;
+  const scheduleViews = () => {
+    if (viewFrame !== null || pendingViews.size === 0) return;
+    viewFrame = requestAnimationFrame(() => {
+      viewFrame = null;
+      const views = [...pendingViews];
+      pendingViews.clear();
+      if (debugEvents) console.debug('[conveyor refresh]', views);
+      if (views.includes('board')) refreshDashboardWhenSafe();
+      if (views.includes('conversation')) scheduleConversationRefresh();
+      if (views.includes('activity')) scheduleActivityRefresh();
+    });
+  };
   const dashboardEvents = createDashboardEventConnection({
     onConnectionChange: setConnection,
     onReconnect: refreshDashboardWhenSafe,
@@ -2369,15 +2419,21 @@ export const dashboardClient = String.raw`(() => {
         }
         return;
       }
-      if (type === 'conversation') return scheduleConversationRefresh();
-      if (type === 'activity') return scheduleActivityRefresh();
-      try {
-        const next = JSON.parse(message.data);
-        if (typeof next.revision !== 'string' || next.revision === revision) return;
-        revision = next.revision;
-        body.dataset.dashboardRevision = revision;
-        refreshDashboardWhenSafe();
-      } catch {}
+      if (type === 'reset') {
+        // Events were missed and are no longer kept: every view re-reads.
+        for (const view of ['board', 'conversation', 'activity']) pendingViews.add(view);
+        return scheduleViews();
+      }
+      let event;
+      try { event = JSON.parse(message.data); } catch { return; }
+      if (!event || typeof event.type !== 'string') return;
+      // What the page has heard of, even while an open dialog holds its refresh back.
+      if (typeof event.seq === 'number') body.dataset.lastEventSeq = String(event.seq);
+      const views = dashboardViewsForEvent(event.type);
+      if (debugEvents) console.debug('[conveyor event]', event, views);
+      for (const view of views) pendingViews.add(view);
+      if (typeof event.correlationId === 'string') settleCorrelation(event.correlationId);
+      scheduleViews();
     },
   });
   document.addEventListener('visibilitychange', dashboardEvents.check);

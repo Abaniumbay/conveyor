@@ -48,6 +48,7 @@ Each event has:
 | Event | Meaning | Payload |
 | --- | --- | --- |
 | `run.finished` | A run finished; `status` is its outcome. | `runId`: string<br>`status`: string |
+| `run.progressed` | A run wrote to its transcript; recorded at most once a second per run, and once after its last line. | `runId`: string |
 | `run.started` | An agent, script or steering run started. | `runId`: string<br>`kind`: string<br>`stage`: string \| null |
 
 ### Conversation
@@ -104,14 +105,18 @@ Each event has:
 | `account.created` | A dashboard account was created. | `accountId`: string<br>`role`: string |
 | `account.deleted` | A dashboard account was deleted. | `accountId`: string |
 | `account.passwordChanged` | A dashboard account's password changed. | `accountId`: string |
+| `admission.paused` | Conveyor stopped admitting new work (a drain); running work continues. | - |
+| `admission.resumed` | Conveyor admits new work again. | - |
 | `config.recorded` | A new configuration snapshot was recorded. | `hash`: string |
 | `notifications.settingsChanged` | An account's push notification preferences changed. | `accountId`: string |
 | `notifications.subscribed` | A browser subscribed to push notifications. | `accountId`: string |
 | `notifications.unsubscribed` | A browser's push subscription was removed. | `accountId`: string \| null |
+| `repository.healthChanged` | A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error. | `check`: `"onboarding"` \| `"reconcile"`<br>`healthy`: boolean |
 | `repository.onboarded` | A configured repository was added to or updated in the local index. | `address`: string |
 | `repository.reconciled` | Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all. | `issueNumbers`: integer[] \| null |
 | `repository.removed` | An unconfigured repository and its history were removed. | - |
 | `repository.trustChanged` | A repository's observed visibility changed. | `visibility`: string |
+| `service.reconciled` | A pass over every repository finished; `failed` repositories could not be read. | `failed`: integer |
 | `session.signedIn` | A dashboard account signed in. | `accountId`: string \| null |
 | `session.signedOut` | A dashboard account signed out. | `accountId`: string \| null |
 

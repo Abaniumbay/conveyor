@@ -33,7 +33,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IndicatorViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -60,7 +60,7 @@ import { conversationQuestionAnswer, questionConfigurationError, questionOptions
 import { ManualGateApprovals } from "../engine/manual-gates";
 import { CommandBus, CommandForbiddenError, type CommandActor } from "../commands/bus";
 import { EventBus } from "../events/bus";
-import type { EventType } from "../events/catalogue";
+import type { EventType, StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
@@ -160,6 +160,14 @@ const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** How often a webhook reconcile still reads the whole issue list (finding deleted or transferred issues) rather than recent changes. */
 const FULL_ISSUE_LISTING_MS = 60 * 60_000;
+/** A reconnecting dashboard replays at most this many missed events; with more it reloads. */
+const REPLAY_LIMIT = 1_000;
+
+/** What the dashboard stream sends for an event: what changed, never its content. */
+function streamEvent(event: StoredEvent): DashboardStreamEvent {
+  return { seq: event.seq, type: event.type, repositoryId: event.repositoryId, issueId: event.issueId, correlationId: event.correlationId };
+}
+
 /** Changes that can make an item runnable; the scheduler runs after them. */
 // Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
 // person's action makes that can let an item run.
@@ -476,9 +484,10 @@ export class ConveyorService {
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           await this.github.ensureWebhook({ address: repository.address, url, secret });
         }
-        this.#onboardingErrors.delete(id);
+        if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (!this.#onboardingErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: false }, { repositoryId: id });
         this.#onboardingErrors.set(id, message);
         log.error("Repository onboarding failed", { repository: id }, error);
       }
@@ -529,9 +538,11 @@ export class ConveyorService {
         await this.reconcileRelationships(id, repository.address);
         await this.syncIssueFields(id, repository);
         this.restorePendingStatus(id);
-        this.#repositoryErrors.delete(id);
+        if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
+        this.store.events().append("repository.reconciled", { issueNumbers: null }, { repositoryId: id });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
         this.#repositoryErrors.set(id, message);
         log.error("Repository reconciliation failed", { repository: id }, error);
       } finally {
@@ -539,6 +550,7 @@ export class ConveyorService {
       }
     }
     this.#lastReconciledAt = new Date().toISOString();
+    this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size });
     this.interruptIneligibleRuns();
   }
 
@@ -4349,6 +4361,7 @@ export class ConveyorService {
   drain(reason: string): { since: string; reason: string } {
     if (!this.#drain) {
       this.#drain = { since: new Date().toISOString(), reason };
+      this.store.events().append("admission.paused", {});
       log.info("Admission paused: draining", { reason });
       for (const [issueId, active] of this.#active) {
         log.info("Stage waiting during drain", { ...this.itemFields(issueId), stage: active.stageId });
@@ -4361,6 +4374,7 @@ export class ConveyorService {
   resumeAdmission(): boolean {
     if (!this.#drain) return false;
     this.#drain = null;
+    this.store.events().append("admission.resumed", {});
     log.info("Admission resumed");
     this.schedule();
     return true;
@@ -4496,9 +4510,8 @@ export class ConveyorService {
         this.store.events().append(change === "signedIn" ? "session.signedIn" : "session.signedOut", { accountId })),
       getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
       getIssueDetails: (csrfToken, issueId) => this.issueDetails(csrfToken, issueId),
-      getDashboardRevision: () => this.dashboardRevision(),
-      getConversationRevision: () => this.store.conversationRevision(),
-      getActivityRevision: () => this.store.activityRevision(),
+      subscribeEvents: (listener) => this.events.subscribe("*", "dashboard stream", (event) => listener(streamEvent(event))),
+      eventsAfter: (seq) => this.eventsAfter(seq),
       getSystemStatus: () => this.systemStatus(),
       isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
@@ -4524,6 +4537,21 @@ export class ConveyorService {
       getAgentProfile: async (agentId) =>
         (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
+  }
+
+  /**
+   * The events after `seq` for a reconnecting dashboard, or null when some of them are gone
+   * (pruned, from another database, or too many to replay) and the page must reload instead.
+   */
+  eventsAfter(seq: number): DashboardStreamEvent[] | null {
+    const log = this.store.events();
+    const latest = log.latestSeq();
+    if (seq > latest) return null;
+    if (seq === latest) return [];
+    const oldest = log.oldestSeq();
+    if (oldest === null || seq < oldest - 1) return null;
+    const missed = log.read({ afterSeq: seq, limit: REPLAY_LIMIT + 1 });
+    return missed.length > REPLAY_LIMIT ? null : missed.map(streamEvent);
   }
 
   seedDashboardSuperuser(username: string, passwordHash: string): void {

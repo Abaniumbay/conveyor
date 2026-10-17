@@ -239,10 +239,7 @@ describe("buildRepositorySummaries", () => {
     for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
       expect(html).not.toContain("sentinel-webhook-secret");
     }
-    const dependencies = service.webDependencies({} as never, "operator");
     expect(boardHtml).toContain(`data-dashboard-revision="${board.revision}"`);
-    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
-    expect(await dependencies.getDashboardRevision()).toBe(board.revision);
 
     store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
     const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
@@ -253,11 +250,15 @@ describe("buildRepositorySummaries", () => {
     const degraded = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     expect(store.dashboardRevision()).toBe(storedRevision);
     expect(degraded.revision).not.toBe(updated.revision);
-    expect(await dependencies.getDashboardRevision()).toBe(degraded.revision);
+    // The live dashboard learns of the failing repository from its event, and of every pass.
+    const health = () => store.events().read({ type: "repository.healthChanged" }).map((event) => [event.repositoryId, event.payload]);
+    expect(health()).toContainEqual(["alpha", { check: "reconcile", healthy: false }]);
     expect(degraded.repositories.find((repository) => repository.id === "alpha")?.health).toBe("degraded");
-    await Bun.sleep(2);
+    const passes = store.events().read({ type: "service.reconciled" }).length;
     await service.reconcileAll();
-    expect(await dependencies.getDashboardRevision()).not.toBe(degraded.revision);
+    expect(store.events().read({ type: "service.reconciled" })).toHaveLength(passes + 1);
+    // Failing again is not a new health change.
+    expect(health().filter(([repository]) => repository === "alpha")).toHaveLength(1);
     expect(degraded.systemWarnings).toEqual([]);
     // The board no longer lists repositories, but a repository that cannot sync is called out there.
     const degradedBoard = renderDashboard(degraded);

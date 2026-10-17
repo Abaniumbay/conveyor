@@ -33,7 +33,7 @@ describe("ConveyorStore", () => {
     expect(plan("SELECT COUNT(*) FROM usage_cost_entries u JOIN runs r ON r.id = u.run_id WHERE r.issue_id = ?", "i1")).not.toMatch(/SCAN (u|r)\b/);
     // latestRunSummary(issueId).
     expect(plan("SELECT id FROM runs r WHERE r.issue_id = ? ORDER BY r.started_at DESC, r.id DESC LIMIT 1", "i1")).toContain("runs_issue_idx");
-    // activityRevision(), on every tick of every dashboard event stream.
+    // Run events by time, for retention.
     expect(plan("SELECT MAX(created_at) FROM run_events")).toContain("run_events_created_idx");
     store.close();
   });
@@ -604,8 +604,6 @@ describe("ConveyorStore", () => {
     });
 
     const board = store.dashboardRevision();
-    const conversation = store.conversationRevision();
-    const activity = store.activityRevision();
     await Bun.sleep(2);
     store.upsertIssue(issue);
     store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
@@ -621,8 +619,8 @@ describe("ConveyorStore", () => {
 
     store.appendRunEvent("run-1", "progress", { message: "Editing" });
     expect(store.dashboardRevision()).toBe(board);
-    expect(store.activityRevision()).not.toBe(activity);
-    expect(store.conversationRevision()).toBe(conversation);
+    // A transcript line refreshes the logs, not the board.
+    expect(store.events().read({ type: "run.progressed" }).map((event) => event.payload)).toEqual([{ runId: "run-1" }]);
 
     store.appendConversationMessage({
       issueId: "issue-1",
@@ -635,7 +633,7 @@ describe("ConveyorStore", () => {
       message: "Running focused tests.",
     });
     expect(store.dashboardRevision()).toBe(board);
-    expect(store.conversationRevision()).not.toBe(conversation);
+    expect(store.events().read({ type: "message.posted" }).at(-1)?.issueId).toBe("issue-1");
 
     // A todo change shows on the card, so the board must refresh for it.
     new ItemTodos(store.sqlite()).set("issue-1", [{ id: "t1", text: "A", status: "in_progress" }], "run-1", "2026-01-01T00:00:02.000Z");

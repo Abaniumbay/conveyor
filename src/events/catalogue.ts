@@ -62,6 +62,7 @@ export const EVENT_CATALOGUE = {
 
   // Runs
   "run.started": define("Runs", "An agent, script or steering run started.", z.object({ runId: id, kind: z.string(), stage: stage }).strict()),
+  "run.progressed": define("Runs", "A run wrote to its transcript; recorded at most once a second per run, and once after its last line.", z.object({ runId: id }).strict()),
   "run.finished": define("Runs", "A run finished; `status` is its outcome.", z.object({ runId: id, status: z.string() }).strict()),
 
   // Conversation
@@ -117,6 +118,12 @@ export const EVENT_CATALOGUE = {
   "notifications.unsubscribed": define("System", "A browser's push subscription was removed.", z.object({ accountId: nullableId }).strict()),
   "session.signedIn": define("System", "A dashboard account signed in.", z.object({ accountId: nullableId }).strict()),
   "session.signedOut": define("System", "A dashboard account signed out.", z.object({ accountId: nullableId }).strict()),
+  "repository.healthChanged": define("System", "A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error.", z.object({
+    check: z.enum(["onboarding", "reconcile"]), healthy: z.boolean(),
+  }).strict()),
+  "admission.paused": define("System", "Conveyor stopped admitting new work (a drain); running work continues.", z.object({}).strict()),
+  "admission.resumed": define("System", "Conveyor admits new work again.", z.object({}).strict()),
+  "service.reconciled": define("System", "A pass over every repository finished; `failed` repositories could not be read.", z.object({ failed: z.number().int().nonnegative() }).strict()),
   "repository.reconciled": define("System", "Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all.", z.object({
     issueNumbers: z.array(number).nullable(),
   }).strict()),

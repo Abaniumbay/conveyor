@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createDashboardEventConnection, createDashboardNavigation, dashboardClient, serverStatusMetrics } from "../../src/web/client";
+import { createDashboardEventConnection, createDashboardNavigation, dashboardClient, dashboardViewsForEvent, serverStatusMetrics } from "../../src/web/client";
+import { EVENT_CATALOGUE } from "../../src/events/catalogue";
 import { quotaCountdown, updateQuotaWindow } from "../../src/usage/quota-time";
 
 describe("dashboard browser client", () => {
@@ -135,9 +136,9 @@ describe("dashboard browser client", () => {
     expect(sources).toHaveLength(2);
     sources[1]!.readyState = 1;
     sources[1]!.onopen!();
-    sources[1]!.listeners.get("revision")!({ data: "revision-2" });
+    sources[1]!.listeners.get("conveyor")!({ data: "{\"seq\":2,\"type\":\"item.updated\"}" });
     expect(reconnects).toEqual([5_000]);
-    expect(events).toEqual(["revision"]);
+    expect(events).toEqual(["conveyor"]);
     expect(watchdog).not.toBeNull();
 
     // A PWA that resumes after a silent stream is immediately marked reconnecting,
@@ -163,10 +164,10 @@ describe("dashboard browser client", () => {
     expect(sources.filter((source) => !source.closed)).toHaveLength(1);
     sources[2]!.readyState = 1;
     sources[2]!.onopen!();
-    sources[2]!.listeners.get("revision")!({ data: "revision-3" });
+    sources[2]!.listeners.get("conveyor")!({ data: "{\"seq\":3,\"type\":\"item.updated\"}" });
     expect(states.at(-1)).toBe(true);
     expect(reconnects).toEqual([5_000, 75_000]);
-    expect(events).toEqual(["revision", "revision"]);
+    expect(events).toEqual(["conveyor", "conveyor"]);
     expect(sources.filter((source) => !source.closed)).toHaveLength(1);
     sources[2]!.onerror!();
     expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
@@ -396,6 +397,31 @@ describe("dashboard browser client", () => {
       expect(text.textContent).toBe("resets in 2d 7h 56m");
     } finally {
       await rm(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("dashboardViewsForEvent", () => {
+  test("an item change refreshes the board", () => {
+    expect(dashboardViewsForEvent("item.stageChanged")).toEqual(["board"]);
+  });
+  test("a conversation message refreshes the board and the conversation", () => {
+    expect(dashboardViewsForEvent("message.posted")).toEqual(["board", "conversation"]);
+  });
+  test("a transcript line refreshes only the logs", () => {
+    expect(dashboardViewsForEvent("run.progressed")).toEqual(["activity"]);
+  });
+  test("a run starting or finishing refreshes the board and the logs", () => {
+    expect(dashboardViewsForEvent("run.finished")).toEqual(["board", "activity"]);
+  });
+  test("bookkeeping that shows nowhere refreshes nothing", () => {
+    for (const type of ["webhook.received", "task.planned", "task.pending", "command.accepted", "session.signedIn", "item.fenced", "source.mutationStarted"]) {
+      expect({ type, views: dashboardViewsForEvent(type) }).toEqual({ type, views: [] });
+    }
+  });
+  test("every catalogued event maps only to known views", () => {
+    for (const type of Object.keys(EVENT_CATALOGUE)) {
+      for (const view of dashboardViewsForEvent(type)) expect(["board", "conversation", "activity"]).toContain(view);
     }
   });
 });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
 import { fakeCommandBus } from "../support/web-commands";
 
 const password = "correct horse";
@@ -177,6 +177,17 @@ function startDashboard(state: {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
+  // The test changes `revision` to simulate a change; like the core, publish an event for it.
+  const listeners = new Set<(event: DashboardStreamEvent) => void>();
+  let published = state.revision();
+  let seq = 0;
+  const watcher = setInterval(() => {
+    const current = state.revision();
+    if (current === published) return;
+    published = current;
+    seq += 1;
+    for (const listener of listeners) listener({ seq, type: "item.updated", repositoryId: "repo", issueId: null, correlationId: null });
+  }, 50);
   const { commands } = fakeCommandBus({
     answerQuestion: () => state.answerQuestion?.(), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
     postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
@@ -199,9 +210,10 @@ function startDashboard(state: {
       const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
       return dashboardIssue(model, issueId);
     },
-    getDashboardRevision: () => state.revision(),
-    getConversationRevision: () => "conversation-1",
-    getActivityRevision: () => "activity-1",
+    subscribeEvents: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     getSystemStatus: () => state.systemStatus?.() ?? ({
       memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
       disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
@@ -223,7 +235,16 @@ function startDashboard(state: {
     getAgentProfiles: () => [],
     getAgentProfile: () => null,
   });
-  return Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const stop = server.stop.bind(server);
+  return Object.assign(server, {
+    stop: (force?: boolean) => { clearInterval(watcher); return stop(force); },
+    /** Resolves with the sequence number of the event published for the latest change. */
+    published: async () => {
+      while (published !== state.revision()) await Bun.sleep(10);
+      return seq;
+    },
+  });
 }
 
 async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined) {
@@ -525,7 +546,8 @@ describe("dashboard live refresh position", () => {
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-4";
-      await page.waitForFunction(() => document.body.dataset.dashboardRevision === "revision-4");
+      // The page hears of the change but keeps the dialog's draft: its refresh waits.
+      await page.waitForFunction((expected) => Number(document.body.dataset.lastEventSeq ?? 0) >= expected, await server.published());
       await page.waitForTimeout(1100);
       expect(await page.locator("main.dashboard").getAttribute("data-before-refresh")).toBe("true");
       expect(await page.locator("dialog[open]").count()).toBe(1);

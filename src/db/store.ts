@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
 import { eventLog, type EventLog } from "../events/log";
+import { EventThrottle } from "../events/throttle";
 import { migrations } from "./migrations";
 
 export interface RepositoryRecord {
@@ -353,11 +354,17 @@ export class ConveyorStore {
   readonly #database: Database;
   readonly #executions: ExecutionStore;
   readonly #events: EventLog;
+  /** Transcript lines are many: they are recorded as at most one `run.progressed` per run and second. */
+  readonly #runProgress: EventThrottle;
 
   private constructor(database: Database) {
     this.#database = database;
     this.#executions = new ExecutionStore(database);
     this.#events = eventLog(database);
+    this.#runProgress = new EventThrottle(1_000, (runId) => {
+      const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
+      this.#events.append("run.progressed", { runId }, { issueId: owner?.issue_id ?? null });
+    });
   }
 
   /**
@@ -1971,6 +1978,7 @@ export class ConveyorStore {
           runId,
         );
       if (updated.changes !== 1) throw new Error(`unknown run: ${runId}`);
+      this.#runProgress.forget(runId);
       const owner = this.#database.query("SELECT issue_id FROM runs WHERE id = ?").get(runId) as { issue_id: string | null } | null;
       this.#events.append("run.finished", { runId, status: finish.status }, { issueId: owner?.issue_id ?? null });
       this.#database
@@ -2280,30 +2288,6 @@ export class ConveyorStore {
            ), '|')
            FROM (SELECT * FROM criterion_test_evidence_tests ORDER BY issue_id, criterion_id, ordinal)
          ), '') FROM criterion_test_evidence_tests`,
-      )
-      .all() as Array<Record<string, SQLQueryBindings>>;
-    return rows
-      .map((row) => `${String(row.source)}:${Number(row.count)}:${String(row.updated)}`)
-      .join("|");
-  }
-
-  conversationRevision(): string {
-    const row = this.#database
-      .query(
-        `SELECT COUNT(*) AS count, COALESCE(MAX(created_at), '') AS updated
-         FROM conversation_messages`,
-      )
-      .get() as Record<string, SQLQueryBindings>;
-    return `${Number(row.count)}:${String(row.updated)}`;
-  }
-
-  activityRevision(): string {
-    const rows = this.#database
-      .query(
-        `SELECT 'runs' AS source, COUNT(*) AS count,
-           COALESCE(MAX(COALESCE(finished_at, started_at)), '') AS updated FROM runs
-         UNION ALL
-         SELECT 'run_events', COUNT(*), COALESCE(MAX(created_at), '') FROM run_events`,
       )
       .all() as Array<Record<string, SQLQueryBindings>>;
     return rows
@@ -2690,6 +2674,7 @@ export class ConveyorStore {
            VALUES (?, ?, ?, ?, ?)`,
         )
         .run(runId, row.sequence, type, json(payload), now());
+      this.#runProgress.note(runId);
       const eventPayload = payload !== null && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
         : null;

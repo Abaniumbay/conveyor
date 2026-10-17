@@ -16,7 +16,7 @@ import { renderDashboard, renderIssueDetails } from "./render";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
-import type { AgentProfileViewModel, DashboardPageSelection, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -39,11 +39,12 @@ export interface WebHandlerDependencies {
     csrfToken: string,
     pagination: DashboardPageSelection,
   ) => DashboardViewModel | Promise<DashboardViewModel>;
-  getDashboardRevision: () => string | Promise<string>;
   /** Current data for a single board details dialog, without rebuilding the board page. */
   getIssueDetails?: (csrfToken: string, issueId: string) => IssueCardViewModel | null | Promise<IssueCardViewModel | null>;
-  getConversationRevision: () => string | Promise<string>;
-  getActivityRevision: () => string | Promise<string>;
+  /** Calls `listener` with every event recorded from now on; returns the unsubscribe. */
+  subscribeEvents?: (listener: (event: DashboardStreamEvent) => void) => () => void;
+  /** The events after `seq` for a reconnecting page; null when they are no longer all kept. */
+  eventsAfter?: (seq: number) => DashboardStreamEvent[] | null;
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
@@ -414,80 +415,76 @@ function steeringEventStream(
   });
 }
 
-function dashboardEventStream(dependencies: WebHandlerDependencies): ReadableStream<Uint8Array> {
+/**
+ * The live dashboard stream: one `conveyor` message per recorded event (identifiers and type only;
+ * the page re-reads what it shows), the system status every ten seconds and a heartbeat. A browser
+ * reconnecting with Last-Event-ID first receives what it missed, or `reset` when that is no
+ * longer all kept.
+ */
+function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId: number | null): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  let cancelled = false;
+  let stop = () => {};
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      void (async () => {
-        let revision = "";
-        let conversationRevision = await Promise.resolve()
-          .then(() => dependencies.getConversationRevision())
-          .catch(() => "");
-        let activityRevision = await Promise.resolve()
-          .then(() => dependencies.getActivityRevision())
-          .catch(() => "");
-        let lastStatus = 0;
-        let lastHeartbeat = 0;
-        controller.enqueue(encoder.encode("retry: 5000\n\n"));
-        while (!cancelled) {
-          try {
-            const nextRevision = await dependencies.getDashboardRevision();
-            if (nextRevision !== revision) {
-              revision = nextRevision;
-              controller.enqueue(encoder.encode(
-                `event: revision\ndata: ${JSON.stringify({ revision })}\n\n`,
-              ));
-            }
-          } catch {
-            // A transient SQLite read must not terminate the browser's event stream.
-          }
-          try {
-            const nextConversationRevision = await dependencies.getConversationRevision();
-            if (conversationRevision && nextConversationRevision !== conversationRevision) {
-              controller.enqueue(encoder.encode(
-                `event: conversation\ndata: ${JSON.stringify({ revision: nextConversationRevision })}\n\n`,
-              ));
-            }
-            conversationRevision = nextConversationRevision;
-          } catch {
-            // The next successful read will catch the client up.
-          }
-          try {
-            const nextActivityRevision = await dependencies.getActivityRevision();
-            if (activityRevision && nextActivityRevision !== activityRevision) {
-              controller.enqueue(encoder.encode(
-                `event: activity\ndata: ${JSON.stringify({ revision: nextActivityRevision })}\n\n`,
-              ));
-            }
-            activityRevision = nextActivityRevision;
-          } catch {
-            // The next successful read will catch the client up.
-          }
-          const now = Date.now();
-          if (now - lastStatus >= 10_000) {
-            try {
-              const status = await dependencies.getSystemStatus();
-              controller.enqueue(encoder.encode(
-                `event: status\ndata: ${JSON.stringify(status)}\n\n`,
-              ));
-              lastStatus = now;
-            } catch {
-              // Retry on the next loop while keeping the SSE connection alive.
-            }
-          }
-          if (now - lastHeartbeat >= 4_000) {
-            controller.enqueue(encoder.encode(": ping\n\n"));
-            lastHeartbeat = now;
-          }
-          await Bun.sleep(1_000);
+      let closed = false;
+      const send = (text: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(text));
+        } catch {
+          closed = true;
+          stop();
         }
-      })().catch((error) => {
-        if (!cancelled) controller.error(error);
-      });
+      };
+      const forward = (event: DashboardStreamEvent) => send(`id: ${event.seq}\nevent: conveyor\ndata: ${JSON.stringify(event)}\n\n`);
+      let statusTimer: ReturnType<typeof setTimeout> | null = null;
+      // Every ten seconds; a failed read (a transient statfs error) is retried after a second.
+      const status = async () => {
+        let delay = 10_000;
+        try {
+          send(`event: status\ndata: ${JSON.stringify(await dependencies.getSystemStatus())}\n\n`);
+        } catch {
+          delay = 1_000;
+        }
+        if (!closed) statusTimer = setTimeout(() => void status(), delay);
+      };
+      send("retry: 5000\n\n: ping\n\n");
+      // Subscribe before replaying, so nothing appended in between is lost; replay skips duplicates.
+      const buffered: DashboardStreamEvent[] = [];
+      let replaying = lastEventId !== null;
+      let lastSent = lastEventId ?? 0;
+      const unsubscribe = dependencies.subscribeEvents?.((event) => {
+        if (replaying) buffered.push(event);
+        else if (event.seq > lastSent) {
+          lastSent = event.seq;
+          forward(event);
+        }
+      }) ?? (() => {});
+      if (lastEventId !== null) {
+        const missed = dependencies.eventsAfter ? dependencies.eventsAfter(lastEventId) : [];
+        if (missed === null) send("event: reset\ndata: {}\n\n");
+        else for (const event of missed) {
+          lastSent = Math.max(lastSent, event.seq);
+          forward(event);
+        }
+        replaying = false;
+        for (const event of buffered.splice(0)) {
+          if (event.seq <= lastSent) continue;
+          lastSent = event.seq;
+          forward(event);
+        }
+      }
+      void status();
+      const heartbeat = setInterval(() => send(": ping\n\n"), 4_000);
+      stop = () => {
+        closed = true;
+        if (statusTimer) clearTimeout(statusTimer);
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
     },
     cancel() {
-      cancelled = true;
+      stop();
     },
   });
 }
@@ -939,7 +936,8 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       if (!session(request)) return json({ error: "unauthorized" }, 401);
-      return response(dashboardEventStream(dependencies), 200, "text/event-stream; charset=utf-8", {
+      const lastEventId = /^\d{1,15}$/.test(request.headers.get("last-event-id") ?? "") ? Number(request.headers.get("last-event-id")) : null;
+      return response(dashboardEventStream(dependencies, lastEventId), 200, "text/event-stream; charset=utf-8", {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
         "x-accel-buffering": "no",

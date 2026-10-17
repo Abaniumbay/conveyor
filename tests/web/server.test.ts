@@ -4,7 +4,7 @@ import { ToolRequestError } from "../../src/tasks/errors";
 import { BUILD } from "../../src/version";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler, PROFILE_AVATARS } from "../../src/web/server";
-import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
+import type { DashboardStreamEvent, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 import { withCommands } from "../support/web-commands";
 
 const model: DashboardViewModel = {
@@ -108,14 +108,18 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
+  const streamListeners = new Set<(event: DashboardStreamEvent) => void>();
+  const emit = (event: DashboardStreamEvent) => { for (const listener of streamListeners) listener(event); };
   const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [], manualRequirements: [], manualApprovals: [] };
   const dependencies = {
     auth,
     username: "operator",
     getDashboard: () => model,
-    getDashboardRevision: () => "revision-1",
-    getConversationRevision: () => "conversation-1",
-    getActivityRevision: () => "activity-1",
+    subscribeEvents: (listener: (event: DashboardStreamEvent) => void) => {
+      streamListeners.add(listener);
+      return () => { streamListeners.delete(listener); };
+    },
+    eventsAfter: (seq: number) => (seq > 100 ? null : [{ seq: seq + 1, type: "item.updated", repositoryId: "repo", issueId: "github:owner/repo#1", correlationId: null }]),
     getSystemStatus: async () => ({
       memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
       disk: { available: true, usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
@@ -216,7 +220,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   const { dependencies: withDispatch, events } = withCommands(dependencies);
-  return { handler: createWebHandler(withDispatch as never), auth, calls, events };
+  return { handler: createWebHandler(withDispatch as never), auth, calls, events, emit, streamListeners };
 }
 
 async function login(handler: (request: Request) => Promise<Response>) {
@@ -884,8 +888,7 @@ describe("createWebHandler", () => {
       })(),
       Bun.sleep(2_500).then(() => { throw new Error("dashboard event stream timed out"); }),
     ]);
-    expect(streamed).toContain("event: revision");
-    expect(streamed).toContain('"revision":"revision-1"');
+    expect(streamed).not.toContain("event: revision");
     expect(streamed).toContain("event: status");
     expect(streamed).toContain('"artifacts":{"available":true,"usedBytes":86000');
     expect(streamed).toContain('"temporaryDirectory":{"available":false}');
@@ -1494,5 +1497,59 @@ describe("dashboard commands", () => {
     }));
     expect(response.status).toBe(503);
     expect(events.read({ type: "command.rejected" }).map((event) => event.payload)).toEqual([{ command: "account.setAvatar", reason: "account.setAvatar is unavailable" }]);
+  });
+});
+
+describe("live dashboard stream", () => {
+  async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, marker: string): Promise<string> {
+    let streamed = "";
+    await Promise.race([
+      (async () => {
+        while (!streamed.includes(marker)) {
+          const next = await reader.read();
+          if (next.done) throw new Error("dashboard event stream closed");
+          streamed += new TextDecoder().decode(next.value);
+        }
+      })(),
+      Bun.sleep(2_500).then(() => { throw new Error(`no ${marker} on the stream: ${streamed}`); }),
+    ]);
+    return streamed;
+  }
+
+  test("forwards each recorded event with its sequence number and no content", async () => {
+    const { handler, emit } = setup();
+    const { cookie } = await login(handler);
+    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
+    await readUntil(reader, "retry: 5000");
+    emit({ seq: 7, type: "message.posted", repositoryId: "repo", issueId: "github:owner/repo#1", correlationId: "c-1" });
+    const streamed = await readUntil(reader, "event: conveyor");
+    expect(streamed).toContain(`id: 7\nevent: conveyor\ndata: {"seq":7,"type":"message.posted","repositoryId":"repo","issueId":"github:owner/repo#1","correlationId":"c-1"}`);
+    await reader.cancel();
+  });
+
+  test("a reconnecting page first receives the events it missed", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie, "last-event-id": "41" } }))).body!.getReader();
+    expect(await readUntil(reader, "event: conveyor")).toContain('id: 42\nevent: conveyor\ndata: {"seq":42,"type":"item.updated"');
+    await reader.cancel();
+  });
+
+  test("a page that missed more than is kept is told to reload", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie, "last-event-id": "500" } }))).body!.getReader();
+    expect(await readUntil(reader, "event: reset")).toContain("event: reset");
+    await reader.cancel();
+  });
+
+  test("closing the page stops its subscription", async () => {
+    const { handler, streamListeners } = setup();
+    const { cookie } = await login(handler);
+    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
+    await readUntil(reader, "retry: 5000");
+    expect(streamListeners.size).toBe(1);
+    await reader.cancel();
+    expect(streamListeners.size).toBe(0);
   });
 });
