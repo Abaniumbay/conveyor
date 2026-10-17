@@ -134,7 +134,7 @@ interface GitHubLabel {
   name: string;
 }
 
-interface GitHubIssue {
+export interface GitHubIssue {
   id: number;
   number: number;
   html_url: string;
@@ -161,7 +161,7 @@ function eventActor(event: GitHubIssueEvent): SourceEventActor {
   return { login: typeof event.actor?.login === "string" ? event.actor.login : null };
 }
 
-function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
+export function sourceIssue(address: string, issue: GitHubIssue): SourceIssue {
   return {
     id: `github:${address}#${issue.number}`,
     number: issue.number,

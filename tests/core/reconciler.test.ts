@@ -693,6 +693,82 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  describe("with the actors a delivery names", () => {
+    async function trusted(provenanceReads: { count: number }, trustedLogins = ["maintainer"]) {
+      const store = await openStore();
+      const input = {
+        store, configHash: "hash-1",
+        repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+        stages: ["refinement"], labels,
+        trust: { async isTrusted({ login }: { login: string | null }) { return login !== null && trustedLogins.includes(login); } },
+        extraTrustedLogins: [],
+        source: {
+          async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; },
+          async getIssueProvenance() { provenanceReads.count += 1; return { enrollment: { login: "maintainer" }, title: null, body: null }; },
+        },
+      };
+      await reconcileRepository(input);
+      provenanceReads.count = 0;
+      return { store, input };
+    }
+    const changed = (labels: string[], fields: Partial<{ title: string; body: string }> = {}) =>
+      [{ ...issue(1, labels), ...fields, updatedAt: "2026-10-17T05:00:00Z" }];
+    const unchanged = { enrollment: "unchanged", title: "unchanged", body: "unchanged" } as const;
+
+    test("another label on a trusted item reads no provenance", async () => {
+      const reads = { count: 0 };
+      const { store, input } = await trusted(reads);
+      await reconcileRepository({ ...input, issues: changed(["conveyor", "conveyor:refinement", "backend"]), delivered: new Map([[1, unchanged]]) });
+      expect(reads.count).toBe(0);
+      expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: expect.arrayContaining(["backend"]), projectedState: "active" });
+      store.close();
+    });
+
+    test("a title edited by a trusted sender is accepted without reading provenance", async () => {
+      const reads = { count: 0 };
+      const { store, input } = await trusted(reads);
+      await reconcileRepository({ ...input, issues: changed(["conveyor", "conveyor:refinement"], { title: "Renamed" }), delivered: new Map([[1, { ...unchanged, title: { login: "maintainer" } }]]) });
+      expect(reads.count).toBe(0);
+      expect(store.getIssue("github:owner/repo#1")?.title).toBe("Renamed");
+      store.close();
+    });
+
+    test("a title edited by an untrusted sender is ignored without reading provenance", async () => {
+      const reads = { count: 0 };
+      const { store, input } = await trusted(reads);
+      await reconcileRepository({ ...input, issues: changed(["conveyor", "conveyor:refinement"], { title: "Hijacked" }), delivered: new Map([[1, { ...unchanged, title: { login: "outsider" } }]]) });
+      expect(reads.count).toBe(0);
+      expect(store.getIssue("github:owner/repo#1")).toMatchObject({ title: "Issue 1", warning: expect.stringContaining("@outsider") });
+      store.close();
+    });
+
+    test("an enrollment label added by an untrusted sender blocks the item without reading provenance", async () => {
+      const reads = { count: 0 };
+      const store = await openStore();
+      await reconcileRepository({
+        store, configHash: "hash-1",
+        repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+        stages: ["refinement"], labels,
+        trust: { async isTrusted({ login }: { login: string | null }) { return login === "maintainer"; } },
+        extraTrustedLogins: [],
+        source: { async listIssues() { return []; }, async getIssueProvenance() { reads.count += 1; return { enrollment: null, title: null, body: null }; } },
+        issues: changed(["conveyor", "conveyor:refinement"]),
+        delivered: new Map([[1, { ...unchanged, enrollment: { login: "outsider" } }]]),
+      });
+      expect(reads.count).toBe(0);
+      expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedState: "waiting", warning: expect.stringContaining("@outsider") });
+      store.close();
+    });
+
+    test("a delivery that does not answer who changed differing text reads provenance", async () => {
+      const reads = { count: 0 };
+      const { store, input } = await trusted(reads);
+      await reconcileRepository({ ...input, issues: changed(["conveyor", "conveyor:refinement"], { body: "Changed elsewhere" }), delivered: new Map([[1, unchanged]]) });
+      expect(reads.count).toBe(1);
+      store.close();
+    });
+  });
+
   test("updates only the given issues, without a listing, and marks nothing else missing", async () => {
     const store = await openStore();
     let listings = 0;

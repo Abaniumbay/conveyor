@@ -116,6 +116,13 @@ export class GitHubSimulator implements GitHubTransport {
     return structuredClone(result) as T;
   }
 
+  /** An issue as GitHub's REST API and webhook payloads show it. */
+  issueJson(address: string, number: number) {
+    const issue = this.repository(address).issues.get(number);
+    if (!issue) throw new Error(`no simulated issue ${address}#${number}`);
+    return this.#issueJson(address, issue);
+  }
+
   #issueJson(address: string, issue: SimulatedIssue) {
     return {
       id: issue.number * 10, number: issue.number, html_url: `https://github.com/${address}/issues/${issue.number}`,

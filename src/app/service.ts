@@ -70,6 +70,7 @@ import { JsonlEventSink, SinkRunner, type EventSink } from "../events/sinks";
 import { isEventOf, type EventType, type StoredEvent } from "../events/catalogue";
 import { withEventContext } from "../events/context";
 import { normalizeGitHubEvent } from "../source/github/events";
+import { deliveredIssueChange } from "../source/github/delivery-issue";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
@@ -2849,6 +2850,15 @@ export class ConveyorService {
     const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
+      if (isEventOf(event, "github.issueUpdated")) {
+        // A comment on a pull request changes nothing on the item's issue.
+        if (event.payload.pullRequest) {
+          const named = new Set(this.issueNumbersFor(repositoryId, event));
+          this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
+          return;
+        }
+        if (await this.applyIssueDelivery(repositoryId, event.actor.id)) return;
+      }
       const issueNumbers = this.issueNumbersFor(repositoryId, event);
       if (issueNumbers.length === 0) return;
       // CI and pull request events change no issue data: the indicator is updated above, a waiting
@@ -2865,6 +2875,44 @@ export class ConveyorService {
     }));
     this.#webhookWork.add(work);
     void work.finally(() => this.#webhookWork.delete(work));
+  }
+
+  /**
+   * Applies the issue an `issues` or `issue_comment` delivery carries, with no GitHub request: the
+   * delivery holds the issue's current state and names who made the change. False when the delivery
+   * cannot stand in for a read (a transfer, an unknown action), so the caller reads the issue instead.
+   */
+  private async applyIssueDelivery(repositoryId: string, deliveryId: string | null): Promise<boolean> {
+    const repository = this.config.repositories[repositoryId];
+    const stored = deliveryId ? this.store.sourceEvent("github", deliveryId) : null;
+    if (!repository || !stored) return false;
+    const change = deliveredIssueChange(repository.address, stored.eventType, stored.payload, this.config.labels.enrollment);
+    if (!change) return false;
+    const number = change.issue.number;
+    const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
+    // Deliveries can arrive out of order: an older state of the issue changes nothing.
+    if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(change.issue.updatedAt)) return true;
+    const pipeline = this.config.pipelines[repository.pipeline]!;
+    await reconcileRepository({
+      store: this.store,
+      configHash: this.config.hash,
+      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
+      stages: pipeline.stages.map((stage) => stage.id),
+      labels: this.config.labels,
+      source: this.github,
+      trust: this.#issueTrust,
+      extraTrustedLogins: repository.extraTrustedLogins ?? [],
+      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      issues: [change.issue],
+      delivered: new Map([[number, change.actors]]),
+    });
+    this.restorePendingStatus(repositoryId);
+    this.interruptIneligibleRuns();
+    this.store.events().append("repository.reconciled", { issueNumbers: [number] }, { repositoryId });
+    this.schedule();
+    const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
+    if (applied) this.refreshStatusComments([applied.id]);
+    return true;
   }
 
   /** Resolves once every accepted webhook delivery has been processed. */

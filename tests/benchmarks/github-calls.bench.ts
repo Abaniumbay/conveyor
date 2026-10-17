@@ -112,7 +112,11 @@ repositories:
   }
   let delivery = 0;
   const deliver = async (service: ConveyorService, event: string, payload: Record<string, unknown>) => {
-    const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: ADDRESS }, ...payload }));
+    // As GitHub sends them: an issue delivery carries the whole issue and who made the change.
+    const named = (payload.issue as { number?: number } | undefined)?.number;
+    const issue = (event === "issues" || event === "issue_comment") && named !== undefined && simulator.repository(ADDRESS).issues.has(named)
+      ? { issue: simulator.issueJson(ADDRESS, named) } : {};
+    const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: ADDRESS }, sender: { login: "maintainer" }, ...payload, ...issue }));
     const signature = `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
     await service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": `d${(delivery += 1)}`, "x-github-event": event }));
   };
