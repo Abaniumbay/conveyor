@@ -8,7 +8,8 @@ import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { TaskContext, WorkspaceContext } from "../../src/tasks/context";
 import { runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
-import type { GitOps } from "../../src/workspace/git";
+import { pushInput } from "../../src/tasks/workspace";
+import { GitPushRejectedError, type GitOps } from "../../src/workspace/git";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -22,6 +23,8 @@ type Pass = Extract<TaskResult, { status: "pass" }>;
 
 function gitFake(state: {
   clean?: boolean; head?: string | null; remote?: string | null; ahead?: number; behind?: number;
+  ancestor?: boolean;
+  pushError?: Error;
 } = {}) {
   const calls: Array<[string, ...unknown[]]> = [];
   const git: GitOps = {
@@ -29,7 +32,14 @@ function gitFake(state: {
     revParse: async (p, ref) => { calls.push(["revParse", p, ref]); return ref === "HEAD" ? (state.head ?? "aaa") : (state.remote === undefined ? "aaa" : state.remote); },
     aheadBehind: async (p, branch) => { calls.push(["aheadBehind", p, branch]); return { ahead: state.ahead ?? 0, behind: state.behind ?? 0 }; },
     fetch: async (p, remote, branch) => { calls.push(["fetch", p, remote, branch]); },
-    push: async (p, branch, options) => { calls.push(["push", p, branch, options]); },
+    isAncestor: async (p, ancestor, descendant) => {
+      calls.push(["isAncestor", p, ancestor, descendant]);
+      return state.ancestor ?? true;
+    },
+    push: async (p, branch, options) => {
+      calls.push(["push", p, branch, options]);
+      if (state.pushError) throw state.pushError;
+    },
   };
   return { git, calls };
 }
@@ -241,15 +251,36 @@ describe("workspace tools", () => {
     await tool("workspace.fetch", w);
     expect(w.git.calls).toEqual([["fetch", p, "origin", "main"]]);
   });
-  test("workspace.push pushes the workspace branch, with force-with-lease only when asked", async () => {
+  test("workspace.push accepts an observed head only for a lease push", () => {
+    expect(pushInput.safeParse({ forceWithLease: true }).success).toBe(false);
+    expect(pushInput.safeParse({ headSha: "a".repeat(40) }).success).toBe(false);
+    expect(pushInput.safeParse({ forceWithLease: true, headSha: "a".repeat(40) }).success).toBe(true);
+  });
+  test("workspace.push uses the observed, reconciled head as an explicit force-with-lease", async () => {
     const w = await world();
     const p = await w.record();
+    const headSha = "a".repeat(40);
     await tool("workspace.push", w);
-    await tool("workspace.push", w, { forceWithLease: true });
+    await tool("workspace.push", w, { forceWithLease: true, headSha });
     expect(w.git.calls).toEqual([
       ["push", p, "conveyor/7-r1-x", { forceWithLease: false }],
-      ["push", p, "conveyor/7-r1-x", { forceWithLease: true }],
+      ["isAncestor", p, headSha, "HEAD"],
+      ["push", p, "conveyor/7-r1-x", { forceWithLease: true, expectedRemoteHead: headSha }],
     ]);
+  });
+  test("workspace.push refuses an unreconciled or moved observed head with a recovery reason", async () => {
+    const headSha = "a".repeat(40);
+    const unreconciled = await world({ ancestor: false });
+    const p = await unreconciled.record();
+    await expect(tool("workspace.push", unreconciled, { forceWithLease: true, headSha }))
+      .rejects.toThrow(`The workspace has not reconciled observed change head ${headSha}; fetch and rebase before pushing.`);
+    expect(unreconciled.git.calls).toEqual([["isAncestor", p, headSha, "HEAD"]]);
+
+    const movedHead = "b".repeat(40);
+    const moved = await world({ pushError: new GitPushRejectedError(movedHead) });
+    await moved.record();
+    await expect(tool("workspace.push", moved, { forceWithLease: true, headSha }))
+      .rejects.toThrow(`The remote branch moved to ${movedHead}; fetch and rebase before pushing.`);
   });
   test("tools fail without a workspace", async () => {
     const w = await world();

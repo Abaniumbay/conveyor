@@ -10,13 +10,25 @@ import { z } from "zod";
 import type { WorkspaceContext } from "./context";
 import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
+import { ToolRequestError } from "./errors";
+import { GitPushRejectedError } from "../workspace/git";
 import { ensureWorkspace, removeWorkspace } from "../workspace/lifecycle";
 
 type Deps = TaskDeps;
 type Args<I = unknown> = TaskArgs<unknown, I, Deps>;
 
 const emptyInput = z.object({});
-export const pushInput = z.object({ forceWithLease: z.boolean().optional() });
+export const pushInput = z.object({
+  forceWithLease: z.boolean().optional(),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/i, "headSha must be a full Git commit SHA").optional(),
+}).superRefine(({ forceWithLease, headSha }, ctx) => {
+  if (forceWithLease === true && headSha === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["headSha"], message: "headSha is required with forceWithLease" });
+  }
+  if (forceWithLease !== true && headSha !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["headSha"], message: "headSha is only used with forceWithLease" });
+  }
+});
 
 const load: TaskDefinition<unknown, unknown, Deps> = {
   name: "workspace.load",
@@ -148,9 +160,22 @@ const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base bra
     return { accepted: true };
   }));
 
-const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin, optionally with --force-with-lease.", pushInput, true,
+const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push, first read change.get, fetch and rebase the observed change head into HEAD, then provide forceWithLease: true and that headSha; a moved remote head must be fetched and reconciled before retrying.", pushInput, true,
   async ({ deps, input }, workspace) => {
-    await deps.git.push(workspace.path, workspace.branch, { forceWithLease: input!.forceWithLease === true });
+    if (input!.forceWithLease !== true) {
+      await deps.git.push(workspace.path, workspace.branch, { forceWithLease: false });
+      return { accepted: true };
+    }
+    const expectedRemoteHead = input!.headSha!;
+    if (!await deps.git.isAncestor(workspace.path, expectedRemoteHead, "HEAD")) {
+      throw new ToolRequestError(`The workspace has not reconciled observed change head ${expectedRemoteHead}; fetch and rebase before pushing.`);
+    }
+    try {
+      await deps.git.push(workspace.path, workspace.branch, { forceWithLease: true, expectedRemoteHead });
+    } catch (error) {
+      if (error instanceof GitPushRejectedError) throw new ToolRequestError(error.message);
+      throw error;
+    }
     return { accepted: true };
   }, ["workspace"]));
 

@@ -206,6 +206,6 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `workspace.fetch` | tool | - | - | Fetch the repository base branch from origin into the workspace. |
 | `workspace.get` | tool | - | - | Read scoped workspace metadata (path and branch). |
 | `workspace.load` | load | - | writes workspace | Loads the stored workspace with local git facts: clean, ahead/behind and head SHAs against origin/<branch> as last fetched or pushed (no network). |
-| `workspace.push` | tool | - | invalidates workspace | Push the workspace branch to origin, optionally with --force-with-lease. |
+| `workspace.push` | tool | - | invalidates workspace | Push the workspace branch to origin. For a lease push, first read change.get, fetch and rebase the observed change head into HEAD, then provide forceWithLease: true and that headSha; a moved remote head must be fetched and reconciled before retrying. |
 | `workspace.pushed` | check | workspace | - | Passes when the workspace is clean, not ahead of origin/<branch>, and its head equals the remote head; the failure names the condition that failed. |
 | `workspace.removed` | check | workspace | - | Passes when no workspace exists. |

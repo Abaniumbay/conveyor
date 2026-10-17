@@ -66,7 +66,16 @@ export class HttpControlClient implements ControlClient {
         continue;
       }
       if (!response.ok) {
-        throw new Error(`control request failed (${response.status}): ${await response.text()}`);
+        const body = await response.text();
+        let serviceError: string | null = null;
+        try {
+          const parsed: unknown = JSON.parse(body);
+          if (typeof parsed === "object" && parsed !== null && "error" in parsed && typeof parsed.error === "string") {
+            serviceError = parsed.error;
+          }
+        } catch { /* A non-JSON response retains the existing generic client error. */ }
+        if (serviceError !== null) throw new Error(serviceError);
+        throw new Error(`control request failed (${response.status}): ${body}`);
       }
       return response.json();
     }
