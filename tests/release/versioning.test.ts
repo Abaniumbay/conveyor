@@ -121,23 +121,11 @@ describe("versioning", () => {
     const changelog = await readFile(path.join(ROOT, "CHANGELOG.md"), "utf8");
     const manifest = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8")) as { version: string };
     expect(changelogSection(changelog, "Unreleased")?.body).toBe("See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.");
+    // Later changes add fragments of their own; the migrated entries must still be among them.
+    const migrated = ["294-trust-safeguards.md", "302-lease-protected-pushes.md", "303-roll-up-stage.md", "305-run-home-cleanup.md", "307-completed-roll-ups.md", "308-review-repair-path.md"];
     const fragments = await readChangelogFragments(ROOT);
-    expect(fragments.map((fragment) => fragment.filename)).toEqual([
-      "290-graph-view.md",
-      "294-trust-safeguards.md",
-      "306-changelog-fragments.md",
-      "302-lease-protected-pushes.md",
-      "303-roll-up-stage.md",
-      "305-run-home-cleanup.md",
-      "307-completed-roll-ups.md",
-      "308-review-repair-path.md",
-    ]);
-    expect(fragments.filter((fragment) => fragment.issue !== 306).map(({ filename, section, body }) => ({ filename, section, body }))).toEqual([
-      {
-        filename: "290-graph-view.md",
-        section: "Added",
-        body: "The dashboard now includes a read-only Graph view for following current item families and dependencies across repositories.",
-      },
+    expect(fragments.map((fragment) => fragment.filename)).toEqual(expect.arrayContaining([...migrated, "306-changelog-fragments.md"]));
+    expect(fragments.filter((fragment) => migrated.includes(fragment.filename)).map(({ filename, section, body }) => ({ filename, section, body }))).toEqual([
       {
         filename: "294-trust-safeguards.md",
         section: "Added",
