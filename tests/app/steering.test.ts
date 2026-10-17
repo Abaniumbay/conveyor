@@ -128,6 +128,7 @@ describe("ConveyorService steering", () => {
     sourceIssues.set(1, { id: "healthy", number: 1, url: "https://example.test/1", title: "Healthy", body: "", state: "open", stateReason: null, labels: [], updatedAt: "2026-01-01T00:00:00Z" });
     let scheduledCalls = 0;
     let holdScheduledRun = false;
+    let leaveNegatedAnswerUnresolved = false;
     let scheduledRunEntered: (() => void) | null = null;
     const github = {
       async listIssues() {
@@ -185,6 +186,9 @@ describe("ConveyorService steering", () => {
         await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is not stable." } }, context.control.token)).rejects.toThrow("must state the submitted answer");
         expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
         stoppedSource.body = stoppedSource.body.replace("\nThe accepted release is not stable.", "");
+        if (leaveNegatedAnswerUnresolved) {
+          return { summary: "Inspected stopped", sessionId: "scheduled", usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, durationMs: 1, exitCode: 0, stderr: "" };
+        }
         await service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: question.id, answer: "stable", evidence: "The accepted release is stable." } }, context.control.token);
         await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "retryable" } }, context.control.token);
         service.drain("Keep the retry queued while this check records its outcome.");
@@ -277,12 +281,21 @@ describe("ConveyorService steering", () => {
     }));
     holdScheduledRun = false;
     const question = store.openQuestion({ issueId: "stopped", runId: null, prompt: "Which release track?", reason: "Needed before retrying", options: ["stable", "beta"] });
+    leaveNegatedAnswerUnresolved = true;
+    const negatedAnswerRun = await service.runScheduledOperatorCheck();
+    expect(negatedAnswerRun).not.toBeNull();
+    await service.waitForSteeringRun(negatedAnswerRun!);
+    expect(store.getQuestion(question.id)).toMatchObject({ status: "open" });
+    expect(store.listRunEvents(negatedAnswerRun!).filter((event) => event.type === "operator.outcome")).toContainEqual(expect.objectContaining({
+      payload: expect.objectContaining({ issueId: "stopped", outcome: "unresolved", reason: expect.stringContaining("must state the submitted answer"), runStatus: "succeeded" }),
+    }));
+    leaveNegatedAnswerUnresolved = false;
     const runId = await service.runScheduledOperatorCheck();
     expect(runId).not.toBeNull();
     expect(await service.runScheduledOperatorCheck()).toBeNull();
     await service.waitForSteeringRun(runId!);
     await service.answerFollowUpsSettled();
-    expect(scheduledCalls).toBe(3);
+    expect(scheduledCalls).toBe(4);
     expect(store.getRun(runId!)).toMatchObject({ status: "succeeded" });
     expect(store.listRunEvents(runId!).filter((event) => event.type === "operator.outcome")).toContainEqual(expect.objectContaining({
       payload: expect.objectContaining({ issueId: "stopped", outcome: "answered", runStatus: "succeeded" }),
