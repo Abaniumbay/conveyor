@@ -111,7 +111,7 @@ export const EVENT_CATALOGUE = {
   "github.ciUpdated": define("GitHub", "GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished.", z.object({
     repository: z.string(), sha, pullRequests: z.array(number), completed: z.boolean(),
   }).strict()),
-  "webhook.healthChanged": define("GitHub", "A repository's webhook started or stopped delivering reliably; while unhealthy, waits poll instead of relying on events.", z.object({ healthy: z.boolean() }).strict()),
+  "webhook.healthChanged": define("GitHub", "A repository's webhook started or stopped delivering: unhealthy when a ping went undelivered, healthy again with the next delivery.", z.object({ healthy: z.boolean() }).strict()),
   "github.ping": define("GitHub", "GitHub confirmed the webhook (a ping).", z.object({ repository: z.string() }).strict()),
   "source.mutationStarted": define("GitHub", "Conveyor recorded a change it is about to make at the source.", z.object({ mutationId: id, operation: z.string() }).strict()),
   "source.mutationCompleted": define("GitHub", "A source change completed.", z.object({ mutationId: id, operation: z.string() }).strict()),

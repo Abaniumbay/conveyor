@@ -728,7 +728,7 @@ describe("renderDashboard", () => {
     expect(reader).toContain("1 of 2");
     expect(reader).toContain("<dt>GitHub calls, last hour</dt><dd>0</dd>");
     const webhooks = renderDashboard({ ...base, repositories: [{ ...repository, setup: { ...repository.setup, itemSync: "webhook" as const, webhooks: "unhealthy" as const, githubCalls: { total: 7, bySource: [{ source: "tick", count: 5 }, { source: "webhook", count: 2 }] } } }] });
-    expect(webhooks).toContain("github · webhook (deliveries unhealthy: waits poll)");
+    expect(webhooks).toContain("github · webhook (deliveries stopped arriving: check the webhook)");
     expect(webhooks).toContain("<dt>GitHub calls, last hour</dt><dd>7 (tick 5, webhook 2)</dd>");
     // Counts, not nine links to the same Board page.
     expect(reader).toContain("<p>4 backlog · 2 Implementation · 8 completed all-time</p>");
