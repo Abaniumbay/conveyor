@@ -3913,11 +3913,12 @@ export class ConveyorService {
     }
   }
 
+  /**
+   * The status line of the issue's status comment. Only the status itself: times that move on their
+   * own (the next check, how long it has been queued) would rewrite the comment without any change.
+   */
   private statusCommentText(status: LiveIssueStatus): string {
-    const state = status.kind === "queued" ? "Queued" : "Waiting";
-    const nextCheck = status.nextCheckAt ? ` · next check ${status.nextCheckAt}` : "";
-    const since = status.kind === "queued" ? ` · queued since ${status.since}` : "";
-    return `${state} · ${status.reason}${nextCheck}${since}`;
+    return `${status.kind === "queued" ? "Queued" : "Waiting"} · ${status.reason}`;
   }
 
   private repositorySummaries(issues?: readonly StoredIssue[]): RepositorySummaries {
