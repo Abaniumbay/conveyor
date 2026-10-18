@@ -204,6 +204,8 @@ function FamilySquares({ parent }: { parent: IssueCardViewModel }) {
 
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const url = safeUrl(issue.url);
+  const stageBadge = issue.stageBadge;
+  const stageLabel = stageBadge ? `Stage: ${stageBadge.name}${stageBadge.offboarded ? " (offboarded)" : ""}` : null;
   const historyOnly = issue.historyOnly === true;
   const summaryId = `${id}-summary`;
   const conversationId = `${id}-conversation`;
@@ -213,7 +215,14 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
     <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-details-url={`/api/issues/${encodeURIComponent(issue.id)}/details`} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
-          <p class={`details-kicker repo-color-${issue.repositoryColor}`}><RepositoryBadge repository={issue.repository} /><span class="issue-number">#{issue.number}</span></p>
+          <p class={`details-kicker repo-color-${issue.repositoryColor}`}>
+            <RepositoryBadge repository={issue.repository} />
+            <span class="issue-number">#{issue.number}</span>
+            {stageBadge && <span class="repository-badge details-stage-badge" data-details-stage-badge aria-label={stageLabel ?? undefined}>
+              <span aria-hidden="true">{stageBadge.icon && <span class="details-stage-icon">{stageBadge.icon}</span>}{stageBadge.icon && " "}{stageBadge.name}{stageBadge.offboarded && " offboarded"}</span>
+            </span>}
+            {url && <a class="details-source-link" href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a>}
+          </p>
           <h2 id={`${id}-title`}>{issue.title}</h2>
         </div>
         <div class="details-header-actions">
@@ -346,7 +355,6 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             <div>{issue.labels.map((label) => <span class="source-label" key={label}>{label}</span>)}</div>
           </section>
         )}
-        {url && <p class="details-source"><a href={url} target="_blank" rel="noopener noreferrer">Open issue source ↗</a></p>}
       </section>
       <section
         id={conversationId}

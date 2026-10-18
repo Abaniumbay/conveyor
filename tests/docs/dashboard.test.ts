@@ -28,4 +28,16 @@ describe("dashboard documentation", () => {
     expect(dashboard).toContain("screenshots/graph.png");
     expect(screenshot.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   });
+
+  test("documents the item detail stage badge and source link", async () => {
+    const [dashboard, specification] = await Promise.all([
+      readFile(path.join(root, "docs/dashboard.md"), "utf8"),
+      readFile(path.join(root, "SPEC.md"), "utf8"),
+    ]);
+
+    expect(dashboard).toContain("stage badge");
+    expect(dashboard).toContain("source issue from every tab");
+    expect(specification).toContain("detail header shows a stage badge");
+    expect(specification).toContain("source-issue link");
+  });
 });
