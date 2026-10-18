@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
+import { CodeHostRegistry } from "../../src/codehost/registry";
+import type { CodeHost } from "../../src/codehost/types";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
@@ -17,11 +19,11 @@ afterEach(async () => {
 
 const LABELS = {
   enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
-  states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+  states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
 };
 
 /** One repository with one enrolled issue, and a GitHub fake that records what Conveyor reads and writes. */
-async function service(options: { second?: boolean } = {}) {
+async function service(options: { second?: boolean; nativePipeline?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-calls-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -32,7 +34,17 @@ async function service(options: { second?: boolean } = {}) {
     web: { listen: "127.0.0.1:7788" },
     sources: { github: { type: "github", webhookPath: "/hooks/github", webhookSecret: "secret" } },
     labels: LABELS,
-    pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "work", run: { type: "agent", agent: "a" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+    pipelines: { default: {
+      successStatuses: ["done"],
+      failureStatuses: ["blocked"],
+      stages: options.nativePipeline
+        ? [
+          { id: "review", actions: [], exitGate: [], concurrency: 1 },
+          { id: "merge", actions: [{ id: "mergeChange", task: "change.merge" }], exitGate: [], concurrency: 1 },
+          { id: "deploy", actions: [], exitGate: [], concurrency: 1 },
+        ]
+        : [{ id: "work", run: { type: "agent", agent: "a" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }],
+    } },
     repositories: {
       repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], ci: { mode: "disabled" } },
     },
@@ -41,11 +53,11 @@ async function service(options: { second?: boolean } = {}) {
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: "h" });
   const issue = {
     id: "github:owner/repo#1", number: 1, url: "https://github.com/owner/repo/issues/1", title: "One", body: "",
-    state: "open" as const, stateReason: null, labels: ["conveyor", "conveyor:work"], updatedAt: "2026-10-07T20:00:00Z",
+    state: "open" as "open" | "closed", stateReason: null as string | null, labels: ["conveyor", "conveyor:work"], updatedAt: "2026-10-07T20:00:00Z",
   };
   const second = { ...issue, id: "github:owner/repo#2", number: 2, url: "https://github.com/owner/repo/issues/2", title: "Two" };
   const issues = options.second ? [issue, second] : [issue];
-  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
+  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], changeReads: [] as string[], labelWrites: [] as Array<{ issue: number; labels: string[] }>, subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
   let listingGate: Promise<void> | null = null;
   let omitFromPartialListing = false;
   const rejectedFetches = new Set<number>();
@@ -64,6 +76,9 @@ async function service(options: { second?: boolean } = {}) {
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
     },
     async collaboratorPermission() { return "write" as const; },
+    async replaceConveyorLabels(_address: string, issueNumber: number, labels: readonly string[]) {
+      calls.labelWrites.push({ issue: issueNumber, labels: [...labels] });
+    },
     async listSubIssues(_address: string, issueNumber: number) { calls.subIssues += 1; calls.relationshipReads.push(issueNumber); return []; },
     async listDependencies() { calls.dependencies += 1; return []; },
     async upsertStatusComment(_address: string, issueNumber: number, _markdown: string, known?: number) {
@@ -71,7 +86,34 @@ async function service(options: { second?: boolean } = {}) {
       return 42;
     },
   };
-  const conveyor = new ConveyorService(config, store, github as never);
+  const codeHost: CodeHost = {
+    async pushBranch() { throw new Error("not expected"); },
+    async ensureChange() { throw new Error("not expected"); },
+    async getChange() { throw new Error("not expected"); },
+    async readFileAtRevision() { throw new Error("not expected"); },
+    sourceFileUrl() { return "https://example.com/change"; },
+    async mergeChange() { throw new Error("not expected"); },
+    async setChangeChecklist() { throw new Error("not expected"); },
+    async setChangeDescription() { throw new Error("not expected"); },
+    async getChangeDelivery(input) {
+      calls.changeReads.push(input.id);
+      return {
+        change: {
+          id: input.id, number: 23, url: "https://example.com/changes/23", state: "merged",
+          headSha: "head", draft: false, mergeable: true, mergedAt: "2026-10-07T21:00:00Z",
+        },
+        checks: [],
+      };
+    },
+    async createFinding() { throw new Error("not expected"); },
+    async resolveFindingProjection() { throw new Error("not expected"); },
+    async resolveNativeFinding() { throw new Error("not expected"); },
+    async deleteBranch() { throw new Error("not expected"); },
+    async listReviewArtifacts() { throw new Error("not expected"); },
+  };
+  const conveyor = new ConveyorService(config, store, github as never, {
+    codeHosts: new CodeHostRegistry().register("github", codeHost),
+  });
   conveyor.drain("tests: nothing executes");
   let delivery = 0;
   const deliver = (event: string, payload: Record<string, unknown> = {}) => {
@@ -93,6 +135,209 @@ async function service(options: { second?: boolean } = {}) {
 }
 
 describe("GitHub calls made for webhook deliveries", () => {
+  test("a person-merged current change continues a closed review item at its post-merge stage", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ nativePipeline: true });
+    issue.labels = ["conveyor", "conveyor:review"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({
+      issueId: issue.id,
+      id: "github:owner/repo#pr-23",
+      number: 23,
+      url: "https://example.com/changes/23",
+      state: "open",
+    });
+    issue.state = "closed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("pull_request", {
+      action: "closed",
+      pull_request: {
+        number: 23,
+        merged: true,
+        head: { sha: "head" },
+      },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([1]);
+    expect(calls.changeReads).toEqual(["github:owner/repo#pr-23"]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:deploy"] }]);
+    expect(store.getCurrentPullRequest(issue.id)).toMatchObject({ state: "merged", mergedAt: "2026-10-07T21:00:00Z" });
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("hourly recovery reads an unchanged open blocked item once and leaves it alone", async () => {
+    const { conveyor, store, calls, issue } = await service();
+    issue.labels = ["conveyor", "conveyor:work", "conveyor:blocked"];
+    await conveyor.reconcileAll();
+    calls.fetched.length = 0;
+    const journey = store.listStageTransitions(issue.id);
+    const now = Date.now;
+    Date.now = () => now() + (61 * 60 * 1000);
+    try {
+      await conveyor.tick();
+    } finally {
+      Date.now = now;
+    }
+
+    expect(calls.fetched).toEqual([1]);
+    expect(calls.changeReads).toEqual([]);
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "work", projectedState: "blocked" });
+    expect(store.listStageTransitions(issue.id)).toEqual(journey);
+    store.close();
+  });
+
+  test("hourly recovery does not read an item whose workflow position just changed", async () => {
+    const { conveyor, store, calls, issue } = await service();
+    issue.labels = ["conveyor", "conveyor:work", "conveyor:blocked"];
+    await conveyor.reconcileAll();
+    calls.fetched.length = 0;
+
+    await conveyor.tick();
+
+    expect(calls.fetched).toEqual([]);
+    expect(calls.changeReads).toEqual([]);
+    expect(calls.labelWrites).toEqual([]);
+    store.close();
+  });
+
+  test("a closed enrolled item without a current merged change is offboarded", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    await conveyor.reconcileAll();
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.labels = ["conveyor", "conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([]);
+    expect(calls.changeReads).toEqual([]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    store.close();
+  });
+
+  test("a closed paused item is offboarded immediately once, without a source read", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    await conveyor.reconcileAll();
+    const closed = {
+      id: 1,
+      number: 1,
+      html_url: issue.url,
+      title: issue.title,
+      body: issue.body,
+      state: "closed",
+      state_reason: "not_planned",
+      labels: ["conveyor:work", "unrelated"],
+      updated_at: "2026-10-07T21:00:00Z",
+    };
+
+    await deliver("issues", { action: "closed", issue: closed, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    await deliver("issues", { action: "closed", issue: closed, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    expect(store.listStageTransitions(issue.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: "offboarded",
+      status: "completed",
+      reason: "closed without a merged change",
+    })]));
+    store.close();
+  });
+
+  test("a re-enrolled closed item offboards its new enrollment", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    await conveyor.reconcileAll();
+    expect(store.activateEnrollment(issue.id).generation).toBe(1);
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.labels = ["conveyor", "conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    issue.state = "open";
+    issue.stateReason = null;
+    issue.labels = ["conveyor", "conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T22:00:00Z";
+    await conveyor.reconcileAll();
+    expect(store.activateEnrollment(issue.id).generation).toBe(2);
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.updatedAt = "2026-10-07T23:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }, { issue: 1, labels: [] }]);
+    expect(store.listStageTransitions(issue.id).filter((transition) => transition.kind === "offboarded")).toHaveLength(2);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    store.close();
+  });
+
+  test("a completed parent remains done when its completed closure delivery arrives", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    issue.labels = ["conveyor", "conveyor:work", "conveyor:done"];
+    await conveyor.reconcileAll();
+    issue.state = "closed";
+    issue.stateReason = "completed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.fetched).toEqual([]);
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "work", projectedState: "done", warning: null });
+    store.close();
+  });
+
+  test("a paused repository retries a pending closed-item cleanup as soon as it resumes", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    await conveyor.reconcileAll();
+    conveyor.pauseRepository("repo", "maintenance", "Ada");
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.labels = ["conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getIssue(issue.id)?.warning).toBe("Closed-item cleanup will resume when the repository resumes.");
+
+    await conveyor.resumeRepository("repo");
+
+    expect(calls.fetched).toEqual([1]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    store.close();
+  });
+
   test("a delivery is recorded together with what it means, by the webhook", async () => {
     const { conveyor, store, deliver } = await service();
     const after = store.events().latestSeq();
@@ -304,4 +549,3 @@ describe("issue deliveries that carry the full issue", () => {
     store.close();
   });
 });
-

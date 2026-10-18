@@ -569,7 +569,9 @@ than claiming the safeguards are active. A skipped native review remains inspect
 history by its author and URL only; Conveyor never repeats its body or promotes it to an agent
 finding without a trusted source action.
 
-The expected closure caused by merging the issue's own Conveyor-managed PR is the sole exception to step 3: explicitly configured post-merge stages remain eligible until a terminal result.
+The expected closure caused by merging the issue's current Conveyor-managed PR is the sole exception to step 3: explicitly configured post-merge stages remain eligible until a terminal result. The merge may be performed by Conveyor or by a person; Conveyor records a confirmed current merged change and continues at the configured stage after merge without merging again.
+
+Closed-item recovery handles both webhook delivery and missed or older source changes. A closed issue delivery, or a closed-and-merged pull-request delivery, resolves the affected item immediately. The periodic safety pass considers only visible stopped, blocked, paused, or closed projections whose stage or state has not changed for one hour; source edits and comments do not reset that window. It reads the current issue once. If that issue remains open it makes no further source read or mutation. For a closed issue with a current change it reads that change once: a confirmed merge follows the post-merge path, while no current merged change removes Conveyor's enrollment and control labels through a durable retryable source mutation, records `closed without a merged change` in the journey, and offboards the item. Unrelated labels are preserved. Recovery does not write while the repository is paused and retries a pending cleanup after it resumes.
 
 Pausing interrupts the current process, releases its concurrency permit, and preserves its worktree. Restoring the base label starts a fresh agent process at the same incomplete stage using the existing worktree and current source state. Previous chat transcript is not injected.
 

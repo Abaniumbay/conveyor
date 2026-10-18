@@ -80,6 +80,7 @@ export interface StoredIssue extends IssueProjection {
   projectedStage: string | null;
   projectedState: string | null;
   warning: string | null;
+  projectionChangedAt: string;
 }
 
 export interface CostSummary {
@@ -807,8 +808,9 @@ export class ConveyorStore {
       .query(
         `INSERT INTO issues(
            id, repository_id, source_number, source_url, title, body, source_state,
-           source_state_reason, labels_json, source_updated_at, accepted_text_at, parent_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           source_state_reason, labels_json, source_updated_at, accepted_text_at, parent_id, created_at, updated_at,
+           projection_changed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            repository_id = excluded.repository_id,
            source_number = excluded.source_number,
@@ -848,6 +850,7 @@ export class ConveyorStore {
         issue.sourceUpdatedAt,
         issue.acceptedTextAt ?? null,
         issue.parentId ?? null,
+        timestamp,
         timestamp,
         timestamp,
       );
@@ -949,7 +952,11 @@ export class ConveyorStore {
     this.#database
       .query(
         `UPDATE issues
-         SET projected_stage = ?, projected_state = ?, warning = ?, updated_at = ?
+         SET projected_stage = ?, projected_state = ?, warning = ?, updated_at = ?,
+             projection_changed_at = CASE
+               WHEN projected_stage IS NOT ? OR projected_state IS NOT ? THEN ?
+               ELSE projection_changed_at
+             END
          WHERE id = ? AND (
            projected_stage IS NOT ? OR projected_state IS NOT ? OR warning IS NOT ?
          )`,
@@ -958,6 +965,9 @@ export class ConveyorStore {
         projection.stage,
         projection.state,
         projection.warning,
+        now(),
+        projection.stage,
+        projection.state,
         now(),
         issueId,
         projection.stage,
@@ -988,6 +998,20 @@ export class ConveyorStore {
              ORDER BY queue_rank IS NULL, queue_rank, repository_id, source_number`,
           )
           .all()) as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => this.mapIssue(row));
+  }
+
+  /** Visible stopped items that have not changed workflow position since `before`. */
+  listRecoveryCandidates(repositoryId: string, before: string): StoredIssue[] {
+    const rows = this.#database
+      .query(
+        `SELECT * FROM issues
+         WHERE repository_id = ?
+           AND projected_state IN ('blocked', 'closed', 'error', 'needs-input', 'needs-intervention', 'paused', 'rejected', 'stopped', 'waiting')
+           AND projection_changed_at <= ?
+         ORDER BY source_number`,
+      )
+      .all(repositoryId, before) as Array<Record<string, SQLQueryBindings>>;
     return rows.map((row) => this.mapIssue(row));
   }
 
@@ -1277,6 +1301,17 @@ export class ConveyorStore {
     })();
   }
 
+  getActiveEnrollment(issueId: string): EnrollmentRecord | null {
+    const row = this.#database
+      .query(
+        `SELECT * FROM enrollments
+         WHERE issue_id = ? AND status = 'active'
+         ORDER BY generation DESC LIMIT 1`,
+      )
+      .get(issueId) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapEnrollment(row) : null;
+  }
+
   getEnrollment(id: string): EnrollmentRecord | null {
     const row = this.#database
       .query("SELECT * FROM enrollments WHERE id = ?")
@@ -1490,7 +1525,7 @@ export class ConveyorStore {
     const row = this.#database
       .query(
         `SELECT 1 AS found FROM pull_requests p
-         JOIN enrollments e ON e.id = p.enrollment_id
+         JOIN enrollments e ON e.id = p.enrollment_id AND e.status = 'active'
          WHERE e.issue_id = ? AND p.merged_at IS NOT NULL LIMIT 1`,
       )
       .get(issueId) as { found: number } | null;
@@ -1788,6 +1823,7 @@ export class ConveyorStore {
       projectedState:
         row.projected_state === null ? null : String(row.projected_state),
       warning: row.warning === null ? null : String(row.warning),
+      projectionChangedAt: row.projection_changed_at === null ? String(row.updated_at) : String(row.projection_changed_at),
     };
   }
 

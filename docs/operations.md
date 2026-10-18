@@ -158,6 +158,12 @@ CLIs are not in `~/.local/bin`, `~/.bun/bin` or the system directories, pass `--
 | `conveyor service status` | The unit's state and the running service. |
 | `sudo conveyor service uninstall` | Removes the unit. The home and installed releases are kept; delete them yourself only if you no longer need them. |
 
+## Closed items and recovery
+
+When GitHub closes an enrolled or paused item, Conveyor resolves it from the closure delivery. If its current Conveyor change is confirmed merged, including a merge performed by a person, Conveyor records that merge and continues at the configured post-merge stage. If no current merged change exists, Conveyor removes only its own enrollment and control labels, preserves unrelated labels, records `closed without a merged change` in the item's Journey, and removes the item from the Board.
+
+The same rule is a safety net in the regular recovery loop: once a visible stopped, blocked, paused, or closed item's projected stage or state has remained unchanged for one hour, Conveyor reads the issue once. An open issue is otherwise untouched. The recovery pass reads a current change only for a closed issue, and all source-label removal is durable and retryable. A paused repository performs no recovery writes; pending cleanup resumes when the repository is resumed.
+
 When a drain times out, nothing is stopped and admission resumes; `--force` goes ahead anyway.
 
 `GET /health/live` is public, for process supervision and load balancers. Its JSON response is

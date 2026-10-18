@@ -16,7 +16,7 @@ import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
 import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
-import { applyRollupTransition, applyStageTransition } from "../core/transition";
+import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
 import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
@@ -82,6 +82,7 @@ import { ReviewFindings } from "../engine/review-findings";
 import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
 const FOLLOW_UP_GATE_TASK = "item.followUps";
+const CLOSED_ITEM_RECOVERY_AGE_MS = 60 * 60 * 1000;
 
 /** Code host methods that change a change or its branch; each drops what was read about the repository's changes. */
 const CODE_HOST_WRITES = new Set([
@@ -1037,13 +1038,177 @@ export class ConveyorService {
     if (this.#shuttingDown || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
-      await withGitHubCallSource("tick", () => this.reconcileAll({ skipFresh: true }));
+      await withGitHubCallSource("tick", async () => {
+        await this.reconcileAll({ skipFresh: true });
+        await this.recoverClosedItems();
+      });
       this.schedule();
     } finally {
       this.#tickRunning = false;
     }
     // Not awaited: a slow CI provider must not stall reconcile and scheduling.
     void this.pollAdvisoryCi().catch((error) => log.warn("Advisory CI poll failed", {}, error));
+  }
+
+  /** Reconcile long-lived non-runnable projections that webhook delivery may have missed. */
+  private async recoverClosedItems(): Promise<void> {
+    const before = new Date(Date.now() - CLOSED_ITEM_RECOVERY_AGE_MS).toISOString();
+    for (const repositoryId of Object.keys(this.config.repositories)) {
+      for (const issue of this.store.listRecoveryCandidates(repositoryId, before)) {
+        await this.recoverClosedItem(repositoryId, issue);
+      }
+    }
+  }
+
+  /** Resolve one closed source item without treating a failed read as evidence of closure or merge. */
+  private async recoverClosedItem(
+    repositoryId: string,
+    issue: StoredIssue,
+    deliveredIssue?: SourceIssue,
+  ): Promise<void> {
+    if (issue.projectedState === "done" || issue.projectedState === "offboarded") return;
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return;
+    let sourceIssue: SourceIssue;
+    try {
+      sourceIssue = deliveredIssue ?? await this.executionGitHub(repositoryId).getIssue(repository.address, issue.sourceNumber);
+    } catch (error) {
+      log.warn("Could not read an item for closed-item recovery", this.itemFields(issue.id), error);
+      return;
+    }
+    if (sourceIssue.state !== "closed") return;
+
+    const current = this.store.getCurrentPullRequest(issue.id);
+    if (current) {
+      const host = this.executionCodeHost(issue.id, this.codeHostFor(repositoryId));
+      if (!host) {
+        log.warn("Could not read a current change for closed-item recovery", this.itemFields(issue.id));
+        return;
+      }
+      let delivery: ChangeDelivery;
+      try {
+        delivery = await host.getChangeDelivery({ address: repository.address, id: current.id });
+      } catch (error) {
+        log.warn("Could not read a current change for closed-item recovery", this.itemFields(issue.id), error);
+        return;
+      }
+      const mergedAt = delivery.change.mergedAt ?? current.mergedAt ??
+        (delivery.change.state === "merged" ? new Date().toISOString() : null);
+      this.store.upsertPullRequest({
+        issueId: issue.id,
+        id: current.id,
+        number: delivery.change.number,
+        url: delivery.change.url,
+        state: delivery.change.state,
+        ...(mergedAt ? { mergedAt } : {}),
+      });
+      if (mergedAt) {
+        await this.continueExternalMerge(repositoryId, issue, sourceIssue, current.id);
+        return;
+      }
+    }
+    try {
+      const enrollment = this.store.getActiveEnrollment(issue.id);
+      await applyClosedItemOffboarding({
+        store: this.store,
+        source: this.executionGitHub(repositoryId),
+        sourceName: repository.source,
+        address: repository.address,
+        transitionId: `closed-item-offboard:${issue.id}:${enrollment?.generation ?? "untracked"}`,
+        issue,
+      });
+    } catch (error) {
+      if (error instanceof RepositoryPausedError) {
+        this.store.setIssueProjection(issue.id, {
+          stage: issue.projectedStage,
+          state: issue.projectedState,
+          warning: "Closed-item cleanup will resume when the repository resumes.",
+        });
+        return;
+      }
+      this.store.setIssueProjection(issue.id, {
+        stage: issue.projectedStage,
+        state: issue.projectedState,
+        warning: "Closed-item cleanup is pending after a source update failure.",
+      });
+      log.warn("Could not remove controls from a closed item", this.itemFields(issue.id), error);
+    }
+  }
+
+  /** Records a person-merged current change and continues at the stage after Conveyor's merge task. */
+  private async continueExternalMerge(
+    repositoryId: string,
+    issue: StoredIssue,
+    sourceIssue: SourceIssue,
+    changeId: string,
+  ): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return;
+    const stages = this.config.pipelines[repository.pipeline]!.stages;
+    const mergeIndex = stages.findIndex((stage) => isNativeStage(stage) && stage.actions.some((action) => action.task === "change.merge"));
+    const currentStage = issue.projectedStage;
+    const currentIndex = currentStage ? stages.findIndex((stage) => stage.id === currentStage) : -1;
+    try {
+      if (!currentStage || mergeIndex < 0 || currentIndex < 0 || currentIndex > mergeIndex) {
+        await this.reconcileClosedItem(repositoryId, sourceIssue);
+        return;
+      }
+      const applied = await applyStageTransition({
+        store: this.store,
+        source: this.executionGitHub(repositoryId),
+        sourceName: repository.source,
+        address: repository.address,
+        configHash: this.config.hash,
+        transitionId: `external-merge:${issue.id}:${changeId}`,
+        issue,
+        stages: stages.map((stage) => stage.id),
+        labels: this.config.labels,
+        result: {
+          kind: "advance",
+          stageId: currentStage,
+          nextStageId: stages[mergeIndex + 1]?.id ?? null,
+          feedbackCycles: this.store.getStageState(issue.id)?.feedbackCycle ?? 0,
+          result: null,
+        },
+        actor: { name: "GitHub", title: "External merge" },
+      });
+      const conveyorLabels = sourceIssue.labels.filter((label) =>
+        label === this.config.labels.enrollment || label.startsWith(`${this.config.labels.enrollment}:`));
+      const projected = {
+        ...sourceIssue,
+        labels: [...sourceIssue.labels.filter((label) => !conveyorLabels.includes(label)), ...applied.labels],
+      };
+      await this.reconcileClosedItem(repositoryId, projected);
+    } catch (error) {
+      if (error instanceof RepositoryPausedError) {
+        this.store.setIssueProjection(issue.id, {
+          stage: issue.projectedStage,
+          state: issue.projectedState,
+          warning: "Post-merge continuation will resume when the repository resumes.",
+        });
+        return;
+      }
+      log.warn("Could not continue an externally merged change", this.itemFields(issue.id), error);
+    }
+  }
+
+  /** Reconciles one supplied source snapshot without issuing another source read. */
+  private async reconcileClosedItem(repositoryId: string, issue: SourceIssue): Promise<void> {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository) return;
+    const pipeline = this.config.pipelines[repository.pipeline]!;
+    await reconcileRepository({
+      store: this.store,
+      configHash: this.config.hash,
+      repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
+      stages: pipeline.stages.map((stage) => stage.id),
+      labels: this.config.labels,
+      source: this.executionGitHub(repositoryId),
+      trust: this.#issueTrust,
+      extraTrustedLogins: repository.extraTrustedLogins ?? [],
+      expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+      issues: [issue],
+    });
   }
 
   private schedule(): void {
@@ -3076,6 +3241,14 @@ export class ConveyorService {
         }
         if (await this.applyIssueDelivery(repositoryId, event.actor.id)) return;
       }
+      if (isEventOf(event, "github.changeUpdated") && event.payload.action === "closed" && event.payload.merged) {
+        const named = new Set(this.issueNumbersFor(repositoryId, event));
+        for (const issue of this.store.listIssues(repositoryId).filter((candidate) => named.has(candidate.sourceNumber))) {
+          await this.recoverClosedItem(repositoryId, issue);
+        }
+        this.refreshStatusComments(this.store.listIssues(repositoryId).filter((issue) => named.has(issue.sourceNumber)).map((issue) => issue.id));
+        return;
+      }
       const issueNumbers = this.issueNumbersFor(repositoryId, event);
       if (issueNumbers.length === 0) return;
       // CI and pull request events change no issue data: the indicator is updated above, a waiting
@@ -3124,13 +3297,14 @@ export class ConveyorService {
       issues: [change.issue],
       delivered: new Map([[number, change.actors]]),
     });
+    const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
+    if (change.issue.state === "closed" && applied) await this.recoverClosedItem(repositoryId, applied, change.issue);
     if (this.store.repositoryPause(repositoryId)) return true;
     this.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: [number] }, { repositoryId });
     this.schedule();
-    const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     if (applied) this.refreshStatusComments([applied.id]);
     return true;
   }
@@ -5391,6 +5565,13 @@ export class ConveyorService {
     if (!this.config.repositories[repositoryId]) throw new Error("repository not found");
     this.store.resumeRepository(repositoryId);
     const resumedAt = new Date().toISOString();
+    // A paused cleanup has already recorded its source-mutation intent. Retry it immediately
+    // after the write fence lifts instead of making a just-closed item wait for the hourly pass.
+    await withGitHubCallSource("command", async () => {
+      for (const issue of this.store.listRecoveryCandidates(repositoryId, resumedAt)) {
+        await this.recoverClosedItem(repositoryId, issue);
+      }
+    });
     this.schedule();
     log.info("Repository resumed", { repository: repositoryId });
     return { resumedAt };
