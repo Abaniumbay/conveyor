@@ -91,6 +91,7 @@ repositories:
     const calls: string[] = [];
     const labels: string[][] = [];
     const runtimeDelivery: unknown[] = [];
+    let liveChangeNumber = 190;
     const executor = new IssueExecutor({
       config,
       store,
@@ -111,9 +112,10 @@ repositories:
       },
       recoverWorkspaceChange: async (_issue, _repository, workspace) => {
         calls.push(`change:${workspace.branch}`);
+        if (workspace.branch === "conveyor/70-r1-retried-feature") liveChangeNumber = 191;
       },
       loadDeliveryState: async () => ({
-        pullRequest: { number: 190, state: "open" },
+        pullRequest: { number: liveChangeNumber, state: "open" },
         checks: [{ name: "Tests", conclusion: "success" }],
       }),
       runtime(context) {
@@ -175,6 +177,49 @@ repositories:
       branch: "conveyor/7-r1-a-feature",
       generation: 1,
     });
+
+    store.upsertIssue({
+      id: "issue-retry",
+      repositoryId: "repo",
+      sourceNumber: 70,
+      sourceUrl: "https://example.com/70",
+      title: "Retried feature",
+      body: "Requirements",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setIssueProjection("issue-retry", { stage: "refinement", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-retry",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
+    const retryEnrollment = store.activateEnrollment("issue-retry");
+    store.recordWorkspace({
+      id: "retry-workspace",
+      enrollmentId: retryEnrollment.id,
+      path: path.join(root, "retry-worktree"),
+      branch: "conveyor/70-r1-retried-feature",
+      status: "active",
+    });
+    calls.length = 0;
+    runtimeDelivery.length = 0;
+
+    await expect(executor.execute(store.getIssue("issue-retry")!)).resolves.toMatchObject({ kind: "advance" });
+
+    expect(calls).toEqual([
+      "change:conveyor/70-r1-retried-feature",
+      "check:enter",
+      "producer:refinement",
+      "check:exit",
+    ]);
+    expect(runtimeDelivery).toEqual([{
+      pullRequest: { number: 191, state: "open" },
+      checks: [{ name: "Tests", conclusion: "success" }],
+    }]);
 
     store.upsertIssue({
       id: "issue-abort",

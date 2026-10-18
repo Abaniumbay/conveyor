@@ -51,6 +51,45 @@ describe("CodeHost contract: GitHub", () => {
     expect(transport.requests.some((request) => request.method === "POST")).toBe(false);
   });
 
+  test("prefers an open branch change over an older closed unmerged request", async () => {
+    const closed = { ...pull(3, "closed"), merged: false };
+    const transport = new FakeTransport([[closed, pull(8)], pull(8)]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+
+    const change = await host.ensureChange({
+      address: "owner/repo", issueNumber: 12, branch: "feature", base: "main", title: "A feature", closes: true,
+    });
+
+    expect(change).toMatchObject({ id: "github:owner/repo#pr-8", number: 8, state: "open" });
+    expect(transport.requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
+  test("opens one change when the only matching request closed without merge", async () => {
+    const closed = { ...pull(3, "closed"), merged: false };
+    const transport = new FakeTransport([[closed], pull(9), pull(9), [closed, pull(9)], pull(9)]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+    const input = {
+      address: "owner/repo", issueNumber: 12, branch: "feature", base: "main", title: "A feature", closes: true,
+    };
+
+    expect((await host.ensureChange(input)).id).toBe("github:owner/repo#pr-9");
+    expect((await host.ensureChange(input)).id).toBe("github:owner/repo#pr-9");
+    expect(transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+  });
+
+  test("retains a matching merged request instead of opening another", async () => {
+    const merged = { ...pull(8, "closed"), merged: true, merged_at: "2026-01-01T00:00:00.000Z" };
+    const transport = new FakeTransport([[merged], merged]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+
+    const change = await host.ensureChange({
+      address: "owner/repo", issueNumber: 12, branch: "feature", base: "main", title: "A feature", closes: true,
+    });
+
+    expect(change).toMatchObject({ id: "github:owner/repo#pr-8", state: "merged", mergedAt: "2026-01-01T00:00:00.000Z" });
+    expect(transport.requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
   test("creates with closing or related references and reads the new change", async () => {
     for (const [closes, expectedBody] of [[true, "Closes #12"], [false, "Related to #12"]] as const) {
       const transport = new FakeTransport([[], pull(9), pull(9)]);
