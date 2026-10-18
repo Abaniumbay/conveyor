@@ -1,4 +1,5 @@
-import { TODO_CLOSEOUT_NOTE } from "../engine/todos";
+// Migration 17 wrote this exact note; it is kept here so that migration's SQL never changes.
+const TODO_CLOSEOUT_NOTE = "Closed by Conveyor when the implementation stage passed its gate.";
 
 export interface Migration {
   version: number;
@@ -947,6 +948,14 @@ export const migrations: readonly Migration[] = [
       UPDATE issues SET projection_changed_at = updated_at WHERE projection_changed_at IS NULL;
       CREATE INDEX issues_recovery_candidates_idx
         ON issues(repository_id, projected_state, projection_changed_at);
+    `,
+  },
+  {
+    version: 37,
+    sql: `
+      -- A todo list belongs to the stage of the run that wrote it, not to a stage named in code.
+      ALTER TABLE item_todos ADD COLUMN stage_id TEXT;
+      UPDATE item_todos SET stage_id = (SELECT runs.stage_id FROM runs WHERE runs.id = item_todos.run_id);
     `,
   },
 ];

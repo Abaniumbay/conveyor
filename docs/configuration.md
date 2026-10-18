@@ -231,8 +231,8 @@ stays the source of truth: the copy saves requests and is never trusted past its
 - **A restart reads nothing the copy holds.** At start Conveyor asks GitHub to redeliver what it
   missed while stopped, and lists the issues changed since the newest change it stored.
 - **The merge decides mergeability.** Conveyor does not wait for GitHub to compute whether a change
-  is mergeable: it merges, and a refusal is routed as before (a conflict returns the change to
-  implementation). A refusal while GitHub is still computing is retried, not treated as a conflict.
+  is mergeable: it merges, and a refusal follows the merge action's `onFail` (the packaged pipeline returns a
+  conflict to implementation). A refusal while GitHub is still computing is retried, not treated as a conflict.
   Branch protection on the base branch is what enforces the checks and reviews a repository
   requires.
 - **Waits** for something GitHub reports by webhook (CI finishing, a new pull request head, a blocker
@@ -540,7 +540,7 @@ pipelines:
       - id: merge
         concurrency: 1
         actions:
-          - { id: mergeReviewedHead, task: change.merge, with: { method: squash } }
+          - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
         exit-gate:
           - { id: merged, task: change.merged, onFail: { return: implementation } }
       - id: deploy
@@ -601,8 +601,9 @@ Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` se
 
 The default merge action observes the live pull request before merging. If review or required CI
 belongs to an older head, or the code host reports a changed head, merge conflict, or outdated
-base during the merge attempt, Conveyor returns the item to `implementation` with the repair
-reason. That uses the normal bounded `settings.maxReturns` route: the implementer updates and
+base during the merge attempt, the merge action fails with the repair reason and its `onFail`
+decides where the item goes: the packaged pipeline sets `onFail: { return: implementation }`. A
+merge action without an `onFail` stops as `blocked` instead, as any failed action does. That uses the normal bounded `settings.maxReturns` route: the implementer updates and
 publishes the branch, then required CI and every non-manual criterion approval run again for the
 new head before a fresh review can pass. A stale checkpoint or approval therefore cannot
 authorize a merge. A pull request merged elsewhere still passes idempotently; a closed pull

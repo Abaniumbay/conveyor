@@ -213,7 +213,7 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
     const host = deps.codeHost;
     if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
     const live = await host.getChange({ address: deps.repository.address, id: change.ref.id });
-    if (live.headSha !== change.headSha) return fail(`Change head moved from ${change.headSha} to ${live.headSha}; return to implementation and record evidence for the current head`, { route: { return: "implementation" } });
+    if (live.headSha !== change.headSha) return fail(`Change head moved from ${change.headSha} to ${live.headSha}; record evidence for the current head`);
     const entries = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
     const files = new Map<string, string | null>();
     const gaps: string[] = [];
@@ -243,10 +243,10 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
       }
       if (foundLines.length === entry.tests.length) lines.set(criterion.id, foundLines);
     }
-    if (gaps.length > 0) return fail(`Criterion test evidence is incomplete or stale: ${gaps.join("; ")}`, { route: { return: "implementation" } });
+    if (gaps.length > 0) return fail(`Criterion test evidence is incomplete or stale: ${gaps.join("; ")}`);
     deps.store.refreshCriterionTestEvidence(deps.issueId, live.headSha, lines);
     const synced = await syncChecklist(host, deps, change.ref.id);
-    return synced.ok ? pass() : fail(`Criterion test evidence was verified, but the PR checklist could not be updated: ${synced.message}`, { route: { return: "implementation" } });
+    return synced.ok ? pass() : fail(`Criterion test evidence was verified, but the PR checklist could not be updated: ${synced.message}`);
   },
 };
 

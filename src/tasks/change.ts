@@ -18,8 +18,8 @@ type Args<C = unknown, I = unknown> = TaskArgs<C, I, Deps>;
 
 const NO_CHANGE = "No change request exists yet";
 const blocked = (message: string) => fail(message, { route: { stop: "blocked" } });
-const returnToImplementation = (message: string) => fail(message, { route: { return: "implementation" } });
-const recoverMerge = (message: string) => returnToImplementation(`${message} Return to implementation to update the branch, run CI, and obtain a fresh review for its current head.`);
+// A repairable merge failure names no stage: the action's configured onFail decides where it goes.
+const recoverMerge = (message: string) => fail(`${message} Update the branch, run CI, and obtain a fresh review for its current head.`);
 
 const ensureConfig = z.object({
   closingReference: z.boolean().optional(),
@@ -102,7 +102,7 @@ const ensure: TaskDefinition<z.output<typeof ensureConfig>, unknown, Deps> = {
 const merge: TaskDefinition<z.output<typeof mergeConfig>, unknown, Deps> = {
   name: "change.merge",
   kind: "act",
-  description: "Squash-merges only the reviewed (and, when required, CI-passed) head. A changed, conflicting, or outdated branch returns to implementation for the bounded repair path; closed or policy-refused changes stop. An already merged change passes.",
+  description: "Squash-merges only the reviewed (and, when required, CI-passed) head. A changed, conflicting, or outdated branch fails without a route, so the action's configured onFail sends it to the stage that repairs it; closed or policy-refused changes stop. An already merged change passes.",
   reads: ["repository", "change", "checkpoints"],
   writes: [],
   invalidates: ["change"],
@@ -165,7 +165,7 @@ const headUnchanged: TaskDefinition<unknown, unknown, Deps> = {
 const mergeable: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.mergeable",
   kind: "check",
-  description: "Passes unless the code host reports that the change conflicts with its base branch; then it tells implementation to update the branch, resolve conflicts, test, and publish a new head. A mergeability the host has not computed yet passes: the merge itself decides, and a refused merge returns the change to implementation.",
+  description: "Passes unless the code host reports that the change conflicts with its base branch; then it asks for the branch to be updated, conflicts resolved, tested, and a new head published. A mergeability the host has not computed yet passes: the merge itself decides, and a refused merge follows the merge action's onFail.",
   reads: ["change"],
   writes: [],
   invalidates: [],
@@ -177,7 +177,7 @@ const mergeable: TaskDefinition<unknown, unknown, Deps> = {
     if (change.state === "closed") return fail(`Change request #${change.ref.number} is closed`);
     // Waiting for the host to compute mergeability cost a read per poll; the merge attempt reports it.
     if (change.mergeable === "unknown") return pass();
-    return change.mergeable === "yes" ? pass() : fail(`Change request #${change.ref.number} conflicts with its base branch. Return to implementation to update the branch, resolve conflicts, test, and publish a new head.`);
+    return change.mergeable === "yes" ? pass() : fail(`Change request #${change.ref.number} conflicts with its base branch. Update the branch, resolve conflicts, test, and publish a new head.`);
   },
 };
 

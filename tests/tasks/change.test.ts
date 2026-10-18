@@ -213,10 +213,10 @@ describe("change.merge", () => {
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("returns an owner-updated head to implementation until CI and review pass for it", async () => {
+  test("fails an owner-updated head without a route, so the configured onFail repairs it, until CI and review pass for it", async () => {
     const w = await world({ change: request({ headSha: "head2" }) });
     const stale = await run("change.merge", { context: ctx({ change: change({ headSha: "head2" }), checkpoints: { ciPassed: cp("head1"), reviewPassed: cp("head1") } }), deps: w.deps }) as Fail;
-    expect(stale.route).toEqual({ return: "implementation" });
+    expect(stale.route).toBeUndefined();
     expect(stale.message).toContain("head2");
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
 
@@ -231,7 +231,7 @@ describe("change.merge", () => {
     const stale = { checkpoints: { ciPassed: cp("old"), reviewPassed: cp("head1") } };
     const w = await world();
     const returned = await run("change.merge", { context: ctx(stale), deps: w.deps }) as Fail;
-    expect(returned.route).toEqual({ return: "implementation" });
+    expect(returned.route).toBeUndefined();
     expect(returned.message).toContain("CI");
     const advisory = await run("change.merge", { context: ctx({ ...stale, ...repository("advisory") }), deps: w.deps });
     expect(advisory.status).toBe("pass");
@@ -246,20 +246,20 @@ describe("change.merge", () => {
     expect(w.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("observes the live change first: merged elsewhere passes, a moved head returns to implementation", async () => {
+  test("observes the live change first: merged elsewhere passes, a moved head fails for repair without naming a stage", async () => {
     const merged = await world({ change: request({ state: "merged" }) });
     expect((await run("change.merge", { context: ctx(), deps: merged.deps })).status).toBe("pass");
     expect(merged.host.calls.some(([n]) => n === "merge")).toBe(false);
     const moved = await world({ change: request({ headSha: "head2" }) });
     const result = await run("change.merge", { context: ctx(), deps: moved.deps }) as Fail;
-    expect(result.route).toEqual({ return: "implementation" });
+    expect(result.route).toBeUndefined();
     expect(moved.host.calls.some(([n]) => n === "merge")).toBe(false);
   });
 
-  test("a head that moves during the merge returns to implementation with a clear message", async () => {
+  test("a head that moves during the merge fails for repair with a clear message", async () => {
     const w = await world({ merge: { merged: false, refusal: "head-moved" } });
     const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
-    expect(result.route).toEqual({ return: "implementation" });
+    expect(result.route).toBeUndefined();
     expect(result.message).toContain("head");
   });
 
@@ -277,19 +277,19 @@ describe("change.merge", () => {
     expect(result.message).toContain("not a repairable conflict");
   });
 
-  test("returns merge-time conflicts and an outdated base to the bounded repair path", async () => {
+  test("fails merge-time conflicts and an outdated base for repair without naming a stage", async () => {
     for (const [refusal, expected] of [["conflict", "conflicting"], ["outdated", "outdated"]] as const) {
       const w = await world({ merge: { merged: false, refusal } });
       const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
-      expect(result.route).toEqual({ return: "implementation" });
+      expect(result.route).toBeUndefined();
       expect(result.message).toContain(expected);
     }
   });
 
-  test("returns a conflict observed immediately before merge to implementation", async () => {
+  test("fails a conflict observed immediately before merge for repair without naming a stage", async () => {
     const w = await world({ change: request({ mergeable: false }) });
     const result = await run("change.merge", { context: ctx(), deps: w.deps }) as Fail;
-    expect(result.route).toEqual({ return: "implementation" });
+    expect(result.route).toBeUndefined();
     expect(result.message).toContain("conflicts");
     expect(w.host.calls.some(([name]) => name === "merge")).toBe(false);
   });
@@ -312,7 +312,7 @@ describe("change checks", () => {
     expect(await run("change.headUnchanged", { context: ctx({ change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
   });
 
-  test("mergeable passes while unknown (the merge decides), tells implementation to resolve conflicts, and passes on yes", async () => {
+  test("mergeable passes while unknown (the merge decides), asks for conflicts to be resolved, and passes on yes", async () => {
     expect((await run("change.mergeable", { context: ctx({ change: change({ mergeable: "unknown" }) }) })).status).toBe("pass");
     const conflict = await run("change.mergeable", { context: ctx({ change: change({ mergeable: "no" }) }) }) as Fail;
     expect(conflict.status).toBe("fail");
@@ -381,13 +381,13 @@ describe("change tools", () => {
     }
   });
 
-  test("criterionTestsVerified routes unlinked, stale, and renamed evidence to implementation and refreshes a moved line", async () => {
+  test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
     const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
     const unlinked = await world({ body: PR_BODY }, true, BODY);
     const missing = await run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: unlinked.deps }) as Fail;
     expect(missing.status).toBe("fail");
     expect(missing.message).toContain("a: no tests linked");
-    expect(missing.route).toEqual({ return: "implementation" });
+    expect(missing.route).toBeUndefined();
 
     const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": "\n\n\nit(\"does work\", () => {})" } }, true, BODY);
     await dispatchTool(
@@ -419,7 +419,7 @@ describe("change tools", () => {
     const moved = await world({ body: PR_BODY, change: request({ headSha: "head2" }) }, true, BODY);
     const changedHead = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: moved.deps }) as Fail;
     expect(changedHead.message).toContain("Change head moved from head1 to head2");
-    expect(changedHead.route).toEqual({ return: "implementation" });
+    expect(changedHead.route).toBeUndefined();
   });
 
   test("criterionTestsVerified uses the current Manual marker rather than recorded evidence", async () => {

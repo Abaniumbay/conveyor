@@ -30,6 +30,8 @@ export interface IssueTodosViewModel {
   skipped: number;
   /** The item in progress, or else the next pending one; null when every item is terminal. */
   current: string | null;
+  /** Whether the item is in the stage the list belongs to; the card shows progress only then. */
+  inOwningStage: boolean;
   items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done" | "skipped"; note?: string }>;
 }
 
@@ -87,9 +89,9 @@ export interface IssueCardViewModel {
   manualGates?: readonly ManualGateViewModel[];
   /** Request token copied into superuser forms rendered from this card. */
   csrfToken?: string;
-  /** The implementer's todo list, kept by Conveyor; null until one is written. */
+  /** The item's todo list, kept by Conveyor; null until one is written. */
   todos: IssueTodosViewModel | null;
-  /** The stage the item is in; card todo progress is shown only in the stage that owns the list. */
+  /** The stage the item is in. */
   stage?: string | null;
   /** Agents configured for this item's own pipeline stage, for board search metadata. */
   searchActors?: readonly StageActorViewModel[];

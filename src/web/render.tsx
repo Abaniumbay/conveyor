@@ -21,7 +21,6 @@ import type {
   StageActorViewModel,
   StageColumnViewModel,
 } from "./types";
-import { TODO_OWNING_STAGE } from "../engine/todos";
 import { BUILD } from "../version";
 
 function safeUrl(value: string | null): string | null {
@@ -410,7 +409,7 @@ function waitingStateWord(kind: "waiting" | "queued"): string {
 
 function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
   const todos = issue.todos;
-  if (!todos || issue.stage !== TODO_OWNING_STAGE) return null;
+  if (!todos?.inOwningStage) return null;
   const label = `${todos.finished} of ${todos.total} todos finished`;
   return (
     <div class="todo-progress" aria-label={`Todo progress for #${issue.number}: ${label}`}>
@@ -426,7 +425,7 @@ function TodoChecklist({ issue }: { issue: IssueCardViewModel }) {
   if (!todos) return null;
   const marks = { done: "Done", in_progress: "In progress", pending: "Pending", skipped: "Skipped" } as const;
   return (
-    <section class="todos" aria-label="Implementation todos">
+    <section class="todos" aria-label="Todos">
       <h3>Todos <span class="todos-count">{todos.finished}/{todos.total}{todos.skipped > 0 && <>, {todos.skipped} skipped</>}</span></h3>
       <ol class="todo-list">
         {todos.items.map((item) => (
@@ -577,20 +576,16 @@ interface Station {
 }
 
 /** The emoji of a stage with none configured, by its usual id; any other stage shows none. */
-const DEFAULT_STAGE_ICONS: Record<string, string> = {
-  backlog: "📥", refinement: "🧭", implementation: "🛠️", review: "🔍", merge: "🔀",
-  deploy: "🚀", verify: "✅", cleanup: "🧹", done: "🏁",
-};
-
-function stageIcon(id: string, configured: string | null | undefined): string | null {
-  return configured ?? DEFAULT_STAGE_ICONS[id.replace(/^stage:/, "")] ?? null;
-}
+// Backlog and Done are Conveyor's own columns around the pipeline. A stage's icon comes only from
+// its configuration: Conveyor knows no stage by name.
+const BACKLOG_ICON = "📥";
+const DONE_ICON = "🏁";
 
 function boardStations(model: DashboardViewModel): Station[] {
   return [
-    { id: "backlog", name: "Backlog", icon: stageIcon("backlog", null), description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
-    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, icon: stageIcon(column.id, column.icon), description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
-    { id: "done", name: "Done", icon: stageIcon("done", null), description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
+    { id: "backlog", name: "Backlog", icon: BACKLOG_ICON, description: "Enrolled items waiting for their first stage, in the order they will start.", count: model.backlog.length, actors: [], cost: null, issues: model.backlog, column: null, kind: "backlog" },
+    ...model.stages.map((column): Station => ({ id: column.id, name: column.name, icon: column.icon ?? null, description: column.description ?? null, count: column.totalIssues, actors: column.actors, cost: column.cost, issues: column.issues, column, kind: "stage" })),
+    { id: "done", name: "Done", icon: DONE_ICON, description: "Delivered and closed items, the most recent first.", count: model.done.totalIssues, actors: [], cost: null, issues: model.done.issues, column: model.done, kind: "done" },
   ];
 }
 
