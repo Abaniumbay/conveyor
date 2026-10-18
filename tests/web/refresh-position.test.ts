@@ -1249,6 +1249,95 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+  test("keeps a newly opened item visible when a delayed approval refresh finishes", async () => {
+    let revision = "approval-1";
+    let approved = false;
+    let refreshDelay = 0;
+    const build = () => {
+      const approvedCard = { ...issue("approved", 3, "Approval item"), state: approved ? "active" : "needs-input" };
+      approvedCard.manualGates = [{ stageId: "review", gateId: null, kind: "board", required: false, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
+      return dashboard(revision, [approvedCard, issue("next", 4, "Next item")]);
+    };
+    const server = startDashboard({
+      dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
+      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
+      approveManualGate: async () => { approved = true; revision = "approval-2"; },
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+
+      await page.locator('article.issue[data-issue-id="approved"] .card-open').click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve"));
+      await page.locator("dialog.issue-details[open] .manual-gate-approve").click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]")?.textContent?.includes("Approved by operator"));
+
+      refreshDelay = 1_000;
+      const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
+      await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
+      await refreshStarted;
+      await page.locator('article.issue[data-issue-id="next"] .card-open').click();
+      await page.waitForURL("**/issues/sample/4");
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'next');
+      await delayedRefresh;
+
+      expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
+      expect(page.url()).toContain("/issues/sample/4");
+      expect(await page.locator('article.issue[data-issue-id="approved"]').getAttribute("data-state-word")).toBe("Needs input");
+      await page.keyboard.press("Escape");
+      await page.waitForURL("**/board");
+      await page.locator('article.issue[data-issue-id="approved"][data-state-word="Queued"]').waitFor();
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("keeps a newly opened item visible when a delayed board-approval switch refresh finishes", async () => {
+    let revision = "switch-1";
+    let required = false;
+    let refreshDelay = 0;
+    const build = () => {
+      const switchCard = issue("switch", 3, required ? "Approval required" : "Approval optional");
+      switchCard.manualGates = [{ stageId: "review", gateId: null, kind: "board", required, waiting: false, approvedBy: null, approvedAt: null }];
+      return dashboard(revision, [switchCard, issue("next", 4, "Next item")]);
+    };
+    const server = startDashboard({
+      dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
+      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
+      setBoardApprovalRequirement: (nextRequired) => { required = nextRequired; revision = "switch-2"; },
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      await signIn(page, server.port);
+
+      await page.locator('article.issue[data-issue-id="switch"] .card-open').click();
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-switch"));
+      await page.locator("dialog.issue-details[open] .manual-gate-switch").click();
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
+
+      refreshDelay = 1_000;
+      const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
+      await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
+      await refreshStarted;
+      await page.locator('article.issue[data-issue-id="next"] .card-open').click();
+      await page.waitForURL("**/issues/sample/4");
+      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'next');
+      await delayedRefresh;
+
+      expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
+      expect(page.url()).toContain("/issues/sample/4");
+      expect(await page.locator('article.issue[data-issue-id="switch"] .issue-title').textContent()).toBe("Approval optional");
+      await page.keyboard.press("Escape");
+      await page.waitForURL("**/board");
+      await page.locator('article.issue[data-issue-id="switch"] .issue-title').filter({ hasText: "Approval required" }).waitFor();
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
   test("the line is open on a wide screen and closed on a phone until the reader folds or opens it", async () => {
     const server = startDashboard({ dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]), revision: () => "revision-1", delayMs: () => 0 });
     try {
