@@ -157,7 +157,10 @@ export function createDashboardEventConnection(options: {
   const reconnect = (immediate = false) => {
     options.onConnectionChange(false);
     closeSource();
-    if (immediate) open();
+    if (immediate) {
+      clearRetry();
+      open();
+    }
     else scheduleRetry();
   };
   const handleError = () => {
@@ -196,7 +199,7 @@ export function createDashboardEventConnection(options: {
       options.onEvent(type, event);
     });
   };
-  const check = () => {
+  const check = (immediate = true) => {
     if (closed || sessionExpired) return;
     if (!pageActive() || !online()) {
       clearRetry();
@@ -208,10 +211,14 @@ export function createDashboardEventConnection(options: {
       reconnect(true);
       return;
     }
-    if (!source || now() - lastActivity >= staleAfter) reconnect(true);
+    if (!source) {
+      if (immediate) reconnect(true);
+      return;
+    }
+    if (now() - lastActivity >= staleAfter) reconnect(true);
   };
 
-  const watchdog = setWatchdog(check, Math.min(retryDelays[0]!, staleAfter));
+  const watchdog = setWatchdog(() => check(false), Math.min(retryDelays[0]!, staleAfter));
   open();
   return {
     check,

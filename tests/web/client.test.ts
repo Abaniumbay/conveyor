@@ -197,6 +197,7 @@ describe("dashboard browser client", () => {
     let online = true;
     const timers: Array<{ delay: number; callback: () => void; cancelled: boolean }> = [];
     const sources: Array<{ readyState: number; onopen: (() => void) | null; onerror: (() => void) | null; close: () => void; addEventListener: () => void }> = [];
+    let watchdog: (() => void) | null = null;
     const connection = createDashboardEventConnection({
       createEventSource: () => {
         const source = { readyState: 0, onopen: null as (() => void) | null, onerror: null as (() => void) | null, close: () => { source.readyState = 2; }, addEventListener: () => {} };
@@ -205,40 +206,61 @@ describe("dashboard browser client", () => {
       },
       pageActive: () => pageActive,
       online: () => online,
-      retryDelays: [1_000, 2_000, 5_000],
+      retryDelays: [1_000, 2_000, 5_000, 10_000],
       setTimeout: (callback, delay) => {
         const timer = { delay, callback, cancelled: false };
         timers.push(timer);
         return timer;
       },
       clearTimeout: (timer) => { timer.cancelled = true; },
-      setInterval: () => 0,
+      setInterval: (callback) => {
+        watchdog = callback;
+        return 0;
+      },
       clearInterval: () => {},
       onConnectionChange: () => {},
       onReconnect: () => {},
       onEvent: () => {},
     });
     const runTimer = () => {
-      const timer = timers.shift()!;
-      if (!timer.cancelled) timer.callback();
+      const timer = timers.find((candidate) => !candidate.cancelled)!;
+      timer.cancelled = true;
+      timer.callback();
     };
     sources[0]!.onerror!();
     expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([1_000]);
+    watchdog!();
+    expect(sources).toHaveLength(1);
     runTimer();
     sources[1]!.onerror!();
-    expect(timers.map((timer) => timer.delay)).toEqual([2_000]);
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([2_000]);
+    watchdog!();
+    expect(sources).toHaveLength(2);
+    runTimer();
+    sources[2]!.onerror!();
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([5_000]);
+    watchdog!();
+    expect(sources).toHaveLength(3);
+    runTimer();
+    sources[3]!.onerror!();
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([10_000]);
+    watchdog!();
+    expect(sources).toHaveLength(4);
+    connection.check();
+    expect(timers.at(-1)!.cancelled).toBe(true);
+    expect(sources).toHaveLength(5);
     pageActive = false;
     connection.check();
-    expect(timers[0]!.cancelled).toBe(true);
+    expect(timers.filter((timer) => !timer.cancelled)).toEqual([]);
     online = false;
     pageActive = true;
     connection.check();
-    expect(sources).toHaveLength(2);
+    expect(sources).toHaveLength(5);
     online = true;
     connection.check();
-    expect(sources).toHaveLength(3);
-    sources[2]!.onopen!();
-    sources[2]!.onerror!();
+    expect(sources).toHaveLength(6);
+    sources[5]!.onopen!();
+    sources[5]!.onerror!();
     expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([1_000]);
   });
 
