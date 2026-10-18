@@ -74,13 +74,16 @@ describe("reference configuration", () => {
     const omid = config.agents.omid!;
     expect([...omid.tasks].sort()).toEqual([
       "agent.reportBlocker", "agent.reportMilestone", "agent.reportProgress", "agent.reportRationale", "agent.reportResult",
-      "operator.getBoard", "operator.getItemHistory", "operator.moveBacklogItem", "operator.retryItem",
+      "operator.findItem", "operator.getBoard", "operator.getItemHistory", "operator.moveBacklogItem", "operator.retryItem",
     ]);
+    expect(omid.workspaceAccess).toBe("confined");
     expect(await readFile(path.join(EXAMPLES, "config/agents.yaml"), "utf8")).toContain("instructions: ../../skills/conveyor-operator/SKILL.md");
     const guidance = await readFile(path.resolve(EXAMPLES, "../skills/conveyor-operator/SKILL.md"), "utf8");
     expect(guidance).toContain("Inspect first, before mutation.");
     expect(guidance).toContain("must not silently bypass or replace the normal issue pipeline");
     expect(guidance).toContain("Never close a source issue.");
+    expect(guidance).toContain("not on this configured board");
+    expect(guidance).toContain("Never search files");
   });
 
   test("every native stage has a non-empty exit gate", async () => {

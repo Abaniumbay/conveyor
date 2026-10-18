@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
-import { privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
+import { confinedCommand, confinedCommandPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -20,6 +20,96 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
   expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
+
+describeSandbox("confined command exposes only its fresh scratch directory", () => {
+  test("denies an agent read of another Conveyor home's database", async () => {
+    const root = await shortTemporaryDirectory("conveyor-operator-confined-");
+    try {
+      const scratch = path.join(root, "scratch");
+      const otherHome = path.join(root, "another-conveyor-home");
+      const database = path.join(otherHome, "conveyor.sqlite");
+      const runtime = path.join(root, "codex-runtime");
+      const agent = path.join(runtime, "codex");
+      const mcpRuntime = path.join(root, "mcp-runtime");
+      const mcp = path.join(mcpRuntime, "bridge");
+      const mcpContext = path.join(root, "mcp-context.json");
+      const codexHome = path.join(root, "codex-home");
+      await mkdir(scratch);
+      await mkdir(otherHome);
+      await mkdir(runtime);
+      await mkdir(mcpRuntime);
+      await mkdir(codexHome);
+      await writeFile(database, "database that must not be readable");
+      await writeFile(path.join(runtime, "runtime-dependency"), "codex-runtime");
+      await writeFile(path.join(mcpRuntime, "runtime-dependency"), "mcp-runtime");
+      await writeFile(path.join(codexHome, "auth.json"), "credential");
+      await writeFile(mcpContext, "mcp-context");
+      await writeFile(mcp, `#!/bin/sh
+      test "$(cat "$(dirname "$0")/runtime-dependency")" = mcp-runtime || exit 21
+      test "$(cat "$MCP_CONTEXT")" = mcp-context || exit 22
+      printf mcp-ready
+    `);
+      await writeFile(agent, `#!/bin/sh
+      test -z "$(ls -A \"$TMPDIR\")" || exit 11
+      if cat "$HOST_DATABASE" >/dev/null 2>&1; then exit 12; fi
+      test "$(cat "$CODEX_HOME/auth.json")" = credential || exit 13
+      test "$(cat "$(dirname "$0")/runtime-dependency")" = codex-runtime || exit 14
+      test -r /etc/resolv.conf || exit 15
+      test -d /etc/ssl/certs || exit 16
+      test "$("$MCP_COMMAND")" = mcp-ready || exit 17
+      printf usable > "$TMPDIR/operator-file"
+    `);
+      await Promise.all([chmod(agent, 0o755), chmod(mcp, 0o755)]);
+      const launch = confinedCommand({
+        argv: [agent],
+        env: {
+          PATH: "/usr/bin:/bin",
+          HOST_DATABASE: database,
+          CODEX_HOME: codexHome,
+          MCP_COMMAND: mcp,
+          MCP_CONTEXT: mcpContext,
+        },
+        scratch,
+        readablePaths: [mcpContext],
+        runtimePaths: [mcp],
+      });
+      expect(await readdir(scratch)).toEqual([]);
+      const child = Bun.spawn(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
+      expect(await child.exited).toBe(0);
+      expect(await Bun.file(path.join(scratch, "operator-file")).text()).toBe("usable");
+      expect(await Bun.file(database).text()).toBe("database that must not be readable");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("confined command fails closed before bubblewrap can launch", async () => {
+  const root = await shortTemporaryDirectory("conveyor-confined-plan-");
+  try {
+    const scratch = path.join(root, "scratch");
+    const runtime = path.join(root, "runtime");
+    const command = path.join(runtime, "codex");
+    const codexHome = path.join(root, "codex-home");
+    await Promise.all([mkdir(scratch), mkdir(runtime), mkdir(codexHome)]);
+    await writeFile(command, "#!/bin/sh\nexit 0\n");
+    await chmod(command, 0o755);
+    await writeFile(path.join(codexHome, "auth.json"), "credential");
+
+    const plan = confinedCommandPlan({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch });
+    expect(plan.argv).not.toContain("--dev-bind");
+    expect(plan.argv.filter((argument) => argument === "--bind")).toEqual(["--bind"]);
+    expect(plan.argv.slice(plan.argv.indexOf("--bind"), plan.argv.indexOf("--bind") + 3)).toEqual(["--bind", scratch, scratch]);
+    expect(plan.env.HOME).toBe(scratch);
+    expect(plan.env.CODEX_HOME).toBe(codexHome);
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "", CODEX_HOME: codexHome }, scratch })).toThrow("requires bubblewrap");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch })).toThrow("requires CODEX_HOME/auth.json");
+    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch: path.join(root, "missing") })).toThrow("scratch directory does not exist");
+    expect(() => confinedCommand({ argv: ["missing-codex"], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch })).toThrow("not installed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("network isolation normalizes a symlinked run temporary directory", async () => {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -32,6 +32,19 @@ export interface SandboxedCommand {
   dataEnv: Record<string, string>;
 }
 
+export interface ConfinedCommandOptions {
+  /** The command which is allowed to run in the otherwise empty mount namespace. */
+  argv: readonly string[];
+  /** Its sanitized environment. */
+  env: Record<string, string>;
+  /** The only writable and readable application directory. */
+  scratch: string;
+  /** Individual files the command needs, such as a run-scoped MCP context. */
+  readablePaths?: readonly string[];
+  /** Executable installation directories the command needs to invoke its scoped MCP bridge. */
+  runtimePaths?: readonly string[];
+}
+
 /** Runs locally with a private /tmp while preserving ordinary host networking. */
 export function privateTmpCommand(options: { argv: readonly string[]; env: Record<string, string> }): SandboxedCommand {
   return {
@@ -39,6 +52,110 @@ export function privateTmpCommand(options: { argv: readonly string[]; env: Recor
     env: resolvePathEnvironment(options.env),
     dataEnv: {},
   };
+}
+
+/**
+ * Runs a command in an empty filesystem with only its scratch directory and individual run files.
+ * This is deliberately separate from the ordinary isolation wrappers: it is for the board-only
+ * Operator, whose process must not inherit the service's workspace or home mounts.
+ */
+/** Builds the mount namespace arguments before requiring the bubblewrap executable. */
+export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedCommand {
+  const command = options.argv[0];
+  if (!command) throw new Error("cannot confine an empty command");
+  const scratch = resolveFilesystemPath(options.scratch);
+  if (!existsSync(scratch)) throw new Error(`Operator scratch directory does not exist: ${scratch}`);
+  const executable = path.isAbsolute(command)
+    ? resolveFilesystemPath(command)
+    : findOnPath(command, options.env.PATH);
+  if (!executable || !existsSync(executable)) throw new Error(`cannot confine a command that is not installed: ${command}`);
+
+  const mounts = [
+    "--tmpfs", "/",
+    "--dir", "/usr",
+    "--ro-bind", "/usr", "/usr",
+    "--symlink", "usr/bin", "/bin",
+    "--symlink", "usr/lib", "/lib",
+    "--symlink", "usr/lib64", "/lib64",
+    "--dev", "/dev",
+    "--proc", "/proc",
+  ];
+  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
+  const addDirectory = (directory: string) => {
+    if (directories.has(directory) || directory.startsWith("/usr/")) return;
+    const parent = path.dirname(directory);
+    if (parent !== directory) addDirectory(parent);
+    mounts.push("--dir", directory);
+    directories.add(directory);
+  };
+  const addFile = (file: string) => {
+    const target = path.resolve(file);
+    const resolved = resolveFilesystemPath(file);
+    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
+    addDirectory(path.dirname(target));
+    mounts.push("--ro-bind", resolved, target);
+  };
+  const addRuntimePath = (runtimePath: string) => {
+    const target = path.resolve(runtimePath);
+    const resolved = resolveFilesystemPath(runtimePath);
+    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
+    const isDirectory = statSync(resolved).isDirectory();
+    const sourceDirectory = isDirectory ? resolved : path.dirname(resolved);
+    const targetDirectory = isDirectory ? target : path.dirname(target);
+    if (directories.has(targetDirectory)) return;
+    addDirectory(path.dirname(targetDirectory));
+    mounts.push("--ro-bind", sourceDirectory, targetDirectory);
+    directories.add(targetDirectory);
+  };
+  // Bubblewrap creates bind targets only when their parents already exist in the new namespace.
+  addDirectory(path.dirname(scratch));
+  mounts.push("--bind", scratch, scratch);
+  directories.add(scratch);
+  // Codex and the MCP bridge can use adjacent runtime files, but no parent directory above
+  // their resolved installation directory is made visible.
+  addRuntimePath(executable);
+  for (const runtimePath of options.runtimePaths ?? []) {
+    if (path.isAbsolute(runtimePath)) addRuntimePath(runtimePath);
+  }
+  for (const file of options.readablePaths ?? []) {
+    if (path.isAbsolute(file)) addFile(file);
+  }
+  const codexHome = options.env.CODEX_HOME;
+  if (!codexHome) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  const credential = path.join(resolveFilesystemPath(codexHome), "auth.json");
+  if (!existsSync(credential)) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  addFile(credential);
+  if (existsSync("/etc/ssl/certs")) {
+    addDirectory("/etc");
+    mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
+  }
+  for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) {
+    if (existsSync(file)) addFile(file);
+  }
+  const env: Record<string, string> = { ...options.env, HOME: scratch, TMPDIR: scratch };
+  return {
+    argv: ["--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
+    env: resolvePathEnvironment(env),
+    dataEnv: {},
+  };
+}
+
+/** Starts the fail-closed mount namespace for the board-only Operator. */
+export function confinedCommand(options: ConfinedCommandOptions): SandboxedCommand {
+  const plan = confinedCommandPlan(options);
+  const bubblewrap = findOnPath("bwrap", options.env.PATH);
+  if (!bubblewrap) throw new Error("Operator filesystem confinement requires bubblewrap");
+  return { ...plan, argv: [bubblewrap, ...plan.argv] };
+}
+
+function findOnPath(command: string, pathValue: string | undefined): string | undefined {
+  if (path.isAbsolute(command)) return resolveFilesystemPath(command);
+  for (const directory of (pathValue ?? process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return resolveFilesystemPath(candidate);
+  }
+  return undefined;
 }
 
 

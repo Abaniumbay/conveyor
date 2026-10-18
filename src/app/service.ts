@@ -3003,12 +3003,20 @@ export class ConveyorService {
             operator: {
               scheduled,
               board: () => this.operatorBoard(),
+              findItem: (reference) => this.operatorFindItem(reference),
               itemHistory: async (input) => {
-                if (scheduled && !this.#scheduledOperatorChecks.get(grant.runId)?.targets.has(input.itemId)) {
+                const matches = this.operatorItemsForReference(input.itemId);
+                if (matches.length === 0) {
+                  if (scheduled) throw new Error("scheduled checks may inspect history only for their stopped targets");
+                  throw new Error("item is not on this configured board");
+                }
+                if (matches.length > 1) throw new Error("item reference matches multiple configured board items; use a repository-qualified reference");
+                const issue = matches[0]!;
+                if (scheduled && !this.#scheduledOperatorChecks.get(grant.runId)?.targets.has(issue.id)) {
                   throw new Error("scheduled checks may inspect history only for their stopped targets");
                 }
-                const history = await this.operatorItemHistory(input);
-                if (scheduled) this.#scheduledOperatorChecks.get(grant.runId)?.inspected.add(input.itemId);
+                const history = await this.operatorItemHistory({ ...input, itemId: issue.id });
+                if (scheduled) this.#scheduledOperatorChecks.get(grant.runId)?.inspected.add(issue.id);
                 return history;
               },
               retry: (itemId, note) => this.retryIssue(itemId, note, "AI Operator"),
@@ -3055,16 +3063,7 @@ export class ConveyorService {
   /** A redacted board view for the scoped Operator MCP tools; it intentionally has no credentials or raw config. */
   private operatorBoard(): unknown {
     const activeIssueIds = new Set(this.store.listActiveIssueRuns().map((run) => run.issueId));
-    const reference = (issue: StoredIssue) => ({
-      id: issue.id,
-      repositoryId: issue.repositoryId,
-      number: issue.sourceNumber,
-      url: issue.sourceUrl,
-      title: issue.title,
-    });
-    const visible = (issue: StoredIssue | null): issue is StoredIssue =>
-      Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "offboarded");
-    const items = this.store.listIssues().filter(visible).map((issue) => {
+    const items = this.operatorVisibleItems().map((issue) => {
       const cursor = this.store.executions().getCursor(issue.id);
       const manualGates = this.manualGateViews(issue);
       const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
@@ -3072,7 +3071,7 @@ export class ConveyorService {
       const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
       const parent = issue.parentId ? this.store.getIssue(issue.parentId) : null;
       return {
-        ...reference(issue),
+        ...this.operatorReference(issue),
         stage: this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage,
         state: issue.projectedState ?? issue.sourceState,
         activity: active ? "active" : cursor?.state === "pending" ? "waiting" : "idle",
@@ -3080,11 +3079,11 @@ export class ConveyorService {
         waitingOrStopReason: cursor?.state === "pending"
           ? this.store.executions().pendingMessage(issue.id) ?? issue.warning
           : stopped ? latestStopReason(this.store, issue.id) ?? issue.warning : null,
-        parent: visible(parent) ? reference(parent) : null,
+        parent: this.operatorVisibleItem(parent) ? this.operatorReference(parent) : null,
         dependencies: this.store.listDependencies(issue.id)
           .map((id) => this.store.getIssue(id))
-          .filter(visible)
-          .map(reference),
+          .filter((dependency): dependency is StoredIssue => this.operatorVisibleItem(dependency))
+          .map((dependency) => this.operatorReference(dependency)),
       };
     });
     return {
@@ -3099,6 +3098,62 @@ export class ConveyorService {
     };
   }
 
+  private operatorVisibleItem(issue: StoredIssue | null): issue is StoredIssue {
+    return Boolean(issue && this.config.repositories[issue.repositoryId] && issue.projectedState !== "offboarded");
+  }
+
+  private operatorVisibleItems(): StoredIssue[] {
+    return this.store.listIssues().filter((issue) => this.operatorVisibleItem(issue));
+  }
+
+  private operatorReference(issue: StoredIssue): { id: string; repositoryId: string; number: number; url: string; title: string } {
+    return {
+      id: issue.id,
+      repositoryId: issue.repositoryId,
+      number: issue.sourceNumber,
+      url: issue.sourceUrl,
+      title: issue.title,
+    };
+  }
+
+  /** Resolves the forms people use without consulting a source outside the configured board. */
+  private operatorItemsForReference(input: string): StoredIssue[] {
+    const reference = input.trim().toLowerCase();
+    const visible = this.operatorVisibleItems();
+    const direct = visible.filter((issue) => issue.id.toLowerCase() === reference);
+    if (direct.length > 0) return direct;
+    const bare = /^#?(\d+)$/.exec(reference);
+    if (bare) return visible.filter((issue) => issue.sourceNumber === Number(bare[1]));
+    const qualified = /^(.+?)(?:#\s*|:\s*|\s+)(\d+)$/.exec(reference);
+    if (!qualified) {
+      const matching = Object.entries(this.config.repositories).flatMap(([id, repository]) =>
+        [id, repository.address, repository.address.split("/").at(-1)!]
+          .map((alias) => alias.toLowerCase())
+          .filter((alias) => reference.startsWith(alias) && /^\d+$/.test(reference.slice(alias.length)))
+          .map((alias) => ({ id, number: Number(reference.slice(alias.length)) })),
+      );
+      return visible.filter((issue) => matching.some((candidate) =>
+        issue.repositoryId === candidate.id && issue.sourceNumber === candidate.number,
+      ));
+    }
+    const [, repositoryReference, number] = qualified;
+    if (!repositoryReference || !number) return [];
+    const repositories = Object.entries(this.config.repositories)
+      .filter(([id, repository]) => {
+        const address = repository.address.toLowerCase();
+        return [id.toLowerCase(), address, address.split("/").at(-1)!].includes(repositoryReference.trim());
+      })
+      .map(([id]) => id);
+    return visible.filter((issue) => repositories.includes(issue.repositoryId) && issue.sourceNumber === Number(number));
+  }
+
+  private operatorFindItem(reference: string): unknown {
+    const items = this.operatorItemsForReference(reference).map((issue) => this.operatorReference(issue));
+    return items.length > 0
+      ? { reference, status: "found", items }
+      : { reference, status: "not-on-board", message: "This reference is not on this configured board.", items: [] };
+  }
+
   /** History is deliberately bounded by transition, run, and event limits and rejects non-board references uniformly. */
   private async operatorItemHistory(input: {
     itemId: string;
@@ -3109,7 +3164,7 @@ export class ConveyorService {
     eventLimit: number;
   }): Promise<unknown> {
     const issue = this.store.getIssue(input.itemId);
-    if (!issue || !this.config.repositories[issue.repositoryId] || issue.projectedState === "offboarded") {
+    if (!this.operatorVisibleItem(issue)) {
       throw new Error("item is not on this configured board");
     }
     const runs = this.store.listIssueRunsPage(issue.id, {
@@ -3842,7 +3897,8 @@ export class ConveyorService {
         ].join("\n"),
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
-        sandbox: agent.workspaceAccess === "read-only" ? "read-only" : runner.sandbox,
+        sandbox: agent.workspaceAccess === "workspace-write" ? runner.sandbox : "read-only",
+        ...(agent.workspaceAccess === "confined" ? { filesystem: "scratch" as const } : {}),
         automaticApprovals: runner.automaticApprovals,
         mcp: lease.configuration,
         interruptGraceMs: this.config.settings.interruptGraceMs,

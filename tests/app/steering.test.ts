@@ -536,15 +536,21 @@ describe("ConveyorService steering", () => {
       },
       agents: {
         operator: {
-          runner: "codex", effort: "medium", instructions, workspaceAccess: "workspace-write",
-          tasks: ["operator.getBoard", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"],
+          runner: "codex", effort: "medium", instructions, workspaceAccess: "confined",
+          tasks: ["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"],
         },
       },
       pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "backlog" }, { id: "implementation" }] } },
-      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      repositories: {
+        repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+        "conveyor-v2": { source: "github", address: "Abaniumbay/conveyor", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+        "other-conveyor": { source: "github", address: "owner/conveyor", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] },
+      },
       sources: { github: { type: "github" } }, checks: {}, ci: {},
     } as unknown as ConveyorConfig;
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    store.upsertRepository({ id: "conveyor-v2", configName: "conveyor-v2", source: "github", address: "Abaniumbay/conveyor", folder: root, configHash: config.hash });
+    store.upsertRepository({ id: "other-conveyor", configName: "other-conveyor", source: "github", address: "owner/conveyor", folder: root, configHash: config.hash });
     store.upsertIssue({
       id: "item-1", repositoryId: "repo", sourceNumber: 87, sourceUrl: "https://example.test/87", title: "Operator item",
       body: "", sourceState: "open", labels: ["conveyor", "conveyor:backlog"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
@@ -552,6 +558,14 @@ describe("ConveyorService steering", () => {
     store.setIssueProjection("item-1", { stage: "backlog", state: "active", warning: null });
     store.setQueueRank("item-1", 10);
     store.setStageState({ issueId: "item-1", stageId: "backlog", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    for (const [id, repositoryId] of [["conveyor-v2:318", "conveyor-v2"], ["other-conveyor:318", "other-conveyor"]] as const) {
+      store.upsertIssue({
+        id, repositoryId, sourceNumber: 318, sourceUrl: `https://example.test/${id}`, title: id,
+        body: "", sourceState: "open", labels: ["conveyor", "conveyor:backlog"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+      });
+      store.setIssueProjection(id, { stage: "backlog", state: "active", warning: null });
+      store.setStageState({ issueId: id, stageId: "backlog", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    }
     for (const [id, number, stage] of [["item-2", 88, "backlog"], ["item-3", 89, "backlog"], ["child", 90, "backlog"], ["not-backlog", 91, "implementation"], ["offboarded", 92, null]] as const) {
       store.upsertIssue({
         id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id,
@@ -636,6 +650,8 @@ describe("ConveyorService steering", () => {
     service = new ConveyorService(config, store, github as never, {
       codeHosts: createGitHubCodeHostRegistry(config, github as never),
       steering: async (input) => {
+        expect(input.sandbox).toBe("read-only");
+        expect(input.filesystem).toBe("scratch");
         expect(input.prompt).toContain("Inspect first, before mutation.");
         expect(input.prompt).toContain("operator.getBoard → tools.mcp__conveyor__operator_getBoard");
         expect(input.prompt).not.toContain("tools.mcp__conveyor__change_merge");
@@ -647,7 +663,7 @@ describe("ConveyorService steering", () => {
           control: { token: string };
           allowedTools: string[];
         };
-        expect(context.allowedTools).toEqual(["operator.getBoard", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"]);
+        expect(context.allowedTools).toEqual(["operator.getBoard", "operator.findItem", "operator.getItemHistory", "operator.retryItem", "operator.moveBacklogItem"]);
         await expect(service.handleMcp({ tool: "operator.retryStoppedItem", input: { itemId: "retry-item", note: "owner asked", evidence: "clear source evidence" } }, context.control.token)).rejects.toThrow("not granted");
         await expect(service.handleMcp({ tool: "operator.answerItemQuestion", input: { questionId: "question", answer: "yes", evidence: "clear source evidence" } }, context.control.token)).rejects.toThrow("not granted");
         await expect(service.handleMcp({ tool: "operator.reportStoppedItemOutcome", input: { itemId: "retry-item", reason: "owner needed" } }, context.control.token)).rejects.toThrow("not granted");
@@ -661,9 +677,28 @@ describe("ConveyorService steering", () => {
         await limitedLease.close();
         await expect(service.handleMcp({ tool: "operator.getBoard", input: {} }, limitedContext.control.token)).rejects.toThrow("expired MCP grant");
         const board = await service.handleMcp({ tool: "operator.getBoard", input: {} }, context.control.token) as { repositories: Array<{ id: string; address: string; health: string; lastReconciledAt: string | null }>; items: Array<{ id: string; queue: { status: string; rank: number | null } }> };
-        expect(board.repositories).toEqual([{ id: "repo", address: "owner/repo", health: "healthy", lastReconciledAt: null }]);
+        expect(board.repositories).toEqual(expect.arrayContaining([
+          { id: "repo", address: "owner/repo", health: "healthy", lastReconciledAt: null },
+          { id: "conveyor-v2", address: "Abaniumbay/conveyor", health: "healthy", lastReconciledAt: null },
+          { id: "other-conveyor", address: "owner/conveyor", health: "healthy", lastReconciledAt: null },
+        ]));
         expect(board.items).toContainEqual(expect.objectContaining({ id: "item-1", queue: { status: "queued", rank: 10 } }));
         expect(JSON.stringify(board)).not.toContain(context.control.token);
+        const find = async (reference: string) => service.handleMcp({ tool: "operator.findItem", input: { reference } }, context.control.token) as Promise<{
+          reference: string; status: string; items: Array<{ id: string }>; message?: string;
+        }>;
+        for (const reference of ["#318", "318", "conveyor 318", "conveyor318", "conveyor#318"]) {
+          expect((await find(reference)).items.map((item) => item.id)).toContain("conveyor-v2:318");
+        }
+        for (const reference of ["Abaniumbay/conveyor#318", "conveyor-v2:318"]) {
+          expect((await find(reference)).items.map((item) => item.id)).toEqual(["conveyor-v2:318"]);
+        }
+        expect((await find("318")).items.map((item) => item.id).sort()).toEqual(["conveyor-v2:318", "other-conveyor:318"]);
+        expect((await find("conveyor 318")).items.map((item) => item.id).sort()).toEqual(["conveyor-v2:318", "other-conveyor:318"]);
+        await expect(service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "Abaniumbay/conveyor#318" } }, context.control.token))
+          .resolves.toMatchObject({ item: { id: "conveyor-v2:318" } });
+        expect(await find("offboarded")).toEqual({ reference: "offboarded", status: "not-on-board", message: "This reference is not on this configured board.", items: [] });
+        expect(await find("unconfigured#318")).toEqual({ reference: "unconfigured#318", status: "not-on-board", message: "This reference is not on this configured board.", items: [] });
         const history = await service.handleMcp({ tool: "operator.getItemHistory", input: { itemId: "item-1", eventLimit: 2 } }, context.control.token) as {
           delivery: { status: string; pullRequest: { number: number }; checks: Array<{ state: string }> };
           runs: Array<{ id: string; events: Array<{ sequence: number }>; nextEventBefore: number | null }>;

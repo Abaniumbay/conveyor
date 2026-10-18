@@ -273,6 +273,18 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
   const errors: LocatedError[] = [];
   const error = (segments: readonly (string | number)[], message: string) =>
     errors.push({ path: segments.map(String), message: ` ${message}` });
+  const rejectConfinedStageAgent = (
+    segments: readonly (string | number)[],
+    agentName: string,
+  ) => {
+    const agent = config.agents[agentName];
+    if (agent?.workspaceAccess === "confined") {
+      error(
+        segments,
+        `references confined agent "${agentName}", which cannot run pipeline stages`,
+      );
+    }
+  };
   if (config.web.steering && !config.agents[config.web.steering.agent]) {
     error(["web", "steering", "agent"], `references unknown agent "${config.web.steering.agent}"`);
   }
@@ -280,6 +292,10 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     const runner = config.runners[agent.runner];
     if (!runner) {
       error(["agents", name, "runner"], `references unknown runner "${agent.runner}"`);
+    } else if (agent.workspaceAccess === "confined" && runner.type !== "codex") {
+      error(["agents", name], "uses access: confined, which requires the Codex runner");
+    } else if (agent.workspaceAccess === "confined" && agent.writableRoots.length > 0) {
+      error(["agents", name], "is confined, so writableRoots does not apply");
     } else if (runner.type === "claude-code" && agent.workspaceAccess === "workspace-write" && !agent.network) {
       // The Claude CLI needs the network for its own API calls, so its commands cannot be cut off from it.
       error(["agents", name], "runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");
@@ -290,14 +306,43 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {
-    if (!config.agents[check.verifier]) {
+    const verifier = config.agents[check.verifier];
+    if (!verifier) {
       error(["checks", name, "verifier"], `references unknown agent "${check.verifier}"`);
+    } else if (verifier.workspaceAccess === "confined") {
+      error(
+        ["checks", name, "verifier"],
+        `references confined agent "${check.verifier}", which cannot run legacy checks`,
+      );
     }
   }
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = ["pipelines", pipelineName, "stages", index];
       if (isNativeStage(stage)) {
+        for (const [group, entries] of [
+          ["actions", stage.actions],
+          ["exit-gate", stage.exitGate],
+        ] as const) {
+          for (const [entryIndex, entry] of entries.entries()) {
+            if (entry.task !== "agent.run" || !entry.with) continue;
+            if (typeof entry.with.agent === "string") {
+              rejectConfinedStageAgent(
+                [...prefix, group, entryIndex, "with", "agent"],
+                entry.with.agent,
+              );
+            }
+            if (Array.isArray(entry.with.agents)) {
+              for (const [agentIndex, agentName] of entry.with.agents.entries()) {
+                if (typeof agentName !== "string") continue;
+                rejectConfinedStageAgent(
+                  [...prefix, group, entryIndex, "with", "agents", agentIndex],
+                  agentName,
+                );
+              }
+            }
+          }
+        }
         if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
           if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
             error([...prefix, "childrenStartAt"], `references unknown stage "${stage.childrenStartAt}"`);
@@ -311,8 +356,13 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
       if (stage.exitCheck && !config.checks[stage.exitCheck]) {
         error([...prefix, "exitCheck"], `references unknown check "${stage.exitCheck}"`);
       }
-      if (stage.run.type === "agent" && !config.agents[stage.run.agent]) {
-        error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
+      if (stage.run.type === "agent") {
+        const agent = config.agents[stage.run.agent];
+        if (!agent) {
+          error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
+        } else {
+          rejectConfinedStageAgent([...prefix, "run", "agent"], stage.run.agent);
+        }
       }
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
         error([...prefix, "run", "runner"], `references unknown runner "${stage.run.runner}"`);

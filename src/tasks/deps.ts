@@ -72,6 +72,7 @@ export interface TaskDeps {
     /** True only for a cadence-triggered Operator run. */
     scheduled?: boolean;
     board: () => unknown;
+    findItem: (reference: string) => unknown;
     itemHistory: (input: {
       itemId: string;
       beforeRunId?: string;
