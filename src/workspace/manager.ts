@@ -137,6 +137,12 @@ export class WorkspaceManager {
       const occupant = atPath.branch ? `registered worktree on branch "${atPath.branch}"` : "registered detached worktree";
       throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": path contains ${occupant}`);
     }
+    if (atPath && !existsSync(resolvedWorkspacePath)) {
+      const pruned = await git(repositoryPath, ["worktree", "prune"]);
+      if (pruned.exitCode !== 0) {
+        throw new WorkspaceError(`cannot prune missing worktree ${resolvedWorkspacePath}: ${pruned.stderr || "unknown Git error"}`);
+      }
+    }
     if (!atPath && existsSync(resolvedWorkspacePath)) {
       throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": path is occupied by a non-worktree directory`);
     }
@@ -144,7 +150,7 @@ export class WorkspaceManager {
     if (branchElsewhere) {
       throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": branch is checked out at ${branchElsewhere.path}`);
     }
-    if (atPath) {
+    if (atPath && existsSync(resolvedWorkspacePath)) {
       await this.ensureScratch(resolvedWorkspacePath);
       const head = atPath.head ?? (await git(repositoryPath, ["rev-parse", "--verify", `refs/heads/${branch}`])).stdout;
       return { path: resolvedWorkspacePath, branch, baseRevision: head, adopted: true };

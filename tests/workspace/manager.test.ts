@@ -242,6 +242,27 @@ describe("WorkspaceManager.create recovery", () => {
     expect(await command(created.path, "git", "status", "--porcelain")).toContain("dirty.txt");
   });
 
+  test("prunes a missing registered worktree before reattaching its branch", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const input = {
+      repositoryPath: fixture.checkout, repositoryId: "owner-repository", issueNumber: 46, enrollment: 1, slug: "dirty", baseBranch: "main",
+    };
+    const created = await manager.create(input);
+    await writeFile(path.join(created.path, "recovered.txt"), "keep\n");
+    await command(created.path, "git", "add", "recovered.txt");
+    await command(created.path, "git", "commit", "-m", "saved work");
+    const head = await command(created.path, "git", "rev-parse", "HEAD");
+    await rm(created.path, { recursive: true });
+
+    const recovered = await manager.create(input);
+
+    expect(recovered).toMatchObject({ path: created.path, branch: created.branch, adopted: true });
+    expect(existsSync(recovered.path)).toBe(true);
+    expect(await command(recovered.path, "git", "rev-parse", "HEAD")).toBe(head);
+    expect(await readFile(path.join(recovered.path, "recovered.txt"), "utf8")).toBe("keep\n");
+  });
+
   test("records a dirty registered worktree and keeps that record on retry", async () => {
     const fixture = await repository();
     const manager = new WorkspaceManager(fixture.workspaces);
