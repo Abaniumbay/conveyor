@@ -72,6 +72,8 @@ describe("ConveyorStore", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Title", body: "Body", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
     store.sqlite().exec(`
+      DROP TABLE ci_gate_observations;
+      DROP TABLE ci_failure_windows;
       DROP INDEX issues_recovery_candidates_idx;
       ALTER TABLE issues DROP COLUMN projection_changed_at;
       DROP TABLE ci_gate_observations;
