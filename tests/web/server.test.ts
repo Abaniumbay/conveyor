@@ -566,6 +566,7 @@ describe("createWebHandler", () => {
       repositoryIds: [],
       q: "",
       state: null,
+      graphStage: null,
       recentTypes: [],
       recentCursor: null,
     }]]);
@@ -618,6 +619,10 @@ describe("createWebHandler", () => {
     expect(dashboardCalls.at(-1)).toMatchObject({
       view: "recent", recentCursor: { occurredAt: "2026-10-14T12:00:00.000Z", id: null },
     });
+    await get("/graph?repo=midgame&stage=review");
+    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", repositoryIds: ["midgame"], graphStage: "review" });
+    await get("/graph?stage=review&stage=implementation");
+    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", graphStage: null });
     expect((await get("/team/kaveh")).status).toBe(200);
     expect((await get("/operator/runs/run-1")).status).toBe(200);
     expect((await get("/issues/midgame/1/conversation?column=stage%3Areview&page=2")).status).toBe(200);

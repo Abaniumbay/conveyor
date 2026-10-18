@@ -4565,15 +4565,20 @@ export class ConveyorService {
     const attentionIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) && !stagedIds.has(issue.id),
     );
-    // The graph starts with every current workflow item, then adds only direct relationship
+    const graphFilterRepositories = new Set(pagination.repositoryIds ?? []);
+    const graphCurrentIssues = workflowIssues.filter((issue) =>
+      (graphFilterRepositories.size === 0 || graphFilterRepositories.has(issue.repositoryId)) &&
+      (!pagination.graphStage || issue.projectedStage === pagination.graphStage),
+    );
+    // The graph starts with filtered current workflow items, then adds only direct relationship
     // endpoints. That retains the context needed to understand a current item without turning
     // historical completed work into a second, unbounded archive view.
-    const graphCurrentIds = new Set(workflowIssues.map((issue) => issue.id));
+    const graphCurrentIds = new Set(graphCurrentIssues.map((issue) => issue.id));
     const graphContextIds = new Set<string>();
     const addGraphContext = (issueId: string | null | undefined) => {
       if (issueId && !graphCurrentIds.has(issueId) && listedById.has(issueId)) graphContextIds.add(issueId);
     };
-    for (const issue of workflowIssues) {
+    for (const issue of graphCurrentIssues) {
       addGraphContext(issue.parentId);
       childrenFor(issue.id).forEach(({ issueId }) => addGraphContext(issueId));
       dependenciesFor(issue.id).forEach(addGraphContext);
@@ -4614,7 +4619,7 @@ export class ConveyorService {
       if (!graphIds.has(relationship.from) || !graphIds.has(relationship.to)) return;
       graphRelationships.set(`${relationship.kind}:${relationship.from}:${relationship.to}`, relationship);
     };
-    for (const issue of workflowIssues) {
+    for (const issue of graphCurrentIssues) {
       if (issue.parentId) addGraphRelationship({ kind: "parent-child", from: issue.parentId, to: issue.id, status: null });
       childrenFor(issue.id).forEach(({ issueId }) => {
         addGraphRelationship({ kind: "parent-child", from: issue.id, to: issueId, status: null });
@@ -4734,6 +4739,11 @@ export class ConveyorService {
         repositories: [...filterRepositories],
         q: pagination.q ?? "",
         state: pagination.state ?? null,
+      },
+      graphFilters: {
+        repositories: [...graphFilterRepositories],
+        stage: pagination.graphStage ?? null,
+        stages: stages.map((stage) => ({ id: stage, name: stageNames.get(stage) ?? displayName(stage) })),
       },
       ...(recent ? { recent } : {}),
       graph,

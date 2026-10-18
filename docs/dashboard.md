@@ -41,9 +41,11 @@ The compact filter bar narrows the cards already on the board by repository, tex
 
 ## Graph
 
-**Graph** (`/graph`) is a read-only relationship-first view across configured repositories. It shows every current workflow item, including backlog, roll-up, child, and label-problem items, as a node; a completed or offboarded item appears only when it is a direct parent, child, prerequisite, or dependent of a current item. Unrelated history is not imported. A node gives its repository, issue number, title, state, and stage tag. Stages do not create graph columns or groups.
+**Graph** (`/graph`) is a read-only relationship-first view across configured repositories. It draws a server-rendered SVG for every current workflow item, including backlog, roll-up, child, and label-problem items; a completed or offboarded item appears only when it is a direct parent, child, prerequisite, or dependent of a current item. Unrelated history is not imported. Each box has a repository-colour strip, repository and issue number, a shortened title, state, and optional stage. Its full title remains available to assistive technology.
 
-The directed relationship list says **Parent → child** for family links and “issue waits for prerequisite” for dependencies. Dependencies say whether the prerequisite is satisfied, outstanding, or stopped. Each node repeats its immediate parents, children, prerequisites, and dependents as keyboard-accessible links, and opens the existing item details when selected. Context nodes use a labelled dashed treatment; stopped nodes and stopped prerequisites are labelled as such, so the meaning does not depend on color. The graph refreshes with the dashboard's live updates and remains a single column on phones.
+Solid directed lines show **Parent → child** links; dashed directed lines show prerequisite-to-dependent links and are labelled **Met**, **Waiting**, or **Blocked**. The stable layout separates unrelated families and dependency chains. Selecting a box with a pointer or keyboard opens the existing item details. Context boxes have a labelled dashed treatment, and stopped boxes and prerequisites are labelled, so meaning never depends on colour. The screen-reader-only relationship list states every visible connection and dependency status in text.
+
+Repository and stage controls select current matching items while retaining one directly connected context item where it explains a relationship. Choices remain in the URL and **Clear filters** restores the complete graph. The graph refreshes with the dashboard's live updates. On a phone, the SVG scrolls horizontally inside its own panel; the page itself remains within the viewport.
 
 ![The Graph showing directed family and dependency relationships](screenshots/graph.png)
 

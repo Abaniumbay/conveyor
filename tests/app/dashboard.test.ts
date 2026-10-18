@@ -553,6 +553,23 @@ describe("ConveyorService dashboard", () => {
       expect.objectContaining({ kind: "dependency", from: "finished", to: "unrelated", status: "satisfied" }),
       expect.objectContaining({ kind: "dependency", from: "working", to: "completed-dependent", status: "outstanding" }),
     ]));
+    const filtered = new ConveyorService(config, store, {} as never).dashboard("csrf", {
+      view: "graph", column: null, page: 1, doneLimit: 20, runId: null, issueId: null,
+      repositoryIds: ["repo"], graphStage: "review",
+    });
+    // The selected Review item retains its parent and directly dependent item as context, but
+    // unrelated current work and context that is not directly linked to it do not leak through.
+    expect(filtered.graph.nodes.map((node) => node.id).sort()).toEqual(["parent", "stopped", "unrelated"]);
+    expect(filtered.graph.nodes.find((node) => node.id === "parent")).toMatchObject({ context: true });
+    expect(filtered.graph.nodes.find((node) => node.id === "unrelated")).toMatchObject({ context: true });
+    expect(filtered.graph.relationships).toEqual(expect.arrayContaining([
+      { kind: "parent-child", from: "parent", to: "stopped", status: null },
+      { kind: "dependency", from: "stopped", to: "unrelated", status: "stopped" },
+    ]));
+    expect(filtered.graphFilters).toEqual({
+      repositories: ["repo"], stage: "review",
+      stages: [{ id: "refinement", name: "Refinement" }, { id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
+    });
     store.replaceRelationships("unrelated", null, ["finished"]);
     const refreshed = new ConveyorService(config, store, {} as never).dashboard("csrf");
     expect(refreshed.graph.relationships).not.toContainEqual(expect.objectContaining({ kind: "dependency", from: "stopped", to: "unrelated" }));
