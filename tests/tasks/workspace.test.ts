@@ -24,6 +24,7 @@ type Pass = Extract<TaskResult, { status: "pass" }>;
 function gitFake(state: {
   clean?: boolean; head?: string | null; remote?: string | null; ahead?: number; behind?: number;
   ancestor?: boolean;
+  remoteBranchHead?: string | null;
   pushError?: Error;
   /** Branches origin does not have. */
   missingOnRemote?: string[];
@@ -39,6 +40,7 @@ function gitFake(state: {
       if (state.fetchError) throw state.fetchError;
       return !(state.missingOnRemote ?? []).includes(branch);
     },
+    remoteBranchHead: async (p, branch) => { calls.push(["remoteBranchHead", p, branch]); return state.remoteBranchHead === undefined ? "a".repeat(40) : state.remoteBranchHead; },
     isAncestor: async (p, ancestor, descendant) => {
       calls.push(["isAncestor", p, ancestor, descendant]);
       return state.ancestor ?? true;
@@ -289,23 +291,37 @@ describe("workspace tools", () => {
     await tool("workspace.push", w, { forceWithLease: true, headSha });
     expect(w.git.calls).toEqual([
       ["push", p, "conveyor/7-r1-x", { forceWithLease: false }],
+      ["remoteBranchHead", p, "conveyor/7-r1-x"],
       ["isAncestor", p, headSha, "HEAD"],
       ["push", p, "conveyor/7-r1-x", { forceWithLease: true, expectedRemoteHead: headSha }],
     ]);
   });
-  test("workspace.push refuses an unreconciled or moved observed head with a recovery reason", async () => {
+  test("workspace.push refuses missing, stale, unreconciled, or moved observed heads with recovery guidance", async () => {
     const headSha = "a".repeat(40);
+    const missing = await world({ remoteBranchHead: null });
+    await missing.record();
+    await expect(tool("workspace.push", missing, { forceWithLease: true, headSha }))
+      .rejects.toThrow("The remote branch conveyor/7-r1-x does not exist; push without forceWithLease to create it.");
+    expect(missing.git.calls.map(([name]) => name)).toEqual(["remoteBranchHead"]);
+
+    const currentHead = "b".repeat(40);
+    const stale = await world({ remoteBranchHead: currentHead });
+    await stale.record();
+    await expect(tool("workspace.push", stale, { forceWithLease: true, headSha }))
+      .rejects.toThrow(`The remote branch moved to ${currentHead}; use workspace.fetch, rebase, and retry.`);
+    expect(stale.git.calls.map(([name]) => name)).toEqual(["remoteBranchHead"]);
+
     const unreconciled = await world({ ancestor: false });
     const p = await unreconciled.record();
     await expect(tool("workspace.push", unreconciled, { forceWithLease: true, headSha }))
-      .rejects.toThrow(`The workspace has not reconciled observed change head ${headSha}; read change.get, use workspace.fetch, and rebase before pushing.`);
-    expect(unreconciled.git.calls).toEqual([["isAncestor", p, headSha, "HEAD"]]);
+      .rejects.toThrow(`The workspace has not reconciled observed remote head ${headSha}; use workspace.fetch and rebase before pushing.`);
+    expect(unreconciled.git.calls).toEqual([["remoteBranchHead", p, "conveyor/7-r1-x"], ["isAncestor", p, headSha, "HEAD"]]);
 
     const movedHead = "b".repeat(40);
     const moved = await world({ pushError: new GitPushRejectedError(movedHead) });
     await moved.record();
     await expect(tool("workspace.push", moved, { forceWithLease: true, headSha }))
-      .rejects.toThrow(`The remote branch moved to ${movedHead}; read change.get, use workspace.fetch, and rebase before pushing.`);
+      .rejects.toThrow(`The remote branch moved to ${movedHead}; use workspace.fetch, rebase, and retry.`);
   });
   test("tools fail without a workspace", async () => {
     const w = await world();

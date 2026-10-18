@@ -64,8 +64,10 @@ export async function dispatchTool(
   const headSha = (input as { headSha?: unknown }).headSha;
   if (typeof headSha === "string") {
     const live = await env.liveHeadSha();
-    if (live === null) throw new ToolRequestError(`${name}: the item has no change request to check headSha ${headSha} against`);
-    if (live !== headSha) throw new ToolRequestError(`${name}: headSha ${headSha} is not the current change head ${live}; read change.get and retry`);
+    // Before a change exists, workspace.push validates its lease against origin itself. Every
+    // other SHA-bearing tool remains fenced by the authoritative change head.
+    if (live === null && name !== "workspace.push") throw new ToolRequestError(`${name}: the item has no change request to check headSha ${headSha} against`);
+    if (live !== null && live !== headSha) throw new ToolRequestError(`${name}: headSha ${headSha} is not the current change head ${live}; read change.get and retry`);
   }
 
   const mutating = definition.mutating === true && definition.journal !== false;
