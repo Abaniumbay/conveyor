@@ -1599,10 +1599,19 @@ export const dashboardClient = String.raw`(() => {
 
     if (!event.target.closest('.card-open') && event.target.closest('a, button, input, textarea, select, label, form')) return;
     const opener = event.target.closest('[data-dialog-open]');
-    if (opener) openIssueDialog(opener);
+    if (opener) {
+      if (opener.matches('a[href]')) event.preventDefault();
+      openIssueDialog(opener);
+    }
   });
 
   document.addEventListener('keydown', (event) => {
+    const graphOpener = event.target instanceof Element ? event.target.closest('[data-graph-node][data-dialog-open]') : null;
+    if ((event.key === 'Enter' || event.key === ' ') && graphOpener) {
+      event.preventDefault();
+      openIssueDialog(graphOpener);
+      return;
+    }
     if (event.key === 'Escape') {
       const openDetails = document.querySelector('.dashboard-header details[open]');
       if (openDetails instanceof HTMLDetailsElement) {

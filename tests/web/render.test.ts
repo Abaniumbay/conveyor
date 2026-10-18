@@ -299,7 +299,7 @@ describe("renderDashboard", () => {
       view: "graph",
       graph: {
         nodes: [
-          { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "Parent <safe>", state: "Active", stage: "Implementation", context: false, signal: "run" },
+          { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "Parent <safe> title that remains available in full", state: "Active", stage: "Implementation", context: false, signal: "run" },
           { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "Child", state: "Blocked", stage: "Review", context: false, signal: "stop" },
           { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Finished prerequisite", state: "Done", stage: null, context: true, signal: null },
           { id: "outstanding", repository: "foundation", repositoryColor: 2, number: 8, title: "Outstanding prerequisite", state: "Active", stage: null, context: true, signal: "run" },
@@ -312,15 +312,28 @@ describe("renderDashboard", () => {
           { kind: "dependency", from: "stopped", to: "child", status: "stopped" },
         ],
       },
+      graphFilters: {
+        repositories: ["sample"], stage: "implementation",
+        stages: [{ id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
+      },
     });
 
     expect(html).toContain("<title>Graph · Conveyor</title>");
     expect(html).toContain('<a href="/graph" class="tab tab--active" aria-current="page">Graph</a>');
     expect(html).toContain('<a href="/board" class="tab">Board<span class="tab-count">43</span></a>');
+    expect(html).toContain('<svg class="graph-svg"');
+    expect(html).toContain('data-graph-edge="parent-child:parent:child"');
+    expect(html).toContain('data-graph-edge="dependency:prerequisite:child"');
+    expect(html).toContain('class="graph-canvas"');
+    expect(html).toContain('action="/graph"');
+    expect(html).toContain('<option value="implementation" selected>Implementation</option>');
     expect(html).toContain('data-graph-node="parent"');
-    expect(html).toContain('Parent &lt;safe>');
+    expect(html).toContain('Parent &lt;safe> title that remains available in full');
     expect(html).not.toContain("Parent <safe>");
+    expect(html).toMatch(/class="graph-node-title"[^>]*>[^<]*…<\/text>/);
     expect(html).toContain('href="/issues/sample/41"');
+    expect(html).toContain('data-details-url="/api/issues/parent/details"');
+    expect(html).toContain('aria-haspopup="dialog"');
     expect(html).toContain("Parent #41 → child #42");
     expect(html).toContain("Issue #42 waits for prerequisite #7");
     expect(html).toContain("Status: satisfied prerequisite");

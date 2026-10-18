@@ -263,10 +263,12 @@ export interface DashboardPageSelection {
   doneLimit: number;
   runId: string | null;
   issueId: string | null;
-  /** Board-only client filters, also understood by the server for the Done column and no-JS form. */
+  /** Dashboard repository filters, also understood by the server for no-JS forms. */
   repositoryIds?: readonly string[];
   q?: string;
   state?: string | null;
+  /** Graph stage filter. */
+  graphStage?: string | null;
   /** Recent page event categories; an empty list means its non-roll-up default. */
   recentTypes?: readonly RecentActivityType[];
   recentCursor?: { occurredAt: string; id: string | null } | null;
@@ -299,6 +301,12 @@ export interface GraphRelationshipViewModel {
 export interface GraphViewModel {
   nodes: readonly GraphNodeViewModel[];
   relationships: readonly GraphRelationshipViewModel[];
+}
+
+export interface GraphFiltersViewModel {
+  repositories: readonly string[];
+  stage: string | null;
+  stages: readonly { id: string; name: string }[];
 }
 
 export type RecentActivityType = "done" | "stopped" | "sent-back" | "moved-forward" | "new" | "resumed" | "rollup";
@@ -445,6 +453,7 @@ export interface DashboardViewModel {
   view: DashboardView;
   repositoryId: string | null;
   boardFilters?: { repositories: readonly string[]; q: string; state: string | null };
+  graphFilters?: GraphFiltersViewModel;
   recent?: RecentActivityViewModel;
   /** Reconciled workflow items and their one-hop relationship context. */
   graph: GraphViewModel;

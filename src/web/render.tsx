@@ -866,35 +866,130 @@ function Board({ model }: { model: DashboardViewModel }) {
   );
 }
 
-function graphNodeAnchor(id: string): string {
-  return `graph-node-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+const GRAPH_NODE_WIDTH = 248;
+const GRAPH_NODE_HEIGHT = 116;
+const GRAPH_COLUMN_GAP = 92;
+const GRAPH_ROW_GAP = 34;
+const GRAPH_GROUP_GAP = 76;
+
+interface GraphPosition { x: number; y: number; }
+
+interface GraphLayout {
+  positions: Map<string, GraphPosition>;
+  width: number;
+  height: number;
 }
 
-function GraphNodeLink({ node }: { node: GraphNodeViewModel }) {
-  return <a href={`#${graphNodeAnchor(node.id)}`}>{node.repository} #{node.number}: {node.title}</a>;
+function graphEdgeId(relationship: GraphRelationshipViewModel): string {
+  return `${relationship.kind}:${relationship.from}:${relationship.to}`;
 }
 
-function GraphRelationshipList({
-  label,
-  relationships,
-  nodesById,
-}: {
-  label: string;
-  relationships: GraphRelationshipViewModel[];
-  nodesById: Map<string, GraphNodeViewModel>;
-}) {
-  const related = relationships.flatMap((relationship) => {
-    const node = nodesById.get(relationship.from) ?? nodesById.get(relationship.to);
-    return node ? [{ relationship, node }] : [];
-  });
-  if (related.length === 0) return null;
-  return <div class="graph-node-relations">
-    <dt>{label}</dt>
-    <dd><ul>{related.map(({ relationship, node }) => <li key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
-      <GraphNodeLink node={node} />
-      {relationship.kind === "dependency" && <span> — {relationship.status} prerequisite</span>}
-    </li>)}</ul></dd>
-  </div>;
+function graphTitle(title: string): string {
+  return title.length > 38 ? `${title.slice(0, 37)}…` : title;
+}
+
+/** Produces stable left-to-right layers while putting unrelated graph components on separate rows. */
+function graphLayout(nodes: readonly GraphNodeViewModel[], relationships: readonly GraphRelationshipViewModel[]): GraphLayout {
+  const sortedIds = nodes.map((node) => node.id).sort((left, right) => left.localeCompare(right));
+  const nodeIds = new Set(sortedIds);
+  const neighbours = new Map(sortedIds.map((id) => [id, new Set<string>()]));
+  const predecessors = new Map(sortedIds.map((id) => [id, [] as string[]]));
+  for (const relationship of relationships) {
+    if (!nodeIds.has(relationship.from) || !nodeIds.has(relationship.to)) continue;
+    neighbours.get(relationship.from)?.add(relationship.to);
+    neighbours.get(relationship.to)?.add(relationship.from);
+    predecessors.get(relationship.to)?.push(relationship.from);
+  }
+  const components: string[][] = [];
+  const remaining = new Set(sortedIds);
+  while (remaining.size > 0) {
+    const first = [...remaining].sort((left, right) => left.localeCompare(right))[0];
+    if (!first) break;
+    const component: string[] = [];
+    const pending = [first];
+    remaining.delete(first);
+    while (pending.length > 0) {
+      const id = pending.shift();
+      if (!id) continue;
+      component.push(id);
+      for (const neighbour of neighbours.get(id) ?? []) {
+        if (!remaining.delete(neighbour)) continue;
+        pending.push(neighbour);
+      }
+    }
+    components.push(component.sort((left, right) => left.localeCompare(right)));
+  }
+
+  const positions = new Map<string, GraphPosition>();
+  let offsetY = 24;
+  let widestLayer = 1;
+  for (const component of components) {
+    const componentIds = new Set(component);
+    const depths = new Map<string, number>();
+    const visiting = new Set<string>();
+    const depthOf = (id: string): number => {
+      const known = depths.get(id);
+      if (known !== undefined) return known;
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      const depth = Math.max(0, ...(predecessors.get(id) ?? [])
+        .filter((predecessor) => componentIds.has(predecessor))
+        .map((predecessor) => depthOf(predecessor) + 1));
+      visiting.delete(id);
+      depths.set(id, depth);
+      return depth;
+    };
+    const layers = new Map<number, string[]>();
+    for (const id of component) {
+      const depth = depthOf(id);
+      const layer = layers.get(depth) ?? [];
+      layer.push(id);
+      layers.set(depth, layer);
+    }
+    let rows = 1;
+    for (const [depth, ids] of layers) {
+      const sorted = ids.sort((left, right) => left.localeCompare(right));
+      rows = Math.max(rows, sorted.length);
+      widestLayer = Math.max(widestLayer, depth + 1);
+      sorted.forEach((id, row) => positions.set(id, {
+        x: 24 + depth * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
+        y: offsetY + row * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP),
+      }));
+    }
+    offsetY += rows * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP) + GRAPH_GROUP_GAP;
+  }
+  return {
+    positions,
+    width: 48 + widestLayer * GRAPH_NODE_WIDTH + Math.max(0, widestLayer - 1) * GRAPH_COLUMN_GAP,
+    height: Math.max(164, offsetY - GRAPH_GROUP_GAP + 24),
+  };
+}
+
+function GraphFilters({ model }: { model: DashboardViewModel }) {
+  const filters = model.graphFilters ?? { repositories: [], stage: null, stages: [] };
+  return <form class="graph-filters" method="get" action="/graph">
+    <label>Repository
+      <select name="repo" multiple size={Math.min(Math.max(model.repositories.length, 1), 4)} aria-label="Graph repositories">
+        {model.repositories.map((repository) => <option value={repository.id} selected={filters.repositories.includes(repository.id)} key={repository.id}>{repository.id}</option>)}
+      </select>
+    </label>
+    <label>Stage
+      <select name="stage" aria-label="Graph stage">
+        <option value="" selected={!filters.stage}>All stages</option>
+        {filters.stages.map((stage) => <option value={stage.id} selected={filters.stage === stage.id} key={stage.id}>{stage.name}</option>)}
+      </select>
+    </label>
+    <div class="graph-filter-actions"><button type="submit">Apply filters</button><a href="/graph">Clear</a></div>
+  </form>;
+}
+
+function GraphRelationshipText({ relationship, nodesById }: { relationship: GraphRelationshipViewModel; nodesById: Map<string, GraphNodeViewModel> }) {
+  const from = nodesById.get(relationship.from);
+  const to = nodesById.get(relationship.to);
+  if (!from || !to) return null;
+  return relationship.kind === "parent-child"
+    ? <><strong>Parent #{from.number} → child #{to.number}</strong><span> Family relationship</span></>
+    : <><strong>Issue #{to.number} waits for prerequisite #{from.number}</strong><span> Status: {relationship.status} prerequisite</span></>;
 }
 
 /** A read-only, relationship-first view of the current workflow. */
@@ -902,64 +997,74 @@ function Graph({ model }: { model: DashboardViewModel }) {
   const nodesById = new Map(model.graph.nodes.map((node) => [node.id, node]));
   if (model.graph.nodes.length === 0) return <section class="graph-view" aria-labelledby="graph-heading">
     <header class="graph-header"><h2 id="graph-heading">Workflow graph</h2><p>Relationships between current workflow items appear here.</p></header>
+    <GraphFilters model={model} />
     <p class="graph-empty">There are no current workflow items to show.</p>
   </section>;
+  const layout = graphLayout(model.graph.nodes, model.graph.relationships);
   return <section class="graph-view" aria-labelledby="graph-heading">
     <header class="graph-header">
       <h2 id="graph-heading">Workflow graph</h2>
-      <p>Nodes show current workflow items and directly related context. Stage is a tag, not a graph grouping.</p>
+      <p>Nodes show current workflow items and directly related context. Lines point from parents and prerequisites to the items they affect.</p>
     </header>
-    <section class="graph-relationships" aria-labelledby="graph-relationships-heading">
+    <GraphFilters model={model} />
+    <div class="graph-canvas" tabindex={0} aria-label="Drawn workflow graph">
+      <svg class="graph-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} role="img" aria-labelledby="graph-svg-title graph-svg-description">
+        <title id="graph-svg-title">Workflow graph</title>
+        <desc id="graph-svg-description">A directed graph of current workflow items and their directly related context.</desc>
+        <defs>
+          <marker id="graph-arrow-parent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" /></marker>
+          <marker id="graph-arrow-dependency" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" /></marker>
+        </defs>
+        {model.graph.relationships.flatMap((relationship) => {
+          const from = layout.positions.get(relationship.from);
+          const to = layout.positions.get(relationship.to);
+          if (!from || !to) return [];
+          const startX = from.x + GRAPH_NODE_WIDTH;
+          const startY = from.y + GRAPH_NODE_HEIGHT / 2;
+          const endX = to.x;
+          const endY = to.y + GRAPH_NODE_HEIGHT / 2;
+          const midX = startX + (endX - startX) / 2;
+          const statusClass = relationship.kind === "dependency" && relationship.status ? ` graph-edge--${relationship.status}` : "";
+          return <g class={`graph-edge graph-edge--${relationship.kind}${statusClass}`} data-graph-edge={graphEdgeId(relationship)} key={graphEdgeId(relationship)}>
+            <path d={`M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`} marker-end={`url(#graph-arrow-${relationship.kind === "parent-child" ? "parent" : "dependency"})`} />
+            {relationship.kind === "dependency" && <text x={midX} y={(startY + endY) / 2 - 7} text-anchor="middle">{relationship.status === "satisfied" ? "Met" : relationship.status === "stopped" ? "Blocked" : "Waiting"}</text>}
+          </g>;
+        })}
+        {model.graph.nodes.map((node) => {
+          const position = layout.positions.get(node.id);
+          if (!position) return null;
+          const label = `${node.repository} #${node.number}: ${node.title}${node.stage ? `; stage ${node.stage}` : ""}; state ${node.state}${node.context ? "; context item" : ""}${node.signal === "stop" ? "; stopped" : ""}`;
+          const dialogId = `issue-${node.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${node.number}`;
+          return <a href={issueHref(node.repository, node.number)} class={`graph-node card-open repo-color-${node.repositoryColor}${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id} data-dialog-open={dialogId} data-details-url={`/api/issues/${encodeURIComponent(node.id)}/details`} aria-haspopup="dialog" aria-label={label} tabIndex={0} key={node.id}>
+            <title>{label}</title>
+            <rect x={position.x} y={position.y} width={GRAPH_NODE_WIDTH} height={GRAPH_NODE_HEIGHT} rx="4" />
+            <rect
+              class="graph-node-color"
+              style="fill:var(--repo-color)"
+              x={position.x}
+              y={position.y}
+              width="7"
+              height={GRAPH_NODE_HEIGHT}
+              rx="3"
+            />
+            <text class="graph-node-reference" x={position.x + 16} y={position.y + 23}>{node.repository} #{node.number}</text>
+            <text class="graph-node-title" x={position.x + 16} y={position.y + 47}>{graphTitle(node.title)}</text>
+            <text class="graph-node-detail" x={position.x + 16} y={position.y + 71}>Stage: {node.stage ?? "None"}</text>
+            <text class="graph-node-detail" x={position.x + 16} y={position.y + 91}>State: {node.state}</text>
+            {node.context && <text class="graph-node-badge" x={position.x + GRAPH_NODE_WIDTH - 12} y={position.y + 23} text-anchor="end">Context item</text>}
+            {node.signal === "stop" && <text class="graph-node-stop" x={position.x + GRAPH_NODE_WIDTH - 12} y={position.y + 106} text-anchor="end">Stopped</text>}
+          </a>;
+        })}
+      </svg>
+    </div>
+    <section class="graph-relationships sr-only" aria-labelledby="graph-relationships-heading">
       <h3 id="graph-relationships-heading">Directed relationships</h3>
       <ol>{model.graph.relationships.flatMap((relationship) => {
-        const from = nodesById.get(relationship.from);
-        const to = nodesById.get(relationship.to);
-        if (!from || !to) return [];
-        const description = relationship.kind === "parent-child"
-          ? <><strong>Parent #{from.number} → child #{to.number}</strong><span> Family relationship</span></>
-          : <><strong>Issue #{to.number} waits for prerequisite #{from.number}</strong><span> Status: {relationship.status} prerequisite</span></>;
-        const statusClass = relationship.kind === "dependency" && relationship.status
-          ? ` graph-relationship--${relationship.status}`
-          : "";
-        return <li class={`graph-relationship graph-relationship--${relationship.kind}${statusClass}`} key={`${relationship.kind}-${relationship.from}-${relationship.to}`}>
-          {description}
-        </li>;
+        if (!nodesById.has(relationship.from) || !nodesById.has(relationship.to)) return [];
+        const statusClass = relationship.kind === "dependency" && relationship.status ? ` graph-relationship--${relationship.status}` : "";
+        return <li class={`graph-relationship graph-relationship--${relationship.kind}${statusClass}`} key={graphEdgeId(relationship)}><GraphRelationshipText relationship={relationship} nodesById={nodesById} /></li>;
       })}</ol>
     </section>
-    <ol class="graph-nodes" aria-label="Workflow items">
-      {model.graph.nodes.map((node) => {
-        const parents = model.graph.relationships.filter((relationship) => relationship.kind === "parent-child" && relationship.to === node.id)
-          .map((relationship) => ({ ...relationship, to: relationship.from }));
-        const children = model.graph.relationships.filter((relationship) => relationship.kind === "parent-child" && relationship.from === node.id)
-          .map((relationship) => ({ ...relationship, from: relationship.to }));
-        const prerequisites = model.graph.relationships.filter((relationship) => relationship.kind === "dependency" && relationship.to === node.id)
-          .map((relationship) => ({ ...relationship, to: relationship.from }));
-        const dependents = model.graph.relationships.filter((relationship) => relationship.kind === "dependency" && relationship.from === node.id)
-          .map((relationship) => ({ ...relationship, from: relationship.to }));
-        return <li key={node.id}>
-          <article id={graphNodeAnchor(node.id)} class={`graph-node${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id}>
-            <header>
-              <a class="graph-node-reference" href={issueHref(node.repository, node.number)}>{node.repository} #{node.number}</a>
-              <span class="graph-node-state">State: {node.state}</span>
-            </header>
-            <h3><a href={issueHref(node.repository, node.number)}>{node.title}</a></h3>
-            <p class="graph-node-tags">
-              {node.stage && <span>Stage: {node.stage}</span>}
-              {node.context && <span>Context item</span>}
-              {node.signal === "stop" && <span>Stopped</span>}
-              {node.signal === "wait" && <span>Waiting</span>}
-              {node.signal === "run" && <span>Running</span>}
-            </p>
-            <dl>
-              <GraphRelationshipList label="Parents" relationships={parents} nodesById={nodesById} />
-              <GraphRelationshipList label="Children" relationships={children} nodesById={nodesById} />
-              <GraphRelationshipList label="Prerequisites" relationships={prerequisites} nodesById={nodesById} />
-              <GraphRelationshipList label="Dependents" relationships={dependents} nodesById={nodesById} />
-            </dl>
-          </article>
-        </li>;
-      })}
-    </ol>
   </section>;
 }
 
