@@ -44,6 +44,16 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
   };
 }
 
+function repository(id: string, color: number): DashboardViewModel["repositories"][number] {
+  return {
+    id, address: `owner/${id}`, addressUrl: null, color, health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, pause: null,
+    backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
+    setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled", systemLabels: [] },
+    trust: { visibility: "unknown", checkedAt: null, warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: [] },
+    report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+  };
+}
+
 function stage(id: string, name: string, issues: readonly IssueCardViewModel[]): StageColumnViewModel {
   return { id, name, actors: [], cost: null, totalIssues: issues.length, page: 1, totalPages: 1, issues };
 }
@@ -411,10 +421,17 @@ describe("dashboard live refresh position", () => {
   }, 30_000);
 
   test("keeps the Graph usable at 360 px without horizontal page scrolling", async () => {
+    const repositories = [repository("sample", 1), repository("foundation", 2)];
     const server = startDashboard({
       dashboard: (selection) => ({
         ...dashboard("graph-1", [issue("parent", 41), issue("child", 42), issue("prerequisite", 7)]),
         view: selection.view,
+        repositories,
+        graphFilters: {
+          repositories: selection.repositoryIds ?? [],
+          stage: selection.graphStage ?? null,
+          stages: [{ id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
+        },
         graph: {
           nodes: [
             { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", context: false, signal: "run" },
@@ -435,6 +452,23 @@ describe("dashboard live refresh position", () => {
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(page, server.port);
       await page.goto(`http://127.0.0.1:${server.port}/graph`);
+
+      const sampleRepository = page.getByRole("checkbox", { name: "sample" });
+      const foundationRepository = page.getByRole("checkbox", { name: "foundation" });
+      await sampleRepository.focus();
+      await page.keyboard.press("Space");
+      expect(await sampleRepository.isChecked()).toBe(true);
+      await foundationRepository.focus();
+      await page.keyboard.press("Space");
+      expect(await foundationRepository.isChecked()).toBe(true);
+      await page.getByLabel("Graph stage").selectOption("review");
+      await Promise.all([
+        page.waitForURL("**/graph?repo=sample&repo=foundation&stage=review"),
+        page.getByRole("button", { name: "Apply filters" }).click(),
+      ]);
+      expect(await sampleRepository.isChecked()).toBe(true);
+      expect(await foundationRepository.isChecked()).toBe(true);
+      expect(await page.getByLabel("Graph stage").inputValue()).toBe("review");
 
       expect(await page.locator(".graph-node").count()).toBe(3);
       expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: stopped prerequisite");
@@ -458,6 +492,16 @@ describe("dashboard live refresh position", () => {
       await prerequisiteNode.focus();
       await prerequisiteNode.press("Enter", { noWaitAfter: true });
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'prerequisite');
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('dialog.issue-details[open]'));
+
+      await Promise.all([
+        page.waitForURL("**/graph"),
+        page.getByRole("link", { name: "Clear" }).click(),
+      ]);
+      expect(await sampleRepository.isChecked()).toBe(false);
+      expect(await foundationRepository.isChecked()).toBe(false);
+      expect(await page.getByLabel("Graph stage").inputValue()).toBe("");
     } finally {
       server.stop(true);
     }

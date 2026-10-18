@@ -1020,20 +1020,29 @@ function graphLayout(nodes: readonly GraphNodeViewModel[], relationships: readon
 
 function GraphFilters({ model }: { model: DashboardViewModel }) {
   const filters = model.graphFilters ?? { repositories: [], stage: null, stages: [] };
-  return <form class="graph-filters" method="get" action="/graph">
-    <label>Repository
-      <select name="repo" multiple size={Math.min(Math.max(model.repositories.length, 1), 4)} aria-label="Graph repositories">
-        {model.repositories.map((repository) => <option value={repository.id} selected={filters.repositories.includes(repository.id)} key={repository.id}>{repository.id}</option>)}
-      </select>
-    </label>
-    <label>Stage
-      <select name="stage" aria-label="Graph stage">
-        <option value="" selected={!filters.stage}>All stages</option>
-        {filters.stages.map((stage) => <option value={stage.id} selected={filters.stage === stage.id} key={stage.id}>{stage.name}</option>)}
-      </select>
-    </label>
-    <div class="graph-filter-actions"><button type="submit" class="action-button action-button--primary">Apply filters</button><a class="action-button action-button--secondary" href="/graph">Clear</a></div>
-  </form>;
+  return <section class="board-filters" aria-label="Graph filters">
+    <form method="get" action="/graph">
+      <div class="board-filter-choices">
+        <fieldset><legend>Repositories</legend>
+          {model.repositories.map((repository) => <span class="repository-filter" key={repository.id}>
+            <label>
+              <input type="checkbox" name="repo" value={repository.id} checked={filters.repositories.includes(repository.id)} />
+              <i class={`repository-dot repo-color-${repository.color}`} aria-hidden="true" />
+              {repository.id}
+            </label>
+          </span>)}
+        </fieldset>
+        <fieldset><legend>Stage</legend>
+          <select class="board-filter-select" name="stage" aria-label="Graph stage">
+            <option value="" selected={!filters.stage}>All stages</option>
+            {filters.stages.map((stage) => <option value={stage.id} selected={filters.stage === stage.id} key={stage.id}>{stage.name}</option>)}
+          </select>
+        </fieldset>
+      </div>
+      <button type="submit" class="board-filter-submit action-button action-button--secondary">Apply filters</button>
+      <a class="board-filter-clear action-button action-button--secondary" href="/graph">Clear</a>
+    </form>
+  </section>;
 }
 
 function GraphRelationshipText({ relationship, nodesById }: { relationship: GraphRelationshipViewModel; nodesById: Map<string, GraphNodeViewModel> }) {

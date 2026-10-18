@@ -619,8 +619,8 @@ describe("createWebHandler", () => {
     expect(dashboardCalls.at(-1)).toMatchObject({
       view: "recent", recentCursor: { occurredAt: "2026-10-14T12:00:00.000Z", id: null },
     });
-    await get("/graph?repo=midgame&stage=review");
-    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", repositoryIds: ["midgame"], graphStage: "review" });
+    await get("/graph?repo=midgame&repo=foundation&stage=review");
+    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", repositoryIds: ["midgame", "foundation"], graphStage: "review" });
     await get("/graph?stage=review&stage=implementation");
     expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", graphStage: null });
     expect((await get("/team/kaveh")).status).toBe(200);
