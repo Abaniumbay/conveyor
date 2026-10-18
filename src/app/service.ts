@@ -21,6 +21,7 @@ import { claudeCodeHarness } from "../harness/claude-code";
 import { codexHarness } from "../harness/codex";
 import type { Harness } from "../harness/types";
 import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
+import { followUpsFromBody } from "../source/github/managed-sections";
 import { GitHubRepositoryTrust } from "../source/github/trust";
 import type { SourceIssue } from "../source/types";
 import { DeliveredCheckRuns, GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
@@ -77,7 +78,9 @@ import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
-import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver } from "../engine/stage-executor";
+import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
+
+const FOLLOW_UP_GATE_TASK = "item.followUps";
 
 /** Code host methods that change a change or its branch; each drops what was read about the repository's changes. */
 const CODE_HOST_WRITES = new Set([
@@ -801,7 +804,7 @@ export class ConveyorService {
     try {
       // What Conveyor held before the read, so a `changed` pass re-reads relationships only for issues
       // GitHub reports changed (the listing overlaps the last read and returns some unchanged ones).
-      const before = new Map(this.store.listIssues(id).map((issue) => [issue.sourceNumber, issue.sourceUpdatedAt]));
+      const before = new Map(this.store.listIssues(id).map((issue) => [issue.id, { body: issue.body, sourceUpdatedAt: issue.sourceUpdatedAt }]));
       const listing = this.issueListing(id, kind);
       await reconcileRepository({
         store: this.store,
@@ -826,10 +829,11 @@ export class ConveyorService {
       const since = listing.since;
       const scope = since === undefined
         ? null
-        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.sourceNumber) !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
+        : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.id)?.sourceUpdatedAt !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
       await this.reconcileRelationships(id, repository.address, scope);
       if (scope !== null) await this.backfillCiIndicators(id, scope);
       await this.syncIssueFields(id, repository);
+      this.wakeClearedFollowUps(id, new Map([...before].map(([issueId, previous]) => [issueId, previous.body])));
       this.restorePendingStatus(id);
       if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
       this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
@@ -1559,16 +1563,26 @@ export class ConveyorService {
     const stage = this.boardApprovalCandidate(issue, stageId);
     const task = stage.exitGate.find((candidate) => candidate.id === gateId);
     if (!task?.manual) throw new Error("manual approval is available only for configured manual gates");
-    return { stageId, gateId, configured: true };
+    return { stageId, gateId, configured: true, task: task.task };
   }
 
-  private readonly manualGateStatus: ManualGateResolver = ({ issueId, stageId, gateId, stageEpoch, attempt, configured }) => {
+  private readonly manualGateStatus: ManualGateResolver = ({ issueId, stageId, gateId, stageEpoch, attempt, configured, task }) => {
     const approval = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, attempt);
+    const followUps = task === FOLLOW_UP_GATE_TASK ? followUpsFromBody(this.store.getIssue(issueId)?.body ?? "") : [];
     return {
-      required: configured,
+      required: configured && (task !== FOLLOW_UP_GATE_TASK || followUps.length > 0),
       approved: approval !== null,
-      message: `Waiting for configured manual gate \"${gateId}\".`,
+      message: task === FOLLOW_UP_GATE_TASK ? "Waiting for follow-up acknowledgement." : `Waiting for configured manual gate \"${gateId}\".`,
     };
+  };
+
+  private readonly manualGateWaiting: ManualGateWaitingNotifier = ({ issueId, stageId, gateId, stageEpoch, attempt, task }) => {
+    if (task !== FOLLOW_UP_GATE_TASK) return;
+    this.store.recordPushEvent({
+      id: `follow-up:${issueId}:${stageId}:${gateId}:${stageEpoch}:${attempt}`,
+      category: "questions",
+      target: issueId,
+    });
   };
 
   private readonly boardApprovalStatus: BoardApprovalResolver = ({ issueId, stageId, stageEpoch, attempt }) => {
@@ -1579,6 +1593,29 @@ export class ConveyorService {
       message: "Waiting for board approval",
     };
   };
+
+  /**
+   * A Follow-ups gate has no actor that can notice a human clearing its notes.  Fence its parked
+   * visit after a source read so the normal executor re-evaluates the now-empty gate and advances.
+   */
+  private wakeClearedFollowUps(repositoryId: string, before: ReadonlyMap<string, string>): void {
+    const journal = this.store.executions();
+    for (const issue of this.store.listIssues(repositoryId)) {
+      const previousBody = before.get(issue.id);
+      if (previousBody === undefined || followUpsFromBody(previousBody).length === 0 || followUpsFromBody(issue.body).length !== 0) continue;
+      if (this.hasWaitingFollowUp(issue)) {
+        journal.onStageChange(issue.id);
+      }
+    }
+  }
+
+  private followUpBodies(repositoryId: string): Map<string, string> {
+    return new Map(this.store.listIssues(repositoryId).map((issue) => [issue.id, issue.body]));
+  }
+
+  private hasWaitingFollowUp(issue: StoredIssue): boolean {
+    return this.manualGateViews(issue).some((gate) => gate.kind === "follow-up" && gate.waiting);
+  }
 
   private manualGateViews(issue: StoredIssue) {
     if (!issue.labels.includes(this.config.labels.enrollment) || !issue.projectedStage || issue.projectedState === "done" || issue.projectedState === "completed") return [];
@@ -1606,14 +1643,16 @@ export class ConveyorService {
         const configured = stage.exitGate.flatMap((task) => {
           if (!task.manual) return [];
           const approval = visit ? this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch, visit.attempt) : null;
+          const followUp = task.task === FOLLOW_UP_GATE_TASK;
           return [{
             stageId: stage.id,
             gateId: task.id,
-            kind: "configured" as const,
-            required: true,
+            kind: followUp ? "follow-up" as const : "configured" as const,
+            required: followUp ? followUpsFromBody(issue.body).length > 0 : true,
             waiting: visit?.list === "exit-gate" && visit.taskInstanceId === task.id && visit.state === "pending" && visit.wakeAt === null,
             approvedBy: approval?.accountName ?? null,
             approvedAt: approval?.approvedAt ?? null,
+            ...(followUp ? { notes: followUpsFromBody(issue.body) } : {}),
           }];
         });
         return [board, ...configured];
@@ -1649,8 +1688,8 @@ export class ConveyorService {
   approveManualGate(issueId: string, stageId: string, gateId: string | null, account: { id: string; username: string }): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
-    if (gateId !== null) this.manualGateCandidate(issue, stageId, gateId);
-    else this.boardApprovalCandidate(issue, stageId);
+    const candidate = gateId !== null ? this.manualGateCandidate(issue, stageId, gateId) : null;
+    if (gateId === null) this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
     const cursor = journal.getCursor(issueId);
     const stageEpoch = journal.stageEpoch(issueId);
@@ -1660,7 +1699,7 @@ export class ConveyorService {
     }
     const status = gateId === null
       ? this.boardApprovalStatus({ issueId, stageId, stageEpoch, attempt: cursor.attempt })
-      : this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, configured: true });
+      : this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, configured: true, task: candidate!.task });
     if (!status.required) throw new Error(gateId === null ? "board approval is not required for this stage" : "manual approval is not required for this gate");
     const existing = gateId === null
       ? this.#manualGateApprovals.getBoardApproval(issueId, stageId, stageEpoch, cursor.attempt)
@@ -1677,7 +1716,7 @@ export class ConveyorService {
       this.store.appendConversationMessage({
         issueId, runId: null, stageId, actorType: "user", actorId: account.id,
         actorName: account.username, actorTitle: "Superuser",
-        message: gateId === null ? "Approved board approval." : `Approved configured manual gate \"${gateId}\".`,
+        message: gateId === null ? "Approved board approval." : candidate!.task === FOLLOW_UP_GATE_TASK ? "Acknowledged Follow-ups." : `Approved configured manual gate \"${gateId}\".`,
       });
     }
     // The approval event wakes the item.
@@ -1712,6 +1751,7 @@ export class ConveyorService {
       sourceGuidance: SOURCE_GUIDANCE,
       taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository, signal),
       manualGate: this.manualGateStatus,
+      manualGateWaiting: this.manualGateWaiting,
       boardApproval: this.boardApprovalStatus,
       waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
       signal,
@@ -2001,6 +2041,7 @@ export class ConveyorService {
       return;
     }
     const pipeline = this.config.pipelines[repository.pipeline]!;
+    const followUpBodies = this.followUpBodies(repositoryId);
     const listing = this.issueListing(repositoryId, options.partial === true ? "changed" : "full");
     await reconcileRepository({
       store: this.store,
@@ -2025,6 +2066,7 @@ export class ConveyorService {
     const scope = options.includeIssueNumbers ? new Set(options.includeIssueNumbers) : null;
     await this.reconcileRelationships(repositoryId, repository.address, scope);
     await this.backfillCiIndicators(repositoryId, scope);
+    this.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: options.includeIssueNumbers ? [...options.includeIssueNumbers] : null }, { repositoryId });
@@ -2035,6 +2077,7 @@ export class ConveyorService {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
+    const followUpBodies = this.followUpBodies(repositoryId);
     const issues = await Promise.all([...new Set(numbers)].map((number) => this.github.getIssue(repository.address, number)));
     await reconcileRepository({
       store: this.store,
@@ -2055,6 +2098,7 @@ export class ConveyorService {
     });
     const scope = new Set(numbers);
     await this.reconcileRelationships(repositoryId, repository.address, scope);
+    this.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: [...scope] }, { repositoryId });
@@ -2106,7 +2150,8 @@ export class ConveyorService {
     }
     const doneLabel = this.config.labels.states.done;
     return (doneLabel !== undefined && issue.labels.includes(doneLabel)) ||
-      (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issue.id));
+      (issue.sourceState === "closed" &&
+        (!this.store.hasMergedPullRequest(issue.id) || this.hasWaitingFollowUp(issue)));
   }
 
   /** Reflect the successful, source-authoritative close without waiting for another poll. */
@@ -3023,6 +3068,7 @@ export class ConveyorService {
     if (!change) return false;
     const number = change.issue.number;
     const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
+    const followUpBodies = this.followUpBodies(repositoryId);
     // Deliveries can arrive out of order: an older state of the issue changes nothing.
     if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(change.issue.updatedAt)) return true;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -3039,6 +3085,7 @@ export class ConveyorService {
       issues: [change.issue],
       delivered: new Map([[number, change.actors]]),
     });
+    this.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
     this.store.events().append("repository.reconciled", { issueNumbers: [number] }, { repositoryId });

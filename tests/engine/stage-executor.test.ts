@@ -185,8 +185,9 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
   const registry = buildRegistry(world);
   const notes: string[] = [];
   const statuses: Array<string | null> = [];
-  let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; configured: boolean }) =>
+  let manualGate = (_input: { issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; task: string; configured: boolean }) =>
     ({ required: false, approved: false, message: "" });
+  const manualGateWaits: Array<{ issueId: string; stageId: string; gateId: string; stageEpoch: number; attempt: number; task: string }> = [];
   let boardApproval = (_input: { issueId: string; stageId: string; stageEpoch: number; attempt: number }) =>
     ({ required: false, approved: false, message: "" });
   let onStatus: (message: string | null) => void | Promise<void> = () => {};
@@ -196,6 +197,7 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
       notify: (m) => { notes.push(m); },
       setStatus: async (m) => { statuses.push(m); await onStatus(m); },
       manualGate: (input) => manualGate(input),
+      manualGateWaiting: (input) => { manualGateWaits.push(input); },
       boardApproval: (input) => boardApproval(input),
       ...(options.fallbackMs ? { fallbackMs: options.fallbackMs } : {}),
       settings: { maxReturns: options.maxReturns ?? 5 },
@@ -203,7 +205,7 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
   const run = (plan: CompiledPipeline, stageId: string, exec = executorFor()): Promise<StageOutcome> =>
     exec.execute({ issueId: "issue-1", pipeline: plan, stageId, baseContext: baseContext(), deps: { tag: "deps" } });
   return {
-    store, journal, world, registry, notes, statuses, executorFor, run,
+    store, journal, world, registry, notes, statuses, manualGateWaits, executorFor, run,
     setManualGate: (next: typeof manualGate) => { manualGate = next; },
     setBoardApproval: (next: typeof boardApproval) => { boardApproval = next; },
     setStatusHook: (next: typeof onStatus) => { onStatus = next; },
@@ -261,6 +263,21 @@ describe("happy path", () => {
     expect(h.journal.wakeNow("issue-1")).toBe(true);
     expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
     expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
+  });
+
+  test("notifies once after parking a configured manual gate", async () => {
+    const h = await harness();
+    h.activate();
+    h.setManualGate(({ configured }) => ({ required: configured, approved: false, message: "Waiting for acknowledgement" }));
+    const plan = simple(h, [ct(h.registry, "follow-ups", "test.check", { manual: true })]);
+
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", reason: "pending" });
+    expect(h.manualGateWaits).toEqual([expect.objectContaining({
+      issueId: "issue-1", stageId: "implementation", gateId: "follow-ups", task: "test.check",
+    })]);
+
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", reason: "pending" });
+    expect(h.manualGateWaits).toHaveLength(1);
   });
 
   test("waits for the final board approval after configured manual gates pass", async () => {

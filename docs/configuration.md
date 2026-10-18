@@ -328,6 +328,24 @@ before the service can start. `config compare` prints two configurations' compil
 side, marking any manual exit gate and reporting a manual approval setting change in its summary;
 it exits 1 when the plans differ, including when only that setting differs.
 
+## Follow-up acknowledgement
+
+Follow-ups are optional, human-owned reminders for work Conveyor cannot perform after delivery. To
+use them, add an otherwise empty native stage at the point where acknowledgement should happen
+(normally after cleanup). Its `item.followUps` exit gate is automatically required only when the
+issue body's managed Follow-ups section contains notes:
+
+```yaml
+- id: follow-up
+  actions: []
+  exit-gate:
+    - { id: acknowledge-follow-ups, task: item.followUps, manual: true }
+```
+
+An empty section advances immediately and sends no notification. Notes park the item as waiting
+until a superuser selects **Done** on the board; the stage runs no agent. This is an opt-in native
+stage: adding it to a repository pipeline does not alter the packaged built-in pipeline.
+
 ## Reference
 
 The canonical shape names the three provider roles, the harnesses, and gives every stage `actions` and an `exit-gate`. This is the shape of the packaged defaults in [`examples/config`](../examples/config) (see [tasks.md](tasks.md) for every task). Written as one `conveyor.yaml`:

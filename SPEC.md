@@ -146,6 +146,25 @@ A task entry has `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` default
 
 A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`). Naming a stage, list or instance that does not exist is an error. A repository may declare `agentEgress` (section 19; optional, and without it agents get the sanitized environment only); these are security inputs, not task expressions. A repository's `ci` is `{ provider, mode: required | advisory | disabled, ignoreChecks }` (section 8, CI modes).
 
+### Follow-up acknowledgement stages
+
+`item.followUps` lets a native pipeline opt into a final, no-agent acknowledgement stage without
+changing the packaged built-in pipeline. Configure an empty `actions` list and a manual exit-gate
+entry, normally after cleanup:
+
+```yaml
+- id: follow-up
+  actions: []
+  exit-gate:
+    - { id: acknowledge-follow-ups, task: item.followUps, manual: true }
+```
+
+The task reads the issue body's managed Follow-ups section. With no notes it passes immediately.
+With one or more notes it creates a task-specific automatic manual gate, keeps the item waiting,
+and sends the existing questions-category notification once. A superuser's board acknowledgement
+is durable for that stage visit; clearing notes wakes a waiting visit, while editing notes after
+acknowledgement does not reopen it.
+
 Settings added by task chains: `maxReturns` (default 5, the cross-stage `return` budget), `taskDefaults.wait`, and `history.contextSummaryBytes` (default 65536, the bound on the stored item context).
 
 ### Packaged defaults (and the deprecated import)
@@ -758,6 +777,11 @@ Refinement must produce:
 - Dependencies and sibling order.
 - A complete proposed child breakdown, or an explicit no-split decision, when the configured pipeline uses work breakdown.
 - A concise rationale visible in the issue.
+
+When post-release work is outside Conveyor's authority (for example, configuration changes,
+manual migrations, announcements, or cleanups), refinement and implementation append it as a
+separate note in the managed Follow-ups section. The note says when it applies; it is a reminder,
+not a command for an agent to run.
 
 Acceptance criteria live in a managed issue-body section while all content outside that section remains untouched:
 

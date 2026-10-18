@@ -23,7 +23,7 @@ const run = (name: string, state: CiRun["state"], over: Partial<CiRun> = {}): Ci
   id: `id-${name}`, name, state, url: `https://ci/${name}`, canRerun: false, hasLog: false, startedAt: "2026-01-01T00:00:00Z", completedAt: null, ...over,
 });
 
-async function setup(ci = "", manual = false, reviewSettlement = false, laterNativeStage = false, legacyStage = false) {
+async function setup(ci = "", manual = false, reviewSettlement = false, laterNativeStage = false, legacyStage = false, followUps = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-ci-indicator-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -51,7 +51,7 @@ pipelines:
         concurrency: 1
         actions: ${reviewSettlement ? "[{ id: ciSettled, task: ci.settled, with: { settleSeconds: 120 } }]" : "[]"}
         exit-gate:
-          - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 }${manual ? ", manual: true" : ""} }
+${followUps ? "          - { id: followUps, task: item.followUps, manual: true }" : `          - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 }${manual ? ", manual: true" : ""} }`}
 ${laterNativeStage ? `      - id: review
         concurrency: 1
         actions: []
@@ -73,7 +73,10 @@ repositories:
   store.activateEnrollment("issue");
   store.upsertPullRequest({ issueId: "issue", id: "pr-5", number: 5, url: "https://x/pull/5", state: "open" });
 
-  const state = { head: "head1", runsHead: null as string | null, runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false, issueListings: 0, headReads: 0 };
+  const state = {
+    head: "head1", runsHead: null as string | null, runs: [run("build", "running")] as CiRun[], listed: [] as string[], fail: false,
+    issueListings: 0, headReads: 0, sourceBody: "", sourceUpdatedAt: "2026-01-01T00:00:00Z",
+  };
   const provider = {
     async list(_change: unknown, commit: string) {
       state.listed.push(commit);
@@ -85,7 +88,7 @@ repositories:
   const github = {
     async listIssues() {
       state.issueListings += 1;
-      return [{ id: "issue", number: 1, url: "u", title: "F", body: "", state: "open", labels: ["conveyor"], updatedAt: "2026-01-01T00:00:00Z" }];
+      return [{ id: "issue", number: 1, url: "u", title: "F", body: state.sourceBody, state: "open", labels: ["conveyor"], updatedAt: state.sourceUpdatedAt }];
     },
     async getIssueProvenance() {
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
@@ -106,6 +109,7 @@ repositories:
     backfillCiIndicators(id: string): Promise<void>;
     updateStatusComment(id: string): Promise<void>;
     wakeupReached(issueId: string): boolean;
+    execute(issue: ReturnType<ConveyorStore["getIssue"]> extends infer T ? Exclude<T, null> : never, signal: AbortSignal): Promise<boolean>;
   };
   internals.ciProvider = () => provider;
   internals.codeHostFor = () => ({ async getChange() { state.headReads += 1; return { headSha: state.head }; } }) as unknown as CodeHost;
@@ -211,6 +215,90 @@ test("a configured manual gate records a fresh superuser approval and wakes only
   const receipts = w.store.sqlite().query("SELECT stage_epoch, attempt FROM manual_gate_approvals WHERE issue_id = 'issue' ORDER BY stage_epoch, attempt").all() as Array<{ stage_epoch: number; attempt: number }>;
   expect(receipts).toEqual([{ stage_epoch: firstEpoch, attempt: 1 }, { stage_epoch: firstEpoch, attempt: 2 }, { stage_epoch: nextEpoch, attempt: 2 }]);
 
+  await w.service.close();
+});
+
+test("a Follow-ups gate waits durably, notifies once, and records its acknowledgement", async () => {
+  const w = await setup("", false, false, false, false, true);
+  const subscriber = w.store.createDashboardUser("subscriber", "hash");
+  w.store.putPushSubscription(subscriber.id, "https://push.example/follow-ups", { p256dh: "key", auth: "secret" });
+  w.store.setPushPreferences(subscriber.id, { questions: true, stopped: false, done: false });
+  const stored = w.store.getIssue("issue")!;
+  w.store.upsertIssue({
+    ...stored,
+    body: "<!-- conveyor:follow-ups:start -->\nAdd <em>production</em> configuration.\n\nAnnounce the release.\n<!-- conveyor:follow-ups:end -->",
+  });
+
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+  const dashboard = () => w.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+  expect(w.store.executions().getCursor("issue")).toMatchObject({ taskInstanceId: "followUps", state: "pending", wakeAt: null });
+  expect(dashboard().selectedIssue?.manualGates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "follow-up", required: true, waiting: true, notes: ["Add <em>production</em> configuration.", "Announce the release."] }),
+  ]));
+  expect(w.store.pendingPushEvents()).toEqual([expect.objectContaining({ category: "questions", target: "issue" })]);
+
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+  expect(w.store.pendingPushEvents()).toHaveLength(1);
+
+  const reopened = await w.reopen();
+  expect(reopened.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.manualGates)
+    .toEqual(expect.arrayContaining([expect.objectContaining({ kind: "follow-up", waiting: true })]));
+  await reopened.service.close();
+
+  expect(() => w.service.approveManualGate("issue", "implementation", "wrong-gate", { id: "admin-1", username: "admin" })).toThrow("configured manual gates");
+  expect(w.store.sqlite().query("SELECT COUNT(*) AS count FROM manual_gate_approvals WHERE issue_id = 'issue' AND gate_id = 'followUps'").get()).toEqual({ count: 0 });
+  w.service.approveManualGate("issue", "implementation", "followUps", { id: "admin-1", username: "admin" });
+  await w.service.eventsSettled();
+  expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({
+    actorType: "user", actorId: "admin-1", message: "Acknowledged Follow-ups.",
+  });
+  expect(w.store.executions().getCursor("issue")?.wakeAt).toEqual(expect.any(String));
+  expect(() => w.service.approveManualGate("issue", "implementation", "followUps", { id: "admin-2", username: "other" })).not.toThrow();
+
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+  expect(w.store.executions().getCursor("issue")).toBeNull();
+  expect(dashboard().selectedIssue?.manualGates?.find((gate) => gate.kind === "follow-up")?.waiting).toBe(false);
+  expect(() => w.service.approveManualGate("issue", "implementation", "followUps", { id: "admin-2", username: "other" })).toThrow("not waiting");
+  expect(w.store.sqlite().query("SELECT COUNT(*) AS count FROM manual_gate_approvals WHERE issue_id = 'issue' AND gate_id = 'followUps'").get()).toEqual({ count: 1 });
+
+  // A later human edit can update the reminder text, but cannot resurrect this completed visit.
+  w.state.sourceBody = "<!-- conveyor:follow-ups:start -->\nA later reminder.\n<!-- conveyor:follow-ups:end -->";
+  w.state.sourceUpdatedAt = "2026-01-02T00:00:00Z";
+  await w.service.reconcileAll();
+  expect(w.store.executions().getCursor("issue")).toBeNull();
+  expect(dashboard().selectedIssue?.manualGates?.find((gate) => gate.kind === "follow-up")?.waiting).not.toBe(true);
+  expect(w.store.sqlite().query("SELECT COUNT(*) AS count FROM manual_gate_approvals WHERE issue_id = 'issue' AND gate_id = 'followUps'").get()).toEqual({ count: 1 });
+
+  await w.service.close();
+});
+
+test("an empty Follow-ups stage advances without a manual gate or notification", async () => {
+  const w = await setup("", false, false, false, false, true);
+
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+
+  expect(w.store.executions().getCursor("issue")).toBeNull();
+  expect(w.store.pendingPushEvents()).toEqual([]);
+  expect(w.card()?.manualGates?.find((gate) => gate.kind === "follow-up")?.waiting).not.toBe(true);
+  await w.service.close();
+});
+
+test("clearing Follow-ups through source sync wakes and completes the parked stage", async () => {
+  const w = await setup("", false, false, false, false, true);
+  const stored = w.store.getIssue("issue")!;
+  w.store.upsertIssue({
+    ...stored,
+    body: "<!-- conveyor:follow-ups:start -->\nRemove this production setting after delivery.\n<!-- conveyor:follow-ups:end -->",
+  });
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+  expect(w.store.executions().getCursor("issue")).toMatchObject({ state: "pending", wakeAt: null });
+
+  w.state.sourceUpdatedAt = "2026-01-02T00:00:00Z";
+  await w.service.reconcileAll();
+  expect(w.store.executions().getCursor("issue")).toBeNull();
+
+  await w.internals.execute(w.store.getIssue("issue")!, new AbortController().signal);
+  expect(w.card()?.manualGates?.find((gate) => gate.kind === "follow-up")?.waiting).not.toBe(true);
   await w.service.close();
 });
 

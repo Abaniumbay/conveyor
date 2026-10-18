@@ -258,9 +258,10 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             <h3>Manual gate approvals</h3>
             <ul class="criteria-list">{issue.manualGates.map((gate) => (
               <li key={`${gate.stageId}:${gate.kind}:${gate.gateId ?? "board"}`}>
-                <strong>{gate.kind === "board" ? gate.stageId : `${gate.stageId} · ${gate.gateId}`}</strong>{" "}
-                <span>{gate.kind === "board" ? (gate.required ? "Board approval required" : "No board approval required") : "Configured manual requirement"}</span>
-                {gate.waiting && <p>{gate.kind === "board" ? "Waiting for board approval" : `Waiting for configured manual gate \"${gate.gateId}\".`}</p>}
+                <strong>{gate.kind === "board" ? gate.stageId : gate.kind === "follow-up" ? `${gate.stageId} · Follow-ups` : `${gate.stageId} · ${gate.gateId}`}</strong>{" "}
+                <span>{gate.kind === "board" ? (gate.required ? "Board approval required" : "No board approval required") : gate.kind === "follow-up" ? "Follow-up acknowledgement required" : "Configured manual requirement"}</span>
+                {gate.waiting && <p>{gate.kind === "board" ? "Waiting for board approval" : gate.kind === "follow-up" ? "Waiting for follow-up acknowledgement." : `Waiting for configured manual gate \"${gate.gateId}\".`}</p>}
+                {gate.kind === "follow-up" && gate.notes?.map((note) => <p key={note}>{note}</p>)}
                 {gate.approvedBy && <p>Approved by {gate.approvedBy}{gate.approvedAt ? ` at ${new Date(gate.approvedAt).toLocaleString()}` : ""}.</p>}
                 {canManage && <div class="manual-gate-actions">
                   {gate.kind === "board" && <form method="post" action="/manual-gates/requirement" data-manual-gate-form>
@@ -275,7 +276,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
                     <input type="hidden" name="issueId" value={issue.id} />
                     <input type="hidden" name="stageId" value={gate.stageId} />
                     {gate.gateId !== null && <input type="hidden" name="gateId" value={gate.gateId} />}
-                    <button type="submit" class="manual-gate-approve">Approve</button>
+                    <button type="submit" class="manual-gate-approve">{gate.kind === "follow-up" ? "Done" : "Approve"}</button>
                   </form>}
                   <p class="manual-gate-status" role="status" data-manual-gate-status />
                 </div>}
@@ -965,7 +966,7 @@ function Graph({ model }: { model: DashboardViewModel }) {
 
 function NeedsYou({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
-  const { stopped, total } = needsYouItems(model);
+  const { stopped, followUps, total } = needsYouItems(model);
   return (
     <section class="needs-you" aria-labelledby="needs-you-heading">
       <header><h2 id="needs-you-heading">Needs you <span>({total})</span></h2></header>
@@ -978,6 +979,22 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <p>{issue.reason ?? issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
             </div>
             <a class="needs-you-action" href={issueHref(issue.repository, issue.number)}>Open</a>
+          </li>
+        ))}
+        {followUps.map(({ issue, gate }) => (
+          <li class={`needs-you-item needs-you-item--follow-up repo-color-${issue.repositoryColor}`} key={issue.id}>
+            <span class="needs-you-follow-up" aria-hidden="true">✓</span>
+            <div>
+              <h3><RepositoryBadge repository={issue.repository} /> · #{issue.number} {issue.title}</h3>
+              {gate.notes?.map((note) => <p key={note}>{note}</p>)}
+            </div>
+            {canManage ? <form method="post" action="/manual-gates/approve" data-manual-gate-form>
+              <input type="hidden" name="csrf" value={model.csrfToken} />
+              <input type="hidden" name="issueId" value={issue.id} />
+              <input type="hidden" name="stageId" value={gate.stageId} />
+              {gate.gateId !== null && <input type="hidden" name="gateId" value={gate.gateId} />}
+              <button type="submit" class="manual-gate-approve">Done</button>
+            </form> : <a class="needs-you-action" href={issueHref(issue.repository, issue.number)}>Open</a>}
           </li>
         ))}
         {model.questions.map((question, questionIndex) => (
@@ -1013,8 +1030,13 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
 
 function needsYouItems(model: DashboardViewModel) {
   const questionIssueIds = new Set(model.questions.map((question) => question.issueId));
-  const stopped = model.needsYou.filter((issue) => !questionIssueIds.has(issue.id));
-  return { stopped, total: model.questions.length + stopped.length };
+  const followUps = model.needsYou.flatMap((issue) => {
+    const gate = issue.manualGates?.find((candidate) => candidate.kind === "follow-up" && candidate.waiting);
+    return gate ? [{ issue, gate }] : [];
+  });
+  const followUpIssueIds = new Set(followUps.map(({ issue }) => issue.id));
+  const stopped = model.needsYou.filter((issue) => !questionIssueIds.has(issue.id) && !followUpIssueIds.has(issue.id));
+  return { stopped, followUps, total: model.questions.length + followUps.length + stopped.length };
 }
 
 function Navigation({ model }: { model: DashboardViewModel }) {

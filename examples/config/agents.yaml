@@ -23,7 +23,7 @@ darya:
   tasks: [item.get, item.guidance, item.listOpen, workspace.get, change.get, conversation.get,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.askQuestion, item.comment, item.setCriteria, item.setTitle,
-          item.setSystemLabels, item.setType, item.setFields, item.setRefinement, item.setParent,
+          item.setSystemLabels, item.setType, item.setFields, item.setRefinement, item.addFollowUp, item.setParent,
           item.setDependencies, breakdown.setPlan]
 parisa:
   name: Parisa
@@ -74,6 +74,7 @@ kaveh:
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
           todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata, change.recordCriterionTests,
+          item.addFollowUp,
           change.listFindings, change.comment, change.resolveFinding]
 jamshid:                                 # implements when Kaveh cannot run; Claude Code (Haiku)
   name: Jamshid
@@ -108,6 +109,7 @@ jamshid:                                 # implements when Kaveh cannot run; Cla
           agent.reportProgress, agent.reportRationale, agent.reportBlocker, agent.reportResult,
           agent.reportMilestone, agent.recordArtifact, agent.askQuestion, item.comment,
           todo.get, todo.set, todo.update, workspace.fetch, workspace.push, change.setMetadata, change.recordCriterionTests,
+          item.addFollowUp,
           change.listFindings, change.comment, change.resolveFinding]
 shaghayegh:                              # reviews first; Claude Code (read-only)
   name: Shaghayegh

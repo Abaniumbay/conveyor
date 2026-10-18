@@ -16,7 +16,7 @@ afterEach(async () => {
 
 const MESSAGE = "Waiting for CI at abc1234: Tests.";
 
-async function setup() {
+async function setup(followUps = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-wakeups-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -44,8 +44,11 @@ pipelines:
     failureStatuses: [blocked]
     stages:
       - id: implementation
-        run: { agent: worker }
-        concurrency: 1
+${followUps ? `        concurrency: 1
+        actions: []
+        exit-gate:
+          - { id: acknowledge, task: item.followUps, manual: true }` : `        run: { agent: worker }
+        concurrency: 1`}
 repositories:
   repo:
     source: github
@@ -138,6 +141,39 @@ describe("persisted wake-ups", () => {
     schedule(second.service);
     expect(second.executed).toEqual(["issue"]);
     await second.service.close();
+  });
+
+  test("a merged item waiting for Follow-ups satisfies its dependent and parent", async () => {
+    const { config, first } = await setup(true);
+    first.store.upsertIssue({
+      id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Delivered feature",
+      body: "<!-- conveyor:follow-ups:start -->\nSet the production configuration.\n<!-- conveyor:follow-ups:end -->",
+      sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    first.store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
+    first.store.setStageState({ issueId: "blocker", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    first.store.activateEnrollment("blocker");
+    first.store.upsertPullRequest({ issueId: "blocker", id: "pr-2", number: 2, url: "https://example.test/pr/2", state: "merged", mergedAt: "2026-01-02T00:01:00Z" });
+    const journal = first.store.executions();
+    const epoch = journal.stageEpoch("blocker");
+    journal.saveCursor({
+      issueId: "blocker", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+      taskInstanceId: "acknowledge", state: "pending", feedback: null, pendingSince: "2026-01-02T00:02:00Z", wakeAt: null, deadlineAt: null,
+    }, epoch);
+    first.store.upsertIssue({
+      id: "parent", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Parent", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.setIssueProjection("parent", { stage: "implementation", state: "active", warning: null });
+    first.store.activateEnrollment("issue");
+    first.store.replaceRelationships("blocker", { parentId: "parent", siblingOrder: 1 }, []);
+    first.store.replaceRelationships("issue", null, ["blocker"]);
+
+    schedule(first.service);
+    expect(first.executed).toContain("issue");
+    const dashboard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "parent" });
+    expect(dashboard.selectedIssue?.children).toEqual([expect.objectContaining({ id: "blocker", satisfied: true })]);
+    await first.service.close();
   });
 
   test("a parked item keeps its wake-up across a restart and is scheduled when due", async () => {
