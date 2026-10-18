@@ -1,3 +1,4 @@
+import { InfrastructureError } from "../../tasks/contract";
 import type {
   BranchPushResult,
   ChangeDelivery,
@@ -224,17 +225,22 @@ export class GitHubCodeHost implements CodeHost {
     method: "squash";
     expectedHeadSha?: string;
   }): Promise<MergeChangeResult> {
+    let refused: MergeChangeResult;
     try {
       const result = await this.github.squashMerge(input.address, reference(input.address, input.id), input.expectedHeadSha);
       if (result.merged) return result.sha ? { merged: true, sha: result.sha } : { merged: true };
-      return refusalResult(result.message ?? "") ?? { merged: false, refusal: "blocked", ...(result.message ? { reason: result.message } : {}) };
+      refused = refusalResult(result.message ?? "") ?? { merged: false, refusal: "blocked", ...(result.message ? { reason: result.message } : {}) };
     } catch (error) {
-      if (error instanceof GitHubTransportError) {
-        const result = refusalResult(error.stderr);
-        if (result) return result;
-      }
-      throw error;
+      const result = error instanceof GitHubTransportError ? refusalResult(error.stderr) : null;
+      if (!result) throw error;
+      refused = result;
     }
+    // Conveyor merges without waiting for GitHub to compute mergeability. A refusal as "not
+    // mergeable" while it is still computing is no conflict: the merge is tried again later.
+    if (!refused.merged && refused.refusal === "conflict" && (await this.getChange(input)).mergeable === null) {
+      throw new InfrastructureError("GitHub has not computed whether the change is mergeable yet; the merge is tried again.");
+    }
+    return refused;
   }
 
   async setChangeChecklist(input: { address: string; id: string; markdown: string }): Promise<void> {

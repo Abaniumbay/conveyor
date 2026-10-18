@@ -136,6 +136,21 @@ const settingsSchema = z
         sinks,
         fallbackMs: { default: fallback.default, ci: fallback.ci, change: fallback.change, dependencies: fallback.dependencies },
       })),
+    /** How long Conveyor's copy of GitHub data is used before it is read again, by kind of data. */
+    githubCache: z
+      .object({
+        issue: durationSchema.prefault("1h"),
+        change: durationSchema.prefault("1h"),
+        permission: durationSchema.prefault("1h"),
+        /** A commit's check runs while one still runs. */
+        runningChecks: durationSchema.prefault("15m"),
+        /** A commit whose check runs all finished ("unlimited": a re-run arrives by delivery). */
+        finishedChecks: waitTimeoutSchema.prefault("unlimited"),
+        other: durationSchema.prefault("1h"),
+      })
+      .strict()
+      .prefault({})
+      .transform((lifetimes) => ({ ...lifetimes, finishedChecks: lifetimes.finishedChecks ?? Number.POSITIVE_INFINITY })),
     /** Service logs: stdout/stderr, and <logs>/conveyor.log rotated by size. */
     logging: z
       .object({

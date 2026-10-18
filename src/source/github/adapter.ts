@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
+import type { GitHubCacheLifetimes, GitHubMirrorStorage } from "./read-cache";
 import type { PullRequestReference, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../types";
 import type { IssueFieldDataType, IssueFieldDefinition, ResolvedFieldValue } from "./issue-metadata";
 import {
@@ -276,6 +277,7 @@ const WEBHOOK_EVENTS = [
   "check_run",
   "sub_issues",
   "issue_dependencies",
+  "member",
 ];
 
 export interface GitHubReviewThread {
@@ -333,11 +335,36 @@ function labelName(label: GitHubLabel | string): string {
   return typeof label === "string" ? label : label.name;
 }
 
+/** A transport that keeps cached reads, and can be told what a delivery changed. */
+interface CachingTransport extends GitHubTransport {
+  applyDelivery(eventType: string, payload: unknown): void;
+  forgetRepository(address: string): void;
+  useStorage(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void;
+}
+
+const caching = (transport: GitHubTransport): transport is CachingTransport =>
+  "applyDelivery" in transport && "forgetRepository" in transport;
+
 export class GitHubAdapter {
   constructor(
     private readonly transport: GitHubTransport,
     private readonly labelPrefix: string,
   ) {}
+
+  /** Tells the read cache, when there is one, what a verified webhook delivery changed. */
+  applyDelivery(eventType: string, payload: unknown): void {
+    if (caching(this.transport)) this.transport.applyDelivery(eventType, payload);
+  }
+
+  /** Keeps the read cache, when there is one, in `storage` (the database), so it outlives a restart. */
+  useMirror(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void {
+    if (caching(this.transport)) this.transport.useStorage(storage, lifetimes);
+  }
+
+  /** Drops a repository's cached reads, when there is a cache, so its next reads go to GitHub. */
+  forgetRepository(address: string): void {
+    if (caching(this.transport)) this.transport.forgetRepository(address);
+  }
 
   async listConveyorIssues(address: string): Promise<SourceIssue[]> {
     return (await this.listIssues(address)).filter((issue) =>

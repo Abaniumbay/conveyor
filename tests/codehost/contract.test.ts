@@ -82,7 +82,8 @@ describe("CodeHost contract: GitHub", () => {
       ["This branch is out of date with the base branch.", "outdated"],
       ["Pull request is not mergeable: required status check is expected.", "blocked"],
     ] as const) {
-      const host = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), { merged: false, message }]), "conveyor"));
+      // A conflict is confirmed by one read of the change, which reports it as not mergeable.
+      const host = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), { merged: false, message }, ...(refusal === "conflict" ? [{ ...pull(8), mergeable_state: "dirty" }] : [])]), "conveyor"));
       await expect(host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
         .resolves.toMatchObject({ merged: false, refusal, reason: message });
     }
@@ -95,12 +96,17 @@ describe("CodeHost contract: GitHub", () => {
       ["gh: Bad credentials (HTTP 401)", "blocked"],
     ] as const) {
       const host = new GitHubCodeHost(new GitHubAdapter(
-        new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, stderr)]),
+        new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, stderr), ...(refusal === "conflict" ? [{ ...pull(8), mergeable_state: "dirty" }] : [])]),
         "conveyor",
       ));
       await expect(host.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
         .resolves.toMatchObject({ merged: false, refusal, reason: stderr });
     }
+
+    // Merged without waiting for mergeability: "not mergeable" while GitHub is still computing it is retried, not a conflict.
+    const computing = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "gh: Pull Request is not mergeable (HTTP 405)"), { ...pull(8), mergeable_state: "unknown" }]), "conveyor"));
+    await expect(computing.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))
+      .rejects.toMatchObject({ name: "InfrastructureError" });
 
     const unavailable = new GitHubCodeHost(new GitHubAdapter(new FakeTransport([pull(8), new GitHubTransportError("gh failed", 1, "HTTP 502")]), "conveyor"));
     await expect(unavailable.mergeChange({ address: "owner/repo", id: "github:owner/repo#pr-8", method: "squash" }))

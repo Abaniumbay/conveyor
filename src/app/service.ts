@@ -25,7 +25,7 @@ import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSigna
 import { followUpsFromBody } from "../source/github/managed-sections";
 import { GitHubRepositoryTrust } from "../source/github/trust";
 import type { SourceIssue } from "../source/types";
-import { DeliveredCheckRuns, GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
+import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
@@ -100,24 +100,6 @@ const GITHUB_WRITES = new Set([
   "createChildIssue", "ensureLabels", "ensureWebhook", "pingHook", "redeliverHookDelivery",
 ]);
 
-/** Drops the last read state of a repository's changes. */
-function forgetChanges(cache: Map<string, unknown>, address: string): void {
-  const prefix = `${address.toLowerCase()}#`;
-  for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key);
-}
-
-/** The part of a `check_run` delivery the CI gate uses. */
-const checkRunSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  head_sha: z.string(),
-  status: z.string(),
-  conclusion: z.string().nullable().optional(),
-  details_url: z.string().nullable().optional(),
-  started_at: z.string().nullable().optional(),
-  completed_at: z.string().nullable().optional(),
-  app: z.object({ slug: z.string() }).loose().nullable().optional(),
-}).loose();
 
 interface ActiveRun {
   repositoryId: string;
@@ -500,12 +482,6 @@ export class ConveyorService {
   /** When each repository last received a delivery, and when Conveyor last pinged its webhook. */
   readonly #webhookDeliveredAt = new Map<string, number>();
   readonly #webhookPingedAt = new Map<string, number>();
-  /** Check runs reported by deliveries (and remembered from reads), per commit. */
-  readonly #deliveredCheckRuns = new DeliveredCheckRuns();
-  /** Items whose current run was woken by an event, not by a deadline or other stage work. */
-  readonly #eventWoken = new Set<string>();
-  /** A change's last read state, per repository address and change id; any delivery about a change drops a repository's. */
-  readonly #changeDeliveries = new Map<string, unknown>();
   readonly #webhookIds = new Map<string, number>();
   /** Repositories whose deliveries Conveyor may not list; warned about once. */
   readonly #redeliveryDenied = new Set<string>();
@@ -597,6 +573,8 @@ export class ConveyorService {
     }
     // The snapshot is history, not a credential store: values that came from !secret are redacted.
     store.recordConfigSnapshot(config.hash, redactSecrets(config, config.secrets ?? []));
+    // The copy of GitHub lives in the database, so a restart does not read it all again.
+    github.useMirror?.(store.githubMirror(), config.settings.githubCache);
     const service = new ConveyorService(
       config,
       store,
@@ -886,7 +864,8 @@ export class ConveyorService {
   }
 
   private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
-    // A sync must not reuse cached sub-issues and blockers: that is what it is asked to re-read.
+    // A sync reads everything again: nothing held about the repository is reused.
+    this.github.forgetRepository?.(this.config.repositories[repositoryId]!.address);
     this.forgetRelationships(repositoryId, this.store.listIssues(repositoryId).map((issue) => issue.sourceNumber));
     await this.reconcileOne(repositoryId, "full", { verifyTrust: true });
     await this.backfillCiIndicators(repositoryId);
@@ -1115,13 +1094,9 @@ export class ConveyorService {
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
       let rescheduleAfterRelease = false;
-      const source = this.executionCallSource(issue.id);
-      // A parked task woken by its event re-reads only what that event could have changed.
-      if (source === "wait") this.#eventWoken.add(issue.id);
-      void withGitHubCallSource(source, () => this.execute(issue, active.controller.signal)).then((reschedule) => {
+      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal)).then((reschedule) => {
         rescheduleAfterRelease = reschedule;
       }).finally(() => {
-        this.#eventWoken.delete(issue.id);
         this.#active.delete(issue.id);
         if (this.#drain && !active.interrupted) {
           log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
@@ -1976,8 +1951,7 @@ export class ConveyorService {
     let provider = this.#ciProviders.get(key);
     if (!provider) {
       if (configured && configured.type !== "github-actions") throw new Error(`unsupported CI provider: ${providerName}`);
-      // With a managed webhook, check-run deliveries answer a finished commit without a read.
-      provider = new GitHubActionsCiProvider(this.github, triggers, this.webhookUrl(repositoryId) ? this.#deliveredCheckRuns : undefined);
+      provider = new GitHubActionsCiProvider(this.github, triggers);
       this.#ciProviders.set(key, provider);
     }
     return provider;
@@ -2000,46 +1974,18 @@ export class ConveyorService {
     });
   }
 
-  /**
-   * The code host an item's run uses. A run woken by an event reuses the change's last read state:
-   * any delivery about a change drops it, and the item's own writes go through this host and drop it
-   * too. A state whose mergeability GitHub had not computed yet is read again. Every other run reads.
-   */
+  /** The code host an item's run uses: its writes stop at the durable repository pause boundary. */
   private executionCodeHost(issueId: string, host: CodeHost | null): CodeHost | null {
     if (!host) return null;
-    const cache = this.#changeDeliveries;
-    const eventWoken = () => this.#eventWoken.has(issueId);
     const repositoryId = this.store.getIssue(issueId)?.repositoryId;
     const store = this.store;
     return new Proxy(host, {
       get(target, property, receiver) {
         const value: unknown = Reflect.get(target, property, receiver);
         if (typeof value !== "function") return value;
-        if (property === "getChangeDelivery") {
-          return async (input: { address: string; id: string }): Promise<ChangeDelivery> => {
-            const key = `${input.address.toLowerCase()}#${input.id}#delivery`;
-            const cached = cache.get(key) as ChangeDelivery | undefined;
-            if (cached && eventWoken() && cached.change.mergeable !== null) return cached;
-            const read = await target.getChangeDelivery(input);
-            cache.set(key, read);
-            return read;
-          };
-        }
-        if (property === "listReviewArtifacts") {
-          return async (input: Parameters<CodeHost["listReviewArtifacts"]>[0]) => {
-            const key = `${input.address.toLowerCase()}#${input.id}#reviews#${(input.extraTrustedLogins ?? []).join(",")}`;
-            const cached = cache.get(key) as Awaited<ReturnType<CodeHost["listReviewArtifacts"]>> | undefined;
-            if (cached && eventWoken()) return cached;
-            const read = await target.listReviewArtifacts(input);
-            cache.set(key, read);
-            return read;
-          };
-        }
         if (!CODE_HOST_WRITES.has(String(property))) return value.bind(target) as unknown;
         return async (...args: unknown[]) => {
           if (repositoryId && store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
-          const input = args[0] as { address?: unknown } | undefined;
-          if (typeof input?.address === "string") forgetChanges(cache, input.address);
           return Reflect.apply(value, target, args) as unknown;
         };
       },
@@ -3103,6 +3049,8 @@ export class ConveyorService {
     const recorded = withEventContext({ actor: { kind: "webhook", id: deliveryId } }, () =>
       this.store.recordSourceEvent({ source: "github", deliveryId, eventType, payload, repositoryId: repository?.[0] ?? null, normalized }));
     if (!recorded) return;
+    // Before anything reacts to it: the copy now says what the delivery says.
+    if (repository) this.github.applyDelivery?.(eventType, payload);
     if (typeof repositoryAddress !== "string") return;
     if (!repository) this.schedule();
   }
@@ -3116,10 +3064,6 @@ export class ConveyorService {
   private reactToGitHubEvent(event: StoredEvent): void {
     const repositoryId = event.repositoryId;
     if (!repositoryId || !this.config.repositories[repositoryId]) return;
-    if (isEventOf(event, "github.ciUpdated")) this.recordDeliveredCheckRun(repositoryId, event.actor.id);
-    if (isEventOf(event, "github.changeUpdated") || (isEventOf(event, "github.issueUpdated") && event.payload.pullRequest)) {
-      forgetChanges(this.#changeDeliveries, this.config.repositories[repositoryId]!.address);
-    }
     const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));
@@ -3189,20 +3133,6 @@ export class ConveyorService {
     const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     if (applied) this.refreshStatusComments([applied.id]);
     return true;
-  }
-
-  /** Keeps the check run a `check_run` delivery reports, so a finished commit's CI needs no read. */
-  private recordDeliveredCheckRun(repositoryId: string, deliveryId: string | null): void {
-    const address = this.config.repositories[repositoryId]?.address;
-    const stored = deliveryId ? this.store.sourceEvent("github", deliveryId) : null;
-    if (!address || stored?.eventType !== "check_run") return;
-    const run = checkRunSchema.safeParse((stored.payload as { check_run?: unknown } | null)?.check_run);
-    if (!run.success) return;
-    this.#deliveredCheckRuns.remember(address, run.data.head_sha, [{
-      id: run.data.id, name: run.data.name, status: run.data.status, conclusion: run.data.conclusion ?? null,
-      details_url: run.data.details_url ?? null, started_at: run.data.started_at ?? null, completed_at: run.data.completed_at ?? null,
-      app: run.data.app ? { slug: run.data.app.slug } : null,
-    }]);
   }
 
   /** Resolves once every accepted webhook delivery has been processed. */

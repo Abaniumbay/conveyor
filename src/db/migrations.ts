@@ -924,4 +924,19 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 35,
+    sql: `
+      -- Conveyor's copy of what it read from GitHub, kept current by webhook deliveries and its own
+      -- writes. A restart reuses it instead of reading GitHub again.
+      -- version is the item's format as the application writes it: a row of another version is read again.
+      CREATE TABLE github_mirror (
+        key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

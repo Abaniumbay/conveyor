@@ -198,6 +198,26 @@ describe("settings for task chains", () => {
   });
 });
 
+describe("GitHub cache settings", () => {
+  const withCache = (cache: string) => ({ header: HEADER.replace("  artifacts: /tmp/artifacts\n", `  artifacts: /tmp/artifacts\n  githubCache:\n${cache}`) });
+
+  test("defaults: an hour for issues, changes and permissions, 15 minutes for running checks, finished checks kept", async () => {
+    const { config } = await load("");
+    expect(config.settings.githubCache).toEqual({
+      issue: 60 * 60_000, change: 60 * 60_000, permission: 60 * 60_000, runningChecks: 15 * 60_000, finishedChecks: Number.POSITIVE_INFINITY, other: 60 * 60_000,
+    });
+  });
+
+  test("each lifetime is configurable", async () => {
+    const { config } = await load("", withCache("    issue: 30m\n    finishedChecks: 1d\n"));
+    expect(config.settings.githubCache).toMatchObject({ issue: 30 * 60_000, finishedChecks: 86_400_000 });
+  });
+
+  test("an unknown kind of data is an error", async () => {
+    await expect(load("", withCache("    reviews: 5m\n"))).rejects.toThrow(/reviews/);
+  });
+});
+
 describe("event settings", () => {
   const withEvents = (events: string) => ({ header: HEADER.replace("  artifacts: /tmp/artifacts\n", `  artifacts: /tmp/artifacts\n  events:\n${events}`) });
 

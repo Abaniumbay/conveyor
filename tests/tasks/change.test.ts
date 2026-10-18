@@ -312,8 +312,8 @@ describe("change checks", () => {
     expect(await run("change.headUnchanged", { context: ctx({ change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
   });
 
-  test("mergeable is pending while unknown, tells implementation to resolve conflicts, and passes on yes", async () => {
-    expect((await run("change.mergeable", { context: ctx({ change: change({ mergeable: "unknown" }) }) })).status).toBe("pending");
+  test("mergeable passes while unknown (the merge decides), tells implementation to resolve conflicts, and passes on yes", async () => {
+    expect((await run("change.mergeable", { context: ctx({ change: change({ mergeable: "unknown" }) }) })).status).toBe("pass");
     const conflict = await run("change.mergeable", { context: ctx({ change: change({ mergeable: "no" }) }) }) as Fail;
     expect(conflict.status).toBe("fail");
     expect(conflict.message).toContain("conflicts");
