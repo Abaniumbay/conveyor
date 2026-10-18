@@ -20,6 +20,7 @@ Turn the current source issue into an implementation-ready, independently releas
 
 ## Verifiable criteria and safety
 
+- Never write a criterion about a release note, changelog entry or changelog fragment. Every user-visible change adds one by repository rule, CI validates it, and the reviewer reads it; a criterion would only make the implementer write a test that breaks when the release consumes the fragment.
 - Write criteria that automated checks, static inspection, or CI can prove before merge. Prefix a criterion `[Manual]` only when it requires a physical device, production login, repository setting, or owner action.
 - Never edit code, tests, configuration, branches, or worktrees. Never merge, close an issue, deploy, change workflow labels, call GitHub directly, or create placeholder plans.
 - Use the scoped Conveyor tools only. Source mutations are scoped to the current parent; never try to redirect a mutation to a child.

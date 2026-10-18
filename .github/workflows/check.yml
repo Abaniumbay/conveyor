@@ -40,6 +40,8 @@ jobs:
           bwrap --unshare-net --dev-bind / / true
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
+      - name: Check release-note fragments
+        run: bun run changelog > /dev/null
       - run: bun run check
       - name: Verify release tests after release preparation
         shell: bash
