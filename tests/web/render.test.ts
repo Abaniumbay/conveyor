@@ -622,12 +622,12 @@ describe("renderDashboard", () => {
     const working = {
       ...backlogIssue, id: "working", number: 77, working: true, stage: "implementation",
       todos: {
-        finished: 2, skipped: 1, total: 4, current: "Tenant <b>settings</b> endpoint", inOwningStage: true,
+        finished: 2, skipped: 1, total: 4, current: "Tenant <b>settings</b> endpoint",
         items: [
           { id: "t1", text: "Shared repository", status: "done" as const },
           { id: "t2", text: "Tenant <b>settings</b> endpoint", status: "in_progress" as const, note: "admin auth first" },
           { id: "t3", text: "Lobby picker", status: "pending" as const },
-          { id: "t0", text: "Old work", status: "skipped" as const, note: "Closed by Conveyor when its stage passed its gate." },
+          { id: "t0", text: "Old work", status: "skipped" as const, note: "Closed by Conveyor when the item moved on to its next stage." },
         ],
       },
     };
@@ -647,11 +647,11 @@ describe("renderDashboard", () => {
     expect(html.match(/aria-label="Todos"/g)).toHaveLength(1);
   });
 
-  test("shows card todo progress only while the item is in the stage that owns the list, keeping the details checklist", () => {
+  test("shows no card todo progress once nothing is left open, keeping the details checklist", () => {
     for (const stage of ["review", "merge", "done"]) {
       const issue = {
         ...backlogIssue, id: "later", number: 78, stage,
-        todos: { finished: 1, skipped: 1, total: 1, current: null, inOwningStage: false, items: [{ id: "t1", text: "Closed", status: "skipped" as const, note: "n" }] },
+        todos: { finished: 1, skipped: 1, total: 1, current: null, items: [{ id: "t1", text: "Closed", status: "skipped" as const, note: "n" }] },
       };
       const html = renderDashboard({ ...dashboard, selectedIssue: issue, stages: [{ ...dashboard.stages[0]!, issues: [issue] }], backlog: [backlogIssue] });
       expect(html).not.toContain('class="todo-progress"');

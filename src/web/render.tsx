@@ -425,7 +425,8 @@ function waitingStateWord(kind: "waiting" | "queued"): string {
 
 function TodoProgress({ issue }: { issue: IssueCardViewModel }) {
   const todos = issue.todos;
-  if (!todos?.inOwningStage) return null;
+  // Progress shows while work is open; a finished or closed-out list stays in the item's details.
+  if (!todos?.current) return null;
   const label = `${todos.finished} of ${todos.total} todos finished`;
   return (
     <div class="todo-progress" aria-label={`Todo progress for #${issue.number}: ${label}`}>

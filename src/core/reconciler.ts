@@ -54,17 +54,17 @@ export interface ReconcileRepositoryResult {
 /** Projected states an item resumes from when its stopping label is removed (or enrolment restored). */
 const STOPPED_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected", "paused", "waiting"]);
 
-/** Whether the item has moved past the stage its todo list belongs to (or finished altogether). */
-function hasPassedTodoStage(
+/** Whether the item moved forward from its prior stage, or finished altogether. */
+function movedForward(
   stages: readonly string[],
-  todoStage: string | null,
+  priorStage: string | null,
   stage: string | null,
   state: string | null,
 ): boolean {
   if (state === "done" || state === "completed") return true;
-  const owningStage = todoStage === null ? -1 : stages.indexOf(todoStage);
-  const currentStage = stage === null ? -1 : stages.indexOf(stage);
-  return owningStage >= 0 && currentStage > owningStage;
+  const prior = priorStage === null ? -1 : stages.indexOf(priorStage);
+  const current = stage === null ? -1 : stages.indexOf(stage);
+  return prior >= 0 && current > prior;
 }
 
 function isConveyorIssue(labels: readonly string[], enrollment: string): boolean {
@@ -291,10 +291,8 @@ export async function reconcileRepository(
 
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
-    if (eligible) {
-      const todos = new ItemTodos(input.store.sqlite());
-      const todoStage = todos.get(issueId)?.stageId ?? null;
-      if (hasPassedTodoStage(input.stages, todoStage, projected.stage, projected.state)) todos.closeOut(issueId);
+    if (eligible && movedForward(input.stages, prior?.projectedStage ?? null, projected.stage, projected.state)) {
+      new ItemTodos(input.store.sqlite()).closeOut(issueId);
     }
 
     if (!visible) {

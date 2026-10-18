@@ -213,7 +213,8 @@ export async function applyStageTransition(
   // The source transition succeeded: close the todo list out together with the local advance.
   input.store.sqlite().transaction(() => {
     input.store.completeStageTransition(input.transitionId);
-    if (input.result.kind === "advance") new ItemTodos(input.store.sqlite()).closeOutStage(input.issue.id, input.result.stageId);
+    // Moving on closes out unfinished todos; a return to an earlier stage keeps them open.
+    if (input.result.kind === "advance") new ItemTodos(input.store.sqlite()).closeOut(input.issue.id);
     input.store.setStageState({
       issueId: input.issue.id,
       stageId: target.stageId,
