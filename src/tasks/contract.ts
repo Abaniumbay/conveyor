@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { ExecutionStore } from "../engine/journal";
 import type { WaitFor } from "../events/topics";
 import { ToolRequestError } from "./errors";
 import {
@@ -78,6 +79,10 @@ export interface TaskArgs<C = unknown, I = unknown, D = unknown> {
   context: Partial<TaskContext>;
   config: C;
   deps: D;
+  /** Item whose stage task is executing. */
+  issueId?: string;
+  /** Fenced execution records available to deterministic stage tasks. */
+  journal?: Pick<ExecutionStore, "recordCiGateObservation">;
   instance: { id: string; stage: string; idempotencyKey: string; resumed: boolean };
   input?: I;
   actor?: string;
@@ -246,8 +251,10 @@ export async function runTask<C, I, D>(
     ...(input === undefined ? {} : { input }),
     context,
     config,
+    // Checks have no task dependencies, but retain their planned-execution identity so a
+    // deterministic gate can record fenced evidence without gaining external capabilities.
     deps: (isCheck ? undefined : args.deps) as D,
-    instance: isCheck ? { ...args.instance, idempotencyKey: "" } : args.instance,
+    instance: args.instance,
   });
   return validateResult(definition.name, result);
 }
