@@ -51,6 +51,23 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
       - run: bun run check
+      - name: Verify release tests after release preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          git archive --format=tar HEAD | tar -x -C "$scratch"
+          if ! find "$scratch/changes" -maxdepth 1 -type f -name '*.md' -print -quit 2>/dev/null | grep -q .; then
+            mkdir -p "$scratch/changes"
+            printf '%s\n' '---' 'section: Fixed' '---' 'Scratch release-test fragment.' > "$scratch/changes/999-release-test.md"
+          fi
+          cd "$scratch"
+          bun install --frozen-lockfile
+          version="$(bun -e 'const manifest = await Bun.file("package.json").json(); const [major, minor] = manifest.version.split(".").map(Number); console.log(`${major}.${minor + 1}.0`);')"
+          bun run scripts/release.ts prepare "$version"
+          bun run check
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain)"
       - name: Report skipped Bubblewrap tests
         if: always() && steps.bwrap.outputs.available != 'true'
         shell: bash
