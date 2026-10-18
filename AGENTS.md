@@ -210,8 +210,10 @@ a service mutation directly.
 - Tests run offline with no credentials. Use temporary directories (`mkdtemp(path.join(tmpdir(), …))`),
   a temporary SQLite database and real `git` on local bare repositories. Never call GitHub or any
   network service.
-- Never assert on the repository checkout's `changes/` contents or `CHANGELOG.md`. Test release
-  tooling against a temporary repository so release preparation can consume its fragments safely.
+- Never assert on the repository checkout's `changes/` contents or `CHANGELOG.md`. Releasing
+  deletes every fragment, so such a test fails on the release commit. CI validates the fragments
+  (`bun run changelog`), and `tests/release/fragment-guard.test.ts` fails any test outside
+  `tests/release` that reads them. Test release tooling against a temporary repository.
 - Fake only the outer edges: the code host, the CI provider, the GitHub issue adapter, the agent
   harness. `tests/support/delivery-world.ts` already wires these; reuse it for anything that
   crosses stages.
@@ -256,7 +258,7 @@ a service mutation directly.
    number and a short slug. Its frontmatter selects Added, Changed, Deprecated, Removed or Fixed;
    use `breaking: true` when applicable. Write it for an operator: what changed for them, not how
    the code changed. Preview the combined notes with `bun run changelog`; do not edit Unreleased in
-   `CHANGELOG.md`.
+   `CHANGELOG.md`. The fragment is a standing rule, not an acceptance criterion: link no test to it.
 5. A change to documented behaviour updates `docs/` and, where it describes it, `SPEC.md`.
 6. No hostname, login, private repository address, machine path or secret anywhere in the diff.
 7. Never change `version` in `package.json`; releases are cut by maintainers.
