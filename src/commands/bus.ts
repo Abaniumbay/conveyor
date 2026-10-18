@@ -29,6 +29,8 @@ export interface CommandResults {
   "notifications.subscribe": void;
   "notifications.unsubscribe": void;
   "repository.sync": { issues: number; failed: boolean };
+  "repository.pause": { pausedAt: string };
+  "repository.resume": { resumedAt: string };
   "admission.drain": { since: string; reason: string };
   "admission.resume": boolean;
   "service.restart": void;

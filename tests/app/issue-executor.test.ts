@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { IssueExecutor, stageAdvanceMessage } from "../../src/app/issue-executor";
 import { loadConfig } from "../../src/config/load";
+import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
 
 const directories: string[] = [];
@@ -233,6 +234,82 @@ repositories:
 
     await expect(interrupted.execute(store.getIssue("issue-abort")!)).rejects.toMatchObject({ name: "AbortError" });
     expect(store.getStageState("issue-abort")?.status).toBe("interrupted");
+
+    store.upsertIssue({
+      id: "issue-paused-transition",
+      repositoryId: "repo",
+      sourceNumber: 9,
+      sourceUrl: "https://example.test/9",
+      title: "Deferred transition",
+      body: "Requirements",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setIssueProjection("issue-paused-transition", { stage: "refinement", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-paused-transition",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
+    let paused = true;
+    const deferredLabels: string[][] = [];
+    let producerCalls = 0;
+    const deferred = new IssueExecutor({
+      config,
+      store,
+      sourceName: "github",
+      source: {
+        async replaceConveyorLabels(_address, _number, next) {
+          if (paused) {
+            throw new RepositoryPausedError();
+          }
+          deferredLabels.push([...next]);
+        },
+      },
+      workspaceManager: {
+        async create() {
+          return { path: path.join(root, "worktree-paused"), branch: "conveyor/9-r1-deferred-transition", baseRevision: "abc" };
+        },
+      },
+      runtime() {
+        return {
+          async runCheck() {
+            return { decision: "pass", status: "done", reason: null, evidence: [], requiredFixes: [], criteria: [] };
+          },
+          async runProducer() {
+            producerCalls += 1;
+            return {
+              stageResult: { outcome: "success", status: "done", summary: "ok", reason: null, metrics: {} },
+              sessionId: null,
+              usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
+              cost: { amount: 0, currency: "USD", source: "unavailable" },
+              durationMs: 1,
+              exitCode: 0,
+              artifacts: [],
+              stderr: "",
+            };
+          },
+          async runAction() {},
+        };
+      },
+      sourceGuidance: "Never close issues.",
+    });
+
+    await expect(deferred.execute(store.getIssue("issue-paused-transition")!)).resolves.toMatchObject({ kind: "parked", reason: "pending" });
+    expect(store.getStageState("issue-paused-transition")).toMatchObject({ stageId: "refinement", status: "ready" });
+    const transition = store.listStageTransitions("issue-paused-transition")[0]!;
+    expect(transition).toMatchObject({ status: "pending" });
+    expect(store.getSourceMutation(transition.sourceMutationId!)).toMatchObject({ status: "pending" });
+    expect(producerCalls).toBe(1);
+
+    paused = false;
+    await expect(deferred.execute(store.getIssue("issue-paused-transition")!)).resolves.toMatchObject({ kind: "advance", nextStageId: "implementation" });
+    expect(deferredLabels).toEqual([["conveyor", "conveyor:implementation"]]);
+    expect(producerCalls).toBe(1);
+    expect(store.listStageTransitions("issue-paused-transition")).toMatchObject([{ id: transition.id, status: "completed" }]);
     store.close();
   });
   test("a completed stage names the next one, and the last one says the item is done", () => {

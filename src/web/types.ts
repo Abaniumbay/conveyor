@@ -69,6 +69,8 @@ import type { IndicatorViewModel } from "../app/indicators";
 export interface IssueCardViewModel {
   id: string;
   repository: string;
+  /** The repository is paused even if an in-flight run is still completing. */
+  repositoryPaused: boolean;
   /** One-based palette slot assigned by repository configuration order. */
   repositoryColor: number;
   number: number;
@@ -345,6 +347,7 @@ export interface RepositoryDashboardSummary {
   error: string | null;
   errorSummary: string | null;
   lastReconciledAt: string | null;
+  pause?: { actor: string; pausedAt: string; reason: string | null } | null;
   backlog: number;
   stages: readonly { id: string; name: string; count: number }[];
   done: number;

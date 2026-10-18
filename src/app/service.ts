@@ -14,6 +14,7 @@ import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
+import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyRollupTransition, applyStageTransition } from "../core/transition";
 import { ConveyorStore, type StoredIssue, type StoredQuestion } from "../db/store";
@@ -86,6 +87,17 @@ const FOLLOW_UP_GATE_TASK = "item.followUps";
 const CODE_HOST_WRITES = new Set([
   "pushBranch", "ensureChange", "mergeChange", "setChangeChecklist", "setChangeDescription",
   "createFinding", "resolveFindingProjection", "resolveNativeFinding", "deleteBranch",
+]);
+
+/** GitHub adapter methods that can change a source repository. */
+const GITHUB_WRITES = new Set([
+  "setIssueType", "setIssueFieldValues", "setTitle", "setParent", "setDependencies",
+  "replaceConveyorLabels", "replaceManagedProjectLabels", "upsertStatusComment", "addComment",
+  "createComment", "updateComment", "createReviewComment", "deleteBranchRef", "replyToReviewComment",
+  "reactToReviewComment", "reactToIssueComment", "replyToReviewThread", "resolveReviewThread",
+  "reactToReviewThread", "updateManagedSection", "ensurePullRequest", "setPullRequestChecklist",
+  "setPullRequestDescription", "retriggerLabel", "rerunJob", "squashMerge", "closeIssue",
+  "createChildIssue", "ensureLabels", "ensureWebhook", "pingHook", "redeliverHookDelivery",
 ]);
 
 /** Drops the last read state of a repository's changes. */
@@ -617,8 +629,9 @@ export class ConveyorService {
         configHash: this.config.hash,
       });
       await this.recordRepositoryTrustStatus(id, repository.address);
+      if (this.store.repositoryPause(id)) continue;
       try {
-        await this.github.ensureLabels(repository.address, labelDefinitions(this.config, id));
+        await this.executionGitHub(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
         const source = this.config.sources[repository.source];
         if (
           source?.type === "github" &&
@@ -629,10 +642,11 @@ export class ConveyorService {
           if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
           const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
           // Missed deliveries are asked for, and the webhook pinged, in start(), once the server listens.
-          this.#webhookIds.set(id, await this.github.ensureWebhook({ address: repository.address, url, secret }));
+          this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret }));
         }
         if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
       } catch (error) {
+        if (error instanceof RepositoryPausedError) continue;
         const message = error instanceof Error ? error.message : String(error);
         if (!this.#onboardingErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: false }, { repositoryId: id });
         this.#onboardingErrors.set(id, message);
@@ -660,14 +674,16 @@ export class ConveyorService {
    * request (an outage, the rate limit) changes nothing: health is decided by deliveries alone.
    */
   async pingWebhook(repositoryId: string): Promise<boolean> {
+    if (this.store.repositoryPause(repositoryId)) return false;
     const address = this.config.repositories[repositoryId]?.address;
     const hookId = this.#webhookIds.get(repositoryId);
     if (!this.webhookUrl(repositoryId) || !address || hookId === undefined) return false;
     try {
-      await this.github.pingHook(address, hookId);
+      await this.executionGitHub(repositoryId).pingHook(address, hookId);
       this.#webhookPingedAt.set(repositoryId, Date.now());
       return true;
     } catch (error) {
+      if (error instanceof RepositoryPausedError) return false;
       log.warn("Could not ask GitHub to ping the webhook", { repository: repositoryId }, error);
       return false;
     }
@@ -702,6 +718,7 @@ export class ConveyorService {
    * permission to list deliveries it warns once and leaves them to the safety-net reconcile.
    */
   async redeliverMissed(repositoryId: string): Promise<number> {
+    if (this.store.repositoryPause(repositoryId)) return 0;
     const address = this.config.repositories[repositoryId]?.address;
     const hookId = this.#webhookIds.get(repositoryId);
     if (!address || hookId === undefined || this.#redeliveryDenied.has(repositoryId)) return 0;
@@ -728,9 +745,10 @@ export class ConveyorService {
     let redelivered = 0;
     for (const delivery of missed) {
       try {
-        await this.github.redeliverHookDelivery(address, hookId, delivery.id);
+        await this.executionGitHub(repositoryId).redeliverHookDelivery(address, hookId, delivery.id);
         redelivered += 1;
       } catch (error) {
+        if (error instanceof RepositoryPausedError) break;
         log.warn("Could not ask GitHub to redeliver a webhook delivery", { repository: repositoryId, delivery: delivery.guid }, error);
       }
     }
@@ -818,7 +836,7 @@ export class ConveyorService {
         },
         stages: pipeline.stages.map((stage) => stage.id),
         labels: this.config.labels,
-        source: this.github,
+        source: this.executionGitHub(id),
         trust: this.#issueTrust,
         extraTrustedLogins: repository.extraTrustedLogins ?? [],
         expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -830,6 +848,9 @@ export class ConveyorService {
       const scope = since === undefined
         ? null
         : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.id)?.sourceUpdatedAt !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
+      // A paused repository may refresh its projection, but cannot reconcile work that would
+      // mutate source state or discard a worktree.
+      if (this.store.repositoryPause(id)) return;
       await this.reconcileRelationships(id, repository.address, scope);
       if (scope !== null) await this.backfillCiIndicators(id, scope);
       await this.syncIssueFields(id, repository);
@@ -838,6 +859,7 @@ export class ConveyorService {
       if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
       this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
     } catch (error) {
+      if (error instanceof RepositoryPausedError) return;
       const message = error instanceof Error ? error.message : String(error);
       if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
       this.#repositoryErrors.set(id, message);
@@ -854,6 +876,7 @@ export class ConveyorService {
    * who changed something GitHub sends no event for, such as a collaborator's permission.
    */
   syncRepository(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
+    this.assertRepositoryActive(repositoryId);
     // A second click while a sync runs joins it rather than reading everything twice.
     const running = this.#repositorySyncs.get(repositoryId);
     if (running) return running;
@@ -1071,6 +1094,9 @@ export class ConveyorService {
     for (const candidate of selected) {
       const issue = this.store.getIssue(candidate.id);
       if (!issue) continue;
+      // A pause can land between candidate collection and admission. Recheck
+      // at the boundary so every wake path observes the durable pause.
+      if (this.store.repositoryPause(issue.repositoryId)) continue;
       // Relationship reconciliation can add children after this scheduling
       // pass built its candidates. Recheck at the admission boundary so an
       // item never starts a new run after becoming a roll-up parent.
@@ -1146,6 +1172,7 @@ export class ConveyorService {
           state.status === "ready" &&
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
+          this.store.repositoryPause(issue.repositoryId) === null &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly:
@@ -1323,6 +1350,8 @@ export class ConveyorService {
     commands.handle("item.retry", (input, actor) => this.retryIssue(input.issueId, input.note, actor.name));
     commands.handle("item.pause", (input, actor) => this.pauseIssue(input.issueId, actor.name));
     commands.handle("item.resume", (input, actor) => this.resumeIssue(input.issueId, actor.name));
+    commands.handle("repository.pause", (input, actor) => this.pauseRepository(input.repositoryId, input.reason, actor.name));
+    commands.handle("repository.resume", (input) => this.resumeRepository(input.repositoryId));
     commands.handle("item.postMessage", (input, actor) => this.postIssueMessage(input.issueId, input.message, actor.name));
     commands.handle("question.answer", (input, actor) => this.answerQuestion(input.questionId, input.answer, actor.name));
     commands.handle("gate.approve", (input, actor) => this.approveManualGate(input.issueId, input.stageId, input.gateId, account(actor)));
@@ -1445,6 +1474,8 @@ export class ConveyorService {
 
   /** Makes a parked item due now and remembers that an event, not its wake-up time, woke it. */
   private wakeParked(issueId: string): boolean {
+    const issue = this.store.getIssue(issueId);
+    if (issue && this.store.repositoryPause(issue.repositoryId)) return false;
     const woken = this.store.executions().wakeNow(issueId);
     if (woken) this.#wokenEarly.add(issueId);
     return woken;
@@ -1502,7 +1533,7 @@ export class ConveyorService {
     return {
       store: this.store,
       config: this.config,
-      items: this.github,
+      items: this.executionGitHub(repository.id),
       repository,
       issueId,
       sourceGuidance: SOURCE_GUIDANCE,
@@ -1513,7 +1544,7 @@ export class ConveyorService {
       delivery: () => this.loadDeliveryState(issueId, repository.address),
       codeHost: this.executionCodeHost(issueId, this.codeHostFor(repository.id)),
       ci: {
-        provider: () => this.ciProvider(repository.id),
+        provider: () => this.executionCiProvider(repository.id),
         watchAdvisory: (input) => {
           this.#advisoryWatches.ensureWatch({
             repositoryId: repository.id, itemId: input.itemId, headSha: input.headSha, stage: input.stage,
@@ -1599,6 +1630,7 @@ export class ConveyorService {
    * visit after a source read so the normal executor re-evaluates the now-empty gate and advances.
    */
   private wakeClearedFollowUps(repositoryId: string, before: ReadonlyMap<string, string>): void {
+    if (this.store.repositoryPause(repositoryId)) return;
     const journal = this.store.executions();
     for (const issue of this.store.listIssues(repositoryId)) {
       const previousBody = before.get(issue.id);
@@ -1666,6 +1698,7 @@ export class ConveyorService {
   setBoardApprovalRequirement(issueId: string, stageId: string, required: boolean): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    this.assertRepositoryActive(issue.repositoryId);
     this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
     const cursor = journal.getCursor(issueId);
@@ -1688,6 +1721,7 @@ export class ConveyorService {
   approveManualGate(issueId: string, stageId: string, gateId: string | null, account: { id: string; username: string }): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    this.assertRepositoryActive(issue.repositoryId);
     const candidate = gateId !== null ? this.manualGateCandidate(issue, stageId, gateId) : null;
     if (gateId === null) this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
@@ -1744,7 +1778,7 @@ export class ConveyorService {
       config: this.config,
       store: this.store,
       sourceName: repository.source,
-      source: this.github,
+      source: this.executionGitHub(issue.repositoryId),
       workspaceManager: this.workspaceManager,
       loadDeliveryState: async (currentIssue, currentRepository) =>
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
@@ -1773,6 +1807,14 @@ export class ConveyorService {
       rescheduleAfterRelease = outcome.kind === "parked" && outcome.reason === "superseded";
       this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
+        // A transition can reach the repository pause fence after the stage
+        // itself has completed. Its pending source mutation is deliberately
+        // retained for resume; do not turn the status-comment write into an
+        // infrastructure failure while that repository is paused.
+        if (this.store.repositoryPause(issue.repositoryId)) {
+          this.schedule();
+          return false;
+        }
         // A parked poll changes nothing at the source: no reconcile, just the status line.
         this.restorePendingStatus(issue.repositoryId);
         if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);
@@ -1837,7 +1879,7 @@ export class ConveyorService {
     });
     await applyStageTransition({
       store: this.store,
-      source: this.github,
+      source: this.executionGitHub(issue.repositoryId),
       sourceName: repository.source,
       address: repository.address,
       configHash: this.config.hash,
@@ -1879,6 +1921,7 @@ export class ConveyorService {
 
   /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
   private restorePendingStatus(repositoryId: string): void {
+    if (this.store.repositoryPause(repositoryId)) return;
     for (const issue of this.store.listIssues(repositoryId)) {
       if (issue.projectedState !== "active" || issue.warning) continue;
       const message = this.store.executions().pendingMessage(issue.id);
@@ -1940,6 +1983,23 @@ export class ConveyorService {
     return provider;
   }
 
+  /** Lets a paused repository keep observing CI while preventing CI dispatches and reruns. */
+  private executionCiProvider(repositoryId: string, stageInput?: Record<string, unknown>): CiProvider {
+    const provider = this.ciProvider(repositoryId, stageInput);
+    const store = this.store;
+    return new Proxy(provider, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        if (property !== "start" && property !== "rerun") return value.bind(target) as unknown;
+        return async (...args: unknown[]) => {
+          if (store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
+          return Reflect.apply(value, target, args) as unknown;
+        };
+      },
+    });
+  }
+
   /**
    * The code host an item's run uses. A run woken by an event reuses the change's last read state:
    * any delivery about a change drops it, and the item's own writes go through this host and drop it
@@ -1949,6 +2009,8 @@ export class ConveyorService {
     if (!host) return null;
     const cache = this.#changeDeliveries;
     const eventWoken = () => this.#eventWoken.has(issueId);
+    const repositoryId = this.store.getIssue(issueId)?.repositoryId;
+    const store = this.store;
     return new Proxy(host, {
       get(target, property, receiver) {
         const value: unknown = Reflect.get(target, property, receiver);
@@ -1975,8 +2037,25 @@ export class ConveyorService {
         }
         if (!CODE_HOST_WRITES.has(String(property))) return value.bind(target) as unknown;
         return async (...args: unknown[]) => {
+          if (repositoryId && store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
           const input = args[0] as { address?: unknown } | undefined;
           if (typeof input?.address === "string") forgetChanges(cache, input.address);
+          return Reflect.apply(value, target, args) as unknown;
+        };
+      },
+    });
+  }
+
+  /** Fences every item-task source mutation at the durable repository pause boundary. */
+  private executionGitHub(repositoryId: string): GitHubAdapter {
+    const store = this.store;
+    return new Proxy(this.github, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        if (!GITHUB_WRITES.has(String(property))) return value.bind(target) as unknown;
+        return async (...args: unknown[]) => {
+          if (store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
           return Reflect.apply(value, target, args) as unknown;
         };
       },
@@ -2055,7 +2134,7 @@ export class ConveyorService {
       },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.github,
+      source: this.executionGitHub(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -2063,6 +2142,7 @@ export class ConveyorService {
       ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
     listing.finish();
+    if (this.store.repositoryPause(repositoryId)) return;
     const scope = options.includeIssueNumbers ? new Set(options.includeIssueNumbers) : null;
     await this.reconcileRelationships(repositoryId, repository.address, scope);
     await this.backfillCiIndicators(repositoryId, scope);
@@ -2085,7 +2165,7 @@ export class ConveyorService {
       repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.github,
+      source: this.executionGitHub(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
@@ -2096,6 +2176,7 @@ export class ConveyorService {
         ? { delivered: new Map(numbers.map((number) => [number, { enrollment: "unchanged", title: "unchanged", body: "unchanged" } as const])) }
         : {}),
     });
+    if (this.store.repositoryPause(repositoryId)) return;
     const scope = new Set(numbers);
     await this.reconcileRelationships(repositoryId, repository.address, scope);
     this.wakeClearedFollowUps(repositoryId, followUpBodies);
@@ -2184,13 +2265,15 @@ export class ConveyorService {
     parent: StoredIssue,
     doneLabel: string | undefined,
   ): Promise<void> {
+    if (this.store.repositoryPause(repositoryId)) return;
+    const github = this.executionGitHub(repositoryId);
     const repository = this.config.repositories[repositoryId]!;
     const stageLabel = parent.projectedStage
       ? [this.config.labels.stageTemplate.replace("{stage}", parent.projectedStage)]
       : [];
     const closeMutationKeyPrefix = `rollup-completion-close:${parent.id}:`;
 
-    let current = await this.github.getIssue(address, parent.sourceNumber);
+    let current = await github.getIssue(address, parent.sourceNumber);
     const priorCloseMutation = this.store.getLatestSourceMutationByKeyPrefix(closeMutationKeyPrefix);
     if (
       current.state === "closed" &&
@@ -2249,7 +2332,7 @@ export class ConveyorService {
       });
       if (labelMutation.status !== "succeeded") {
         try {
-          await this.github.replaceConveyorLabels(
+          await github.replaceConveyorLabels(
             address,
             parent.sourceNumber,
             labels,
@@ -2257,6 +2340,7 @@ export class ConveyorService {
           );
           this.store.completeSourceMutation(labelMutation.id, { labels });
         } catch (error) {
+          if (error instanceof RepositoryPausedError) throw error;
           this.store.failSourceMutation(
             labelMutation.id,
             error instanceof Error ? error.message : String(error),
@@ -2264,7 +2348,7 @@ export class ConveyorService {
           throw error;
         }
       }
-      current = await this.github.getIssue(address, parent.sourceNumber);
+      current = await github.getIssue(address, parent.sourceNumber);
     }
 
     if (
@@ -2293,7 +2377,7 @@ export class ConveyorService {
     });
     if (closeMutation.status === "succeeded") return;
     try {
-      const closed = await this.github.closeIssue(address, parent.sourceNumber);
+      const closed = await github.closeIssue(address, parent.sourceNumber);
       if (closed.state !== "closed") {
         throw new Error("GitHub did not confirm the completed roll-up parent as closed.");
       }
@@ -2303,6 +2387,7 @@ export class ConveyorService {
       });
       this.recordClosedRollupParent(parent, closed);
     } catch (error) {
+      if (error instanceof RepositoryPausedError) throw error;
       // GitHub can apply the close and still answer with an error (a 422 was seen in production), so
       // the issue's state decides: a closed issue is a completed close, not a failure to retry.
       const observed = await this.github.getIssue(address, parent.sourceNumber).catch(() => null);
@@ -2325,6 +2410,7 @@ export class ConveyorService {
       await this.completeRollupParent(repositoryId, address, parent, doneLabel);
       return true;
     } catch (error) {
+      if (error instanceof RepositoryPausedError) return false;
       log.warn("Roll-up parent could not be closed; the next pass retries it", this.itemFields(parent.id), error);
       return false;
     }
@@ -2345,6 +2431,7 @@ export class ConveyorService {
     address: string,
     scope: ReadonlySet<number> | null = null,
   ): Promise<void> {
+    if (this.store.repositoryPause(repositoryId)) return;
     const refresh = (issue: StoredIssue) => scope === null || scope.has(issue.sourceNumber);
     const issues = this.store
       .listIssues(repositoryId)
@@ -2454,6 +2541,7 @@ export class ConveyorService {
     );
     const repositoryIssues = this.store.listIssues(repositoryId);
     for (const parent of repositoryIssues) {
+      if (this.store.repositoryPause(repositoryId)) return;
       const children = this.store.listChildren(parent.id);
       const closeMutation = this.store.getLatestSourceMutationByKeyPrefix(`rollup-completion-close:${parent.id}:`);
       if (
@@ -2515,18 +2603,24 @@ export class ConveyorService {
             .update(`${parent.id}\0${parent.sourceUpdatedAt}\0${parent.projectedStage ?? ""}\0${targetStage}`)
             .digest("hex")
             .slice(0, 24);
-          const applied = await applyRollupTransition({
-            store: this.store,
-            source: this.github,
-            sourceName: this.config.repositories[repositoryId]!.source,
-            address,
-            configHash: this.config.hash,
-            transitionId: `rollup-${transitionDigest}`,
-            issue: parent,
-            targetStageId: targetStage,
-            labels: this.config.labels,
-            reason: `Following the earliest unfinished child stage: ${targetStage}`,
-          });
+          let applied: boolean;
+          try {
+            applied = await applyRollupTransition({
+              store: this.store,
+              source: this.executionGitHub(repositoryId),
+              sourceName: this.config.repositories[repositoryId]!.source,
+              address,
+              configHash: this.config.hash,
+              transitionId: `rollup-${transitionDigest}`,
+              issue: parent,
+              targetStageId: targetStage,
+              labels: this.config.labels,
+              reason: `Following the earliest unfinished child stage: ${targetStage}`,
+            });
+          } catch (error) {
+            if (error instanceof RepositoryPausedError) return;
+            throw error;
+          }
           if (applied) {
             log.info("Roll-up stage transition completed", {
               ...this.itemFields(parent.id),
@@ -2653,6 +2747,7 @@ export class ConveyorService {
   private sourceActions(context: RuntimeIssueContext): SourceActionHandler {
     return {
       run: async (action) => {
+        this.assertRepositoryActive(context.repository.id);
         const workspace = context.workspace;
         const changeOperation = changeAction(action.sourceAction);
         if (action.sourceAction === "workspace.cleanup") {
@@ -2666,7 +2761,7 @@ export class ConveyorService {
         }
         if (!workspace) throw new Error(`${action.sourceAction} requires a workspace`);
         if (changeOperation === "ensure") {
-          const codeHost = this.codeHostFor(context.repository.id);
+          const codeHost = this.executionCodeHost(context.issue.id, this.codeHostFor(context.repository.id));
           if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
           const ensured = await pushAndEnsureChange({
             codeHost, store: this.store, address: context.repository.address,
@@ -2680,7 +2775,7 @@ export class ConveyorService {
           return this.awaitPullRequestChecks(context, workspace, action.with);
         }
         if (changeOperation === "merge") {
-          const codeHost = this.codeHostFor(context.repository.id);
+          const codeHost = this.executionCodeHost(context.issue.id, this.codeHostFor(context.repository.id));
           if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
           const pullRequest = await codeHost.ensureChange({
             address: context.repository.address,
@@ -2717,7 +2812,7 @@ export class ConveyorService {
   ): Promise<SourceActionOutcome> {
     const options = parseCiGateOptions(input);
     const maxCorrections = typeof input?.maxCorrections === "number" ? input.maxCorrections : 5;
-    const codeHost = this.codeHostFor(context.repository.id);
+    const codeHost = this.executionCodeHost(context.issue.id, this.codeHostFor(context.repository.id));
     if (!codeHost) throw new Error(`repository ${context.repository.id} has no supported code host`);
     const ensured = await pushAndEnsureChange({
       codeHost, store: this.store, address: context.repository.address,
@@ -2731,7 +2826,7 @@ export class ConveyorService {
       change: { repository: context.repository.address, changeId: String(pullRequest.number), url: pullRequest.url },
       issueKey: context.issue.id,
       options,
-      provider: this.ciProvider(context.issue.repositoryId, input),
+      provider: this.executionCiProvider(context.issue.repositoryId, input),
       headSha,
       memory: this.#ciMemory,
       now: Date.now(),
@@ -3078,13 +3173,14 @@ export class ConveyorService {
       repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      source: this.github,
+      source: this.executionGitHub(repositoryId),
       trust: this.#issueTrust,
       extraTrustedLogins: repository.extraTrustedLogins ?? [],
       expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
       issues: [change.issue],
       delivered: new Map([[number, change.actors]]),
     });
+    if (this.store.repositoryPause(repositoryId)) return true;
     this.wakeClearedFollowUps(repositoryId, followUpBodies);
     this.restorePendingStatus(repositoryId);
     this.interruptIneligibleRuns();
@@ -3277,6 +3373,7 @@ export class ConveyorService {
     if (issue?.projectedState === "offboarded") {
       throw new Error("This question belongs to an offboarded item.");
     }
+    if (issue) this.assertRepositoryActive(issue.repositoryId);
     const response = validatedQuestionAnswer(question, answer);
     if (question.status !== "open") throw new Error("This question has already been answered.");
     if (question.answer !== null) {
@@ -3324,6 +3421,8 @@ export class ConveyorService {
     issue: StoredIssue,
     repository: ConveyorConfig["repositories"][string],
   ): Promise<void> {
+    this.assertRepositoryActive(issue.repositoryId);
+    const github = this.executionGitHub(issue.repositoryId);
     // Before replying, only what resuming needs: the source's needs-input label goes first (a sync
     // that still saw it would stop the item again), then the parked agent wakes. Mirroring the answer
     // as a comment, re-syncing the repository and the status comment follow in the background.
@@ -3334,12 +3433,13 @@ export class ConveyorService {
       const stage = runStage ?? issue.projectedStage;
       const metadata = metadataLabels(issue.labels, this.config);
       try {
-        await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
+        await github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
           this.config.labels.enrollment,
           ...(stage ? [this.config.labels.stageTemplate.replace("{stage}", stage)] : []),
           ...metadata,
         ], [this.config.labels.metadata.noSplit]);
-      } catch {
+      } catch (error) {
+        if (error instanceof RepositoryPausedError) throw error;
         throw new Error("Your answer was saved but the question state could not be cleared. Submit the same answer to retry.");
       }
     }
@@ -3355,7 +3455,7 @@ export class ConveyorService {
     }
     if (!parkedAgentWoken && issue.projectedStage) {
       const metadata = metadataLabels(issue.labels, this.config);
-      await this.github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
+      await github.replaceConveyorLabels(repository.address, issue.sourceNumber, [
         this.config.labels.enrollment,
         this.config.labels.stageTemplate.replace("{stage}", issue.projectedStage),
         ...metadata,
@@ -3424,6 +3524,9 @@ export class ConveyorService {
   }
 
   async #answerFollowUp(issueId: string, questionId: string, response: string, address: string, sourceNumber: number, source: string, scheduled = false): Promise<boolean> {
+    const issue = this.store.getIssue(issueId);
+    if (!issue || this.store.repositoryPause(issue.repositoryId)) return false;
+    const github = this.executionGitHub(issue.repositoryId);
     // The answer is mirrored as an issue comment once, retried a few times when the source is unavailable.
     const mirrorKey = `question-answer:${questionId}`;
     if (!this.#answerMirrorsInFlight.has(mirrorKey)) {
@@ -3441,12 +3544,13 @@ export class ConveyorService {
           if (mirror.status === "succeeded") break;
           try {
             const marker = `<!-- conveyor:answer:${questionId} -->`;
-            const sourceHasAnswer = typeof this.github.hasCommentWithMarker === "function" &&
-              await this.github.hasCommentWithMarker(address, sourceNumber, marker);
-            if (!sourceHasAnswer) await this.github.addComment(address, sourceNumber, `${marker}\n**${scheduled ? "Scheduled Operator answer" : "Conveyor answer"}:** ${response}`);
+            const sourceHasAnswer = typeof github.hasCommentWithMarker === "function" &&
+              await github.hasCommentWithMarker(address, sourceNumber, marker);
+            if (!sourceHasAnswer) await github.addComment(address, sourceNumber, `${marker}\n**${scheduled ? "Scheduled Operator answer" : "Conveyor answer"}:** ${response}`);
             this.store.completeSourceMutation(mirror.id, { questionId });
             break;
           } catch (error) {
+            if (error instanceof RepositoryPausedError) return false;
             this.store.failSourceMutation(mirror.id, error instanceof Error ? error.message : String(error));
             log.warn("Could not mirror an answer to the source; retrying", { ...this.itemFields(issueId), attempt: attempt + 1 }, error);
           }
@@ -3483,6 +3587,7 @@ export class ConveyorService {
       this.#shuttingDown || this.#drain || this.#steeringActive.size > 0) return null;
     const targets = this.store.listIssues().filter((issue) =>
       Boolean(this.config.repositories[issue.repositoryId]) &&
+      this.store.repositoryPause(issue.repositoryId) === null &&
       issue.labels.includes(this.config.labels.enrollment) &&
       issue.projectedState !== "offboarded" &&
       issue.projectedState !== null && STOPPED_ISSUE_STATES.has(issue.projectedState),
@@ -3787,6 +3892,7 @@ export class ConveyorService {
   private async writeStatusComment(issueId: string): Promise<void> {
     const issue = this.store.getIssue(issueId);
     if (!issue) return;
+    if (this.store.repositoryPause(issue.repositoryId)) return;
     const relevant = issue.labels.some(
       (label) =>
         label === this.config.labels.enrollment ||
@@ -3861,7 +3967,7 @@ export class ConveyorService {
     // have moved on since (checked, then unchecked), so skip only when it is the last write.
     if (mutation.status === "succeeded" && this.#statusCommentDigests.get(issue.id) === digest) return;
     try {
-      const commentId = await this.github.upsertStatusComment(
+      const commentId = await this.executionGitHub(issue.repositoryId).upsertStatusComment(
         repository.address,
         issue.sourceNumber,
         markdown,
@@ -3871,6 +3977,7 @@ export class ConveyorService {
       this.#statusCommentDigests.set(issue.id, digest);
       this.#statusCommentIds.set(issue.id, commentId);
     } catch (error) {
+      if (error instanceof RepositoryPausedError) throw error;
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
     }
@@ -4086,6 +4193,7 @@ export class ConveyorService {
       return {
         id: issue.id,
         repository: issue.repositoryId,
+        repositoryPaused: this.store.repositoryPause(issue.repositoryId) !== null,
         repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
         number: issue.sourceNumber,
         title: issue.title,
@@ -4836,6 +4944,7 @@ export class ConveyorService {
     return {
       id: issue.id,
       repository: issue.repositoryId,
+      repositoryPaused: this.store.repositoryPause(issue.repositoryId) !== null,
       repositoryColor: repositoryColors.get(issue.repositoryId) ?? 1,
       number: issue.sourceNumber,
       title: issue.title,
@@ -5019,6 +5128,7 @@ export class ConveyorService {
   ): Promise<{ status: "delivered" | "started" | "queued"; stageId: string }> {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
+    this.assertRepositoryActive(issue.repositoryId);
     if (issue.sourceState === "closed" && !this.store.hasMergedPullRequest(issueId)) {
       throw new Error("closed issues cannot be resumed from conversation");
     }
@@ -5075,7 +5185,7 @@ export class ConveyorService {
       });
       if (mutation.status !== "succeeded") {
         try {
-          await this.github.replaceConveyorLabels(
+          await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
             repository.address,
             issue.sourceNumber,
             labels,
@@ -5083,6 +5193,7 @@ export class ConveyorService {
           );
           this.store.completeSourceMutation(mutation.id, { labels });
         } catch (error) {
+          if (error instanceof RepositoryPausedError) throw error;
           this.store.failSourceMutation(
             mutation.id,
             error instanceof Error ? error.message : String(error),
@@ -5210,6 +5321,7 @@ export class ConveyorService {
       const issue = this.store.getIssue(issueId);
       const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
       if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
+      this.assertRepositoryActive(issue.repositoryId);
       if (note.length > 4_000) throw new Error("retry note must not exceed 4000 characters");
       const expectedPostMergeClosure = this.store.hasMergedPullRequest(issueId);
       if ((issue.sourceState !== "open" && !(issue.sourceState === "closed" && expectedPostMergeClosure)) ||
@@ -5254,7 +5366,7 @@ export class ConveyorService {
         label !== this.config.labels.states[evaluated.state!],
       );
       try {
-        await this.github.replaceConveyorLabels(
+        await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
           repository.address,
           issue.sourceNumber,
           conveyorLabels,
@@ -5262,6 +5374,7 @@ export class ConveyorService {
         );
         this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
       } catch (error) {
+        if (error instanceof RepositoryPausedError) throw error;
         this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
         throw error;
       }
@@ -5321,12 +5434,35 @@ export class ConveyorService {
     return this.#drain;
   }
 
+  /** Rejects an operation that would admit work or mutate the paused repository's source. */
+  private assertRepositoryActive(repositoryId: string): void {
+    if (this.store.repositoryPause(repositoryId)) throw new RepositoryPausedError();
+  }
+
   /** Work in flight: items executing a stage, and steering runs. */
   activeWork(): { items: Array<{ issueId: string; repositoryId: string; stageId: string }>; steering: number } {
     return {
       items: [...this.#active.entries()].map(([issueId, active]) => ({ issueId, repositoryId: active.repositoryId, stageId: active.stageId })),
       steering: this.#steeringActive.size,
     };
+  }
+
+  /** Pauses future repository work without changing its configured plan or any item projection. */
+  pauseRepository(repositoryId: string, reason: string, actor: string): { pausedAt: string } {
+    if (!this.config.repositories[repositoryId]) throw new Error("repository not found");
+    const pause = this.store.pauseRepository(repositoryId, actor, reason.trim() || null);
+    log.info("Repository paused", { repository: repositoryId, actor });
+    return { pausedAt: pause.pausedAt };
+  }
+
+  /** Re-admits retained work without changing individual item enrollment. */
+  async resumeRepository(repositoryId: string): Promise<{ resumedAt: string }> {
+    if (!this.config.repositories[repositoryId]) throw new Error("repository not found");
+    this.store.resumeRepository(repositoryId);
+    const resumedAt = new Date().toISOString();
+    this.schedule();
+    log.info("Repository resumed", { repository: repositoryId });
+    return { resumedAt };
   }
 
   /**
@@ -5372,6 +5508,7 @@ export class ConveyorService {
     const issue = this.store.getIssue(issueId);
     const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
     if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("item not found");
+    this.assertRepositoryActive(issue.repositoryId);
     const live = await this.github.getIssue(repository.address, issue.sourceNumber);
     if (live.state !== "open") throw new Error("the item is closed");
     if (this.conveyorLabels(live.labels).length === 0) throw new Error("the item is offboarded (it has no Conveyor labels)");
@@ -5386,6 +5523,7 @@ export class ConveyorService {
   }
 
   private async replaceLabelsRecorded(issue: StoredIssue, repository: ConveyorConfig["repositories"][string], operation: string, labels: string[]): Promise<void> {
+    this.assertRepositoryActive(issue.repositoryId);
     const mutation = this.store.beginSourceMutation({
       idempotencyKey: `${operation}:${randomUUID()}`,
       source: repository.source,
@@ -5393,7 +5531,7 @@ export class ConveyorService {
       request: { issueId: issue.id, issueNumber: issue.sourceNumber, labels },
     });
     try {
-      await this.github.replaceConveyorLabels(
+      await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
         repository.address,
         issue.sourceNumber,
         labels,
@@ -5401,6 +5539,7 @@ export class ConveyorService {
       );
       this.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
+      if (error instanceof RepositoryPausedError) throw error;
       this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
       throw error;
     }

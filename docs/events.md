@@ -123,8 +123,10 @@ Each event has:
 | `notifications.unsubscribed` | A browser's push subscription was removed. | `accountId`: string \| null |
 | `repository.healthChanged` | A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error. | `check`: `"onboarding"` \| `"reconcile"`<br>`healthy`: boolean |
 | `repository.onboarded` | A configured repository was added to or updated in the local index. | `address`: string |
+| `repository.paused` | An operator paused repository work without changing its configuration. | `actor`: string<br>`reason`: string \| null |
 | `repository.reconciled` | Conveyor finished reading a repository's issues; `issueNumbers` are the ones a webhook named, null for all. | `issueNumbers`: integer[] \| null |
 | `repository.removed` | An unconfigured repository and its history were removed. | - |
+| `repository.resumed` | An operator resumed repository work from its retained state. | - |
 | `repository.trustChanged` | A repository's observed visibility changed. | `visibility`: string |
 | `service.reconciled` | A pass over every repository finished; `failed` repositories could not be read. | `failed`: integer |
 | `session.signedIn` | A dashboard account signed in. | `accountId`: string \| null |

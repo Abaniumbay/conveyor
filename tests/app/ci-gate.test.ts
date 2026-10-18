@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
 import { boundLog, boundSnapshotLogs, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
+import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { focusGitHubActionsLog } from "../../src/source/github/ci-provider";
 
 class FakeProvider implements CiProvider {
@@ -68,6 +69,24 @@ describe("provider-neutral CI gate", () => {
     const pending = new FakeProvider(); pending.runs = [run("2", "Pending", "running")];
     const timedOut = await gate(pending, memory, options.timeoutMs + 1);
     expect(timedOut).toMatchObject({ outcome: "failure", status: "blocked" });
+  });
+
+  test("keeps a cancelled run eligible when its rerun is deferred by a repository pause", async () => {
+    const provider = new FakeProvider();
+    provider.runs = [run("1", "Tests", "cancelled", { canRerun: true })];
+    const memory = createCiGateMemory();
+    let paused = true;
+    provider.rerun = async (_change, runId) => {
+      provider.reruns.push(runId);
+      if (paused) throw new RepositoryPausedError();
+    };
+
+    await expect(gate(provider, memory)).rejects.toBeInstanceOf(RepositoryPausedError);
+    expect(memory.reruns).toEqual(new Set());
+
+    paused = false;
+    await expect(gate(provider, memory)).rejects.toBeInstanceOf(ExternalWaitError);
+    expect(provider.reruns).toEqual(["1", "1"]);
   });
   test("a new commit gets its own settle clock and focused logs trim cleanup", async () => {
     const provider = new FakeProvider(); provider.sha = "fedcba987"; provider.runs = [run("1", "Tests", "passed")];

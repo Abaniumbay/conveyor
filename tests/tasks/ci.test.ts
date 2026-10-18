@@ -6,6 +6,7 @@ import path from "node:path";
 import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../src/app/ci-provider";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
 import { configSchema } from "../../src/config/schema";
+import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -222,6 +223,21 @@ describe("ci.start", () => {
     const next = gateCtx(ci({ headSha: "head2", runs: [crun("Tests", "cancelled", { rerunnable: true })] }), { change: change({ headSha: "head2" }) });
     await run("ci.start", { context: next, deps: w.deps });
     expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toHaveLength(2);
+  });
+
+  test("keeps a cancelled rerun eligible when its write is deferred by a repository pause", async () => {
+    const w = await world();
+    const cancelled = gateCtx(ci({ runs: [crun("Tests", "cancelled", { rerunnable: true })] }));
+    w.provider.runs = [ciRun("Tests", "cancelled", { canRerun: true })];
+    w.provider.onRerun = () => { throw new RepositoryPausedError(); };
+
+    await expect(run("ci.start", { context: cancelled, deps: w.deps })).rejects.toBeInstanceOf(RepositoryPausedError);
+    expect(w.store.executions().ciMarks("i1", "head1", "rerun")).toEqual([]);
+    expect(w.store.executions().ciMarks("i1", "head1", "rerun-id")).toEqual([]);
+
+    w.provider.onRerun = () => {};
+    await expect(run("ci.start", { context: cancelled, deps: w.deps })).resolves.toMatchObject({ status: "pass" });
+    expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toEqual(["rerun id-Tests", "rerun id-Tests"]);
   });
 
   test("advisory mode also starts the durable watch; required mode does not", async () => {
