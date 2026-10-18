@@ -11,6 +11,7 @@ import { statusFilesystems } from "../../src/cli/commands/operations";
 import { RESTART_EXIT_CODE, stopAgentTransportsAfterService, SUPERVISED_RESTART_SHUTDOWN_TIMEOUT_MS } from "../../src/cli/commands/serve";
 import { runCli } from "../../src/cli/main";
 import { ConveyorService } from "../../src/app/service";
+import { serveControlSocket } from "../../src/control/server";
 import { Database } from "bun:sqlite";
 import { ConveyorStore, databaseSchemaVersion, LATEST_SCHEMA_VERSION } from "../../src/db/store";
 import { ConsoleSink, log } from "../../src/log/logger";
@@ -614,6 +615,38 @@ describe("conveyor doctor", () => {
 });
 
 describe("conveyor status filesystem capacity", () => {
+  test("reports a reachable service that is reconciling startup", async () => {
+    const home = await initialisedHome();
+    const socket = path.join(home, "run/control.sock");
+    const control = await serveControlSocket(socket, async () => Response.json({
+      version: { version: "1.0.0", commit: "development" },
+      pid: process.pid,
+      home,
+      config: path.join(home, "config/conveyor.yaml"),
+      logs: path.join(home, "logs"),
+      database: path.join(home, "state/conveyor.sqlite"),
+      artifacts: path.join(home, "artifacts"),
+      temporary: path.join(home, "tmp"),
+      dashboardUrl: "https://conveyor.example.com/",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      supervised: false,
+      configHash: "startup-test",
+      ready: false,
+      startup: { state: "starting", repository: "app", phase: "reconciling" },
+      draining: null,
+      runners: { limit: 1, busy: 0 },
+      active: [], steering: 0, stopped: [], openQuestions: 0,
+    }));
+    try {
+      const result = await cli("status", "--home", home);
+
+      expect(result.code).toBe(EXIT.ok);
+      expect(result.out).toContain("starting: reconciling app");
+    } finally {
+      await control.stop();
+    }
+  });
+
   test("uses the shared capacity report with stubbed artifact and temporary measurements", async () => {
     const report = await statusFilesystems({ artifacts: "/srv/conveyor/artifacts" }, async (location) => {
       if (location === "/srv/conveyor/artifacts") return { blocks: 100, bsize: 1, bavail: 14 };

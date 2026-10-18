@@ -247,12 +247,8 @@ describe("agent.run through the service", () => {
   test("interrupts a running agent stage for restart and queues the same workspace again", async () => {
     const first = await setup({ waitForAbort: true });
     const logs: string[] = [];
-    const onboard = ConveyorService.prototype.onboardRepositories;
-    const reconcile = ConveyorService.prototype.reconcileAll;
     const resumed: string[] = [];
     log.configure({ sinks: [{ write: (record) => logs.push(JSON.stringify(record)) }] });
-    ConveyorService.prototype.onboardRepositories = async () => {};
-    ConveyorService.prototype.reconcileAll = async () => {};
     try {
       first.schedule();
       await first.running;
@@ -260,21 +256,47 @@ describe("agent.run through the service", () => {
       await first.service.close();
 
       const interrupted = await ConveyorStore.open(path.join(first.root, "db.sqlite"));
+      const sourceIssue = interrupted.getIssue("issue")!;
       expect(interrupted.getStageState("issue")).toMatchObject({ status: "interrupted" });
       expect(interrupted.listIssueRuns("issue")[0]).toMatchObject({ status: "interrupted" });
       expect(interrupted.getIssue("issue")).toMatchObject({ projectedState: "active" });
       expect(interrupted.getActiveWorkspace("issue")).toMatchObject({ path: first.workspace });
       interrupted.close();
 
-      const service = await ConveyorService.create(first.config, {} as never, {} as never);
+      const github = {
+        async listIssues() {
+          return [{
+            id: sourceIssue.id,
+            number: sourceIssue.sourceNumber,
+            url: sourceIssue.sourceUrl,
+            title: sourceIssue.title,
+            body: sourceIssue.body,
+            state: sourceIssue.sourceState,
+            stateReason: sourceIssue.sourceStateReason,
+            labels: sourceIssue.labels,
+            updatedAt: sourceIssue.sourceUpdatedAt,
+          }];
+        },
+        async getIssueProvenance() {
+          return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+        },
+        async collaboratorPermission() { return "write" as const; },
+        async listSubIssues() { return []; },
+        async listDependencies() { return []; },
+        async ensureLabels() {},
+        async replaceConveyorLabels() {},
+      };
+      const service = await ConveyorService.create(first.config, github as never, {} as never);
       (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => {
         resumed.push(issue.id);
         // A real executor makes the item ineligible before releasing its worker.
         service.store.setIssueProjection(issue.id, { stage: "refinement", state: "needs-input", warning: null });
       };
       service.start();
-      while (resumed.length === 0) await Bun.sleep(5);
+      const deadline = Date.now() + 1_000;
+      while (resumed.length === 0 && Date.now() < deadline) await Bun.sleep(5);
 
+      expect(service.startupStatus()).toEqual({ state: "ready", repository: null, phase: null });
       expect(resumed).toEqual(["issue"]);
       expect(service.store.getStageState("issue")).toMatchObject({ status: "ready", stageId: "refinement" });
       expect(service.store.getActiveWorkspace("issue")).toMatchObject({ path: first.workspace });
@@ -286,8 +308,6 @@ describe("agent.run through the service", () => {
       expect(logs).toContainEqual(expect.stringContaining('"item":"repo:1"'));
       await service.close();
     } finally {
-      ConveyorService.prototype.onboardRepositories = onboard;
-      ConveyorService.prototype.reconcileAll = reconcile;
       log.configure({ sinks: [new ConsoleSink()] });
     }
   });
