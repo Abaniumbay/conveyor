@@ -304,7 +304,7 @@ pipelines:
       - id: merge
         concurrency: 1
         actions:
-          - { id: mergeReviewedHead, task: change.merge, with: { method: squash } }
+          - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
         exit-gate:
           - { id: merged, task: change.merged, onFail: { return: implementation } }
       - id: deploy
@@ -619,7 +619,7 @@ A task returns `pass`, `pending` or `fail`. A thrown error is an infrastructure 
 
 ### Routing: onFail, retries, maxReturns
 
-A failing task is routed, in order, by the route the task result carries, the instance's `onFail`, or the list default:
+A failing task is routed, in order, by the route the task result carries, the instance's `onFail`, or the list default. A task result may carry only `retry` or `stop`: no task names a stage, so where a failure returns to is decided by the pipeline's `onFail` alone. Conveyor's code knows no stage by name; stages, their order, their icons and their routes come only from the configuration.
 
 - `retry` (default for an exit-gate failure): run the stage's actions again as the next attempt with the failure message and details as `run.feedback`, while the attempt number is at most `retries` (so a stage makes up to `retries + 1` attempts). When retries are exhausted the stage stops as `blocked` with the last failure. Usage-limit and infrastructure retries do not count.
 - `{ return: <stage> }`: leave this stage and return to another stage of the pipeline (normally an earlier one; the compiler rejects an unknown stage and the stage's own id) with the failure as required fixes and evidence. The number of returns is counted per item in the context; reaching `settings.maxReturns` stops the item as `blocked` with a loop-guard reason. The counter resets when the item leaves the pipeline or is stopped, so a person's unblock starts with a fresh budget.
@@ -899,7 +899,7 @@ Every agent receives a scoped MCP server for exactly one repository, issue, stag
 - `change.*`: `get`, `setMetadata`, `comment`, `resolveFinding`, `listFindings`, `checkCriterion`, `uncheckCriterion` (and `dismissFinding`, which is never grantable).
 - `ci.getLogs`: failing or named CI job logs for the current head.
 - `conversation.get`: read the concise shared issue handoff without exposing raw harness logs or private reasoning.
-- `todo.*`: `get`, `set`, `update`: the implementer's ordered todo list for the item (stable ids; pending, in_progress or done; at most one in progress). Conveyor stores it, not the repository; it survives across runs and returns to the stage, and the board shows its progress on the card and the checklist in the item's details.
+- `todo.*`: `get`, `set`, `update`: an agent's ordered todo list for the item, owned by the stage of the run that wrote it (stable ids; pending, in_progress or done; at most one in progress). Conveyor stores it, not the repository; it survives across runs and returns to the stage, and the board shows its progress on the card and the checklist in the item's details.
 
 `agents.<id>.tasks` is the exact grant (default: every grantable tool). The legacy snake_case names remain accepted as aliases, in grants (`tools:` is normalised to `tasks`; using both is an error) and in calls: `source.get_issue` is `item.get`, `source.get_guidance` is `item.guidance`, `source.add_comment` is `item.comment`, `source.set_acceptance_criteria` is `item.setCriteria`, `source.set_system_labels`, `source.set_parent`, `source.set_dependencies` and `source.create_child` map to the matching `item.*` tools, `source.set_pull_request_metadata` is `change.setMetadata`, `workspace.get_context`, `workspace.request_fetch` and `workspace.request_push` are `workspace.get`, `workspace.fetch` and `workspace.push`, `delivery.get_state` is `change.get`, `delivery.get_check_logs` is `ci.getLogs`, `run.report_*` and `run.ask_question` are `agent.report*` and `agent.askQuestion`, and `run.record_artifact` and `workspace.record_artifact` are `agent.recordArtifact`. New configuration and documentation use the camelCase names.
 

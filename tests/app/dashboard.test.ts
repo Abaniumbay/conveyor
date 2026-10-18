@@ -384,7 +384,7 @@ describe("ConveyorService dashboard", () => {
     }
   });
 
-  test("a card carries the item's todo list with done/total progress and the current item", async () => {
+  test("a card carries the todo list, in progress only while the item is in the stage of the run that wrote it", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-todos-"));
     temporaryDirectories.push(root);
     const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
@@ -393,26 +393,27 @@ describe("ConveyorService dashboard", () => {
       settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
       web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
       labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
-      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "build", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
       repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
       agents: {},
     } as unknown as ConveyorConfig;
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
     for (const [id, number] of [["with-todos", 1], ["without", 2]] as const) {
-      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`, title: id, body: "", sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
+      store.upsertIssue({ id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`, title: id, body: "", sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:build"], sourceUpdatedAt: "2026-10-01T00:00:00Z" });
       store.setQueueRank(id, number);
-      store.setIssueProjection(id, { stage: "implementation", state: "active", warning: null });
-      store.setStageState({ issueId: id, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+      store.setIssueProjection(id, { stage: "build", state: "active", warning: null });
+      store.setStageState({ issueId: id, stageId: "build", status: "ready", feedbackCycle: 0, configHash: config.hash });
     }
     const items = [
       { id: "t1", text: "Repository", status: "done" as const },
       { id: "t2", text: "Endpoint", status: "pending" as const },
     ];
+    store.createRun({ id: "run-1", issueId: "with-todos", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-03T09:00:00Z" });
     new ItemTodos(store.sqlite()).set("with-todos", items, "run-1", "2026-10-03T10:00:00Z");
 
     const service = new ConveyorService(config, store, {} as never);
     const cards = service.dashboard("csrf").stages.flatMap((stage) => stage.issues);
-    expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ finished: 1, total: 2, skipped: 0, current: "Endpoint", items });
+    expect(cards.find((card) => card.id === "with-todos")!.todos).toEqual({ finished: 1, total: 2, skipped: 0, current: "Endpoint", inOwningStage: true, items });
     expect(cards.find((card) => card.id === "without")!.todos).toBeNull();
     store.close();
   });

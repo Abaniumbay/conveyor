@@ -64,7 +64,7 @@ const detailIssue: IssueCardViewModel = {
   issueType: null,
   issueFields: [],
   acceptanceCriteria: [{ id: "AC-1", text: "Works safely", approved: true, manual: false, tests: [] }],
-  todos: { finished: 1, skipped: 0, total: 1, current: null, items: [{ id: "t1", text: "Complete", status: "done" }] },
+  todos: { finished: 1, skipped: 0, total: 1, current: null, inOwningStage: true, items: [{ id: "t1", text: "Complete", status: "done" }] },
   indicators: [],
   activity: "Testing",
   reason: null,

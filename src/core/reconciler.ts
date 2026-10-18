@@ -1,7 +1,7 @@
 import type { LabelConfiguration } from "./issue-state";
 import { evaluateIssueState } from "./issue-state";
 import type { ConveyorStore, RepositoryRecord } from "../db/store";
-import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
+import { ItemTodos } from "../engine/todos";
 import { log } from "../log/logger";
 import type { IssueSourceAdapter, SourceEventActor, SourceIssue, SourceIssueProvenance } from "../source/types";
 
@@ -54,13 +54,15 @@ export interface ReconcileRepositoryResult {
 /** Projected states an item resumes from when its stopping label is removed (or enrolment restored). */
 const STOPPED_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected", "paused", "waiting"]);
 
-function hasPassedTodoOwningStage(
+/** Whether the item has moved past the stage its todo list belongs to (or finished altogether). */
+function hasPassedTodoStage(
   stages: readonly string[],
+  todoStage: string | null,
   stage: string | null,
   state: string | null,
 ): boolean {
   if (state === "done" || state === "completed") return true;
-  const owningStage = stages.indexOf(TODO_OWNING_STAGE);
+  const owningStage = todoStage === null ? -1 : stages.indexOf(todoStage);
   const currentStage = stage === null ? -1 : stages.indexOf(stage);
   return owningStage >= 0 && currentStage > owningStage;
 }
@@ -289,8 +291,10 @@ export async function reconcileRepository(
 
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
-    if (eligible && hasPassedTodoOwningStage(input.stages, projected.stage, projected.state)) {
-      new ItemTodos(input.store.sqlite()).closeOut(issueId);
+    if (eligible) {
+      const todos = new ItemTodos(input.store.sqlite());
+      const todoStage = todos.get(issueId)?.stageId ?? null;
+      if (hasPassedTodoStage(input.stages, todoStage, projected.stage, projected.state)) todos.closeOut(issueId);
     }
 
     if (!visible) {

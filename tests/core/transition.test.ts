@@ -153,8 +153,9 @@ describe("applyStageTransition", () => {
     store.close();
   });
 
-  test("closes implementation todos only after its source advance succeeds and preserves the closeout on replay", async () => {
+  test("closes the left stage's todos only after its source advance succeeds and preserves the closeout on replay", async () => {
     const store = await setup();
+    store.createRun({ id: "run", issueId: "issue", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: "hash", startedAt: "2026-10-01T00:00:00Z" });
     const todos = new ItemTodos(store.sqlite());
     todos.set("issue", [
       { id: "done", text: "Completed", status: "done", note: "kept" },
@@ -171,9 +172,9 @@ describe("applyStageTransition", () => {
       configHash: "hash",
       transitionId: "run-closeout",
       issue: store.getIssue("issue")!,
-      stages: ["refinement", "implementation", "review"],
+      stages: ["refinement", "build", "review"],
       labels: labelConfig,
-      result: { kind: "advance" as const, stageId: "implementation", nextStageId: "review", result: null, feedbackCycles: 0 },
+      result: { kind: "advance" as const, stageId: "build", nextStageId: "review", result: null, feedbackCycles: 0 },
     };
 
     await applyStageTransition(input);
@@ -193,6 +194,7 @@ describe("applyStageTransition", () => {
 
   test("does not close todos when a source advance fails", async () => {
     const store = await setup();
+    store.createRun({ id: "run", issueId: "issue", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: "hash", startedAt: "2026-10-01T00:00:00Z" });
     const todos = new ItemTodos(store.sqlite());
     todos.set("issue", [{ id: "open", text: "Open", status: "pending" }], "run", "2026-10-01T00:00:00Z");
 
@@ -204,9 +206,9 @@ describe("applyStageTransition", () => {
       configHash: "hash",
       transitionId: "run-source-failure",
       issue: store.getIssue("issue")!,
-      stages: ["refinement", "implementation", "review"],
+      stages: ["refinement", "build", "review"],
       labels: labelConfig,
-      result: { kind: "advance", stageId: "implementation", nextStageId: "review", result: null, feedbackCycles: 0 },
+      result: { kind: "advance", stageId: "build", nextStageId: "review", result: null, feedbackCycles: 0 },
     })).rejects.toThrow("source unavailable");
 
     expect(todos.get("issue")!.items).toEqual([{ id: "open", text: "Open", status: "pending" }]);

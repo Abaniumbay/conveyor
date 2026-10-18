@@ -2,7 +2,7 @@ import type { StoredIssue, ConveyorStore } from "../db/store";
 import type { StageExecutionResult } from "./pipeline";
 import type { LabelConfiguration } from "./issue-state";
 import { RepositoryPausedError } from "./repository-pause";
-import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
+import { ItemTodos } from "../engine/todos";
 
 export interface TransitionSource {
   replaceConveyorLabels(
@@ -213,9 +213,7 @@ export async function applyStageTransition(
   // The source transition succeeded: close the todo list out together with the local advance.
   input.store.sqlite().transaction(() => {
     input.store.completeStageTransition(input.transitionId);
-    if (input.result.kind === "advance" && input.result.stageId === TODO_OWNING_STAGE) {
-      new ItemTodos(input.store.sqlite()).closeOut(input.issue.id);
-    }
+    if (input.result.kind === "advance") new ItemTodos(input.store.sqlite()).closeOutStage(input.issue.id, input.result.stageId);
     input.store.setStageState({
       issueId: input.issue.id,
       stageId: target.stageId,

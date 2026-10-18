@@ -92,7 +92,7 @@ delivery:
       icon: "🔀"
       concurrency: 1
       actions:
-        - { id: mergeReviewedHead, task: change.merge, with: { method: squash } }
+        - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
       exit-gate:
         - { id: merged, task: change.merged, onFail: { return: implementation } }
 
