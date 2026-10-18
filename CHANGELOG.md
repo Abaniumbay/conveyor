@@ -10,6 +10,31 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.11.1] - 2026-10-18
+
+Conveyor now keeps a copy of what it reads from GitHub in its database and answers every read from it; only an item it does not hold or one older than its configured lifetime is read from GitHub, which cuts an agent's GitHub calls during review to none and a full delivery to about a third. Merging no longer waits for GitHub to compute mergeability, and status comments are edited only when the status changes. Also adds board approvals per stage and pausing a repository from its page.
+
+### Added
+
+- Superusers can pause a repository from its dashboard page and later resume its preserved work without changing its configuration or item enrollment.
+
+- Operators can require one board approval before an item leaves any current or later native stage. Board approvals wait after configured exit checks, including configured manual gates, and show separate controls and receipts in item details.
+
+### Changed
+
+- Conveyor keeps a copy of what it reads from GitHub in its database and answers every read from it.
+  Only an item it does not hold, or one older than its lifetime (`settings.githubCache`: an hour for
+  issues, pull requests and permissions, 15 minutes for running checks, finished checks kept), is read
+  from GitHub. Webhook deliveries and Conveyor's own writes keep the copy current, and a restart reads
+  nothing it already holds. Merging no longer waits for GitHub to compute mergeability: the merge
+  decides. The issue's status comment no longer shows the next check or how long an item has been
+  queued, so it is edited only when the status changes. On the offline benchmark, an agent's 30 tool calls during review now cost no GitHub
+  request (92 calls before), a 20-minute CI wait 21 (44), and one item's delivery 22 (45).
+
+### Fixed
+
+- Release checks now run against a prepared scratch checkout, so changelog-fragment tests remain valid when a release consumes its fragments.
+
 ## [0.11.0] - 2026-10-17
 
 Conveyor now reads GitHub only when it needs to. For repositories whose webhook it manages, an item entering a stage reads its issue once, deliveries update issues and decide finished CI without reads, nothing is read periodically, and a restart reads only what changed while Conveyor was stopped. Webhook health comes from deliveries and a ping after a quiet hour. Also fixes roll-up parent closing and the implementer's first workspace fetch.
