@@ -12,8 +12,9 @@
 import type { StageExecutionResult } from "../core/pipeline";
 import type { CompiledPipeline, CompiledStage, CompiledTask } from "../tasks/plan";
 import type { Feedback, TaskContext } from "../tasks/context";
-import { runTask, type Route, type TaskRegistry, type TaskResult } from "../tasks/contract";
+import { pending, runTask, type Route, type TaskRegistry, type TaskResult } from "../tasks/contract";
 import { StaleEpochError, type ExecutionStore, type StageCursor } from "./journal";
+import { RepositoryPausedError } from "../core/repository-pause";
 import {
   captureOutput, detailLists, engineState, formatDuration, keysToLoad, markLoaded, markStale, recordCheckpoint,
   snapshotReads, validAfter,
@@ -267,10 +268,15 @@ export class StageExecutor {
       } else {
         const running = journal.markRunning(record.id, run.epoch);
         await this.#save(run, { state: "running" });
-        result = await runTask(definition, {
-          context: run.context, config: task.with, deps,
-          instance: { id: task.id, stage: run.stage.id, idempotencyKey: record.idempotencyKey, resumed: planned.resumed },
-        });
+        try {
+          result = await runTask(definition, {
+            context: run.context, config: task.with, deps,
+            instance: { id: task.id, stage: run.stage.id, idempotencyKey: record.idempotencyKey, resumed: planned.resumed },
+          });
+        } catch (error) {
+          if (!(error instanceof RepositoryPausedError)) throw error;
+          result = pending(error.message, { after: 60_000 });
+        }
         if (result.status === "pending" && expired(running.deadlineAt)) result = timeoutFail(result.message);
       }
       if (result.status === "pass") journal.completeExecution(record.id, result, run.epoch);

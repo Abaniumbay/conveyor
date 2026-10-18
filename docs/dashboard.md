@@ -75,6 +75,8 @@ The Board's compact repository filters show repositories with active board work,
 
 **Repositories** (`/repositories`) lists every configured repository with its id, address, health, and current work. A degraded repository is also called out above the Board's line with its error and page link, since its items may be out of date. Select one to open `/repositories/<id>`, which provides its current delivery status, recent work, and **Setup**. Setup shows the provider configuration to every signed-in user, but only superusers see the local folder and agent egress hosts.
 
+A superuser can **Pause** a repository from its detail page, optionally recording why, and later **Resume** it there. A paused badge appears in the repository list, Board filter, detail page, and its Board cards; the detail page records who paused it and when. Conveyor may still refresh GitHub reads, and a process run already under way is allowed to finish, but it admits no new work and performs no GitHub, code-host, or CI write for that repository until it resumes. Its items, cursors, approvals, journals, costs, and worktrees remain intact, so resumption continues eligible items from their stored step. This is separate from pausing an item, which changes that item's enrollment label, and from removing a repository from configuration, which removes its local operational records.
+
 ![Configured repositories](screenshots/repositories.png)
 
 ![Repository detail and setup](screenshots/repository.png)

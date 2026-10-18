@@ -7,6 +7,7 @@ import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { BOARD_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
+import { RepositoryPausedError } from "../../src/core/repository-pause";
 import type { WaitKind } from "../../src/events/topics";
 import type { CiContext, TaskContext } from "../../src/tasks/context";
 import {
@@ -452,6 +453,23 @@ describe("crash injection", () => {
     expect(h.world.resumedFlags).toEqual([false, true]);
     expect(h.world.remote).toHaveLength(1);
     expect(h.journal.getContext("issue-1")!.context.agent?.summary).toBe("answered");
+  });
+
+  test("a repository pause parks an act at its cursor and resumes it without repeating its recorded work", async () => {
+    const h = await harness();
+    h.activate();
+    const plan = simple(h);
+    h.world.actResult = () => { throw new RepositoryPausedError(); };
+
+    await expect(h.run(plan, "implementation")).resolves.toMatchObject({ kind: "parked", reason: "pending" });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ taskInstanceId: "act", state: "pending" });
+    expect(h.world.remote).toHaveLength(1);
+
+    h.world.actResult = () => pass({ agentId: "a", status: "done", summary: "resumed", reason: null, sessionId: null, runId: "r" });
+    h.advance(60_000);
+    await expect(h.run(plan, "implementation")).resolves.toMatchObject({ kind: "advance" });
+    expect(h.world.resumedFlags).toEqual([false, true]);
+    expect(h.world.remote).toHaveLength(1);
   });
 
   test("late completion after an epoch bump is discarded silently", async () => {

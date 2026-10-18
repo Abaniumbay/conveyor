@@ -129,6 +129,8 @@ export const EVENT_CATALOGUE = {
   "repository.onboarded": define("System", "A configured repository was added to or updated in the local index.", z.object({ address: z.string() }).strict()),
   "repository.removed": define("System", "An unconfigured repository and its history were removed.", z.object({}).strict()),
   "repository.trustChanged": define("System", "A repository's observed visibility changed.", z.object({ visibility: z.string() }).strict()),
+  "repository.paused": define("System", "An operator paused repository work without changing its configuration.", z.object({ actor: z.string(), reason: z.string().nullable() }).strict()),
+  "repository.resumed": define("System", "An operator resumed repository work from its retained state.", z.object({}).strict()),
   "config.recorded": define("System", "A new configuration snapshot was recorded.", z.object({ hash: z.string() }).strict()),
   "account.created": define("System", "A dashboard account was created.", z.object({ accountId: id, role: z.string() }).strict()),
   "account.passwordChanged": define("System", "A dashboard account's password changed.", z.object({ accountId: id }).strict()),

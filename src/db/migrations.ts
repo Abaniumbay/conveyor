@@ -912,4 +912,16 @@ export const migrations: readonly Migration[] = [
       GROUP BY issue_id, stage_id;
     `,
   },
+  {
+    version: 34,
+    sql: `
+      -- A repository pause is operational state, intentionally independent of its configuration.
+      CREATE TABLE repository_pauses (
+        repository_id TEXT PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+        actor TEXT NOT NULL,
+        paused_at TEXT NOT NULL,
+        reason TEXT
+      );
+    `,
+  },
 ];

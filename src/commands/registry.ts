@@ -51,6 +51,8 @@ export const COMMANDS = {
 
   // Repositories
   "repository.sync": define("superuser", "Read one repository afresh now: every issue, provenance, permissions, relationships, pull request heads and CI.", z.object({ repositoryId: id }).strict()),
+  "repository.pause": define("superuser", "Pause a repository without changing its configured pipeline or enrolled items.", z.object({ repositoryId: id, reason: text(500) }).strict()),
+  "repository.resume": define("superuser", "Resume a paused repository from its retained state.", z.object({ repositoryId: id }).strict()),
 
   // Service
   "admission.drain": define("superuser", "Stop admitting new work; running work continues.", z.object({ reason: text(500) }).strict()),

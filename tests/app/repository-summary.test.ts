@@ -224,6 +224,7 @@ describe("buildRepositorySummaries", () => {
     } as unknown as ConveyorConfig;
     const provider = new Proxy({}, { get: () => { throw new Error("provider access is forbidden"); } }) as never;
     const service = new ConveyorService(serviceConfig, store, provider);
+    store.pauseRepository("alpha", "operator", "CI budget");
 
     const board = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
     const list = service.dashboard("csrf", { view: "repositories", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });
@@ -237,11 +238,18 @@ describe("buildRepositorySummaries", () => {
     const readerDetail = renderDashboard({ ...detail, account: reader });
     const superuserDetail = renderDashboard({ ...detail, account: superuser });
 
+    expect(board.repositories.find((repository) => repository.id === "alpha")?.pause).toMatchObject({ actor: "operator", reason: "CI budget" });
+    expect(board.stages.flatMap((stage) => stage.issues).find((card) => card.id === "running")).toMatchObject({ repositoryPaused: true, working: true });
     expect(boardHtml).toContain('href="/repositories"');
+    expect(boardHtml).toContain("Repository paused");
     expect(readerList).toContain("owner/alpha");
     expect(superuserList).toContain("owner/alpha");
     expect(readerDetail).toContain("Recently delivered");
+    expect(readerDetail).toContain("Paused");
+    expect(readerDetail).toContain("CI budget");
     expect(superuserDetail).toContain("/work/alpha");
+    expect(readerDetail).not.toContain("/repositories/alpha/pause");
+    expect(superuserDetail).toContain("/repositories/alpha/resume");
     expect(readerDetail).not.toContain("/work/alpha");
     for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
       expect(html).not.toContain("sentinel-webhook-secret");

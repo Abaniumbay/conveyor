@@ -29,6 +29,14 @@ export interface RepositoryTrustStatus {
   warning: string | null;
 }
 
+/** A durable operational pause for one configured repository. */
+export interface RepositoryPause {
+  repositoryId: string;
+  actor: string;
+  pausedAt: string;
+  reason: string | null;
+}
+
 /** The GitHub issue type and the organization issue-field values Conveyor shows beside labels. */
 export interface IssueMetadata {
   type: string | null;
@@ -718,6 +726,46 @@ export class ConveyorStore {
       checkedAt: row.checked_at,
       warning: row.warning,
     };
+  }
+
+  repositoryPause(repositoryId: string): RepositoryPause | null {
+    const row = this.#database.query(
+      "SELECT repository_id, actor, paused_at, reason FROM repository_pauses WHERE repository_id = ?",
+    ).get(repositoryId) as { repository_id: string; actor: string; paused_at: string; reason: string | null } | null;
+    return row === null ? null : {
+      repositoryId: row.repository_id,
+      actor: row.actor,
+      pausedAt: row.paused_at,
+      reason: row.reason,
+    };
+  }
+
+  pauseRepository(repositoryId: string, actor: string, reason: string | null): RepositoryPause {
+    const repository = this.#database.query("SELECT id FROM repositories WHERE id = ?").get(repositoryId) as { id: string } | null;
+    if (!repository) throw new Error("repository not found");
+    if (this.repositoryPause(repositoryId)) throw new Error("the repository is already paused");
+    const pause = { repositoryId, actor, pausedAt: now(), reason };
+    this.#database.transaction(() => {
+      this.#database.query(
+        "INSERT INTO repository_pauses(repository_id, actor, paused_at, reason) VALUES (?, ?, ?, ?)",
+      ).run(pause.repositoryId, pause.actor, pause.pausedAt, pause.reason);
+      this.#events.append("repository.paused", { actor, reason }, { repositoryId });
+    })();
+    return pause;
+  }
+
+  resumeRepository(repositoryId: string): RepositoryPause {
+    const pause = this.repositoryPause(repositoryId);
+    if (!pause) {
+      const repository = this.#database.query("SELECT id FROM repositories WHERE id = ?").get(repositoryId) as { id: string } | null;
+      if (!repository) throw new Error("repository not found");
+      throw new Error("the repository is not paused");
+    }
+    this.#database.transaction(() => {
+      this.#database.query("DELETE FROM repository_pauses WHERE repository_id = ?").run(repositoryId);
+      this.#events.append("repository.resumed", {}, { repositoryId });
+    })();
+    return pause;
   }
 
   removeRepositoriesExcept(configuredIds: readonly string[]): string[] {

@@ -24,13 +24,24 @@ async function service() {
   const config = {
     hash: "h", root,
     settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "worktrees"), runners: 1, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
-    web: {}, sources: { github: { type: "github" } }, labels: {}, pipelines: {}, agents: {}, repositories: {},
+    web: {}, sources: { github: { type: "github" } },
+    labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { noSplit: "conveyor:no-split" } },
+    pipelines: {}, agents: {},
+    repositories: {
+      repo: { source: "github", address: "owner/my-app", folder: root, baseBranch: "main", pipeline: "delivery", concurrency: 1 },
+    },
   } as unknown as ConveyorConfig;
-  const conveyor = new ConveyorService(config, store, {} as never);
+  store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: "h" });
+  const sourceCalls: string[] = [];
+  const github = {
+    async getIssue() { sourceCalls.push("get"); throw new Error("paused calls must not read the source"); },
+    async replaceConveyorLabels() { sourceCalls.push("labels"); },
+  };
+  const conveyor = new ConveyorService(config, store, github as never);
   const alice = store.createDashboardUser("alice", "hash-a");
   const bob = store.createDashboardUser("bob", "hash-b");
   const actor = (account: { id: string; username: string }, role: CommandActor["role"] = "user"): CommandActor => ({ kind: "user", id: account.id, name: account.username, role });
-  return { conveyor, store, alice, bob, actor };
+  return { conveyor, store, alice, bob, actor, sourceCalls };
 }
 
 describe("account commands", () => {
@@ -68,6 +79,34 @@ describe("service commands", () => {
     const { conveyor, store } = await service();
     const missing = (Object.keys(COMMANDS) as CommandName[]).filter((name) => !conveyor.commands.has(name));
     expect(missing).toEqual(["service.restart", "release.schedule", "release.cancel"]);
+    store.close();
+  });
+
+  test("a superuser pauses and resumes a configured repository without admitting source actions", async () => {
+    const { conveyor, store, alice, actor, sourceCalls } = await service();
+    store.upsertIssue({
+      id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.com/1", title: "Issue", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+
+    await expect(conveyor.commands.dispatch("repository.pause", { repositoryId: "repo", reason: "CI budget" }, actor(alice)))
+      .rejects.toBeInstanceOf(CommandForbiddenError);
+    await conveyor.commands.dispatch("repository.pause", { repositoryId: "repo", reason: "CI budget" }, actor(alice, "superuser"));
+    expect(store.repositoryPause("repo")).toMatchObject({ actor: "alice", reason: "CI budget" });
+
+    await expect(conveyor.pauseIssue("issue", "alice")).rejects.toThrow("Repository is paused");
+    expect(() => conveyor.syncRepository("repo")).toThrow("Repository is paused");
+    expect(sourceCalls).toEqual([]);
+    expect(store.getIssue("issue")).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+
+    await conveyor.commands.dispatch("repository.resume", { repositoryId: "repo" }, actor(alice, "superuser"));
+    expect(store.repositoryPause("repo")).toBeNull();
+    await expect(conveyor.commands.dispatch("repository.resume", { repositoryId: "repo" }, actor(alice, "superuser")))
+      .rejects.toThrow("repository is not paused");
+    await expect(conveyor.commands.dispatch("repository.pause", { repositoryId: "missing", reason: "x" }, actor(alice, "superuser")))
+      .rejects.toThrow("repository not found");
+    expect(store.repositoryPause("repo")).toBeNull();
     store.close();
   });
 });
