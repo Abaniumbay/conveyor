@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 
+import { RepositoryPausedError } from "../core/repository-pause";
 import { observeCi, observeCiError } from "../app/indicators";
 import { boundLog, boundSnapshotLogs, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
@@ -122,11 +123,21 @@ const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
     for (const name of waiting) marks.markCi(deps.issueId, head, "started", name, at.toISOString());
 
     // Marked before the rerun so a crash in between loses one rerun rather than repeating it.
+    // A repository pause is different: its fence runs before the provider write,
+    // so release these provisional marks and preserve the rerun intent for resume.
     const { rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable);
     for (const run of rerun) {
       if (marks.markCi(deps.issueId, head, "rerun", run.name, at.toISOString()).fresh) {
         marks.markCi(deps.issueId, head, "rerun-id", run.id, at.toISOString());
-        await provider.rerun(target, run.id);
+        try {
+          await provider.rerun(target, run.id);
+        } catch (error) {
+          if (error instanceof RepositoryPausedError) {
+            marks.unmarkCi(deps.issueId, head, "rerun", run.name);
+            marks.unmarkCi(deps.issueId, head, "rerun-id", run.id);
+          }
+          throw error;
+        }
       }
     }
 

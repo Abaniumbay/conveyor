@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import type { PipelineDependencies } from "../core/pipeline";
+import { RepositoryPausedError } from "../core/repository-pause";
 import { applyStageTransition, type TransitionSource } from "../core/transition";
 import type { ConveyorStore, StoredIssue } from "../db/store";
 import { StageExecutor, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier, type StageOutcome } from "../engine/stage-executor";
@@ -122,7 +123,12 @@ export class IssueExecutor {
         checks: [],
       };
     };
-    const transitionId = randomUUID();
+    // A completed stage can be paused at its final label write. Reuse only a
+    // pending transition from this stage so its source-mutation key survives
+    // resume, while a genuine failed attempt still receives a fresh intent.
+    const transitionId = store.listStageTransitions(issue.id)
+      .find((transition) => transition.status === "pending" && transition.fromStage === stageId)?.id
+      ?? randomUUID();
     try {
       signal?.throwIfAborted();
       let deps: unknown = this.dependencies.taskDeps?.(issue, runtimeRepository) ?? {};
@@ -234,6 +240,26 @@ export class IssueExecutor {
       }
       return result;
     } catch (error) {
+      if (error instanceof RepositoryPausedError) {
+        const current = store.getIssue(issue.id);
+        if (current) {
+          store.setIssueProjection(issue.id, {
+            stage: current.projectedStage,
+            state: current.projectedState ?? "active",
+            warning: "Repository is paused; the completed stage transition will resume when it resumes.",
+          });
+        }
+        // Do not fence the stage epoch: its completed task records and pending
+        // source transition are the durable cursor for the resumed pass.
+        store.setStageState({
+          issueId: issue.id,
+          stageId,
+          status: "ready",
+          feedbackCycle: state.feedbackCycle,
+          configHash: config.hash,
+        });
+        return { kind: "parked", stageId, reason: "pending", wakeAt: null };
+      }
       store.setStageState({
         issueId: issue.id,
         stageId,

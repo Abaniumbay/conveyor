@@ -5,6 +5,7 @@
 // depends on executor defaults.
 
 import { ExternalWaitError } from "../app/ci-gate";
+import { RepositoryPausedError } from "../core/repository-pause";
 import {
   PipelineExecutionError,
   type CheckContext,
@@ -142,6 +143,7 @@ const produce: TaskDefinition<LegacyWith, unknown, LegacyRuntime> = {
     try {
       result = await deps.runProducer(config.stage, producerContext(args));
     } catch (error) {
+      if (error instanceof RepositoryPausedError) return pending(error.message, { after: POLL_MS });
       if (!(error instanceof ExternalWaitError)) throw error;
       return pending(error.message, { after: error.retryAfterMs });
     }

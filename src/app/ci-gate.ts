@@ -1,4 +1,5 @@
 /** Provider-neutral CI gate. A pending gate releases all runner permits. */
+import { RepositoryPausedError } from "../core/repository-pause";
 import type { CiChange, CiProvider, CiRun, CiRunState } from "./ci-provider";
 
 export class ExternalWaitError extends Error {
@@ -190,8 +191,16 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
   const checks = allRuns.filter((run) => !ignored.has(run.name) && !awaitingStart.includes(run.name));
   const { running, failed, rerun } = classifyRuns(checks, (run) => run.canRerun && !memory.reruns.has(`${key}:${run.name}`));
   for (const run of rerun) {
-    memory.reruns.add(`${key}:${run.name}`);
-    await provider.rerun(change, run.id);
+    const rerunKey = `${key}:${run.name}`;
+    memory.reruns.add(rerunKey);
+    try {
+      await provider.rerun(change, run.id);
+    } catch (error) {
+      // The pause fence runs before the provider write, so its provisional
+      // in-memory mark must not consume the retry when work resumes.
+      if (error instanceof RepositoryPausedError) memory.reruns.delete(rerunKey);
+      throw error;
+    }
     running.push(run);
   }
 

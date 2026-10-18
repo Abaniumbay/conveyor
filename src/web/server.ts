@@ -1328,6 +1328,37 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
+    const repositoryPausePath = /^\/repositories\/([^/]{1,200})\/(pause|resume)$/.exec(path);
+    if (repositoryPausePath) {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      let repositoryId: string;
+      try {
+        repositoryId = decodeURIComponent(repositoryPausePath[1]!);
+      } catch {
+        return text("Invalid repository", 400);
+      }
+      const action = repositoryPausePath[2]!;
+      const reason = oneValue(form, "reason");
+      if (reason !== null && reason.length > 500) return text("Pause reason is too long", 400);
+      if (action === "resume" && reason !== null) return text("Invalid resume request", 400);
+      try {
+        const { result, correlationId } = action === "pause"
+          ? await dependencies.dispatch("repository.pause", { repositoryId, reason: reason ?? "" }, actorOf(currentSession))
+          : await dependencies.dispatch("repository.resume", { repositoryId }, actorOf(currentSession));
+        if (wantsJson(request)) return json({ ok: true, ...result, correlationId });
+        return redirect(`/repositories/${encodeURIComponent(repositoryId)}`);
+      } catch (error) {
+        return commandError(error) ?? text(`Unable to ${action} the repository`, 409);
+      }
+    }
+
     if (path === "/backlog/reorder") {
       const methodError = requireMethod(request, "POST");
       if (methodError) return methodError;

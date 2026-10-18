@@ -54,6 +54,7 @@ const model: DashboardViewModel = {
 const detailIssue: IssueCardViewModel = {
   id: "github:owner/repo#1",
   repository: "repo",
+  repositoryPaused: false,
   repositoryColor: 1,
   number: 1,
   title: "Keep <item> safe",
@@ -1461,6 +1462,8 @@ describe("dashboard commands", () => {
       putPushSubscription: () => {},
       deletePushSubscription: () => {},
       syncRepository: () => ({ issues: 3, failed: false }),
+      pauseRepository: () => ({ pausedAt: "2026-10-18T12:00:00.000Z" }),
+      resumeRepository: () => ({ resumedAt: "2026-10-18T12:00:00.000Z" }),
     });
     const { cookie } = await login(handler);
     const csrf = auth.getSession(cookie)!.csrfToken;
@@ -1478,6 +1481,8 @@ describe("dashboard commands", () => {
       ["backlog.reorder", () => form("/backlog/reorder", { issueId: "i-1", direction: "up" })],
       ["backlog.move", () => form("/backlog/move", { issueId: "i-1", beforeIssueId: "" })],
       ["repository.sync", () => form("/repositories/app/sync", {})],
+      ["repository.pause", () => form("/repositories/app/pause", { reason: "CI budget" })],
+      ["repository.resume", () => form("/repositories/app/resume", {})],
       ["item.postMessage", () => form(`/api/issues/${ISSUE}/conversation`, { message: "Please continue" })],
       ["item.retry", () => form(`/api/issues/${ISSUE}/retry`, { note: "" })],
       ["finding.dismiss", () => json(`/api/issues/${ISSUE}/findings/f-1/dismiss`, { reason: "Not applicable" })],
@@ -1599,6 +1604,43 @@ describe("repository sync", () => {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ csrf }),
     }));
     expect(await response.json()).toMatchObject({ ok: false, issues: 3, failed: true });
+  });
+});
+
+describe("repository pause", () => {
+  test("a superuser pauses and resumes a repository with a CSRF-protected command", async () => {
+    const calls: Array<[string, string, string?]> = [];
+    const { handler, auth } = setup({
+      pauseRepository: (id: string, reason: string, actor: string) => { calls.push(["pause", id, `${actor}: ${reason}`]); return { pausedAt: "2026-10-18T12:00:00.000Z" }; },
+      resumeRepository: (id: string) => { calls.push(["resume", id]); return { resumedAt: "2026-10-18T13:00:00.000Z" }; },
+    });
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)!.csrfToken;
+    const pause = await handler(new Request("http://localhost/repositories/my-app/pause", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, reason: "CI budget" }),
+    }));
+    const resume = await handler(new Request("http://localhost/repositories/my-app/resume", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }),
+    }));
+    expect(pause.headers.get("location")).toBe("/repositories/my-app");
+    expect(resume.headers.get("location")).toBe("/repositories/my-app");
+    expect(calls).toEqual([["pause", "my-app", "operator: CI budget"], ["resume", "my-app"]]);
+  });
+
+  test("repository pause rejects unsigned, forged, and non-superuser requests", async () => {
+    const paused: string[] = [];
+    const { handler, auth } = setup({ pauseRepository: (id: string) => { paused.push(id); return { pausedAt: "2026-10-18T12:00:00.000Z" }; } });
+    expect((await handler(new Request("http://localhost/repositories/my-app/pause", { method: "POST" }))).status).toBe(401);
+    const { cookie } = await login(handler);
+    expect((await handler(new Request("http://localhost/repositories/my-app/pause", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({}),
+    }))).status).toBe(403);
+    const reader = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1 };
+    const readerSession = auth.createSession(reader)!;
+    expect((await handler(new Request("http://localhost/repositories/my-app/pause", {
+      method: "POST", headers: { cookie: readerSession.cookie.split(";", 1)[0]!, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: readerSession.csrfToken }),
+    }))).status).toBe(403);
+    expect(paused).toEqual([]);
   });
 });
 

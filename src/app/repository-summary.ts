@@ -40,6 +40,7 @@ export interface RepositorySummary {
   error: string | null;
   errorSummary: string | null;
   lastReconciledAt: string | null;
+  pause: { actor: string; pausedAt: string; reason: string | null } | null;
   backlog: number;
   stages: Array<{ id: string; name: string; count: number }>;
   done: number;
@@ -193,6 +194,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     const ciProvider = ci.provider ? config.ci?.[ci.provider]?.type ?? null : null;
     const report = reportByRepository.get(id)!;
     const observedTrust = store.repositoryTrustStatus(id);
+    const pause = store.repositoryPause(id);
 
     return {
       id,
@@ -203,6 +205,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
       error,
       errorSummary: error === null ? null : concise(error, 240),
       lastReconciledAt,
+      pause: pause === null ? null : { actor: pause.actor, pausedAt: pause.pausedAt, reason: pause.reason },
       backlog: nonDone.filter((issue) => issue.projectedStage === null).length,
       stages: stages.map((stage) => ({
         id: stage.id,

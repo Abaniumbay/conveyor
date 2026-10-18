@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { applyRollupTransition, applyStageTransition } from "../../src/core/transition";
+import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
@@ -210,6 +211,28 @@ describe("applyStageTransition", () => {
 
     expect(todos.get("issue")!.items).toEqual([{ id: "open", text: "Open", status: "pending" }]);
     expect(store.listStageTransitions("issue")).toMatchObject([{ id: "run-source-failure", status: "failed" }]);
+    store.close();
+  });
+
+  test("keeps a transition and source intent pending when a repository pause defers its label write", async () => {
+    const store = await setup();
+    const input = {
+      store,
+      source: { async replaceConveyorLabels() { throw new RepositoryPausedError(); } },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-paused",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance" as const, stageId: "implementation", nextStageId: "review", result: null, feedbackCycles: 0 },
+    };
+
+    await expect(applyStageTransition(input)).rejects.toBeInstanceOf(RepositoryPausedError);
+    expect(store.listStageTransitions("issue")).toMatchObject([{ id: "run-paused", status: "pending" }]);
+    expect(store.getSourceMutationByKey("transition:run-paused")).toMatchObject({ status: "pending" });
+    expect(store.getStageState("issue")).toBeNull();
     store.close();
   });
 

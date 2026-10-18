@@ -12,6 +12,7 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
   return {
     id,
     repository: "sample",
+    repositoryPaused: false,
     repositoryColor: 1,
     number,
     title,

@@ -835,6 +835,12 @@ A runnable stage phase must acquire its applicable permits:
 
 The global permit counts live OS-level runner processes; an in-process source action does not consume it. Stage and repository permits count issues currently executing in that scope, including source actions; a producer and verifier for the same issue never overlap. Questions, pauses, automatic backoff, blocked states, and completed attempts hold no permits. Harness-native subagents remain inside the lead runner's single permit.
 
+### Repository pause
+
+A superuser may pause a configured repository from its dashboard detail page, with an optional reason. This is durable Conveyor operational state, recording the actor and time; it is not configuration and does not change a configuration or pipeline-plan hash. A repository without a pause record is active. While paused, Conveyor may read GitHub to refresh the dashboard, but admits no new stage, retry, operator action, or follow-on work for its items and makes no GitHub, code-host, or CI mutation. A run already executing may finish its current process, but its next write boundary is deferred with the stage cursor and recorded intent preserved. Pause never rewrites enrollment labels or removes projections, epochs, cursors, journals, questions, approvals, costs, or worktrees. Resuming removes only the repository pause record and readmits eligible items at their stored step; individually paused items and other blockers remain unchanged.
+
+Repository pause differs from item pause, which removes that issue's active enrollment label and affects only that item. It also differs from removing a repository from configuration: configuration removal is an administrative lifecycle change that removes its local operational records, whereas pausing preserves them and leaves the configured pipeline unchanged.
+
 ## 11. Workspace and Git behavior
 
 Each configured repository folder must be an existing accessible Git checkout; v0.1 never clones repositories. On fresh enrollment, an issue receives one clean worktree and branch created from the latest fetched repository base branch, defaulting to `main`. If refinement converts it into a roll-up parent, that temporary worktree is removed and new child worktrees are created. A resumed paused issue reuses its worktree; a fully offboarded and later re-enrolled issue receives a new enrollment generation.

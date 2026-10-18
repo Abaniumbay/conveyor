@@ -7,6 +7,7 @@ import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types
 const parent: IssueCardViewModel = {
   id: "parent",
   repository: "sample",
+  repositoryPaused: false,
   repositoryColor: 1,
   number: 41,
   title: "Build <safe> & sound",
@@ -46,6 +47,7 @@ const parent: IssueCardViewModel = {
 const backlogIssue: IssueCardViewModel = {
   id: "backlog",
   repository: "sample",
+  repositoryPaused: false,
   repositoryColor: 1,
   number: 43,
   title: "Next item",
@@ -676,6 +678,7 @@ describe("renderDashboard", () => {
     const summary = (id: string, health: "healthy" | "degraded", items: DashboardViewModel["repositories"][number]["items"], errorSummary: string | null = null) => ({
       id, address: `owner/${id}`, color: 1, health, error: errorSummary, errorSummary,
       addressUrl: `https://github.com/owner/${id}`, lastReconciledAt: null,
+      pause: null,
       backlog: 1, stages: [{ id: "implementation", name: "Implementation", count: 1 }], done: 2, items,
       deliveries: [], skippedReviewItems: [], capacity: { busy: 1, slots: 2 },
       setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "webhook" as const, webhooks: "healthy" as const, githubCalls: { total: 0, bySource: [] }, ciProvider: "github-actions", ciMode: "required" as const, systemLabels: ["conveyor"] },
@@ -733,6 +736,7 @@ describe("renderDashboard", () => {
       id: "space/name", address: "owner/space-name", color: 2, health: "degraded" as const,
       error: "The full reconciliation error", errorSummary: "Reconciliation failed", backlog: 4,
       addressUrl: "https://github.com/owner/space-name", lastReconciledAt: "2026-10-01T00:00:00.000Z",
+      pause: null,
       stages: [{ id: "implementation", name: "Implementation", count: 2 }], done: 8,
       items: [{ number: 7, title: "Current item", stage: "implementation", state: "Running" as const }],
       deliveries: [{ number: 6, title: "Delivered item", deliveredAt: "2026-10-01T00:00:00.000Z" }],
@@ -781,9 +785,19 @@ describe("renderDashboard", () => {
     expect(superuser).toContain("/sentinel/local-folder");
     expect(superuser).toContain("sentinel.egress.example");
     // Sync now is one repository's, and only for superusers.
-    expect(superuser).toContain('<div class="repository-section-heading"><h3>Setup</h3><form class="repository-sync" method="post" action="/repositories/space%2Fname/sync" data-repository-sync="true">');
+    expect(superuser).toContain('action="/repositories/space%2Fname/sync" data-repository-sync="true"');
     expect(superuser).toContain(">Sync now</button>");
+    expect(superuser).toContain('action="/repositories/space%2Fname/pause"');
+    expect(superuser).toContain("Pause repository");
     expect(reader).not.toContain("Sync now");
+    expect(reader).not.toContain("Pause repository");
+
+    const paused = renderDashboard({ ...base, repositories: [{ ...repository, pause: { actor: "<operator>", pausedAt: "2026-10-01T01:00:00.000Z", reason: "<CI budget>" } }], backlog: [{ ...backlogIssue, repository: repository.id, repositoryPaused: true, working: true }] });
+    expect(paused).toContain("Paused</strong> by &lt;operator>");
+    expect(paused).toContain("&lt;CI budget>");
+    expect(paused).toContain("Resume repository");
+    const pausedBoard = renderDashboard({ ...dashboard, repositories: [{ ...repository, pause: { actor: "operator", pausedAt: "2026-10-01T01:00:00.000Z", reason: "CI budget" } }], backlog: [{ ...backlogIssue, repository: repository.id, repositoryPaused: true, working: true }] });
+    expect(pausedBoard).toContain("Repository paused");
 
     const unreconciled = renderDashboard({ ...base, repositories: [{ ...repository, lastReconciledAt: null }] });
     expect(unreconciled).not.toContain("Last checked");

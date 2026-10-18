@@ -318,6 +318,13 @@ export class ExecutionStore {
     return rows.map((row) => row.name);
   }
 
+  /** Removes a CI fact when its guarded external write was deferred before it ran. */
+  unmarkCi(issueId: string, headSha: string, kind: CiMarkKind, name: string): void {
+    this.#db
+      .query("DELETE FROM ci_marks WHERE issue_id = ? AND head_sha = ? AND kind = ? AND name = ?")
+      .run(issueId, headSha, kind, name);
+  }
+
   /** The durable timestamp of a CI fact, used to keep a settle window stable across restarts. */
   ciMarkAt(issueId: string, headSha: string, kind: CiMarkKind, name = ""): string | null {
     const row = this.#db
