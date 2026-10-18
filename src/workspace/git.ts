@@ -13,6 +13,8 @@ export interface GitOps {
   aheadBehind(path: string, branch: string): Promise<{ ahead: number; behind: number } | null>;
   /** Fetches a remote branch; false when the remote has no such branch (an item branch before its first push). */
   fetch(path: string, remote: string, branch: string): Promise<boolean>;
+  /** The current head of the branch on origin, or null when origin does not have it. */
+  remoteBranchHead(path: string, branch: string): Promise<string | null>;
   /** True when ancestor is in descendant's history. */
   isAncestor(path: string, ancestor: string, descendant: string): Promise<boolean>;
   push(path: string, branch: string, options: PushOptions): Promise<void>;
@@ -25,7 +27,7 @@ export type PushOptions =
 /** A lease push was refused because the remote branch no longer has the observed head. */
 export class GitPushRejectedError extends Error {
   constructor(readonly currentHeadSha: string) {
-    super(`The remote branch moved to ${currentHeadSha}; read change.get, use workspace.fetch, and rebase before pushing.`);
+    super(`The remote branch moved to ${currentHeadSha}; use workspace.fetch, rebase, and retry.`);
     this.name = "GitPushRejectedError";
   }
 }
@@ -55,11 +57,10 @@ function isPushRejection(result: { stdout: string; stderr: string }): boolean {
   return /stale info|fetch first|non-fast-forward|\[rejected\]|failed to push some refs/i.test(`${result.stdout}\n${result.stderr}`);
 }
 
-async function remoteBranchHead(path: string, branch: string): Promise<string> {
+async function remoteBranchHead(path: string, branch: string): Promise<string | null> {
   const output = await mustRun(path, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
   const match = output.match(/^([0-9a-f]{40})\s/m);
-  if (!match?.[1]) throw new Error("git ls-remote did not return the remote branch head");
-  return match[1];
+  return match?.[1] ?? null;
 }
 
 /**
@@ -117,6 +118,7 @@ export const cliGit: GitOps = {
     if (/couldn't find remote ref/i.test(result.stderr)) return false;
     throw new Error(`git fetch failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
   },
+  remoteBranchHead,
   async isAncestor(path, ancestor, descendant) {
     // An observed head can be valid on the code host but absent until the workspace fetches it.
     // Treat that as unreconciled so the caller can return its actionable recovery error.
@@ -137,7 +139,9 @@ export const cliGit: GitOps = {
     const result = await run(path, args);
     if (result.exitCode === 0) return;
     if (options.forceWithLease && isPushRejection(result)) {
-      throw new GitPushRejectedError(await remoteBranchHead(path, branch));
+      const currentHead = await remoteBranchHead(path, branch);
+      if (currentHead !== null) throw new GitPushRejectedError(currentHead);
+      throw new Error("The remote branch disappeared during the lease push; push without forceWithLease only after confirming it is safe to create the branch.");
     }
     throw new Error(`git push failed: ${result.stderr || `exit ${result.exitCode}`}`);
   },
