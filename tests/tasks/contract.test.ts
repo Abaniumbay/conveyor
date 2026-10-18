@@ -200,12 +200,12 @@ describe("runTask", () => {
     await runTask(def, args(context(), { config: {} }));
     expect(got).toEqual({ n: 2 });
   });
-  test("checks get no deps and an empty idempotency key", async () => {
+  test("checks get no deps but retain their execution identity", async () => {
     let seen: TaskArgs | undefined;
     const def = check({ run: (a) => ((seen = a), pass()) });
     await runTask(def, args(context(), { deps: { db: 1 } }));
     expect(seen?.deps).toBeUndefined();
-    expect(seen?.instance.idempotencyKey).toBe("");
+    expect(seen?.instance.idempotencyKey).toBe("k");
   });
   test("acts keep deps and instance", async () => {
     let seen: TaskArgs | undefined;

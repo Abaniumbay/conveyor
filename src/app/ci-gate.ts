@@ -133,6 +133,56 @@ export function boundSnapshotLogs<T extends { runs: Array<{ log: string | null }
 
 export interface FailedRun { name: string; state: CiRunState; url: string | null; log: string | null }
 
+const TEST_FAILURE_LINE = /^(?:(?:# Subtest:\s*|not ok \d+\s*-\s*|✖\s*|❌\s*|FAIL\s+|--- FAIL:\s*)(.+)|\(fail\)\s+(.+?)(?:\s+\[[^\]]+\])?)$/i;
+const ERROR_LINE = /##\[error\]|\b(?:error|exception|assertion|expected|actual|fatal|failed)\b/i;
+
+/**
+ * A stable identifier for a CI failure's checks and useful diagnostics. A check without either a
+ * recognizable failing test or an error line deliberately makes the observation incomparable:
+ * matching its name alone must not stop an item.
+ */
+export function ciFailureFingerprint(failed: readonly FailedRun[]): string | null {
+  const facts = failed.map((run) => {
+    const diagnostics = ciFailureDiagnostics(run.log);
+    if (diagnostics.length === 0) return null;
+    return [`check:${normalizeCiCheckName(run.name)}`, ...diagnostics.map((line) => `diagnostic:${line}`)].join("\n");
+  });
+  if (facts.some((fact) => fact === null)) return null;
+  return new Bun.CryptoHasher("sha256").update(facts.sort().join("\n\n")).digest("hex");
+}
+
+function ciFailureDiagnostics(log: string | null): string[] {
+  if (!log) return [];
+  const lines = log.split("\n").map(normalizeCiDiagnostic).filter(Boolean);
+  const tests = lines
+    .map((line) => {
+      const match = line.match(TEST_FAILURE_LINE);
+      return (match?.[1] ?? match?.[2])?.replace(/\s*\(failed\)$/i, "").trim() ?? null;
+    })
+    .filter((line): line is string => line !== null);
+  const errors = lines.filter((line) => ERROR_LINE.test(line) && !TEST_FAILURE_LINE.test(line));
+  if (tests.length > 0) return [...new Set(tests)].slice(0, 15);
+  return [...new Set(errors)].slice(0, 3);
+}
+
+function normalizeCiCheckName(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeCiDiagnostic(value: string): string {
+  return value
+    .trim()
+    .replace(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+/, "")
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b/g, "<timestamp>")
+    .replace(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/gi, "<id>")
+    .replace(/\b(?:run|job|build|attempt|workflow|check)\s*(?:id|number)?\s*[=: #]+\d+\b/gi, (match) => match.replace(/\d+\b/, "<id>"))
+    .replace(/\/(?:runs|jobs|builds)\/\d+\b/g, "/<id>")
+    .replace(/(?:[A-Z]:)?[\\/](?:tmp|private[\\/]var[\\/]folders|var[\\/]folders|home[\\/]runner[\\/]work[\\/]_temp)[^\s:'")]+/gi, "<tmp>")
+    .replace(/\b[0-9a-f]{7,64}\b/gi, "<sha>")
+    .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|m|h)\b/gi, "<duration>")
+    .replace(/\s+/g, " ");
+}
+
 /** The failure message, required fixes and per-run log sections for failed runs. */
 export function describeCiFailure(changeUrl: string, short: string, failed: FailedRun[]): {
   reason: string;

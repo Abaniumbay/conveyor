@@ -335,6 +335,53 @@ describe("ci.passed", () => {
     expect(details.evidence[0]).toContain("##[error]boom");
   });
 
+  test("stops the second consecutive diagnosed failure with both failures as evidence", async () => {
+    const w = await world();
+    const snapshot = ci({ runs: [crun("Tests", "failed", { log: "not ok 1 - creates a widget" })] });
+    const context = () => gateCtx(snapshot, {
+      run: {
+        stage: "implementation", stageEpoch: w.store.executions().stageEpoch("i1"), attempt: 1, maxAttempts: 3,
+        taskInstanceId: "ciPassed", enteredAt: new Date(T0).toISOString(), feedback: null,
+      },
+    });
+    const attempt = (id: string) => run("ci.passed", {
+      context: context(), issueId: "i1", journal: w.store.executions(),
+      instance: { id: "ciPassed", stage: "implementation", idempotencyKey: id, resumed: false },
+    });
+
+    expect((await attempt("first")) as Fail).toMatchObject({ status: "fail", route: { retry: true } });
+    const repeated = await attempt("second") as Fail;
+    expect(repeated.route).toEqual({ stop: "needs-intervention" });
+    expect(repeated.message).toContain("same required CI failure repeated");
+    expect(repeated.message).toContain("Another automatic retry will not fix it");
+    expect(repeated.message.match(/https:\/\/ci\/Tests/g)).toHaveLength(2);
+    expect(repeated.message.match(/not ok 1 - creates a widget/g)).toHaveLength(2);
+    expect((repeated.details as { evidence: string[] }).evidence).toHaveLength(2);
+  });
+
+  test("routes changed, missing, and pass-interrupted diagnostics back to implementation", async () => {
+    const w = await world();
+    const context = (snapshot: CiContext) => gateCtx(snapshot, {
+      run: {
+        stage: "implementation", stageEpoch: w.store.executions().stageEpoch("i1"), attempt: 1, maxAttempts: 3,
+        taskInstanceId: "ciPassed", enteredAt: new Date(T0).toISOString(), feedback: null,
+      },
+    });
+    const attempt = (id: string, snapshot: CiContext) => run("ci.passed", {
+      context: context(snapshot), issueId: "i1", journal: w.store.executions(),
+      instance: { id: "ciPassed", stage: "implementation", idempotencyKey: id, resumed: false },
+    });
+    const failure = (log: string | null, name = "Tests") => ci({ runs: [crun(name, "failed", { log })] });
+
+    expect((await attempt("one", failure("not ok 1 - renders the first card")) as Fail).route).toEqual({ retry: true });
+    expect((await attempt("two", failure("not ok 1 - renders the second card")) as Fail).route).toEqual({ retry: true });
+    expect((await attempt("three", failure(null)) as Fail).route).toEqual({ retry: true });
+    expect((await attempt("four", failure(null)) as Fail).route).toEqual({ retry: true });
+    expect((await attempt("five", ci({ runs: [crun("Tests", "passed")] })) as Pass).status).toBe("pass");
+    expect((await attempt("six", failure("not ok 1 - renders the second card")) as Fail).route).toEqual({ retry: true });
+    expect((await attempt("seven", failure("not ok 1 - renders the second card", "Lint")) as Fail).route).toEqual({ retry: true });
+  });
+
   test("a cancelled rerunnable run not yet rerun fails with a retry that names it; once rerun it counts as failed", async () => {
     const cancelled = crun("Tests", "cancelled", { rerunnable: true });
     const first = await run("ci.passed", { context: gateCtx(ci({ runs: [cancelled] })) }) as Fail;
@@ -362,6 +409,7 @@ describe("ci.passed", () => {
     const few = await keep({ logLines: 2 });
     expect(few).toContain("line 98");
     expect(few).not.toContain("line 97");
+    expect(few).toContain("[Excerpt truncated by Conveyor.]");
   });
 
   test("logLines trims only the tail; the failing-test blocks of a focused log stay", async () => {
@@ -672,6 +720,37 @@ describe("a cancelled run through the stage executor", () => {
     expect(await execute()).toMatchObject({ kind: "advance", stageId: "implementation" });
     expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toHaveLength(1);
     expect(journal.getContext("i1")!.context.checkpoints.ciPassed).toMatchObject({ sha: "head1", taskInstanceId: "ci.passed" });
+  });
+
+  test("stops at needs-intervention after the second matching required-CI failure", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "failed")];
+    w.provider.logs["id-Tests"] = "not ok 1 - preserves both failures";
+    const pipeline = compilePipeline({ config: baseConfig("required"), repositoryId: "sample", registry });
+    const notes: string[] = [];
+    const executor = new StageExecutor({
+      registry, journal: w.store.executions(), clock: () => new Date(w.clock.now),
+      notify: (message) => { notes.push(message); }, setStatus: () => {}, settings: { maxReturns: 5 },
+    });
+    const baseContext: TaskContext = {
+      schemaVersion: 1, configHash: "h",
+      run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: new Date(T0).toISOString(), feedback: null },
+      repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: "required", systemLabels: [] },
+      item: { id: "i1", number: 7, title: "T", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+      checkpoints: { ciPassed: null, reviewPassed: null },
+    };
+
+    const outcome = await executor.execute({ issueId: "i1", pipeline, stageId: "implementation", baseContext, deps: w.deps });
+    const stopped = outcome as Extract<typeof outcome, { kind: "stopped" }>;
+    expect(stopped.reason.match(/https:\/\/ci\/Tests/g)).toHaveLength(2);
+    const stopReason = stopped.reason;
+    expect(outcome).toMatchObject({
+      kind: "stopped", state: "needs-intervention",
+      reason: expect.stringContaining("The same required CI failure repeated"),
+    });
+    expect(notes.some((note) => note.includes(stopReason))).toBe(true);
+    expect(w.provider.calls.filter((call) => call.startsWith("start"))).toHaveLength(2);
+    expect(notes.filter((note) => note.includes("retrying"))).toHaveLength(1);
   });
 });
 

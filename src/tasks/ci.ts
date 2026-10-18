@@ -2,17 +2,19 @@
 // facts (first sight of the head, started checks, reruns) into the `ci` snapshot. `ci.start` is
 // the only task that changes CI state: it starts label-triggered runs, reruns a cancelled run
 // once per (head, run name) and announces CI once per head. `ci.defined` and `ci.passed` are
-// pure checks over the snapshot; the gate logic they share with the legacy `ci.await` source
+// checks over the snapshot. `ci.passed` also records each completed required-CI outcome so it can
+// stop a repeat deterministically; the gate logic it shares with the legacy `ci.await` source
 // action lives in src/app/ci-gate.ts.
 
 import { z } from "zod";
 
 import { RepositoryPausedError } from "../core/repository-pause";
 import { observeCi, observeCiError } from "../app/indicators";
-import { boundLog, boundSnapshotLogs, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
+import { boundLog, boundSnapshotLogs, ciFailureFingerprint, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { changeTopic, ciTopic } from "../events/topics";
+import type { CiGateObservation } from "../engine/journal";
 import type { ChangeContext, CiContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -180,14 +182,14 @@ const defined: TaskDefinition<unknown, unknown, Deps> = {
 const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.passed",
   kind: "check",
-  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed.",
-  reads: ["change", "ci", "repository"],
+  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention.",
+  reads: ["change", "ci", "repository", "run"],
   writes: [],
   invalidates: [],
   config: passedConfig,
   checkpoint: { name: "ciPassed", scope: "task" },
   defaultWait: { timeoutMs: 3 * 3_600_000, pollMs: 60_000 },
-  run({ context, config }) {
+  run({ context, config, instance, issueId, journal }) {
     const change = context.change;
     const snapshot = context.ci;
     if (!change || !snapshot) return fail(NO_CHANGE);
@@ -196,8 +198,27 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const { running, failed, rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable && !reran.has(run.name));
 
     if (failed.length > 0) {
-      const bounded = failed.map((run) => ({ ...run, log: run.log === null ? null : boundLog(run.log, { lines: config.logLines }) }));
+      const bounded = boundedFailureRuns(failed, config.logLines);
       const report = describeCiFailure(change.url, sha, bounded);
+      const fingerprint = ciFailureFingerprint(bounded);
+      const observation = context.run && issueId && journal ? journal.recordCiGateObservation({
+        issueId,
+        stage: context.run.stage,
+        expectedEpoch: context.run.stageEpoch,
+        taskKey: instance.idempotencyKey,
+        headSha: snapshot.headSha,
+        outcome: "failed",
+        fingerprint,
+        checkNames: bounded.map((run) => run.name).sort(),
+        evidence: report.sections,
+        changeUrl: change.url,
+      }) : null;
+      if (fingerprint !== null && observation?.previous?.outcome === "failed" && observation.previous.fingerprint === fingerprint) {
+        return fail(repeatedCiFailureReason(observation.previous, observation.observation), {
+          route: { stop: "needs-intervention" },
+          details: { requiredFixes: report.requiredFixes, evidence: [...observation.previous.evidence, ...observation.observation.evidence] },
+        });
+      }
       return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }
     if (rerun.length > 0) {
@@ -211,9 +232,44 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
       return pending(`Waiting for CI at ${sha}: ${waitingOn.join(", ") || "checks to register"}.`, ciWait(context.repository!.address, change, snapshot.headSha, waitingOn.length, config.settleSeconds * 1_000 - elapsedMs));
     }
+    if (context.run && issueId && journal) {
+      journal.recordCiGateObservation({
+        issueId,
+        stage: context.run.stage,
+        expectedEpoch: context.run.stageEpoch,
+        taskKey: instance.idempotencyKey,
+        headSha: snapshot.headSha,
+        outcome: "passed",
+        fingerprint: null,
+        checkNames: snapshot.runs.map((run) => run.name).sort(),
+        evidence: [],
+        changeUrl: change.url,
+      });
+    }
     return pass();
   },
 };
+
+function boundedFailureRuns(failed: CiContext["runs"], lines: number) {
+  return failed.map((run) => {
+    if (run.log === null) return run;
+    const log = boundLog(run.log, { lines });
+    return { ...run, log: log === run.log ? log : `${log}\n[Excerpt truncated by Conveyor.]` };
+  });
+}
+
+function repeatedCiFailureReason(first: CiGateObservation, second: CiGateObservation): string {
+  const evidence = (label: string, observation: CiGateObservation) => [
+    `${label} failure: ${observation.changeUrl} at ${short(observation.headSha)}.`,
+    `Failed checks: ${observation.checkNames.join(", ") || "unknown"}.`,
+    ...observation.evidence,
+  ].join("\n\n");
+  return [
+    "The same required CI failure repeated. Another automatic retry will not fix it.",
+    evidence("First", first),
+    evidence("Second", second),
+  ].join("\n\n");
+}
 
 /**
  * What a CI wait waits for: the head's CI finishing, or the change moving to another head. While
