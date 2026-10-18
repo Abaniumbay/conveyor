@@ -867,10 +867,12 @@ function Board({ model }: { model: DashboardViewModel }) {
 }
 
 const GRAPH_NODE_WIDTH = 248;
-const GRAPH_NODE_HEIGHT = 116;
+const GRAPH_NODE_HEIGHT = 140;
 const GRAPH_COLUMN_GAP = 92;
 const GRAPH_ROW_GAP = 34;
 const GRAPH_GROUP_GAP = 76;
+const GRAPH_NODE_TEXT_X = 16;
+const GRAPH_NODE_TEXT_WIDTH = GRAPH_NODE_WIDTH - 28;
 
 interface GraphPosition { x: number; y: number; }
 
@@ -884,8 +886,8 @@ function graphEdgeId(relationship: GraphRelationshipViewModel): string {
   return `${relationship.kind}:${relationship.from}:${relationship.to}`;
 }
 
-function graphTitle(title: string): string {
-  return title.length > 38 ? `${title.slice(0, 37)}…` : title;
+function graphText(text: string, maximumCharacters: number): string {
+  return text.length > maximumCharacters ? `${text.slice(0, maximumCharacters - 1)}…` : text;
 }
 
 /** Produces stable left-to-right layers while putting unrelated graph components on separate rows. */
@@ -894,11 +896,13 @@ function graphLayout(nodes: readonly GraphNodeViewModel[], relationships: readon
   const nodeIds = new Set(sortedIds);
   const neighbours = new Map(sortedIds.map((id) => [id, new Set<string>()]));
   const predecessors = new Map(sortedIds.map((id) => [id, [] as string[]]));
-  for (const relationship of relationships) {
+  const successors = new Map(sortedIds.map((id) => [id, [] as string[]]));
+  for (const relationship of [...relationships].sort((left, right) => graphEdgeId(left).localeCompare(graphEdgeId(right)))) {
     if (!nodeIds.has(relationship.from) || !nodeIds.has(relationship.to)) continue;
     neighbours.get(relationship.from)?.add(relationship.to);
     neighbours.get(relationship.to)?.add(relationship.from);
     predecessors.get(relationship.to)?.push(relationship.from);
+    successors.get(relationship.from)?.push(relationship.to);
   }
   const components: string[][] = [];
   const remaining = new Set(sortedIds);
@@ -946,12 +950,41 @@ function graphLayout(nodes: readonly GraphNodeViewModel[], relationships: readon
       layer.push(id);
       layers.set(depth, layer);
     }
+    const layerDepths = [...layers.keys()].sort((left, right) => left - right);
+    for (const depth of layerDepths) layers.get(depth)?.sort((left, right) => left.localeCompare(right));
+    const orderByNeighbours = (ids: string[], neighboursAtOtherDepth: (id: string) => readonly string[], rowsById: Map<string, number>) => ids.sort((left, right) => {
+      const average = (id: string): number | undefined => {
+        const rows = neighboursAtOtherDepth(id)
+          .map((neighbour) => rowsById.get(neighbour))
+          .filter((row): row is number => row !== undefined);
+        return rows.length === 0 ? undefined : rows.reduce((total, row) => total + row, 0) / rows.length;
+      };
+      const leftAverage = average(left);
+      const rightAverage = average(right);
+      if (leftAverage === undefined && rightAverage === undefined) return left.localeCompare(right);
+      if (leftAverage === undefined) return 1;
+      if (rightAverage === undefined) return -1;
+      return leftAverage - rightAverage || left.localeCompare(right);
+    });
+    for (const depth of layerDepths.slice(1)) {
+      const prior = layers.get(depth - 1) ?? [];
+      const priorRows = new Map(prior.map((id, row) => [id, row]));
+      const layer = layers.get(depth);
+      if (layer) orderByNeighbours(layer, (id) => (predecessors.get(id) ?? []).filter((predecessor) => depths.get(predecessor) === depth - 1), priorRows);
+    }
+    for (const depth of [...layerDepths].reverse().slice(1)) {
+      const next = layers.get(depth + 1) ?? [];
+      const nextRows = new Map(next.map((id, row) => [id, row]));
+      const layer = layers.get(depth);
+      if (layer) orderByNeighbours(layer, (id) => (successors.get(id) ?? []).filter((successor) => depths.get(successor) === depth + 1), nextRows);
+    }
+
     let rows = 1;
-    for (const [depth, ids] of layers) {
-      const sorted = ids.sort((left, right) => left.localeCompare(right));
-      rows = Math.max(rows, sorted.length);
+    for (const depth of layerDepths) {
+      const layer = layers.get(depth) ?? [];
+      rows = Math.max(rows, layer.length);
       widestLayer = Math.max(widestLayer, depth + 1);
-      sorted.forEach((id, row) => positions.set(id, {
+      layer.forEach((id, row) => positions.set(id, {
         x: 24 + depth * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
         y: offsetY + row * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP),
       }));
@@ -988,19 +1021,21 @@ function GraphRelationshipText({ relationship, nodesById }: { relationship: Grap
   const to = nodesById.get(relationship.to);
   if (!from || !to) return null;
   return relationship.kind === "parent-child"
-    ? <><strong>Parent #{from.number} → child #{to.number}</strong><span> Family relationship</span></>
-    : <><strong>Issue #{to.number} waits for prerequisite #{from.number}</strong><span> Status: {relationship.status} prerequisite</span></>;
+    ? <><strong>Parent #{from.number} ({from.title}) → child #{to.number} ({to.title})</strong><span> Family relationship</span></>
+    : <><strong>Issue #{to.number} ({to.title}) waits for prerequisite #{from.number} ({from.title})</strong><span> Status: {relationship.status} prerequisite</span></>;
 }
 
 /** A read-only, relationship-first view of the current workflow. */
 function Graph({ model }: { model: DashboardViewModel }) {
-  const nodesById = new Map(model.graph.nodes.map((node) => [node.id, node]));
-  if (model.graph.nodes.length === 0) return <section class="graph-view" aria-labelledby="graph-heading">
+  const nodes = [...model.graph.nodes].sort((left, right) => left.id.localeCompare(right.id));
+  const relationships = [...model.graph.relationships].sort((left, right) => graphEdgeId(left).localeCompare(graphEdgeId(right)));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  if (nodes.length === 0) return <section class="graph-view" aria-labelledby="graph-heading">
     <header class="graph-header"><h2 id="graph-heading">Workflow graph</h2><p>Relationships between current workflow items appear here.</p></header>
     <GraphFilters model={model} />
     <p class="graph-empty">There are no current workflow items to show.</p>
   </section>;
-  const layout = graphLayout(model.graph.nodes, model.graph.relationships);
+  const layout = graphLayout(nodes, relationships);
   return <section class="graph-view" aria-labelledby="graph-heading">
     <header class="graph-header">
       <h2 id="graph-heading">Workflow graph</h2>
@@ -1008,14 +1043,14 @@ function Graph({ model }: { model: DashboardViewModel }) {
     </header>
     <GraphFilters model={model} />
     <div class="graph-canvas" tabindex={0} aria-label="Drawn workflow graph">
-      <svg class="graph-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} role="img" aria-labelledby="graph-svg-title graph-svg-description">
+      <svg class="graph-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} role="group" aria-labelledby="graph-svg-title graph-svg-description">
         <title id="graph-svg-title">Workflow graph</title>
         <desc id="graph-svg-description">A directed graph of current workflow items and their directly related context.</desc>
         <defs>
           <marker id="graph-arrow-parent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" /></marker>
           <marker id="graph-arrow-dependency" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" /></marker>
         </defs>
-        {model.graph.relationships.flatMap((relationship) => {
+        {relationships.flatMap((relationship) => {
           const from = layout.positions.get(relationship.from);
           const to = layout.positions.get(relationship.to);
           if (!from || !to) return [];
@@ -1030,11 +1065,12 @@ function Graph({ model }: { model: DashboardViewModel }) {
             {relationship.kind === "dependency" && <text x={midX} y={(startY + endY) / 2 - 7} text-anchor="middle">{relationship.status === "satisfied" ? "Met" : relationship.status === "stopped" ? "Blocked" : "Waiting"}</text>}
           </g>;
         })}
-        {model.graph.nodes.map((node) => {
+        {nodes.map((node) => {
           const position = layout.positions.get(node.id);
           if (!position) return null;
           const label = `${node.repository} #${node.number}: ${node.title}${node.stage ? `; stage ${node.stage}` : ""}; state ${node.state}${node.context ? "; context item" : ""}${node.signal === "stop" ? "; stopped" : ""}`;
           const dialogId = `issue-${node.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${node.number}`;
+          const clipId = `graph-node-clip-${node.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
           return <a href={issueHref(node.repository, node.number)} class={`graph-node card-open repo-color-${node.repositoryColor}${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id} data-dialog-open={dialogId} data-details-url={`/api/issues/${encodeURIComponent(node.id)}/details`} aria-haspopup="dialog" aria-label={label} tabIndex={0} key={node.id}>
             <title>{label}</title>
             <rect x={position.x} y={position.y} width={GRAPH_NODE_WIDTH} height={GRAPH_NODE_HEIGHT} rx="4" />
@@ -1047,19 +1083,25 @@ function Graph({ model }: { model: DashboardViewModel }) {
               height={GRAPH_NODE_HEIGHT}
               rx="3"
             />
-            <text class="graph-node-reference" x={position.x + 16} y={position.y + 23}>{node.repository} #{node.number}</text>
-            <text class="graph-node-title" x={position.x + 16} y={position.y + 47}>{graphTitle(node.title)}</text>
-            <text class="graph-node-detail" x={position.x + 16} y={position.y + 71}>Stage: {node.stage ?? "None"}</text>
-            <text class="graph-node-detail" x={position.x + 16} y={position.y + 91}>State: {node.state}</text>
-            {node.context && <text class="graph-node-badge" x={position.x + GRAPH_NODE_WIDTH - 12} y={position.y + 23} text-anchor="end">Context item</text>}
-            {node.signal === "stop" && <text class="graph-node-stop" x={position.x + GRAPH_NODE_WIDTH - 12} y={position.y + 106} text-anchor="end">Stopped</text>}
+            <clipPath id={clipId}><rect x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 8} width={GRAPH_NODE_TEXT_WIDTH} height={GRAPH_NODE_HEIGHT - 16} /></clipPath>
+            <g clip-path={`url(#${clipId})`}>
+              <text class="graph-node-reference" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 23}>{graphText(`${node.repository} #${node.number}`, 27)}</text>
+              <text class="graph-node-title" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 47}>{graphText(node.title, 27)}</text>
+              <text class="graph-node-detail" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 71}>Stage: {graphText(node.stage ?? "None", 27)}</text>
+              <text class="graph-node-detail" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 91}>State: {graphText(node.state, 27)}</text>
+              {node.context && <text class="graph-node-badge" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 110}>Context item</text>}
+              {node.signal === "stop" && <text class="graph-node-stop" x={position.x + GRAPH_NODE_TEXT_X} y={position.y + 128}>Stopped</text>}
+            </g>
           </a>;
         })}
       </svg>
     </div>
     <section class="graph-relationships sr-only" aria-labelledby="graph-relationships-heading">
-      <h3 id="graph-relationships-heading">Directed relationships</h3>
-      <ol>{model.graph.relationships.flatMap((relationship) => {
+      <h3 id="graph-relationships-heading">Graph items and directed relationships</h3>
+      <h4>Items</h4>
+      <ol>{nodes.map((node) => <li key={node.id}>Issue #{node.number} ({node.title}): stage {node.stage ?? "None"}; state {node.state}{node.context ? "; context item" : ""}{node.signal === "stop" ? "; stopped" : ""}</li>)}</ol>
+      <h4>Relationships</h4>
+      <ol>{relationships.flatMap((relationship) => {
         if (!nodesById.has(relationship.from) || !nodesById.has(relationship.to)) return [];
         const statusClass = relationship.kind === "dependency" && relationship.status ? ` graph-relationship--${relationship.status}` : "";
         return <li class={`graph-relationship graph-relationship--${relationship.kind}${statusClass}`} key={graphEdgeId(relationship)}><GraphRelationshipText relationship={relationship} nodesById={nodesById} /></li>;

@@ -301,9 +301,10 @@ describe("renderDashboard", () => {
         nodes: [
           { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "Parent <safe> title that remains available in full", state: "Active", stage: "Implementation", context: false, signal: "run" },
           { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "Child", state: "Blocked", stage: "Review", context: false, signal: "stop" },
-          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Finished prerequisite", state: "Done", stage: null, context: true, signal: null },
+          { id: "prerequisite", repository: "foundation-with-a-deliberately-long-name", repositoryColor: 2, number: 7, title: "Finished prerequisite", state: "Done", stage: null, context: true, signal: null },
           { id: "outstanding", repository: "foundation", repositoryColor: 2, number: 8, title: "Outstanding prerequisite", state: "Active", stage: null, context: true, signal: "run" },
           { id: "stopped", repository: "foundation", repositoryColor: 2, number: 9, title: "Stopped prerequisite", state: "Stopped", stage: null, context: true, signal: "stop" },
+          { id: "standalone", repository: "sample", repositoryColor: 1, number: 99, title: "Unconnected item title", state: "Active", stage: "Implementation", context: false, signal: "run" },
         ],
         relationships: [
           { kind: "parent-child", from: "parent", to: "child", status: null },
@@ -322,6 +323,8 @@ describe("renderDashboard", () => {
     expect(html).toContain('<a href="/graph" class="tab tab--active" aria-current="page">Graph</a>');
     expect(html).toContain('<a href="/board" class="tab">Board<span class="tab-count">43</span></a>');
     expect(html).toContain('<svg class="graph-svg"');
+    expect(html).toContain('role="group"');
+    expect(html).not.toContain('role="img" aria-labelledby="graph-svg-title');
     expect(html).toContain('data-graph-edge="parent-child:parent:child"');
     expect(html).toContain('data-graph-edge="dependency:prerequisite:child"');
     expect(html).toContain('class="graph-canvas"');
@@ -331,17 +334,71 @@ describe("renderDashboard", () => {
     expect(html).toContain('Parent &lt;safe> title that remains available in full');
     expect(html).not.toContain("Parent <safe>");
     expect(html).toMatch(/class="graph-node-title"[^>]*>[^<]*…<\/text>/);
+    expect(html).toMatch(/class="graph-node-reference"[^>]*>[^<]*…<\/text>/);
+    expect(html).toContain('clipPath id="graph-node-clip-parent"');
+    expect(html).toContain('clip-path="url(#graph-node-clip-parent)"');
     expect(html).toContain('href="/issues/sample/41"');
     expect(html).toContain('data-details-url="/api/issues/parent/details"');
     expect(html).toContain('aria-haspopup="dialog"');
-    expect(html).toContain("Parent #41 → child #42");
-    expect(html).toContain("Issue #42 waits for prerequisite #7");
+    expect(html).toContain("Parent #41 (Parent &lt;safe> title that remains available in full) → child #42 (Child)");
+    expect(html).toContain("Issue #42 (Child) waits for prerequisite #7 (Finished prerequisite)");
+    expect(html).toContain("Issue #99 (Unconnected item title): stage Implementation; state Active");
     expect(html).toContain("Status: satisfied prerequisite");
     expect(html).toContain("graph-relationship--satisfied");
     expect(html).toContain("graph-relationship--outstanding");
     expect(html).toContain("graph-relationship--stopped");
     expect(html).toContain("Context item");
     expect(html).toContain("Stopped");
+  });
+
+  test("keeps branching Graphs stable, uncrossed, and separate from unrelated components", () => {
+    const nodes: DashboardViewModel["graph"]["nodes"] = [
+      { id: "parent", repository: "sample", repositoryColor: 1, number: 1, title: "Parent", state: "Active", stage: "Implementation", context: false, signal: "run" },
+      { id: "branch-a", repository: "sample", repositoryColor: 1, number: 2, title: "First child", state: "Active", stage: "Implementation", context: false, signal: "run" },
+      { id: "branch-b", repository: "sample", repositoryColor: 1, number: 3, title: "Second child", state: "Active", stage: "Implementation", context: false, signal: "run" },
+      { id: "end-a", repository: "sample", repositoryColor: 1, number: 4, title: "Second dependency target", state: "Active", stage: "Review", context: false, signal: "run" },
+      { id: "end-b", repository: "sample", repositoryColor: 1, number: 5, title: "First dependency target", state: "Active", stage: "Review", context: false, signal: "run" },
+      { id: "unrelated", repository: "other", repositoryColor: 2, number: 6, title: "Unrelated item", state: "Active", stage: "Implementation", context: false, signal: "run" },
+    ];
+    const relationships: DashboardViewModel["graph"]["relationships"] = [
+      { kind: "parent-child", from: "parent", to: "branch-a", status: null },
+      { kind: "parent-child", from: "parent", to: "branch-b", status: null },
+      { kind: "dependency", from: "branch-a", to: "end-b", status: "outstanding" },
+      { kind: "dependency", from: "branch-b", to: "end-a", status: "outstanding" },
+    ];
+    const renderGraph = (graphNodes: DashboardViewModel["graph"]["nodes"], graphRelationships: DashboardViewModel["graph"]["relationships"]) => renderDashboard({
+      ...dashboard,
+      view: "graph",
+      graph: { nodes: graphNodes, relationships: graphRelationships },
+    });
+    const html = renderGraph(nodes, relationships);
+    const reorderedHtml = renderGraph([...nodes].reverse(), [...relationships].reverse());
+    const nodePosition = (id: string) => {
+      const match = html.match(new RegExp(`data-graph-node="${id}"[\\s\\S]*?<rect x="(\\d+)" y="(\\d+)" width="248" height="140"`));
+      if (!match?.[1] || !match[2]) throw new Error(`Missing Graph node position for ${id}`);
+      return { x: Number(match[1]), y: Number(match[2]) };
+    };
+    const parent = nodePosition("parent");
+    const branchA = nodePosition("branch-a");
+    const branchB = nodePosition("branch-b");
+    const endA = nodePosition("end-a");
+    const endB = nodePosition("end-b");
+    const unrelated = nodePosition("unrelated");
+    const edgeRows = (id: string) => {
+      const match = html.match(new RegExp(`data-graph-edge="${id}">[\\s\\S]*?<path d="M \\d+ (\\d+) C \\d+ \\d+, \\d+ \\d+, \\d+ (\\d+)"`));
+      if (!match?.[1] || !match[2]) throw new Error(`Missing Graph edge positions for ${id}`);
+      return { from: Number(match[1]), to: Number(match[2]) };
+    };
+    const firstDependency = edgeRows("dependency:branch-a:end-b");
+    const secondDependency = edgeRows("dependency:branch-b:end-a");
+
+    expect(html).toBe(reorderedHtml);
+    expect(parent.x).toBeLessThan(branchA.x);
+    expect(branchA.y).toBeLessThan(branchB.y);
+    expect(endB.y).toBeLessThan(endA.y);
+    expect(firstDependency.from).toBeLessThan(secondDependency.from);
+    expect(firstDependency.to).toBeLessThan(secondDependency.to);
+    expect(unrelated.y).toBeGreaterThan(Math.max(parent.y, branchA.y, branchB.y, endA.y, endB.y) + 140);
   });
 
   test("renders an empty Graph without board columns", () => {

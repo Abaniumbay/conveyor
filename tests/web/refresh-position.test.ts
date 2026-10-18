@@ -306,7 +306,7 @@ describe("dashboard live refresh position", () => {
           nodes: [
             { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", context: false, signal: "run" },
             { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "A deliberately long child title that must also wrap inside a phone viewport", state: "Blocked", stage: "Review", context: false, signal: "stop" },
-            { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Context prerequisite", state: "Done", stage: null, context: true, signal: null },
+            { id: "prerequisite", repository: "foundation-with-a-deliberately-long-name", repositoryColor: 2, number: 7, title: "Context prerequisite", state: "Done", stage: null, context: true, signal: null },
           ],
           relationships: [
             { kind: "parent-child", from: "parent", to: "child", status: null },
@@ -327,6 +327,14 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: stopped prerequisite");
       expect(await page.locator(".graph-canvas").evaluate((canvas) => canvas.scrollWidth > canvas.clientWidth)).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      expect(await page.locator(".graph-node text").evaluateAll((texts) => texts.every((text) => {
+        const node = text.closest(".graph-node");
+        if (!node) return false;
+        const textBounds = text.getBoundingClientRect();
+        const nodeBounds = node.getBoundingClientRect();
+        return textBounds.left >= nodeBounds.left && textBounds.right <= nodeBounds.right
+          && textBounds.top >= nodeBounds.top && textBounds.bottom <= nodeBounds.bottom;
+      }))).toBe(true);
 
       await page.locator('[data-graph-node="child"]').click({ noWaitAfter: true });
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'child');
