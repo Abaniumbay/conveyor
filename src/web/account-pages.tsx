@@ -38,7 +38,7 @@ export function Accounts({ accounts, csrfToken }: { accounts: readonly Dashboard
                       <input type="hidden" name="csrf" value={csrfToken} />
                       <label for={`account-password-${account.id}`} class="sr-only">New password for {account.username}</label>
                       <input id={`account-password-${account.id}`} name="password" type="password" minLength={12} maxLength={1024} autoComplete="new-password" placeholder="New password" required />
-                      <button type="submit">Reset password</button>
+                      <button type="submit" class="action-button action-button--secondary">Reset password</button>
                       <span role="status" aria-live="polite" data-form-status />
                     </form>
                     {account.role === "user" && (
@@ -48,7 +48,7 @@ export function Accounts({ accounts, csrfToken }: { accounts: readonly Dashboard
                           <input type="hidden" name="csrf" value={csrfToken} />
                           <label for={`account-delete-${account.id}`}>Type {account.username} to confirm deletion</label>
                           <input id={`account-delete-${account.id}`} name="confirmation" autoComplete="off" required />
-                          <div class="account-action-buttons"><button type="submit">Delete account</button><button type="button" data-account-delete-cancel>Cancel</button></div>
+                          <div class="account-action-buttons"><button type="submit" class="action-button action-button--destructive">Delete account</button><button type="button" class="action-button action-button--secondary" data-account-delete-cancel>Cancel</button></div>
                           <span role="status" aria-live="polite" data-form-status />
                         </form>
                       </details>
@@ -72,7 +72,7 @@ export function Accounts({ accounts, csrfToken }: { accounts: readonly Dashboard
           <label for="account-password">Initial password</label>
           <input id="account-password" type="password" name="password" minLength={12} autoComplete="new-password" required />
           <div class="settings-actions">
-            <button type="submit">Create account</button>
+            <button type="submit" class="action-button action-button--primary">Create account</button>
             <span role="status" aria-live="polite" data-form-status />
           </div>
         </form>
@@ -109,7 +109,7 @@ export function Profile({ account, csrfToken }: { account: DashboardAccountViewM
             </div>
           </fieldset>
           <div class="settings-actions">
-            <button type="submit">Save</button>
+            <button type="submit" class="action-button action-button--primary">Save</button>
             <span role="status" aria-live="polite" data-form-status />
           </div>
         </form>
@@ -125,7 +125,7 @@ export function Profile({ account, csrfToken }: { account: DashboardAccountViewM
           <input id="current-password" name="currentPassword" type="password" autoComplete="current-password" required />
           <label for="new-password">New password</label>
           <input id="new-password" name="newPassword" type="password" minLength={12} autoComplete="new-password" required />
-          <div class="settings-actions"><button type="submit">Change password</button></div>
+          <div class="settings-actions"><button type="submit" class="action-button action-button--secondary">Change password</button></div>
         </form>
       </section>
     </section>

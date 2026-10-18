@@ -31,7 +31,7 @@ export function Notifications({ preferences, csrfToken }: { preferences: Notific
               </label>
             ))}
           </fieldset>
-          <div class="settings-actions"><button type="submit">Save notification settings</button></div>
+          <div class="settings-actions"><button type="submit" class="action-button action-button--primary">Save notification settings</button></div>
         </form>
       </section>
     </section>
