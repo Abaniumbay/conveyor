@@ -64,3 +64,39 @@ test("a repository pause defers a completed in-flight transition and resumes it 
   expect(w.labelWrites.filter((labels) => labels.includes("conveyor:refinement-review"))).toHaveLength(1);
   expect(w.store.listStageTransitions("issue")).toContainEqual(expect.objectContaining({ id: transition.id, status: "completed" }));
 });
+
+test("a repository pause fences the recorded code-host action until resume", async () => {
+  world = await deliveryWorld({ pauseBeforeChangeEnsure: true });
+  const w = world;
+
+  await expect(w.drive()).rejects.toThrow("item did not finish");
+
+  expect(w.host.pushes).toBe(0);
+  expect(w.host.ensures).toBe(0);
+  expect(w.ci.starts).toBe(0);
+  expect(w.store.repositoryPause("conveyor")).not.toBeNull();
+
+  await w.service.resumeRepository("conveyor");
+  await w.drive();
+
+  expect(w.host.pushes).toBeGreaterThan(0);
+  expect(w.host.ensures).toBeGreaterThan(0);
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+});
+
+test("a repository pause after opening a change fences CI dispatch until resume", async () => {
+  world = await deliveryWorld({ pauseBeforeCiStart: true });
+  const w = world;
+
+  await expect(w.drive()).rejects.toThrow("item did not finish");
+
+  expect(w.host.ensures).toBe(1);
+  expect(w.host.checklistUpdates).toBe(1);
+  expect(w.ci.starts).toBe(0);
+
+  await w.service.resumeRepository("conveyor");
+  await w.drive();
+
+  expect(w.ci.starts).toBeGreaterThan(0);
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+});

@@ -42,7 +42,7 @@ export interface DeliveryWorld {
   store: ConveyorStore;
   service: ConveyorService;
   host: FakeHost;
-  ci: { runs: CiRun[] };
+  ci: { runs: CiRun[]; starts: number; reruns: number };
   /** Every agent invocation: the stage it ran for, in order. */
   agentRuns: string[];
   /** Every script invocation (`deploy` or `verify`), in order. */
@@ -62,9 +62,12 @@ export interface FakeHost extends CodeHost {
   state: ChangeRequest["state"];
   descriptionUpdates: number;
   humanBodyEdits: number;
+  pushes: number;
+  ensures: number;
+  checklistUpdates: number;
 }
 
-function fakeHost(): FakeHost {
+function fakeHost(options: { afterChecklistUpdate?: () => void } = {}): FakeHost {
   const id = "github:owner/conveyor#pr-5";
   let body = "";
   const host: FakeHost = {
@@ -73,12 +76,16 @@ function fakeHost(): FakeHost {
     state: "open",
     descriptionUpdates: 0,
     humanBodyEdits: 0,
+    pushes: 0,
+    ensures: 0,
+    checklistUpdates: 0,
     async pushBranch(input) {
+      host.pushes += 1;
       await git(input.workspace.path, "push", "--set-upstream", "origin", input.workspace.branch);
       host.headSha = await git(input.workspace.path, "rev-parse", "HEAD");
       return { pushed: true };
     },
-    async ensureChange() { return change(); },
+    async ensureChange() { host.ensures += 1; return change(); },
     async getChange() { return change(); },
     async readFileAtRevision() { return "feature\n"; },
     sourceFileUrl(input) { return `https://example.com/${input.headSha}/${input.path}#L${input.line}`; },
@@ -88,7 +95,9 @@ function fakeHost(): FakeHost {
       return { merged: true, sha: "merge-sha" };
     },
     async setChangeChecklist(input) {
+      host.checklistUpdates += 1;
       body = upsertManagedSection(body, "acceptance-criteria", input.markdown, parseManagedSections(body).revision);
+      options.afterChecklistUpdate?.();
     },
     async setChangeDescription(input) {
       const updated = upsertManagedSection(body, "description", input.markdown, parseManagedSections(body).revision);
@@ -125,7 +134,11 @@ const envelope = (summary: string): RunEnvelope => ({
   sessionId: null, usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
 });
 
-export async function deliveryWorld(options: { requireDescription?: boolean } = {}): Promise<DeliveryWorld> {
+export async function deliveryWorld(options: {
+  requireDescription?: boolean;
+  pauseBeforeChangeEnsure?: boolean;
+  pauseBeforeCiStart?: boolean;
+} = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
   await mkdir(directory, { recursive: true });
@@ -172,12 +185,23 @@ export async function deliveryWorld(options: { requireDescription?: boolean } = 
   const store = await ConveyorStore.open(config.settings.database);
   store.upsertRepository({ id: "conveyor", configName: "conveyor", source: "github", address: "owner/conveyor", folder, configHash: config.hash });
 
-  const host = fakeHost();
-  const ci = { runs: [{ id: "1", name: "Tests", url: "https://ci.test/1", state: "passed", canRerun: false, hasLog: true }] as CiRun[] };
+  let pauseBeforeCiStart = options.pauseBeforeCiStart ?? false;
+  const host = fakeHost({
+    afterChecklistUpdate: () => {
+      if (!pauseBeforeCiStart) return;
+      pauseBeforeCiStart = false;
+      store.pauseRepository("conveyor", "operator", "Pause before CI dispatch");
+    },
+  });
+  const ci = {
+    runs: [{ id: "1", name: "Tests", url: "https://ci.test/1", state: "passed", canRerun: false, hasLog: true }] as CiRun[],
+    starts: 0,
+    reruns: 0,
+  };
   const provider: CiProvider = {
-    async start() { return []; },
+    async start() { ci.starts += 1; return []; },
     async list(_change: CiChange, _commit: string) { return ci.runs; },
-    async rerun() {},
+    async rerun() { ci.reruns += 1; },
     async definitions() { return { defined: true, provable: true, summary: "Tests workflow" }; },
     async log() { return ""; },
   };
@@ -222,6 +246,7 @@ export async function deliveryWorld(options: { requireDescription?: boolean } = 
           const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
           await git(input.workspace, "push", "--set-upstream", "origin", branch);
           host.headSha = await git(input.workspace, "rev-parse", "HEAD");
+          if (options.pauseBeforeChangeEnsure) store.pauseRepository("conveyor", "operator", "Pause before opening change");
         } else if (implementationRuns === 2) {
           // The first run created the branch commit. Conveyor has now opened the change, so this
           // returned implementation run can bind the evidence to its authoritative head.

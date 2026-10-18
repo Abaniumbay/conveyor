@@ -54,10 +54,12 @@ repositories:
     type: "Bug" as string | null | undefined,
     fields: { Effort: "Low", "Target date": "2026-11-01" } as Record<string, string>,
     second: null as null | { fields: Record<string, string>; updatedAt: string },
-    fieldReads: 0, visibilityReads: 0, visibility: "private" as "public" | "private", fail: false, failedNumbers: new Set<number>(), updatedAt: "2026-01-01T00:00:00Z",
+    fieldReads: 0, visibilityReads: 0, listings: 0, statusWrites: 0, labelWrites: 0,
+    visibility: "private" as "public" | "private", fail: false, failedNumbers: new Set<number>(), updatedAt: "2026-01-01T00:00:00Z",
   };
   const github = {
     async listIssues() {
+      source.listings += 1;
       const issues = [{
         id: "github:owner/repo#1", number: 1, url: "u", title: "F", body: "", state: "open", labels: ["conveyor", "conveyor:implementation"],
         updatedAt: source.updatedAt, ...(source.type === undefined ? {} : { type: source.type }),
@@ -83,8 +85,8 @@ repositories:
       if (source.fail || source.failedNumbers.has(number)) throw new Error("no access");
       return number === 2 ? source.second?.fields ?? {} : source.fields;
     },
-    async upsertStatusComment() { return 1; },
-    async replaceConveyorLabels() {},
+    async upsertStatusComment() { source.statusWrites += 1; return 1; },
+    async replaceConveyorLabels() { source.labelWrites += 1; },
   };
   const service = new ConveyorService(config, store, github as never);
   const card = () => service.dashboard("csrf").stages.flatMap((stage) => stage.issues).find((issue) => issue.number === 1);
@@ -106,6 +108,23 @@ test("reconciliation refreshes the repository visibility projection", async () =
 
   expect(source.visibilityReads).toBe(2);
   expect(store.repositoryTrustStatus("repo")).toMatchObject({ visibility: "public", warning: null });
+  store.close();
+});
+
+test("paused reconciliation keeps source reads but skips repository follow-on work", async () => {
+  const { service, store, source } = await setup();
+  store.pauseRepository("repo", "operator", "Investigating CI use");
+
+  await service.reconcileAll();
+
+  expect(source.listings).toBe(1);
+  expect(store.getIssue("github:owner/repo#1")).toMatchObject({
+    projectedStage: "implementation",
+    projectedState: "active",
+  });
+  expect(source.fieldReads).toBe(0);
+  expect(source.statusWrites).toBe(0);
+  expect(source.labelWrites).toBe(0);
   store.close();
 });
 

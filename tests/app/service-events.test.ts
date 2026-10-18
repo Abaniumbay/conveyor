@@ -20,13 +20,15 @@ afterEach(async () => {
 
 const ISSUE = "issue";
 
-async function setup(options: { drained?: boolean; sink?: EventSink } = {}) {
+async function setup(options: { drained?: boolean; sink?: EventSink; secondRepository?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-events-"));
   directories.push(root);
   const records: LogRecord[] = [];
   log.configure({ sinks: [{ write: (record: LogRecord) => { records.push(record); } }] });
   const repositoryPath = path.join(root, "repo");
   await mkdir(repositoryPath);
+  const secondRepositoryPath = path.join(root, "repo-two");
+  if (options.secondRepository) await mkdir(secondRepositoryPath);
   await writeFile(path.join(root, "instructions.md"), "Work.");
   await writeFile(path.join(root, "config.yml"), `
 settings: { database: ${root}/db.sqlite, logs: ${root}/logs, workspaces: ${root}/workspaces, artifacts: ${root}/artifacts }
@@ -52,7 +54,8 @@ pipelines:
           - { id: ciGate, task: ci.passed, manual: true }
 repositories:
   repo: { source: github, address: owner/my-app, folder: ${repositoryPath}, pipeline: default }
-`);
+${options.secondRepository ? `  repo-two: { source: github, address: owner/other-app, folder: ${secondRepositoryPath}, pipeline: default }
+` : ""}`);
   const config = await loadConfig(path.join(root, "config.yml"));
   const store = await ConveyorStore.open(config.settings.database);
   store.recordConfigSnapshot(config.hash, config);
@@ -62,6 +65,14 @@ repositories:
   store.setStageState({ issueId: ISSUE, stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
   store.activateEnrollment(ISSUE);
   store.setQueueRank(ISSUE, 10);
+  if (options.secondRepository) {
+    store.upsertRepository({ id: "repo-two", configName: "repo-two", source: "github", address: "owner/other-app", folder: secondRepositoryPath, configHash: config.hash });
+    store.upsertIssue({ id: "issue-two", repositoryId: "repo-two", sourceNumber: 2, sourceUrl: "https://example.com/2", title: "Second", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    store.setIssueProjection("issue-two", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: "issue-two", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.activateEnrollment("issue-two");
+    store.setQueueRank("issue-two", 20);
+  }
   const service = new ConveyorService(config, store, { async upsertStatusComment() { return 1; } } as never, options.sink ? { eventSinks: [options.sink] } : {});
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
@@ -179,12 +190,14 @@ describe("scheduling", () => {
     await service.close();
   });
 
-  test("a wake event does not admit a paused repository and resume readmits its retained item", async () => {
+  test("retry, follow-on, and operator wake events do not admit a paused repository", async () => {
     const { service, store, records } = await setup({ drained: false });
     const epoch = store.executions().stageEpoch(ISSUE);
     service.pauseRepository("repo", "Conserve CI time", "operator");
 
+    store.events().append("task.woken", {}, { issueId: ISSUE });
     store.events().append("item.requeued", { reason: "retry" }, { issueId: ISSUE });
+    store.events().append("command.accepted", { command: "backlog.move" });
     await service.eventsSettled();
 
     expect(started(records)).toEqual([]);
@@ -195,6 +208,35 @@ describe("scheduling", () => {
     await service.eventsSettled();
 
     expect(started(records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
+    await service.close();
+  });
+
+  test("a paused repository does not prevent another repository from starting", async () => {
+    const { service, store, records } = await setup({ drained: false, secondRepository: true });
+    service.pauseRepository("repo", "Conserve CI time", "operator");
+
+    store.events().append("command.accepted", { command: "backlog.move" });
+    await service.eventsSettled();
+
+    expect(started(records)).toEqual([expect.objectContaining({ item: "repo-two:2", stage: "implementation" })]);
+    expect(store.getStageState(ISSUE)).toMatchObject({ status: "ready" });
+    await service.close();
+  });
+
+  test("pause and resume retain a manual approval's gate visit and pipeline hash", async () => {
+    const { service, store, journal, park } = await setup();
+    const epoch = park();
+    const configHash = store.getStageState(ISSUE)!.configHash;
+
+    service.approveManualGate(ISSUE, "implementation", "ciGate", { id: "operator", username: "operator" });
+    await service.eventsSettled();
+    const wakeAt = journal.getCursor(ISSUE)?.wakeAt;
+
+    service.pauseRepository("repo", "Conserve CI time", "operator");
+    await service.resumeRepository("repo");
+
+    expect(journal.getCursor(ISSUE)).toMatchObject({ stage: "implementation", stageEpoch: epoch, wakeAt });
+    expect(store.getStageState(ISSUE)?.configHash).toBe(configHash);
     await service.close();
   });
 
