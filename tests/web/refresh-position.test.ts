@@ -1260,6 +1260,7 @@ describe("dashboard live refresh position", () => {
     };
     const server = startDashboard({
       dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
+      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
       approveManualGate: async () => { approved = true; revision = "approval-2"; },
     });
     try {
@@ -1272,7 +1273,7 @@ describe("dashboard live refresh position", () => {
       await page.locator("dialog.issue-details[open] .manual-gate-approve").click();
       await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]")?.textContent?.includes("Approved by operator"));
 
-      refreshDelay = 250;
+      refreshDelay = 1_000;
       const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
       const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
       await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
@@ -1284,6 +1285,7 @@ describe("dashboard live refresh position", () => {
 
       expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
       expect(page.url()).toContain("/issues/sample/4");
+      expect(await page.locator('article.issue[data-issue-id="approved"]').getAttribute("data-state-word")).toBe("Needs input");
       await page.keyboard.press("Escape");
       await page.waitForURL("**/board");
       await page.locator('article.issue[data-issue-id="approved"][data-state-word="Queued"]').waitFor();
@@ -1303,6 +1305,7 @@ describe("dashboard live refresh position", () => {
     };
     const server = startDashboard({
       dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
+      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
       setBoardApprovalRequirement: (nextRequired) => { required = nextRequired; revision = "switch-2"; },
     });
     try {
@@ -1315,7 +1318,7 @@ describe("dashboard live refresh position", () => {
       await page.locator("dialog.issue-details[open] .manual-gate-switch").click();
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
 
-      refreshDelay = 250;
+      refreshDelay = 1_000;
       const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
       const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
       await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
@@ -1327,6 +1330,7 @@ describe("dashboard live refresh position", () => {
 
       expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
       expect(page.url()).toContain("/issues/sample/4");
+      expect(await page.locator('article.issue[data-issue-id="switch"] .issue-title').textContent()).toBe("Approval optional");
       await page.keyboard.press("Escape");
       await page.waitForURL("**/board");
       await page.locator('article.issue[data-issue-id="switch"] .issue-title').filter({ hasText: "Approval required" }).waitFor();
