@@ -10,6 +10,32 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.11.2] - 2026-10-18
+
+Conveyor no longer depends on stage names, a rebased branch can be pushed before its pull request exists, the Graph is drawn, acceptance criteria show one clear marker, and closed items recover.
+
+### Changed
+
+- The dashboard Graph now draws workflow items and their family and prerequisite connections. Filter it by repository or stage, open an item from its graph box, and use the accessible relationship list when you prefer text.
+
+- Board repository filters now only filter the Board. Open repository details from **Show all**, the Repositories view, or a repository badge on a Board card.
+
+- Acceptance criteria in item details now show one marker that combines linked-test evidence and current review approval, with a text label and guidance explaining the checks.
+
+- **Breaking:** Conveyor no longer knows any stage by name; your pipeline configuration alone decides. If you use your own pipeline configuration, check three things:
+
+  - **Merge repair routes come from `onFail`.** A changed head, a conflict or an outdated base at merge, and a failed `change.criterionTestsVerified`, now follow the action's `onFail`. Before, they always returned to a stage called `implementation`. Add `onFail: { return: <your build stage> }` to your `change.merge` action, as the packaged pipeline now does. Without it, these failures stop the item as `blocked`.
+  - **Todos follow the tool grants.** Any agent granted the todo tools can keep the list. It is no longer tied to a stage called `implementation`; Conveyor closes out unfinished todos whenever the item moves on to its next stage, and a card shows todo progress while entries are still open.
+  - **Stage icons come only from `icon:` in the pipeline.** A stage without one shows no icon.
+
+### Fixed
+
+- Closed items now continue from a confirmed current merged change, including a person-merged pull request, or are safely offboarded after Conveyor removes its control labels. Missed closure deliveries are recovered after an hour without disrupting open work.
+
+- The default Operator now works only through its configured board tools in an empty, confined scratch filesystem. It can resolve common item references across configured repositories and explicitly reports when an item is not on the board.
+
+- Lease-protected workspace pushes can now safely republish a rebased feature branch before Conveyor has created its pull request.
+
 ## [0.11.1] - 2026-10-18
 
 Conveyor now keeps a copy of what it reads from GitHub in its database and answers every read from it; only an item it does not hold or one older than its configured lifetime is read from GitHub, which cuts an agent's GitHub calls during review to none and a full delivery to about a third. Merging no longer waits for GitHub to compute mergeability, and status comments are edited only when the status changes. Also adds board approvals per stage and pausing a repository from its page.
