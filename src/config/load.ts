@@ -315,8 +315,13 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
       if (stage.exitCheck && !config.checks[stage.exitCheck]) {
         error([...prefix, "exitCheck"], `references unknown check "${stage.exitCheck}"`);
       }
-      if (stage.run.type === "agent" && !config.agents[stage.run.agent]) {
-        error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
+      if (stage.run.type === "agent") {
+        const agent = config.agents[stage.run.agent];
+        if (!agent) {
+          error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
+        } else if (agent.workspaceAccess === "confined") {
+          error([...prefix, "run", "agent"], `references confined agent "${stage.run.agent}", which cannot run pipeline stages`);
+        }
       }
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
         error([...prefix, "run", "runner"], `references unknown runner "${stage.run.runner}"`);

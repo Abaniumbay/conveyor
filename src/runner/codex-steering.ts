@@ -177,7 +177,8 @@ export async function runCodexSteering(
           argv: launch.argv,
           env: launch.env,
           scratch: scratch.path,
-          readablePaths: input.mcp ? [input.mcp.command, ...input.mcp.args.filter((value) => value.startsWith("/"))] : [],
+          readablePaths: input.mcp ? input.mcp.args.filter((value) => value.startsWith("/")) : [],
+          runtimePaths: input.mcp ? [input.mcp.command] : [],
         })
       : launch;
     child = Bun.spawn(confinedLaunch.argv, { cwd: agentWorkspace, env: confinedLaunch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
