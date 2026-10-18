@@ -61,7 +61,7 @@ async function waitFor(check: () => boolean): Promise<void> {
   expect(check()).toBe(true);
 }
 
-async function twoRepositoryService(holdSecond: Promise<void>, failSecond = false) {
+async function twoRepositoryService(holdSecond: Promise<void>, failSecond = false, holdFirst = Promise.resolve(), failFirst = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-startup-"));
   directories.push(root);
   const firstFolder = path.join(root, "first");
@@ -124,6 +124,10 @@ repositories:
     async collaboratorPermission() { return "admin" as const; },
     async ensureLabels() {},
     async listIssues(address: string) {
+      if (address === "owner/my-app") {
+        await holdFirst;
+        if (failFirst) throw new Error("source unavailable");
+      }
       if (address === "owner/other-app") {
         secondListed = true;
         await holdSecond;
@@ -224,6 +228,100 @@ describe("startup reconciliation", () => {
     }
   });
 
+  test("keeps cached startup live while held onboarding degrades", async () => {
+    const root = await shortTemporaryDirectory("conveyor-startup-", { socketPath: "control.sock" });
+    directories.push(root);
+    const cached = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    cached.upsertRepository({
+      id: "app", configName: "app", source: "github", address: "owner/my-app", folder: root, configHash: "startup-test",
+    });
+    cached.upsertIssue({
+      id: "cached-issue", repositoryId: "app", sourceNumber: 1, sourceUrl: "https://example.com/issues/1",
+      title: "Cached issue", body: "", sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    cached.setIssueProjection("cached-issue", { stage: "implementation", state: "active", warning: null });
+    cached.setStageState({ issueId: "cached-issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "startup-test" });
+    cached.activateEnrollment("cached-issue");
+    cached.setQueueRank("cached-issue", 1);
+    cached.close();
+
+    let release!: () => void;
+    const heldOnboarding = new Promise<void>((resolve) => { release = resolve; });
+    let labelsRequested = 0;
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async ensureLabels() {
+        labelsRequested += 1;
+        await heldOnboarding;
+        throw new Error("label setup unavailable");
+      },
+      async listIssues() { throw new Error("reconciliation must not start after failed onboarding"); },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+    };
+    const service = await ConveyorService.create(config(root), github as never, new CodeHostRegistry());
+    const auth = createWebAuth({
+      username: "operator",
+      passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      secureCookies: false,
+    });
+    const web = Bun.serve({ port: 0, fetch: createWebHandler(service.webDependencies(auth, "operator")) });
+    const socket = path.join(root, "control.sock");
+    const control = await serveControlSocket(socket, createControlHandler(service, {
+      home: root, config: path.join(root, "conveyor.yaml"), logs: path.join(root, "logs"), database: path.join(root, "conveyor.sqlite"),
+      dashboardUrl: "https://conveyor.example.com/", startedAt: new Date().toISOString(), supervised: false,
+    }));
+    try {
+      service.start();
+      await waitFor(() => labelsRequested === 1);
+
+      const login = await fetch(new URL("/login", web.url), {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username: "operator", password: "correct horse" }),
+      });
+      const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+      const [live, ready, dashboard, status] = await Promise.all([
+        fetch(new URL("/health/live", web.url)),
+        fetch(new URL("/health/ready", web.url), { headers: { cookie } }),
+        fetch(new URL("/board", web.url), { headers: { cookie } }),
+        fetch("http://example.com/v1/status", { unix: socket }),
+      ]);
+
+      expect(live.status).toBe(200);
+      expect(ready.status).toBe(503);
+      expect(await dashboard.text()).toContain("Starting repository setup");
+      expect(await (await fetch(new URL("/board", web.url), { headers: { cookie } })).text()).toContain("Cached issue");
+      expect(await status.json()).toMatchObject({
+        ready: false,
+        startup: { state: "starting", repository: "app", phase: "onboarding" },
+      });
+
+      release();
+      await waitFor(() => service.startupStatus().state === "degraded");
+      const [failedLive, failedReady, failedDashboard, failedStatus] = await Promise.all([
+        fetch(new URL("/health/live", web.url)),
+        fetch(new URL("/health/ready", web.url), { headers: { cookie } }),
+        fetch(new URL("/board", web.url), { headers: { cookie } }),
+        fetch("http://example.com/v1/status", { unix: socket }),
+      ]);
+      expect(failedLive.status).toBe(200);
+      expect(failedReady.status).toBe(503);
+      expect(await failedDashboard.text()).toContain("label setup unavailable");
+      expect(await failedStatus.json()).toMatchObject({
+        ready: false,
+        startup: { state: "degraded", repository: "app", phase: null },
+      });
+    } finally {
+      release();
+      await service.close();
+      await control.stop();
+      web.stop(true);
+    }
+  });
+
   test("clears startup only after every repository succeeds and exposes a failed repository as degraded", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-startup-"));
     directories.push(root);
@@ -266,6 +364,24 @@ describe("startup reconciliation", () => {
 
       release();
       await waitFor(() => store.getStageState("second-issue")?.status === "done");
+    } finally {
+      release();
+      await service.close();
+    }
+  });
+
+  test("admits a later repository while an earlier startup reconciliation is held", async () => {
+    let release!: () => void;
+    const firstListing = new Promise<void>((resolve) => { release = resolve; });
+    const { service, store, secondListed } = await twoRepositoryService(Promise.resolve(), false, firstListing);
+    try {
+      service.start();
+      await waitFor(secondListed);
+      await waitFor(() => store.getStageState("second-issue")?.status === "done");
+      expect(store.getStageState("first-issue")?.status).toBe("ready");
+
+      release();
+      await waitFor(() => store.getStageState("first-issue")?.status === "done");
     } finally {
       release();
       await service.close();

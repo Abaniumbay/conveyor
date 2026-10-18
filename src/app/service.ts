@@ -952,7 +952,7 @@ export class ConveyorService {
     for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
     void withGitHubCallSource("startup", async () => {
       await this.recoverWorkspaceScratch();
-      for (const [id, repository] of Object.entries(this.config.repositories)) {
+      await Promise.all(Object.entries(this.config.repositories).map(async ([id, repository]) => {
         const startedAt = Date.now();
         let issues = 0;
         let failed = false;
@@ -981,7 +981,7 @@ export class ConveyorService {
           // A repository can safely resume as soon as its own projection is checked.
           if (!failed) this.schedule();
         }
-      }
+      }));
       this.#lastReconciledAt = new Date().toISOString();
       this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size + this.#onboardingErrors.size });
       this.interruptIneligibleRuns();
