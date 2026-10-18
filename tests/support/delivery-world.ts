@@ -239,24 +239,17 @@ export async function deliveryWorld(options: {
       } else if (stage === "implementation") {
         implementationRuns += 1;
         if (implementationRuns === 1) {
-          // kaveh: commits and pushes the branch.
+          // kaveh: writes a failing-test claim before Conveyor creates the change.
           await writeFile(path.join(input.workspace, "feature.txt"), "feature\n");
           await git(input.workspace, "add", "feature.txt");
           await git(input.workspace, "commit", "-m", "Add the feature");
-          const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
-          await git(input.workspace, "push", "--set-upstream", "origin", branch);
-          host.headSha = await git(input.workspace, "rev-parse", "HEAD");
-          if (options.pauseBeforeChangeEnsure) store.pauseRepository("conveyor", "operator", "Pause before opening change");
-        } else if (implementationRuns === 2) {
-          // The first run created the branch commit. Conveyor has now opened the change, so this
-          // returned implementation run can bind the evidence to its authoritative head.
           const run = store.listRunsForStage("issue", "implementation", "producer")[0];
           if (!run) throw new Error("the implementation tool call requires its active run");
           const actor = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };
           await dispatchTool(
             {
               name: "change.recordCriterionTests",
-              input: { headSha: host.headSha, criteria: [{ criterionId: "works", tests: [{ name: "feature", file: "feature.txt" }] }] },
+              input: { criteria: [{ criterionId: "works", tests: [{ name: "feature", file: "feature.txt" }] }] },
               actor,
               grant: { runId: run.id, stageId: "implementation", issueScoped: true, actor, tasks: new Set(["change.recordCriterionTests"]) },
             },
@@ -268,10 +261,14 @@ export async function deliveryWorld(options: {
                 issueId: "issue", sourceGuidance: "", git: {} as never, workspaces: {} as never,
                 codeHost: host,
               }),
-              liveHeadSha: async () => host.headSha,
+              liveHeadSha: async () => store.getCurrentPullRequest("issue") ? host.headSha : null,
               store,
             },
           );
+          const branch = await git(input.workspace, "rev-parse", "--abbrev-ref", "HEAD");
+          await git(input.workspace, "push", "--set-upstream", "origin", branch);
+          host.headSha = await git(input.workspace, "rev-parse", "HEAD");
+          if (options.pauseBeforeChangeEnsure) store.pauseRepository("conveyor", "operator", "Pause before opening change");
         } else if (options.requireDescription) {
           // kaveh: follows the criterion's request through the granted agent tool, not a human body edit.
           const run = store.listRunsForStage("issue", "implementation", "producer")[0];

@@ -992,4 +992,44 @@ export const migrations: readonly Migration[] = [
         ON ci_gate_observations(issue_id, retry_window, id DESC);
     `,
   },
+  {
+    version: 40,
+    sql: `
+      -- Test evidence can be claimed while the implementation branch has no pull request yet.
+      -- The review gate fills the source-link revision only after it verifies the claim.
+      CREATE TABLE criterion_test_evidence_new (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        criterion_id TEXT NOT NULL,
+        manual INTEGER NOT NULL CHECK (manual IN (0, 1)),
+        recorded_head_sha TEXT,
+        source_link_head_sha TEXT,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (issue_id, criterion_id)
+      );
+      CREATE TABLE criterion_test_evidence_tests_new (
+        issue_id TEXT NOT NULL,
+        criterion_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        file TEXT NOT NULL,
+        line INTEGER,
+        description TEXT,
+        PRIMARY KEY (issue_id, criterion_id, ordinal),
+        FOREIGN KEY (issue_id, criterion_id)
+          REFERENCES criterion_test_evidence_new(issue_id, criterion_id) ON DELETE CASCADE
+      );
+      INSERT INTO criterion_test_evidence_new
+        SELECT issue_id, criterion_id, manual, recorded_head_sha, source_link_head_sha, recorded_at
+        FROM criterion_test_evidence;
+      INSERT INTO criterion_test_evidence_tests_new
+        SELECT issue_id, criterion_id, ordinal, name, file, line, description
+        FROM criterion_test_evidence_tests;
+      DROP TABLE criterion_test_evidence_tests;
+      DROP TABLE criterion_test_evidence;
+      ALTER TABLE criterion_test_evidence_new RENAME TO criterion_test_evidence;
+      ALTER TABLE criterion_test_evidence_tests_new RENAME TO criterion_test_evidence_tests;
+      CREATE INDEX criterion_test_evidence_tests_issue_idx
+        ON criterion_test_evidence_tests(issue_id, criterion_id);
+    `,
+  },
 ];

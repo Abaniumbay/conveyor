@@ -1549,6 +1549,9 @@ test("shows tests linked when evidence exists without current-head approval", ()
 
   expect(html).toContain('class="criterion-state criterion-state--tests-linked" aria-label="Tests linked"');
   expect(html).toContain('aria-hidden="true">☑</span> Tests linked');
+  expect(html).toContain("records evidence");
+  expect(html).toContain("tests/web/render.test.ts:1");
+  expect(html).not.toContain('href="null"');
   expect(html).not.toContain('aria-hidden="true">☑☑</span> Approved');
 });
 
