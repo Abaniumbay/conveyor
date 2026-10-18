@@ -251,7 +251,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         {canManage && issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
           <label for={`${id}-retry-note`}>Optional note for the next attempt</label>
           <textarea id={`${id}-retry-note`} name="note" rows={2} maxLength={4000} placeholder="Add feedback for the next attempt…" />
-          <button type="submit" data-retry-submit>Retry</button>
+          <button type="submit" class="action-button action-button--secondary" data-retry-submit>Retry</button>
           <span role="status" aria-live="polite" data-retry-status />
         </form>}
         {issue.waiting && <WaitingLine issue={issue} className="waiting-detail" />}
@@ -292,7 +292,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
                     <input type="hidden" name="issueId" value={issue.id} />
                     <input type="hidden" name="stageId" value={gate.stageId} />
                     {gate.gateId !== null && <input type="hidden" name="gateId" value={gate.gateId} />}
-                    <button type="submit" class="manual-gate-approve">{gate.kind === "follow-up" ? "Done" : "Approve"}</button>
+                    <button type="submit" class="manual-gate-approve action-button action-button--secondary">{gate.kind === "follow-up" ? "Done" : "Approve"}</button>
                   </form>}
                   <p class="manual-gate-status" role="status" data-manual-gate-status />
                 </div>}
@@ -371,7 +371,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           <textarea id={`${conversationId}-message`} name="message" rows={3} maxLength={4000} required placeholder="Add context or steer the work…" />
           <div class="conversation-compose-actions">
             <span>Shared with the next run.</span>
-            <button type="submit">Send</button>
+            <button type="submit" class="action-button action-button--secondary">Send</button>
           </div>
         </form>
       </section>
@@ -553,7 +553,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
         {!issue.waiting && issue.stateChangedAt && <> · <RelativeTime value={issue.stateChangedAt} /></>}
         {issue.noSplit && <> · <span>No split</span></>}
       </p>
-      {canManage && issue.retryable && <button type="button" class="issue-retry" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
+      {canManage && issue.retryable && <button type="button" class="issue-retry action-button action-button--secondary" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
       <IndicatorChips issue={issue} />
@@ -779,7 +779,7 @@ function BoardFilters({ model }: { model: DashboardViewModel }) {
         <label class="board-filter-search">Search board
           <input type="search" name="q" value={q} placeholder="Search items" data-filter-search />
         </label>
-        <button type="button" class="board-filter-more" data-filter-more aria-expanded="false">Filters <span data-filter-count>0</span></button>
+        <button type="button" class="board-filter-more action-button action-button--secondary" data-filter-more aria-expanded="false">Filters <span data-filter-count>0</span></button>
         <div class="board-filter-choices" data-filter-choices>
           <fieldset><legend>Repositories</legend>
             {repositories.map((repository) => {
@@ -799,8 +799,8 @@ function BoardFilters({ model }: { model: DashboardViewModel }) {
               <label data-filter-state={value} key={value}><input type="radio" name="state" value={value} checked={state === value} />{label}</label>)}
           </fieldset>
         </div>
-        <button type="submit" class="board-filter-submit">Apply filters</button>
-        <button type="button" class="board-filter-clear" data-filter-clear hidden>Clear filters</button>
+        <button type="submit" class="board-filter-submit action-button action-button--secondary">Apply filters</button>
+        <button type="button" class="board-filter-clear action-button action-button--secondary" data-filter-clear hidden>Clear filters</button>
         <p class="board-filter-summary" data-filter-summary aria-live="polite">Showing {active.length} of {active.length} active board items</p>
       </form>
     </section>
@@ -832,7 +832,7 @@ function Board({ model }: { model: DashboardViewModel }) {
     <>
     <p class="trace-banner" data-trace-banner role="status" hidden>
       <span data-trace-text />
-      <button type="button" class="trace-clear" data-trace-clear>Show everything</button>
+      <button type="button" class="trace-clear action-button action-button--secondary" data-trace-clear>Show everything</button>
     </p>
     <section class="board board--rows" aria-label="Delivery board" data-done-total={model.done.totalIssues}>
       <div class="board-track" style={style}>
@@ -869,7 +869,7 @@ function Board({ model }: { model: DashboardViewModel }) {
                       {model.boardFilters?.q && <input type="hidden" name="q" value={model.boardFilters.q} />}
                       {model.boardFilters?.state && <input type="hidden" name="state" value={model.boardFilters.state} />}
                       <input type="hidden" name="doneLimit" value={done.issues.length + increment} />
-                      <button type="submit">Load {increment} more</button>
+                      <button type="submit" class="action-button action-button--secondary">Load {increment} more</button>
                       <span>{done.issues.length} of {done.totalIssues}</span>
                     </form>
                   )}
@@ -1032,7 +1032,7 @@ function GraphFilters({ model }: { model: DashboardViewModel }) {
         {filters.stages.map((stage) => <option value={stage.id} selected={filters.stage === stage.id} key={stage.id}>{stage.name}</option>)}
       </select>
     </label>
-    <div class="graph-filter-actions"><button type="submit">Apply filters</button><a href="/graph">Clear</a></div>
+    <div class="graph-filter-actions"><button type="submit" class="action-button action-button--primary">Apply filters</button><a class="action-button action-button--secondary" href="/graph">Clear</a></div>
   </form>;
 }
 
@@ -1144,7 +1144,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <h3><RepositoryBadge repository={issue.repository} /> · #{issue.number} {issue.title}</h3>
               <p>{issue.reason ?? issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
             </div>
-            <a class="needs-you-action" href={issueHref(issue.repository, issue.number)}>Open</a>
+            <a class="needs-you-action action-button action-button--secondary" href={issueHref(issue.repository, issue.number)}>Open</a>
           </li>
         ))}
         {followUps.map(({ issue, gate }) => (
@@ -1159,8 +1159,8 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
               <input type="hidden" name="issueId" value={issue.id} />
               <input type="hidden" name="stageId" value={gate.stageId} />
               {gate.gateId !== null && <input type="hidden" name="gateId" value={gate.gateId} />}
-              <button type="submit" class="manual-gate-approve">Done</button>
-            </form> : <a class="needs-you-action" href={issueHref(issue.repository, issue.number)}>Open</a>}
+              <button type="submit" class="manual-gate-approve action-button action-button--secondary">Done</button>
+            </form> : <a class="needs-you-action action-button action-button--secondary" href={issueHref(issue.repository, issue.number)}>Open</a>}
           </li>
         ))}
         {model.questions.map((question, questionIndex) => (
@@ -1184,7 +1184,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
                   <input type="radio" name="answer" value={option.id} required={optionIndex === 0} /> {option.label}
                 </label>
               ))}
-              <button class="answer-button" type="submit">Answer</button>
+              <button class="answer-button action-button action-button--secondary" type="submit">Answer</button>
               <p class="answer-status" role="status" data-answer-status />
             </form>}
           </li>
@@ -1284,7 +1284,7 @@ function Recent({ model }: { model: DashboardViewModel }) {
             ))}
           </div>
         </fieldset>
-        <button class="recent-filter-submit" type="submit">Apply filters</button>
+        <button class="recent-filter-submit action-button action-button--primary" type="submit">Apply filters</button>
       </form>
       {recent.events.length === 0
         ? <p class="recent-empty" role="status">{recent.rangeStartedAt ? "No activity matches these filters." : "You've reached the end of the activity feed."}</p>
@@ -1304,7 +1304,7 @@ function Recent({ model }: { model: DashboardViewModel }) {
             </li>
           ))}
         </ol>{!recent.nextCursor && <p class="recent-empty recent-end" role="status">You've reached the end of the activity feed.</p>}</>}
-      {recent.nextCursor && <a class="recent-load-more" href={recentHref(model, recent.nextCursor)}>Load more</a>}
+      {recent.nextCursor && <a class="recent-load-more action-button action-button--secondary" href={recentHref(model, recent.nextCursor)}>Load more</a>}
     </section>
   );
 }
@@ -1416,7 +1416,7 @@ function RepositoryDetail({ model }: { model: DashboardViewModel }) {
       <section><h3>Line</h3><p>{line.join(" · ")}</p><p class="repository-empty">Completed all-time includes completed roll-up parents; Last 30 days counts deliveries only.</p></section>
       <section><h3>Now</h3>{repository.items.length > 0 ? <><p>{repository.capacity.busy} of {repository.capacity.slots} run slots busy</p><ol class="repository-items">{repository.items.map((item) => <li key={item.number}><a href={issueHref(repository.id, item.number)}>#{item.number} {item.title}</a><span>{item.stage ?? "Backlog"} · {item.state}</span></li>)}</ol></> : <p class="repository-empty">No work is in progress.</p>}</section>
       <section><h3>Recently delivered</h3>{repository.deliveries.length > 0 ? <ol class="repository-items">{repository.deliveries.map((delivery) => <li key={delivery.number}><a href={issueHref(repository.id, delivery.number)}>#{delivery.number} {delivery.title}</a><time dateTime={delivery.deliveredAt} data-local-time>…</time></li>)}</ol> : <p class="repository-empty">Nothing has been delivered yet.</p>}</section>
-      <section><div class="repository-section-heading"><h3>Setup</h3>{canManageDashboard(model) && <div class="repository-actions"><form class="repository-sync" method="post" action={`${repositoryHref(repository.id)}/sync`} data-repository-sync><input type="hidden" name="csrf" value={model.csrfToken} /><button type="submit" data-repository-sync-submit>Sync now</button></form>{repository.pause ? <form method="post" action={`${repositoryHref(repository.id)}/resume`}><input type="hidden" name="csrf" value={model.csrfToken} /><button type="submit">Resume repository</button></form> : <form method="post" action={`${repositoryHref(repository.id)}/pause`}><input type="hidden" name="csrf" value={model.csrfToken} /><label>Pause reason <input name="reason" maxLength={500} /></label><button type="submit">Pause repository</button></form>}</div>}</div>{canManageDashboard(model) && <p class="repository-sync-status" role="status" data-repository-sync-status>Sync now reads every issue, permission, relationship and pull request again, for changes GitHub sends no webhook for.</p>}<dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}{repository.setup.webhooks ? ` (${repository.setup.webhooks === "healthy" ? "deliveries healthy" : "deliveries stopped arriving: check the webhook"})` : ""}</dd><dt>GitHub calls, last hour</dt><dd>{repository.setup.githubCalls.total}{repository.setup.githubCalls.bySource.length > 0 ? ` (${repository.setup.githubCalls.bySource.map((entry) => `${entry.source} ${entry.count}`).join(", ")})` : ""}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
+      <section><div class="repository-section-heading"><h3>Setup</h3>{canManageDashboard(model) && <div class="repository-actions"><form class="repository-sync" method="post" action={`${repositoryHref(repository.id)}/sync`} data-repository-sync><input type="hidden" name="csrf" value={model.csrfToken} /><button type="submit" class="action-button action-button--secondary" data-repository-sync-submit>Sync now</button></form>{repository.pause ? <form method="post" action={`${repositoryHref(repository.id)}/resume`}><input type="hidden" name="csrf" value={model.csrfToken} /><button type="submit" class="action-button action-button--secondary">Resume repository</button></form> : <form method="post" action={`${repositoryHref(repository.id)}/pause`}><input type="hidden" name="csrf" value={model.csrfToken} /><label>Pause reason <input name="reason" maxLength={500} /></label><button type="submit" class="action-button action-button--secondary">Pause repository</button></form>}</div>}</div>{canManageDashboard(model) && <p class="repository-sync-status" role="status" data-repository-sync-status>Sync now reads every issue, permission, relationship and pull request again, for changes GitHub sends no webhook for.</p>}<dl class="repository-facts"><dt>Pipeline</dt><dd>{repository.setup.pipeline}</dd><dt>Base branch</dt><dd>{repository.setup.baseBranch}</dd><dt>Item source</dt><dd>{repository.setup.itemProvider} · {repository.setup.itemSync}{repository.setup.webhooks ? ` (${repository.setup.webhooks === "healthy" ? "deliveries healthy" : "deliveries stopped arriving: check the webhook"})` : ""}</dd><dt>GitHub calls, last hour</dt><dd>{repository.setup.githubCalls.total}{repository.setup.githubCalls.bySource.length > 0 ? ` (${repository.setup.githubCalls.bySource.map((entry) => `${entry.source} ${entry.count}`).join(", ")})` : ""}</dd><dt>Slots</dt><dd>{repository.capacity.busy} of {repository.capacity.slots}</dd><dt>CI</dt><dd>{repository.setup.ciProvider ?? "None"} · {repository.setup.ciMode}</dd><dt>System labels</dt><dd>{repository.setup.systemLabels.length > 0 ? repository.setup.systemLabels.join(", ") : "None"}</dd>{restricted && <><dt>Local folder</dt><dd>{restricted.folder}</dd><dt>Agent egress hosts</dt><dd>{restricted.agentEgressHosts.length > 0 ? restricted.agentEgressHosts.join(", ") : "None"}</dd></>}</dl></section>
       <section><h3>Last 30 days</h3><a href={`/reports/${encodeURIComponent(repository.id)}?period=30d`}>Full report →</a><dl class="repository-facts"><dt>Delivered</dt><dd>{repository.report30d.delivered}</dd><dt>Tokens</dt><dd>{repository.report30d.inputTokens.toLocaleString()} in · {repository.report30d.outputTokens.toLocaleString()} out</dd><dt>Agent time</dt><dd>{Math.round(repository.report30d.agentMs / 60_000).toLocaleString()} min</dd></dl></section>
       <section><h3>Public repository trust</h3><p>{trustStatus}</p><dl class="repository-facts"><dt>Default permission threshold</dt><dd>{repository.trust.permissionThreshold}</dd><dt>Extra trusted logins</dt><dd>{repository.trust.extraTrustedLogins.length > 0 ? repository.trust.extraTrustedLogins.join(", ") : "None"}</dd><dt>Ignored inputs</dt><dd><ul class="repository-trust-list">{repository.trust.ignoredInputCategories.map((category) => <li key={category}>{category}</li>)}</ul></dd></dl>{repository.skippedReviewItems.length > 0 ? <p class="repository-empty">Ignored native reviews: {repository.skippedReviewItems.map((item, index) => <span key={item.number}>{index > 0 && ", "}<a href={issueHref(repository.id, item.number, "journey")}>#{item.number} {item.title} Journey history</a> ({item.count})</span>)}</p> : <p class="repository-empty">No ignored native reviews have been recorded. Their text is never shown here.</p>}{repository.trust.warning && <p class="repository-error">Source checks uncertain: {repository.trust.warning}</p>}</section>
     </article>
@@ -1454,7 +1454,7 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
             <textarea id="steering-prompt" name="prompt" maxLength={12000} rows={5} required disabled={!steering.enabled || running} placeholder="For example: inspect why issue #152 is blocked and fix any clear Conveyor configuration problem." />
             <div class="compose-actions">
               <span>{running ? "Wait for the current agent to finish." : "The final response is retained as a report."}</span>
-              <button type="submit" disabled={!steering.enabled || running}>Send to operator</button>
+              <button type="submit" class="action-button action-button--primary" disabled={!steering.enabled || running}>Send to operator</button>
             </div>
           </form>}
         </div>
@@ -1739,7 +1739,7 @@ function Page({ model }: { model: DashboardViewModel }) {
                 <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
                 {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
                 <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
-                <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout" type="submit">Sign out</button></form>
+                <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout action-button action-button--secondary" type="submit">Sign out</button></form>
               </div>
               </details>
             </header>
