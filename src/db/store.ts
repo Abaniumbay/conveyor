@@ -69,8 +69,8 @@ export interface CriterionTestEvidence {
   criterionId: string;
   manual: boolean;
   tests: Array<{ name: string; file: string; line?: number; description?: string }>;
-  recordedHead: string;
-  sourceLinkHead: string;
+  recordedHead: string | null;
+  sourceLinkHead: string | null;
   recordedAt: string;
 }
 
@@ -440,7 +440,7 @@ export class ConveyorStore {
         LEFT JOIN criterion_test_evidence_tests t ON t.issue_id = e.issue_id AND t.criterion_id = e.criterion_id
        WHERE e.issue_id = ?
        ORDER BY e.criterion_id, t.ordinal
-    `).all(issueId) as Array<{ criterionId: string; manual: number; recordedHead: string; sourceLinkHead: string; recordedAt: string; ordinal: number | null; name: string | null; file: string | null; line: number | null; description: string | null }>;
+    `).all(issueId) as Array<{ criterionId: string; manual: number; recordedHead: string | null; sourceLinkHead: string | null; recordedAt: string; ordinal: number | null; name: string | null; file: string | null; line: number | null; description: string | null }>;
     const evidence = new Map<string, CriterionTestEvidence>();
     for (const row of rows) {
       let entry = evidence.get(row.criterionId);

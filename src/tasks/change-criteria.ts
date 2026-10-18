@@ -20,7 +20,7 @@ const oneLine = z.string().refine((value) => value.trim().length > 0 && !/[\r\n]
 const repositoryFile = z.string().refine((value) => value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.includes("\0") && value.split("/").every((part) => part.length > 0 && part !== "." && part !== ".."), "must be a safe repository-relative path");
 const linkedTest = z.object({ name: oneLine, file: repositoryFile, line: z.number().int().positive().optional(), description: oneLine.optional() }).strict();
 const criterionEvidence = z.union([z.object({ criterionId: z.string().min(1), tests: z.array(linkedTest).min(1) }).strict(), z.object({ criterionId: z.string().min(1), manual: z.literal(true) }).strict()]);
-const recordEvidenceInput = z.object({ headSha: z.string().min(1), criteria: z.array(criterionEvidence).min(1).superRefine((entries, context) => { const seen = new Set<string>(); entries.forEach((entry, index) => { if (seen.has(entry.criterionId)) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "criterionId"], message: "criterion ids must be unique" }); seen.add(entry.criterionId); }); }) }).strict();
+const recordEvidenceInput = z.object({ headSha: z.string().min(1).optional(), criteria: z.array(criterionEvidence).min(1).superRefine((entries, context) => { const seen = new Set<string>(); entries.forEach((entry, index) => { if (seen.has(entry.criterionId)) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "criterionId"], message: "criterion ids must be unique" }); seen.add(entry.criterionId); }); }) }).strict();
 type RecordEvidenceInput = z.output<typeof recordEvidenceInput>;
 
 const NO_CHANGE = "No change request exists yet";
@@ -80,7 +80,7 @@ function render(deps: Deps, headSha: string | null, host?: CodeHost): { markdown
         const recorded = evidence.get(id);
         const detail = recorded?.manual ? "manual" : recorded?.tests.length ? `tests: ${recorded.tests.map((test) => {
           const location = `${test.file}${test.line ? `:${test.line}` : ""}`;
-          const linkedLocation = host && test.line
+          const linkedLocation = host && test.line && recorded.sourceLinkHead
             ? `[${location}](${host.sourceFileUrl({ address: deps.repository.address, path: test.file, headSha: recorded.sourceLinkHead, line: test.line })})`
             : location;
           return `${test.name} (${linkedLocation}${test.description ? ` — ${test.description}` : ""})`;
@@ -171,31 +171,37 @@ export const uncheckCriterion = criterionTool(
 export const recordCriterionTests: TaskDefinition<unknown, RecordEvidenceInput, Deps> = {
   name: "change.recordCriterionTests",
   kind: "tool",
-  description: "Records exact tests or a permitted manual designation for item criteria at the current change head, then refreshes the managed PR checklist.",
+  description: "Records exact tests or a permitted manual designation for item criteria. Before a pull request exists this is an unverified claim; the review gate verifies every linked test at the pull request head. With a pull request, headSha must be its current head and the managed checklist is refreshed.",
   reads: [], writes: [], invalidates: ["change"], mutating: true, journal: false,
   input: recordEvidenceInput,
   async run({ deps, input }: TaskArgs<unknown, RecordEvidenceInput, Deps>) {
-    const stored = deps.store.getCurrentPullRequest(deps.issueId);
-    if (!stored) return fail(NO_CHANGE);
     const known = new Map(criteriaOf(deps.store.getIssue(deps.issueId)?.body ?? "").map((criterion) => [criterion.id, criterion]));
     for (const entry of input!.criteria) {
       const criterion = known.get(entry.criterionId);
       if (!criterion) return fail(`Unknown criterion "${entry.criterionId}"; no evidence was recorded`);
       if ("manual" in entry && !criterion.manual) return fail(`Criterion "${entry.criterionId}" is not marked [Manual]; no evidence was recorded`);
     }
-    const host = deps.codeHost;
-    if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
-    const live = await host.getChange({ address: deps.repository.address, id: stored.id });
-    if (live.headSha !== input!.headSha) return fail(`The change head is ${live.headSha}, not ${input!.headSha}; read change.get and retry`);
-    deps.store.replaceCriterionTestEvidence(deps.issueId, input!.criteria.map((entry) => ({
+    const evidence = (headSha: string | null) => input!.criteria.map((entry) => ({
       criterionId: entry.criterionId, manual: "manual" in entry, tests: "tests" in entry ? entry.tests.map((test) => {
         const recorded: { name: string; file: string; line?: number; description?: string } = { name: test.name, file: test.file };
         if (test.line !== undefined) recorded.line = test.line;
         if (test.description !== undefined) recorded.description = test.description;
         return recorded;
       }) : [],
-      recordedHead: live.headSha, sourceLinkHead: live.headSha, recordedAt: new Date().toISOString(),
-    })));
+      recordedHead: headSha, sourceLinkHead: headSha, recordedAt: new Date().toISOString(),
+    }));
+    const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    if (!stored) {
+      if (input!.headSha !== undefined) return fail("No change request exists yet; do not supply headSha until one exists");
+      deps.store.replaceCriterionTestEvidence(deps.issueId, evidence(null));
+      return pass({ headSha: null });
+    }
+    if (input!.headSha === undefined) return fail("A headSha is required while a change request exists; read change.get and retry");
+    const host = deps.codeHost;
+    if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
+    const live = await host.getChange({ address: deps.repository.address, id: stored.id });
+    if (live.headSha !== input!.headSha) return fail(`The change head is ${live.headSha}, not ${input!.headSha}; read change.get and retry`);
+    deps.store.replaceCriterionTestEvidence(deps.issueId, evidence(live.headSha));
     const synced = await syncChecklist(host, deps, stored.id);
     return pass(synced.ok ? { headSha: live.headSha } : { headSha: live.headSha, checklist: `Recorded, but the PR checklist could not be updated: ${synced.message}` });
   },

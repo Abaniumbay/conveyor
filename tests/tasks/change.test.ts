@@ -381,6 +381,70 @@ describe("change tools", () => {
     }
   });
 
+  test("recordCriterionTests records unverified evidence before a change exists without reading source", async () => {
+    const w = await world({}, false, BODY);
+    const result = await dispatchTool(
+      { name: "change.recordCriterionTests", input: { criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }, { criterionId: "m", manual: true }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => null, store: w.store },
+    );
+    expect(result).toEqual({ headSha: null });
+    expect(w.store.criterionTestEvidence("i1")).toMatchObject([
+      { criterionId: "a", manual: false, tests: [{ name: "does work", file: "tests/a.test.ts" }], recordedHead: null, sourceLinkHead: null },
+      { criterionId: "m", manual: true, tests: [], recordedHead: null, sourceLinkHead: null },
+    ]);
+    expect(w.host.calls).toEqual([]);
+  });
+
+  test("recordCriterionTests requires the live change head without replacing evidence", async () => {
+    for (const input of [
+      { criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] },
+      { headSha: "stale", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] },
+    ]) {
+      const w = await world({ body: PR_BODY }, true, BODY);
+      w.store.replaceCriterionTestEvidence("i1", [{ criterionId: "a", manual: false, tests: [{ name: "original", file: "tests/original.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-01-01T00:00:00Z" }]);
+      const result = await run("change.recordCriterionTests", { context: {}, deps: w.deps, input }) as Fail;
+      expect(result.status).toBe("fail");
+      expect(w.store.criterionTestEvidence("i1")).toMatchObject([{ criterionId: "a", tests: [{ name: "original", file: "tests/original.test.ts" }] }]);
+    }
+  });
+
+  test("recordCriterionTests rejects invalid pre-change batches without recording evidence", async () => {
+    const cases: unknown[] = [
+      { criteria: [{ criterionId: "unknown", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] },
+      { criteria: [{ criterionId: "a", manual: true }] },
+      ...["/tests/a.test.ts", "tests/../a.test.ts", "tests/../../a.test.ts"].map((file) => ({ criteria: [{ criterionId: "a", tests: [{ name: "does work", file }] }] })),
+      { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] },
+    ];
+    for (const input of cases) {
+      const w = await world({}, false, BODY);
+      await expect(dispatchTool(
+        { name: "change.recordCriterionTests", input, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+        { registry, deps: () => w.deps, liveHeadSha: async () => null, store: w.store },
+      )).rejects.toBeInstanceOf(Error);
+      expect(w.store.criterionTestEvidence("i1")).toEqual([]);
+    }
+  });
+
+  test("criterionTestsVerified returns pre-change claims with missing or renamed tests to implementation", async () => {
+    for (const { files, message } of [
+      { files: {}, message: "a: file tests/a.test.ts is missing at head1" },
+      { files: { "tests/a.test.ts": "it(\"renamed test\", () => {})" }, message: 'a: test "does work" is not in tests/a.test.ts' },
+    ]) {
+      const w = await world({ body: PR_BODY, files }, false, BODY);
+      await dispatchTool(
+        { name: "change.recordCriterionTests", input: { criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+        { registry, deps: () => w.deps, liveHeadSha: async () => null, store: w.store },
+      );
+      w.store.upsertPullRequest({ issueId: "i1", id: ID, number: 5, url: "https://x/pull/5", state: "open" });
+
+      const result = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: w.deps }) as Fail;
+
+      expect(result.status).toBe("fail");
+      expect(result.message).toContain(message);
+      expect(w.store.criterionTestEvidence("i1")[0]?.sourceLinkHead).toBeNull();
+    }
+  });
+
   test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
     const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
     const unlinked = await world({ body: PR_BODY }, true, BODY);
@@ -607,6 +671,21 @@ describe("change.ensure criteriaChecklist", () => {
     const w = await world({ body: PR_BODY }, false, BODY);
     await run("change.ensure", { context: repository(), deps: w.deps, config: {} });
     expect(w.host.calls.some(([n]) => n === "checklist")).toBe(false);
+  });
+
+  test("projects unverified evidence recorded before the pull request exists", async () => {
+    const w = await world({ body: PR_BODY }, false, BODY);
+    const recorded = await run("change.recordCriterionTests", {
+      context: {}, deps: w.deps,
+      input: { criteria: [{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }, { criterionId: "m", manual: true }] },
+    });
+    expect(recorded).toEqual({ status: "pass", output: { headSha: null } });
+
+    await run("change.ensure", { context: repository(), deps: w.deps, config: { criteriaChecklist: true } });
+
+    expect(lastChecklist(w)).toContain("tests: does work (tests/a.test.ts)");
+    expect(lastChecklist(w)).toContain("manual");
+    expect(lastChecklist(w)).not.toContain("https://example.com/");
   });
 });
 

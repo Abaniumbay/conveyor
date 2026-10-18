@@ -144,17 +144,23 @@ test("projects recorded criterion tests with coherent refreshed source revisions
       tests: [{ name: "has no verified line", file: "tests/file-only.test.ts" }],
       recordedHead: "recorded-head", sourceLinkHead: "recorded-head", recordedAt: "2026-01-01T00:00:00Z",
     },
+    {
+      criterionId: "AC-3", manual: true,
+      tests: [{ name: "records an unverified claim", file: "tests/implementation.test.ts" }],
+      recordedHead: null, sourceLinkHead: null, recordedAt: "2026-01-01T00:00:00Z",
+    },
   ]);
 
   const initial = w.card().acceptanceCriteria;
   expect(initial).toMatchObject([
     { id: "AC-1", approved: false, manual: false, tests: [{ name: "checks the criterion", file: "tests/criteria.test.ts", line: 17, description: "Covers the stored condition" }] },
     { id: "AC-2", approved: false, manual: false, tests: [{ name: "has no verified line", file: "tests/file-only.test.ts", line: null, description: null }] },
-    { id: "AC-3", approved: false, manual: true, tests: [] },
+    { id: "AC-3", approved: false, manual: true, tests: [{ name: "records an unverified claim", file: "tests/implementation.test.ts", line: null, description: null, sourceUrl: null }] },
   ]);
   expect(initial[0]?.tests[0]?.sourceUrl).toContain("/blob/recorded-head/tests/criteria.test.ts#L17");
   expect(initial[1]?.tests[0]?.sourceUrl).toContain("/blob/recorded-head/tests/file-only.test.ts");
   expect(initial[1]?.tests[0]?.sourceUrl).not.toContain("#L");
+  expect(initial[2]?.tests[0]?.sourceUrl).toBeNull();
 
   new CriterionApprovals(w.store.sqlite()).approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-1", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
   w.store.refreshCriterionTestEvidence("issue", "verified-head", new Map([["AC-1", [31]]]));
