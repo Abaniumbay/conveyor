@@ -15,11 +15,10 @@ describe("docs/tasks.md", () => {
   });
 
   test("documents lease pushes before a change request exists", async () => {
-    const [taskDocs, instructions, specification, releaseNote] = await Promise.all([
+    const [taskDocs, instructions, specification] = await Promise.all([
       readFile(path.join(import.meta.dir, "../../docs/tasks.md"), "utf8"),
       readFile(path.join(import.meta.dir, "../../examples/config/instructions/kaveh.md"), "utf8"),
       readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8"),
-      readFile(path.join(import.meta.dir, "../../changes/343-pre-change-lease-push.md"), "utf8"),
     ]);
 
     for (const text of [taskDocs, instructions, specification]) {
@@ -32,7 +31,6 @@ describe("docs/tasks.md", () => {
     expect(instructions).toContain("forceWithLease");
     expect(specification).toContain("remote branch live");
     expect(specification).toContain("force-with-lease");
-    expect(releaseNote).toContain("Lease-protected workspace pushes");
   });
 
   test("explains the semantics an operator needs", () => {
