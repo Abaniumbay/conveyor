@@ -716,6 +716,50 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
+  test("keeps repository actions touch-sized, keyboard-focusable, and within a phone viewport in both themes", async () => {
+    const repository = {
+      id: "sample", address: "owner/sample", addressUrl: "https://github.com/owner/sample", color: 1,
+      health: "healthy" as const, error: null, errorSummary: null, lastReconciledAt: null, pause: null,
+      backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings"] },
+      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+    };
+    const server = startDashboard({
+      dashboard: (selection) => ({ ...dashboard("repository-actions", []), repositoryId: selection.repositoryId ?? null, repositories: [repository] }),
+      revision: () => "repository-actions",
+      delayMs: () => 0,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
+      await signIn(page, server.port);
+      await page.goto(`http://127.0.0.1:${server.port}/repositories/sample`);
+
+      const sync = page.locator("[data-repository-sync-submit]");
+      const pause = page.getByRole("button", { name: "Pause repository" });
+      await sync.focus();
+      expect(await sync.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
+      const touchTarget = await sync.evaluate((element) => ({
+        height: element.getBoundingClientRect().height,
+        minimum: Number.parseFloat(getComputedStyle(element).minHeight),
+        root: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      }));
+      expect(touchTarget.minimum).toBe(touchTarget.root * 2.75);
+      expect(touchTarget.height).toBeGreaterThanOrEqual(touchTarget.minimum);
+      expect(await pause.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(touchTarget.minimum);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+      const darkPage = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "dark" });
+      await signIn(darkPage, server.port);
+      await darkPage.goto(`http://127.0.0.1:${server.port}/repositories/sample`);
+      expect(await darkPage.locator("[data-repository-sync-submit]").evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(touchTarget.minimum);
+      expect(await darkPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("keeps the newest card selection when an earlier details load finishes late", async () => {
     let revision = "revision-1";
     const slow = issue("slow", 20, "Slow item");

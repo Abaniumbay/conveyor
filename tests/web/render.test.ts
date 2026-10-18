@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderDashboard, renderIssueDetails } from "../../src/web/render";
 import { BUILD } from "../../src/version";
 import { dashboardCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
-import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
+import type { DashboardView, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
   id: "parent",
@@ -212,6 +212,37 @@ const dashboard: DashboardViewModel = {
   selectedIssue: null,
   csrfToken: "csrf-token",
 };
+
+test("defines shared action variants with a touch target", () => {
+  expect(dashboardCss).toContain(".action-button{");
+  expect(dashboardCss).toContain(".action-button--primary{");
+  expect(dashboardCss).toContain(".action-button--secondary{");
+  expect(dashboardCss).toContain(".action-button--destructive{");
+  expect(dashboardCss).toContain(".action-button:focus-visible{");
+  expect(dashboardCss).toContain("@media(pointer:coarse){.action-button{min-height:2.75rem}");
+  expect(dashboardCss).toContain(".dialog-close{");
+  for (const duplicatedRule of [".repository-sync button{", ".retry-form button{", ".settings-actions button{", ".recent-filter-submit,.recent-load-more{"]) {
+    expect(dashboardCss).not.toContain(duplicatedRule);
+  }
+});
+
+test("keeps at most one primary action in each dashboard view", () => {
+  const account = { id: "admin", username: "admin", role: "superuser" as const, avatar: "🦊" };
+  const views: readonly DashboardView[] = ["board", "graph", "recent", "attention", "agent", "team", "reports", "repositories", "repository", "about", "accounts", "profile", "notifications"];
+
+  for (const view of views) {
+    const html = renderDashboard({
+      ...dashboard,
+      view,
+      account,
+      accounts: [account],
+      notifications: { questions: true, stopped: false, done: true },
+    });
+    expect((html.match(/class="[^"]*action-button--primary/g) ?? []).length, `${view} has more than one primary action`).toBeLessThanOrEqual(1);
+  }
+
+  expect(renderIssueDetails(parent)).toContain('<button type="submit" class="action-button action-button--secondary">Send</button>');
+});
 
 test("renders the stage badge and source link once in every item-details header", () => {
   const issue: IssueCardViewModel = {
@@ -463,6 +494,8 @@ describe("renderDashboard", () => {
     expect(html).toContain('name="type" value="done" checked');
     expect(html).toContain('datetime="2026-10-15T12:00:00.000Z" data-relative-time="true" title="2026-10-15T12:00:00.000Z" aria-label="2026-10-15T12:00:00.000Z" tabindex="0"');
     expect(html).toContain('href="/issues/sample/72"');
+    expect(html).toContain('<button class="recent-filter-submit action-button action-button--primary" type="submit">Apply filters</button>');
+    expect(html).toContain('<a class="recent-load-more action-button action-button--secondary"');
     expect(html).toContain("review</span><span aria-hidden=\"true\">→</span><span>implementation");
     expect(html).toContain(`<details class="recent-reason"><summary><span>Reason</span><span>${reason}</span></summary>`);
     expect(html).toContain('href="/recent?type=done&amp;type=stopped&amp;repo=sample&amp;beforeAt=2026-10-15T11%3A00%3A00.000Z&amp;beforeId=transition%3Aolder"');
@@ -534,7 +567,7 @@ describe("renderDashboard", () => {
     expect(superuser).toContain("Require board approval before leaving implementation");
     const optional = renderDashboard({ ...base, selectedIssue: { ...selectedIssue, manualGates: [{ ...selectedIssue.manualGates[0]!, required: false }] }, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(optional).toContain('<input type="hidden" name="required" value="true"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="false">');
-    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve</button>');
+    expect(superuser).toContain('<button type="submit" class="manual-gate-approve action-button action-button--secondary">Approve</button>');
   });
 
   test("renders waiting Follow-ups once, escapes every note, and limits Done to superusers", () => {
@@ -560,7 +593,7 @@ describe("renderDashboard", () => {
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(superuser).toContain('action="/manual-gates/approve"');
     expect(superuser).toContain('name="gateId" value="followUps"');
-    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Done</button>');
+    expect(superuser).toContain('<button type="submit" class="manual-gate-approve action-button action-button--secondary">Done</button>');
   });
 
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
@@ -649,6 +682,8 @@ describe("renderDashboard", () => {
     expect(html.match(/>Retry</g)).toHaveLength(2);
     expect(html).toContain('data-retry-card');
     expect(html).toContain('data-retry-form');
+    expect(html).toContain('class="issue-retry action-button action-button--secondary" data-retry-card');
+    expect(html).toContain('class="action-button action-button--secondary" data-retry-submit="true">Retry</button>');
     expect(html).toContain('maxlength="4000"');
     expect(html).toContain('role="status" aria-live="polite" data-retry-status');
   });
@@ -807,6 +842,8 @@ describe("renderDashboard", () => {
     expect(board).toContain('name="repo" value="active"');
     expect(filters).not.toContain('href="/repositories/');
     expect(filters).not.toContain("repository-filter-open");
+    expect(filters).toContain('class="board-filter-more action-button action-button--secondary"');
+    expect(filters).toContain('class="board-filter-submit action-button action-button--secondary">Apply filters</button>');
     expect(board).toContain('name="q"');
     expect(board).toContain('data-filter-state="needs-you"');
     expect(board).toContain('href="/repositories" class="repository-filter-all">Show all</a>');
@@ -897,7 +934,8 @@ describe("renderDashboard", () => {
     expect(superuser).toContain("sentinel.egress.example");
     // Sync now is one repository's, and only for superusers.
     expect(superuser).toContain('action="/repositories/space%2Fname/sync" data-repository-sync="true"');
-    expect(superuser).toContain(">Sync now</button>");
+    expect(superuser).toContain('<button type="submit" class="action-button action-button--secondary" data-repository-sync-submit="true">Sync now</button>');
+    expect(superuser).toContain('<label>Pause reason <input name="reason" maxlength="500"/></label><button type="submit" class="action-button action-button--secondary">Pause repository</button>');
     expect(superuser).toContain('action="/repositories/space%2Fname/pause"');
     expect(superuser).toContain("Pause repository");
     expect(reader).not.toContain("Sync now");
@@ -932,6 +970,7 @@ describe("renderDashboard", () => {
     });
     expect(legacy).toContain('type="radio" name="answer" value="compact"');
     expect(legacy).toContain('type="radio" name="answer" value="expanded"');
+    expect(legacy).toContain('<button class="answer-button action-button action-button--secondary" type="submit">Answer</button>');
 
     const valueBacked = renderDashboard({
       ...dashboard,
@@ -1205,7 +1244,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("Label problems");
     expect(html).toContain("Needs you <span>(2)</span>");
     expect(html).toContain("#41 Build &lt;safe> &amp; sound");
-    expect(html).toContain('<a class="needs-you-action" href="/issues/sample/41">Open</a>');
+    expect(html).toContain('<a class="needs-you-action action-button action-button--secondary" href="/issues/sample/41">Open</a>');
     expect(html).toContain("/questions/question%2F1/answer");
     expect(html).toContain('name="csrf" value="csrf-token"');
     expect(html).toContain("System attention");
@@ -1352,6 +1391,7 @@ describe("renderDashboard", () => {
     expect(html).toContain("reader &amp; friend");
     expect(html).toContain("href=\"/profile\"");
     expect(html).toContain('action="/logout"');
+    expect(html).toContain('class="logout action-button action-button--secondary" type="submit">Sign out</button>');
     expect(html).toContain('<a class="header-link" href="/settings/notifications">Notifications</a>');
     expect(html).toContain('class="account-menu"');
     expect(html).toContain('aria-label="Account menu for reader &amp; friend"');
@@ -1378,6 +1418,10 @@ describe("renderDashboard", () => {
     expect(accountsHtml).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
     expect(accountsHtml).toContain('data-account-list="true"');
     expect(accountsHtml).toContain('data-account-create-form="true"');
+    expect(accountsHtml).toContain('<button type="submit" class="action-button action-button--primary">Create account</button>');
+    expect(accountsHtml).toContain('<button type="submit" class="action-button action-button--secondary">Reset password</button>');
+    expect(accountsHtml).toContain('class="action-button action-button--destructive">Delete account</button>');
+    expect(accountsHtml).toContain('class="action-button action-button--secondary" data-account-delete-cancel="true">Cancel</button>');
     expect(accountsHtml).toContain('action="/api/accounts/admin/password"');
     expect(accountsHtml).toContain('action="/api/accounts/reader/delete"');
     expect(accountsHtml).toContain('Type reader &lt;safe> to confirm deletion');
@@ -1391,7 +1435,8 @@ describe("renderDashboard", () => {
     expect(profileHtml).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
     expect(profileHtml).toContain('name="avatar" value="🦊" checked');
     expect(profileHtml).toContain('data-profile-avatar-form="true"');
-    expect(profileHtml).toContain('<button type="submit">Save</button>');
+    expect(profileHtml).toContain('<button type="submit" class="action-button action-button--primary">Save</button>');
+    expect(profileHtml).toContain('<button type="submit" class="action-button action-button--secondary">Change password</button>');
     expect(profileHtml).not.toContain('Save avatar');
   });
 
@@ -1489,6 +1534,7 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain('action="/steering"');
     expect(html).toContain('data-steering-run="run-1"');
+    expect(html).toContain('class="action-button action-button--primary" disabled>Send to operator</button>');
     expect(html).toContain("Send to operator");
   });
 

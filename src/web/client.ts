@@ -748,6 +748,7 @@ export const dashboardClient = String.raw`(() => {
     wrapper.className = 'activity-more';
     const button = document.createElement('button');
     button.type = 'button';
+    button.className = 'action-button action-button--secondary';
     button.textContent = label;
     button.setAttribute(attribute, String(cursor));
     wrapper.append(button);
