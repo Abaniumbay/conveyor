@@ -61,6 +61,31 @@ type DashboardEventSource = {
   addEventListener(type: string, listener: (event: { data: string }) => void): void;
 };
 
+type DashboardEventConnection = {
+  check(): void;
+  close(): void;
+};
+
+type DashboardEventTarget = {
+  addEventListener(type: string, listener: (event: Event) => void): void;
+};
+
+/** Wakes the dashboard stream immediately when a suspended page returns to the foreground. */
+export function bindDashboardEventReconnectSignals(
+  connection: DashboardEventConnection,
+  targets: { documentTarget?: DashboardEventTarget; windowTarget?: DashboardEventTarget } = {},
+): void {
+  const documentTarget = targets.documentTarget ?? document;
+  const windowTarget = targets.windowTarget ?? window;
+  documentTarget.addEventListener('visibilitychange', connection.check);
+  windowTarget.addEventListener('focus', connection.check);
+  windowTarget.addEventListener('online', connection.check);
+  windowTarget.addEventListener('offline', connection.check);
+  windowTarget.addEventListener('pageshow', (event) => {
+    if ((event as PageTransitionEvent).persisted) connection.check();
+  });
+}
+
 export function createDashboardEventConnection(options: {
   createEventSource?: () => DashboardEventSource;
   onConnectionChange: (connected: boolean) => void;
@@ -70,7 +95,10 @@ export function createDashboardEventConnection(options: {
   online?: () => boolean;
   now?: () => number;
   retryDelay?: number;
+  retryDelays?: readonly number[];
   staleAfter?: number;
+  isSessionExpired?: () => Promise<boolean>;
+  onSessionExpired?: () => void;
   setTimeout?: (callback: () => void, delay: number) => any;
   clearTimeout?: (timer: any) => void;
   setInterval?: (callback: () => void, delay: number) => any;
@@ -80,18 +108,23 @@ export function createDashboardEventConnection(options: {
   const pageActive = options.pageActive ?? (() => document.visibilityState === 'visible');
   const online = options.online ?? (() => navigator.onLine);
   const now = options.now ?? (() => Date.now());
-  const retryDelay = options.retryDelay ?? 5_000;
+  const configuredRetryDelays = options.retryDelays ?? (options.retryDelay === undefined ? [1_000, 2_000, 5_000, 10_000] : [options.retryDelay]);
+  const retryDelays = configuredRetryDelays.length > 0
+    ? configuredRetryDelays
+    : [1_000, 2_000, 5_000, 10_000];
   const staleAfter = options.staleAfter ?? 30_000;
   const setTimer = options.setTimeout ?? ((callback, delay) => setTimeout(callback, delay));
   const clearTimer = options.clearTimeout ?? ((timer) => clearTimeout(timer));
   const setWatchdog = options.setInterval ?? ((callback, delay) => setInterval(callback, delay));
   const clearWatchdog = options.clearInterval ?? ((timer) => clearInterval(timer));
-  const eventTypes = ['status', 'conveyor', 'reset'];
+  const eventTypes = ['status', 'conveyor', 'reset', 'keep-alive'];
   let source: DashboardEventSource | null = null;
   let retryTimer: any = null;
   let lastActivity = now();
   let opened = false;
   let closed = false;
+  let sessionExpired = false;
+  let retryAttempt = 0;
 
   const clearRetry = () => {
     if (retryTimer === null) return;
@@ -104,18 +137,40 @@ export function createDashboardEventConnection(options: {
     source = null;
     current.close();
   };
-  const canConnect = () => !closed && pageActive() && online();
+  const canConnect = () => !closed && !sessionExpired && pageActive() && online();
   const scheduleRetry = () => {
     if (!canConnect() || retryTimer !== null) return;
+    const delay = retryDelays[Math.min(retryAttempt, retryDelays.length - 1)]!;
+    retryAttempt += 1;
     retryTimer = setTimer(() => {
       retryTimer = null;
       open();
-    }, retryDelay);
+    }, delay);
   };
-  const reconnect = () => {
+  const markSessionExpired = () => {
+    if (sessionExpired) return;
+    sessionExpired = true;
+    clearRetry();
+    closeSource();
+    options.onSessionExpired?.();
+  };
+  const reconnect = (immediate = false) => {
     options.onConnectionChange(false);
     closeSource();
-    scheduleRetry();
+    if (immediate) open();
+    else scheduleRetry();
+  };
+  const handleError = () => {
+    reconnect();
+    if (!canConnect() || !options.isSessionExpired) return;
+    void options.isSessionExpired().then((expired) => {
+      // A successful replacement supersedes this error, so an older session
+      // probe must not tear down its live stream.
+      if (closed || !expired || source) return;
+      markSessionExpired();
+    }).catch(() => {
+      // A failed session check is indistinguishable from a transient stream error.
+    });
   };
   const open = () => {
     if (!canConnect() || source) return;
@@ -126,13 +181,14 @@ export function createDashboardEventConnection(options: {
       if (source !== current) return;
       lastActivity = now();
       clearRetry();
+      retryAttempt = 0;
       options.onConnectionChange(true);
       if (opened) options.onReconnect();
       opened = true;
     };
     current.onerror = () => {
       if (source !== current) return;
-      reconnect();
+      handleError();
     };
     for (const type of eventTypes) current.addEventListener(type, (event) => {
       if (source !== current) return;
@@ -141,16 +197,21 @@ export function createDashboardEventConnection(options: {
     });
   };
   const check = () => {
-    if (closed || !pageActive()) return;
-    if (!online()) {
+    if (closed || sessionExpired) return;
+    if (!pageActive() || !online()) {
+      clearRetry();
       options.onConnectionChange(false);
-      closeSource();
+      if (!online()) closeSource();
       return;
     }
-    if (!source || now() - lastActivity >= staleAfter) reconnect();
+    if (source?.readyState === 2) {
+      reconnect(true);
+      return;
+    }
+    if (!source || now() - lastActivity >= staleAfter) reconnect(true);
   };
 
-  const watchdog = setWatchdog(check, Math.min(retryDelay, staleAfter));
+  const watchdog = setWatchdog(check, Math.min(retryDelays[0]!, staleAfter));
   open();
   return {
     check,
@@ -270,6 +331,7 @@ export const dashboardClient = String.raw`(() => {
   const serverStatusMetrics = ${serverStatusMetrics.toString()};
   const serverStatusHasPressure = ${serverStatusHasPressure.toString()};
   const createDashboardEventConnection = ${createDashboardEventConnection.toString()};
+  const bindDashboardEventReconnectSignals = ${bindDashboardEventReconnectSignals.toString()};
   const dashboardViewsForEvent = ${dashboardViewsForEvent.toString()};
   const createDashboardNavigation = ${createDashboardNavigation.toString()};
   const morphDashboard = ${morphDashboard.toString()};
@@ -2198,20 +2260,35 @@ export const dashboardClient = String.raw`(() => {
 
   let serverStatus = null;
   let connectionState = null;
+  let sessionSignIn = null;
   let serverMetrics = null;
   let connected = false;
+  let sessionEnded = false;
   let latestServerStatus = null;
   let dashboardRefresh = null;
   let dashboardRefreshQueued = false;
   let dashboardRequestVersion = 0;
   let revision = body.dataset.dashboardRevision || '';
-  const setConnection = (nextConnected) => {
-    connected = nextConnected;
+  const renderConnection = () => {
     if (!serverStatus) return;
-    serverStatus.dataset.connected = nextConnected ? 'true' : 'false';
-    const label = nextConnected ? 'Connected' : 'Reconnecting';
+    const label = sessionEnded ? 'Session ended' : connected ? 'Connected' : 'Reconnecting…';
+    serverStatus.dataset.connected = connected ? 'true' : 'false';
     if (connectionState) connectionState.textContent = label;
+    if (sessionSignIn) {
+      sessionSignIn.hidden = !sessionEnded;
+      sessionSignIn.href = '/login?returnTo=' + encodeURIComponent(location.pathname + location.search + location.hash);
+    }
     serverStatus.querySelector('summary')?.setAttribute('aria-label', 'Connection state: ' + label + (serverStatus.dataset.storagePressure === 'true' ? '; storage pressure warning' : ''));
+  };
+  const setConnection = (nextConnected) => {
+    if (sessionEnded) return;
+    connected = nextConnected;
+    renderConnection();
+  };
+  const setSessionEnded = () => {
+    connected = false;
+    sessionEnded = true;
+    renderConnection();
   };
   const renderServerStatus = () => {
     if (!serverMetrics || !latestServerStatus) return;
@@ -2227,8 +2304,9 @@ export const dashboardClient = String.raw`(() => {
   const bindServerStatus = () => {
     serverStatus = document.querySelector('[data-server-status]');
     connectionState = serverStatus && serverStatus.querySelector('[data-connection-state]');
+    sessionSignIn = serverStatus && serverStatus.querySelector('[data-session-sign-in]');
     serverMetrics = serverStatus && serverStatus.querySelector('[data-server-metrics]');
-    setConnection(connected);
+    renderConnection();
     renderServerStatus();
   };
   // The whole dashboard is swapped on navigation and on live updates, so the focused control and
@@ -2517,6 +2595,11 @@ export const dashboardClient = String.raw`(() => {
   const dashboardEvents = createDashboardEventConnection({
     onConnectionChange: setConnection,
     onReconnect: refreshDashboardWhenSafe,
+    isSessionExpired: async () => {
+      const response = await fetch(location.href, { cache: 'no-store' });
+      return response.status === 401 || (response.redirected && new URL(response.url).pathname === '/login');
+    },
+    onSessionExpired: setSessionEnded,
     onEvent: (type, message) => {
       if (type === 'status') {
         try {
@@ -2544,9 +2627,7 @@ export const dashboardClient = String.raw`(() => {
       scheduleViews();
     },
   });
-  document.addEventListener('visibilitychange', dashboardEvents.check);
-  window.addEventListener('online', dashboardEvents.check);
-  window.addEventListener('offline', dashboardEvents.check);
+  bindDashboardEventReconnectSignals(dashboardEvents);
 
   let steeringSource = null;
   let steeringPanel = null;

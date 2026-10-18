@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createDashboardEventConnection, createDashboardNavigation, dashboardClient, dashboardViewsForEvent, serverStatusMetrics } from "../../src/web/client";
+import { bindDashboardEventReconnectSignals, createDashboardEventConnection, createDashboardNavigation, dashboardClient, dashboardViewsForEvent, serverStatusMetrics } from "../../src/web/client";
 import { EVENT_CATALOGUE } from "../../src/events/catalogue";
 import { quotaCountdown, updateQuotaWindow } from "../../src/usage/quota-time";
 
@@ -64,15 +64,12 @@ describe("dashboard browser client", () => {
     expect(unavailable).toContain("agent scratch unavailable");
   });
 
-  test("recovers a failed or silent dashboard stream with one bounded replacement stream", () => {
+  test("reopens a silently closed stream for every return signal without duplicating a healthy stream", () => {
     let now = 0;
     let pageActive = true;
     let online = true;
     const states: boolean[] = [];
-    const reconnects: number[] = [];
-    const events: string[] = [];
     const timers: Array<{ delay: number; callback: () => void; cancelled: boolean }> = [];
-    let watchdog: (() => void) | null = null;
     const sources: Array<{
       readyState: number;
       closed: boolean;
@@ -102,80 +99,285 @@ describe("dashboard browser client", () => {
         return timer;
       },
       clearTimeout: (timer) => { timer.cancelled = true; },
-      setInterval: (callback) => {
-        watchdog = callback;
-        return callback;
-      },
-      clearInterval: () => { watchdog = null; },
+      setInterval: () => 0,
+      clearInterval: () => {},
       now: () => now,
       pageActive: () => pageActive,
       online: () => online,
       staleAfter: 30_000,
-      retryDelay: 5_000,
+      retryDelays: [1_000, 2_000, 5_000, 10_000],
       onConnectionChange: (connected) => states.push(connected),
-      onReconnect: () => reconnects.push(now),
-      onEvent: (type) => events.push(type),
+      onReconnect: () => {},
+      onEvent: () => {},
     });
-    const runNextTimer = () => {
-      const timer = timers.shift();
-      expect(timer).toBeDefined();
-      now += timer!.delay;
-      if (!timer!.cancelled) timer!.callback();
+    const documentTarget = new EventTarget();
+    const windowTarget = new EventTarget();
+    bindDashboardEventReconnectSignals(connection, { documentTarget, windowTarget });
+    const open = () => {
+      const source = sources.at(-1)!;
+      source.readyState = 1;
+      source.onopen!();
+    };
+    const silentClose = () => { sources.at(-1)!.readyState = 2; };
+    const returnFrom = (signal: "visibilitychange" | "focus" | "online" | "pageshow") => {
+      silentClose();
+      if (signal === "visibilitychange") documentTarget.dispatchEvent(new Event(signal));
+      else if (signal === "pageshow") {
+        const event = new Event(signal);
+        Object.defineProperty(event, "persisted", { value: true });
+        windowTarget.dispatchEvent(event);
+      } else windowTarget.dispatchEvent(new Event(signal));
+      open();
     };
 
     expect(sources).toHaveLength(1);
-    sources[0]!.readyState = 1;
-    sources[0]!.onopen!();
-    sources[0]!.onerror!();
-    sources[0]!.onerror!();
-    expect(states).toEqual([true, false]);
-    expect(sources.filter((source) => !source.closed)).toHaveLength(0);
-    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
-
-    runNextTimer();
-    expect(sources).toHaveLength(2);
-    sources[1]!.readyState = 1;
-    sources[1]!.onopen!();
-    sources[1]!.listeners.get("conveyor")!({ data: "{\"seq\":2,\"type\":\"item.updated\"}" });
-    expect(reconnects).toEqual([5_000]);
-    expect(events).toEqual(["conveyor"]);
-    expect(watchdog).not.toBeNull();
-
-    // A PWA that resumes after a silent stream is immediately marked reconnecting,
-    // then receives exactly one replacement after the same bounded delay.
+    open();
     pageActive = false;
-    now += 60_000;
+    silentClose();
+    documentTarget.dispatchEvent(new Event("visibilitychange"));
+    expect(sources).toHaveLength(1);
+    pageActive = true;
+    returnFrom("visibilitychange");
+    expect(sources).toHaveLength(2);
+    returnFrom("focus");
+    expect(sources).toHaveLength(3);
+    online = false;
     connection.check();
-    expect(sources[1]!.closed).toBe(false);
+    online = true;
+    returnFrom("online");
+    expect(sources).toHaveLength(4);
+    returnFrom("pageshow");
+    expect(sources).toHaveLength(5);
+    windowTarget.dispatchEvent(new Event("focus"));
+    expect(sources).toHaveLength(5);
+    expect(states.at(-1)).toBe(true);
+    connection.close();
+    expect(timers).toEqual([]);
+  });
+
+  test("pauses hidden retries and resumes a hidden error immediately when visible", () => {
+    let pageActive = true;
+    const timers: Array<{ delay: number; callback: () => void; cancelled: boolean }> = [];
+    const states: boolean[] = [];
+    const sources: Array<{ readyState: number; onopen: (() => void) | null; onerror: (() => void) | null; close: () => void; addEventListener: () => void }> = [];
+    const connection = createDashboardEventConnection({
+      createEventSource: () => {
+        const source = { readyState: 0, onopen: null as (() => void) | null, onerror: null as (() => void) | null, close: () => { source.readyState = 2; }, addEventListener: () => {} };
+        sources.push(source);
+        return source;
+      },
+      pageActive: () => pageActive,
+      online: () => true,
+      retryDelays: [1_000, 2_000, 5_000],
+      setTimeout: (callback, delay) => {
+        const timer = { delay, callback, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: (timer) => { timer.cancelled = true; },
+      setInterval: () => 0,
+      clearInterval: () => {},
+      onConnectionChange: (connected) => states.push(connected),
+      onReconnect: () => {},
+      onEvent: () => {},
+    });
+    sources[0]!.onopen!();
+    pageActive = false;
+    sources[0]!.onerror!();
+    expect(timers).toEqual([]);
     pageActive = true;
     connection.check();
-    expect(states.at(-1)).toBe(false);
-    expect(sources[1]!.closed).toBe(true);
-    expect(sources.filter((source) => !source.closed)).toHaveLength(0);
-    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
+    expect(sources).toHaveLength(2);
+    sources[1]!.onopen!();
+    expect(states.at(-1)).toBe(true);
+  });
 
+  test("uses bounded increasing retries until the stream opens and pauses them while unavailable", () => {
+    let pageActive = true;
+    let online = true;
+    const timers: Array<{ delay: number; callback: () => void; cancelled: boolean }> = [];
+    const sources: Array<{ readyState: number; onopen: (() => void) | null; onerror: (() => void) | null; close: () => void; addEventListener: () => void }> = [];
+    const connection = createDashboardEventConnection({
+      createEventSource: () => {
+        const source = { readyState: 0, onopen: null as (() => void) | null, onerror: null as (() => void) | null, close: () => { source.readyState = 2; }, addEventListener: () => {} };
+        sources.push(source);
+        return source;
+      },
+      pageActive: () => pageActive,
+      online: () => online,
+      retryDelays: [1_000, 2_000, 5_000],
+      setTimeout: (callback, delay) => {
+        const timer = { delay, callback, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: (timer) => { timer.cancelled = true; },
+      setInterval: () => 0,
+      clearInterval: () => {},
+      onConnectionChange: () => {},
+      onReconnect: () => {},
+      onEvent: () => {},
+    });
+    const runTimer = () => {
+      const timer = timers.shift()!;
+      if (!timer.cancelled) timer.callback();
+    };
+    sources[0]!.onerror!();
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([1_000]);
+    runTimer();
+    sources[1]!.onerror!();
+    expect(timers.map((timer) => timer.delay)).toEqual([2_000]);
+    pageActive = false;
+    connection.check();
+    expect(timers[0]!.cancelled).toBe(true);
     online = false;
-    runNextTimer();
+    pageActive = true;
+    connection.check();
     expect(sources).toHaveLength(2);
     online = true;
     connection.check();
-    runNextTimer();
     expect(sources).toHaveLength(3);
-    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
-    sources[2]!.readyState = 1;
     sources[2]!.onopen!();
-    sources[2]!.listeners.get("conveyor")!({ data: "{\"seq\":3,\"type\":\"item.updated\"}" });
-    expect(states.at(-1)).toBe(true);
-    expect(reconnects).toEqual([5_000, 75_000]);
-    expect(events).toEqual(["conveyor", "conveyor"]);
-    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
     sources[2]!.onerror!();
-    expect(timers.map((timer) => timer.delay)).toEqual([5_000]);
-    runNextTimer();
-    expect(sources).toHaveLength(4);
-    expect(sources.filter((source) => !source.closed)).toHaveLength(1);
-    connection.close();
-    expect(watchdog).toBeNull();
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.delay)).toEqual([1_000]);
+  });
+
+  test("refreshes after a replacement opens without replay and handles later live events", () => {
+    const sources: Array<{
+      readyState: number;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+      listeners: Map<string, (event: { data: string }) => void>;
+      addEventListener: (type: string, listener: (event: { data: string }) => void) => void;
+    }> = [];
+    const refreshes: string[] = [];
+    const events: string[] = [];
+    const connection = createDashboardEventConnection({
+      createEventSource: () => {
+        const source = {
+          readyState: 0,
+          onopen: null as (() => void) | null,
+          onerror: null as (() => void) | null,
+          close: () => { source.readyState = 2; },
+          listeners: new Map<string, (event: { data: string }) => void>(),
+          addEventListener: (type: string, listener: (event: { data: string }) => void) => source.listeners.set(type, listener),
+        };
+        sources.push(source);
+        return source;
+      },
+      retryDelay: 1,
+      pageActive: () => true,
+      online: () => true,
+      setTimeout: (callback) => ({ callback }),
+      clearTimeout: () => {},
+      setInterval: () => 0,
+      clearInterval: () => {},
+      onConnectionChange: () => {},
+      onReconnect: () => refreshes.push("refresh"),
+      onEvent: (type) => events.push(type),
+    });
+
+    sources[0]!.onopen!();
+    sources[0]!.onerror!();
+    connection.check();
+    sources[1]!.onopen!();
+    expect(refreshes).toEqual(["refresh"]);
+    expect(events).toEqual([]);
+    sources[1]!.listeners.get("conveyor")!({ data: "{}" });
+    expect(events).toEqual(["conveyor"]);
+  });
+
+  test("keeps an idle stream open for observable keep-alives and replaces missing activity", () => {
+    let now = 0;
+    let watchdog = () => {};
+    const sources: Array<{
+      readyState: number;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+      listeners: Map<string, (event: { data: string }) => void>;
+      addEventListener: (type: string, listener: (event: { data: string }) => void) => void;
+    }> = [];
+    createDashboardEventConnection({
+      createEventSource: () => {
+        const source = {
+          readyState: 1,
+          onopen: null as (() => void) | null,
+          onerror: null as (() => void) | null,
+          close: () => { source.readyState = 2; },
+          listeners: new Map<string, (event: { data: string }) => void>(),
+          addEventListener: (type: string, listener: (event: { data: string }) => void) => source.listeners.set(type, listener),
+        };
+        sources.push(source);
+        return source;
+      },
+      now: () => now,
+      pageActive: () => true,
+      online: () => true,
+      staleAfter: 30_000,
+      setInterval: (callback) => {
+        watchdog = callback;
+        return 0;
+      },
+      clearInterval: () => {},
+      onConnectionChange: () => {},
+      onReconnect: () => {},
+      onEvent: () => {},
+    });
+
+    sources[0]!.onopen!();
+    now = 29_000;
+    sources[0]!.listeners.get("keep-alive")!({ data: "{}" });
+    now = 58_000;
+    watchdog();
+    expect(sources).toHaveLength(1);
+    now = 88_000;
+    watchdog();
+    expect(sources).toHaveLength(2);
+  });
+
+  test("stops retries for an expired session but retains them for transient errors", async () => {
+    const makeConnection = (expired: boolean) => {
+      const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+      const sources: Array<{ readyState: number; onopen: (() => void) | null; onerror: (() => void) | null; close: () => void; addEventListener: () => void }> = [];
+      const sessionStates: string[] = [];
+      createDashboardEventConnection({
+        createEventSource: () => {
+          const source = { readyState: 0, onopen: null as (() => void) | null, onerror: null as (() => void) | null, close: () => { source.readyState = 2; }, addEventListener: () => {} };
+          sources.push(source);
+          return source;
+        },
+        isSessionExpired: async () => expired,
+        onSessionExpired: () => sessionStates.push("ended"),
+        pageActive: () => true,
+        online: () => true,
+        setTimeout: (callback) => {
+          const timer = { callback, cancelled: false };
+          timers.push(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => { timer.cancelled = true; },
+        setInterval: () => 0,
+        clearInterval: () => {},
+        onConnectionChange: () => {},
+        onReconnect: () => {},
+        onEvent: () => {},
+      });
+      return { sources, timers, sessionStates };
+    };
+
+    const expired = makeConnection(true);
+    expired.sources[0]!.onerror!();
+    await Promise.resolve();
+    expect(expired.sessionStates).toEqual(["ended"]);
+    expect(expired.timers[0]!.cancelled).toBe(true);
+
+    const transient = makeConnection(false);
+    transient.sources[0]!.onerror!();
+    await Promise.resolve();
+    expect(transient.sessionStates).toEqual([]);
+    expect(transient.timers[0]!.cancelled).toBe(false);
   });
 
   test("keeps dashboard navigation feedback with the latest delayed response", async () => {
@@ -219,8 +421,10 @@ describe("dashboard browser client", () => {
     expect(dashboardClient).toContain("addEventListener('dragend'");
     expect(dashboardClient).toContain("data-detail-tab");
     expect(dashboardClient).toContain("createDashboardEventConnection");
-    expect(dashboardClient).toContain("document.addEventListener('visibilitychange', dashboardEvents.check)");
-    expect(dashboardClient).toContain("window.addEventListener('online', dashboardEvents.check)");
+    expect(dashboardClient).toContain('bindDashboardEventReconnectSignals(dashboardEvents)');
+    expect(dashboardClient).toContain('event.persisted');
+    expect(dashboardClient).toContain('Session ended');
+    expect(dashboardClient).toContain('data-session-sign-in');
     expect(dashboardClient).toContain("const refreshDashboardWhenSafe = () => {");
     expect(dashboardClient).toContain("onReconnect: refreshDashboardWhenSafe");
     expect(dashboardClient).toContain("scheduleJourneyRefresh();\n      scheduleSummaryRefresh();\n      pendingRefresh = true;");

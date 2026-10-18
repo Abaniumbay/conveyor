@@ -452,7 +452,7 @@ function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId:
         }
         if (!closed) statusTimer = setTimeout(() => void status(), delay);
       };
-      send("retry: 5000\n\n: ping\n\n");
+      send("retry: 1000\n\nevent: keep-alive\ndata: {}\n\n");
       // Subscribe before replaying, so nothing appended in between is lost; replay skips duplicates.
       const buffered: DashboardStreamEvent[] = [];
       let replaying = lastEventId !== null;
@@ -479,7 +479,9 @@ function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId:
         }
       }
       void status();
-      const heartbeat = setInterval(() => send(": ping\n\n"), 4_000);
+      // Comments do not reach EventSource listeners, so use an event that the
+      // client can count as stream activity before its stale-stream deadline.
+      const heartbeat = setInterval(() => send("event: keep-alive\ndata: {}\n\n"), 4_000);
       stop = () => {
         closed = true;
         if (statusTimer) clearTimeout(statusTimer);
