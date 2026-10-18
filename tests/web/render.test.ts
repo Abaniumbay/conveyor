@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderDashboard, renderIssueDetails } from "../../src/web/render";
 import { BUILD } from "../../src/version";
-import { dashboardCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
+import { dashboardCss, graphCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardView, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
@@ -411,6 +411,22 @@ describe("renderDashboard", () => {
         repositories: ["sample"], stage: "implementation",
         stages: [{ id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
       },
+      repositories: [
+        {
+          id: "sample", address: "owner/sample", addressUrl: null, color: 1, health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, pause: null,
+          backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
+          setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled", systemLabels: [] },
+          trust: { visibility: "unknown", checkedAt: null, warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: [] },
+          report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+        },
+        {
+          id: "foundation", address: "owner/foundation", addressUrl: null, color: 2, health: "healthy", error: null, errorSummary: null, lastReconciledAt: null, pause: null,
+          backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
+          setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling", webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled", systemLabels: [] },
+          trust: { visibility: "unknown", checkedAt: null, warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: [] },
+          report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+        },
+      ],
     });
 
     expect(html).toContain("<title>Graph · Conveyor</title>");
@@ -423,7 +439,21 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-graph-edge="dependency:prerequisite:child"');
     expect(html).toContain('class="graph-canvas"');
     expect(html).toContain('action="/graph"');
+    expect(html).toContain('<section class="board-filters" aria-label="Graph filters">');
+    expect(html).toContain('<fieldset><legend>Repositories</legend>');
+    expect(html).toContain('class="repository-filter"');
+    expect(html).toContain('name="repo" value="sample" checked');
+    expect(html).toContain('name="repo" value="foundation"');
+    expect(html).toContain('class="repository-dot repo-color-1"');
+    expect(html).not.toContain('name="repo" multiple');
+    expect(html).toContain('<fieldset><legend>Stage</legend>');
+    expect(html).toContain('<select class="board-filter-select" name="stage" aria-label="Graph stage">');
+    expect(html).toContain('<option value>All stages</option>');
     expect(html).toContain('<option value="implementation" selected>Implementation</option>');
+    expect(html).toContain('class="board-filter-submit action-button action-button--secondary">Apply filters</button>');
+    expect(html).toContain('class="board-filter-clear action-button action-button--secondary" href="/graph">Clear</a>');
+    expect(graphCss).not.toContain(".graph-filters");
+    expect(dashboardCss).toContain(".board-filter-select");
     expect(html).toContain('data-graph-node="parent"');
     expect(html).toContain('Parent &lt;safe> title that remains available in full');
     expect(html).not.toContain("Parent <safe>");
