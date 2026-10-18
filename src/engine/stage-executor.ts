@@ -270,7 +270,7 @@ export class StageExecutor {
         await this.#save(run, { state: "running" });
         try {
           result = await runTask(definition, {
-            context: run.context, config: task.with, deps,
+            context: run.context, config: task.with, deps, issueId, journal,
             instance: { id: task.id, stage: run.stage.id, idempotencyKey: record.idempotencyKey, resumed: planned.resumed },
           });
         } catch (error) {

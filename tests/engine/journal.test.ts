@@ -49,12 +49,13 @@ function seed(store: ConveyorStore): void {
 async function setup(options: { contextSummaryBytes?: number } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-journal-"));
   temporaryDirectories.push(directory);
-  const store = await ConveyorStore.open(path.join(directory, "conveyor.sqlite"));
+  const databasePath = path.join(directory, "conveyor.sqlite");
+  const store = await ConveyorStore.open(databasePath);
   seed(store);
   let tick = 0;
   const clock = () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++));
   const journal = new ExecutionStore(store.sqlite(), { ...options, now: clock });
-  return { store, journal };
+  return { store, journal, databasePath };
 }
 
 function context(extra: Partial<TaskContext> = {}): TaskContext {
@@ -149,6 +150,40 @@ describe("ExecutionStore context", () => {
     ).toThrow(/"agent"/);
     expect(journal.getContext("issue-1")).toBeNull();
     store.close();
+  });
+});
+
+describe("ExecutionStore CI gate observations", () => {
+  test("persists consecutive observations across restarts, resets them for a retry, and fences stale writes", async () => {
+    const { store, journal, databasePath } = await setup();
+    const first = journal.recordCiGateObservation({
+      issueId: "issue-1", stage: "implementation", expectedEpoch: 0, taskKey: "ci-1", headSha: "head-1",
+      outcome: "failed", fingerprint: "same", checkNames: ["Tests"], evidence: ["first evidence"], changeUrl: "https://example.test/change",
+    });
+    store.close();
+    const reopened = await ConveyorStore.open(databasePath);
+    const afterRestart = reopened.executions();
+    const second = afterRestart.recordCiGateObservation({
+      issueId: "issue-1", stage: "implementation", expectedEpoch: 0, taskKey: "ci-2", headSha: "head-1",
+      outcome: "failed", fingerprint: "same", checkNames: ["Tests"], evidence: ["second evidence"], changeUrl: "https://example.test/change",
+    });
+    expect(first.previous).toBeNull();
+    expect(second.previous).toMatchObject({ fingerprint: "same", checkNames: ["Tests"], evidence: ["first evidence"] });
+
+    expect(afterRestart.resetCiFailureWindow("issue-1")).toBe(1);
+    const afterRetry = afterRestart.recordCiGateObservation({
+      issueId: "issue-1", stage: "implementation", expectedEpoch: 0, taskKey: "ci-3", headSha: "head-1",
+      outcome: "failed", fingerprint: "same", checkNames: ["Tests"], evidence: ["after retry"], changeUrl: "https://example.test/change",
+    });
+    expect(afterRetry.observation.retryWindow).toBe(1);
+    expect(afterRetry.previous).toBeNull();
+
+    afterRestart.bumpStageEpoch("issue-1");
+    expect(() => afterRestart.recordCiGateObservation({
+      issueId: "issue-1", stage: "implementation", expectedEpoch: 0, taskKey: "stale", headSha: "head-1",
+      outcome: "failed", fingerprint: "same", checkNames: ["Tests"], evidence: [], changeUrl: "https://example.test/change",
+    })).toThrow(StaleEpochError);
+    reopened.close();
   });
 });
 
@@ -275,7 +310,7 @@ describe("migration", () => {
 
     const store = await ConveyorStore.open(file);
     expect(store.schemaVersion()).toBe(migrations.at(-1)!.version);
-    expect(migrations.at(-1)!.version).toBe(38);
+    expect(migrations.at(-1)!.version).toBe(39);
     seed(store);
     const journal = new ExecutionStore(store.sqlite());
     expect(journal.bumpStageEpoch("issue-1")).toBe(1);
