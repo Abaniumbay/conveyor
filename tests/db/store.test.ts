@@ -76,8 +76,6 @@ describe("ConveyorStore", () => {
       DROP TABLE ci_failure_windows;
       DROP INDEX issues_recovery_candidates_idx;
       ALTER TABLE issues DROP COLUMN projection_changed_at;
-      DROP TABLE ci_gate_observations;
-      DROP TABLE ci_failure_windows;
       DROP TABLE github_mirror;
       DROP TABLE repository_pauses;
       DROP TABLE board_approvals;
