@@ -29,7 +29,7 @@ The implementer keeps a working todo list (`todo.set`, `todo.update`). When the 
 
 ![The Board after a long stage scroll, retaining its navigation and stage headings](screenshots/board-scrolled.png)
 
-The compact filter bar narrows the cards already on the board by repository, text, and state without hiding the separate **Needs you** panel. Repository choices open their own detail pages as well as filtering, and active choices stay in the URL for a reload or shared link. On a phone, search and the Filters control occupy the collapsed bar; selected choices and Clear filters remain directly below it.
+The compact filter bar narrows the cards already on the board by repository, text, and state without hiding the separate **Needs you** panel. Repository choices are filters only, and active choices stay in the URL for a reload or shared link. Use **Show all**, repository cards in the Repositories view, or repository badges on Board cards to open a repository detail page. On a phone, search and the Filters control occupy the collapsed bar; selected choices and Clear filters remain directly below it.
 
 ![The Board filtered to a repository and text search](screenshots/board-filtered.png)
 
@@ -71,7 +71,7 @@ A live update does not reload the page. The event stream (`/events/dashboard`) s
 
 ## Repositories
 
-The Board's compact repository filters show repositories with active board work, plus any degraded repository, while **Show all** opens the dedicated repository view. The dedicated pages retain the full cards with each repository's id and address, current health, and active work.
+The Board's compact repository filters show repositories with active board work, plus any degraded repository, while **Show all** opens the dedicated repository view. Individual filter choices do not navigate away from the Board. The dedicated pages retain the full cards with each repository's id and address, current health, and active work.
 
 **Repositories** (`/repositories`) lists every configured repository with its id, address, health, and current work. A degraded repository is also called out above the Board's line with its error and page link, since its items may be out of date. Select one to open `/repositories/<id>`, which provides its current delivery status, recent work, and **Setup**. Setup shows the provider configuration to every signed-in user, but only superusers see the local folder and agent egress hosts.
 

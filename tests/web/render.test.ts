@@ -695,11 +695,13 @@ describe("renderDashboard", () => {
       summary("space/name", "healthy", []),
     ];
     const board = renderDashboard({ ...dashboard, repositories, backlog: [{ ...backlogIssue, repository: "active" }] });
+    const filters = board.slice(board.indexOf('<section class="board-filters"'), board.indexOf("</section>", board.indexOf('<section class="board-filters"')));
 
     expect(board).not.toContain('<h2 id="repositories-heading"><a href="/repositories">Repositories</a></h2>');
     expect(board).toContain('data-board-filters');
     expect(board).toContain('name="repo" value="active"');
-    expect(board).toContain('aria-label="Open active"');
+    expect(filters).not.toContain('href="/repositories/');
+    expect(filters).not.toContain("repository-filter-open");
     expect(board).toContain('name="q"');
     expect(board).toContain('data-filter-state="needs-you"');
     expect(board).toContain('href="/repositories" class="repository-filter-all">Show all</a>');
@@ -716,8 +718,12 @@ describe("renderDashboard", () => {
     expect(list.indexOf('href="/repositories/broken"')).toBeLessThan(list.indexOf('href="/repositories/owner"'));
     expect(list.indexOf('href="/repositories/owner"')).toBeLessThan(list.indexOf('href="/repositories/active"'));
     expect(dashboardCss).toContain('.repository-grid{grid-template-columns:minmax(0,1fr)}');
+    expect(dashboardCss).not.toContain("repository-filter-open");
     expect(list).not.toContain('Show all 7');
     expect(renderDashboard({ ...dashboard, view: "repositories", repositories: [] })).toContain("No repositories are configured.");
+
+    const boardWithEncodedRepository = renderDashboard({ ...dashboard, backlog: [{ ...backlogIssue, repository: "space/name" }] });
+    expect(boardWithEncodedRepository).toContain('class="repository-badge" href="/repositories/space%2Fname" title="space/name"');
   });
 
   test("uses each card's pipeline actors in board search data", () => {
