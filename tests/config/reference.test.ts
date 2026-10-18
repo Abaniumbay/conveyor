@@ -220,7 +220,7 @@ describe("reference configuration", () => {
         expect(config.agents[agent]!.tasks).toContain(name);
       }
     };
-    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "breakdown.setPlan", "item.setType", "item.setFields", "item.setRefinement"]);
+    await mentions("darya", ["item.setTitle", "item.setCriteria", "item.setSystemLabels", "item.setDependencies", "breakdown.setPlan", "item.setType", "item.setFields", "item.setRefinement", "item.addFollowUp"]);
     await mentions("parisa", ["breakdown.reviewPlan"]);
     await mentions("roya", ["breakdown.createChildren"]);
     const darya = await read("darya");
@@ -230,7 +230,7 @@ describe("reference configuration", () => {
     expect(darya).toMatch(/roll-up parent likewise gets only its configured type, fields and Refinement section/);
     expect(darya).toMatch(/When no system labels are configured, skip the tool entirely/);
     expect(darya).toMatch(/When there is no `refinement` configuration, skip `item\.setType` and `item\.setFields`; do not assume that an Effort field is required/);
-    await mentions("kaveh", ["todo.get", "todo.set", "todo.update", "workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings"]);
+    await mentions("kaveh", ["todo.get", "todo.set", "todo.update", "workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings", "item.addFollowUp"]);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
     }

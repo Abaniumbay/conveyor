@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /** The only issue or pull-request body blocks this module considers Conveyor-owned. */
-export type ManagedSectionName = "acceptance-criteria" | "breakdown" | "dependencies" | "description" | "refinement";
+export type ManagedSectionName = "acceptance-criteria" | "breakdown" | "dependencies" | "description" | "follow-ups" | "refinement";
 
 export interface ManagedSectionsSnapshot {
   /** SHA-256 of the entire body; pass this back when writing to reject stale edits. */
@@ -19,6 +19,7 @@ const SECTION_NAMES: readonly ManagedSectionName[] = [
   "breakdown",
   "dependencies",
   "description",
+  "follow-ups",
   "refinement",
 ];
 
@@ -47,7 +48,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     if (raw.length === 0) break;
     const contentEnd = offset + raw.replace(/(?:\r\n|\n|\r)$/, "").length;
     const text = body.slice(offset, contentEnd).trim();
-    const match = /^<!-- conveyor:(acceptance-criteria|breakdown|dependencies|description|refinement):(start|end) -->$/.exec(text);
+    const match = /^<!-- conveyor:(acceptance-criteria|breakdown|dependencies|description|follow-ups|refinement):(start|end) -->$/.exec(text);
     if (match) {
       const marker: MarkerLine = {
         name: match[1] as ManagedSectionName,
@@ -75,6 +76,7 @@ export function parseManagedSections(body: string): ManagedSectionsSnapshot {
     breakdown: undefined,
     dependencies: undefined,
     description: undefined,
+    "follow-ups": undefined,
     refinement: undefined,
   };
   for (const name of SECTION_NAMES) {
@@ -169,6 +171,19 @@ export function upsertManagedSection(
     }
   }
   return upsertInto(working, name, content, newline);
+}
+
+/**
+ * Follow-up notes are separated by blank lines so each note can contain ordinary
+ * Markdown text without Conveyor assigning it a structure of its own.
+ */
+export function followUpsFromBody(body: string): string[] {
+  try {
+    const markdown = parseManagedSections(body).sections["follow-ups"];
+    return markdown === undefined ? [] : markdown.split(/\r?\n[ \t]*\r?\n/).map((note) => note.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function upsertInto(body: string, name: ManagedSectionName, content: string, newline: string): string {

@@ -143,11 +143,13 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
+| `item.addFollowUp` | tool | - | invalidates item | Append a non-empty post-release follow-up note without changing existing Follow-ups notes. Use it for work Conveyor will not perform itself, such as a configuration change, manual migration, announcement, or cleanup. |
 | `item.childrenValid` | check | item, repository | - | Passes when every child is enrolled, open or done, and has acceptance criteria or children of its own (and when there are no children). |
 | `item.comment` | tool | - | invalidates item | Add a Markdown comment to the current issue. |
 | `item.createChild` | tool | - | invalidates item | Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first. |
 | `item.criteriaDefined` | check | item, repository | - | Passes when the item has at least one acceptance criterion, or has children that carry the work. |
 | `item.dependenciesMet` | check | item, repository | - | Pending while any dependency is neither closed nor done; the message lists them. A blocker of a tracked repository closing or reaching done wakes it at once. |
+| `item.followUps` | check | item, repository | - | Passes the follow-up stage; notes, when present, require its automatic acknowledgement gate. |
 | `item.get` | tool | - | - | Read the accepted source snapshot of the current issue, including whether it must remain one item. |
 | `item.guidance` | tool | - | - | Read source-specific agent guidance. |
 | `item.labelsValid` | check | item, repository | - | Passes when the repository configures no system labels or the item has at least one of them (the loaded labels are already limited to configured ones). |

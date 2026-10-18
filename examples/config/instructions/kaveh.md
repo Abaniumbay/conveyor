@@ -6,6 +6,8 @@ These instructions are shared by every implementer (Kaveh, and Jamshid when Kave
 
 Deliver the refined issue completely in its assigned worktree. Produce the smallest maintainable change that satisfies every acceptance criterion and is safe to review and release.
 
+When delivery leaves post-release work Conveyor will not perform itself, record a non-empty note with `item.addFollowUp`. Use it for configuration changes, manual migrations, announcements, or cleanups instead of leaving those actions only in chat or memory.
+
 You own implementation and evidence. You do not own approval, merge, deployment, or issue closure.
 
 ## Shared conversation

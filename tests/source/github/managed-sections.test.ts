@@ -55,6 +55,27 @@ describe("managed GitHub issue body sections", () => {
     );
   });
 
+  test("round-trips Follow-ups notes without changing human text or other managed sections", () => {
+    const body = [
+      "Human introduction",
+      "<!-- conveyor:dependencies:start -->",
+      "- #2",
+      "<!-- conveyor:dependencies:end -->",
+      "<!-- conveyor:follow-ups:start -->",
+      "Deploy the release first.\n\nThen update production configuration.",
+      "<!-- conveyor:follow-ups:end -->",
+      "Human footer",
+    ].join("\n");
+
+    const parsed = parseManagedSections(body);
+    expect(parsed.sections["follow-ups"]).toBe("Deploy the release first.\n\nThen update production configuration.");
+    const updated = upsertManagedSection(body, "follow-ups", `${parsed.sections["follow-ups"]}\n\nAnnounce the change.`, parsed.revision);
+    expect(parseManagedSections(updated).sections["follow-ups"]).toBe("Deploy the release first.\n\nThen update production configuration.\n\nAnnounce the change.");
+    expect(updated).toContain("<!-- conveyor:dependencies:start -->\n- #2\n<!-- conveyor:dependencies:end -->");
+    expect(updated).toContain("Human introduction\n");
+    expect(updated).toEndWith("Human footer");
+  });
+
   test("appends a new managed section without rewriting existing body", () => {
     const body = "Human text\n";
     const result = upsertManagedSection(
@@ -176,7 +197,7 @@ describe("refinement section and legacy criteria", () => {
     const second = write(first, "refinement", "## Refinement\n\nChanged.");
     expect(parseManagedSections(second).sections.refinement).toBe("## Refinement\n\nChanged.");
     expect(second.replace("Changed.", "One release.")).not.toBe(first);
-    const { refinement: _gone, breakdown: _noBreakdown, ...others } = parseManagedSections(second).sections;
+    const { refinement: _gone, breakdown: _noBreakdown, "follow-ups": _noFollowUps, ...others } = parseManagedSections(second).sections;
     expect(others).toEqual({ "acceptance-criteria": "- [ ] A <!-- conveyor:criterion:a -->", dependencies: "- #1", description: undefined });
     expect(second.startsWith("Intro\n<!-- conveyor:acceptance-criteria:start -->")).toBe(true);
     expect(second.endsWith("Footer\n\n<!-- conveyor:refinement:start -->\n## Refinement\n\nChanged.\n<!-- conveyor:refinement:end -->\n")).toBe(true);

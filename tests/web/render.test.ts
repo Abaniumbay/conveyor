@@ -430,6 +430,32 @@ describe("renderDashboard", () => {
     expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Approve</button>');
   });
 
+  test("renders waiting Follow-ups once, escapes every note, and limits Done to superusers", () => {
+    const selectedIssue = {
+      ...parent,
+      csrfToken: "csrf-token",
+      manualGates: [{
+        stageId: "follow-up", gateId: "followUps", kind: "follow-up", required: true, waiting: true,
+        approvedBy: null, approvedAt: null,
+        notes: ["Set <script>alert(1)</script> production config.", "Announce the release."],
+      }],
+    } satisfies IssueCardViewModel;
+    const base = { ...dashboard, needsYou: [selectedIssue], selectedIssue };
+
+    const reader = renderDashboard({ ...base, account: { id: "reader", username: "reader", role: "user", avatar: "🦊" } });
+    expect(reader.match(/needs-you-item--follow-up/g)).toHaveLength(1);
+    expect(reader).toContain('class="needs-you-follow-up" aria-hidden="true">✓</span>');
+    expect(reader).toContain("Set &lt;script>alert(1)&lt;/script> production config.");
+    expect(reader).toContain("Announce the release.");
+    expect(reader).not.toContain("<script>alert(1)</script>");
+    expect(reader).not.toContain(">Done</button>");
+
+    const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
+    expect(superuser).toContain('action="/manual-gates/approve"');
+    expect(superuser).toContain('name="gateId" value="followUps"');
+    expect(superuser).toContain('<button type="submit" class="manual-gate-approve">Done</button>');
+  });
+
   test("labels capacity-held work Queued on its card and details without an obsolete next check", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: queuedIssue, stages: [{ ...dashboard.stages[0]!, issues: [queuedIssue] }] });
 

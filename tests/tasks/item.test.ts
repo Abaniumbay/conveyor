@@ -373,7 +373,7 @@ describe("item tools", () => {
     run(name, { context: {}, deps, input, actor: "agent", instance: { id: name, stage, idempotencyKey: "k", resumed: false } }) as Promise<Extract<TaskResult, { status: "pass" }>>;
 
   test("are declared as mutating or not, invalidating item", () => {
-    for (const name of ["item.setCriteria", "item.setType", "item.setFields", "item.setRefinement", "item.setTitle", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
+    for (const name of ["item.setCriteria", "item.setType", "item.setFields", "item.setRefinement", "item.addFollowUp", "item.setTitle", "item.setSystemLabels", "item.setParent", "item.setDependencies", "item.createChild", "item.comment"]) {
       expect(registry.require(name)).toMatchObject({ kind: "tool", mutating: true, invalidates: ["item"] });
     }
     for (const name of ["item.get", "item.guidance", "item.listOpen"]) {
@@ -441,6 +441,29 @@ describe("item tools", () => {
       .rejects.toThrow("body changed since it was read");
 
     expect(w.store.getIssue("i1")!.body).toBe("Accepted body");
+  });
+
+  test("addFollowUp appends a non-empty note without replacing existing human-written notes", async () => {
+    const body = [
+      "Intro",
+      "<!-- conveyor:follow-ups:start -->",
+      "Enable the feature in production.",
+      "<!-- conveyor:follow-ups:end -->",
+      "Footer",
+    ].join("\n");
+    const w = await world(); w.add("i1", 5, { body });
+
+    const out = await tool("item.addFollowUp", w.deps(), { note: "  Announce the release.  " });
+
+    expect(out.output).toMatchObject({ revision: expect.any(String) });
+    const written = w.calls[0]![1] as { section: string; markdown: string; baseBody: string };
+    expect(written).toMatchObject({
+      section: "follow-ups",
+      markdown: "Enable the feature in production.\n\nAnnounce the release.",
+      baseBody: body,
+    });
+    expect(w.source(5).body).toContain("Enable the feature in production.\n\nAnnounce the release.");
+    await expect(tool("item.addFollowUp", w.deps(), { note: "  " })).rejects.toThrow();
   });
 
   test("setTitle replaces the current issue's title, trimmed", async () => {

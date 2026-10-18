@@ -62,6 +62,7 @@ export const commentInput = z.object({ markdown: z.string().min(1) }).strict();
 export const systemLabelsInput = z.object({ labels: z.array(z.string().min(1)) }).strict();
 export const parentInput = z.object({ parentNumber: z.number().int().positive() }).strict();
 export const dependenciesInput = z.object({ issueNumbers: z.array(z.number().int().positive()) }).strict();
+export const addFollowUpInput = z.object({ note: z.string().trim().min(1) }).strict();
 const emptyInput = z.object({}).strict();
 
 interface ParsedCriterion { id: string; text: string }
@@ -345,6 +346,13 @@ const dependenciesMet = check(
     return pending(`Waiting for dependencies: ${waiting.map((dependency) => `#${dependency.number}`).join(", ")}`, { waitFor: { topics, kind: "dependencies" } });
   },
   { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 } },
+);
+
+/** The follow-up stage has no agent action; its manual gate reads the managed notes. */
+const followUps = check(
+  "item.followUps",
+  "Passes the follow-up stage; notes, when present, require its automatic acknowledgement gate.",
+  () => pass(),
 );
 
 const tool = <I>(
@@ -655,6 +663,24 @@ const setRefinement = tool("item.setRefinement",
     return { revision: deps.items.managedRevision(updated.body) };
   });
 
+const addFollowUp = tool("item.addFollowUp",
+  "Append a non-empty post-release follow-up note without changing existing Follow-ups notes. Use it for work Conveyor will not perform itself, such as a configuration change, manual migration, announcement, or cleanup.",
+  addFollowUpInput, true,
+  async ({ deps, input }, issue) => {
+    const existing = parseManagedSections(issue.body).sections["follow-ups"]?.trim();
+    const markdown = existing ? `${existing}\n\n${input!.note}` : input!.note;
+    const updated = await deps.items.updateManagedSection({
+      address: deps.repository.address,
+      issueNumber: issue.sourceNumber,
+      section: "follow-ups",
+      markdown,
+      expectedRevision: deps.items.managedRevision(issue.body),
+      baseBody: issue.body,
+    });
+    persistSourceIssue(deps, updated, issue.id, { body: upsertManagedSection(issue.body, "follow-ups", markdown, parseManagedSections(issue.body).revision) });
+    return { revision: deps.items.managedRevision(updated.body) };
+  });
+
 const createChild = tool("item.createChild",
   "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first.",
   createChildInput, true,
@@ -751,7 +777,7 @@ const createChild = tool("item.createChild",
   });
 
 export const itemGroup = defineGroup("item", [
-  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet,
+  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet, followUps,
   get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies,
-  setType, setFields, setRefinement, createChild,
+  setType, setFields, setRefinement, addFollowUp, createChild,
 ]);

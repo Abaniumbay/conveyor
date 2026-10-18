@@ -35,6 +35,8 @@ export interface StageExecutorOptions {
   setStatus: (message: string | null) => void | Promise<void>;
   /** Reads the human-approval state after an exit check has passed. */
   manualGate?: ManualGateResolver;
+  /** Records that a configured manual gate began waiting after its cursor is durable. */
+  manualGateWaiting?: ManualGateWaitingNotifier;
   /** Reads the item-specific board approval after every configured exit gate has passed. */
   boardApproval?: BoardApprovalResolver;
   /**
@@ -58,7 +60,17 @@ export type ManualGateResolver = (input: {
   stageEpoch: number;
   attempt: number;
   configured: boolean;
+  task: string;
 }) => ManualGateState;
+
+export type ManualGateWaitingNotifier = (input: {
+  issueId: string;
+  stageId: string;
+  gateId: string;
+  stageEpoch: number;
+  attempt: number;
+  task: string;
+}) => void | Promise<void>;
 
 export const BOARD_APPROVAL_TASK_ID = "board-approval";
 
@@ -169,15 +181,26 @@ export class StageExecutor {
     markStale(run.context, tasks.flatMap((task) => snapshotReads(task.reads)));
     this.#persist(run, tasks[0]?.id ?? run.stage.id);
     for (const task of tasks) {
+      const wasWaitingForApproval = run.cursor.list === "exit-gate" && run.cursor.taskInstanceId === task.id
+        && run.cursor.state === "pending" && run.cursor.wakeAt === null;
       const step = await this.#runTask(run, task, "exit-gate");
       if (step.kind === "aborted") return { kind: "parked", stageId: run.stage.id, reason: "aborted", wakeAt: null };
       if (step.kind === "pending") return { kind: "parked", stageId: run.stage.id, reason: "pending", wakeAt: step.wakeAt };
       if (step.kind === "fail") return this.#route(run, task, "exit-gate", step);
       const manual = this.#o.manualGate?.({
         issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch,
-        attempt: run.cursor.attempt, configured: task.manual === true,
+        attempt: run.cursor.attempt, configured: task.manual === true, task: task.task,
       });
-      if (manual?.required && !manual.approved) return this.#waitForApproval(run, task.id, manual.message);
+      if (manual?.required && !manual.approved) {
+        const outcome = await this.#waitForApproval(run, task.id, manual.message);
+        if (!wasWaitingForApproval) {
+          await this.#o.manualGateWaiting?.({
+            issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch,
+            attempt: run.cursor.attempt, task: task.task,
+          });
+        }
+        return outcome;
+      }
     }
     // The board requirement belongs to the stage and is always its final gate.
     const board = this.#o.boardApproval?.({
