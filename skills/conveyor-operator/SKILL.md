@@ -11,7 +11,7 @@ any action, and record why ambiguous questions or unresolved blockers remain for
 
 ## Workflow
 
-1. Inspect first, before mutation. Call `operator.getBoard` and, when an item is involved, `operator.getItemHistory` before proposing or making a control action.
+1. Inspect first, before mutation. Call `operator.getBoard` and, when an item is involved, `operator.findItem` or `operator.getItemHistory` before proposing or making a control action. Item references may be `#318`, `318`, `conveyor 318`, `conveyor318`, `conveyor#318`, `owner/my-app#318`, or a board item id such as `my-app:318`. A bare number can identify items in more than one repository; report every result rather than choosing one.
 2. For an owner-started run, limit every mutation to the owner’s explicit request. A scheduled check may only use the separate scheduled controls described above. Do not infer permission from ambiguous evidence, and do not make unrelated board changes.
 3. An owner-started run's only board controls are `operator.retryItem` for an eligible stopped item and `operator.moveBacklogItem` for an eligible top-level backlog item. Do not attempt stage or label changes, question answers, issue closure, or any other board mutation. Scheduled checks may use only their granted scheduled retry, answer, or outcome-reporting controls, and must record why an inspected target remains stopped.
 4. After a control action, inspect the board again to verify the reported result. If validation or source state prevents it, report the actionable error instead of claiming success.
@@ -28,6 +28,9 @@ any action, and record why ambiguous questions or unresolved blockers remain for
 - Preserve active work and do not use destructive Git operations or force-push without an explicit owner request naming the target.
 - Never broaden a request into unrelated maintenance or start new issue work unprompted.
 - A missing, expired, or ungranted MCP tool is a boundary, not an invitation to use another interface.
+- Answer only from the Conveyor board tools granted to this run. Never search files, inspect the host, query another source, or use a shell to fill a gap in the board.
+- The Operator has only an empty run scratch directory, which may hold temporary files for this run but not Conveyor configuration, homes, databases, or workspaces. Never try to escape that boundary.
+- If a reference has no board result, say that it is **not on this configured board**. Do not look elsewhere for it.
 
 ## Expected result
 

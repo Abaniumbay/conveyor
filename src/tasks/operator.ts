@@ -8,6 +8,7 @@ import { defineGroup, pass, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
 const emptyInput = z.object({}).strict();
+const findItemInput = z.object({ reference: z.string().min(1) }).strict();
 const historyInput = z.object({
   itemId: z.string().min(1),
   beforeRunId: z.string().min(1).optional(),
@@ -80,10 +81,20 @@ const board: TaskDefinition<unknown, z.infer<typeof emptyInput>, Deps> = {
   },
 };
 
+const findItem: TaskDefinition<unknown, z.infer<typeof findItemInput>, Deps> = {
+  name: "operator.findItem",
+  kind: "tool",
+  description: "Find visible board items by #123, 123, repository 123, repository#123, owner/repository#123, or repository-id:123. Returns every visible match and says explicitly when none is on this configured board.",
+  reads: [], writes: [], invalidates: [], input: findItemInput,
+  run({ deps, input }) {
+    return pass(operator(deps).findItem(input!.reference));
+  },
+};
+
 const itemHistory: TaskDefinition<unknown, z.infer<typeof historyInput>, Deps> = {
   name: "operator.getItemHistory",
   kind: "tool",
-  description: "Read a bounded, pageable diagnostic history for one configured board item.",
+  description: "Read a bounded, pageable diagnostic history for one visible configured board item. Its itemId accepts the same supported reference forms as operator.findItem.",
   reads: [], writes: [], invalidates: [], input: historyInput,
   async run({ deps, input }) {
     return pass(await operator(deps).itemHistory({
@@ -177,6 +188,7 @@ const reportStoppedItemOutcome: TaskDefinition<unknown, z.infer<typeof scheduled
 
 export const OPERATOR_STEERING_TOOLS = new Set([
   "operator.getBoard",
+  "operator.findItem",
   "operator.getItemHistory",
   "operator.retryItem",
   "operator.moveBacklogItem",
@@ -187,6 +199,7 @@ export const OPERATOR_STEERING_TOOLS = new Set([
 
 export const operatorGroup = defineGroup("operator", [
   board,
+  findItem,
   itemHistory,
   retry,
   moveBacklog,

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
+import { confinedCommand } from "../isolation/sandbox";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import { CodexRunnerError, cleanupCodexRun, type CodexMcpConfiguration, withCleanupError } from "./codex";
 import { EMPTY_USAGE } from "./result";
@@ -25,6 +26,8 @@ export interface CodexSteeringInput {
   onEvent?: (event: unknown) => void;
   egress?: EgressInput;
   writableRoots?: string[];
+  /** Run with only a fresh scratch filesystem instead of a steering workspace mount. */
+  filesystem?: "scratch";
   /** Omit for disposable workspace-free scratch. */
   temporaryDirectory?: string;
 }
@@ -145,7 +148,9 @@ export async function runCodexSteering(
   let network: RunNetwork | null = null;
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env });
+    const confined = input.filesystem === "scratch";
+    const agentWorkspace = confined ? scratch.path : workspace;
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace: agentWorkspace, overrides: input.env });
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const run = runInput.sandbox === "workspace-write"
@@ -164,10 +169,18 @@ export async function runCodexSteering(
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
-      buildArguments: (extra) => argumentsFor(run, extra),
+      buildArguments: (extra) => argumentsFor({ ...run, workspace: agentWorkspace }, extra),
     });
     network = launch.network;
-    child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const confinedLaunch = confined
+      ? confinedCommand({
+          argv: launch.argv,
+          env: launch.env,
+          scratch: scratch.path,
+          readablePaths: input.mcp ? [input.mcp.command, ...input.mcp.args.filter((value) => value.startsWith("/"))] : [],
+        })
+      : launch;
+    child = Bun.spawn(confinedLaunch.argv, { cwd: agentWorkspace, env: confinedLaunch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
     const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });

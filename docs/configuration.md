@@ -177,6 +177,21 @@ evidence, and report the result. They cannot move backlog items or take
 unrelated board actions. Failed source writes remain visible and are retried
 without recording a successful answer prematurely.
 
+## Operator board boundary
+
+The default Operator runs in `access: confined`. Owner-started and scheduled
+Operator runs receive a fresh, empty scratch directory instead of a Conveyor
+workspace, home, configuration, or database. The scratch directory remains
+writable for temporary files during that run. If this filesystem boundary
+cannot be established, Conveyor stops the run before it starts the agent.
+
+Use `operator.findItem` or `operator.getItemHistory` with `#318`, `318`,
+`conveyor 318`, `conveyor318`, `conveyor#318`, `owner/my-app#318`, or the
+board item id `my-app:318`. Bare numbers return every matching visible board
+item; a repository-qualified reference returns matching items only from that
+repository. If no visible board item matches, the Operator reports that the
+reference is not on this configured board and does not look elsewhere.
+
 ## Events
 
 Every change Conveyor makes is recorded in its event log ([events.md](events.md) lists them). The

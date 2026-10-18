@@ -32,11 +32,84 @@ export interface SandboxedCommand {
   dataEnv: Record<string, string>;
 }
 
+export interface ConfinedCommandOptions {
+  /** The command which is allowed to run in the otherwise empty mount namespace. */
+  argv: readonly string[];
+  /** Its sanitized environment. */
+  env: Record<string, string>;
+  /** The only writable and readable application directory. */
+  scratch: string;
+  /** Individual files the command needs, such as a run-scoped MCP context. */
+  readablePaths?: readonly string[];
+}
+
 /** Runs locally with a private /tmp while preserving ordinary host networking. */
 export function privateTmpCommand(options: { argv: readonly string[]; env: Record<string, string> }): SandboxedCommand {
   return {
     argv: ["bwrap", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...options.argv],
     env: resolvePathEnvironment(options.env),
+    dataEnv: {},
+  };
+}
+
+/**
+ * Runs a command in an empty filesystem with only its scratch directory and individual run files.
+ * This is deliberately separate from the ordinary isolation wrappers: it is for the board-only
+ * Operator, whose process must not inherit the service's workspace or home mounts.
+ */
+export function confinedCommand(options: ConfinedCommandOptions): SandboxedCommand {
+  const command = options.argv[0];
+  if (!command) throw new Error("cannot confine an empty command");
+  const bubblewrap = Bun.which("bwrap");
+  if (!bubblewrap) throw new Error("Operator filesystem confinement requires bubblewrap");
+  const scratch = resolveFilesystemPath(options.scratch);
+  if (!existsSync(scratch)) throw new Error(`Operator scratch directory does not exist: ${scratch}`);
+  const executable = path.isAbsolute(command)
+    ? resolveFilesystemPath(command)
+    : Bun.which(command);
+  if (!executable || !existsSync(executable)) throw new Error(`cannot confine a command that is not installed: ${command}`);
+
+  const mounts = [
+    "--tmpfs", "/",
+    "--dir", "/usr",
+    "--ro-bind", "/usr", "/usr",
+    "--symlink", "usr/bin", "/bin",
+    "--symlink", "usr/lib", "/lib",
+    "--symlink", "usr/lib64", "/lib64",
+    "--dev", "/dev",
+    "--proc", "/proc",
+  ];
+  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
+  const addDirectory = (directory: string) => {
+    if (directories.has(directory) || directory.startsWith("/usr/")) return;
+    const parent = path.dirname(directory);
+    if (parent !== directory) addDirectory(parent);
+    mounts.push("--dir", directory);
+    directories.add(directory);
+  };
+  const addFile = (file: string) => {
+    const resolved = resolveFilesystemPath(file);
+    if (!existsSync(resolved) || resolved === scratch || resolved.startsWith(`${scratch}/`) || resolved.startsWith("/usr/")) return;
+    addDirectory(path.dirname(resolved));
+    mounts.push("--ro-bind", resolved, resolved);
+  };
+  // Bubblewrap creates bind targets only when their parents already exist in the new namespace.
+  addDirectory(path.dirname(scratch));
+  mounts.push("--bind", scratch, scratch);
+  directories.add(scratch);
+  addFile(executable);
+  for (const file of options.readablePaths ?? []) {
+    if (path.isAbsolute(file)) addFile(file);
+  }
+  if (existsSync("/etc/ssl/certs")) {
+    addDirectory("/etc");
+    mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
+  }
+  const env: Record<string, string> = { ...options.env, HOME: scratch, TMPDIR: scratch };
+  delete env.CODEX_HOME;
+  return {
+    argv: [bubblewrap, "--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
+    env: resolvePathEnvironment(env),
     dataEnv: {},
   };
 }
