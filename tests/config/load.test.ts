@@ -290,6 +290,17 @@ repositories:
       await writeFile(path.join(directory, "conveyor.yml"), configWith(agentLines));
       return loadConfig(directory);
     }
+    async function rejectionMessage(config: string) {
+      const directory = await temporaryDirectory();
+      await writeFile(path.join(directory, "conveyor.yml"), config);
+      try {
+        await loadConfig(directory);
+      } catch (error) {
+        if (error instanceof Error) return error.message;
+        throw error;
+      }
+      throw new Error("expected configuration to be rejected");
+    }
 
     test("network defaults off; writable roots accept absolute and ~/ paths", async () => {
       expect((await load("")).agents.worker).toMatchObject({ network: false, writableRoots: [] });
@@ -346,6 +357,54 @@ repositories:
       );
       await expect(loadConfig(steeringDirectory)).rejects.toThrow(/confined agent "worker", which cannot run pipeline stages/);
 
+    });
+
+    test("confined access is rejected from every native agent task entry", async () => {
+      const config = configWith("    workspaceAccess: confined").replace(
+        `    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: work, run: { agent: worker }, concurrency: 1 }`,
+        `    stages:
+      - id: work
+        concurrency: 1
+        actions:
+          - { id: action-one, task: agent.run, with: { agent: worker } }
+          - { id: action-many, task: agent.run, with: { agents: [worker, worker] } }
+        exit-gate:
+          - { id: gate-one, task: agent.run, with: { agent: worker } }
+          - { id: gate-many, task: agent.run, with: { agents: [worker] } }`,
+      );
+
+      const message = await rejectionMessage(config);
+      expect(message).toContain("pipelines.default.stages.0.actions.0.with.agent references confined agent");
+      expect(message).toContain("pipelines.default.stages.0.actions.1.with.agents.0 references confined agent");
+      expect(message).toContain("pipelines.default.stages.0.actions.1.with.agents.1 references confined agent");
+      expect(message).toContain("pipelines.default.stages.0.exit-gate.0.with.agent references confined agent");
+      expect(message).toContain("pipelines.default.stages.0.exit-gate.1.with.agents.0 references confined agent");
+    });
+
+    test("confined access is rejected for legacy check verifiers", async () => {
+      const message = await rejectionMessage(
+        configWith("    workspaceAccess: confined").replace(
+          `    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - { id: work, run: { agent: worker }, concurrency: 1 }`,
+          `    stages:
+      - id: work
+        concurrency: 1
+        actions: []
+        exit-gate:
+          - { id: criteria, task: item.criteriaDefined }`,
+        ).replace(
+          "settings: {}",
+          "settings: {}\nchecks:\n  verify: { verifier: worker }",
+        ),
+      );
+
+      expect(message).toContain("checks.verify.verifier references confined agent");
+      expect(message).toContain('confined agent "worker", which cannot run legacy checks');
     });
 
     test("tasks is the exact grant, in camelCase", async () => {
