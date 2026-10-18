@@ -244,6 +244,34 @@ test("keeps at most one primary action in each dashboard view", () => {
   expect(renderIssueDetails(parent)).toContain('<button type="submit" class="action-button action-button--secondary">Send</button>');
 });
 
+test("keeps dialog, line, row-fold, and theme controls out of action-button variants", () => {
+  const family: IssueCardViewModel = {
+    ...parent,
+    id: "family",
+    number: 172,
+    children: [{ id: "family-part", repository: "sample", number: 173, title: "A family part", url: null, satisfied: false }],
+  };
+  const familyPart: IssueCardViewModel = {
+    ...backlogIssue,
+    id: "family-part",
+    number: 173,
+    parent: { id: "family", repository: "sample", number: 172, title: "Build <safe> & sound", url: null, satisfied: false },
+    parentProgress: { done: 0, total: 1 },
+  };
+  const html = renderDashboard({
+    ...dashboard,
+    selectedIssue: parent,
+    stages: [{ ...dashboard.stages[0]!, issues: [family, familyPart] }, dashboard.stages[1]!],
+  });
+
+  expect(html).toContain('<button class="dialog-close" aria-label="Close issue details">×</button>');
+  expect(html).toContain('<button type="button" class="line-toggle" data-line-toggle="true"');
+  expect(html).toContain('<button type="button" class="row-fold" data-row-fold="family-family" aria-controls="family-family-cells" aria-expanded="true" aria-label="Fold the #172 family" data-fold-label="the #172 family">');
+  expect(html).toContain('<button type="button" data-theme-choice="system" aria-pressed="true">System</button>');
+  expect(html).toContain('<button type="button" data-theme-choice="light" aria-pressed="false">Light</button>');
+  expect(html).toContain('<button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>');
+});
+
 test("renders the stage badge and source link once in every item-details header", () => {
   const issue: IssueCardViewModel = {
     ...parent,
