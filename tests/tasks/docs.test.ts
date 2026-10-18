@@ -14,6 +14,27 @@ describe("docs/tasks.md", () => {
     }
   });
 
+  test("documents lease pushes before a change request exists", async () => {
+    const [taskDocs, instructions, specification, releaseNote] = await Promise.all([
+      readFile(path.join(import.meta.dir, "../../docs/tasks.md"), "utf8"),
+      readFile(path.join(import.meta.dir, "../../examples/config/instructions/kaveh.md"), "utf8"),
+      readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8"),
+      readFile(path.join(import.meta.dir, "../../changes/343-pre-change-lease-push.md"), "utf8"),
+    ]);
+
+    for (const text of [taskDocs, instructions, specification]) {
+      expect(text).toContain("workspace.fetch");
+      expect(text).toContain("rebase");
+    }
+    expect(taskDocs).toContain("refs/remotes/origin/<branch>");
+    expect(taskDocs).toContain("forceWithLease");
+    expect(instructions).toContain("refs/remotes/origin/<branch>");
+    expect(instructions).toContain("forceWithLease");
+    expect(specification).toContain("remote branch live");
+    expect(specification).toContain("force-with-lease");
+    expect(releaseNote).toContain("Lease-protected workspace pushes");
+  });
+
   test("explains the semantics an operator needs", () => {
     const text = renderTaskDocs(new TaskRegistry());
     for (const word of ["load", "check", "act", "tool", "pass", "pending", "fail", "instance id", "implicit", "when", "wait", "onFail", "exit gate"]) {
