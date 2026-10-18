@@ -23,9 +23,14 @@ function pull(number: number, state = "open") {
   };
 }
 
+function listedPull(number: number, state = "open", mergedAt: string | null = null) {
+  const { merged: _merged, ...pullRequest } = pull(number, state);
+  return { ...pullRequest, merged_at: mergedAt };
+}
+
 describe("CodeHost contract: GitHub", () => {
   test("finds an existing open branch change without creating one", async () => {
-    const transport = new FakeTransport([[pull(8)], pull(8)]);
+    const transport = new FakeTransport([[listedPull(8)], pull(8)]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
 
     const change = await host.findOpenChange({ address: "owner/repo", branch: "feature" });
@@ -36,7 +41,7 @@ describe("CodeHost contract: GitHub", () => {
   });
 
   test("ensures an existing change idempotently and exposes neutral metadata", async () => {
-    const transport = new FakeTransport([[pull(8)], pull(8)]);
+    const transport = new FakeTransport([[listedPull(8)], pull(8)]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
 
     const change = await host.ensureChange({
@@ -52,8 +57,8 @@ describe("CodeHost contract: GitHub", () => {
   });
 
   test("prefers an open branch change over an older closed unmerged request", async () => {
-    const closed = { ...pull(3, "closed"), merged: false };
-    const transport = new FakeTransport([[closed, pull(8)], pull(8)]);
+    const closed = listedPull(3, "closed");
+    const transport = new FakeTransport([[closed, listedPull(8)], pull(8)]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
 
     const change = await host.ensureChange({
@@ -65,8 +70,8 @@ describe("CodeHost contract: GitHub", () => {
   });
 
   test("opens one change when the only matching request closed without merge", async () => {
-    const closed = { ...pull(3, "closed"), merged: false };
-    const transport = new FakeTransport([[closed], pull(9), pull(9), [closed, pull(9)], pull(9)]);
+    const closed = listedPull(3, "closed");
+    const transport = new FakeTransport([[closed], pull(9), pull(9), [closed, listedPull(9)], pull(9)]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
     const input = {
       address: "owner/repo", issueNumber: 12, branch: "feature", base: "main", title: "A feature", closes: true,
@@ -78,8 +83,10 @@ describe("CodeHost contract: GitHub", () => {
   });
 
   test("retains a matching merged request instead of opening another", async () => {
-    const merged = { ...pull(8, "closed"), merged: true, merged_at: "2026-01-01T00:00:00.000Z" };
-    const transport = new FakeTransport([[merged], merged]);
+    const mergedAt = "2026-01-01T00:00:00.000Z";
+    const listedMerged = listedPull(8, "closed", mergedAt);
+    const merged = { ...pull(8, "closed"), merged: true, merged_at: mergedAt };
+    const transport = new FakeTransport([[listedMerged], merged]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
 
     const change = await host.ensureChange({

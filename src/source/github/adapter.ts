@@ -1168,7 +1168,7 @@ export class GitHubAdapter {
     });
     const pullRequest =
       existing.find((candidate) => candidate.state === "open") ??
-      existing.find((candidate) => candidate.state === "closed" && candidate.merged === true) ??
+      existing.find((candidate) => candidate.state === "closed" && candidate.merged_at != null) ??
       (await this.transport.request<GitHubPullRequest>({
         method: "POST",
         path: `repos/${input.address}/pulls`,
