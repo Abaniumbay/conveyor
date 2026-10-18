@@ -939,4 +939,31 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 36,
+    sql: `
+      -- Completed required-CI observations make repeat-failure routing durable across restarts.
+      CREATE TABLE ci_failure_windows (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        retry_window INTEGER NOT NULL
+      );
+      CREATE TABLE ci_gate_observations (
+        id INTEGER PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        retry_window INTEGER NOT NULL,
+        task_key TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('passed', 'failed')),
+        fingerprint TEXT,
+        check_names_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        change_url TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(issue_id, stage, retry_window, task_key)
+      );
+      CREATE INDEX ci_gate_observations_streak_idx
+        ON ci_gate_observations(issue_id, retry_window, id DESC);
+    `,
+  },
 ];

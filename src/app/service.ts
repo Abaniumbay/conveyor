@@ -5310,6 +5310,9 @@ export class ConveyorService {
         throw error;
       }
 
+      // A retry is a deliberate fresh attempt, so only failures observed after it may form a repeat.
+      this.store.executions().resetCiFailureWindow(issueId);
+
       if (note.trim()) {
         this.store.appendConversationMessage({
           issueId, runId: null, stageId, actorType: automated ? "conveyor" : "user", actorId: automated ? "scheduled-operator" : username,

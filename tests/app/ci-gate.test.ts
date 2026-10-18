@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
-import { boundLog, boundSnapshotLogs, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
+import { boundLog, boundSnapshotLogs, ciFailureFingerprint, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { focusGitHubActionsLog } from "../../src/source/github/ci-provider";
 
@@ -183,5 +183,35 @@ describe("boundLog", () => {
     expect(total).toBeLessThanOrEqual(1000);
     expect(bounded.runs[0]!.log).toContain("Expected: no matching candidates");
     expect(boundSnapshotLogs({ runs: [{ log: null }] }, 10).runs[0]!.log).toBeNull();
+  });
+});
+
+describe("ciFailureFingerprint", () => {
+  const failure = (name: string, log: string | null) => ({ name, state: "failed" as const, url: null, log });
+
+  test("normalizes volatile values and check order while retaining failing-test identity", () => {
+    const first = ciFailureFingerprint([
+      failure("Unit", "2026-10-18T10:00:00.123Z not ok 4 - rejects expired tokens (12ms)\nabc1234\nError: job id=123e4567-e89b-12d3-a456-426614174000"),
+      failure("Lint", "FAIL /tmp/worker-17/src/style.test.ts (run id=18)"),
+    ]);
+    const second = ciFailureFingerprint([
+      failure("Lint", "FAIL /tmp/worker-98/src/style.test.ts (run id=92)"),
+      failure("Unit", "2026-10-19T11:01:02.456Z not ok 4 - rejects expired tokens (96ms)\nfedcba9\nError: job id=68b3f993-8c9d-4753-a6b3-0dc6a48c4e4b\n…\nError: unrelated log tail"),
+    ]);
+    expect(first).not.toBeNull();
+    expect(second).toBe(first);
+    const firstErrors = ciFailureFingerprint([failure("Errors", "##[error]first substantive error\n##[error]second substantive error\n##[error]third substantive error\n##[error]first log tail")]);
+    const secondErrors = ciFailureFingerprint([failure("Errors", "##[error]first substantive error\n##[error]second substantive error\n##[error]third substantive error\n##[error]changed log tail")]);
+    expect(secondErrors).toBe(firstErrors);
+  });
+
+  test("changes when a check, test, or substantive error changes and rejects missing diagnostics", () => {
+    const baseline = ciFailureFingerprint([failure("Unit", "not ok 4 - rejects expired tokens")]);
+    expect(ciFailureFingerprint([failure("Unit", "not ok 4 - accepts expired tokens")])).not.toBe(baseline);
+    expect(ciFailureFingerprint([failure("Lint", "not ok 4 - rejects expired tokens")])).not.toBe(baseline);
+    expect(ciFailureFingerprint([failure("Unit", "##[error]database unavailable")])).not.toBe(baseline);
+    const withError = ciFailureFingerprint([failure("Unit", "Error: database unavailable")]);
+    expect(ciFailureFingerprint([failure("Unit", "Error: permission denied")])).not.toBe(withError);
+    expect(ciFailureFingerprint([failure("Unit", null)])).toBeNull();
   });
 });

@@ -142,6 +142,12 @@ describe("ConveyorService dashboard", () => {
     const enrollment = store.activateEnrollment("with-note");
     store.recordWorkspace({ id: "existing-worktree", enrollmentId: enrollment.id, path: path.join(root, "existing-worktree"), branch: "conveyor/1-r1-feature", status: "active" });
     store.createRun({ id: "prior-run", issueId: "with-note", stageId: "implementation", attempt: 1, kind: "producer", status: "completed", configHash: config.hash, startedAt: "2026-09-30T00:00:00Z" });
+    const execution = store.executions();
+    execution.recordCiGateObservation({
+      issueId: "with-note", stage: "implementation", expectedEpoch: execution.stageEpoch("with-note"),
+      taskKey: "before-retry", headSha: "old-head", outcome: "failed", fingerprint: "old-fingerprint",
+      checkNames: ["Tests"], evidence: ["old evidence"], changeUrl: "https://ci/old",
+    });
     const replacements: string[][] = [];
     const github = {
       async getIssue(_address: string, number: number) {
@@ -167,6 +173,11 @@ describe("ConveyorService dashboard", () => {
     const closedCard = [...before.stages.flatMap((stage) => stage.issues), ...before.attention.issues].find((issue) => issue.id === "closed-merged");
     expect(closedCard?.retryable).toBe(true);
     await expect(service.retryIssue("with-note", "Android run passed", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
+    expect(execution.recordCiGateObservation({
+      issueId: "with-note", stage: "implementation", expectedEpoch: execution.stageEpoch("with-note"),
+      taskKey: "after-retry", headSha: "new-head", outcome: "failed", fingerprint: "old-fingerprint",
+      checkNames: ["Tests"], evidence: ["new evidence"], changeUrl: "https://ci/new",
+    }).previous).toBeNull();
     await expect(service.retryIssue("without-note", "", "operator")).resolves.toMatchObject({ status: "queued", stageId: "implementation" });
     await expect(service.retryIssue("failed", "do not record this", "operator")).rejects.toThrow("source label update failed");
     await expect(service.retryIssue("stale", "do not record this either", "operator")).rejects.toThrow("inconsistent; refresh before retrying");

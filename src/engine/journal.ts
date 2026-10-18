@@ -38,6 +38,36 @@ export interface StageCursor {
 
 export type CiMarkKind = "first-seen" | "announced" | "rerun" | "rerun-id" | "started";
 
+export type CiGateOutcome = "passed" | "failed";
+
+export interface CiGateObservation {
+  id: number;
+  issueId: string;
+  stage: string;
+  retryWindow: number;
+  taskKey: string;
+  headSha: string;
+  outcome: CiGateOutcome;
+  fingerprint: string | null;
+  checkNames: string[];
+  evidence: string[];
+  changeUrl: string;
+  createdAt: string;
+}
+
+export interface RecordCiGateObservation {
+  issueId: string;
+  stage: string;
+  expectedEpoch: number;
+  taskKey: string;
+  headSha: string;
+  outcome: CiGateOutcome;
+  fingerprint: string | null;
+  checkNames: string[];
+  evidence: string[];
+  changeUrl: string;
+}
+
 export interface StoredContext {
   context: TaskContext;
   version: number;
@@ -103,6 +133,21 @@ interface CursorRow {
   pending_since: string | null;
   wake_at: string | null;
   deadline_at: string | null;
+}
+
+interface CiGateObservationRow {
+  id: number;
+  issue_id: string;
+  stage: string;
+  retry_window: number;
+  task_key: string;
+  head_sha: string;
+  outcome: CiGateOutcome;
+  fingerprint: string | null;
+  check_names_json: string;
+  evidence_json: string;
+  change_url: string;
+  created_at: string;
 }
 
 export class ExecutionStore {
@@ -331,6 +376,59 @@ export class ExecutionStore {
       .query("SELECT created_at FROM ci_marks WHERE issue_id = ? AND head_sha = ? AND kind = ? AND name = ?")
       .get(issueId, headSha, kind, name) as { created_at: string } | null;
     return row?.created_at ?? null;
+  }
+
+  /** Starts a new comparison window after an authorized retry of a stopped item. */
+  resetCiFailureWindow(issueId: string): number {
+    const row = this.#db
+      .query(
+        `INSERT INTO ci_failure_windows(issue_id, retry_window)
+         VALUES (?, 1)
+         ON CONFLICT(issue_id) DO UPDATE SET retry_window = retry_window + 1
+         RETURNING retry_window`,
+      )
+      .get(issueId) as { retry_window: number };
+    return row.retry_window;
+  }
+
+  /**
+   * Records a completed required-CI gate observation once for its task execution and returns its
+   * immediately preceding observation in this retry window. The epoch fence prevents a late CI
+   * result from being compared after the item changed stage or state.
+   */
+  recordCiGateObservation(input: RecordCiGateObservation): { observation: CiGateObservation; previous: CiGateObservation | null } {
+    return this.#fenced(input.issueId, input.expectedEpoch, () => {
+      this.#db.query("INSERT OR IGNORE INTO ci_failure_windows(issue_id, retry_window) VALUES (?, 0)").run(input.issueId);
+      const window = this.#db
+        .query("SELECT retry_window FROM ci_failure_windows WHERE issue_id = ?")
+        .get(input.issueId) as { retry_window: number };
+      let row = this.#db
+        .query("SELECT * FROM ci_gate_observations WHERE issue_id = ? AND stage = ? AND retry_window = ? AND task_key = ?")
+        .get(input.issueId, input.stage, window.retry_window, input.taskKey) as CiGateObservationRow | null;
+      if (!row) {
+        const at = this.#timestamp();
+        row = this.#db
+          .query(
+            `INSERT INTO ci_gate_observations(
+               issue_id, stage, retry_window, task_key, head_sha, outcome, fingerprint,
+               check_names_json, evidence_json, change_url, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING *`,
+          )
+          .get(
+            input.issueId, input.stage, window.retry_window, input.taskKey, input.headSha, input.outcome, input.fingerprint,
+            JSON.stringify(input.checkNames), JSON.stringify(input.evidence), input.changeUrl, at,
+          ) as CiGateObservationRow;
+      }
+      const previous = this.#db
+        .query(
+          `SELECT * FROM ci_gate_observations
+           WHERE issue_id = ? AND retry_window = ? AND id < ?
+           ORDER BY id DESC LIMIT 1`,
+        )
+        .get(input.issueId, window.retry_window, row.id) as CiGateObservationRow | null;
+      return { observation: ciGateObservation(row), previous: previous ? ciGateObservation(previous) : null };
+    });
   }
 
   getExecution(id: string): TaskExecutionRecord | null {
@@ -565,6 +663,23 @@ function toRecord(row: ExecutionRow): TaskExecutionRecord {
     wakeAt: row.wake_at,
     deadlineAt: row.deadline_at,
     result: row.result_json === null ? null : JSON.parse(row.result_json),
+  };
+}
+
+function ciGateObservation(row: CiGateObservationRow): CiGateObservation {
+  return {
+    id: row.id,
+    issueId: row.issue_id,
+    stage: row.stage,
+    retryWindow: row.retry_window,
+    taskKey: row.task_key,
+    headSha: row.head_sha,
+    outcome: row.outcome,
+    fingerprint: row.fingerprint,
+    checkNames: JSON.parse(row.check_names_json) as string[],
+    evidence: JSON.parse(row.evidence_json) as string[],
+    changeUrl: row.change_url,
+    createdAt: row.created_at,
   };
 }
 
