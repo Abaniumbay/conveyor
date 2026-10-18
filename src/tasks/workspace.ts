@@ -169,15 +169,22 @@ const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base bra
     }
   }));
 
-const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push, first read change.get, use workspace.fetch to fetch the observed branch head, and rebase that head into HEAD; then provide forceWithLease: true and that headSha. When the remote moves, repeat those recovery steps before retrying.", pushInput, true,
+const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push with a change request, read change.get and use its headSha. Before a change request exists, use workspace.fetch, then run git -C <workspace-path> rev-parse refs/remotes/origin/<branch> for the feature branch head; rebase that full SHA into HEAD and use it as headSha. If the branch moved, fetch, rebase, and retry; if it does not exist, push without forceWithLease to create it.", pushInput, true,
   async ({ deps, input }, workspace) => {
     if (input!.forceWithLease !== true) {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: false });
       return { accepted: true };
     }
     const expectedRemoteHead = input!.headSha!;
+    const remoteHead = await deps.git.remoteBranchHead(workspace.path, workspace.branch);
+    if (remoteHead === null) {
+      throw new ToolRequestError(`The remote branch ${workspace.branch} does not exist; push without forceWithLease to create it.`);
+    }
+    if (remoteHead !== expectedRemoteHead) {
+      throw new ToolRequestError(`The remote branch moved to ${remoteHead}; use workspace.fetch, rebase, and retry.`);
+    }
     if (!await deps.git.isAncestor(workspace.path, expectedRemoteHead, "HEAD")) {
-      throw new ToolRequestError(`The workspace has not reconciled observed change head ${expectedRemoteHead}; read change.get, use workspace.fetch, and rebase before pushing.`);
+      throw new ToolRequestError(`The workspace has not reconciled observed remote head ${expectedRemoteHead}; use workspace.fetch and rebase before pushing.`);
     }
     try {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: true, expectedRemoteHead });
