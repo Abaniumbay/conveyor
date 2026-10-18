@@ -770,7 +770,6 @@ function BoardFilters({ model }: { model: DashboardViewModel }) {
                   <input type="checkbox" name="repo" value={repository.id} data-filter-repository={repository.id} checked={pressed} />
                   <i class={`repository-dot repo-color-${repository.color}`} aria-hidden="true" />{repository.id} {repository.pause && <span class="repository-pause-badge">Paused</span>}<b>{counts.count}</b>{counts.needsYou > 0 && <em>{counts.needsYou} needs you</em>}{repository.health === "degraded" && <strong aria-label="Degraded">!</strong>}
                 </label>
-                <a href={`/repositories/${encodeURIComponent(repository.id)}`} class="repository-filter-open" aria-label={`Open ${repository.id}`}>↗</a>
               </span>;
             })}
             <a href="/repositories" class="repository-filter-all">Show all</a>

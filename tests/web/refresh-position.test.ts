@@ -887,7 +887,7 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => location.search === "?repo=alpha");
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
-      expect(await page.locator('a[aria-label="Open alpha"]').getAttribute("href")).toBe("/repositories/alpha");
+      expect(await page.locator('[data-board-filters] a[href^="/repositories/"]').count()).toBe(0);
 
       await page.locator('[data-filter-clear]').click();
       await page.locator('[data-filter-search]').fill("F");
@@ -967,7 +967,7 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('[data-family-row="family-card"] .family-head').isVisible()).toBe(true);
       expect(await page.locator('[data-family-row="family-card"] .issue--compact').isHidden()).toBe(true);
 
-      const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(phone, server.port);
       const collapsed = await phone.evaluate(() => {
         const form = document.querySelector('[data-filter-form]')!;
@@ -977,6 +977,7 @@ describe("dashboard live refresh position", () => {
       expect(collapsed).toBeLessThanOrEqual(2);
       await phone.getByRole("button", { name: "Filters (0)" }).click();
       expect(await phone.locator('.repository-filter label').filter({ hasText: "alpha" }).isVisible()).toBe(true);
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
       const noScript = await browser.newPage({ javaScriptEnabled: false });
       await signIn(noScript, server.port);
