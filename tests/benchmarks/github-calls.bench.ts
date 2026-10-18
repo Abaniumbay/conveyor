@@ -17,6 +17,7 @@ import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from
 import { GitHubCallMeter, MeteredGitHubTransport, currentGitHubCallSource, githubRoute } from "../../src/source/github/call-meter";
 import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
 import { GitHubSimulator } from "../support/github-simulator";
+import { GitHubReadCache } from "../../src/source/github/read-cache";
 import type { Harness } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST } from "../../src/runner/result";
 
@@ -129,7 +130,7 @@ repositories:
   const simulator = new GitHubSimulator();
   const tap = new Tap(simulator);
   const meter = new GitHubCallMeter();
-  const github = new GitHubAdapter(new MeteredGitHubTransport(tap, meter), "conveyor");
+  const github = new GitHubAdapter(new GitHubReadCache(new MeteredGitHubTransport(tap, meter)), "conveyor");
   // Background issues: open, not enrolled, as in a real repository.
   for (let number = 1; number <= options.openIssues; number += 1) simulator.addIssue(ADDRESS, { number, labels: ["bug"] });
   for (let index = 0; index < options.pulls; index += 1) simulator.addPullRequest(ADDRESS, { number: 900 + index, headSha: SHA_2 });

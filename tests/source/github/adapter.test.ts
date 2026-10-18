@@ -791,6 +791,7 @@ describe("GitHubAdapter", () => {
           "check_run",
           "sub_issues",
           "issue_dependencies",
+          "member",
         ],
         config: {
           url: "https://example.test/hooks/github",

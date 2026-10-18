@@ -44,7 +44,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(34);
+    expect(store.schemaVersion()).toBe(35);
 
     store.close();
   });
@@ -56,7 +56,7 @@ describe("ConveyorStore", () => {
     let store = await ConveyorStore.open(database);
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Paused title", body: "Paused body", sourceState: "open", labels: ["conveyor:refinement"], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
-    store.sqlite().exec("DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34);");
+    store.sqlite().exec("DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34, 35);");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -72,10 +72,11 @@ describe("ConveyorStore", () => {
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Title", body: "Body", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
     store.sqlite().exec(`
+      DROP TABLE github_mirror;
+      DROP TABLE repository_pauses;
       DROP TABLE board_approvals;
       DROP TABLE item_board_approval_requirements;
-      DROP TABLE repository_pauses;
-      DELETE FROM schema_migrations WHERE version IN (33, 34);
+      DELETE FROM schema_migrations WHERE version IN (33, 34, 35);
       INSERT INTO item_manual_gate_requirements(issue_id, stage_id, gate_id, changed_at) VALUES
         ('issue', 'implementation', 'ci.passed', '2026-10-16T00:00:00.000Z'),
         ('issue', 'implementation', 'change.findingsResolved', '2026-10-17T00:00:00.000Z'),
@@ -88,6 +89,24 @@ describe("ConveyorStore", () => {
       { issueId: "issue", stageId: "implementation", changedAt: "2026-10-17T00:00:00.000Z" },
       { issueId: "issue", stageId: "review", changedAt: "2026-10-15T00:00:00.000Z" },
     ]);
+    store.close();
+  });
+
+  test("keeps the copy of GitHub across a reopen, with each item's kind, format version and time", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-store-mirror-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    let store = await ConveyorStore.open(database);
+    const at = Date.parse("2026-10-18T10:00:00Z");
+    store.githubMirror().set("repos/owner/app/issues/7", { kind: "issue", version: 1, value: { number: 7, title: "Seven" }, at });
+    store.githubMirror().set("repos/owner/app/pulls/9", { kind: "change", version: 1, value: { number: 9 }, at });
+    store.close();
+    store = await ConveyorStore.open(database);
+    const mirror = store.githubMirror();
+    expect(mirror.get("repos/owner/app/issues/7")).toEqual({ kind: "issue", version: 1, value: { number: 7, title: "Seven" }, at });
+    expect(mirror.keys("repos/owner/app/issues/")).toEqual(["repos/owner/app/issues/7"]);
+    mirror.delete("repos/owner/app/issues/7");
+    expect(mirror.get("repos/owner/app/issues/7")).toBeNull();
     store.close();
   });
 
@@ -503,7 +522,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34);");
+    store.sqlite().exec("DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35);");
     store.close();
 
     store = await ConveyorStore.open(database);

@@ -6,6 +6,7 @@ import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
 import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
 import { GitHubCallMeter, MeteredGitHubTransport } from "../../source/github/call-meter";
+import { GitHubReadCache } from "../../source/github/read-cache";
 import { createGitHubCodeHostRegistry } from "../../source/github/codehost-registry";
 import { BUILD, versionLine } from "../../version";
 import { createWebAuth } from "../../web/auth";
@@ -88,7 +89,8 @@ export const serve: Command = {
     });
     for (const warning of config.warnings ?? []) log.warn(warning);
     const githubCalls = new GitHubCallMeter();
-    const github = new GitHubAdapter(new MeteredGitHubTransport(new GhCliTransport(), githubCalls), config.settings.labelPrefix);
+    // Reads come from the cache; the meter counts only the requests that reach GitHub.
+    const github = new GitHubAdapter(new GitHubReadCache(new MeteredGitHubTransport(new GhCliTransport(), githubCalls)), config.settings.labelPrefix);
     const service = await ConveyorService.create(config, github, createGitHubCodeHostRegistry(config, github), githubCalls);
     const bootstrapUsername = process.env.CONVEYOR_USERNAME;
     const bootstrapHash = process.env.CONVEYOR_PASSWORD_HASH;

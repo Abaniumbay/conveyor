@@ -7,6 +7,7 @@ import type { Indicator, StoredIndicator } from "../app/indicators";
 import { ExecutionStore } from "../engine/journal";
 import { eventLog, type EventLog } from "../events/log";
 import { EventThrottle } from "../events/throttle";
+import type { GitHubMirrorStorage } from "../source/github/read-cache";
 import type { NormalizedGitHubEvent } from "../source/github/events";
 import { migrations } from "./migrations";
 
@@ -1832,6 +1833,30 @@ export class ConveyorStore {
   sourceEvent(source: string, deliveryId: string): { eventType: string; payload: unknown } | null {
     const row = this.#database.query("SELECT event_type, payload_json FROM source_events WHERE source = ? AND delivery_id = ?").get(source, deliveryId) as { event_type: string; payload_json: string } | null;
     return row ? { eventType: row.event_type, payload: JSON.parse(row.payload_json) as unknown } : null;
+  }
+
+  /** Conveyor's stored copy of GitHub reads: what the read cache keeps across restarts. */
+  githubMirror(): GitHubMirrorStorage {
+    const database = this.#database;
+    return {
+      get(key) {
+        const row = database.query("SELECT kind, version, data, updated_at FROM github_mirror WHERE key = ?").get(key) as { kind: string; version: number; data: string; updated_at: string } | null;
+        return row ? { kind: row.kind, version: row.version, value: JSON.parse(row.data) as unknown, at: Date.parse(row.updated_at) } : null;
+      },
+      set(key, entry) {
+        database.query(`INSERT INTO github_mirror(key, kind, version, data, updated_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET kind = excluded.kind, version = excluded.version, data = excluded.data, updated_at = excluded.updated_at`)
+          .run(key, entry.kind, entry.version, JSON.stringify(entry.value), new Date(entry.at).toISOString());
+      },
+      delete(key) {
+        database.query("DELETE FROM github_mirror WHERE key = ?").run(key);
+      },
+      keys(prefix) {
+        // Keys are compared on their first characters: the primary key index serves the range.
+        const rows = database.query("SELECT key FROM github_mirror WHERE key >= ? AND key < ?").all(prefix, `${prefix}\uffff`) as Array<{ key: string }>;
+        return rows.map((row) => row.key);
+      },
+    };
   }
 
   /** Whether a webhook delivery with this id was stored. */

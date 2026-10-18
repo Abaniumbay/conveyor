@@ -217,33 +217,46 @@ settings:
 
 ### How Conveyor reads GitHub
 
-GitHub is the source of truth; Conveyor keeps a copy and does not read again what it already knows.
-For a repository whose webhook Conveyor manages (`autoConfigureWebhook` with a `web.publicUrl`):
+Conveyor keeps a copy of what it reads from GitHub in its database. Every read is answered from the
+copy; only an item it does not hold, or one older than its lifetime, is read from GitHub. GitHub
+stays the source of truth: the copy saves requests and is never trusted past its lifetime.
 
-- **An item entering a stage** reads its issue once. Who enrolled it and who wrote its text are read
-  again only when GitHub reports the issue changed since the last decision (its `updated_at`).
-- **Deliveries update the copy.** An issue or comment delivery carries the whole issue and names who
-  made the change; Conveyor applies it with no read. A delivery older than the stored issue changes
-  nothing. Transfers and deletions are still read.
-- **CI is decided from deliveries.** Check-run deliveries report each check of a commit. When the
-  latest run of every check has finished, green or red, the CI gate decides with no read; only a
-  failure's logs are read, for the implementer. While a check still runs, an evaluation reads the
-  commit, so a lost delivery costs a read, never a wait that does not end. Branch protection on the
-  base branch is what keeps a check whose delivery was lost from making a merge unsafe. The settle
-  window for late-registering checks is 30 seconds by default (`ci.passed` `settleSeconds`).
-- **A task that waits** for something GitHub reports by webhook (CI finishing, a new pull request
-  head, a blocker closing) names those events and sleeps until one arrives; it then runs again
-  within seconds, reusing the pull request's last read state unless a delivery about it arrived. When
-  no event comes it looks again after its `settings.events.fallback`, reading fresh. Waits that
-  GitHub announces no event for, such as a pull request's mergeability being computed, keep their
-  `wait.poll` interval.
-- **No periodic reading.** The periodic tick does not read the repository.
-- **At start** Conveyor reads only the issues changed since the newest change it stored, and
-  sub-issues and blockers only for those; then it asks GitHub to redeliver what it missed while it
-  was stopped and pings the webhook.
+- **Deliveries keep the copy current.** An issue, comment or pull request delivery carries the whole
+  object and replaces the held one, unless the copy already holds a newer state of it. A check-run
+  delivery updates the commit's check runs. A review, review comment or thread, relationship or
+  `member` (collaborator) delivery drops what it changed, so it is read when next needed.
+- **Conveyor's own writes keep it current too.** An issue or pull request edit stores the object
+  GitHub returns, a label change keeps the returned labels, and any other write drops what it
+  changed.
+- **A restart reads nothing the copy holds.** At start Conveyor asks GitHub to redeliver what it
+  missed while stopped, and lists the issues changed since the newest change it stored.
+- **The merge decides mergeability.** Conveyor does not wait for GitHub to compute whether a change
+  is mergeable: it merges, and a refusal is routed as before (a conflict returns the change to
+  implementation). A refusal while GitHub is still computing is retried, not treated as a conflict.
+  Branch protection on the base branch is what enforces the checks and reviews a repository
+  requires.
+- **Waits** for something GitHub reports by webhook (CI finishing, a new pull request head, a blocker
+  closing) name those events and run again within seconds of one. When none comes they look again
+  after their `settings.events.fallback`, from the copy.
+- **Nothing is read periodically.** A repository without a managed webhook (polling) is still read in
+  full every `settings.reconcileInterval`, and its waits poll at their `wait.poll`.
 
-A repository without a managed webhook (polling) is read in full every `settings.reconcileInterval`,
-and its waits poll at their `wait.poll`.
+How long each kind of data is used before it is read again:
+
+```yaml
+settings:
+  githubCache:
+    issue: 1h               # an issue, its events, comments, sub-issues and blockers
+    change: 1h              # a pull request, its reviews and review threads
+    permission: 1h          # a person's permission on a repository
+    runningChecks: 15m      # a commit's check runs while one still runs
+    finishedChecks: unlimited  # a commit whose check runs all finished (a re-run arrives by delivery)
+    other: 1h               # anything else, such as workflow files
+```
+
+Each stored item records its kind, the format version Conveyor wrote it in and when it was read.
+An item of another format version (after an upgrade that changes what is stored) is read again.
+**Sync now** on a repository's page drops the repository's copy and reads it afresh.
 
 `settings.events.reconcileInterval` and `settings.events.fullReconcileInterval` are deprecated: they
 are accepted with a warning and have no effect.
