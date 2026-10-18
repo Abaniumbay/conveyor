@@ -931,16 +931,18 @@ describe("createWebHandler", () => {
     expect(await events.text()).toContain('"text":"Done"');
   });
 
-  test("keeps the dashboard event stream alive with ping comments at least every five seconds", async () => {
-    const { handler } = setup();
+  test("sends EventSource-observable keep-alives at least every five seconds when status reads fail", async () => {
+    const { handler } = setup({
+      getSystemStatus: async () => { throw new Error("temporary statfs failure"); },
+    });
     const { cookie } = await login(handler);
     const updates = await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }));
     const reader = updates.body!.getReader();
     const decoder = new TextDecoder();
     let streamed = "";
 
-    const readThroughTwoPings = async () => {
-      while ((streamed.match(/: ping\n\n/g) ?? []).length < 2) {
+    const readThroughTwoKeepAlives = async () => {
+      while ((streamed.match(/event: keep-alive\ndata: \{\}\n\n/g) ?? []).length < 2) {
         const next = await reader.read();
         if (next.done) throw new Error("dashboard event stream closed");
         streamed += decoder.decode(next.value);
@@ -948,7 +950,7 @@ describe("createWebHandler", () => {
     };
 
     await Promise.race([
-      readThroughTwoPings(),
+      readThroughTwoKeepAlives(),
       Bun.sleep(5_500).then(() => { throw new Error("dashboard heartbeat took longer than five seconds"); }),
     ]);
     await reader.cancel();
@@ -1542,7 +1544,7 @@ describe("live dashboard stream", () => {
     const { handler, emit } = setup();
     const { cookie } = await login(handler);
     const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
-    await readUntil(reader, "retry: 5000");
+    await readUntil(reader, "retry: 1000");
     emit({ seq: 7, type: "message.posted", repositoryId: "repo", issueId: "github:owner/repo#1", correlationId: "c-1" });
     const streamed = await readUntil(reader, "event: conveyor");
     expect(streamed).toContain(`id: 7\nevent: conveyor\ndata: {"seq":7,"type":"message.posted","repositoryId":"repo","issueId":"github:owner/repo#1","correlationId":"c-1"}`);
@@ -1569,7 +1571,7 @@ describe("live dashboard stream", () => {
     const { handler, streamListeners } = setup();
     const { cookie } = await login(handler);
     const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
-    await readUntil(reader, "retry: 5000");
+    await readUntil(reader, "retry: 1000");
     expect(streamListeners.size).toBe(1);
     await reader.cancel();
     expect(streamListeners.size).toBe(0);

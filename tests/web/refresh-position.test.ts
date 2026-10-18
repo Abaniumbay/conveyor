@@ -277,6 +277,106 @@ afterEach(async () => {
 });
 
 describe("dashboard live refresh position", () => {
+  test("restores a hidden dropped stream and receives a later update without reloading", async () => {
+    let revision = "reconnect-1";
+    let title = "Before reconnect";
+    const server = startDashboard({
+      dashboard: () => dashboard(revision, [issue("target", 20, title)]),
+      revision: () => revision,
+      delayMs: () => 0,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
+      await page.addInitScript(() => {
+        const NativeEventSource = window.EventSource;
+        const sources: EventSource[] = [];
+        class TrackedEventSource extends NativeEventSource {
+          constructor(url: string | URL, init?: EventSourceInit) {
+            super(url, init);
+            if (new URL(String(url), location.href).pathname === "/events/dashboard") sources.push(this);
+          }
+        }
+        Object.defineProperty(window, "EventSource", { configurable: true, writable: true, value: TrackedEventSource });
+        (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources = sources;
+      });
+      await signIn(page, server.port);
+      await page.waitForFunction(() => {
+        const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
+        return sources.length === 1 && document.querySelector("[data-connection-state]")?.textContent === "Connected";
+      });
+
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+        const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
+        sources.at(-1)?.close();
+      });
+      await Bun.sleep(100);
+      title = "Missed while hidden";
+      revision = "reconnect-2";
+      await server.published();
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForFunction(() => {
+        const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
+        return sources.length === 2
+          && document.querySelector("[data-connection-state]")?.textContent === "Connected"
+          && document.querySelector('article.issue[data-issue-id="target"]')?.textContent?.includes("Missed while hidden");
+      });
+
+      title = "After reconnect";
+      revision = "reconnect-3";
+      await server.published();
+      await page.waitForFunction(() => document.querySelector('article.issue[data-issue-id="target"]')?.textContent?.includes("After reconnect"));
+      expect(await page.evaluate(() => performance.getEntriesByType("navigation").length)).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("shows a sign-in link and stops reconnecting when the dashboard session expires", async () => {
+    const server = startDashboard({ dashboard: () => dashboard("expired-session", []), revision: () => "expired-session", delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.addInitScript(() => {
+        const NativeEventSource = window.EventSource;
+        const sources: EventSource[] = [];
+        class TrackedEventSource extends NativeEventSource {
+          constructor(url: string | URL, init?: EventSourceInit) {
+            super(url, init);
+            if (new URL(String(url), location.href).pathname === "/events/dashboard") sources.push(this);
+          }
+        }
+        Object.defineProperty(window, "EventSource", { configurable: true, writable: true, value: TrackedEventSource });
+        (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources = sources;
+      });
+      await signIn(page, server.port);
+      await page.waitForFunction(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length === 1);
+
+      await page.context().clearCookies();
+      await page.evaluate(() => {
+        const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
+        sources.at(-1)?.close();
+        window.dispatchEvent(new Event("focus"));
+      });
+      await page.waitForFunction(() => {
+        const state = document.querySelector("[data-connection-state]");
+        const signIn = document.querySelector<HTMLAnchorElement>("[data-session-sign-in]");
+        return state?.textContent === "Session ended" && !signIn?.hidden && signIn?.getAttribute("href") === "/login?returnTo=%2Fboard";
+      });
+      const sourceCount = await page.evaluate(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length);
+      await page.waitForTimeout(1_200);
+      expect(await page.evaluate(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length)).toBe(sourceCount);
+      await Promise.all([page.waitForURL("**/login?returnTo=%2Fboard"), page.locator("[data-session-sign-in]").click()]);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("keeps Recent usable at phone width while filtering, expanding a reason, and paging", async () => {
     const server = startDashboard({ dashboard: recentDashboard, revision: () => "recent-1", delayMs: () => 0 });
     try {

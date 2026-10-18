@@ -1718,7 +1718,7 @@ function Page({ model }: { model: DashboardViewModel }) {
             <header class="dashboard-header">
               <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
               <details class="server-status" data-server-status>
-                <summary aria-label="Connection state: Connecting"><span class="server-dot" aria-hidden="true" /><strong class="connection-state" data-connection-state>Connecting</strong><span class="server-storage-warning" data-storage-warning hidden><span aria-hidden="true">!</span><span class="sr-only">Storage pressure warning</span></span></summary>
+                <summary aria-label="Connection state: Connecting"><span class="server-dot" aria-hidden="true" /><strong class="connection-state" data-connection-state>Connecting</strong><a data-session-sign-in hidden>Sign in again</a><span class="server-storage-warning" data-storage-warning hidden><span aria-hidden="true">!</span><span class="sr-only">Storage pressure warning</span></span></summary>
               <div class="header-popover server-popover">
                 <h2>System</h2>
                 <p data-server-metrics>Waiting for server status…</p>

@@ -592,6 +592,8 @@ describe("renderDashboard", () => {
     expect(html).toContain(`<span class="total-usage header-desktop-control" title="${totalUsage}">${totalUsage}</span>`);
     expect(html).toContain('<a href="/board">Conveyor</a>');
     expect(html).toMatch(/data-connection-state(?:="true")?>Connecting/);
+    expect(html).toContain('data-session-sign-in');
+    expect(html).toContain('>Sign in again</a>');
     expect(html).toContain('1 of 4</strong> runners');
     expect(html).toContain('aria-label="Harness usage remaining"');
     expect(html).toMatch(/data-theme-label(?:="true")?>System/);
