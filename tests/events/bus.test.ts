@@ -22,6 +22,20 @@ describe("EventBus", () => {
     expect(order).toEqual(["first", "second"]);
   });
 
+  test("runs later synchronous subscribers before queued work from an earlier one", async () => {
+    const bus = new EventBus();
+    const order: string[] = [];
+    bus.subscribe("item.offboarded", "first", () => {
+      order.push("first");
+      queueMicrotask(() => { order.push("queued"); });
+    });
+    bus.subscribe("item.offboarded", "second", () => { order.push("second"); });
+
+    await bus.dispatch(event("item.offboarded"));
+
+    expect(order).toEqual(["first", "second", "queued"]);
+  });
+
   test("a failing subscriber is logged and the later ones still run", async () => {
     const records: LogRecord[] = [];
     log.configure({ sinks: [{ write: (record: LogRecord) => { records.push(record); } }] });

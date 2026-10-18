@@ -158,7 +158,8 @@ export class EventLog {
           for (let batch = this.read({ afterSeq: this.#published }); batch.length > 0; batch = this.read({ afterSeq: this.#published })) {
             for (const event of batch) {
               this.#published = event.seq;
-              await bus.dispatch(event);
+              const dispatched = bus.dispatch(event);
+              if (dispatched) await dispatched;
             }
           }
         } while (this.#again);
