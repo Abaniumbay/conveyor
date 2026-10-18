@@ -227,7 +227,8 @@ test("renders the stage badge and source link once in every item-details header"
 
   for (const html of [dialog, direct]) {
     expect(html).toContain('data-details-stage-badge');
-    expect(html).toContain('aria-label="Stage: Review"');
+    expect(html).toContain('<span class="sr-only">Stage: </span>Review');
+    expect(html).not.toContain('aria-label="Stage: Review"');
     expect(html).toContain('class="details-stage-icon"');
     expect(html).toContain('🔍');
     expect(html).toContain('href="https://github.com/sample/repo/issues/41?x=1&amp;y=2" target="_blank" rel="noopener noreferrer"');
@@ -236,11 +237,13 @@ test("renders the stage badge and source link once in every item-details header"
   }
 
   const noIcon = renderIssueDetails({ ...issue, stageBadge: { name: "Deploy", icon: null, offboarded: false } });
-  expect(noIcon).toContain('aria-label="Stage: Deploy"');
+  expect(noIcon).toContain('<span class="sr-only">Stage: </span>Deploy');
+  expect(noIcon).not.toContain('aria-label="Stage: Deploy"');
   expect(noIcon).not.toContain('details-stage-icon');
 
   const offboarded = renderIssueDetails({ ...issue, historyOnly: true, stageBadge: { name: "Build", icon: "🛠️", offboarded: true } });
-  expect(offboarded).toContain('aria-label="Stage: Build (offboarded)"');
+  expect(offboarded).toContain('<span class="sr-only">Stage: </span>Build (offboarded)');
+  expect(offboarded).not.toContain('aria-label="Stage: Build (offboarded)"');
   expect(offboarded).toContain('offboarded');
   expect(offboarded).toContain('aria-hidden="true"');
 });

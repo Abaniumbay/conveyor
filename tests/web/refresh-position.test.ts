@@ -687,12 +687,12 @@ describe("dashboard live refresh position", () => {
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
       await request;
       await page.waitForURL("**/issues/sample/20");
-      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.getAttribute("aria-label") === "Stage: Build");
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Build"));
       await page.getByRole("tab", { name: "Conversation" }).click();
 
       target = { ...target, stageBadge: { name: "Review", icon: "🔍", offboarded: false } };
       revision = "stage-badge-2";
-      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.getAttribute("aria-label") === "Stage: Review");
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
 
       expect(await page.getByRole("tab", { name: "Conversation" }).getAttribute("aria-selected")).toBe("true");
       expect(await page.evaluate(() => {
@@ -701,12 +701,12 @@ describe("dashboard live refresh position", () => {
       })).toBe(true);
 
       await page.reload({ waitUntil: "commit" });
-      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.getAttribute("aria-label") === "Stage: Review");
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
 
       const darkPage = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "dark" });
       await signIn(darkPage, server.port);
       await darkPage.locator('article.issue[data-issue-id="target"] .card-open').click();
-      await darkPage.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.getAttribute("aria-label") === "Stage: Review");
+      await darkPage.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
       expect(await darkPage.evaluate(() => {
         const dialog = document.querySelector<HTMLElement>("dialog.issue-details[open]");
         return document.documentElement.scrollWidth <= window.innerWidth && (dialog === null || dialog.scrollWidth <= dialog.clientWidth);
