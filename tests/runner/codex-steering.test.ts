@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -77,10 +77,15 @@ describe("runCodexSteering", () => {
     const workspace = path.join(directory, "workspace");
     const otherHome = path.join(directory, "another-conveyor-home");
     const database = path.join(otherHome, "conveyor.sqlite");
-    const executable = path.join(directory, "fake-codex");
+    const runtime = path.join(directory, "codex-runtime");
+    const executable = path.join(runtime, "fake-codex");
+    const codexHome = path.join(directory, "codex-home");
     await mkdir(workspace);
     await mkdir(otherHome);
+    await mkdir(runtime);
+    await mkdir(codexHome);
     await writeFile(database, "database that must not be readable");
+    await writeFile(path.join(codexHome, "auth.json"), "credential");
     await writeFile(executable, `#!/bin/sh
       test -z "$(ls -A \"$TMPDIR\")" || exit 11
       if cat "$HOST_DATABASE" >/dev/null 2>&1; then exit 12; fi
@@ -98,10 +103,41 @@ describe("runCodexSteering", () => {
       sandbox: "read-only",
       automaticApprovals: false,
       filesystem: "scratch",
-      env: { HOST_DATABASE: database },
+      env: { HOST_DATABASE: database, CODEX_HOME: codexHome },
     });
 
     expect(result.summary).toBe("confined");
     expect(await Bun.file(database).text()).toBe("database that must not be readable");
+  });
+
+  test("stops before spawning Codex when confinement is unavailable", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-steering-confined-failure-"));
+    temporaryDirectories.push(directory);
+    const workspace = path.join(directory, "workspace");
+    const executable = path.join(directory, "fake-codex");
+    const marker = path.join(directory, "spawned");
+    const codexHome = path.join(directory, "codex-home");
+    await Promise.all([mkdir(workspace), mkdir(codexHome)]);
+    await writeFile(path.join(codexHome, "auth.json"), "credential");
+    await writeFile(executable, `#!/bin/sh
+      printf spawned > "$SPAWN_MARKER"
+    `);
+    await chmod(executable, 0o755);
+    const scratchBefore = new Set((await readdir(tmpdir())).filter((entry) => entry.startsWith("conveyor-run-")));
+
+    await expect(runCodexSteering({
+      command: executable,
+      workspace,
+      artifactsDirectory: path.join(directory, "artifacts", "run-1"),
+      prompt: "Inspect the board",
+      sandbox: "read-only",
+      automaticApprovals: false,
+      filesystem: "scratch",
+      env: { PATH: "", CODEX_HOME: codexHome, SPAWN_MARKER: marker },
+    })).rejects.toThrow("requires bubblewrap");
+
+    expect(existsSync(marker)).toBe(false);
+    const scratchAfter = await readdir(tmpdir());
+    expect(scratchAfter.filter((entry) => entry.startsWith("conveyor-run-") && !scratchBefore.has(entry))).toEqual([]);
   });
 });

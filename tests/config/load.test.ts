@@ -236,6 +236,8 @@ repositories:
       path.join(directory, "conveyor.yml"),
       `
 settings: {}
+web:
+  steering: { agent: worker, workspace: /tmp/steering }
 labels:
   stageTemplate: "conveyor:{stage}"
   states: { done: done }
@@ -331,6 +333,19 @@ repositories:
     });
     test("a relative writable root is a config error", async () => {
       await expect(load("    writableRoots: [cache]")).rejects.toThrow("writableRoots");
+    });
+
+    test("confined access is rejected for pipeline stages", async () => {
+      const steeringDirectory = await temporaryDirectory();
+      await writeFile(
+        path.join(steeringDirectory, "conveyor.yml"),
+        configWith("    workspaceAccess: confined").replace(
+          "settings: {}",
+          "settings: {}\nweb:\n  steering: { agent: worker, workspace: /tmp/steering }",
+        ),
+      );
+      await expect(loadConfig(steeringDirectory)).rejects.toThrow(/confined agent "worker", which cannot run pipeline stages/);
+
     });
 
     test("tasks is the exact grant, in camelCase", async () => {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -41,6 +41,8 @@ export interface ConfinedCommandOptions {
   scratch: string;
   /** Individual files the command needs, such as a run-scoped MCP context. */
   readablePaths?: readonly string[];
+  /** Executable installation directories the command needs to invoke its scoped MCP bridge. */
+  runtimePaths?: readonly string[];
 }
 
 /** Runs locally with a private /tmp while preserving ordinary host networking. */
@@ -57,16 +59,15 @@ export function privateTmpCommand(options: { argv: readonly string[]; env: Recor
  * This is deliberately separate from the ordinary isolation wrappers: it is for the board-only
  * Operator, whose process must not inherit the service's workspace or home mounts.
  */
-export function confinedCommand(options: ConfinedCommandOptions): SandboxedCommand {
+/** Builds the mount namespace arguments before requiring the bubblewrap executable. */
+export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedCommand {
   const command = options.argv[0];
   if (!command) throw new Error("cannot confine an empty command");
-  const bubblewrap = Bun.which("bwrap");
-  if (!bubblewrap) throw new Error("Operator filesystem confinement requires bubblewrap");
   const scratch = resolveFilesystemPath(options.scratch);
   if (!existsSync(scratch)) throw new Error(`Operator scratch directory does not exist: ${scratch}`);
   const executable = path.isAbsolute(command)
     ? resolveFilesystemPath(command)
-    : Bun.which(command);
+    : findOnPath(command, options.env.PATH);
   if (!executable || !existsSync(executable)) throw new Error(`cannot confine a command that is not installed: ${command}`);
 
   const mounts = [
@@ -88,30 +89,73 @@ export function confinedCommand(options: ConfinedCommandOptions): SandboxedComma
     directories.add(directory);
   };
   const addFile = (file: string) => {
+    const target = path.resolve(file);
     const resolved = resolveFilesystemPath(file);
-    if (!existsSync(resolved) || resolved === scratch || resolved.startsWith(`${scratch}/`) || resolved.startsWith("/usr/")) return;
-    addDirectory(path.dirname(resolved));
-    mounts.push("--ro-bind", resolved, resolved);
+    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
+    addDirectory(path.dirname(target));
+    mounts.push("--ro-bind", resolved, target);
+  };
+  const addRuntimePath = (runtimePath: string) => {
+    const target = path.resolve(runtimePath);
+    const resolved = resolveFilesystemPath(runtimePath);
+    if (!existsSync(resolved) || target === scratch || target.startsWith(`${scratch}/`) || target.startsWith("/usr/")) return;
+    const isDirectory = statSync(resolved).isDirectory();
+    const sourceDirectory = isDirectory ? resolved : path.dirname(resolved);
+    const targetDirectory = isDirectory ? target : path.dirname(target);
+    if (directories.has(targetDirectory)) return;
+    addDirectory(path.dirname(targetDirectory));
+    mounts.push("--ro-bind", sourceDirectory, targetDirectory);
+    directories.add(targetDirectory);
   };
   // Bubblewrap creates bind targets only when their parents already exist in the new namespace.
   addDirectory(path.dirname(scratch));
   mounts.push("--bind", scratch, scratch);
   directories.add(scratch);
-  addFile(executable);
+  // Codex and the MCP bridge can use adjacent runtime files, but no parent directory above
+  // their resolved installation directory is made visible.
+  addRuntimePath(executable);
+  for (const runtimePath of options.runtimePaths ?? []) {
+    if (path.isAbsolute(runtimePath)) addRuntimePath(runtimePath);
+  }
   for (const file of options.readablePaths ?? []) {
     if (path.isAbsolute(file)) addFile(file);
   }
+  const codexHome = options.env.CODEX_HOME;
+  if (!codexHome) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  const credential = path.join(resolveFilesystemPath(codexHome), "auth.json");
+  if (!existsSync(credential)) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  addFile(credential);
   if (existsSync("/etc/ssl/certs")) {
     addDirectory("/etc");
     mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
   }
+  for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) {
+    if (existsSync(file)) addFile(file);
+  }
   const env: Record<string, string> = { ...options.env, HOME: scratch, TMPDIR: scratch };
-  delete env.CODEX_HOME;
   return {
-    argv: [bubblewrap, "--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
+    argv: ["--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
     env: resolvePathEnvironment(env),
     dataEnv: {},
   };
+}
+
+/** Starts the fail-closed mount namespace for the board-only Operator. */
+export function confinedCommand(options: ConfinedCommandOptions): SandboxedCommand {
+  const plan = confinedCommandPlan(options);
+  const bubblewrap = findOnPath("bwrap", options.env.PATH);
+  if (!bubblewrap) throw new Error("Operator filesystem confinement requires bubblewrap");
+  return { ...plan, argv: [bubblewrap, ...plan.argv] };
+}
+
+function findOnPath(command: string, pathValue: string | undefined): string | undefined {
+  if (path.isAbsolute(command)) return resolveFilesystemPath(command);
+  for (const directory of (pathValue ?? process.env.PATH ?? "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return resolveFilesystemPath(candidate);
+  }
+  return undefined;
 }
 
 

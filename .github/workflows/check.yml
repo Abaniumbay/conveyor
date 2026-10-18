@@ -30,43 +30,17 @@ jobs:
           git config --global user.email "ci@conveyor.invalid"
           git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
-      - name: Enable and probe Bubblewrap sandbox coverage
-        id: bwrap
+      - name: Install and verify Bubblewrap sandbox coverage
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          if reason="$(bwrap --unshare-net --dev-bind / / true 2>&1)"; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Sandbox coverage::Bubblewrap is available; bwrap-dependent tests will execute."
-          else
-            {
-              echo "available=false"
-              echo "reason<<EOF"
-              echo "$reason"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-            echo "::warning title=Sandbox coverage skipped::Bubblewrap is unavailable; bwrap-dependent tests will be skipped. Probe reason: $reason"
-          fi
+          bwrap --unshare-net --dev-bind / / true
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
       - run: bun run check
-      - name: Report skipped Bubblewrap tests
-        if: always() && steps.bwrap.outputs.available != 'true'
-        shell: bash
-        env:
-          BWRAP_REASON: ${{ steps.bwrap.outputs.reason }}
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/bwrap-tests.xml"
-          set +e
-          bun test --reporter=junit --reporter-outfile "$report" tests/isolation/sandbox.test.ts tests/runner/codex-egress.test.ts tests/runner/claude-code.test.ts
-          status=$?
-          set -e
-          skipped="$(grep -o '<skipped' "$report" | wc -l || true)"
-          echo "::warning title=Sandbox coverage skipped::$skipped bwrap-dependent tests were skipped. Probe reason: ${BWRAP_REASON//$'\n'/ }"
-          exit "$status"
-
   package:
     name: Package and smoke test
     runs-on: ubuntu-latest

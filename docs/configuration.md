@@ -181,9 +181,13 @@ without recording a successful answer prematurely.
 
 The default Operator runs in `access: confined`. Owner-started and scheduled
 Operator runs receive a fresh, empty scratch directory instead of a Conveyor
-workspace, home, configuration, or database. The scratch directory remains
-writable for temporary files during that run. If this filesystem boundary
-cannot be established, Conveyor stops the run before it starts the agent.
+workspace, home, configuration, or database. The mount namespace additionally
+exposes only the resolved Codex and scoped MCP runtime directories, run-scoped
+MCP context, resolver and CA files, and the single read-only
+`CODEX_HOME/auth.json` record needed to authenticate Codex; `HOME` remains the
+scratch directory. The scratch directory remains writable for temporary files
+during that run. If this filesystem boundary cannot be established, Conveyor
+stops the run before it starts the agent.
 
 Use `operator.findItem` or `operator.getItemHistory` with `#318`, `318`,
 `conveyor 318`, `conveyor318`, `conveyor#318`, `owner/my-app#318`, or the
