@@ -466,8 +466,8 @@ describe("renderDashboard", () => {
   test("renders visible approved and unapproved criterion states", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
-    expect(html).toContain("☐ Waiting");
-    expect(html).toContain("☑ Approved");
+    expect(html).toContain('aria-hidden="true">☐</span> Waiting');
+    expect(html).toContain('aria-hidden="true">☑☑</span> Approved');
     expect(html).toContain("Keyboard usable");
   });
 
@@ -1495,7 +1495,7 @@ describe("renderDashboard", () => {
   });
 });
 
-test("renders expandable criterion evidence as text with SHA-correct source links", () => {
+test("renders one accessible marker for each criterion evidence state", () => {
   const html = renderIssueDetails({
     ...parent,
     acceptanceCriteria: [
@@ -1507,12 +1507,23 @@ test("renders expandable criterion evidence as text with SHA-correct source link
         ],
       },
       { id: "AC-2", text: "No evidence", approved: false, manual: false, tests: [] },
-      { id: "AC-3", text: "Production validation", approved: false, manual: true, tests: [] },
+      {
+        id: "AC-3", text: "Production validation", approved: true, manual: true,
+        tests: [{ name: "manual prerequisite", file: "tests/manual.test.ts", line: null, description: null, sourceUrl: null }],
+      },
+      { id: "AC-4", text: "Approved without recorded evidence", approved: true, manual: false, tests: [] },
     ],
   });
 
   expect(html).toContain('<details class="criterion-evidence">');
-  expect(html).toContain("☑ Approved");
+  expect(html).toContain('class="criterion-state criterion-state--approved" aria-label="Approved"');
+  expect(html).toContain('aria-hidden="true">☑☑</span> Approved');
+  expect(html).toContain('class="criterion-state criterion-state--waiting" aria-label="Waiting"');
+  expect(html).toContain('aria-hidden="true">☐</span> Waiting');
+  expect(html).toContain('class="criterion-state criterion-state--manual" aria-label="Manual"');
+  expect(html).toContain('aria-hidden="true">◌</span> Manual');
+  expect(html).toContain("Marker key: the first check is an implementer-linked test; the second is reviewer approval.");
+  expect(html.match(/class="criterion-state /g)?.length).toBe(4);
   expect(html).toContain("2 linked tests");
   expect(html).toContain('href="https://example.com/owner/repo/blob/verified-head/tests/web/render.test.ts#L47"');
   expect(html).toContain('href="https://example.com/owner/repo/blob/recorded-head/tests/web/no-line.test.ts"');
@@ -1521,8 +1532,29 @@ test("renders expandable criterion evidence as text with SHA-correct source link
   expect(html).toContain("Escapes &lt;stored> text");
   expect(html).toContain("&lt;criterion>");
   expect(html).toContain("renders &lt;safely>");
-  expect(html).toContain("no tests linked");
+  expect(html).toContain("No test linked");
   expect(html).toContain("manual");
   expect(html).not.toContain("<criterion>");
   expect(html).not.toContain("<stored>");
+});
+
+test("shows tests linked when evidence exists without current-head approval", () => {
+  const html = renderIssueDetails({
+    ...parent,
+    acceptanceCriteria: [{
+      id: "AC-1", text: "Evidence is recorded", approved: false, manual: false,
+      tests: [{ name: "records evidence", file: "tests/web/render.test.ts", line: 1, description: null, sourceUrl: null }],
+    }],
+  });
+
+  expect(html).toContain('class="criterion-state criterion-state--tests-linked" aria-label="Tests linked"');
+  expect(html).toContain('aria-hidden="true">☑</span> Tests linked');
+  expect(html).not.toContain('aria-hidden="true">☑☑</span> Approved');
+});
+
+test("styles criterion states with theme variables and removes the generic list marker", () => {
+  expect(dashboardCss).toContain(".criterion-list>li::before{content:none}");
+  expect(dashboardCss).toContain(".criterion-state--waiting,.criterion-state--manual{color:var(--steel)}");
+  expect(dashboardCss).toContain(".criterion-state--tests-linked{color:var(--wait-text)}");
+  expect(dashboardCss).toContain(".criterion-state--approved{color:var(--run-text)}");
 });

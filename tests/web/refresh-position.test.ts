@@ -735,8 +735,12 @@ describe("dashboard live refresh position", () => {
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
       await request;
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
-      expect(await page.locator("[data-criterion-evidence]").textContent()).toContain("no tests linked");
-      expect(await page.locator("[data-criterion-evidence]").textContent()).toContain("manual");
+      const evidence = page.locator("[data-criterion-evidence]");
+      expect(await evidence.textContent()).toContain("no tests linked");
+      expect(await evidence.textContent()).toContain("manual");
+      expect(await evidence.getByLabel("Waiting").count()).toBe(1);
+      expect(await evidence.getByLabel("Manual").count()).toBe(1);
+      expect(await evidence.locator(".criterion-list > li").evaluateAll((items) => items.every((item) => getComputedStyle(item, "::before").content === "none"))).toBe(true);
 
       const refreshed = issue("target", 20, "Target item");
       refreshed.acceptanceCriteria = [
@@ -754,8 +758,9 @@ describe("dashboard live refresh position", () => {
       currentDashboard = dashboard(revision, [refreshed]);
       await page.waitForFunction(() => document.querySelector("[data-criterion-evidence]")?.textContent?.includes("refreshes evidence"));
 
-      const evidence = page.locator("[data-criterion-evidence]");
-      expect(await evidence.textContent()).toContain("☑ Approved");
+      expect(await evidence.textContent()).toContain("☑☑ Approved");
+      expect(await evidence.getByLabel("Approved").count()).toBe(1);
+      expect(await evidence.getByLabel("Manual").count()).toBe(1);
       expect(await evidence.locator("a.criterion-test-location").getAttribute("href")).toContain("/blob/verified-head/tests/web/refresh-position.test.ts#L579");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {

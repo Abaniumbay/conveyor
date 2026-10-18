@@ -22,6 +22,13 @@ const DEMO_PASSWORD = "demo-password-12chars";
 const DEMO_TIMEOUT = 30_000;
 const DEMO_TIME = "2026-09-15T12:00:00.000Z";
 const DEMO_FINISHED_TIME = "2026-09-15T12:01:32.000Z";
+const DEMO_CRITERIA_BODY = [
+  "Deterministic demo item used only to regenerate documentation screenshots.",
+  "",
+  "## Acceptance Criteria",
+  "",
+  "- [ ] Linked test evidence is visible. <!-- conveyor:criterion:AC-1 -->",
+].join("\n");
 const OUTPUT_DIRECTORY = path.join("docs", "screenshots");
 const PHONE_OVERFLOW_REPOSITORY = "MobileViewportRegressionContentMustWrapWithoutCreatingADocumentWideHorizontalScrollRange";
 const PHONE_OVERFLOW_ADDRESS = "demo/PhoneWidthAddressMustWrapWithoutCreatingDocumentWideHorizontalOverflow";
@@ -37,7 +44,7 @@ const DEMO_SOURCE_ISSUES = [
     number: 1,
     html_url: "https://github.invalid/demo/dashboard-demo/issues/1",
     title: "Ship a reliable dashboard overview",
-    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    body: DEMO_CRITERIA_BODY,
     state: "open",
     state_reason: null,
     labels: ["conveyor", "conveyor:implementation", "conveyor:no-split"],
@@ -269,7 +276,7 @@ function issue(number: number, title: string, stage: string): IssueProjection {
     sourceNumber: number,
     sourceUrl: `https://github.invalid/demo/dashboard-demo/issues/${number}`,
     title,
-    body: "Deterministic demo item used only to regenerate documentation screenshots.",
+    body: number === 1 ? DEMO_CRITERIA_BODY : "Deterministic demo item used only to regenerate documentation screenshots.",
     sourceState: "open",
     sourceStateReason: null,
     labels: ["conveyor", `conveyor:${stage}`],
@@ -1056,9 +1063,10 @@ async function main(): Promise<void> {
       "16.2K",
       "Runs",
     ]);
-    await capture(page, baseUrl, "item", "/issues/demo/1/conversation", [
+    await capture(page, baseUrl, "item", "/issues/demo/1", [
       "Ship a reliable dashboard overview",
-      "The dashboard overview is implemented",
+      "Acceptance criteria",
+      "Waiting",
     ]);
     await verifyPhoneLayouts(page, baseUrl);
 
