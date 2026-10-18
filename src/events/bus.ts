@@ -21,14 +21,28 @@ export class EventBus {
   }
 
   /** Runs every subscriber of `event` in order; a failing one is logged and the rest still run. */
-  async dispatch(event: StoredEvent): Promise<void> {
-    for (const { type, name, handler } of [...this.#handlers]) {
-      if (type !== "*" && type !== event.type) continue;
-      try {
-        await handler(event);
-      } catch (error) {
-        log.warn("Event subscriber failed", { subscriber: name, event: event.type, seq: event.seq }, error);
+  dispatch(event: StoredEvent): void | Promise<void> {
+    const handlers = [...this.#handlers];
+    const dispatchFrom = (start: number): void | Promise<void> => {
+      for (let index = start; index < handlers.length; index += 1) {
+        const { type, name, handler } = handlers[index]!;
+        if (type !== "*" && type !== event.type) continue;
+        try {
+          const result = handler(event);
+          if (result) {
+            return result.then(
+              () => dispatchFrom(index + 1),
+              (error: unknown) => {
+                log.warn("Event subscriber failed", { subscriber: name, event: event.type, seq: event.seq }, error);
+                return dispatchFrom(index + 1);
+              },
+            );
+          }
+        } catch (error) {
+          log.warn("Event subscriber failed", { subscriber: name, event: event.type, seq: event.seq }, error);
+        }
       }
-    }
+    };
+    return dispatchFrom(0);
   }
 }

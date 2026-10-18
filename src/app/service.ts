@@ -228,7 +228,7 @@ function streamEvent(event: StoredEvent): DashboardStreamEvent {
 // Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
 // person's action makes that can let an item run.
 const SCHEDULING_EVENTS: readonly EventType[] = [
-  "task.woken", "item.requeued", "gate.requirementChanged", "gate.boardApprovalChanged", "command.accepted",
+  "task.woken", "worker.released", "item.requeued", "gate.requirementChanged", "gate.boardApprovalChanged", "command.accepted",
 ];
 /** How far back missed webhook deliveries are redelivered, and at most how many per pass. */
 const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
@@ -1258,17 +1258,12 @@ export class ConveyorService {
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      let rescheduleAfterRelease = false;
-      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal)).then((reschedule) => {
-        rescheduleAfterRelease = reschedule;
-      }).finally(() => {
+      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal)).finally(() => {
         this.#active.delete(issue.id);
+        this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
         if (this.#drain && !active.interrupted) {
           log.info("Stage finished during drain", { ...this.itemFields(issue.id), stage: candidate.stageId });
         }
-        // execute() schedules while this run still occupies the item. A fenced executor must
-        // schedule again after releasing it so a newly ready projection cannot remain idle.
-        if (rescheduleAfterRelease) this.schedule();
       });
     }
     const selectedIds = startedIds;
@@ -1911,9 +1906,9 @@ export class ConveyorService {
     else log.debug("Stage parked", { ...fields, reason: outcome.reason, wakeAt: outcome.wakeAt });
   }
 
-  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<boolean> {
+  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
     const repository = this.config.repositories[issue.repositoryId];
-    if (!repository) return false;
+    if (!repository) return;
     const executor = new IssueExecutor({
       config: this.config,
       store: this.store,
@@ -1940,11 +1935,9 @@ export class ConveyorService {
         signal,
       ),
     });
-    let rescheduleAfterRelease = false;
     try {
       const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
       const outcome = await executor.execute(issue);
-      rescheduleAfterRelease = outcome.kind === "parked" && outcome.reason === "superseded";
       this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
         // A transition can reach the repository pause fence after the stage
@@ -1952,8 +1945,7 @@ export class ConveyorService {
         // retained for resume; do not turn the status-comment write into an
         // infrastructure failure while that repository is paused.
         if (this.store.repositoryPause(issue.repositoryId)) {
-          this.schedule();
-          return false;
+          return;
         }
         // A parked poll changes nothing at the source: no reconcile, just the status line.
         this.restorePendingStatus(issue.repositoryId);
@@ -1963,14 +1955,12 @@ export class ConveyorService {
         await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
         await this.updateStatusComment(issue.id);
       }
-      this.schedule();
     } catch (error) {
-      if (signal.aborted) return false;
+      if (signal.aborted) return;
       await this.handleInfrastructureFailure(issue, error);
-      return false;
+      return;
     }
     this.#infrastructureFailures.delete(issue.id);
-    return rescheduleAfterRelease;
   }
 
   /**

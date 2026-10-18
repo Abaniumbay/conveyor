@@ -62,6 +62,7 @@ export const EVENT_CATALOGUE = {
   "task.failed": define("Execution", "A task failed.", z.object({ executionId: id, taskInstanceId: id }).strict()),
   "item.fenced": define("Execution", "The item's stage epoch moved: work started for the old epoch can no longer change it, and its stage restarts.", z.object({ epoch: z.number().int().positive() }).strict()),
   "task.woken": define("Execution", "A parked task was made due before its wake-up time.", z.object({}).strict()),
+  "worker.released": define("Execution", "A stage worker left the running set; `stageId` identifies the stage it ran.", z.object({ stageId: id }).strict()),
 
   // Runs
   "run.started": define("Runs", "An agent, script or steering run started.", z.object({ runId: id, kind: z.string(), stage: stage }).strict()),
