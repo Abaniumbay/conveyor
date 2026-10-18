@@ -16,7 +16,7 @@ export interface CommandResults {
   "item.postMessage": unknown;
   "question.answer": void;
   "gate.approve": void;
-  "gate.setRequirement": void;
+  "gate.setItemApproval": void;
   "finding.dismiss": void;
   "backlog.reorder": void;
   "backlog.move": void;

@@ -35,6 +35,8 @@ export interface StageExecutorOptions {
   setStatus: (message: string | null) => void | Promise<void>;
   /** Reads the human-approval state after an exit check has passed. */
   manualGate?: ManualGateResolver;
+  /** Reads the item-specific board approval after every configured exit gate has passed. */
+  boardApproval?: BoardApprovalResolver;
   /**
    * How long a task that waits for events sleeps when none comes; null when the repository's
    * webhooks cannot be trusted to deliver them, and the task polls as before.
@@ -56,6 +58,15 @@ export type ManualGateResolver = (input: {
   stageEpoch: number;
   attempt: number;
   configured: boolean;
+}) => ManualGateState;
+
+export const BOARD_APPROVAL_TASK_ID = "board-approval";
+
+export type BoardApprovalResolver = (input: {
+  issueId: string;
+  stageId: string;
+  stageEpoch: number;
+  attempt: number;
 }) => ManualGateState;
 
 export interface ExecuteInput {
@@ -168,6 +179,11 @@ export class StageExecutor {
       });
       if (manual?.required && !manual.approved) return this.#waitForApproval(run, task.id, manual.message);
     }
+    // The board requirement belongs to the stage and is always its final gate.
+    const board = this.#o.boardApproval?.({
+      issueId: run.input.issueId, stageId: run.stage.id, stageEpoch: run.epoch, attempt: run.cursor.attempt,
+    });
+    if (board?.required && !board.approved) return this.#waitForApproval(run, BOARD_APPROVAL_TASK_ID, board.message);
     const at = this.#o.clock().toISOString();
     for (const task of tasks) {
       const definition = this.#o.registry.require(task.task);

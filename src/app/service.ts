@@ -77,7 +77,7 @@ import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
-import type { ManualGateResolver } from "../engine/stage-executor";
+import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver } from "../engine/stage-executor";
 
 /** Code host methods that change a change or its branch; each drops what was read about the repository's changes. */
 const CODE_HOST_WRITES = new Set([
@@ -230,7 +230,7 @@ function streamEvent(event: StoredEvent): DashboardStreamEvent {
 // Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
 // person's action makes that can let an item run.
 const SCHEDULING_EVENTS: readonly EventType[] = [
-  "task.woken", "item.requeued", "gate.requirementChanged", "command.accepted",
+  "task.woken", "item.requeued", "gate.requirementChanged", "gate.boardApprovalChanged", "command.accepted",
 ];
 /** How far back missed webhook deliveries are redelivered, and at most how many per pass. */
 const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
@@ -1322,7 +1322,7 @@ export class ConveyorService {
     commands.handle("item.postMessage", (input, actor) => this.postIssueMessage(input.issueId, input.message, actor.name));
     commands.handle("question.answer", (input, actor) => this.answerQuestion(input.questionId, input.answer, actor.name));
     commands.handle("gate.approve", (input, actor) => this.approveManualGate(input.issueId, input.stageId, input.gateId, account(actor)));
-    commands.handle("gate.setRequirement", (input) => this.setManualGateRequirement(input.issueId, input.stageId, input.gateId, input.required));
+    commands.handle("gate.setItemApproval", (input) => this.setBoardApprovalRequirement(input.issueId, input.stageId, input.required));
     commands.handle("finding.dismiss", (input, actor) => this.dismissFinding(input.issueId, input.findingId, input.reason, actor.name));
     commands.handle("backlog.reorder", (input) => this.reorderBacklog(input.issueId, input.direction));
     commands.handle("backlog.move", (input) => this.moveBacklogIssue(input.issueId, input.beforeIssueId));
@@ -1370,19 +1370,26 @@ export class ConveyorService {
   /** Reactions to committed changes: waking parked items and scheduling. */
   private subscribeToEvents(): void {
     // A parked exit gate re-evaluates as soon as a person changes what it waits on.
-    const wakeParkedGate = (issueId: string | null, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
+    const wakeParkedGate = (issueId: string | null, stageId: string, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
       if (!issueId) return;
       const cursor = this.store.executions().getCursor(issueId);
-      if (cursor?.state !== "pending" || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
+      if (cursor?.state !== "pending" || cursor.stage !== stageId || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
       // An approval belongs to one visit of the gate; a later visit waits for its own.
       if (visit && (cursor.stageEpoch !== visit.stageEpoch || cursor.attempt !== visit.attempt)) return;
       this.wakeParked(issueId);
     };
     this.events.subscribe("gate.approved", "wake the approved gate", (event) =>
-      wakeParkedGate(event.issueId, event.payload.gateId, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
-    this.events.subscribe("gate.requirementChanged", "wake the changed gate", (event) => wakeParkedGate(event.issueId, event.payload.gateId));
+      wakeParkedGate(event.issueId, event.payload.stageId, event.payload.gateId, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
+    this.events.subscribe("gate.requirementChanged", "wake the changed gate", (event) => wakeParkedGate(event.issueId, event.payload.stageId, event.payload.gateId));
+    this.events.subscribe("gate.boardApproved", "wake the approved board gate", (event) =>
+      wakeParkedGate(event.issueId, event.payload.stageId, BOARD_APPROVAL_TASK_ID, { stageEpoch: event.payload.stageEpoch, attempt: event.payload.attempt }));
+    this.events.subscribe("gate.boardApprovalChanged", "wake the changed board gate", (event) =>
+      wakeParkedGate(event.issueId, event.payload.stageId, BOARD_APPROVAL_TASK_ID));
     this.events.subscribe("finding.changed", "wake the review gate", (event) => {
-      if (event.payload.change === "dismissed") wakeParkedGate(event.issueId, null);
+      if (event.payload.change === "dismissed") {
+        const cursor = event.issueId ? this.store.executions().getCursor(event.issueId) : null;
+        if (cursor) wakeParkedGate(event.issueId, cursor.stage, null);
+      }
     });
     for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
     for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {
@@ -1530,8 +1537,8 @@ export class ConveyorService {
       ?? compilePipeline({ config: this.config, repositoryId, registry: createTaskRegistry() });
   }
 
-  /** A selectable gate belongs to a current or later native stage and has an exit-gate task. */
-  private manualGateCandidate(issue: StoredIssue, stageId: string, gateId: string) {
+  /** A board approval belongs to a current or later native stage. */
+  private boardApprovalCandidate(issue: StoredIssue, stageId: string) {
     if (!issue.labels.includes(this.config.labels.enrollment)) throw new Error("issue is not enrolled");
     if (issue.projectedState === "done" || issue.projectedState === "completed") {
       throw new Error("manual approval cannot be changed for a completed item");
@@ -1543,19 +1550,33 @@ export class ConveyorService {
     const stageIndex = plan.stages.findIndex((stage) => stage.id === stageId);
     if (currentIndex < 0 || stageIndex < currentIndex) throw new Error("manual approval can be changed only for a current or future stage");
     const stage = plan.stages[stageIndex];
-    const task = stage?.legacy ? undefined : stage?.exitGate.find((candidate) => candidate.id === gateId);
-    if (!stage || stage.legacy || !task) throw new Error("manual approval is available only for native stage exit gates");
-    return { stageId, gateId, configured: task.manual === true };
+    if (!stage || stage.legacy) throw new Error("board approval is available only for native stages");
+    return stage;
+  }
+
+  /** A configured manual gate is selected by its native exit-gate task. */
+  private manualGateCandidate(issue: StoredIssue, stageId: string, gateId: string) {
+    const stage = this.boardApprovalCandidate(issue, stageId);
+    const task = stage.exitGate.find((candidate) => candidate.id === gateId);
+    if (!task?.manual) throw new Error("manual approval is available only for configured manual gates");
+    return { stageId, gateId, configured: true };
   }
 
   private readonly manualGateStatus: ManualGateResolver = ({ issueId, stageId, gateId, stageEpoch, attempt, configured }) => {
-    const itemSpecific = this.#manualGateApprovals.hasItemRequirement(issueId, stageId, gateId);
     const approval = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, attempt);
-    const source = configured && itemSpecific ? "configured and item-specific" : configured ? "configured" : "item-specific";
     return {
-      required: configured || itemSpecific,
+      required: configured,
       approved: approval !== null,
-      message: `Waiting for board approval for ${source} manual gate \"${gateId}\".`,
+      message: `Waiting for configured manual gate \"${gateId}\".`,
+    };
+  };
+
+  private readonly boardApprovalStatus: BoardApprovalResolver = ({ issueId, stageId, stageEpoch, attempt }) => {
+    const approval = this.#manualGateApprovals.getBoardApproval(issueId, stageId, stageEpoch, attempt);
+    return {
+      required: this.#manualGateApprovals.hasBoardApprovalRequirement(issueId, stageId),
+      approved: approval !== null,
+      message: "Waiting for board approval",
     };
   };
 
@@ -1567,39 +1588,54 @@ export class ConveyorService {
       if (current < 0) return [];
       const cursor = this.store.executions().getCursor(issue.id);
       const epoch = this.store.executions().stageEpoch(issue.id);
-      return plan.stages.slice(current).flatMap((stage) => stage.legacy ? [] : stage.exitGate.map((task) => {
-        const approval = cursor?.stage === stage.id && cursor.stageEpoch === epoch
-          ? this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch, cursor.attempt)
+      return plan.stages.slice(current).flatMap((stage) => {
+        if (stage.legacy) return [];
+        const visit = cursor?.stage === stage.id && cursor.stageEpoch === epoch ? cursor : null;
+        const boardApproval = visit
+          ? this.#manualGateApprovals.getBoardApproval(issue.id, stage.id, epoch, visit.attempt)
           : null;
-        return {
+        const board = {
           stageId: stage.id,
-          gateId: task.id,
-          configured: task.manual === true,
-          itemSpecific: this.#manualGateApprovals.hasItemRequirement(issue.id, stage.id, task.id),
-          waiting: cursor?.stage === stage.id && cursor.stageEpoch === epoch && cursor.list === "exit-gate" &&
-            cursor.taskInstanceId === task.id && cursor.state === "pending" && cursor.wakeAt === null,
-          approvedBy: approval?.accountName ?? null,
-          approvedAt: approval?.approvedAt ?? null,
+          gateId: null,
+          kind: "board" as const,
+          required: this.#manualGateApprovals.hasBoardApprovalRequirement(issue.id, stage.id),
+          waiting: visit?.list === "exit-gate" && visit.taskInstanceId === BOARD_APPROVAL_TASK_ID && visit.state === "pending" && visit.wakeAt === null,
+          approvedBy: boardApproval?.accountName ?? null,
+          approvedAt: boardApproval?.approvedAt ?? null,
         };
-      }));
+        const configured = stage.exitGate.flatMap((task) => {
+          if (!task.manual) return [];
+          const approval = visit ? this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch, visit.attempt) : null;
+          return [{
+            stageId: stage.id,
+            gateId: task.id,
+            kind: "configured" as const,
+            required: true,
+            waiting: visit?.list === "exit-gate" && visit.taskInstanceId === task.id && visit.state === "pending" && visit.wakeAt === null,
+            approvedBy: approval?.accountName ?? null,
+            approvedAt: approval?.approvedAt ?? null,
+          }];
+        });
+        return [board, ...configured];
+      });
     } catch {
       return [];
     }
   }
 
-  /** Changes an enrolled item's manual requirement without altering repository configuration. */
-  setManualGateRequirement(issueId: string, stageId: string, gateId: string, required: boolean): void {
+  /** Changes an enrolled item's final board-approval requirement without altering repository configuration. */
+  setBoardApprovalRequirement(issueId: string, stageId: string, required: boolean): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
-    this.manualGateCandidate(issue, stageId, gateId);
+    this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
     const cursor = journal.getCursor(issueId);
-    const wasRequired = this.#manualGateApprovals.hasItemRequirement(issueId, stageId, gateId);
+    const wasRequired = this.#manualGateApprovals.hasBoardApprovalRequirement(issueId, stageId);
     if (required && !wasRequired && stageId === issue.projectedStage &&
       this.store.listStageTransitions(issueId).some((transition) => transition.fromStage === stageId && transition.status === "pending")) {
-      throw new Error("manual approval cannot be changed while the current stage is advancing");
+      throw new Error("board approval cannot be changed while the current stage is advancing");
     }
-    this.#manualGateApprovals.setRequirement({ issueId, stageId, gateId, required, changedAt: new Date().toISOString() });
+    this.#manualGateApprovals.setBoardApprovalRequirement({ issueId, stageId, required, changedAt: new Date().toISOString() });
     // A gate may have read its requirement immediately before this board action.
     // Starting a new epoch makes that in-flight decision stale before it can advance.
     // The fence must be synchronous: a subscriber would leave a window for the stale decision.
@@ -1610,36 +1646,41 @@ export class ConveyorService {
   }
 
   /** Records a human receipt only for the current manual gate visit, then wakes that item. */
-  approveManualGate(issueId: string, stageId: string, gateId: string, account: { id: string; username: string }): void {
+  approveManualGate(issueId: string, stageId: string, gateId: string | null, account: { id: string; username: string }): void {
     const issue = this.store.getIssue(issueId);
     if (!issue || issue.projectedState === "offboarded") throw new Error("issue not found");
-    const gate = this.manualGateCandidate(issue, stageId, gateId);
+    if (gateId !== null) this.manualGateCandidate(issue, stageId, gateId);
+    else this.boardApprovalCandidate(issue, stageId);
     const journal = this.store.executions();
     const cursor = journal.getCursor(issueId);
     const stageEpoch = journal.stageEpoch(issueId);
     if (!cursor || cursor.stage !== stageId || cursor.stageEpoch !== stageEpoch || cursor.list !== "exit-gate" ||
-      cursor.taskInstanceId !== gateId || cursor.state !== "pending") {
-      throw new Error("manual gate is not waiting for approval");
+      cursor.taskInstanceId !== (gateId ?? BOARD_APPROVAL_TASK_ID) || cursor.state !== "pending") {
+      throw new Error(gateId === null ? "board approval is not waiting for approval" : "manual gate is not waiting for approval");
     }
-    const status = this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, configured: gate.configured });
-    if (!status.required) throw new Error("manual approval is not required for this gate");
-    const existing = this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, cursor.attempt);
+    const status = gateId === null
+      ? this.boardApprovalStatus({ issueId, stageId, stageEpoch, attempt: cursor.attempt })
+      : this.manualGateStatus({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, configured: true });
+    if (!status.required) throw new Error(gateId === null ? "board approval is not required for this stage" : "manual approval is not required for this gate");
+    const existing = gateId === null
+      ? this.#manualGateApprovals.getBoardApproval(issueId, stageId, stageEpoch, cursor.attempt)
+      : this.#manualGateApprovals.getApproval(issueId, stageId, gateId, stageEpoch, cursor.attempt);
     // A retry after the first request woke the item is a harmless no-op.  A
     // different pending gate, however, must not receive a late approval.
     if (existing) return;
-    if (cursor.wakeAt !== null) throw new Error("manual gate is not waiting for approval");
+    if (cursor.wakeAt !== null) throw new Error(gateId === null ? "board approval is not waiting for approval" : "manual gate is not waiting for approval");
     const approvedAt = new Date().toISOString();
-    const recorded = this.#manualGateApprovals.approve({
-      issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, accountId: account.id, accountName: account.username, approvedAt,
-    });
+    const recorded = gateId === null
+      ? this.#manualGateApprovals.approveBoard({ issueId, stageId, stageEpoch, attempt: cursor.attempt, accountId: account.id, accountName: account.username, approvedAt })
+      : this.#manualGateApprovals.approve({ issueId, stageId, gateId, stageEpoch, attempt: cursor.attempt, accountId: account.id, accountName: account.username, approvedAt });
     if (recorded) {
       this.store.appendConversationMessage({
         issueId, runId: null, stageId, actorType: "user", actorId: account.id,
         actorName: account.username, actorTitle: "Superuser",
-        message: `Approved manual gate \"${gateId}\".`,
+        message: gateId === null ? "Approved board approval." : `Approved configured manual gate \"${gateId}\".`,
       });
     }
-    // The gate.approved event wakes the item.
+    // The approval event wakes the item.
   }
 
   /** Log correlation for an item: its repository and <repository>:<number>. */
@@ -1671,6 +1712,7 @@ export class ConveyorService {
       sourceGuidance: SOURCE_GUIDANCE,
       taskDeps: (currentIssue, currentRepository) => this.taskDeps(currentIssue.id, currentRepository, signal),
       manualGate: this.manualGateStatus,
+      boardApproval: this.boardApprovalStatus,
       waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
@@ -4020,7 +4062,7 @@ export class ConveyorService {
         // Live waiting/queued text supersedes the persisted warning, which can describe the
         // gate state from before the item became runnable.
         reason: stopReason ?? (manualWaiting
-          ? `Waiting for board approval for ${manualWaiting.configured && manualWaiting.itemSpecific ? "a configured and item-specific" : manualWaiting.configured ? "a configured" : "an item-specific"} manual gate \"${manualWaiting.gateId}\".`
+          ? manualWaiting.kind === "board" ? "Waiting for board approval" : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
           : waiting ? null : issue.warning ?? options.reason ?? null),
         cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
@@ -4764,7 +4806,7 @@ export class ConveyorService {
       indicators,
       activity: cursor?.state === "pending" ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}` : state ? `${state.stageId} · ${state.status}` : null,
       reason: stopReason ?? (manualWaiting
-        ? `Waiting for board approval for ${manualWaiting.configured && manualWaiting.itemSpecific ? "a configured and item-specific" : manualWaiting.configured ? "a configured" : "an item-specific"} manual gate \"${manualWaiting.gateId}\".`
+        ? manualWaiting.kind === "board" ? "Waiting for board approval" : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
         : liveWaiting ? null : issue.warning ?? doneReason ?? null),
       cost: formatUsage(cost),
       duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,

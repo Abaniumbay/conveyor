@@ -1281,7 +1281,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       const issueId = oneValue(form, "issueId");
       const stageId = oneValue(form, "stageId");
       const gateId = oneValue(form, "gateId");
-      if (!issueId || !stageId || !gateId || issueId.length > 200 || stageId.length > 200 || gateId.length > 200) {
+      if (!issueId || !stageId || issueId.length > 200 || stageId.length > 200 || (gateId !== null && gateId.length > 200)) {
         return text("Invalid manual gate request", 400);
       }
       try {
@@ -1289,9 +1289,9 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         if (path === "/manual-gates/requirement") {
           const required = oneValue(form, "required");
           if (required !== "true" && required !== "false") return text("Invalid manual gate request", 400);
-          ({ correlationId } = await dependencies.dispatch("gate.setRequirement", { issueId, stageId, gateId, required: required === "true" }, actorOf(currentSession)));
+          ({ correlationId } = await dependencies.dispatch("gate.setItemApproval", { issueId, stageId, required: required === "true" }, actorOf(currentSession)));
         } else {
-          ({ correlationId } = await dependencies.dispatch("gate.approve", { issueId, stageId, gateId }, actorOf(currentSession)));
+          ({ correlationId } = await dependencies.dispatch("gate.approve", { issueId, stageId, gateId: gateId ?? null }, actorOf(currentSession)));
         }
         if (wantsJson(request)) return json({ ok: true, correlationId });
         return redirect("/board");

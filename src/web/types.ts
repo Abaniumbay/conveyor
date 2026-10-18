@@ -50,12 +50,12 @@ export interface IssueCriterionTestViewModel {
   sourceUrl: string | null;
 }
 
-/** A native exit gate that a superuser may require or approve for this item. */
+/** A configured manual gate or final board approval shown for this item. */
 export interface ManualGateViewModel {
   stageId: string;
-  gateId: string;
-  configured: boolean;
-  itemSpecific: boolean;
+  gateId: string | null;
+  kind: "board" | "configured";
+  required: boolean;
   waiting: boolean;
   approvedBy: string | null;
   approvedAt: string | null;
