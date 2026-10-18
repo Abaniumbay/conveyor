@@ -20,7 +20,12 @@ afterEach(async () => {
 
 const ISSUE = "issue";
 
-async function setup(options: { drained?: boolean; sink?: EventSink; secondRepository?: boolean } = {}) {
+async function setup(options: {
+  drained?: boolean;
+  sink?: EventSink;
+  secondRepository?: boolean;
+  upsertStatusComment?: (issueNumber: number) => Promise<number>;
+} = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-events-"));
   directories.push(root);
   const records: LogRecord[] = [];
@@ -73,7 +78,11 @@ ${options.secondRepository ? `  repo-two: { source: github, address: owner/other
     store.activateEnrollment("issue-two");
     store.setQueueRank("issue-two", 20);
   }
-  const service = new ConveyorService(config, store, { async upsertStatusComment() { return 1; } } as never, options.sink ? { eventSinks: [options.sink] } : {});
+  const service = new ConveyorService(config, store, {
+    async upsertStatusComment(_address: string, issueNumber: number) {
+      return options.upsertStatusComment?.(issueNumber) ?? 1;
+    },
+  } as never, options.sink ? { eventSinks: [options.sink] } : {});
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
   /** Parks the item on its exit gate for one visit, as the executor does. */
@@ -266,11 +275,23 @@ describe("scheduling", () => {
   });
 
   test("a burst of worker releases schedules once", async () => {
-    const { service, store, records } = await setup({ drained: false });
+    const statusCommentWrites: number[] = [];
+    const { service, store, records } = await setup({
+      drained: false,
+      secondRepository: true,
+      async upsertStatusComment(issueNumber) {
+        statusCommentWrites.push(issueNumber);
+        throw new Error("Test status comment failure");
+      },
+    });
     for (let index = 0; index < 5; index += 1) store.events().append("worker.released", { stageId: "implementation" }, { issueId: ISSUE });
     await service.eventsSettled();
-    expect(started(records)).toHaveLength(1);
     await service.close();
+
+    expect(started(records)).toHaveLength(1);
+    // The admitted item and the queued item each refresh once. A separate pass per release
+    // retries the queued item's failed status update, so this catches dispatch yielding between events.
+    expect(statusCommentWrites).toEqual([1, 2]);
   });
 });
 
