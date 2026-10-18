@@ -29,7 +29,7 @@ import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTrigg
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
-import { changeAction, pushAndEnsureChange } from "../codehost/actions";
+import { changeAction, linkExistingChange, pushAndEnsureChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
 import { conveyorToolGuidance } from "../mcp/guidance";
@@ -1927,6 +1927,14 @@ export class ConveyorService {
       sourceName: repository.source,
       source: this.executionGitHub(issue.repositoryId),
       workspaceManager: this.workspaceManager,
+      recoverWorkspaceChange: async (currentIssue, currentRepository, workspace) => {
+        const codeHost = this.executionCodeHost(currentIssue.id, this.codeHostFor(currentRepository.id));
+        if (!codeHost) return;
+        await linkExistingChange({
+          codeHost, store: this.store, address: currentRepository.address,
+          issueId: currentIssue.id, branch: workspace.branch,
+        });
+      },
       loadDeliveryState: async (currentIssue, currentRepository) =>
         this.loadDeliveryState(currentIssue.id, currentRepository.address),
       sourceGuidance: SOURCE_GUIDANCE,

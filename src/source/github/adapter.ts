@@ -953,14 +953,20 @@ export class GitHubAdapter {
     }
   }
 
-  /** Whether an open pull request has this branch of the repository as its head. */
-  async hasOpenPullRequestFor(address: string, branch: string): Promise<boolean> {
+  /** Finds the open pull request whose head is this repository branch. */
+  async findOpenPullRequest(address: string, branch: string): Promise<PullRequestReference | null> {
     const [owner] = address.split("/");
-    const open = await this.transport.request<unknown[]>({
+    const open = await this.transport.request<GitHubPullRequest[]>({
       method: "GET",
       path: `repos/${address}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`,
     });
-    return open.length > 0;
+    const pullRequest = open[0];
+    return pullRequest ? { number: pullRequest.number, url: pullRequest.html_url, state: pullRequest.state } : null;
+  }
+
+  /** Whether an open pull request has this branch of the repository as its head. */
+  async hasOpenPullRequestFor(address: string, branch: string): Promise<boolean> {
+    return (await this.findOpenPullRequest(address, branch)) !== null;
   }
 
   async replyToReviewComment(address: string, pullRequestNumber: number, commentId: number, markdown: string): Promise<void> {

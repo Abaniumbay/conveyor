@@ -24,6 +24,17 @@ function pull(number: number, state = "open") {
 }
 
 describe("CodeHost contract: GitHub", () => {
+  test("finds an existing open branch change without creating one", async () => {
+    const transport = new FakeTransport([[pull(8)], pull(8)]);
+    const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));
+
+    const change = await host.findOpenChange({ address: "owner/repo", branch: "feature" });
+
+    expect(change).toMatchObject({ id: "github:owner/repo#pr-8", number: 8, headSha: "abc123" });
+    expect(transport.requests[0]).toMatchObject({ method: "GET", path: "repos/owner/repo/pulls?state=open&head=owner%3Afeature" });
+    expect(transport.requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
   test("ensures an existing change idempotently and exposes neutral metadata", async () => {
     const transport = new FakeTransport([[pull(8)], pull(8)]);
     const host = new GitHubCodeHost(new GitHubAdapter(transport, "conveyor"));

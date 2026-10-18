@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
@@ -17,6 +18,8 @@ export interface ManagedWorkspace {
   path: string;
   branch: string;
   baseRevision: string;
+  /** True when an existing worktree or branch was attached rather than created from base. */
+  adopted?: boolean;
 }
 
 export interface RemoveWorkspaceInput {
@@ -39,6 +42,12 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+}
+
+interface RegisteredWorktree {
+  path: string;
+  branch: string | null;
+  head: string | null;
 }
 
 async function git(cwd: string, args: string[]): Promise<CommandResult> {
@@ -70,6 +79,26 @@ function safeSegment(value: string, fallback: string): string {
   return normalized || fallback;
 }
 
+function registeredWorktrees(output: string): RegisteredWorktree[] {
+  const worktrees: RegisteredWorktree[] = [];
+  let current: Partial<RegisteredWorktree> = {};
+  const commit = () => {
+    if (current.path) worktrees.push({ path: resolveFilesystemPath(current.path), branch: current.branch ?? null, head: current.head ?? null });
+    current = {};
+  };
+  for (const line of output.split("\n")) {
+    if (!line) {
+      commit();
+      continue;
+    }
+    if (line.startsWith("worktree ")) current.path = line.slice("worktree ".length);
+    else if (line.startsWith("branch refs/heads/")) current.branch = line.slice("branch refs/heads/".length);
+    else if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length);
+  }
+  commit();
+  return worktrees;
+}
+
 export class WorkspaceManager {
   readonly #root: string;
 
@@ -89,7 +118,6 @@ export class WorkspaceManager {
       throw new WorkspaceError("enrollment generation must be a positive integer");
     }
 
-    await mkdir(this.#root, { recursive: true });
     const repositorySegment = safeSegment(input.repositoryId, "repository");
     const workspacePath = path.join(
       this.#root,
@@ -97,9 +125,56 @@ export class WorkspaceManager {
       `issue-${input.issueNumber}-r${input.enrollment}`,
     );
     this.assertManagedPath(workspacePath);
-    await mkdir(path.dirname(workspacePath), { recursive: true });
-
     const branch = `conveyor/${input.issueNumber}-r${input.enrollment}-${safeSegment(input.slug, "issue")}`;
+    const resolvedWorkspacePath = resolveFilesystemPath(workspacePath);
+    const listed = await git(repositoryPath, ["worktree", "list", "--porcelain"]);
+    if (listed.exitCode !== 0) {
+      throw new WorkspaceError(`cannot list worktrees: ${listed.stderr || "unknown Git error"}`);
+    }
+    const worktrees = registeredWorktrees(listed.stdout);
+    const atPath = worktrees.find((worktree) => worktree.path === resolvedWorkspacePath);
+    if (atPath && atPath.branch !== branch) {
+      const occupant = atPath.branch ? `registered worktree on branch "${atPath.branch}"` : "registered detached worktree";
+      throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": path contains ${occupant}`);
+    }
+    if (atPath && !existsSync(resolvedWorkspacePath)) {
+      const pruned = await git(repositoryPath, ["worktree", "prune"]);
+      if (pruned.exitCode !== 0) {
+        throw new WorkspaceError(`cannot prune missing worktree ${resolvedWorkspacePath}: ${pruned.stderr || "unknown Git error"}`);
+      }
+    }
+    if (!atPath && existsSync(resolvedWorkspacePath)) {
+      throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": path is occupied by a non-worktree directory`);
+    }
+    const branchElsewhere = worktrees.find((worktree) => worktree.branch === branch && worktree.path !== resolvedWorkspacePath);
+    if (branchElsewhere) {
+      throw new WorkspaceError(`cannot adopt workspace ${resolvedWorkspacePath} for branch "${branch}": branch is checked out at ${branchElsewhere.path}`);
+    }
+    if (atPath && existsSync(resolvedWorkspacePath)) {
+      await this.ensureScratch(resolvedWorkspacePath);
+      const head = atPath.head ?? (await git(repositoryPath, ["rev-parse", "--verify", `refs/heads/${branch}`])).stdout;
+      return { path: resolvedWorkspacePath, branch, baseRevision: head, adopted: true };
+    }
+
+    const localBranch = await git(repositoryPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    if (localBranch.exitCode !== 0 && await this.fetchRemoteBranch(repositoryPath, branch)) {
+      const created = await git(repositoryPath, ["branch", "--track", branch, `refs/remotes/origin/${branch}`]);
+      if (created.exitCode !== 0) {
+        throw new WorkspaceError(`cannot create local branch "${branch}" from origin: ${created.stderr || "unknown Git error"}`);
+      }
+    }
+
+    await mkdir(this.#root, { recursive: true });
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    if (localBranch.exitCode === 0 || (await git(repositoryPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).exitCode === 0) {
+      const attached = await git(repositoryPath, ["worktree", "add", workspacePath, branch]);
+      if (attached.exitCode !== 0) {
+        throw new WorkspaceError(`cannot attach worktree ${workspacePath}: ${attached.stderr || "unknown Git error"}`);
+      }
+      await this.ensureScratch(workspacePath);
+      return { path: resolvedWorkspacePath, branch, baseRevision: (await git(workspacePath, ["rev-parse", "HEAD"])).stdout, adopted: true };
+    }
+
     const revision = await this.resolveBase(repositoryPath, input.baseBranch);
 
     const created = await git(repositoryPath, [
@@ -118,7 +193,17 @@ export class WorkspaceManager {
 
     await this.ensureScratch(workspacePath);
 
-    return { path: resolveFilesystemPath(workspacePath), branch, baseRevision: revision };
+    return { path: resolveFilesystemPath(workspacePath), branch, baseRevision: revision, adopted: false };
+  }
+
+  /** Fetches a branch only when origin has it; a missing branch is a normal fresh-workspace case. */
+  private async fetchRemoteBranch(repositoryPath: string, branch: string): Promise<boolean> {
+    const remote = await git(repositoryPath, ["remote", "get-url", "origin"]);
+    if (remote.exitCode !== 0) return false;
+    const fetched = await git(repositoryPath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    if (fetched.exitCode === 0) return true;
+    if (/couldn't find remote ref|remote ref does not exist|not found/i.test(fetched.stderr)) return false;
+    throw new WorkspaceError(`cannot fetch origin/${branch}: ${fetched.stderr || "unknown Git error"}`);
   }
 
   /**

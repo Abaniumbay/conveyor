@@ -16,6 +16,23 @@ export type EnsuredChange =
   | { pushed: false; status: "changes-requested"; reason: string }
   | { pushed: true; change: ChangeRequest };
 
+/** Records an already-open change before later stages read the item's change state. */
+export async function linkExistingChange(input: {
+  codeHost: Pick<CodeHost, "findOpenChange">;
+  store: Pick<ConveyorStore, "getCurrentPullRequest" | "upsertPullRequest">;
+  address: string;
+  issueId: string;
+  branch: string;
+}): Promise<ChangeRequest | null> {
+  if (input.store.getCurrentPullRequest(input.issueId) || !input.codeHost.findOpenChange) return null;
+  const change = await input.codeHost.findOpenChange({ address: input.address, branch: input.branch });
+  if (!change) return null;
+  input.store.upsertPullRequest({
+    issueId: input.issueId, id: change.id, number: change.number, url: change.url, state: change.state,
+  });
+  return change;
+}
+
 /**
  * Pushes the workspace branch, ensures the change request for it and stores it for the item.
  * Shared by the `change.ensure` task and the legacy source actions.

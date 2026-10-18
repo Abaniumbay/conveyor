@@ -74,6 +74,8 @@ export interface ReviewArtifact {
 }
 
 export interface CodeHost {
+  /** Finds the currently open change for a branch without creating another one. */
+  findOpenChange?(input: { address: string; branch: string }): Promise<ChangeRequest | null>;
   /** Pushes the workspace branch; with `base`, first brings it up to date with that base branch. */
   pushBranch(input: {
     address: string;

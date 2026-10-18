@@ -106,6 +106,12 @@ export class GitHubCodeHost implements CodeHost {
     return `https://github.com/${input.address}/blob/${input.headSha}/${input.path.split("/").map(encodeURIComponent).join("/")}${line}`;
   }
 
+  async findOpenChange(input: { address: string; branch: string }): Promise<ChangeRequest | null> {
+    const pullRequest = await this.github.findOpenPullRequest(input.address, input.branch);
+    if (!pullRequest) return null;
+    return this.getChange({ address: input.address, id: `github:${input.address}#pr-${pullRequest.number}` });
+  }
+
   async pushBranch(input: {
     address: string;
     workspace: { path: string; branch: string };
