@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { applyRollupTransition, applyStageTransition } from "../../src/core/transition";
+import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
@@ -475,6 +475,85 @@ describe("applyStageTransition", () => {
 
     expect(journal.stageEpoch("issue")).toBe(before + 1);
     expect(calls).toEqual([["conveyor", "conveyor:no-split", "conveyor:order:2", "conveyor:review"]]);
+    store.close();
+  });
+});
+
+describe("applyClosedItemOffboarding", () => {
+  test("removes every Conveyor control once, offboards the item, and records the closure reason", async () => {
+    const store = await setup();
+    store.activateEnrollment("issue");
+    store.setIssueProjection("issue", { stage: "implementation", state: "blocked", warning: "Stopped" });
+    const calls: string[][] = [];
+    const input = {
+      store,
+      source: { async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { calls.push([...labels]); } },
+      sourceName: "github",
+      address: "owner/repo",
+      transitionId: "closed-without-change",
+      issue: store.getIssue("issue")!,
+    };
+
+    await applyClosedItemOffboarding(input);
+    await applyClosedItemOffboarding(input);
+
+    expect(calls).toEqual([[]]);
+    expect(store.getIssue("issue")).toMatchObject({ projectedStage: null, projectedState: "offboarded", warning: null });
+    expect(store.listStageTransitions("issue")).toMatchObject([{
+      id: "closed-without-change",
+      kind: "offboarded",
+      status: "completed",
+      reason: "closed without a merged change",
+    }]);
+    store.close();
+  });
+
+  test("keeps cleanup intent pending while a repository is paused", async () => {
+    const store = await setup();
+    const input = {
+      store,
+      source: { async replaceConveyorLabels() { throw new RepositoryPausedError(); } },
+      sourceName: "github",
+      address: "owner/repo",
+      transitionId: "paused-closed-cleanup",
+      issue: store.getIssue("issue")!,
+    };
+
+    await expect(applyClosedItemOffboarding(input)).rejects.toBeInstanceOf(RepositoryPausedError);
+    expect(store.getSourceMutationByKey("paused-closed-cleanup")).toMatchObject({ status: "pending" });
+    expect(store.listStageTransitions("issue")).toMatchObject([{ id: "paused-closed-cleanup", status: "pending" }]);
+    expect(store.getIssue("issue")).toMatchObject({ projectedState: null });
+    store.close();
+  });
+
+  test("retries a failed cleanup without a second offboarding journey entry", async () => {
+    const store = await setup();
+    let attempts = 0;
+    const input = {
+      store,
+      source: {
+        async replaceConveyorLabels() {
+          attempts += 1;
+          if (attempts === 1) throw new Error("source unavailable");
+        },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      transitionId: "retry-closed-cleanup",
+      issue: store.getIssue("issue")!,
+    };
+
+    await expect(applyClosedItemOffboarding(input)).rejects.toThrow("source unavailable");
+    expect(store.getSourceMutationByKey("retry-closed-cleanup")).toMatchObject({ status: "failed" });
+
+    await applyClosedItemOffboarding({ ...input, issue: store.getIssue("issue")! });
+
+    expect(attempts).toBe(2);
+    expect(store.getSourceMutationByKey("retry-closed-cleanup")).toMatchObject({ status: "succeeded" });
+    expect(store.listStageTransitions("issue").filter((transition) => transition.id === "retry-closed-cleanup")).toMatchObject([{
+      status: "completed",
+      kind: "offboarded",
+    }]);
     store.close();
   });
 });

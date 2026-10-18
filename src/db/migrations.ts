@@ -939,4 +939,14 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 36,
+    sql: `
+      -- Recovery is based on workflow movement, not an unrelated source edit or comment.
+      ALTER TABLE issues ADD COLUMN projection_changed_at TEXT;
+      UPDATE issues SET projection_changed_at = updated_at WHERE projection_changed_at IS NULL;
+      CREATE INDEX issues_recovery_candidates_idx
+        ON issues(repository_id, projected_state, projection_changed_at);
+    `,
+  },
 ];

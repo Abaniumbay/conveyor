@@ -110,7 +110,7 @@ export const EVENT_CATALOGUE = {
     repository: z.string(), numbers: z.array(number),
   }).strict()),
   "github.changeUpdated": define("GitHub", "GitHub reported a change to a pull request (opened, synchronize, closed, ...).", z.object({
-    repository: z.string(), number, action: z.string(), headSha: sha.nullable(),
+    repository: z.string(), number, action: z.string(), headSha: sha.nullable(), merged: z.boolean().default(false),
   }).strict()),
   "github.ciUpdated": define("GitHub", "GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished.", z.object({
     repository: z.string(), sha, pullRequests: z.array(number), completed: z.boolean(),

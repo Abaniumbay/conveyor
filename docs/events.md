@@ -89,7 +89,7 @@ Each event has:
 
 | Event | Meaning | Payload |
 | --- | --- | --- |
-| `github.changeUpdated` | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null |
+| `github.changeUpdated` | GitHub reported a change to a pull request (opened, synchronize, closed, ...). | `repository`: string<br>`number`: integer<br>`action`: string<br>`headSha`: string \| null<br>`merged`: boolean |
 | `github.ciUpdated` | GitHub reported CI progress for a commit; `completed` when a workflow run or check suite finished. | `repository`: string<br>`sha`: string<br>`pullRequests`: integer[]<br>`completed`: boolean |
 | `github.issueUpdated` | GitHub reported a change to an issue or its comments; `pullRequest` when the issue is a pull request. | `repository`: string<br>`number`: integer<br>`action`: string<br>`pullRequest`: boolean |
 | `github.ping` | GitHub confirmed the webhook (a ping). | `repository`: string |

@@ -38,7 +38,7 @@ describe("normalizeGitHubEvent", () => {
 
   test("a pull request change names the pull request and its head", () => {
     expect(normalizeGitHubEvent("pull_request", { action: "synchronize", repository, pull_request: { number: 9, head: { sha: SHA }, body: "Text" } }))
-      .toEqual({ type: "github.changeUpdated", payload: { repository: "owner/my-app", number: 9, action: "synchronize", headSha: SHA } });
+      .toEqual({ type: "github.changeUpdated", payload: { repository: "owner/my-app", number: 9, action: "synchronize", headSha: SHA, merged: false } });
   });
 
   test("a completed workflow run names the commit and its pull requests", () => {
@@ -63,7 +63,7 @@ describe("normalizeGitHubEvent", () => {
 
   test("a submitted review is a change to its pull request, kept apart from the pull request's own actions", () => {
     expect(normalizeGitHubEvent("pull_request_review", { action: "submitted", repository, pull_request: { number: 9, head: { sha: SHA } }, review: { body: "Looks good" } }))
-      .toEqual({ type: "github.changeUpdated", payload: { repository: "owner/my-app", number: 9, action: "review_submitted", headSha: SHA } });
+      .toEqual({ type: "github.changeUpdated", payload: { repository: "owner/my-app", number: 9, action: "review_submitted", headSha: SHA, merged: false } });
   });
 
   test("a ping confirms the webhook", () => {

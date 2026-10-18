@@ -40,6 +40,15 @@ export interface ApplyRollupTransitionInput {
   reason: string;
 }
 
+export interface ApplyClosedItemOffboardingInput {
+  store: ConveyorStore;
+  source: TransitionSource;
+  sourceName: string;
+  address: string;
+  transitionId: string;
+  issue: StoredIssue;
+}
+
 function matchesTemplate(label: string, template: string, token: string): boolean {
   const [prefix, suffix = ""] = template.split(`{${token}}`);
   return label.startsWith(prefix ?? "") && label.endsWith(suffix) &&
@@ -135,7 +144,7 @@ function stopWithConfiguredState(input: ApplyStageTransitionInput): ApplyStageTr
 /** Apply the externally visible checkpoint once, then wait for reconciliation. */
 export async function applyStageTransition(
   input: ApplyStageTransitionInput,
-): Promise<void> {
+): Promise<{ labels: string[] }> {
   input = stopWithConfiguredState(input);
   const target = targetFor(input);
   const stageResult = input.result.result?.stageResult;
@@ -215,6 +224,50 @@ export async function applyStageTransition(
         input.result.kind === "correction" ? 0 : input.result.feedbackCycles,
       configHash: input.configHash,
     });
+  })();
+  return { labels };
+}
+
+/** Remove Conveyor's controls from an issue that closed without its current change being merged. */
+export async function applyClosedItemOffboarding(
+  input: ApplyClosedItemOffboardingInput,
+): Promise<void> {
+  const mutation = input.store.beginSourceMutation({
+    idempotencyKey: input.transitionId,
+    source: input.sourceName,
+    operation: "issue.labels.replace",
+    request: { issueId: input.issue.id, issueNumber: input.issue.sourceNumber, labels: [] },
+  });
+  input.store.beginStageTransition({
+    id: input.transitionId,
+    issueId: input.issue.id,
+    fromStage: input.issue.projectedStage,
+    toStage: null,
+    kind: "offboarded",
+    sourceMutationId: mutation.id,
+    detail: {
+      reason: "closed without a merged change",
+      requiredFixes: [],
+      resultStatus: null,
+      actor: { name: "Conveyor", title: "Orchestrator" },
+    },
+  });
+  if (mutation.status !== "succeeded") {
+    try {
+      // No preserve list: closure cleanup intentionally removes every Conveyor control label.
+      await input.source.replaceConveyorLabels(input.address, input.issue.sourceNumber, []);
+      input.store.completeSourceMutation(mutation.id, { labels: [] });
+    } catch (error) {
+      if (error instanceof RepositoryPausedError) throw error;
+      input.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+      input.store.failStageTransition(input.transitionId);
+      throw error;
+    }
+  }
+  input.store.sqlite().transaction(() => {
+    input.store.completeStageTransition(input.transitionId);
+    input.store.setIssueProjection(input.issue.id, { stage: null, state: "offboarded", warning: null });
+    input.store.endActiveEnrollment(input.issue.id, "offboarded");
   })();
 }
 

@@ -65,7 +65,16 @@ export function normalizeGitHubEvent(eventType: string, payload: unknown): Norma
       if (number === null) return null;
       // A review's action (submitted, resolved) is kept apart from the pull request's own actions.
       const changeAction = eventType === "pull_request" ? action : `${eventType.slice("pull_request_".length)}_${action}`;
-      return { type: "github.changeUpdated", payload: { repository, number, action: changeAction, headSha: text(record(pullRequest.head).sha) } };
+      return {
+        type: "github.changeUpdated",
+        payload: {
+          repository,
+          number,
+          action: changeAction,
+          headSha: text(record(pullRequest.head).sha),
+          merged: eventType === "pull_request" && record(pullRequest).merged === true,
+        },
+      };
     }
     case "workflow_run":
     case "check_suite":

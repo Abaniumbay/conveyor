@@ -250,7 +250,11 @@ export async function reconcileRepository(
       labels: input.labels,
       stages: input.stages,
       expectedPostMergeClosure:
-        input.expectedPostMergeClosure?.(issueId) ?? false,
+        (input.expectedPostMergeClosure?.(issueId) ?? false) ||
+        // A roll-up reaches done before Conveyor closes it with GitHub's completed reason.
+        // That final source delivery confirms the result; it must not turn the completed parent
+        // into an uncorrelated manual closure.
+        (prior?.projectedState === "done" && sourceIssue.state === "closed" && sourceIssue.stateReason === "completed"),
     });
     // A question is durable local state. Source updates which race with relationship
     // roll-up must not turn its parked owner back into an active item.
