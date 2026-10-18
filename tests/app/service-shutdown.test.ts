@@ -77,4 +77,38 @@ describe("ConveyorService shutdown", () => {
       log.configure({ sinks: [new ConsoleSink()] });
     }
   });
+
+  test("shutdown settles a held startup pass without starting a duplicate periodic pass", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const config = await loadConfig(directory);
+    config.settings.reconcileIntervalMs = 10;
+    const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
+    let release!: () => void;
+    const listing = new Promise<void>((resolve) => { release = resolve; });
+    let listed = 0;
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async ensureLabels() {},
+      async listIssues() { listed += 1; await listing; return []; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    try {
+      service.start();
+      while (listed === 0) await Bun.sleep(5);
+      let closed = false;
+      const closing = service.close().then(() => { closed = true; });
+      await Bun.sleep(50);
+      expect(closed).toBe(false);
+      expect(listed).toBe(1);
+
+      release();
+      await closing;
+      expect(closed).toBe(true);
+    } finally {
+      release();
+    }
+  });
 });
