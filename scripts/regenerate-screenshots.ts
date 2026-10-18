@@ -966,8 +966,37 @@ async function verifyGithubStub(home: string): Promise<void> {
     );
 }
 
+async function waitForStartupReconciliation(home: string): Promise<void> {
+  const deadline = Date.now() + DEMO_TIMEOUT;
+  const socket = path.join(home, "run", "control.sock");
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch("http://example.com/v1/status", { unix: socket });
+      if (response.ok) {
+        const status = await response.json() as {
+          startup?: { state?: "starting" | "ready" | "degraded" };
+        };
+        if (status.startup?.state === "ready" || status.startup?.state === "degraded") return;
+      }
+    } catch {
+      // The control socket is still starting.
+    }
+    await Bun.sleep(100);
+  }
+  throw new Error(
+    `Demo startup reconciliation did not settle within ${DEMO_TIMEOUT / 1000}s`,
+  );
+}
+
 async function main(): Promise<void> {
-  demoHome = await mkdtemp(path.join(tmpdir(), "conveyor-screenshots-"));
+  // The control socket needs a path shorter than the Unix socket limit.
+  const temporaryRoot =
+    process.platform !== "win32" && process.env.XDG_CACHE_HOME
+      ? process.env.XDG_CACHE_HOME
+      : tmpdir();
+  demoHome = await mkdtemp(
+    path.join(temporaryRoot, "conveyor-screenshots-"),
+  );
   try {
     const listen = await reserveListenAddress();
     const environment = await configureDemo(demoHome, listen);
@@ -983,6 +1012,7 @@ async function main(): Promise<void> {
     );
     const baseUrl = `http://${listen}`;
     await waitForServer(`${baseUrl}/health/live`);
+    await waitForStartupReconciliation(demoHome);
     await verifyGithubStub(demoHome);
 
     // Multi-threaded and GPU rasterization anti-alias edges slightly differently between runs;

@@ -11,6 +11,7 @@ import { publicRepositoryTrustPolicy } from "../source/github/trust";
 import { concise, displayName } from "../tasks/agent-support";
 
 export type RepositoryItemState = "Running" | "Queued" | "Waiting" | "Needs you" | "Blocked";
+export type RepositoryStartupState = "waiting" | "onboarding" | "reconciling";
 
 export interface RepositorySummaryItem {
   number: number;
@@ -36,7 +37,8 @@ export interface RepositorySummary {
   address: string;
   addressUrl: string | null;
   color: number;
-  health: "healthy" | "degraded";
+  health: "healthy" | "starting" | "degraded";
+  startup: RepositoryStartupState | null;
   error: string | null;
   errorSummary: string | null;
   lastReconciledAt: string | null;
@@ -96,6 +98,8 @@ export interface BuildRepositorySummariesInput {
   issues?: readonly StoredIssue[];
   onboardingErrors?: ReadonlyMap<string, string>;
   reconciliationErrors?: ReadonlyMap<string, string>;
+  /** Repositories held from scheduling during the first startup pass. */
+  startup?: ReadonlyMap<string, RepositoryStartupState>;
   lastReconciledAt?: string | null;
   /** Per repository: whether its webhook delivers; absent until checked. */
   webhookHealth?: ReadonlyMap<string, boolean>;
@@ -161,6 +165,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
   const { config, store, now = new Date(), lastReconciledAt = null } = input;
   const onboarding = input.onboardingErrors ?? new Map<string, string>();
   const reconciliation = input.reconciliationErrors ?? new Map<string, string>();
+  const startup = input.startup ?? new Map<string, RepositoryStartupState>();
   const activeRuns = store.listActiveIssueRuns();
   const activeIssueIds = new Set(activeRuns.map((run) => run.issueId));
   const questionIssueIds = new Set(store.listOpenQuestions().map((question) => question.issueId));
@@ -185,6 +190,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
     const doneIssueIds = new Set(issues.filter(isDone).map((issue) => issue.id));
     const stages = config.pipelines[repository.pipeline]?.stages ?? [];
     const error = errorsFor(id, onboarding, reconciliation);
+    const startupState = startup.get(id) ?? null;
     // Dashboard fixtures and older in-process callers can carry partially-normalised
     // repository records. Keep this derived, read-only view safe while configuration
     // loading remains responsible for enforcing the complete production schema.
@@ -201,7 +207,8 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
       address: repository.address,
       addressUrl: codeHost?.type === "github" ? `https://github.com/${repository.address}` : null,
       color: (index % 8) + 1,
-      health: error === null ? "healthy" : "degraded",
+      health: error !== null ? "degraded" : startupState === null ? "healthy" : "starting",
+      startup: startupState,
       error,
       errorSummary: error === null ? null : concise(error, 240),
       lastReconciledAt,

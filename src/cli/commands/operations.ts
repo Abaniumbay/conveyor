@@ -24,6 +24,7 @@ interface StatusPayload {
   supervised: boolean;
   configHash: string;
   ready: boolean;
+  startup: { state: "starting" | "ready" | "degraded"; repository: string | null; phase: "waiting" | "onboarding" | "reconciling" | null };
   draining: { since: string; reason: string } | null;
   runners: { limit: number; busy: number };
   active: Array<{ item: string; stage: string }>;
@@ -107,7 +108,13 @@ export const status: Command = {
     if (!service) {
       lines.push(unreachable ? `Service: not reachable: ${unreachable}` : "Service: not running", `Home: ${context.paths.home}`, `Configuration: ${context.paths.config}`);
     } else {
-      const health = service.draining ? `draining since ${service.draining.since} (${service.draining.reason})` : service.ready ? "ready" : "not ready (see conveyor logs)";
+      const health = service.draining
+        ? `draining since ${service.draining.since} (${service.draining.reason})`
+        : service.startup.state === "starting"
+          ? `starting${service.startup.repository ? `: ${service.startup.phase ?? "waiting"} ${service.startup.repository}` : ""}`
+          : service.startup.state === "degraded"
+            ? `degraded${service.startup.repository ? `: ${service.startup.repository}` : ""}`
+            : service.ready ? "ready" : "not ready (see conveyor logs)";
       lines.push(
         `Service: running ${service.version.version} (${service.version.commit.slice(0, 12)}), pid ${service.pid}, since ${service.startedAt}; ${health}`,
         `Dashboard: ${service.dashboardUrl}`,
