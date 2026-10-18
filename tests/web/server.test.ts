@@ -1258,7 +1258,7 @@ describe("createWebHandler", () => {
     expect(profilePage).toContain('action="/api/profile/password"');
     expect(profilePage).toContain('name="currentPassword"');
     expect(profilePage).toContain('data-profile-avatar-form="true"');
-    expect(profilePage).toContain('<button type="submit">Save</button>');
+    expect(profilePage).toContain('<button type="submit" class="action-button action-button--primary">Save</button>');
     expect(profilePage).not.toContain('Save avatar');
     expect(profilePage).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
     expect(profilePage).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');

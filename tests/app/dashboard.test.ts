@@ -1937,7 +1937,7 @@ describe("ConveyorService dashboard", () => {
     expect(filtered.questions).toEqual(dashboard.questions);
     const html = renderDashboard(dashboard);
     expect(html).toContain('id="needs-you-heading">Needs you <span>(6)</span>');
-    expect(html).toContain('<a class="needs-you-action" href="/issues/repo/1">Open</a>');
+    expect(html).toContain('<a class="needs-you-action action-button action-button--secondary" href="/issues/repo/1">Open</a>');
     store.close();
   });
 
