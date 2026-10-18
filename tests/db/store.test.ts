@@ -104,12 +104,20 @@ describe("ConveyorStore", () => {
   });
 
   test("persists a repository pause without changing repository configuration", async () => {
-    const store = await openStore();
+    const directory = await mkdtemp(path.join(tmpdir(), "conveyor-store-pause-"));
+    temporaryDirectories.push(directory);
+    const database = path.join(directory, "conveyor.sqlite");
+    let store = await ConveyorStore.open(database);
     const repository = { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" };
     store.upsertRepository(repository);
 
     const pause = store.pauseRepository("repo", "Ada", "Conserve CI time");
     expect(store.repositoryPause("repo")).toEqual(pause);
+    store.close();
+
+    store = await ConveyorStore.open(database);
+    expect(store.repositoryPause("repo")).toEqual(pause);
+    expect(store.repositoryPause("missing")).toBeNull();
     store.upsertRepository(repository);
     expect(store.repositoryPause("repo")).toEqual(pause);
     expect(() => store.pauseRepository("repo", "Ada", null)).toThrow("already paused");

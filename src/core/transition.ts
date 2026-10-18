@@ -1,6 +1,7 @@
 import type { StoredIssue, ConveyorStore } from "../db/store";
 import type { StageExecutionResult } from "./pipeline";
 import type { LabelConfiguration } from "./issue-state";
+import { RepositoryPausedError } from "./repository-pause";
 import { ItemTodos, TODO_OWNING_STAGE } from "../engine/todos";
 
 export interface TransitionSource {
@@ -188,6 +189,10 @@ export async function applyStageTransition(
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
+      // A repository pause is a durable wait, not a failed source mutation.
+      // Leaving both records pending lets the same transition resume after the
+      // pause without losing its idempotency key or re-running the stage.
+      if (error instanceof RepositoryPausedError) throw error;
       input.store.failSourceMutation(
         mutation.id,
         error instanceof Error ? error.message : String(error),
@@ -267,6 +272,8 @@ export async function applyRollupTransition(
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
+      // The roll-up follows the same pause boundary as ordinary stages.
+      if (error instanceof RepositoryPausedError) throw error;
       input.store.failSourceMutation(
         mutation.id,
         error instanceof Error ? error.message : String(error),

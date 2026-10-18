@@ -1807,6 +1807,14 @@ export class ConveyorService {
       rescheduleAfterRelease = outcome.kind === "parked" && outcome.reason === "superseded";
       this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
+        // A transition can reach the repository pause fence after the stage
+        // itself has completed. Its pending source mutation is deliberately
+        // retained for resume; do not turn the status-comment write into an
+        // infrastructure failure while that repository is paused.
+        if (this.store.repositoryPause(issue.repositoryId)) {
+          this.schedule();
+          return false;
+        }
         // A parked poll changes nothing at the source: no reconcile, just the status line.
         this.restorePendingStatus(issue.repositoryId);
         if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);

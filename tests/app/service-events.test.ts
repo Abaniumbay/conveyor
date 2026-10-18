@@ -179,6 +179,25 @@ describe("scheduling", () => {
     await service.close();
   });
 
+  test("a wake event does not admit a paused repository and resume readmits its retained item", async () => {
+    const { service, store, records } = await setup({ drained: false });
+    const epoch = store.executions().stageEpoch(ISSUE);
+    service.pauseRepository("repo", "Conserve CI time", "operator");
+
+    store.events().append("item.requeued", { reason: "retry" }, { issueId: ISSUE });
+    await service.eventsSettled();
+
+    expect(started(records)).toEqual([]);
+    expect(store.getStageState(ISSUE)).toMatchObject({ status: "ready" });
+    expect(store.executions().stageEpoch(ISSUE)).toBe(epoch);
+
+    await service.resumeRepository("repo");
+    await service.eventsSettled();
+
+    expect(started(records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
+    await service.close();
+  });
+
   test("an accepted command schedules", async () => {
     const { service, store, records } = await setup({ drained: false });
     store.events().append("command.accepted", { command: "backlog.move" });
