@@ -138,7 +138,7 @@ describe("provider-neutral CI gate", () => {
   });
 
   test("focused logs recognise common test-runner failure markers", () => {
-    for (const marker of ["✖ adds numbers", "❌ test/a_test.dart: adds numbers", "FAIL src/a.test.ts", "--- FAIL: TestAdd (0.00s)", "AssertionError [ERR_ASSERTION]: 1 == 2"]) {
+    for (const marker of ["✖ adds numbers", "❌ test/a_test.dart: adds numbers", "FAIL src/a.test.ts", "--- FAIL: TestAdd (0.00s)", "(fail) ci gate > stops repeated failures [1.2ms]", "AssertionError [ERR_ASSERTION]: 1 == 2"]) {
       const log = [marker, ...Array.from({ length: 200 }, (_, index) => `line ${index}`), "##[error]failed"].join("\n");
       expect(focusGitHubActionsLog(log, 10)).toContain(marker);
     }
@@ -213,5 +213,14 @@ describe("ciFailureFingerprint", () => {
     const withError = ciFailureFingerprint([failure("Unit", "Error: database unavailable")]);
     expect(ciFailureFingerprint([failure("Unit", "Error: permission denied")])).not.toBe(withError);
     expect(ciFailureFingerprint([failure("Unit", null)])).toBeNull();
+  });
+
+  test("recognizes Bun failure names independently of volatile output", () => {
+    const failedTest = (name: string, timestamp: string, duration: string) => ciFailureFingerprint([
+      failure("Tests and typecheck", `${timestamp} (fail) CI gate > ${name} [${duration}]\nerror: expect(received).toBe(expected)\nExpected: true`),
+    ]);
+
+    expect(failedTest("stops repeated failures", "2026-10-18T10:00:00.000Z", "1.2ms")).toBe(failedTest("stops repeated failures", "2026-10-19T11:01:02.000Z", "96.4ms"));
+    expect(failedTest("stops repeated failures", "2026-10-18T10:00:00.000Z", "1.2ms")).not.toBe(failedTest("routes changed failures", "2026-10-19T11:01:02.000Z", "96.4ms"));
   });
 });
