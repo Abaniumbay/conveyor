@@ -165,7 +165,7 @@ const headUnchanged: TaskDefinition<unknown, unknown, Deps> = {
 const mergeable: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.mergeable",
   kind: "check",
-  description: "Passes when the code host reports the change mergeable; pending while it is still computing, and otherwise tells implementation to update the branch, resolve conflicts, test, and publish a new head.",
+  description: "Passes unless the code host reports that the change conflicts with its base branch; then it tells implementation to update the branch, resolve conflicts, test, and publish a new head. A mergeability the host has not computed yet passes: the merge itself decides, and a refused merge returns the change to implementation.",
   reads: ["change"],
   writes: [],
   invalidates: [],
@@ -175,7 +175,8 @@ const mergeable: TaskDefinition<unknown, unknown, Deps> = {
     if (!change) return fail(NO_CHANGE);
     if (change.state === "merged") return pass();
     if (change.state === "closed") return fail(`Change request #${change.ref.number} is closed`);
-    if (change.mergeable === "unknown") return pending("Waiting for the code host to report whether the change is mergeable");
+    // Waiting for the host to compute mergeability cost a read per poll; the merge attempt reports it.
+    if (change.mergeable === "unknown") return pass();
     return change.mergeable === "yes" ? pass() : fail(`Change request #${change.ref.number} conflicts with its base branch. Return to implementation to update the branch, resolve conflicts, test, and publish a new head.`);
   },
 };

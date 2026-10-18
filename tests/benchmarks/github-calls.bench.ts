@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { ensureRuntimeDirectories } from "../../src/app/runtime";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
@@ -16,6 +17,9 @@ import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from
 import { GitHubCallMeter, MeteredGitHubTransport, currentGitHubCallSource, githubRoute } from "../../src/source/github/call-meter";
 import { createGitHubCodeHostRegistry } from "../../src/source/github/codehost-registry";
 import { GitHubSimulator } from "../support/github-simulator";
+import { GitHubReadCache } from "../../src/source/github/read-cache";
+import type { Harness } from "../../src/harness/types";
+import { EMPTY_USAGE, UNAVAILABLE_COST } from "../../src/runner/result";
 
 const ADDRESS = "owner/my-app";
 const SECRET = "benchmark-secret";
@@ -24,6 +28,12 @@ const SHA_1 = "1".repeat(40);
 const SHA_2 = "2".repeat(40);
 const MINUTE = 60_000;
 const ITEM_50 = `github:${ADDRESS}#50`;
+
+/** Runs git synchronously in `cwd` with a fixed identity. */
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "b", GIT_AUTHOR_EMAIL: "b@example.com", GIT_COMMITTER_NAME: "b", GIT_COMMITTER_EMAIL: "b@example.com" } });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
 
 interface Recorded { at: number; source: string; call: string }
 
@@ -56,18 +66,31 @@ async function flush(): Promise<void> {
   await readFile(import.meta.path);
 }
 
-async function world(options: { openIssues: number; pulls: number; enrolledParked?: number }) {
+async function world(options: { openIssues: number; pulls: number; enrolledParked?: number; reviewAgent?: boolean; agent?: unknown }) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-github-calls-bench-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
-  await mkdir(repositoryPath);
+  if (options.reviewAgent) {
+    // An agent run works in a worktree of a real clone.
+    const origin = path.join(root, "origin.git");
+    git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+    git(root, "clone", "--quiet", origin, repositoryPath);
+    await writeFile(path.join(repositoryPath, "README.md"), "app\n");
+    git(repositoryPath, "add", "README.md");
+    git(repositoryPath, "commit", "--quiet", "-m", "Start");
+    git(repositoryPath, "push", "--quiet", "origin", "main");
+  } else {
+    await mkdir(repositoryPath);
+  }
   await writeFile(path.join(root, "instructions.md"), "Work.");
   await writeFile(path.join(root, "config.yml"), `
 settings: { database: ${root}/db.sqlite, logs: ${root}/logs, workspaces: ${root}/workspaces, artifacts: ${root}/artifacts }
 web: { publicUrl: "https://conveyor.example.com" }
 sources: { github: { type: github, webhookSecret: ${SECRET}, autoConfigureWebhook: true } }
 runners: { codex: { type: codex } }
-agents: { worker: { runner: codex, instructions: ./instructions.md } }
+agents:
+  worker: { runner: codex, instructions: ./instructions.md }
+  reviewer: { runner: codex, instructions: ./instructions.md, tasks: [change.get, change.listFindings, change.checkCriterion, agent.reportProgress] }
 checks: {}
 labels:
   enrollment: conveyor
@@ -89,7 +112,13 @@ pipelines:
         actions: []
         exit-gate:
           - { id: ciGate, task: ci.passed, wait: { timeout: 3h, poll: 1m } }
-      - id: merge
+${options.reviewAgent ? `      - id: review
+        concurrency: 1
+        actions:
+          - { id: review, task: agent.run, with: { agent: reviewer } }
+        exit-gate:
+          - { id: reviewed, task: item.dependenciesMet }
+` : ""}      - id: merge
         concurrency: 1
         actions: []
         exit-gate:
@@ -101,7 +130,7 @@ repositories:
   const simulator = new GitHubSimulator();
   const tap = new Tap(simulator);
   const meter = new GitHubCallMeter();
-  const github = new GitHubAdapter(new MeteredGitHubTransport(tap, meter), "conveyor");
+  const github = new GitHubAdapter(new GitHubReadCache(new MeteredGitHubTransport(tap, meter)), "conveyor");
   // Background issues: open, not enrolled, as in a real repository.
   for (let number = 1; number <= options.openIssues; number += 1) simulator.addIssue(ADDRESS, { number, labels: ["bug"] });
   for (let index = 0; index < options.pulls; index += 1) simulator.addPullRequest(ADDRESS, { number: 900 + index, headSha: SHA_2 });
@@ -127,14 +156,14 @@ repositories:
 async function scenario(
   name: string,
   description: string,
-  options: { openIssues: number; pulls: number; enrolledParked?: number; includeStartup?: boolean; restart?: boolean },
+  options: { openIssues: number; pulls: number; enrolledParked?: number; includeStartup?: boolean; restart?: boolean; agent?: (service: () => ConveyorService) => Harness },
   seed: (w: Awaited<ReturnType<typeof world>>, store: ConveyorStore) => void,
   script: (w: Awaited<ReturnType<typeof world>> & { service: ConveyorService; advance: (ms: number) => Promise<void> }) => Promise<string>,
 ): Promise<ScenarioResult> {
   log.configure(process.env.BENCHMARK_LOG ? { level: "debug", sinks: [new ConsoleSink()] } : { sinks: [] });
   jest.useFakeTimers();
   jest.setSystemTime(START);
-  const w = await world(options);
+  const w = await world({ ...options, reviewAgent: options.agent !== undefined });
   // State Conveyor already holds locally (a known pull request) is written before the service opens.
   const seeded = await ConveyorStore.open(w.config.settings.database);
   seeded.upsertRepository({ id: "app", configName: "app", source: "github", address: ADDRESS, folder: w.config.repositories.app!.folder, configHash: w.config.hash });
@@ -151,7 +180,18 @@ async function scenario(
     await first.close();
   }
   const startupFrom = w.tap.calls.length;
-  const service = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
+  let service: ConveyorService;
+  if (options.agent) {
+    // As ConveyorService.create, with the scenario's agent in place of a real one.
+    await ensureRuntimeDirectories(w.config);
+    const store = await ConveyorStore.open(w.config.settings.database);
+    const harness = options.agent(() => service);
+    service = new ConveyorService(w.config, store, w.github, { codeHosts: createGitHubCodeHostRegistry(w.config, w.github), githubCalls: w.meter, harnesses: { codex: harness, "claude-code": harness } });
+    await service.onboardRepositories();
+    await service.reconcileAll();
+  } else {
+    service = await ConveyorService.create(w.config, w.github, createGitHubCodeHostRegistry(w.config, w.github), w.meter);
+  }
   const advance = async (ms: number) => {
     const step = 5_000;
     for (let elapsed = 0; elapsed < ms; elapsed += step) {
@@ -365,6 +405,55 @@ describe("GitHub calls per scenario", () => {
         }
         const issue = service.store.getIssue(ITEM_50);
         return `item ${issue?.projectedStage ?? "-"}/${issue?.projectedState ?? "-"}`;
+      },
+    );
+  }, 300_000);
+
+  test("review: an agent reviews one item for an hour's worth of tool calls next to 30 parked items", async () => {
+    const toolCalls: string[] = [];
+    await scenario(
+      "review-agent-30-enrolled",
+      "One item in review with its pull request and green CI, next to 30 enrolled items parked on a blocker. The review agent makes the tool calls production's reviewer made in its busiest hour: change.get 6 times, change.listFindings 6 times, change.checkCriterion 12 times (each with the change head) and agent.reportProgress 6 times. Measured until the item leaves review.",
+      {
+        openIssues: 20, pulls: 4, enrolledParked: 30,
+        agent: (service) => ({
+          id: "fake-reviewer",
+          capabilities: { sessionResume: false },
+          async run(input) {
+            const context = JSON.parse(await readFile(path.join(input.artifactsDirectory, "mcp-context.json"), "utf8")) as { control: { token: string } };
+            const call = async (tool: string, toolInput: Record<string, unknown> = {}) => {
+              toolCalls.push(tool);
+              await service().handleMcp({ tool, input: toolInput }, context.control.token).catch(() => undefined);
+            };
+            for (let round = 0; round < 6; round += 1) {
+              await call("change.get");
+              await call("change.listFindings");
+              await call("change.checkCriterion", { criterionId: "works", headSha: SHA_1 });
+              await call("change.checkCriterion", { criterionId: "works", headSha: SHA_1 });
+              await call("agent.reportProgress", { message: `Reviewed part ${round + 1}` });
+            }
+            return {
+              stageResult: { outcome: "success", status: "done", summary: "Reviewed", reason: null, metrics: {} },
+              sessionId: null, usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
+            };
+          },
+        }),
+      },
+      (w, store) => {
+        const { simulator } = w;
+        simulator.addIssue(ADDRESS, { number: 50, labels: enrolled("review"), body: "## Acceptance criteria\n\n- [ ] It works <!-- criterion:works -->\n" });
+        simulator.addPullRequest(ADDRESS, { number: 150, headSha: SHA_1, headRef: "conveyor/50-work" });
+        simulator.setCheckRuns(ADDRESS, SHA_1, [{ name: "build", status: "completed", conclusion: "success", startedAt: START.toISOString(), completedAt: START.toISOString() }]);
+        store.upsertIssue({ id: ITEM_50, repositoryId: "app", sourceNumber: 50, sourceUrl: `https://github.com/${ADDRESS}/issues/50`, title: "Issue 50", body: "", sourceState: "open", labels: enrolled("review"), sourceUpdatedAt: START.toISOString() });
+        store.setIssueProjection(ITEM_50, { stage: "review", state: "active", warning: null });
+        store.setStageState({ issueId: ITEM_50, stageId: "review", status: "ready", feedbackCycle: 0, configHash: w.config.hash });
+        store.activateEnrollment(ITEM_50);
+        store.upsertPullRequest({ issueId: ITEM_50, id: `github:${ADDRESS}#pr-150`, number: 150, url: `https://github.com/${ADDRESS}/pull/150`, state: "open" });
+      },
+      async ({ service, advance }) => {
+        const left = () => service.store.getIssue(ITEM_50)?.projectedStage !== "review";
+        for (let waited = 0; waited < 30 * MINUTE && !left(); waited += 5_000) await advance(5_000);
+        return `${toolCalls.length} agent tool calls; item ${service.store.getIssue(ITEM_50)?.projectedStage ?? "-"}`;
       },
     );
   }, 300_000);
