@@ -133,7 +133,7 @@ export function boundSnapshotLogs<T extends { runs: Array<{ log: string | null }
 
 export interface FailedRun { name: string; state: CiRunState; url: string | null; log: string | null }
 
-const TEST_FAILURE_LINE = /^(?:# Subtest:\s*|not ok \d+\s*-\s*|✖\s*|❌\s*|FAIL\s+|--- FAIL:\s*)(.+)$/i;
+const TEST_FAILURE_LINE = /^(?:(?:# Subtest:\s*|not ok \d+\s*-\s*|✖\s*|❌\s*|FAIL\s+|--- FAIL:\s*)(.+)|\(fail\)\s+(.+?)(?:\s+\[[^\]]+\])?)$/i;
 const ERROR_LINE = /##\[error\]|\b(?:error|exception|assertion|expected|actual|fatal|failed)\b/i;
 
 /**
@@ -155,7 +155,10 @@ function ciFailureDiagnostics(log: string | null): string[] {
   if (!log) return [];
   const lines = log.split("\n").map(normalizeCiDiagnostic).filter(Boolean);
   const tests = lines
-    .map((line) => line.match(TEST_FAILURE_LINE)?.[1]?.replace(/\s*\(failed\)$/i, "").trim() ?? null)
+    .map((line) => {
+      const match = line.match(TEST_FAILURE_LINE);
+      return (match?.[1] ?? match?.[2])?.replace(/\s*\(failed\)$/i, "").trim() ?? null;
+    })
     .filter((line): line is string => line !== null);
   const errors = lines.filter((line) => ERROR_LINE.test(line) && !TEST_FAILURE_LINE.test(line));
   if (tests.length > 0) return [...new Set(tests)].slice(0, 15);

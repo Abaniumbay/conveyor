@@ -44,6 +44,7 @@ function canRerun(status: string, conclusion: string | null): boolean {
 const FAILURE_MARKERS = [
   /^not ok \d+/, // TAP (node --test, tap)
   /^(##\[group\])?\s*(✖|✗|❌|×)\s/, // node, mocha, flutter/dart reporters (GitHub groups failed tests)
+  /^\(fail\)\s/, // Bun
   /EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK/, // followed by the Expected/Actual of a Flutter test
   /^\s*FAIL\s/, // jest, vitest
   /^--- FAIL:/, // go test
