@@ -286,7 +286,7 @@ const agentSchema = z
     model: z.string().min(1).optional(),
     effort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     instructions: absolutePathSchema,
-    workspaceAccess: z.enum(["read-only", "workspace-write"]).default("workspace-write"),
+    workspaceAccess: z.enum(["read-only", "workspace-write", "confined"]).default("workspace-write"),
     /** Live web search; a workspace-write agent's own commands also get the network (installs, registries). */
     network: z.boolean().default(false),
     /** Extra directories a workspace-write agent's commands may write, such as package caches. Missing ones are skipped. */

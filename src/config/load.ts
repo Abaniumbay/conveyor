@@ -280,6 +280,10 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     const runner = config.runners[agent.runner];
     if (!runner) {
       error(["agents", name, "runner"], `references unknown runner "${agent.runner}"`);
+    } else if (agent.workspaceAccess === "confined" && runner.type !== "codex") {
+      error(["agents", name], "uses access: confined, which requires the Codex runner");
+    } else if (agent.workspaceAccess === "confined" && agent.writableRoots.length > 0) {
+      error(["agents", name], "is confined, so writableRoots does not apply");
     } else if (runner.type === "claude-code" && agent.workspaceAccess === "workspace-write" && !agent.network) {
       // The Claude CLI needs the network for its own API calls, so its commands cannot be cut off from it.
       error(["agents", name], "runs on Claude Code with access: workspace-write, which needs network: true (its commands cannot be kept off the network yet)");

@@ -180,8 +180,9 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
 | `operator.answerItemQuestion` | tool | - | - | Answer an open question for a scheduled-check target only when the answer follows unambiguously from the quoted current source or recorded conversation evidence. |
+| `operator.findItem` | tool | - | - | Find visible board items by #123, 123, repository 123, repository#123, owner/repository#123, or repository-id:123. Returns every visible match and says explicitly when none is on this configured board. |
 | `operator.getBoard` | tool | - | - | Read the reconciled board, configured repository health, and item state without changing anything. |
-| `operator.getItemHistory` | tool | - | - | Read a bounded, pageable diagnostic history for one configured board item. |
+| `operator.getItemHistory` | tool | - | - | Read a bounded, pageable diagnostic history for one visible configured board item. Its itemId accepts the same supported reference forms as operator.findItem. |
 | `operator.moveBacklogItem` | tool | - | - | Move an eligible top-level backlog item up, down, before another item, or to the end. |
 | `operator.reportStoppedItemOutcome` | tool | - | - | Record why an inspected scheduled-check target remains stopped when the Operator cannot safely retry it or answer its question. |
 | `operator.retryItem` | tool | - | - | Retry an eligible stopped board item after the owner explicitly requests it. |

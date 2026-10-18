@@ -144,7 +144,7 @@ omid:                                    # steering operator (web UI)
   model: gpt-6-luna
   effort: medium
   instructions: ../../skills/conveyor-operator/SKILL.md
-  access: workspace-write
-  tasks: [operator.getBoard, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem,
+  access: confined
+  tasks: [operator.getBoard, operator.findItem, operator.getItemHistory, operator.retryItem, operator.moveBacklogItem,
           agent.reportProgress, agent.reportRationale, agent.reportBlocker,
           agent.reportResult, agent.reportMilestone]

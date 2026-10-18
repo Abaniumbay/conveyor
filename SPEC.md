@@ -427,7 +427,7 @@ agents:
     model: configured-model-name
     effort: medium
     instructions: ./instructions/operator.md
-    workspaceAccess: workspace-write
+    workspaceAccess: confined
 
 checks:
   generic-enter:
@@ -1039,6 +1039,7 @@ This is a trusted single-user VPS tool, not a hostile multi-tenant execution ser
 - Reviewers receive read-only workspace access.
 - Process environment is allowlisted per harness; web/session and source API credentials are never passed to agents or ordinary scripts. A deployment script receives only secrets explicitly allowlisted for that script.
 - Agents receive no source-provider credentials: every Codex agent process starts from a sanitized environment (provider tokens and their enterprise variants, `GIT_ASKPASS`, `SSH_AUTH_SOCK`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`, every `CONVEYOR_*` variable and anything named like a token, secret, password or API key are removed) with a per-run `HOME` holding only a `.gitconfig` with the repository's `user.name` and `user.email`. Codex authenticates through `CODEX_HOME`, which keeps pointing at the real `~/.codex`.
+- The configured Operator is an exception to the normal steering workspace: owner-started and scheduled Operator runs start in an empty scratch filesystem. Its only persistent state comes through its run-scoped Conveyor MCP grant; no host home, steering workspace, configuration, or database is mounted. A failed confinement setup prevents the agent from starting rather than falling back to a host-readable sandbox.
 - Repository paths are resolved and validated against configured absolute paths.
 - Commands are argument arrays, not shell-concatenated strings.
 - Logs redact configured secret patterns and environment values.
@@ -1061,7 +1062,7 @@ Repositories that declare `agentEgress` run every Codex agent process (every `ag
 - Residual risk: a process running as the same user can read the control-plane token from `/proc/<codex pid>/environ`, and Codex's own shell-policy handling is trusted to keep proxy variables out of commands. The token only authenticates a proxy that reaches the model hosts and dies with the run. The `shell_environment_policy` and `sandbox_workspace_write.network_access` keys follow Codex's documented configuration and were not exercised against a live Codex run; run `scripts/check-agent-egress.ts` and one canary agent run before relying on them.
 - Residual risk: the sandbox is network and PID isolation only. `--dev-bind / /` leaves the host filesystem visible; confinement of file access remains Codex's own `workspace-write` or `read-only` sandbox.
 - Residual risk: traffic to an allowed host is an opaque TLS tunnel. An agent, or a malicious dependency it installs, can send data to any allowed host (for example a package registry that accepts requests with arbitrary paths); the allowlist limits where, not what.
-- Residual risk: a repository without `agentEgress` gets the sanitized environment but no network isolation (legacy behaviour until its configuration is migrated), steering runs are system-scoped and not sandboxed, and enforcement requires Linux with `bwrap`.
+- Residual risk: a repository without `agentEgress` gets the sanitized environment but no network isolation (legacy behaviour until its configuration is migrated), non-Operator steering runs are system-scoped and not sandboxed, and enforcement requires Linux with `bwrap`.
 - Residual risk: the sandbox has not yet been exercised against a live Codex run; that live smoke run is a prerequisite of the canary (`docs/migration.md`).
 - Operator verification: `bun scripts/check-agent-egress.ts <repository-id> --config <dir>` (real network; not part of `bun test`). It restores the repository's dependencies in the sandbox with an empty cache, requires `api.github.com` and direct IP connections to fail, and lists every host the proxy refused so the allowlist can be completed.
 

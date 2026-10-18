@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
-import { privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
+import { confinedCommand, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -20,6 +20,38 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
   expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
+
+describeSandbox("confined command exposes only its fresh scratch directory", () => {
+  test("denies an agent read of another Conveyor home's database", async () => {
+    const root = await shortTemporaryDirectory("conveyor-operator-confined-");
+    try {
+      const scratch = path.join(root, "scratch");
+      const otherHome = path.join(root, "another-conveyor-home");
+      const database = path.join(otherHome, "conveyor.sqlite");
+      const agent = path.join(root, "agent");
+      await mkdir(scratch);
+      await mkdir(otherHome);
+      await writeFile(database, "database that must not be readable");
+      await writeFile(agent, `#!/bin/sh
+      test -z "$(ls -A \"$TMPDIR\")" || exit 11
+      if cat "$HOST_DATABASE" >/dev/null 2>&1; then exit 12; fi
+      printf usable > "$TMPDIR/operator-file"
+    `);
+      const launch = confinedCommand({
+        argv: [agent],
+        env: { PATH: "/usr/bin", HOST_DATABASE: database },
+        scratch,
+      });
+      expect(await readdir(scratch)).toEqual([]);
+      const child = Bun.spawn(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
+      expect(await child.exited).toBe(0);
+      expect(await Bun.file(path.join(scratch, "operator-file")).text()).toBe("usable");
+      expect(await Bun.file(database).text()).toBe("database that must not be readable");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 test("network isolation normalizes a symlinked run temporary directory", async () => {
