@@ -10,6 +10,22 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.11.3] - 2026-10-18
+
+Items start their next stage as soon as the previous one finishes, opened item details stay open through board refreshes, and a CI failure that repeats stops the item instead of retrying.
+
+### Changed
+
+- Required CI now stops an item for intervention when the same diagnosed failure repeats consecutively, retaining both failed-run links and focused log excerpts instead of repeatedly retrying.
+
+- The packaged refinement instructions no longer turn release notes or changelog fragments into acceptance criteria. Every user-visible change still adds its fragment by repository rule; CI now validates the fragments on every pull request.
+
+### Fixed
+
+- Stages now schedule their next eligible work as soon as the finishing worker releases its capacity, rather than waiting for a later reconciliation or unrelated event.
+
+- Opening an item now takes precedence over an earlier board refresh, so its details remain visible while the board updates.
+
 ## [0.11.2] - 2026-10-18
 
 Conveyor no longer depends on stage names, a rebased branch can be pushed before its pull request exists, the Graph is drawn, acceptance criteria show one clear marker, and closed items recover.
