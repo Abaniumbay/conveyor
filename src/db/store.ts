@@ -1301,6 +1301,17 @@ export class ConveyorStore {
     })();
   }
 
+  getActiveEnrollment(issueId: string): EnrollmentRecord | null {
+    const row = this.#database
+      .query(
+        `SELECT * FROM enrollments
+         WHERE issue_id = ? AND status = 'active'
+         ORDER BY generation DESC LIMIT 1`,
+      )
+      .get(issueId) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapEnrollment(row) : null;
+  }
+
   getEnrollment(id: string): EnrollmentRecord | null {
     const row = this.#database
       .query("SELECT * FROM enrollments WHERE id = ?")

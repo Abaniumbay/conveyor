@@ -1108,12 +1108,13 @@ export class ConveyorService {
       }
     }
     try {
+      const enrollment = this.store.getActiveEnrollment(issue.id);
       await applyClosedItemOffboarding({
         store: this.store,
         source: this.executionGitHub(repositoryId),
         sourceName: repository.source,
         address: repository.address,
-        transitionId: `closed-item-offboard:${issue.id}`,
+        transitionId: `closed-item-offboard:${issue.id}:${enrollment?.generation ?? "untracked"}`,
         issue,
       });
     } catch (error) {

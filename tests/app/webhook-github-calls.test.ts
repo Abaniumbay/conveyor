@@ -256,6 +256,43 @@ describe("GitHub calls made for webhook deliveries", () => {
     store.close();
   });
 
+  test("a re-enrolled closed item offboards its new enrollment", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service();
+    await conveyor.reconcileAll();
+    expect(store.activateEnrollment(issue.id).generation).toBe(1);
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.labels = ["conveyor", "conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    issue.state = "open";
+    issue.stateReason = null;
+    issue.labels = ["conveyor", "conveyor:work", "unrelated"];
+    issue.updatedAt = "2026-10-07T22:00:00Z";
+    await conveyor.reconcileAll();
+    expect(store.activateEnrollment(issue.id).generation).toBe(2);
+    issue.state = "closed";
+    issue.stateReason = "not_planned";
+    issue.updatedAt = "2026-10-07T23:00:00Z";
+
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }, { issue: 1, labels: [] }]);
+    expect(store.listStageTransitions(issue.id).filter((transition) => transition.kind === "offboarded")).toHaveLength(2);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    store.close();
+  });
+
   test("a completed parent remains done when its completed closure delivery arrives", async () => {
     const { conveyor, store, calls, deliver, issue } = await service();
     issue.labels = ["conveyor", "conveyor:work", "conveyor:done"];
