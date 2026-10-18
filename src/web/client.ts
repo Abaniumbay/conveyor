@@ -2334,6 +2334,12 @@ export const dashboardClient = String.raw`(() => {
       const nextDashboard = nextDocument.querySelector('main.dashboard');
       if (!currentDashboard || !nextDashboard) throw new Error('dashboard response is incomplete');
       if (requestVersion !== dashboardRequestVersion) return true;
+      // A board response started before opening an item must not replace the
+      // newer item route or alter the board while its dialog is active.
+      if (preservePosition && (
+        target.pathname + target.search !== location.pathname + location.search ||
+        document.querySelector('dialog[open]')
+      )) return false;
       const focus = describeFocus(currentDashboard);
       const entries = preservePosition ? describeEntries(currentDashboard) : new Map();
       // Measured here, not before the request: the reader may have scrolled while it was in flight.
