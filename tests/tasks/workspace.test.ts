@@ -177,6 +177,23 @@ describe("workspace.ensure", () => {
     expect(w.store.getActiveWorkspace("i1")).toMatchObject({ branch: "conveyor/7-r1-fix-the-thing", generation: 1, status: "active" });
   });
 
+  test("links an existing open change after recovering an unrecorded workspace", async () => {
+    const w = await world();
+    const lookups: unknown[] = [];
+    w.deps.codeHost = {
+      async findOpenChange(input: unknown) {
+        lookups.push(input);
+        return { id: "github:o/r#pr-7", number: 7, url: "https://example.test/pr/7", state: "open", headSha: "b".repeat(40), draft: false, mergeable: null };
+      },
+    } as never;
+
+    expect((await ensure(w)).status).toBe("pass");
+    expect(lookups).toEqual([{ address: "o/r", branch: "conveyor/7-r1-fix-the-thing" }]);
+    expect(w.store.getCurrentPullRequest("i1")).toMatchObject({ id: "github:o/r#pr-7", number: 7, state: "open" });
+    await ensure(w);
+    expect(lookups).toHaveLength(1);
+  });
+
   test("is a no-op when an active workspace exists on disk, and idempotent", async () => {
     const w = await world();
     await w.record();

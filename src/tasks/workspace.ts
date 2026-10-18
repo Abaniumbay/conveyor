@@ -11,6 +11,7 @@ import type { WorkspaceContext } from "./context";
 import { defineGroup, fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 import { ToolRequestError } from "./errors";
+import { linkExistingChange } from "../codehost/actions";
 import { GitPushRejectedError } from "../workspace/git";
 import { ensureWorkspace, removeWorkspace } from "../workspace/lifecycle";
 
@@ -95,12 +96,18 @@ const removed: TaskDefinition<unknown, unknown, Deps> = {
 const ensure: TaskDefinition<unknown, unknown, Deps> = {
   name: "workspace.ensure",
   kind: "act",
-  description: "Creates the issue's workspace (worktree and branch) when none is recorded; re-attaches the recorded path to its existing branch when the directory went missing; otherwise does nothing.",
+  description: "Ensures the issue has a workspace. Without a record, adopts the computed registered worktree or existing local or origin branch before creating a fresh branch from the base; re-attaches a recorded branch when its directory went missing; otherwise does nothing.",
   reads: ["repository"],
   writes: [],
   invalidates: ["workspace"],
   async run({ deps }: Args) {
-    await ensureWorkspace({ store: deps.store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
+    const workspace = await ensureWorkspace({ store: deps.store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
+    if (deps.codeHost) {
+      await linkExistingChange({
+        codeHost: deps.codeHost, store: deps.store, address: deps.repository.address,
+        issueId: deps.issueId, branch: workspace.branch,
+      });
+    }
     return pass();
   },
 };

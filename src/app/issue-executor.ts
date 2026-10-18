@@ -24,6 +24,12 @@ export interface IssueExecutorDependencies {
   sourceName: string;
   source: TransitionSource;
   workspaceManager: Pick<WorkspaceManager, "create">;
+  /** Reconnects a newly recovered legacy workspace to its existing change before runtime delivery. */
+  recoverWorkspaceChange?: (
+    issue: StoredIssue,
+    repository: { id: string; address: string; folder: string; baseBranch: string },
+    workspace: { path: string; branch: string },
+  ) => Promise<void>;
   loadDeliveryState?: (
     issue: StoredIssue,
     repository: { id: string; address: string; folder: string; baseBranch: string },
@@ -84,12 +90,18 @@ export class IssueExecutor {
     let workspace = store.getActiveWorkspace(issue.id);
     // Legacy stages get today's pre-created workspace; native stages ensure their own.
     if (!workspace && stage.legacy) {
-      workspace = await createWorkspace({
+      const created = await createWorkspace({
         store,
         manager: this.dependencies.workspaceManager,
         issue,
         repository: { id: repositoryId, folder: repository.folder, baseBranch: repository.baseBranch },
       });
+      workspace = created;
+      if (created.adopted) {
+        await this.dependencies.recoverWorkspaceChange?.(issue, {
+          id: repositoryId, address: repository.address, folder: repository.folder, baseBranch: repository.baseBranch,
+        }, workspace);
+      }
     }
 
     const journal = store.executions();

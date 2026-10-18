@@ -17,6 +17,8 @@ export interface WorkspaceRepository {
   baseBranch: string;
 }
 
+export type EnsuredWorkspace = StoredWorkspace & { adopted: boolean };
+
 function slug(title: string): string {
   return title
     .toLowerCase()
@@ -31,7 +33,7 @@ export async function createWorkspace(input: {
   manager: Pick<WorkspaceManager, "create">;
   issue: Pick<StoredIssue, "id" | "sourceNumber" | "title">;
   repository: WorkspaceRepository;
-}): Promise<StoredWorkspace> {
+}): Promise<EnsuredWorkspace> {
   const { store, manager, issue, repository } = input;
   const enrollment = store.activateEnrollment(issue.id);
   const created = await manager.create({
@@ -51,7 +53,7 @@ export async function createWorkspace(input: {
   });
   const workspace = store.getActiveWorkspace(issue.id);
   if (!workspace) throw new Error(`workspace for issue ${issue.id} was not recorded`);
-  return workspace;
+  return { ...workspace, adopted: created.adopted ?? false };
 }
 
 /** The item's active workspace: created when none is recorded, re-attached to its branch when the directory went missing. */
@@ -60,7 +62,7 @@ export async function ensureWorkspace(input: {
   manager: Pick<WorkspaceManager, "create" | "ensureScratch" | "restore">;
   issueId: string;
   repository: WorkspaceRepository;
-}): Promise<StoredWorkspace> {
+}): Promise<EnsuredWorkspace> {
   const { store, manager, issueId, repository } = input;
   const existing = store.getActiveWorkspace(issueId);
   if (existing) {
@@ -74,7 +76,7 @@ export async function ensureWorkspace(input: {
       });
     }
     await manager.ensureScratch(existing.path);
-    return { ...existing, path: resolveFilesystemPath(existing.path) };
+    return { ...existing, path: resolveFilesystemPath(existing.path), adopted: false };
   }
   const issue = store.getIssue(issueId);
   if (!issue) throw new Error(`issue ${issueId} is not stored`);

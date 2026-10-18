@@ -105,8 +105,12 @@ repositories:
             path: path.join(root, "worktree"),
             branch: "conveyor/7-r1-a-feature",
             baseRevision: "abc",
+            adopted: true,
           };
         },
+      },
+      recoverWorkspaceChange: async (_issue, _repository, workspace) => {
+        calls.push(`change:${workspace.branch}`);
       },
       loadDeliveryState: async () => ({
         pullRequest: { number: 190, state: "open" },
@@ -154,6 +158,7 @@ repositories:
     }]);
     expect(calls).toEqual([
       "workspace:7",
+      "change:conveyor/7-r1-a-feature",
       "check:enter",
       "producer:refinement",
       "check:exit",

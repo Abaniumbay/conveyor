@@ -31,6 +31,7 @@ import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
 import { workspaceScratchPath } from "../workspace/manager";
+import { linkExistingChange } from "../codehost/actions";
 import { normalizedQuestionOptions, questionConfigurationError } from "../questions";
 
 type Deps = TaskDeps;
@@ -185,6 +186,11 @@ async function runAgent(
   if (!harness || !deps.mcp) throw new InfrastructureError(`no harness is available for runner type ${runner.type}`);
   // The agent works in the item's workspace; a stage whose first action is this one gets it created here.
   const workspace = await ensureWorkspace({ store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
+  if (deps.codeHost) {
+    await linkExistingChange({
+      codeHost: deps.codeHost, store, address: deps.repository.address, issueId: deps.issueId, branch: workspace.branch,
+    });
+  }
 
   const stageId = instance.stage;
   const runId = startRun(store, { issueId: issue.id, stageId, kind: KIND, configHash: deps.config.hash });
