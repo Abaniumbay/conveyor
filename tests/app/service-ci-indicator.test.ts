@@ -247,6 +247,11 @@ test("a Follow-ups gate waits durably, notifies once, and records its acknowledg
 
   expect(() => w.service.approveManualGate("issue", "implementation", "wrong-gate", { id: "admin-1", username: "admin" })).toThrow("configured manual gates");
   expect(w.store.sqlite().query("SELECT COUNT(*) AS count FROM manual_gate_approvals WHERE issue_id = 'issue' AND gate_id = 'followUps'").get()).toEqual({ count: 0 });
+  const waitingCursor = w.store.executions().getCursor("issue")!;
+  const currentEpoch = w.store.executions().onStageChange("issue");
+  expect(() => w.service.approveManualGate("issue", "implementation", "followUps", { id: "admin-1", username: "admin" })).toThrow("manual gate is not waiting");
+  expect(w.store.sqlite().query("SELECT COUNT(*) AS count FROM manual_gate_approvals WHERE issue_id = 'issue' AND gate_id = 'followUps'").get()).toEqual({ count: 0 });
+  w.store.executions().saveCursor({ ...waitingCursor, stageEpoch: currentEpoch }, currentEpoch);
   w.service.approveManualGate("issue", "implementation", "followUps", { id: "admin-1", username: "admin" });
   await w.service.eventsSettled();
   expect(w.store.listConversationMessages("issue").at(-1)).toMatchObject({
