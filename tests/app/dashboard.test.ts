@@ -484,6 +484,53 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("projects detail stage badges from board position and recorded stage history", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-detail-stage-badges-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [
+        { id: "build", name: "Build", icon: "🛠️", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+        { id: "review", name: "Review", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: root, configHash: config.hash });
+    const add = (id: string, number: number, stage: "build" | "review" | null, state: string, sourceState: "open" | "closed", labels: string[]) => {
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://github.com/owner/repo/issues/${number}`,
+        title: id, body: "", sourceState, sourceStateReason: sourceState === "closed" ? "completed" : null, labels,
+        sourceUpdatedAt: "2026-10-01T00:00:00Z",
+      });
+      store.setQueueRank(id, number);
+      store.setIssueProjection(id, { stage, state, warning: null });
+      store.setStageState({ issueId: id, stageId: stage ?? "review", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    };
+    add("in-build", 1, "build", "active", "open", ["conveyor", "conveyor:build"]);
+    add("in-review", 2, "review", "active", "open", ["conveyor", "conveyor:review"]);
+    add("backlog", 3, "build", "active", "open", ["conveyor"]);
+    add("done", 4, "build", "done", "closed", ["conveyor", "conveyor:build"]);
+    add("offboarded", 5, null, "offboarded", "closed", ["conveyor"]);
+
+    const service = new ConveyorService(config, store, {} as never);
+    const model = service.dashboard("csrf");
+    const staged = model.stages.flatMap((column) => column.issues);
+    expect(staged.find((card) => card.id === "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️", offboarded: false } });
+    expect(staged.find((card) => card.id === "in-review")).toMatchObject({ stageBadge: { name: "Review", icon: null, offboarded: false } });
+    expect(model.backlog.find((card) => card.id === "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null, offboarded: false } });
+    expect(model.done.issues.find((card) => card.id === "done")).toMatchObject({ stageBadge: { name: "Done", icon: null, offboarded: false } });
+    expect(service.issueDetails("csrf", "in-build")).toMatchObject({ stageBadge: { name: "Build", icon: "🛠️", offboarded: false } });
+    expect(service.issueDetails("csrf", "backlog")).toMatchObject({ stageBadge: { name: "Backlog", icon: null, offboarded: false } });
+    expect(service.issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null, offboarded: false } });
+    expect(service.issueDetails("csrf", "offboarded")).toMatchObject({ historyOnly: true, stageBadge: { name: "Review", icon: null, offboarded: true } });
+    store.close();
+  });
+
   test("a parent's children carry their station and signal, and each child its parent's progress", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-families-"));
     temporaryDirectories.push(root);

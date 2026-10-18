@@ -37,7 +37,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -319,6 +319,18 @@ function displayName(value: string): string {
       ? part.toUpperCase()
       : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join(" ");
+}
+
+function itemStageBadge(
+  stageId: string | null,
+  stageNames: ReadonlyMap<string, string>,
+  stageIcons: ReadonlyMap<string, string>,
+  position: "backlog" | "done" | "offboarded" | null,
+): IssueStageBadgeViewModel {
+  if (position === "backlog") return { name: "Backlog", icon: null, offboarded: false };
+  if (position === "done") return { name: "Done", icon: null, offboarded: false };
+  const name = stageId === null ? "Unknown stage" : stageNames.get(stageId) ?? displayName(stageId);
+  return { name, icon: stageId === null ? null : stageIcons.get(stageId) ?? null, offboarded: position === "offboarded" };
 }
 
 function userFacingSteeringEvent(event: {
@@ -4358,6 +4370,7 @@ export class ConveyorService {
         csrfToken,
         todos: todosView(todos.get(issue.id)?.items ?? []),
         stage: issue.projectedStage,
+        stageBadge: stageBadgeFor(issue, state),
         searchActors: issue.projectedStage
           ? actorsForStage(issue.projectedStage, this.config.repositories[issue.repositoryId]?.pipeline)
           : [],
@@ -4544,6 +4557,21 @@ export class ConveyorService {
         (issue.projectedState === "needs-input" && stageState?.status === "ready");
     });
     const backlogIds = new Set(backlogIssues.map((issue) => issue.id));
+    const stageBadgeFor = (
+      issue: StoredIssue,
+      state: ReturnType<ConveyorStore["getStageState"]>,
+    ): IssueStageBadgeViewModel => itemStageBadge(
+      issue.projectedStage ?? state?.stageId ?? null,
+      stageNames,
+      stageIcons,
+      issue.projectedState === "offboarded"
+        ? "offboarded"
+        : finishedRollupIds.has(issue.id) || (issue.sourceState === "closed" && !remainsInWorkflow(issue))
+        ? "done"
+        : backlogIds.has(issue.id)
+        ? "backlog"
+        : null,
+    );
     const stagedIssues = workflowIssues.filter((issue) =>
       !backlogIds.has(issue.id) &&
       issue.projectedStage !== null &&
@@ -4930,6 +4958,12 @@ export class ConveyorService {
     const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
     const stages = pipeline?.stages ?? [];
     const stageNames = stages.map((stage) => stage.name ?? displayName(stage.id));
+    const stageNamesById = new Map<string, string>();
+    const stageIconsById = new Map<string, string>();
+    for (const stage of stages) {
+      stageNamesById.set(stage.id, stage.name ?? displayName(stage.id));
+      if (stage.icon) stageIconsById.set(stage.id, stage.icon);
+    }
     const activeIssueIds = new Set(this.store.listActiveIssueRuns().map((run) => run.issueId));
     const allOpenQuestions = this.store.listOpenQuestions();
     const openQuestions = allOpenQuestions.filter((question) => question.issueId === issue.id);
@@ -5048,6 +5082,12 @@ export class ConveyorService {
       ? `GitHub close reason: ${issue.sourceStateReason.replaceAll("_", " ")}.`
       : null;
     const projectedState = finished ? doneState : issue.projectedState ?? issue.sourceState;
+    const stageBadge = itemStageBadge(
+      issue.projectedStage ?? state?.stageId ?? null,
+      stageNamesById,
+      stageIconsById,
+      issue.projectedState === "offboarded" ? "offboarded" : finished ? "done" : isBacklog(issue) ? "backlog" : null,
+    );
     const manualGates = this.manualGateViews(issue);
     const manualWaiting = manualGates.find((gate) => gate.waiting) ?? null;
     const waiting = !questionIssueIds.has(issue.id) ? this.currentIssueStatus(issue, queue) : null;
@@ -5119,6 +5159,7 @@ export class ConveyorService {
       csrfToken,
       todos: todosView(todos.get(issue.id)?.items ?? []),
       stage: issue.projectedStage,
+      stageBadge,
       searchActors: issue.projectedStage ? actorsForStage(issue.projectedStage) : [],
       indicators,
       activity: cursor?.state === "pending" ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}` : state ? `${state.stageId} · ${state.status}` : null,
