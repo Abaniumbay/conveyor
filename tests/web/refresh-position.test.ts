@@ -1111,8 +1111,15 @@ describe("dashboard live refresh position", () => {
       await signIn(page, server.port);
       doneQueries.length = 0;
 
+      const initialDoneResponse = page.waitForResponse((response) => {
+        if (response.request().resourceType() !== "fetch") return false;
+        const parameters = new URL(response.url()).searchParams;
+        return parameters.get("repo") === "alpha" && !parameters.has("q");
+      });
       await page.locator('.repository-filter label').filter({ hasText: "alpha" }).click();
       await page.waitForFunction(() => location.search === "?repo=alpha");
+      await initialDoneResponse;
+      doneQueries.length = 0;
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
       expect(await page.locator('[data-board-filters] a[href^="/repositories/"]').count()).toBe(0);
