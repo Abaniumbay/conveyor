@@ -257,9 +257,17 @@ describe("scheduling", () => {
     await service.close();
   });
 
-  test("a burst of events schedules once", async () => {
+  test("a released worker requests scheduling", async () => {
     const { service, store, records } = await setup({ drained: false });
-    for (let index = 0; index < 5; index += 1) store.events().append("command.accepted", { command: "backlog.move" });
+    store.events().append("worker.released", { stageId: "implementation" }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(started(records)).toHaveLength(1);
+    await service.close();
+  });
+
+  test("a burst of worker releases schedules once", async () => {
+    const { service, store, records } = await setup({ drained: false });
+    for (let index = 0; index < 5; index += 1) store.events().append("worker.released", { stageId: "implementation" }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(started(records)).toHaveLength(1);
     await service.close();

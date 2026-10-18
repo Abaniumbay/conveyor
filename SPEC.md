@@ -826,7 +826,7 @@ The UI has one global backlog spanning configured repositories.
 - Manual global ranks are stored in SQLite because queue priority is operational UI state, not issue truth.
 - Only top-level items are draggable. Children remain nested under their parent.
 - When a top-level issue is decomposed, its roll-up parent retains the same global rank and its children are scanned beneath it in configured sibling order.
-- The scheduler scans the flattened visible hierarchy from top to bottom and starts the first eligible items.
+- The scheduler scans the flattened visible hierarchy from top to bottom and starts the first eligible items. It runs when a worker releases its permit, so newly eligible next stages and other waiting items can use freed capacity immediately; periodic reconciliation remains a safety net.
 - A blocked/dependent item does not prevent later eligible items from starting.
 
 A runnable stage phase must acquire its applicable permits:

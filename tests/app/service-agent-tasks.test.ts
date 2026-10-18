@@ -23,7 +23,7 @@ const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] It works <!
 
 type Call = HarnessRunInput & HarnessResumeInput;
 
-async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; waitAfterQuestion?: boolean; completeAfterRelease?: boolean; fenceAfterQuestion?: boolean; reconcile?: boolean; scheduling?: boolean } = {}) {
+async function setup(options: { noWorkspace?: boolean; needsInput?: boolean; questionOptions?: unknown[]; allowFreeText?: boolean; waitForAbort?: boolean; waitForRelease?: boolean; waitForRun?: number; waitAfterQuestion?: boolean; completeAfterRelease?: boolean; fenceAfterQuestion?: boolean; reconcile?: boolean; scheduling?: boolean; implementationAgent?: boolean; reviewReturn?: boolean; initialStage?: "refinement" | "review"; waitingItem?: boolean; results?: Array<{ outcome: "success" | "failure"; status: string; summary: string; reason: string | null }> } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-agent-service-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -54,8 +54,14 @@ pipelines:
         exit-gate: [{ task: item.criteriaDefined }]
       - id: implementation
         concurrency: 1
-        actions: []
+        actions: ${options.implementationAgent ? "[{ task: agent.run, with: { agent: worker } }]" : "[]"}
         exit-gate: [{ task: item.criteriaDefined }]
+${options.reviewReturn ? `      - id: review
+        concurrency: 1
+        retries: 0
+        actions: []
+        exit-gate: [{ task: change.findingsResolved, onFail: { return: implementation } }]
+` : ""}
 repositories:
   repo:
     source: github
@@ -68,6 +74,7 @@ repositories:
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repositoryPath, configHash: config.hash });
   const labelWrites: string[][] = [];
   const comments: string[] = [];
+  const sourceLabels = new Map<string, string[]>();
   const linkedChildren = new Set<number>();
   let failComments = 0;
   let failLabels = 0;
@@ -81,7 +88,7 @@ repositories:
         body: issue.body,
         state: issue.sourceState,
         stateReason: issue.sourceStateReason,
-        labels: issue.labels,
+        labels: sourceLabels.get(issue.id) ?? issue.labels,
         updatedAt: issue.sourceUpdatedAt,
       }));
     },
@@ -89,6 +96,21 @@ repositories:
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
     },
     async collaboratorPermission() { return "write" as const; },
+    async getIssue(_address: string, number: number) {
+      const issue = store.listIssues("repo").find((candidate) => candidate.sourceNumber === number);
+      if (!issue) throw new Error(`Unknown issue ${number}`);
+      return {
+        id: issue.id,
+        number: issue.sourceNumber,
+        url: issue.sourceUrl,
+        title: issue.title,
+        body: issue.body,
+        state: issue.sourceState,
+        stateReason: issue.sourceStateReason,
+        labels: sourceLabels.get(issue.id) ?? issue.labels,
+        updatedAt: issue.sourceUpdatedAt,
+      };
+    },
     async listSubIssues(_address: string, number: number) {
       if (number !== 1) return [];
       return store.listIssues("repo")
@@ -101,14 +123,17 @@ repositories:
           body: child.body,
           state: child.sourceState,
           stateReason: child.sourceStateReason,
-          labels: child.labels,
+          labels: sourceLabels.get(child.id) ?? child.labels,
           updatedAt: child.sourceUpdatedAt,
         }));
     },
     async listDependencies() { return []; },
-    replaceConveyorLabels: async (_a: string, _n: number, labels: string[]) => {
+    replaceConveyorLabels: async (_a: string, number: number, labels: string[]) => {
       if (failLabels > 0) { failLabels -= 1; throw new Error("temporary label outage"); }
       labelWrites.push([...labels]);
+      const issue = store.listIssues("repo").find((candidate) => candidate.sourceNumber === number);
+      if (!issue) throw new Error(`Unknown issue ${number}`);
+      sourceLabels.set(issue.id, [...labels]);
     },
     hasCommentWithMarker: async (_a: string, _n: number, marker: string) => comments.some((comment) => comment.includes(marker)),
     addComment: async (_a: string, _n: number, body: string) => {
@@ -128,7 +153,7 @@ repositories:
     get capabilities() { return { sessionResume }; },
     async run(input): Promise<RunEnvelope> {
       calls.push(input);
-      if (options.waitForRelease) {
+      if ((options.waitForRelease && calls.length === 1) || options.waitForRun === calls.length) {
         started!();
         await released;
       }
@@ -140,7 +165,7 @@ repositories:
       }
       const runId = path.basename(input.artifactsDirectory);
       const first = calls.length === 1;
-      if (first && !options.completeAfterRelease) store.openQuestion({
+      if (first && !options.completeAfterRelease && !options.results) store.openQuestion({
         issueId: "issue", runId, prompt: "Which database?", reason: "need it",
         options: options.questionOptions ?? [], allowFreeText: options.allowFreeText ?? true,
       });
@@ -152,6 +177,13 @@ repositories:
       if (options.waitAfterQuestion) {
         started!();
         await released;
+      }
+      const configured = options.results?.[calls.length - 1];
+      if (configured) {
+        return {
+          stageResult: { ...configured, metrics: {} },
+          sessionId: "sess-1", usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
+        };
       }
       return {
         stageResult: first && !options.completeAfterRelease
@@ -170,19 +202,30 @@ repositories:
     updateStatusComment: async () => {},
   });
 
+  const initialStage = options.initialStage ?? "refinement";
   store.upsertIssue({
     id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Issue", body: CRITERIA,
-    sourceState: "open", labels: ["conveyor", "conveyor:refinement", ...(options.needsInput ? ["conveyor:needs-input"] : [])], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    sourceState: "open", labels: ["conveyor", `conveyor:${initialStage}`, ...(options.needsInput ? ["conveyor:needs-input"] : [])], sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
-  store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
+  store.setIssueProjection("issue", { stage: initialStage, state: "active", warning: null });
   store.setQueueRank("issue", store.nextQueueRank());
-  store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+  store.setStageState({ issueId: "issue", stageId: initialStage, status: "ready", feedbackCycle: 0, configHash: config.hash });
   const enrollment = store.activateEnrollment("issue");
   const workspace = path.join(root, "ws");
   const created: Array<Record<string, unknown>> = [];
   if (!options.noWorkspace) {
     await mkdir(workspace);
     store.recordWorkspace({ id: "w1", enrollmentId: enrollment.id, path: workspace, branch: "conveyor/1", status: "active" });
+  }
+  if (options.waitingItem) {
+    store.upsertIssue({
+      id: "waiting", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Waiting issue", body: CRITERIA,
+      sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setIssueProjection("waiting", { stage: "refinement", state: "active", warning: null });
+    store.setQueueRank("waiting", store.nextQueueRank());
+    store.setStageState({ issueId: "waiting", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.activateEnrollment("waiting");
   }
   // These fixtures use a workspace outside the configured worktree root, so model the lifecycle
   // manager instead of asking the real manager to validate an intentionally synthetic path.
@@ -224,7 +267,11 @@ describe("agent.run through the service", () => {
       interrupted.close();
 
       const service = await ConveyorService.create(first.config, {} as never, {} as never);
-      (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => { resumed.push(issue.id); };
+      (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => {
+        resumed.push(issue.id);
+        // A real executor makes the item ineligible before releasing its worker.
+        service.store.setIssueProjection(issue.id, { stage: "refinement", state: "needs-input", warning: null });
+      };
       service.start();
       while (resumed.length === 0) await Bun.sleep(5);
 
@@ -263,6 +310,104 @@ describe("agent.run through the service", () => {
       await w.service.close();
       log.configure({ sinks: [new ConsoleSink()] });
     }
+  });
+
+  test("records one worker release after passed, returned, parked, failed, and interrupted runs", async () => {
+    const cases = [
+      { name: "passed", stageId: "refinement", options: { waitForRelease: true, completeAfterRelease: true, scheduling: true }, release: true },
+      { name: "returned", stageId: "review", options: { initialStage: "review" as const, reviewReturn: true, scheduling: true }, release: false },
+      { name: "parked", stageId: "refinement", options: { scheduling: true }, release: false },
+      { name: "failed", stageId: "refinement", options: { scheduling: true, results: [{ outcome: "failure" as const, status: "blocked", summary: "Stopped", reason: "Blocked" }] }, release: false },
+      { name: "interrupted", stageId: "refinement", options: { waitForAbort: true, scheduling: true }, release: false },
+    ];
+
+    for (const scenario of cases) {
+      const w = await setup(scenario.options);
+      const releases: Array<{ issueId: string | null; stageId: string; active: string[] }> = [];
+      const unsubscribe = w.service.events.subscribe("worker.released", "test release observer", (event) => {
+        releases.push({
+          issueId: event.issueId,
+          stageId: event.payload.stageId,
+          active: w.service.activeWork().items.map((item) => item.issueId),
+        });
+      });
+      w.schedule();
+      if (scenario.name === "interrupted") {
+        await w.running;
+        await w.service.close();
+      } else if (scenario.release) {
+        await w.running;
+        w.release();
+      }
+      if (scenario.name !== "interrupted") {
+        while (w.service.activeWork().items.length > 0) await Bun.sleep(5);
+        await w.service.eventsSettled();
+      }
+
+      expect(releases.filter((event) => event.stageId === scenario.stageId)).toEqual([
+        { issueId: "issue", stageId: scenario.stageId, active: [] },
+      ]);
+      unsubscribe();
+      if (scenario.name !== "interrupted") await w.service.close();
+    }
+  });
+
+  test("starts the next stage from the worker release without another scheduler wake", async () => {
+    const w = await setup({ waitForRelease: true, completeAfterRelease: true, implementationAgent: true, reconcile: true, scheduling: true });
+    const releases: string[] = [];
+    const unsubscribe = w.service.events.subscribe("worker.released", "test transition observer", (event) => {
+      releases.push(event.payload.stageId);
+    });
+
+    w.schedule();
+    await w.running;
+    expect(w.calls).toHaveLength(1);
+    w.release();
+    while (w.calls.length < 2) await Bun.sleep(5);
+    await w.service.eventsSettled();
+
+    expect(releases).toContain("refinement");
+    unsubscribe();
+    await w.service.close();
+  });
+
+  test("a review return starts implementation from the released worker", async () => {
+    const w = await setup({
+      initialStage: "review", reviewReturn: true, implementationAgent: true, waitForRun: 1, reconcile: true, scheduling: true,
+    });
+    const releases: Array<{ stageId: string; active: string[] }> = [];
+    const unsubscribe = w.service.events.subscribe("worker.released", "test return observer", (event) => {
+      releases.push({ stageId: event.payload.stageId, active: w.service.activeWork().items.map((item) => item.issueId) });
+    });
+
+    w.schedule();
+    await w.running;
+
+    expect(w.calls).toHaveLength(1);
+    expect(releases).toEqual([{ stageId: "review", active: [] }]);
+    w.release();
+    while (w.service.activeWork().items.length > 0) await Bun.sleep(5);
+    unsubscribe();
+    await w.service.close();
+  });
+
+  test("a worker release fills its freed stage slot with a waiting item", async () => {
+    const w = await setup({ waitForRelease: true, completeAfterRelease: true, reconcile: true, scheduling: true, waitingItem: true });
+    const releases: Array<{ issueId: string | null; stageId: string }> = [];
+    const unsubscribe = w.service.events.subscribe("worker.released", "test capacity observer", (event) => {
+      releases.push({ issueId: event.issueId, stageId: event.payload.stageId });
+    });
+
+    w.schedule();
+    await w.running;
+    expect(w.service.activeWork().items.map((item) => item.issueId)).toEqual(["issue"]);
+    w.release();
+    while (!releases.some((event) => event.issueId === "waiting" && event.stageId === "refinement")) await Bun.sleep(5);
+
+    expect(releases[0]).toEqual({ issueId: "issue", stageId: "refinement" });
+    expect(releases).toContainEqual({ issueId: "waiting", stageId: "refinement" });
+    unsubscribe();
+    await w.service.close();
   });
 
   test("a native stage whose first action is agent.run gets a workspace on an item that has none", async () => {
@@ -436,6 +581,14 @@ describe("agent.run through the service", () => {
 
   test("a projection change during a question releases a fenced executor for an automatically scheduled fresh answer run", async () => {
     const w = await setup({ needsInput: true, fenceAfterQuestion: true, waitAfterQuestion: true, scheduling: true });
+    const releases: Array<{ issueId: string | null; stageId: string; active: string[] }> = [];
+    const unsubscribe = w.service.events.subscribe("worker.released", "test release observer", (event) => {
+      releases.push({
+        issueId: event.issueId,
+        stageId: event.payload.stageId,
+        active: w.service.activeWork().items.map((item) => item.issueId),
+      });
+    });
 
     w.schedule();
     await w.running;
@@ -448,9 +601,11 @@ describe("agent.run through the service", () => {
 
     w.release();
     while (w.calls.length < 2) await Bun.sleep(5);
+    expect(releases[0]).toEqual({ issueId: "issue", stageId: "refinement", active: [] });
     expect(w.calls[1]).not.toHaveProperty("resumeSessionId");
     while (w.service.activeWork().items.length > 0) await Bun.sleep(5);
     expect(w.store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "awaiting-source" });
+    unsubscribe();
     await w.service.close();
   });
 

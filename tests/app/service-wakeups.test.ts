@@ -69,6 +69,8 @@ repositories:
     } as unknown as GitHubAdapter);
     (service as unknown as { execute(issue: StoredIssue): Promise<void> }).execute = async (issue) => {
       executed.push(issue.id);
+      // A real executor makes the item ineligible before releasing its worker.
+      service.store.setIssueProjection(issue.id, { stage: "implementation", state: "needs-input", warning: null });
     };
     return { store, service, executed, statusComments };
   };
