@@ -235,7 +235,20 @@ function startDashboard(state: {
     getIssueRunEvents: () => null,
     getIssueConversation: () => null,
     getIssueJourney: () => null,
-    getIssueRoute: () => null,
+    getIssueRoute: async (reference) => {
+      const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
+      const cards = [
+        ...model.stages.flatMap((column) => column.issues),
+        ...model.backlog,
+        ...model.done.issues,
+        ...model.attention.issues,
+        ...model.needsYou,
+      ];
+      const card = "id" in reference
+        ? cards.find((candidate) => candidate.id === reference.id)
+        : cards.find((candidate) => candidate.repository === reference.repository && candidate.number === reference.number);
+      return card ? { id: card.id, repository: card.repository, number: card.number } : null;
+    },
     getAgentProfiles: () => [],
     getAgentProfile: () => null,
   });
@@ -653,6 +666,51 @@ describe("dashboard live refresh position", () => {
       await page.waitForURL("**/issues/sample/20");
       await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]"));
       expect(await page.locator("dialog.issue-details[open]").count()).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("refreshes the open stage badge and keeps item details usable at phone width in both themes", async () => {
+    let revision = "stage-badge-1";
+    let target: IssueCardViewModel = {
+      ...issue("target", 20, "Target item"),
+      stageBadge: { name: "Build", icon: "🛠️", offboarded: false },
+    };
+    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
+      await signIn(page, server.port);
+
+      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator('article.issue[data-issue-id="target"] .card-open').click();
+      await request;
+      await page.waitForURL("**/issues/sample/20");
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Build"));
+      await page.getByRole("tab", { name: "Conversation" }).click();
+
+      target = { ...target, stageBadge: { name: "Review", icon: "🔍", offboarded: false } };
+      revision = "stage-badge-2";
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
+
+      expect(await page.getByRole("tab", { name: "Conversation" }).getAttribute("aria-selected")).toBe("true");
+      expect(await page.evaluate(() => {
+        const dialog = document.querySelector<HTMLElement>("dialog.issue-details[open]");
+        return document.documentElement.scrollWidth <= window.innerWidth && (dialog === null || dialog.scrollWidth <= dialog.clientWidth);
+      })).toBe(true);
+
+      await page.reload({ waitUntil: "commit" });
+      await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
+
+      const darkPage = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "dark" });
+      await signIn(darkPage, server.port);
+      await darkPage.locator('article.issue[data-issue-id="target"] .card-open').click();
+      await darkPage.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Review"));
+      expect(await darkPage.evaluate(() => {
+        const dialog = document.querySelector<HTMLElement>("dialog.issue-details[open]");
+        return document.documentElement.scrollWidth <= window.innerWidth && (dialog === null || dialog.scrollWidth <= dialog.clientWidth);
+      })).toBe(true);
     } finally {
       server.stop(true);
     }

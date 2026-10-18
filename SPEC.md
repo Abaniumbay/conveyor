@@ -971,7 +971,7 @@ Primary views:
 - Blocked, rejected, needs-intervention, done, closable, paused, and source-closed status presentation on cards.
 - Run, stage, repository, issue, agent, and total cost summaries.
 
-Every card links directly to its source issue. Issue detail shows:
+Every card links directly to its source issue. Its detail header shows a stage badge beside the repository and issue number, using the configured stage icon when one exists, and one source-issue link that opens safely in a new tab from every detail tab. The badge reads Backlog or Done for those board positions; a history-only item retains its last stage marked offboarded. Issue detail shows:
 
 - Current source state and labels, projected stage, and inconsistencies.
 - Parent, children, dependencies, and global/sibling order.

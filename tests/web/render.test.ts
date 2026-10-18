@@ -213,6 +213,41 @@ const dashboard: DashboardViewModel = {
   csrfToken: "csrf-token",
 };
 
+test("renders the stage badge and source link once in every item-details header", () => {
+  const issue: IssueCardViewModel = {
+    ...parent,
+    stageBadge: { name: "Review", icon: "🔍", offboarded: false },
+  };
+  const dialog = renderDashboard({
+    ...dashboard,
+    stages: [{ ...dashboard.stages[0]!, issues: [issue] }],
+    selectedIssue: issue,
+  });
+  const direct = renderIssueDetails(issue);
+
+  for (const html of [dialog, direct]) {
+    expect(html).toContain('data-details-stage-badge');
+    expect(html).toContain('<span class="sr-only">Stage: </span>Review');
+    expect(html).not.toContain('aria-label="Stage: Review"');
+    expect(html).toContain('class="details-stage-icon"');
+    expect(html).toContain('🔍');
+    expect(html).toContain('href="https://github.com/sample/repo/issues/41?x=1&amp;y=2" target="_blank" rel="noopener noreferrer"');
+    expect(html.match(/Open issue source ↗/g)).toHaveLength(1);
+    expect(html).not.toContain('class="details-source"');
+  }
+
+  const noIcon = renderIssueDetails({ ...issue, stageBadge: { name: "Deploy", icon: null, offboarded: false } });
+  expect(noIcon).toContain('<span class="sr-only">Stage: </span>Deploy');
+  expect(noIcon).not.toContain('aria-label="Stage: Deploy"');
+  expect(noIcon).not.toContain('details-stage-icon');
+
+  const offboarded = renderIssueDetails({ ...issue, historyOnly: true, stageBadge: { name: "Build", icon: "🛠️", offboarded: true } });
+  expect(offboarded).toContain('<span class="sr-only">Stage: </span>Build (offboarded)');
+  expect(offboarded).not.toContain('aria-label="Stage: Build (offboarded)"');
+  expect(offboarded).toContain('offboarded');
+  expect(offboarded).toContain('aria-hidden="true"');
+});
+
 const ciView = (state: "passing" | "running" | "failed" | "unknown", progress: string, symbol: string, word: string) => ({
   id: "ci", label: "CI", state, symbol, stateWord: word, progress, detail: `detail for ${state}`, url: "https://github.com/o/r/pull/5/checks",
   observedAt: "2026-09-29T11:59:00Z", reference: { label: "abcdef1", url: "https://github.com/o/r/pull/5" },

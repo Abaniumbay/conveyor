@@ -861,15 +861,14 @@ export const dashboardClient = String.raw`(() => {
   };
 
   // An open issue dialog postpones the full board refresh (it would wipe what is being read or typed),
-  // so its live parts are swapped in place: the status line, criterion evidence, todo checklist and facts.
+  // so its live parts are swapped in place: the stage badge, status line, criterion evidence, todo checklist and facts.
   const SUMMARY_LIVE_PARTS = ['.details-status', '.indicators', '[data-manual-gates]', '.todos', '.details-facts', '[data-criterion-evidence]'];
   const scheduleSummaryRefresh = () => {
     if (summaryRefreshTimer !== null) return;
     summaryRefreshTimer = setTimeout(async () => {
       summaryRefreshTimer = null;
       const dialog = document.querySelector('dialog[open][data-issue-id]');
-      const panel = dialog && dialog.querySelector('[data-detail-panel="summary"]');
-      if (!dialog || !panel) return;
+      if (!dialog) return;
       try {
         const detailsUrl = dialog.getAttribute('data-details-url') || ('/api/issues/' + encodeURIComponent(dialog.getAttribute('data-issue-id') || '') + '/details');
         const response = await fetch(detailsUrl, { headers: { accept: 'text/html' }, cache: 'no-store' });
@@ -878,8 +877,18 @@ export const dashboardClient = String.raw`(() => {
         const issueId = dialog.getAttribute('data-issue-id');
         const candidates = [...nextDocument.querySelectorAll('dialog[data-issue-id]')].filter((candidate) => candidate.getAttribute('data-issue-id') === issueId);
         const next = candidates[0];
-        const nextPanel = next && next.querySelector('[data-detail-panel="summary"]');
-        if (!nextPanel) return;
+        if (!next) return;
+        const currentBadge = dialog.querySelector('[data-details-stage-badge]');
+        const replacementBadge = next.querySelector('[data-details-stage-badge]');
+        if (currentBadge && replacementBadge) currentBadge.replaceWith(document.importNode(replacementBadge, true));
+        else if (currentBadge) currentBadge.remove();
+        else if (replacementBadge) {
+          const issueNumber = dialog.querySelector('.details-kicker .issue-number');
+          issueNumber?.after(document.importNode(replacementBadge, true));
+        }
+        const panel = dialog.querySelector('[data-detail-panel="summary"]');
+        const nextPanel = next.querySelector('[data-detail-panel="summary"]');
+        if (!panel || !nextPanel) return;
         for (const selector of SUMMARY_LIVE_PARTS) {
           const current = panel.querySelector(selector);
           const replacement = nextPanel.querySelector(selector);

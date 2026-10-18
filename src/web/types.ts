@@ -66,6 +66,13 @@ export interface ManualGateViewModel {
 export type { IndicatorViewModel } from "../app/indicators";
 import type { IndicatorViewModel } from "../app/indicators";
 
+/** The current board position shown in an item's detail header. */
+export interface IssueStageBadgeViewModel {
+  name: string;
+  icon: string | null;
+  offboarded: boolean;
+}
+
 export interface IssueCardViewModel {
   id: string;
   repository: string;
@@ -91,6 +98,8 @@ export interface IssueCardViewModel {
   todos: IssueTodosViewModel | null;
   /** The stage the item is in. */
   stage?: string | null;
+  /** The user-facing stage label, which can differ from the stored stage in Backlog and Done. */
+  stageBadge?: IssueStageBadgeViewModel;
   /** Agents configured for this item's own pipeline stage, for board search metadata. */
   searchActors?: readonly StageActorViewModel[];
   /** Stored status indicators (CI first); rendered by one shared component on the card and in the details. */
