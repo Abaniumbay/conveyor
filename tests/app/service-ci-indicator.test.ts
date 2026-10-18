@@ -417,6 +417,9 @@ test("a workflow_run webhook for the current head updates the stored indicator a
   expect(w.card()?.waiting?.reason).not.toContain("Waiting for CI");
   await w.internals.updateStatusComment("issue");
   expect(w.statusComments.at(-1)).toContain(`- Status: Waiting · ${w.card()?.waiting?.reason}`);
+  // The next check moves on its own; only a change of status rewrites the comment.
+  expect(w.card()?.waiting?.nextCheckAt).not.toBeNull();
+  expect(w.statusComments.at(-1)).not.toContain("next check");
   await w.service.close();
 });
 
