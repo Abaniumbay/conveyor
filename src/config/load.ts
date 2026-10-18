@@ -273,6 +273,18 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
   const errors: LocatedError[] = [];
   const error = (segments: readonly (string | number)[], message: string) =>
     errors.push({ path: segments.map(String), message: ` ${message}` });
+  const rejectConfinedStageAgent = (
+    segments: readonly (string | number)[],
+    agentName: string,
+  ) => {
+    const agent = config.agents[agentName];
+    if (agent?.workspaceAccess === "confined") {
+      error(
+        segments,
+        `references confined agent "${agentName}", which cannot run pipeline stages`,
+      );
+    }
+  };
   if (config.web.steering && !config.agents[config.web.steering.agent]) {
     error(["web", "steering", "agent"], `references unknown agent "${config.web.steering.agent}"`);
   }
@@ -294,14 +306,43 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     }
   }
   for (const [name, check] of Object.entries(config.checks)) {
-    if (!config.agents[check.verifier]) {
+    const verifier = config.agents[check.verifier];
+    if (!verifier) {
       error(["checks", name, "verifier"], `references unknown agent "${check.verifier}"`);
+    } else if (verifier.workspaceAccess === "confined") {
+      error(
+        ["checks", name, "verifier"],
+        `references confined agent "${check.verifier}", which cannot run legacy checks`,
+      );
     }
   }
   for (const [pipelineName, pipeline] of Object.entries(config.pipelines)) {
     for (const [index, stage] of pipeline.stages.entries()) {
       const prefix = ["pipelines", pipelineName, "stages", index];
       if (isNativeStage(stage)) {
+        for (const [group, entries] of [
+          ["actions", stage.actions],
+          ["exit-gate", stage.exitGate],
+        ] as const) {
+          for (const [entryIndex, entry] of entries.entries()) {
+            if (entry.task !== "agent.run" || !entry.with) continue;
+            if (typeof entry.with.agent === "string") {
+              rejectConfinedStageAgent(
+                [...prefix, group, entryIndex, "with", "agent"],
+                entry.with.agent,
+              );
+            }
+            if (Array.isArray(entry.with.agents)) {
+              for (const [agentIndex, agentName] of entry.with.agents.entries()) {
+                if (typeof agentName !== "string") continue;
+                rejectConfinedStageAgent(
+                  [...prefix, group, entryIndex, "with", "agents", agentIndex],
+                  agentName,
+                );
+              }
+            }
+          }
+        }
         if (stage.childrenStartAt && stage.childrenStartAt !== "next") {
           if (!pipeline.stages.some((candidate) => candidate.id === stage.childrenStartAt)) {
             error([...prefix, "childrenStartAt"], `references unknown stage "${stage.childrenStartAt}"`);
@@ -319,8 +360,8 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
         const agent = config.agents[stage.run.agent];
         if (!agent) {
           error([...prefix, "run", "agent"], `references unknown agent "${stage.run.agent}"`);
-        } else if (agent.workspaceAccess === "confined") {
-          error([...prefix, "run", "agent"], `references confined agent "${stage.run.agent}", which cannot run pipeline stages`);
+        } else {
+          rejectConfinedStageAgent([...prefix, "run", "agent"], stage.run.agent);
         }
       }
       if (stage.run.type === "script" && !config.runners[stage.run.runner]) {
