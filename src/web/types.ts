@@ -30,8 +30,6 @@ export interface IssueTodosViewModel {
   skipped: number;
   /** The item in progress, or else the next pending one; null when every item is terminal. */
   current: string | null;
-  /** Whether the item is in the stage the list belongs to; the card shows progress only then. */
-  inOwningStage: boolean;
   items: ReadonlyArray<{ id: string; text: string; status: "pending" | "in_progress" | "done" | "skipped"; note?: string }>;
 }
 

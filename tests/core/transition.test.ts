@@ -153,9 +153,8 @@ describe("applyStageTransition", () => {
     store.close();
   });
 
-  test("closes the left stage's todos only after its source advance succeeds and preserves the closeout on replay", async () => {
+  test("closes unfinished todos only after a source advance succeeds and preserves the closeout on replay", async () => {
     const store = await setup();
-    store.createRun({ id: "run", issueId: "issue", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: "hash", startedAt: "2026-10-01T00:00:00Z" });
     const todos = new ItemTodos(store.sqlite());
     todos.set("issue", [
       { id: "done", text: "Completed", status: "done", note: "kept" },
@@ -194,7 +193,6 @@ describe("applyStageTransition", () => {
 
   test("does not close todos when a source advance fails", async () => {
     const store = await setup();
-    store.createRun({ id: "run", issueId: "issue", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: "hash", startedAt: "2026-10-01T00:00:00Z" });
     const todos = new ItemTodos(store.sqlite());
     todos.set("issue", [{ id: "open", text: "Open", status: "pending" }], "run", "2026-10-01T00:00:00Z");
 
@@ -238,7 +236,7 @@ describe("applyStageTransition", () => {
     store.close();
   });
 
-  test("does not close todos for later-stage advances or corrections", async () => {
+  test("a return to an earlier stage keeps todos open", async () => {
     const store = await setup();
     const todos = new ItemTodos(store.sqlite());
     const open = [{ id: "open", text: "Open", status: "pending" as const }];
@@ -254,11 +252,6 @@ describe("applyStageTransition", () => {
       labels: labelConfig,
     };
 
-    await applyStageTransition({
-      ...common,
-      transitionId: "run-review-advance",
-      result: { kind: "advance", stageId: "review", nextStageId: null, result: null, feedbackCycles: 0 },
-    });
     await applyStageTransition({
       ...common,
       transitionId: "run-correction-with-todos",

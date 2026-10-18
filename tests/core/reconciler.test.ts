@@ -412,7 +412,7 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
-  test("closes the todos of the stage the item left when reconciliation recovers a source-only advance", async () => {
+  test("closes unfinished todos when reconciliation recovers a source-only advance", async () => {
     const store = await openStore();
     const common = {
       store,
@@ -425,7 +425,6 @@ describe("reconcileRepository", () => {
       ...common,
       source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:build"])]; } },
     });
-    store.createRun({ id: "run", issueId: "github:owner/repo#1", stageId: "build", attempt: 1, kind: "producer", status: "running", configHash: "hash-1", startedAt: "2026-10-01T00:00:00Z" });
     const todos = new ItemTodos(store.sqlite());
     todos.set("github:owner/repo#1", [
       { id: "done", text: "Completed", status: "done", note: "kept" },

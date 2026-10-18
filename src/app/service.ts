@@ -54,7 +54,7 @@ import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
 import { removeWorkspace } from "../workspace/lifecycle";
 import { AdvisoryCiWatches, DEFAULT_POLL_MS as ADVISORY_POLL_MS } from "../engine/advisory-ci";
-import { ItemTodos, summarizeTodos, type TodoList } from "../engine/todos";
+import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
 import { isLightweightRepositoryStage } from "./stage-capacity";
@@ -4366,7 +4366,7 @@ export class ConveyorService {
         acceptanceCriteria: this.criterionApprovalStates(issue),
         manualGates,
         csrfToken,
-        todos: todosView(todos.get(issue.id), issue.projectedStage),
+        todos: todosView(todos.get(issue.id)?.items ?? []),
         stage: issue.projectedStage,
         searchActors: issue.projectedStage
           ? actorsForStage(issue.projectedStage, this.config.repositories[issue.repositoryId]?.pipeline)
@@ -5127,7 +5127,7 @@ export class ConveyorService {
       acceptanceCriteria: this.criterionApprovalStates(issue),
       manualGates,
       csrfToken,
-      todos: todosView(todos.get(issue.id), issue.projectedStage),
+      todos: todosView(todos.get(issue.id)?.items ?? []),
       stage: issue.projectedStage,
       searchActors: issue.projectedStage ? actorsForStage(issue.projectedStage) : [],
       indicators,
@@ -5821,8 +5821,7 @@ export class ConveyorService {
   }
 }
 
-function todosView(list: TodoList | null, stage: string | null): IssueTodosViewModel | null {
-  const items = list?.items ?? [];
+function todosView(items: readonly TodoItem[]): IssueTodosViewModel | null {
   const summary = summarizeTodos(items);
-  return summary ? { ...summary, inOwningStage: list!.stageId !== null && list!.stageId === stage, items } : null;
+  return summary ? { ...summary, items } : null;
 }

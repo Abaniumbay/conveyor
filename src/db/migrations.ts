@@ -958,4 +958,11 @@ export const migrations: readonly Migration[] = [
       UPDATE item_todos SET stage_id = (SELECT runs.stage_id FROM runs WHERE runs.id = item_todos.run_id);
     `,
   },
+  {
+    version: 38,
+    sql: `
+      -- Todo access is the agents' tool grants; a list has no owning stage after all.
+      ALTER TABLE item_todos DROP COLUMN stage_id;
+    `,
+  },
 ];
