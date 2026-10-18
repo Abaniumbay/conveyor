@@ -15,6 +15,7 @@ import type {
   GraphNodeViewModel,
   GraphRelationshipViewModel,
   IssueCardViewModel,
+  IssueCriterionViewModel,
   IssueRelationViewModel,
   RecentActivityType,
   RepositoryDashboardSummary,
@@ -31,6 +32,13 @@ function safeUrl(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function criterionState(criterion: IssueCriterionViewModel): { label: string; mark: string; className: string } {
+  if (criterion.manual) return { label: "Manual", mark: "◌", className: "criterion-state--manual" };
+  if (criterion.approved) return { label: "Approved", mark: "☑☑", className: "criterion-state--approved" };
+  if (criterion.tests.length > 0) return { label: "Tests linked", mark: "☑", className: "criterion-state--tests-linked" };
+  return { label: "Waiting", mark: "☐", className: "criterion-state--waiting" };
 }
 
 function issueHref(repository: string, number: number, tab?: "conversation" | "journey" | "logs"): string {
@@ -286,16 +294,23 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         <TodoChecklist issue={issue} />
         <section class="criteria" aria-label="Acceptance criteria" data-criterion-evidence>
           <h3>Acceptance criteria</h3>
+          <p class="criterion-guidance">Marker key: the first check is an implementer-linked test; the second is reviewer approval.</p>
           {issue.acceptanceCriteria.length > 0
-            ? <ul class="criteria-list criterion-list">{issue.acceptanceCriteria.map((criterion) => (
+            ? <ul class="criteria-list criterion-list">{issue.acceptanceCriteria.map((criterion) => {
+              const state = criterionState(criterion);
+              const approvedWithoutTests = !criterion.manual && criterion.approved && criterion.tests.length === 0;
+              return (
               <li key={criterion.id}>
                 <details class="criterion-evidence">
                   <summary class="criterion-summary">
-                    <span class="criterion-state" aria-label={criterion.manual ? "Manual" : criterion.approved ? "Approved" : "Waiting"}>
-                      {criterion.manual ? "◌ Manual" : criterion.approved ? "☑ Approved" : "☐ Waiting"}
+                    <span class={`criterion-state ${state.className}`} aria-label={state.label}>
+                      <span aria-hidden="true">{state.mark}</span> {state.label}
                     </span>
                     <span class="criterion-text">{criterion.text}</span>
-                    <span class="criterion-test-count">{criterion.tests.length} linked test{criterion.tests.length === 1 ? "" : "s"}</span>
+                    <span class="criterion-evidence-summary">
+                      <span class="criterion-test-count">{criterion.tests.length} linked test{criterion.tests.length === 1 ? "" : "s"}</span>
+                      {approvedWithoutTests && <span class="criterion-no-tests">No test linked</span>}
+                    </span>
                   </summary>
                   {criterion.manual
                     ? <p class="criterion-empty">manual</p>
@@ -312,7 +327,8 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
                     })}</ul>}
                 </details>
               </li>
-            ))}</ul>
+              );
+            })}</ul>
             : <p class="details-empty">No acceptance criteria recorded.</p>}
         </section>
         {(issue.issueType || issue.issueFields.length > 0) && (
