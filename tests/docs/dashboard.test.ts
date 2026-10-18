@@ -40,4 +40,17 @@ describe("dashboard documentation", () => {
     expect(specification).toContain("detail header shows a stage badge");
     expect(specification).toContain("source-issue link");
   });
+
+  test("documents live-stream recovery, keep-alives, and expired sessions", async () => {
+    const [dashboard, specification] = await Promise.all([
+      readFile(path.join(root, "docs/dashboard.md"), "utf8"),
+      readFile(path.join(root, "SPEC.md"), "utf8"),
+    ]);
+
+    expect(dashboard).toContain("Reconnecting…");
+    expect(dashboard).toContain("keep-alive event every four seconds");
+    expect(dashboard).toContain("Sign in again");
+    expect(specification).toContain("EventSource-observable keep-alive every four seconds");
+    expect(specification).toContain("An expired session stops those retries and exposes a sign-in link");
+  });
 });
