@@ -116,6 +116,69 @@ function addRunningHolder(store: ConveyorStore, config: ConveyorConfig) {
 const schedule = (service: ConveyorService) => (service as unknown as { schedule(): void }).schedule();
 
 describe("persisted wake-ups", () => {
+  test("shows an unmet dependency before its stage has run, then clears the live status", async () => {
+    const { first } = await setup();
+    first.store.upsertIssue({
+      id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
+    first.store.replaceRelationships("issue", null, ["blocker"]);
+    const before = first.store.getIssue("issue")!;
+
+    const board = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+    expect(board.selectedIssue).toMatchObject({
+      state: "active",
+      working: false,
+      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2" },
+      reason: null,
+    });
+    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({
+      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2" },
+      reason: null,
+    });
+
+    first.store.upsertIssue({
+      id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
+      sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    const cleared = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(cleared).toMatchObject({ state: "active", waiting: null, reason: null });
+    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({ waiting: null, reason: null });
+    expect(first.store.getIssue("issue")).toMatchObject({
+      projectedStage: before.projectedStage,
+      projectedState: before.projectedState,
+      labels: before.labels,
+    });
+    await first.service.close();
+  });
+
+  test("does not give paused, stopped, roll-up, or running items a scheduler queue status", async () => {
+    const { config, first } = await setup();
+    config.settings.runners = 1;
+    config.repositories.repo!.concurrency = 1;
+    addRunningHolder(first.store, config);
+    expect(first.service.liveIssueStatus("issue")).toMatchObject({ kind: "queued" });
+
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "paused", warning: null });
+    expect(first.service.liveIssueStatus("issue")).toBeNull();
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "blocked", warning: null });
+    expect(first.service.liveIssueStatus("issue")).toBeNull();
+
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+    first.store.upsertIssue({
+      id: "child", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Child", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.replaceRelationships("child", { parentId: "issue", siblingOrder: null }, []);
+    expect(first.service.liveIssueStatus("issue")).toBeNull();
+
+    first.store.replaceRelationships("child", null, []);
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "running", feedbackCycle: 0, configHash: config.hash });
+    expect(first.service.liveIssueStatus("issue")).toBeNull();
+    await first.service.close();
+  });
+
   test("keeps a dependent child ineligible after restart until its blocker is closed", async () => {
     const { first, open } = await setup();
     first.store.upsertIssue({

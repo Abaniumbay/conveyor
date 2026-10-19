@@ -94,7 +94,7 @@ async function running({ rollup = false }: { rollup?: boolean } = {}) {
     const code = await runCli([...argv, "--home", home], { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
-  return { home, socket, store, service, issues, cli };
+  return { home, socket, store, config, service, issues, cli };
 }
 
 describe("control socket", () => {
@@ -220,6 +220,66 @@ describe("operating through the CLI", () => {
     expect(shown.out).toContain("retry the implementation stage: conveyor item retry app:1");
     expect(shown.out).toContain("pause it: conveyor item pause app:1");
     expect((await cli("item", "show", "app:99")).code).toBe(EXIT.failure);
+  });
+
+  test("item show reports a pre-stage dependency wait and clears it without changing the projection", async () => {
+    const { cli, store } = await running();
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "config-hash" });
+    store.upsertIssue({
+      id: "blocker", repositoryId: "app", sourceNumber: 3, sourceUrl: "https://example.com/3", title: "Blocker", body: "",
+      sourceState: "open", sourceStateReason: null, labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-10-01T00:00:00Z",
+    });
+    store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
+    store.replaceRelationships("issue-1", null, ["blocker"]);
+    const before = store.getIssue("issue-1")!;
+
+    const waiting = await cli("item", "show", "app:1");
+    expect(waiting.out).toContain("Stage: implementation   State: Waiting");
+    expect(waiting.out).toContain("Blocker: Waiting for dependencies: #3");
+
+    store.upsertIssue({
+      id: "blocker", repositoryId: "app", sourceNumber: 3, sourceUrl: "https://example.com/3", title: "Blocker", body: "",
+      sourceState: "closed", sourceStateReason: null, labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-10-02T00:00:00Z",
+    });
+    const cleared = await cli("item", "show", "app:1");
+    expect(cleared.out).toContain("Stage: implementation   State: active");
+    expect(cleared.out).not.toContain("Waiting for dependencies");
+    expect(store.getIssue("issue-1")).toMatchObject({
+      projectedStage: before.projectedStage,
+      projectedState: before.projectedState,
+      labels: before.labels,
+    });
+  });
+
+  test("dashboard and item show share a full capacity explanation and clear it after release", async () => {
+    const { cli, config, service, store } = await running();
+    config.settings.runners = 1;
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    store.setIssueProjection("issue-2", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: "issue-2", stageId: "implementation", status: "running", feedbackCycle: 0, configHash: config.hash });
+    const reason = "global runner slots 1/1 busy: #2; implementation slots 1/1 busy: #2; app slots 1/1 busy: #2";
+    const before = store.getIssue("issue-1")!;
+
+    expect(service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
+      .toMatchObject({ state: "active", waiting: { kind: "queued", reason }, reason: null });
+    expect(service.issueDetails("csrf", "issue-1")).toMatchObject({ waiting: { kind: "queued", reason }, reason: null });
+    const queued = await cli("item", "show", "app:1");
+    expect(queued.out).toContain("Stage: implementation   State: Queued");
+    expect(queued.out).toContain(`Blocker: ${reason}`);
+
+    store.setStageState({ issueId: "issue-2", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    expect(service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue-1" }).selectedIssue)
+      .toMatchObject({ state: "active", waiting: null, reason: null });
+    const cleared = await cli("item", "show", "app:1");
+    expect(cleared.out).toContain("Stage: implementation   State: active");
+    expect(cleared.out).not.toContain("busy:");
+    expect(store.getIssue("issue-1")).toMatchObject({
+      projectedStage: before.projectedStage,
+      projectedState: before.projectedState,
+      labels: before.labels,
+    });
   });
 
   test("roll-up parents advertise and resume waiting rather than retrying a parent stage", async () => {

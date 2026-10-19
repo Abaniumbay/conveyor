@@ -177,7 +177,7 @@ and the dashboard require a signed-in account.
 ```sh
 conveyor status                       # versions, paths, dashboard URL, health, capacity, stopped items, disk use
 conveyor board                        # every item with its stage and state
-conveyor item show conveyor:90        # its stage, the concrete blocker, and the recovery actions that apply
+conveyor item show conveyor:90        # its stage, live wait or queue reason, concrete blocker, and recovery actions
 conveyor item history conveyor:90     # stage transitions
 conveyor item logs conveyor:90 --follow   # agent events, tool calls and checks
 conveyor item retry conveyor:90 --note "rotated the key"
@@ -217,8 +217,9 @@ and 5 means it refused the request (the reason is printed).
 ## Troubleshooting
 
 - `conveyor doctor` first: it names each missing prerequisite with its fix.
-- `conveyor item show <item>` explains why an item stopped and what can be done. Service-level
-  failures (provider outages, crashes) appear in `conveyor logs --level warn`.
+- `conveyor item show <item>` explains why an item stopped, is waiting on dependencies, or is
+  queued for capacity, and what can be done. Service-level failures (provider outages, crashes)
+  appear in `conveyor logs --level warn`.
 - The service does not start: check `conveyor service status` and `journalctl -u conveyor -n 100`.
   "another Conveyor is already running for this home" means a second instance (for example a
   foreground `serve`) holds the control socket.
