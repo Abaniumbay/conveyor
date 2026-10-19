@@ -1167,7 +1167,8 @@ export class GitHubAdapter {
       path: `repos/${input.address}/pulls?state=all&head=${encodeURIComponent(head)}&base=${encodeURIComponent(input.baseBranch)}`,
     });
     const pullRequest =
-      existing[0] ??
+      existing.find((candidate) => candidate.state === "open") ??
+      existing.find((candidate) => candidate.state === "closed" && candidate.merged_at != null) ??
       (await this.transport.request<GitHubPullRequest>({
         method: "POST",
         path: `repos/${input.address}/pulls`,
