@@ -176,7 +176,7 @@ const fetch = unjournaled(tool("workspace.fetch", "Fetch the repository base bra
     }
   }));
 
-const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push with a change request, read change.get and use its headSha. Before a change request exists, use workspace.fetch, then run git -C <workspace-path> rev-parse refs/remotes/origin/<branch> for the feature branch head; rebase that full SHA into HEAD and use it as headSha. If the branch moved, fetch, rebase, and retry; if it does not exist, push without forceWithLease to create it.", pushInput, true,
+const push = unjournaled(tool("workspace.push", "Push the workspace branch to origin. For a lease push with a change request, read change.get and use its headSha. Before a change request exists, fetch the base and feature branch, read refs/remotes/origin/<branch>, rebase onto origin/<baseBranch> while retaining every published change, then use that fetched feature SHA as headSha. If the lease is stale, fetch, rebase, and retry; if retained changes are missing, reconcile or reapply them before retrying; if the branch does not exist, push without forceWithLease to create it.", pushInput, true,
   async ({ deps, input }, workspace) => {
     if (input!.forceWithLease !== true) {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: false });
@@ -190,8 +190,12 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
     if (remoteHead !== expectedRemoteHead) {
       throw new ToolRequestError(`The remote branch moved to ${remoteHead}; use workspace.fetch, rebase, and retry.`);
     }
-    if (!await deps.git.isAncestor(workspace.path, expectedRemoteHead, "HEAD")) {
-      throw new ToolRequestError(`The workspace has not reconciled observed remote head ${expectedRemoteHead}; use workspace.fetch and rebase before pushing.`);
+    const missing = await deps.git.missingPatchCommits(workspace.path, expectedRemoteHead, "HEAD");
+    if (missing === null) {
+      throw new ToolRequestError(`The observed remote head ${expectedRemoteHead} is unavailable locally; use workspace.fetch, rebase onto origin/${deps.repository.baseBranch}, and retry.`);
+    }
+    if (missing.length > 0) {
+      throw new ToolRequestError(`The workspace would omit published remote commit ${missing[0]}; reconcile or reapply the missing change before retrying.`);
     }
     try {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: true, expectedRemoteHead });

@@ -15,8 +15,8 @@ export interface GitOps {
   fetch(path: string, remote: string, branch: string): Promise<boolean>;
   /** The current head of the branch on origin, or null when origin does not have it. */
   remoteBranchHead(path: string, branch: string): Promise<string | null>;
-  /** True when ancestor is in descendant's history. */
-  isAncestor(path: string, ancestor: string, descendant: string): Promise<boolean>;
+  /** Commits in source whose patches are absent from candidate's history, or null when source is unavailable locally. */
+  missingPatchCommits(path: string, source: string, candidate: string): Promise<string[] | null>;
   push(path: string, branch: string, options: PushOptions): Promise<void>;
 }
 
@@ -119,18 +119,21 @@ export const cliGit: GitOps = {
     throw new Error(`git fetch failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
   },
   remoteBranchHead,
-  async isAncestor(path, ancestor, descendant) {
-    // An observed head can be valid on the code host but absent until the workspace fetches it.
-    // Treat that as unreconciled so the caller can return its actionable recovery error.
-    const object = await run(path, ["rev-parse", "--verify", "--quiet", `${ancestor}^{commit}`]);
-    if (object.exitCode === 1) return false;
+  async missingPatchCommits(path, source, candidate) {
+    const object = await run(path, ["rev-parse", "--verify", "--quiet", `${source}^{commit}`]);
+    if (object.exitCode === 1) return null;
     if (object.exitCode !== 0) {
       throw new Error(`git rev-parse failed: ${object.stderr || `exit ${object.exitCode}`}`);
     }
-    const result = await run(path, ["merge-base", "--is-ancestor", ancestor, descendant]);
-    if (result.exitCode === 0) return true;
-    if (result.exitCode === 1) return false;
-    throw new Error(`git merge-base failed: ${result.stderr || `exit ${result.exitCode}`}`);
+    const result = await run(path, ["cherry", candidate, source]);
+    if (result.exitCode !== 0) {
+      throw new Error(`git cherry failed: ${result.stderr || `exit ${result.exitCode}`}`);
+    }
+    return result.stdout.split("\n")
+      .flatMap((line) => {
+        const match = line.match(/^\+\s+([0-9a-f]{40})\b/i);
+        return match ? [match[1]!] : [];
+      });
   },
   async push(path, branch, options) {
     const args = ["push", "--set-upstream"];

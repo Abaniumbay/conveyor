@@ -23,7 +23,7 @@ type Pass = Extract<TaskResult, { status: "pass" }>;
 
 function gitFake(state: {
   clean?: boolean; head?: string | null; remote?: string | null; ahead?: number; behind?: number;
-  ancestor?: boolean;
+  missingPatches?: string[] | null;
   remoteBranchHead?: string | null;
   pushError?: Error;
   /** Branches origin does not have. */
@@ -41,9 +41,9 @@ function gitFake(state: {
       return !(state.missingOnRemote ?? []).includes(branch);
     },
     remoteBranchHead: async (p, branch) => { calls.push(["remoteBranchHead", p, branch]); return state.remoteBranchHead === undefined ? "a".repeat(40) : state.remoteBranchHead; },
-    isAncestor: async (p, ancestor, descendant) => {
-      calls.push(["isAncestor", p, ancestor, descendant]);
-      return state.ancestor ?? true;
+    missingPatchCommits: async (p, source, candidate) => {
+      calls.push(["missingPatchCommits", p, source, candidate]);
+      return state.missingPatches === undefined ? [] : state.missingPatches;
     },
     push: async (p, branch, options) => {
       calls.push(["push", p, branch, options]);
@@ -309,11 +309,11 @@ describe("workspace tools", () => {
     expect(w.git.calls).toEqual([
       ["push", p, "conveyor/7-r1-x", { forceWithLease: false }],
       ["remoteBranchHead", p, "conveyor/7-r1-x"],
-      ["isAncestor", p, headSha, "HEAD"],
+      ["missingPatchCommits", p, headSha, "HEAD"],
       ["push", p, "conveyor/7-r1-x", { forceWithLease: true, expectedRemoteHead: headSha }],
     ]);
   });
-  test("workspace.push refuses missing, stale, unreconciled, or moved observed heads with recovery guidance", async () => {
+  test("workspace.push refuses missing, stale, unavailable, omitted, or moved observed heads with recovery guidance", async () => {
     const headSha = "a".repeat(40);
     const missing = await world({ remoteBranchHead: null });
     await missing.record();
@@ -328,11 +328,16 @@ describe("workspace tools", () => {
       .rejects.toThrow(`The remote branch moved to ${currentHead}; use workspace.fetch, rebase, and retry.`);
     expect(stale.git.calls.map(([name]) => name)).toEqual(["remoteBranchHead"]);
 
-    const unreconciled = await world({ ancestor: false });
-    const p = await unreconciled.record();
-    await expect(tool("workspace.push", unreconciled, { forceWithLease: true, headSha }))
-      .rejects.toThrow(`The workspace has not reconciled observed remote head ${headSha}; use workspace.fetch and rebase before pushing.`);
-    expect(unreconciled.git.calls).toEqual([["remoteBranchHead", p, "conveyor/7-r1-x"], ["isAncestor", p, headSha, "HEAD"]]);
+    const unavailable = await world({ missingPatches: null });
+    const unavailablePath = await unavailable.record();
+    await expect(tool("workspace.push", unavailable, { forceWithLease: true, headSha }))
+      .rejects.toThrow(`The observed remote head ${headSha} is unavailable locally; use workspace.fetch, rebase onto origin/main, and retry.`);
+    expect(unavailable.git.calls).toEqual([["remoteBranchHead", unavailablePath, "conveyor/7-r1-x"], ["missingPatchCommits", unavailablePath, headSha, "HEAD"]]);
+
+    const omitted = await world({ missingPatches: ["c".repeat(40)] });
+    await omitted.record();
+    await expect(tool("workspace.push", omitted, { forceWithLease: true, headSha }))
+      .rejects.toThrow(`The workspace would omit published remote commit ${"c".repeat(40)}; reconcile or reapply the missing change before retrying.`);
 
     const movedHead = "b".repeat(40);
     const moved = await world({ pushError: new GitPushRejectedError(movedHead) });
