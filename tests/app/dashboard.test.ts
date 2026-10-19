@@ -240,17 +240,19 @@ describe("ConveyorService dashboard", () => {
       ["unenrolled", "blocked", false],
       ["running", "blocked", true],
       ["rollup", "blocked", true],
-      ["review-rollup", "blocked", true],
+      ["review-rollup", "error", true],
+      ["intervention-rollup", "needs-intervention", true],
       ["offboarded", "offboarded", true],
       ["stale-state", "blocked", true],
       ["stale-stage", "blocked", true],
     ] as const;
-    const liveIssues = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason: null; labels: string[]; updatedAt: string }>();
+    const liveIssues = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason: string | null; labels: string[]; updatedAt: string }>();
     for (const [index, [id, projectedState, enrolled]] of cases.entries()) {
       const number = index + 1;
       const stop = ["blocked", "error", "needs-intervention"].includes(projectedState) ? projectedState : "blocked";
       const stage = id === "review-rollup" ? "review" : "implementation";
       const labels = [...(enrolled ? ["conveyor"] : []), `conveyor:${stage}`, `conveyor:${stop}`];
+      if (id === "rollup") labels.push("conveyor:order:7", "team:keep");
       const sourceIssue = {
         id, number, url: `https://github.com/owner/repo/issues/${number}`, title: id, body: "",
         state: id === "closed" ? "closed" as const : "open" as const, stateReason: null, labels, updatedAt: "2026-10-01T00:00:00Z",
@@ -277,14 +279,21 @@ describe("ConveyorService dashboard", () => {
     store.upsertIssue({ id: reviewChild.id, repositoryId: "repo", sourceNumber: reviewChild.number, sourceUrl: reviewChild.url, title: reviewChild.title, body: reviewChild.body, sourceState: reviewChild.state, sourceStateReason: null, labels: reviewChild.labels, sourceUpdatedAt: reviewChild.updatedAt });
     store.setIssueProjection(reviewChild.id, { stage: "implementation", state: "active", warning: null });
     store.replaceRelationships(reviewChild.id, { parentId: "review-rollup", siblingOrder: null }, []);
+    const interventionChild = { ...child, id: "intervention-rollup-child", number: 22, url: "https://example.com/issues/22", title: "intervention child" };
+    store.upsertIssue({ id: interventionChild.id, repositoryId: "repo", sourceNumber: interventionChild.number, sourceUrl: interventionChild.url, title: interventionChild.title, body: interventionChild.body, sourceState: interventionChild.state, sourceStateReason: null, labels: interventionChild.labels, sourceUpdatedAt: interventionChild.updatedAt });
+    store.setIssueProjection(interventionChild.id, { stage: "implementation", state: "active", warning: null });
+    store.replaceRelationships(interventionChild.id, { parentId: "intervention-rollup", siblingOrder: null }, []);
     liveIssues.set(child.number, child);
     liveIssues.set(reviewChild.number, reviewChild);
+    liveIssues.set(interventionChild.number, interventionChild);
     store.createRun({ id: "active-run", issueId: "running", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-01T00:00:00Z" });
 
     store.activateEnrollment("closed");
     store.upsertPullRequest({ issueId: "closed", id: "unmerged-pr", number: 101, url: "https://github.com/owner/repo/pull/101", state: "open" });
 
     const replacements: string[][] = [];
+    const closedRollups: number[] = [];
+    let loseResumeResponseFor: number | null = null;
     const github = {
       async getIssue(_address: string, number: number) {
         const issue = liveIssues.get(number);
@@ -293,7 +302,18 @@ describe("ConveyorService dashboard", () => {
       },
       async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
         replacements.push([...labels]);
-        liveIssues.get(number)!.labels = [...labels];
+        const live = liveIssues.get(number)!;
+        live.labels = [...labels, ...live.labels.filter((label) => label !== "conveyor" && !label.startsWith("conveyor:"))];
+        if (loseResumeResponseFor === number) {
+          loseResumeResponseFor = null;
+          throw new Error("connection closed after GitHub applied the labels");
+        }
+      },
+      async closeIssue(_address: string, number: number, reason: "completed") {
+        const live = liveIssues.get(number)!;
+        closedRollups.push(number);
+        live.state = "closed";
+        live.stateReason = reason;
       },
       async listIssues() { return [...liveIssues.values()]; },
       async getIssueProvenance() {
@@ -302,7 +322,7 @@ describe("ConveyorService dashboard", () => {
       async collaboratorPermission() { return "write" as const; },
       async listSubIssues(_address: string, number: number) {
         const parent = [...liveIssues.values()].find((issue) => issue.number === number);
-        return parent?.id === "rollup" ? [child] : parent?.id === "review-rollup" ? [reviewChild] : [];
+        return parent?.id === "rollup" ? [child] : parent?.id === "review-rollup" ? [reviewChild] : parent?.id === "intervention-rollup" ? [interventionChild] : [];
       },
       async listDependencies() { return []; },
       async upsertStatusComment() { return 1; },
@@ -315,6 +335,10 @@ describe("ConveyorService dashboard", () => {
     expect(retryableById).toMatchObject({ active: false, "needs-input": false, rejected: false, closed: false, unenrolled: false, running: false, rollup: false, "review-rollup": false });
     expect(retryableById).not.toHaveProperty("offboarded");
 
+    const resumableRollupById = Object.fromEntries(cards.map((issue) => [issue.id, issue.resumableRollup]));
+    expect(resumableRollupById).toMatchObject({ rollup: true, "review-rollup": true, "intervention-rollup": true });
+    expect(service.issueDetails("csrf", "rollup")?.resumableRollup).toBe(true);
+
     const rejectedIds = ["active", "needs-input", "rejected", "closed", "unenrolled", "running", "rollup", "review-rollup", "offboarded", "stale-state", "stale-stage"];
     for (const id of rejectedIds) {
       await expect(service.retryIssue(id, "must not be recorded", "operator")).rejects.toThrow();
@@ -325,6 +349,77 @@ describe("ConveyorService dashboard", () => {
     expect(store.listChildren("review-rollup").map((child) => child.issueId)).toEqual(["review-rollup-child"]);
     expect(store.listConversationMessages("blocked")).toEqual([]);
     expect(replacements).toEqual([]);
+
+    const rollup = store.getIssue("rollup")!;
+    const rollupLive = liveIssues.get(rollup.sourceNumber)!;
+    const sourceStopLabels = [...rollupLive.labels];
+    const rollupProjection = { stage: rollup.projectedStage, state: rollup.projectedState };
+    const rollupHistory = store.listIssueRuns("rollup");
+    rollupLive.labels = ["conveyor", "conveyor:implementation", "conveyor:order:7", "team:keep"];
+    await expect(service.resumeRollupParent("rollup")).rejects.toThrow("refresh before resuming");
+    expect(rollupLive.labels).toEqual(["conveyor", "conveyor:implementation", "conveyor:order:7", "team:keep"]);
+    expect(store.getIssue("rollup")).toMatchObject({ projectedStage: rollupProjection.stage, projectedState: rollupProjection.state });
+    expect(store.listIssueRuns("rollup")).toEqual(rollupHistory);
+    rollupLive.labels = sourceStopLabels;
+
+    const blockedLabels = [...liveIssues.get(store.getIssue("blocked")!.sourceNumber)!.labels];
+    const blockedProjection = store.getIssue("blocked")!;
+    const blockedHistory = store.listIssueRuns("blocked");
+    await expect(service.resumeRollupParent("blocked")).rejects.toThrow("not eligible");
+    expect(liveIssues.get(store.getIssue("blocked")!.sourceNumber)!.labels).toEqual(blockedLabels);
+    expect(store.getIssue("blocked")).toMatchObject({ projectedStage: blockedProjection.projectedStage, projectedState: blockedProjection.projectedState });
+    expect(store.listIssueRuns("blocked")).toEqual(blockedHistory);
+
+    const completedReviewChild = liveIssues.get(reviewChild.number)!;
+    completedReviewChild.labels = ["conveyor", "conveyor:implementation", "conveyor:done"];
+    completedReviewChild.state = "closed";
+    completedReviewChild.stateReason = "completed";
+    await service.reconcileAll();
+    expect(store.getIssue("review-rollup")?.projectedState).toBe("error");
+    expect(liveIssues.get(store.getIssue("review-rollup")!.sourceNumber)?.state).toBe("open");
+
+    const question = store.openQuestion({ issueId: "intervention-rollup", runId: null, prompt: "May children continue?", reason: "Operator decision", options: [] });
+    await expect(service.resumeRollupParent("intervention-rollup")).rejects.toThrow("not eligible");
+    store.answerQuestion(question.id, "operator", "yes");
+
+    store.createRun({ id: "rollup-live-run", issueId: "rollup", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-01T00:00:00Z" });
+    const runningHistory = store.listIssueRuns("rollup");
+    await expect(service.resumeRollupParent("rollup")).rejects.toThrow("not eligible");
+    expect(store.listIssueRuns("rollup")).toEqual(runningHistory);
+    store.finishRun("rollup-live-run", {
+      status: "completed", exitCode: 0, result: { outcome: "success" }, sessionId: null, finishedAt: "2026-10-01T00:01:00Z",
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, amount: 0, currency: "USD", source: "test", durationMs: 1 },
+    });
+
+    for (const [parentId, childId] of [["rollup", "rollup-child"], ["review-rollup", "review-rollup-child"], ["intervention-rollup", "intervention-rollup-child"]] as const) {
+      if (parentId === "intervention-rollup") loseResumeResponseFor = store.getIssue(parentId)!.sourceNumber;
+      const resumed = await service.commands.dispatch("item.resumeRollup", { issueId: parentId }, {
+        kind: "cli", id: null, name: "operator", role: "superuser",
+      });
+      expect(resumed.result).toEqual({ stageId: parentId === "review-rollup" ? "review" : "implementation" });
+      const live = liveIssues.get(store.getIssue(parentId)!.sourceNumber)!;
+      expect(live.labels).toContain("conveyor");
+      expect(live.labels).toContain(parentId === "review-rollup" ? "conveyor:review" : "conveyor:implementation");
+      expect(live.labels).not.toEqual(expect.arrayContaining(["conveyor:blocked", "conveyor:error", "conveyor:needs-intervention"]));
+      expect(store.getIssue(parentId)?.projectedState).toBe(parentId === "review-rollup" ? "done" : "active");
+      expect(store.listActiveIssueRuns().filter((run) => run.issueId === parentId)).toEqual([]);
+      expect(store.getIssue(childId)?.projectedState).toBe(parentId === "review-rollup" ? "done" : "active");
+    }
+    expect(liveIssues.get(store.getIssue("rollup")!.sourceNumber)?.labels).toEqual(["conveyor", "conveyor:implementation", "conveyor:order:7", "team:keep"]);
+    expect(store.getIssue("rollup-child")?.projectedState).toBe("active");
+    expect(closedRollups).toContain(store.getIssue("review-rollup")!.sourceNumber);
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-resume:rollup:")?.status).toBe("succeeded");
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-resume:intervention-rollup:")?.status).toBe("succeeded");
+
+    // A process can stop after recording GitHub's completed mutation but before
+    // it refreshes this projection. Retrying only needs to reconcile the source;
+    // it must not plan a second label update or create a parent run.
+    const replacementsBeforeRecovery = replacements.length;
+    store.setIssueProjection("rollup", { stage: "implementation", state: "blocked", warning: null });
+    await expect(service.resumeRollupParent("rollup")).resolves.toEqual({ stageId: "implementation" });
+    expect(replacements).toHaveLength(replacementsBeforeRecovery);
+    expect(store.getIssue("rollup")?.projectedState).toBe("active");
+    expect(store.listActiveIssueRuns().filter((run) => run.issueId === "rollup")).toEqual([]);
     store.close();
   });
 

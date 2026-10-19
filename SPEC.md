@@ -816,7 +816,7 @@ When a pipeline uses reviewed work breakdown:
 
 GitHub-native issue dependencies are used when supported and mirrored in a managed issue section for human visibility. Unsupported cross-repository relationships fail refinement verification rather than being silently stored only in SQLite. A dependency is satisfied when its issue is closed or labeled `conveyor:done`, regardless of whether its closure followed a merged Conveyor pull request. A closed dependency without the done label is accepted but shown as an inconsistency.
 
-Parent roll-up mutations run only while the parent retains its active base label. A paused or fully offboarded parent can be shown as logically complete in the UI, but Conveyor neither marks nor closes it until it is active again. Reconciliation reads current GitHub state before each journaled label or close mutation, so a restart or retry does not duplicate a closure and an uncertain close remains recorded until it can be safely reconciled.
+Parent roll-up mutations run only while the parent retains its active base label. A paused or fully offboarded parent can be shown as logically complete in the UI, but Conveyor neither marks nor closes it until it is active again. Reconciliation reads current GitHub state before each journaled label or close mutation, so a restart or retry does not duplicate a closure and an uncertain close remains recorded until it can be safely reconciled. A stopped, open, enrolled parent with children can be resumed from a blocked, error, or needs-intervention stop by removing only that stop label; it then follows its children without starting a parent run. A stopped parent remains parked even if its descendants complete until that recovery occurs.
 
 ## 10. Scheduling and concurrency
 

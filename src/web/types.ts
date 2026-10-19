@@ -124,6 +124,10 @@ export interface IssueCardViewModel {
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;
   retryable: boolean;
+  /** A stopped parent can clear its stop and keep waiting for independently running children. */
+  resumableRollup: boolean;
+  /** A stopped roll-up parent explains that its children continue independently. */
+  stoppedRollup: boolean;
   /** An offboarded item exposes its immutable journey history only. */
   historyOnly?: boolean;
 }

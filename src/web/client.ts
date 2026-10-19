@@ -1615,6 +1615,27 @@ export const dashboardClient = String.raw`(() => {
       return;
     }
 
+    const resumeRollupCard = event.target.closest('[data-resume-rollup-card]');
+    if (resumeRollupCard instanceof HTMLButtonElement) {
+      const url = resumeRollupCard.getAttribute('data-resume-rollup-url');
+      if (!url || resumeRollupCard.disabled) return;
+      resumeRollupCard.disabled = true;
+      resumeRollupCard.setAttribute('aria-busy', 'true');
+      void fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf: body.dataset.csrfToken || '' }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(await response.text() || 'Resume failed');
+        resumeRollupCard.textContent = 'Waiting resumed';
+      }).catch(() => {
+        resumeRollupCard.disabled = false;
+        resumeRollupCard.removeAttribute('aria-busy');
+        resumeRollupCard.textContent = 'Resume failed · try again';
+      });
+      return;
+    }
+
     const themeButton = event.target.closest('[data-theme-choice]');
     if (themeButton instanceof HTMLButtonElement) {
       const theme = themeButton.getAttribute('data-theme-choice');
@@ -1998,6 +2019,28 @@ export const dashboardClient = String.raw`(() => {
         button.disabled = false;
       } finally {
         if (field instanceof HTMLTextAreaElement) field.disabled = false;
+      }
+      return;
+    }
+    if (form instanceof HTMLFormElement && form.matches('[data-resume-rollup-form]')) {
+      event.preventDefault();
+      const url = form.getAttribute('data-resume-rollup-url');
+      const button = form.querySelector('[data-resume-rollup-submit]');
+      const status = form.querySelector('[data-resume-rollup-status]');
+      if (!url || !(button instanceof HTMLButtonElement)) return;
+      button.disabled = true;
+      if (status) status.textContent = 'Resuming…';
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ csrf: body.dataset.csrfToken || '' }),
+        });
+        if (!response.ok) throw new Error(await response.text() || 'Resume failed');
+        if (status) status.textContent = 'The parent is waiting for its children again.';
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? 'Resume failed: ' + error.message : 'Resume failed.';
+        button.disabled = false;
       }
       return;
     }

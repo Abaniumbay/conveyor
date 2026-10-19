@@ -254,11 +254,16 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           <button type="submit" class="action-button action-button--secondary" data-retry-submit>Retry</button>
           <span role="status" aria-live="polite" data-retry-status />
         </form>}
+        {canManage && issue.resumableRollup && <form class="retry-form" data-resume-rollup-form data-resume-rollup-url={`/api/issues/${encodeURIComponent(issue.id)}/resume-waiting`}>
+          <button type="submit" class="action-button action-button--secondary" data-resume-rollup-submit>Resume waiting for children</button>
+          <span role="status" aria-live="polite" data-resume-rollup-status />
+        </form>}
         {issue.waiting && <WaitingLine issue={issue} className="waiting-detail" />}
         {issue.blocked && (
           <section class="blocked-summary" aria-label="Blocking reason">
             <h3>Blocking reason</h3>
             <p>{issue.reason ?? "Conveyor received a stopped state, but no reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."}</p>
+            {issue.stoppedRollup && <p>Children can keep running while this parent waits.</p>}
           </section>
         )}
         <dl class="details-facts">
@@ -554,6 +559,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
         {issue.noSplit && <> · <span>No split</span></>}
       </p>
       {canManage && issue.retryable && <button type="button" class="issue-retry action-button action-button--secondary" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
+      {canManage && issue.resumableRollup && <button type="button" class="issue-retry action-button action-button--secondary" data-resume-rollup-card data-resume-rollup-url={`/api/issues/${encodeURIComponent(issue.id)}/resume-waiting`}>Resume waiting for children</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />
       <IndicatorChips issue={issue} />

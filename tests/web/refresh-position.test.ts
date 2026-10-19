@@ -41,6 +41,8 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
     working: false,
     needsAttention: false,
     retryable: false,
+    resumableRollup: false,
+    stoppedRollup: false,
   };
 }
 

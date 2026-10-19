@@ -21,6 +21,7 @@ const preferences = z.object({ questions: z.boolean(), stopped: z.boolean(), don
 export const COMMANDS = {
   // Items
   "item.retry": define("superuser", "Retry an item's stopped stage, with an optional note for the agent.", z.object({ issueId: id, note: text(4_000) }).strict()),
+  "item.resumeRollup": define("superuser", "Resume a stopped roll-up parent waiting for its children without starting a parent stage run.", z.object({ issueId: id }).strict()),
   "item.pause": define("superuser", "Pause an item by removing its enrollment label.", z.object({ issueId: id }).strict()),
   "item.resume": define("superuser", "Resume a paused item.", z.object({ issueId: id }).strict()),
   "item.postMessage": define("user", "Post a message to an item's conversation.", z.object({ issueId: id, message: z.string().trim().min(1).max(4_000) }).strict()),

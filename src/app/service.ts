@@ -457,6 +457,7 @@ export class ConveyorService {
   /** Webhook deliveries accepted but not yet processed. */
   readonly #webhookWork = new Set<Promise<void>>();
   readonly #retrying = new Set<string>();
+  readonly #resumingRollups = new Set<string>();
   readonly #steeringActive = new Map<string, AbortController>();
   readonly #steeringCompletions = new Map<string, Promise<void>>();
   /** A scheduled check may act only on these snapshots; history reads are tracked per run. */
@@ -1578,6 +1579,7 @@ export class ConveyorService {
     const account = (actor: CommandActor) => ({ id: actor.id ?? actor.name, username: actor.name });
     const commands = this.commands;
     commands.handle("item.retry", (input, actor) => this.retryIssue(input.issueId, input.note, actor.name));
+    commands.handle("item.resumeRollup", (input) => this.resumeRollupParent(input.issueId));
     commands.handle("item.pause", (input, actor) => this.pauseIssue(input.issueId, actor.name));
     commands.handle("item.resume", (input, actor) => this.resumeIssue(input.issueId, actor.name));
     commands.handle("repository.pause", (input, actor) => this.pauseRepository(input.repositoryId, input.reason, actor.name));
@@ -4440,12 +4442,9 @@ export class ConveyorService {
           dependencyReason ?? issue.warning ?? options.reason ??
           "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
         : null;
-      const retryable = (issue.sourceState === "open" ||
-        (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
-        issue.labels.includes(this.config.labels.enrollment) &&
-        ["blocked", "error", "needs-intervention"].includes(projectedState) &&
-        !activeIssueIds.has(issue.id) &&
-        children.length === 0;
+      const viewIssue = { ...issue, projectedState };
+      const retryable = this.retryableStoppedIssue(viewIssue, children.length, activeIssueIds.has(issue.id));
+      const resumableRollup = this.resumableRollupIssue(viewIssue, children.length, activeIssueIds.has(issue.id), openQuestion !== undefined);
       return {
         id: issue.id,
         repository: issue.repositoryId,
@@ -4496,6 +4495,8 @@ export class ConveyorService {
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
         ].includes(projectedState),
         retryable,
+        resumableRollup,
+        stoppedRollup: stopped && children.length > 0,
         ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
       };
     };
@@ -5198,12 +5199,9 @@ export class ConveyorService {
         dependencyReason ?? issue.warning ?? doneReason ??
         "Conveyor received the stopped state, but no blocking reason was recorded. Add the concrete blocker and required action in Conversation before resuming this item."
       : null;
-    const retryable = (issue.sourceState === "open" ||
-      (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
-      issue.labels.includes(this.config.labels.enrollment) &&
-      ["blocked", "error", "needs-intervention"].includes(projectedState) &&
-      !activeIssueIds.has(issue.id) &&
-      children.length === 0;
+    const viewIssue = { ...issue, projectedState };
+    const retryable = this.retryableStoppedIssue(viewIssue, children.length, activeIssueIds.has(issue.id));
+    const resumableRollup = this.resumableRollupIssue(viewIssue, children.length, activeIssueIds.has(issue.id), openQuestion !== undefined);
     const indicators = this.store.listIndicators(issue.id)
       .filter((indicator) => indicator.id !== CI_INDICATOR_ID || this.config.repositories[issue.repositoryId]?.ci?.mode !== "disabled")
       .map((indicator) => indicatorView(indicator, Date.now()));
@@ -5276,6 +5274,8 @@ export class ConveyorService {
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
+      resumableRollup,
+      stoppedRollup: stopped && children.length > 0,
       ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
     };
   }
@@ -5609,6 +5609,141 @@ export class ConveyorService {
     check.outcomes.set(issueId, { outcome: "unresolved", reason: message });
   }
 
+  private hasLiveIssueRun(issueId: string): boolean {
+    return this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId);
+  }
+
+  private retryableStoppedIssue(issue: StoredIssue, children: number, running: boolean): boolean {
+    return (issue.sourceState === "open" ||
+      (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
+      issue.labels.includes(this.config.labels.enrollment) &&
+      issue.projectedStage !== null &&
+      ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
+      !running && children === 0;
+  }
+
+  private resumableRollupIssue(issue: StoredIssue, children: number, running: boolean, hasOpenQuestion: boolean): boolean {
+    return issue.sourceState === "open" &&
+      issue.labels.includes(this.config.labels.enrollment) &&
+      issue.projectedStage !== null &&
+      ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
+      !running && children > 0 && !hasOpenQuestion;
+  }
+
+  /** Whether the stored state permits a stage retry before the command verifies the source snapshot. */
+  canRetryIssue(issueId: string): boolean {
+    const issue = this.store.getIssue(issueId);
+    return issue !== null && this.retryableStoppedIssue(
+      issue,
+      this.store.listChildren(issueId).length,
+      this.hasLiveIssueRun(issueId),
+    );
+  }
+
+  /** Whether the stored state permits resuming a stopped parent before the command verifies the source snapshot. */
+  canResumeRollupParent(issueId: string): boolean {
+    const issue = this.store.getIssue(issueId);
+    return issue !== null && this.resumableRollupIssue(
+      issue,
+      this.store.listChildren(issueId).length,
+      this.hasLiveIssueRun(issueId),
+      this.store.listOpenQuestions().some((question) => question.issueId === issueId),
+    );
+  }
+
+  async resumeRollupParent(issueId: string): Promise<{ stageId: string }> {
+    if (this.#resumingRollups.has(issueId)) throw new Error("resume waiting for children is already in progress");
+    this.#resumingRollups.add(issueId);
+    try {
+      const issue = this.store.getIssue(issueId);
+      const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+      if (!issue || !repository || issue.projectedState === "offboarded") throw new Error("issue not found");
+      this.assertRepositoryActive(issue.repositoryId);
+      if (!this.canResumeRollupParent(issueId)) {
+        throw new Error("roll-up parent is not eligible to resume waiting for children");
+      }
+      const pipeline = this.config.pipelines[repository.pipeline];
+      if (!pipeline) throw new Error("issue pipeline is not configured");
+
+      const stopMutationKeyPrefix = `rollup-resume:${issue.id}:`;
+      const priorMutation = this.store.getLatestSourceMutationByKeyPrefix(stopMutationKeyPrefix);
+      const stopLabels = Object.entries(this.config.labels.states)
+        .flatMap(([state, label]) => state === "done" ? [] : [label]);
+      const live = await this.github.getIssue(repository.address, issue.sourceNumber);
+      const sourceAlreadyResumed = live.number === issue.sourceNumber &&
+        live.state === "open" &&
+        live.labels.includes(this.config.labels.enrollment) &&
+        !live.labels.some((label) => stopLabels.includes(label));
+      if (sourceAlreadyResumed && priorMutation) {
+        // GitHub can apply the label replacement before a lost response. Its
+        // current labels are the authoritative proof that the planned resume completed.
+        if (priorMutation.status !== "succeeded") {
+          this.store.completeSourceMutation(priorMutation.id, { labels: live.labels });
+        }
+        await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
+        return { stageId: issue.projectedStage ?? "" };
+      }
+
+      const evaluated = evaluateIssueState({
+        sourceState: live.state,
+        sourceLabels: live.labels,
+        labels: this.config.labels,
+        stages: pipeline.stages.map((stage) => stage.id),
+        expectedPostMergeClosure: false,
+      });
+      const resumableStates = new Set(["blocked", "error", "needs-intervention"]);
+      if (live.number !== issue.sourceNumber || live.state !== "open" || evaluated.mode !== "stopped" ||
+        !evaluated.state || !resumableStates.has(evaluated.state) || !evaluated.stage ||
+        evaluated.state !== issue.projectedState || evaluated.stage !== issue.projectedStage ||
+        !this.canResumeRollupParent(issueId)) {
+        throw new Error("roll-up parent state changed or is not eligible; refresh before resuming waiting for children");
+      }
+
+      const stageId = evaluated.stage;
+      const conveyorLabels = live.labels.filter((label) =>
+        (label === this.config.settings.labelPrefix ||
+          label.startsWith(`${this.config.settings.labelPrefix}:`) ||
+          label === this.config.labels.metadata.noSplit) &&
+        label !== this.config.labels.states[evaluated.state!],
+      );
+      const digest = createHash("sha256")
+        .update(`${issue.id}\0${live.updatedAt}\0${[...live.labels].sort().join("\0")}`)
+        .digest("hex")
+        .slice(0, 24);
+      const mutation = this.store.beginSourceMutation({
+        idempotencyKey: `${stopMutationKeyPrefix}${digest}`,
+        source: repository.source,
+        operation: "issue.labels.resume-rollup",
+        request: { issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state, stageId, labels: conveyorLabels },
+      });
+      if (mutation.status !== "succeeded") {
+        try {
+          await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
+            repository.address,
+            issue.sourceNumber,
+            conveyorLabels,
+            [this.config.labels.metadata.noSplit],
+          );
+          this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
+        } catch (error) {
+          if (error instanceof RepositoryPausedError) throw error;
+          const observed = await this.github.getIssue(repository.address, issue.sourceNumber).catch(() => null);
+          if (observed?.state === "open" && observed.labels.includes(this.config.labels.enrollment) &&
+            !observed.labels.some((label) => stopLabels.includes(label))) {
+            this.store.completeSourceMutation(mutation.id, { labels: observed.labels });
+          } else {
+            this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+            throw error;
+          }
+        }
+      }
+      await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
+      return { stageId };
+    } finally {
+      this.#resumingRollups.delete(issueId);
+    }
+  }
+
   async retryIssue(issueId: string, note: string, username: string, automated = false): Promise<{ status: "started" | "queued"; stageId: string }> {
     if (this.#retrying.has(issueId)) throw new Error("retry already in progress");
     this.#retrying.add(issueId);
@@ -5623,7 +5758,7 @@ export class ConveyorService {
         !issue.labels.includes(this.config.labels.enrollment)) {
         throw new Error("issue is closed or offboarded");
       }
-      if (this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId)) {
+      if (this.hasLiveIssueRun(issueId)) {
         throw new Error("issue is already running");
       }
       const pipeline = this.config.pipelines[repository.pipeline];
@@ -5640,14 +5775,12 @@ export class ConveyorService {
       if (live.number !== issue.sourceNumber ||
         (live.state !== "open" && !(live.state === "closed" && expectedPostMergeClosure)) || evaluated.mode !== "stopped" ||
         !evaluated.state || !stoppedStates.has(evaluated.state) || !evaluated.stage ||
-        evaluated.state !== issue.projectedState || evaluated.stage !== issue.projectedStage) {
+        evaluated.state !== issue.projectedState || evaluated.stage !== issue.projectedStage ||
+        !this.canRetryIssue(issueId)) {
         throw new Error("issue state changed or is inconsistent; refresh before retrying");
       }
 
       const stageId = evaluated.stage;
-      if (this.store.listChildren(issueId).length > 0) {
-        throw new Error("roll-up parents cannot be retried directly");
-      }
       const mutation = this.store.beginSourceMutation({
         idempotencyKey: `web-retry:${randomUUID()}`,
         source: repository.source,

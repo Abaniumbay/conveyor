@@ -24,7 +24,7 @@ afterEach(async () => {
 interface FakeIssue { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason: null; labels: string[]; updatedAt: string }
 
 /** A running service with a control socket under a fresh home, two stopped items and a fake GitHub. */
-async function running() {
+async function running({ rollup = false }: { rollup?: boolean } = {}) {
   const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
   directories.push(home);
   log.configure({ sinks: [] });
@@ -53,6 +53,18 @@ async function running() {
     store.setIssueProjection(issue.id, { stage: "implementation", state: "blocked", warning: "The agent needs the API key rotated" });
     store.setStageState({ issueId: issue.id, stageId: "implementation", status: "blocked", feedbackCycle: 0, configHash: config.hash });
   }
+  if (rollup) {
+    const child: FakeIssue = {
+      id: "issue-3", number: 3, url: "https://example.com/issues/3", title: "Child item", body: "",
+      state: "open", stateReason: null, labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-10-01T00:00:00Z",
+    };
+    issues.push(child);
+    store.upsertIssue({ id: child.id, repositoryId: "app", sourceNumber: child.number, sourceUrl: child.url, title: child.title, body: "", sourceState: "open", sourceStateReason: null, labels: child.labels, sourceUpdatedAt: child.updatedAt });
+    store.setQueueRank(child.id, child.number);
+    store.setIssueProjection(child.id, { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: child.id, stageId: "implementation", status: "active", feedbackCycle: 0, configHash: config.hash });
+    store.replaceRelationships(child.id, { parentId: "issue-1", siblingOrder: null }, []);
+  }
   const github = {
     async getIssue(_address: string, number: number) { return issues.find((issue) => issue.number === number)!; },
     async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
@@ -64,7 +76,7 @@ async function running() {
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
     },
     async collaboratorPermission() { return "write" as const; },
-    async listSubIssues() { return []; }, async listDependencies() { return []; },
+    async listSubIssues(_address: string, number: number) { return rollup && number === 1 ? [issues.find((issue) => issue.id === "issue-3")!] : []; }, async listDependencies() { return []; },
     async upsertStatusComment() { return 1; }, async addComment() { return 1; },
   };
   const service = new ConveyorService(config, store, github as never);
@@ -208,6 +220,24 @@ describe("operating through the CLI", () => {
     expect(shown.out).toContain("retry the implementation stage: conveyor item retry app:1");
     expect(shown.out).toContain("pause it: conveyor item pause app:1");
     expect((await cli("item", "show", "app:99")).code).toBe(EXIT.failure);
+  });
+
+  test("roll-up parents advertise and resume waiting rather than retrying a parent stage", async () => {
+    const { cli, store, issues } = await running({ rollup: true });
+    const shown = await cli("item", "show", "app:1");
+    expect(shown.out).toContain("resume waiting for children: conveyor item resume-waiting app:1");
+    expect(shown.out).toContain("Children can keep running while this parent waits.");
+    expect(shown.out).not.toContain("conveyor item retry app:1");
+    expect((await cli("item", "retry", "app:1")).code).toBe(EXIT.rejected);
+
+    const after = store.events().latestSeq();
+    const resumed = await cli("item", "resume-waiting", "app:1");
+    expect(resumed.out).toBe("app:1: resumed waiting for children at implementation.");
+    expect(issues[0]!.labels).toEqual(["conveyor", "conveyor:implementation"]);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedState: "active", projectedStage: "implementation" });
+    expect(store.listActiveIssueRuns().filter((run) => run.issueId === "issue-1")).toEqual([]);
+    expect(store.getIssue("issue-3")?.projectedState).toBe("active");
+    expect(store.events().read({ afterSeq: after, type: "command.accepted" }).map((event) => event.payload)).toEqual([{ command: "item.resumeRollup" }]);
   });
 
   test("retry reports the stage and whether it started or queued; a refusal exits 5 with the reason", async () => {

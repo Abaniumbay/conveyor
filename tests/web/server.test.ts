@@ -83,6 +83,8 @@ const detailIssue: IssueCardViewModel = {
   working: true,
   needsAttention: false,
   retryable: false,
+  resumableRollup: false,
+  stoppedRollup: false,
 };
 
 interface CallLog {
@@ -215,6 +217,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     },
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
+    resumeRollupParent: async () => ({ stageId: "implementation" }),
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
     setBoardApprovalRequirement: async (...args: unknown[]) => { calls.boardApprovals.push(args); },
     approveManualGate: async (...args: unknown[]) => { calls.manualApprovals.push(args); },
@@ -1101,6 +1104,7 @@ describe("createWebHandler", () => {
     }));
     for (const [path, fields] of [
       ["/api/issues/i-1/retry", {}],
+      ["/api/issues/i-1/resume-waiting", {}],
       ["/questions/q-1/answer", { answer: "yes" }],
       ["/backlog/reorder", { issueId: "i-1", direction: "up" }],
       ["/backlog/move", { issueId: "i-1", beforeIssueId: "i-2" }],
@@ -1279,7 +1283,7 @@ describe("createWebHandler", () => {
     expect(auth.authenticate("reader", "replacement password")).toBe(true);
   });
 
-  test("retries only through a signed-in CSRF protected request and permits a blank note", async () => {
+  test("retry and roll-up recovery only run through signed-in CSRF protected requests", async () => {
     const { handler, auth, calls } = setup({ maxBodyBytes: 8_192 });
     const url = "http://localhost/api/issues/github%3Aowner%2Frepo%231/retry";
     expect((await handler(new Request(url, { method: "POST" }))).status).toBe(401);
@@ -1294,6 +1298,13 @@ describe("createWebHandler", () => {
     expect(calls.retries).toEqual([["github:owner/repo#1", "", "operator"]]);
     expect((await post("x".repeat(4_001))).status).toBe(400);
     expect((await handler(new Request(url, { method: "GET", headers: { cookie } }))).status).toBe(405);
+    const resumeUrl = "https://example.com/api/issues/github%3Aowner%2Frepo%231/resume-waiting";
+    expect((await handler(new Request(resumeUrl, { method: "POST" }))).status).toBe(401);
+    expect((await handler(new Request(resumeUrl, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: "" }))).status).toBe(403);
+    expect((await handler(new Request(resumeUrl, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }),
+    }))).status).toBe(202);
+    expect((await handler(new Request(resumeUrl, { method: "GET", headers: { cookie } }))).status).toBe(405);
   });
 
   test("reports a rejected source retry as a conflict", async () => {
@@ -1492,6 +1503,7 @@ describe("dashboard commands", () => {
       ["repository.resume", () => form("/repositories/app/resume", {})],
       ["item.postMessage", () => form(`/api/issues/${ISSUE}/conversation`, { message: "Please continue" })],
       ["item.retry", () => form(`/api/issues/${ISSUE}/retry`, { note: "" })],
+      ["item.resumeRollup", () => form(`/api/issues/${ISSUE}/resume-waiting`, {})],
       ["finding.dismiss", () => json(`/api/issues/${ISSUE}/findings/f-1/dismiss`, { reason: "Not applicable" })],
       ["steering.start", () => form("/steering", { prompt: "Check the board" })],
       ["notifications.updateSettings", () => json("/api/notifications/settings", { questions: true, stopped: false, done: false })],
