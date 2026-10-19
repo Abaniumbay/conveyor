@@ -27,10 +27,17 @@ describe("docs/tasks.md", () => {
     }
     expect(taskDocs).toContain("refs/remotes/origin/<branch>");
     expect(taskDocs).toContain("forceWithLease");
+    expect(taskDocs).toContain("fetch the base and feature branch");
+    expect(taskDocs).toContain("retaining every published change");
+    expect(taskDocs).toContain("retained changes are missing");
     expect(instructions).toContain("refs/remotes/origin/<branch>");
     expect(instructions).toContain("forceWithLease");
+    expect(instructions).toContain("A stale lease means the remote moved");
+    expect(instructions).toContain("A missing-change refusal means reconcile or reapply");
     expect(specification).toContain("remote branch live");
     expect(specification).toContain("force-with-lease");
+    expect(specification).toContain("retaining every published change");
+    expect(specification).toContain("published change is missing");
   });
 
   test("explains the semantics an operator needs", () => {
