@@ -24,10 +24,10 @@ export interface IssueExecutorDependencies {
   sourceName: string;
   source: TransitionSource;
   workspaceManager: Pick<WorkspaceManager, "create">;
-  /** Reconnects a newly recovered legacy workspace to its existing change before runtime delivery. */
+  /** Reconciles the workspace branch's change before runtime delivery and gates run. */
   recoverWorkspaceChange?: (
     issue: StoredIssue,
-    repository: { id: string; address: string; folder: string; baseBranch: string },
+    repository: { id: string; source: string; address: string; folder: string; baseBranch: string },
     workspace: { path: string; branch: string },
   ) => Promise<void>;
   loadDeliveryState?: (
@@ -97,11 +97,11 @@ export class IssueExecutor {
         repository: { id: repositoryId, folder: repository.folder, baseBranch: repository.baseBranch },
       });
       workspace = created;
-      if (created.adopted) {
-        await this.dependencies.recoverWorkspaceChange?.(issue, {
-          id: repositoryId, address: repository.address, folder: repository.folder, baseBranch: repository.baseBranch,
-        }, workspace);
-      }
+    }
+    if (workspace) {
+      await this.dependencies.recoverWorkspaceChange?.(issue, {
+        id: repositoryId, source: repository.source, address: repository.address, folder: repository.folder, baseBranch: repository.baseBranch,
+      }, workspace);
     }
 
     const journal = store.executions();
@@ -114,6 +114,7 @@ export class IssueExecutor {
     });
     const runtimeRepository = {
       id: repositoryId,
+      source: repository.source,
       address: repository.address,
       folder: repository.folder,
       baseBranch: repository.baseBranch,
