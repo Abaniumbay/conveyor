@@ -1482,7 +1482,7 @@ export class ConveyorStore {
          FROM pull_requests p
          JOIN enrollments e ON e.id = p.enrollment_id
          WHERE e.issue_id = ? AND e.status = 'active'
-         ORDER BY p.updated_at DESC, p.id DESC LIMIT 1`,
+         ORDER BY p.updated_at DESC, p.rowid DESC LIMIT 1`,
       )
       .get(issueId) as Record<string, SQLQueryBindings> | null;
     if (!row) return null;
