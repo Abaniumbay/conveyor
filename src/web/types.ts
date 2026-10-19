@@ -360,7 +360,8 @@ export interface RepositoryDashboardSummary {
   address: string;
   addressUrl: string | null;
   color: number;
-  health: "healthy" | "degraded";
+  health: "healthy" | "starting" | "degraded";
+  startup?: "waiting" | "onboarding" | "reconciling" | null;
   error: string | null;
   errorSummary: string | null;
   lastReconciledAt: string | null;

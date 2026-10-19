@@ -73,6 +73,7 @@ function status(service: ConveyorService, info: ControlInfo) {
     temporary: tmpdir(),
     configHash: service.config.hash,
     ready: service.isReady(),
+    startup: service.startupStatus(),
     draining: service.draining(),
     runners: { limit: service.config.settings.runners, busy: work.items.length },
     active: work.items.map((item) => ({ item: itemReference(service, item.issueId), stage: item.stageId })),

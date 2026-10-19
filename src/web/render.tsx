@@ -1336,14 +1336,18 @@ function repositoryHref(id: string): string {
 function repositoryOrder(left: RepositoryDashboardSummary, right: RepositoryDashboardSummary): number {
   const score = (repository: RepositoryDashboardSummary) => repository.health === "degraded"
     ? 0
-    : repository.items.some((item) => item.state === "Needs you") ? 1
-      : repository.items.length > 0 ? 2 : 3;
+    : repository.health === "starting" ? 1
+      : repository.items.some((item) => item.state === "Needs you") ? 2
+        : repository.items.length > 0 ? 3 : 4;
   return score(left) - score(right) || left.id.localeCompare(right.id);
 }
 
 function repositoryStatus(repository: RepositoryDashboardSummary): string {
   if (repository.pause) return "Paused";
   if (repository.errorSummary) return repository.errorSummary;
+  if (repository.startup === "waiting") return "Waiting to reconcile";
+  if (repository.startup === "onboarding") return "Starting repository setup";
+  if (repository.startup === "reconciling") return "Reconciling startup state";
   if (repository.items.length === 0) return "Idle";
   const needsYou = repository.items.filter((item) => item.state === "Needs you").length;
   const running = repository.items.filter((item) => item.state === "Running").length;
@@ -1355,10 +1359,10 @@ function repositoryStatus(repository: RepositoryDashboardSummary): string {
 }
 
 function RepositoryCard({ repository }: { repository: RepositoryDashboardSummary }) {
-  const health = repository.health === "healthy" ? "Healthy" : "Degraded";
+  const health = repository.health === "healthy" ? "Healthy" : repository.health === "starting" ? "Starting" : "Degraded";
   return (
     <a class={`repository-card repo-color-${repository.color} repository-card--${repository.health}`} href={repositoryHref(repository.id)}>
-      <span class="repository-card-heading"><i class="repository-dot" aria-hidden="true" /><strong title={repository.id}>{repository.id}</strong>{repository.pause && <span class="repository-pause-badge">Paused</span>}<span class="repository-health" role="img" aria-label={health}>{repository.health === "healthy" ? "✓" : "!"}</span></span>
+      <span class="repository-card-heading"><i class="repository-dot" aria-hidden="true" /><strong title={repository.id}>{repository.id}</strong>{repository.pause && <span class="repository-pause-badge">Paused</span>}<span class="repository-health" role="img" aria-label={health}>{repository.health === "healthy" ? "✓" : repository.health === "starting" ? "…" : "!"}</span></span>
       <span class="repository-address">{repository.address}</span>
       <span class="repository-status" title={repository.errorSummary ?? undefined}>{repositoryStatus(repository)}</span>
     </a>
@@ -1384,17 +1388,27 @@ function Repositories({ model }: { model: DashboardViewModel }) {
 // The board does not list repositories, so a repository that cannot sync says so here: its items may be stale.
 function RepositoryWarnings({ model }: { model: DashboardViewModel }) {
   const degraded = [...model.repositories].filter((repository) => repository.health === "degraded").sort(repositoryOrder);
-  if (degraded.length === 0) return null;
+  const starting = [...model.repositories].filter((repository) => repository.health === "starting").sort(repositoryOrder);
+  if (degraded.length === 0 && starting.length === 0) return null;
   return (
-    <section class="repository-warnings" aria-label="Repositories that cannot sync">
-      <ul>{degraded.map((repository) => (
+    <>
+      {starting.length > 0 && <section class="repository-warnings repository-warnings--starting" aria-label="Repository startup progress"><ul>{starting.map((repository) => (
         <li key={repository.id} class={`repo-color-${repository.color}`}>
-          <span class="repository-warning-mark" aria-hidden="true">!</span>
-          <span class="repository-warning-text"><strong>{repository.id}</strong> is not syncing{repository.errorSummary ? <>: {repository.errorSummary}</> : null}. Its items may be out of date.</span>
+          <span class="repository-warning-mark" aria-hidden="true">…</span>
+          <span class="repository-warning-text"><strong>{repository.id}</strong>: {repositoryStatus(repository)}.</span>
           <a href={repositoryHref(repository.id)}>Details</a>
         </li>
-      ))}</ul>
-    </section>
+      ))}</ul></section>}
+      {degraded.length > 0 && <section class="repository-warnings" aria-label="Repositories that cannot sync">
+        <ul>{degraded.map((repository) => (
+          <li key={repository.id} class={`repo-color-${repository.color}`}>
+            <span class="repository-warning-mark" aria-hidden="true">!</span>
+            <span class="repository-warning-text"><strong>{repository.id}</strong> is not syncing{repository.errorSummary ? <>: {repository.errorSummary}</> : null}. Its items may be out of date.</span>
+            <a href={repositoryHref(repository.id)}>Details</a>
+          </li>
+        ))}</ul>
+      </section>}
+    </>
   );
 }
 

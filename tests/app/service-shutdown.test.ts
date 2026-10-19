@@ -77,4 +77,79 @@ describe("ConveyorService shutdown", () => {
       log.configure({ sinks: [new ConsoleSink()] });
     }
   });
+
+  test("shutdown settles a held startup pass without starting a duplicate periodic pass", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const config = await loadConfig(directory);
+    config.settings.reconcileIntervalMs = 10;
+    const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
+    let release!: () => void;
+    const listing = new Promise<void>((resolve) => { release = resolve; });
+    let listed = 0;
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async ensureLabels() {},
+      async listIssues() { listed += 1; await listing; return []; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    try {
+      service.start();
+      while (listed === 0) await Bun.sleep(5);
+      let closed = false;
+      const closing = service.close().then(() => { closed = true; });
+      await Bun.sleep(50);
+      expect(closed).toBe(false);
+      expect(listed).toBe(1);
+
+      release();
+      await closing;
+      expect(closed).toBe(true);
+    } finally {
+      release();
+    }
+  });
+
+  test("resumes periodic reconciliation after startup completion", async () => {
+    const { directory, base } = await referenceConfigDirectory();
+    bases.push(base);
+    const config = await loadConfig(directory);
+    config.settings.reconcileIntervalMs = 10;
+    const store = await ConveyorStore.open(path.join(base, "conveyor.sqlite"));
+    let releaseStartup: (() => void) | undefined;
+    let releasePeriodic: (() => void) | undefined;
+    const startupListing = new Promise<void>((resolve) => { releaseStartup = resolve; });
+    const periodicListing = new Promise<void>((resolve) => { releasePeriodic = resolve; });
+    let listed = 0;
+    const github = {
+      async repositoryVisibility() { return "private" as const; },
+      async ensureLabels() {},
+      async listIssues() {
+        listed += 1;
+        if (listed === 1) await startupListing;
+        if (listed === 2) await periodicListing;
+        return [];
+      },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+    };
+    const service = new ConveyorService(config, store, github as never);
+    try {
+      service.start();
+      while (listed < 1) await Bun.sleep(5);
+
+      releaseStartup?.();
+      while (listed < 2) await Bun.sleep(5);
+      await Bun.sleep(50);
+
+      expect(service.isReady()).toBe(true);
+      expect(listed).toBe(2);
+    } finally {
+      releaseStartup?.();
+      releasePeriodic?.();
+      await service.close();
+    }
+  });
 });

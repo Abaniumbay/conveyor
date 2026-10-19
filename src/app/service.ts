@@ -113,6 +113,13 @@ interface ActiveRun {
 
 type LiveIssueStatus = IssueWaitingViewModel & { kind: "waiting" | "queued" };
 
+type StartupRepositoryPhase = "waiting" | "onboarding" | "reconciling";
+
+export type StartupStatus =
+  | { state: "starting"; repository: string | null; phase: StartupRepositoryPhase | null }
+  | { state: "ready"; repository: null; phase: null }
+  | { state: "degraded"; repository: string | null; phase: null };
+
 interface McpGrant {
   runId: string;
   stageId: string;
@@ -463,6 +470,12 @@ export class ConveyorService {
   }>();
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
+  /** Repositories not yet admitted to scheduling during the first startup pass. */
+  readonly #startupRepositories = new Map<string, StartupRepositoryPhase>();
+  #startupStarted = false;
+  #startupRunning = false;
+  #startupCompleted = false;
+  #startupFailed = false;
   /** Delayed infrastructure retries that must not outlive the service store. */
   readonly #retryTimers = new Set<ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -481,6 +494,7 @@ export class ConveyorService {
   /** While set, no new work is admitted; work already running finishes. */
   #drain: { since: string; reason: string } | null = null;
   #retentionTimer: ReturnType<typeof setInterval> | null = null;
+  #retentionActive = 0;
   #githubCallTimer: ReturnType<typeof setInterval> | null = null;
   /** Counts every GitHub request this service makes, by why it was made. */
   readonly githubCalls: GitHubCallMeter;
@@ -601,48 +615,25 @@ export class ConveyorService {
         log.info("Stage queued after restart", { ...service.itemFields(stage.issueId), stage: stage.stageId });
       }
     }
-    await withGitHubCallSource("startup", async () => {
-      await service.recoverWorkspaceScratch();
-      await service.onboardRepositories();
-      await service.reconcileAll();
-    });
+    service.prepareStartupPass();
     return service;
+  }
+
+  /** The process-local state of the first pass, for the control socket and dashboard. */
+  startupStatus(): StartupStatus {
+    if (this.#startupRunning || (this.#startupStarted && !this.#startupCompleted)) {
+      const current = [...this.#startupRepositories.entries()].find(([, phase]) => phase !== "waiting")
+        ?? (!this.#startupRunning ? this.#startupRepositories.entries().next().value ?? null : null);
+      return { state: "starting", repository: current?.[0] ?? null, phase: current?.[1] ?? null };
+    }
+    const failed = [...this.#onboardingErrors.keys(), ...this.#repositoryErrors.keys()][0] ?? null;
+    if (this.#startupFailed && failed === null) return { state: "degraded", repository: null, phase: null };
+    return failed === null ? { state: "ready", repository: null, phase: null } : { state: "degraded", repository: failed, phase: null };
   }
 
   async onboardRepositories(): Promise<void> {
     for (const [id, repository] of Object.entries(this.config.repositories)) {
-      this.store.upsertRepository({
-        id,
-        configName: id,
-        source: repository.source,
-        address: repository.address,
-        folder: repository.folder,
-        configHash: this.config.hash,
-      });
-      await this.recordRepositoryTrustStatus(id, repository.address);
-      if (this.store.repositoryPause(id)) continue;
-      try {
-        await this.executionGitHub(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
-        const source = this.config.sources[repository.source];
-        if (
-          source?.type === "github" &&
-          source.autoConfigureWebhook &&
-          this.config.web.publicUrl
-        ) {
-          const secret = this.webhookSecretFor(repository.source);
-          if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
-          const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
-          // Missed deliveries are asked for, and the webhook pinged, in start(), once the server listens.
-          this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret }));
-        }
-        if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
-      } catch (error) {
-        if (error instanceof RepositoryPausedError) continue;
-        const message = error instanceof Error ? error.message : String(error);
-        if (!this.#onboardingErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: false }, { repositoryId: id });
-        this.#onboardingErrors.set(id, message);
-        log.error("Repository onboarding failed", { repository: id }, error);
-      }
+      await this.onboardRepository(id, repository);
     }
   }
 
@@ -804,9 +795,9 @@ export class ConveyorService {
    * Reads one repository. A full pass lists every issue; a `changed` pass lists only the issues
    * changed since Conveyor last saw the repository and reads relationships for those alone.
    */
-  private async reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<void> {
+  private async reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<number> {
     const repository = this.config.repositories[id];
-    if (!repository) return;
+    if (!repository) return 0;
     const pipeline = this.config.pipelines[repository.pipeline]!;
     const startedAt = Date.now();
     this.#repositoryReconciledAt.set(id, startedAt);
@@ -815,7 +806,7 @@ export class ConveyorService {
       // GitHub reports changed (the listing overlaps the last read and returns some unchanged ones).
       const before = new Map(this.store.listIssues(id).map((issue) => [issue.id, { body: issue.body, sourceUpdatedAt: issue.sourceUpdatedAt }]));
       const listing = this.issueListing(id, kind);
-      await reconcileRepository({
+      const result = await reconcileRepository({
         store: this.store,
         configHash: this.config.hash,
         repository: {
@@ -841,7 +832,7 @@ export class ConveyorService {
         : new Set(this.store.listIssues(id).filter((issue) => issue.sourceUpdatedAt >= since && before.get(issue.id)?.sourceUpdatedAt !== issue.sourceUpdatedAt).map((issue) => issue.sourceNumber));
       // A paused repository may refresh its projection, but cannot reconcile work that would
       // mutate source state or discard a worktree.
-      if (this.store.repositoryPause(id)) return;
+      if (this.store.repositoryPause(id)) return result.seen;
       await this.reconcileRelationships(id, repository.address, scope);
       if (scope !== null) await this.backfillCiIndicators(id, scope);
       await this.syncIssueFields(id, repository);
@@ -849,12 +840,14 @@ export class ConveyorService {
       this.restorePendingStatus(id);
       if (this.#repositoryErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: true }, { repositoryId: id });
       this.store.events().append("repository.reconciled", { issueNumbers: scope === null ? null : [...scope] }, { repositoryId: id });
+      return result.seen;
     } catch (error) {
-      if (error instanceof RepositoryPausedError) return;
+      if (error instanceof RepositoryPausedError) return 0;
       const message = error instanceof Error ? error.message : String(error);
       if (!this.#repositoryErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "reconcile", healthy: false }, { repositoryId: id });
       this.#repositoryErrors.set(id, message);
       log.error("Repository reconciliation failed", { repository: id }, error);
+      return 0;
     } finally {
       // Visibility only informs operators, so a light pass leaves it to the next full one.
       if (kind === "full") await this.recordRepositoryTrustStatus(id, repository.address);
@@ -924,6 +917,7 @@ export class ConveyorService {
 
   start(): void {
     if (this.#timer) return;
+    this.beginStartupPass();
     void this.tick();
     this.#timer = setInterval(() => void this.tick(), this.config.settings.reconcileIntervalMs);
     const periodic = this.config.web?.steering?.periodic;
@@ -932,7 +926,12 @@ export class ConveyorService {
         void this.runScheduledOperatorCheck().catch((error) => log.warn("Scheduled Operator check failed", {}, error));
       }, periodic.intervalMs);
     }
-    const prune = () => void this.applyRetention().catch((error: unknown) => log.error("Retention failed", {}, error));
+    const prune = () => {
+      this.#retentionActive += 1;
+      void this.applyRetention()
+        .catch((error: unknown) => log.error("Retention failed", {}, error))
+        .finally(() => { this.#retentionActive -= 1; });
+    };
     prune();
     this.#retentionTimer = setInterval(prune, 24 * 60 * 60_000);
     this.#githubCallTimer = setInterval(() => void this.logGitHubCalls(), GITHUB_CALL_SUMMARY_MS);
@@ -943,6 +942,88 @@ export class ConveyorService {
       if (this.webhookUrl(repositoryId)) void this.redeliverMissed(repositoryId).then(() => this.pingWebhook(repositoryId));
     }
     this.#webhookHealthTimer = setInterval(() => void this.superviseWebhooks(), WEBHOOK_CHECK_MS);
+  }
+
+  private beginStartupPass(): void {
+    this.#startupStarted = true;
+    this.#startupRunning = true;
+    this.#startupCompleted = false;
+    this.#startupFailed = false;
+    for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
+    void withGitHubCallSource("startup", async () => {
+      await this.recoverWorkspaceScratch();
+      await Promise.all(Object.entries(this.config.repositories).map(async ([id, repository]) => {
+        const startedAt = Date.now();
+        let issues = 0;
+        let failed = false;
+        this.#startupRepositories.set(id, "onboarding");
+        log.info("Startup repository reconciliation started", { repository: id });
+        try {
+          await this.onboardRepository(id, repository);
+          failed = this.#onboardingErrors.has(id);
+          if (!failed) {
+            this.#startupRepositories.set(id, "reconciling");
+            issues = await this.reconcileOne(id, this.webhookUrl(id) ? "changed" : "full");
+            failed = this.#repositoryErrors.has(id);
+          }
+        } catch (error) {
+          failed = true;
+          this.#repositoryErrors.set(id, error instanceof Error ? error.message : String(error));
+          log.error("Startup repository reconciliation failed", { repository: id }, error);
+        } finally {
+          log.info("Startup repository reconciliation completed", {
+            repository: id,
+            issues,
+            durationMs: Date.now() - startedAt,
+            success: !failed,
+          });
+          this.#startupRepositories.delete(id);
+          // A repository can safely resume as soon as its own projection is checked.
+          if (!failed) this.schedule();
+        }
+      }));
+      this.#lastReconciledAt = new Date().toISOString();
+      this.store.events().append("service.reconciled", { failed: this.#repositoryErrors.size + this.#onboardingErrors.size });
+      this.interruptIneligibleRuns();
+      this.#recoverPendingScheduledAnswers();
+    }).catch((error) => {
+      this.#startupFailed = true;
+      log.error("Startup reconciliation failed", {}, error);
+    }).finally(() => {
+      this.#startupRunning = false;
+      this.#startupCompleted = true;
+      this.schedule();
+    });
+  }
+
+  /** Marks creation as pending before listeners are opened; provider work begins from start(). */
+  private prepareStartupPass(): void {
+    this.#startupStarted = true;
+    this.#startupCompleted = false;
+    for (const id of Object.keys(this.config.repositories)) this.#startupRepositories.set(id, "waiting");
+  }
+
+  private async onboardRepository(id: string, repository: ConveyorConfig["repositories"][string]): Promise<void> {
+    this.store.upsertRepository({ id, configName: id, source: repository.source, address: repository.address, folder: repository.folder, configHash: this.config.hash });
+    await this.recordRepositoryTrustStatus(id, repository.address);
+    if (this.store.repositoryPause(id)) return;
+    try {
+      await this.executionGitHub(id).ensureLabels(repository.address, labelDefinitions(this.config, id));
+      const source = this.config.sources[repository.source];
+      if (source?.type === "github" && source.autoConfigureWebhook && this.config.web.publicUrl) {
+        const secret = this.webhookSecretFor(repository.source);
+        if (!secret) throw new Error("a webhook secret is required for webhooks: set webhookSecret on the GitHub items provider (or CONVEYOR_GITHUB_WEBHOOK_SECRET)");
+        const url = new URL(source.webhookPath, this.config.web.publicUrl).href;
+        this.#webhookIds.set(id, await this.executionGitHub(id).ensureWebhook({ address: repository.address, url, secret }));
+      }
+      if (this.#onboardingErrors.delete(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: true }, { repositoryId: id });
+    } catch (error) {
+      if (error instanceof RepositoryPausedError) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.#onboardingErrors.has(id)) this.store.events().append("repository.healthChanged", { check: "onboarding", healthy: false }, { repositoryId: id });
+      this.#onboardingErrors.set(id, message);
+      log.error("Repository onboarding failed", { repository: id }, error);
+    }
   }
 
   /** Resolves once every event sink has received every recorded event (or a delivery failed). */
@@ -1040,14 +1121,14 @@ export class ConveyorService {
     }
     for (const controller of this.#steeringActive.values()) controller.abort();
     // An in-flight reconcile or advisory-CI poll still uses the database; let it finish first.
-    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#tickRunning || this.#advisoryPolling) {
+    while (this.#active.size > 0 || this.#steeringActive.size > 0 || this.#statusCommentUpdates.size > 0 || this.#webhookWork.size > 0 || this.#answerFollowUps.size > 0 || this.#startupRunning || this.#tickRunning || this.#advisoryPolling || this.#retentionActive > 0) {
       await Bun.sleep(25);
     }
     this.store.close();
   }
 
   async tick(): Promise<void> {
-    if (this.#shuttingDown || this.#tickRunning) return;
+    if (this.#shuttingDown || this.#startupRunning || this.#tickRunning) return;
     this.#tickRunning = true;
     try {
       await withGitHubCallSource("tick", async () => {
@@ -1320,6 +1401,8 @@ export class ConveyorService {
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
           this.store.repositoryPause(issue.repositoryId) === null &&
+          !this.#startupRepositories.has(issue.repositoryId) &&
+          !this.#onboardingErrors.has(issue.repositoryId) &&
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly:
@@ -4169,6 +4252,7 @@ export class ConveyorService {
       ...(issues ? { issues } : {}),
       onboardingErrors: this.#onboardingErrors,
       reconciliationErrors: this.#repositoryErrors,
+      startup: this.#startupRepositories,
       lastReconciledAt: this.#lastReconciledAt,
       webhookHealth: this.#webhookHealth,
       githubCalls: this.githubCalls.summary(GITHUB_CALL_SUMMARY_MS),
@@ -4177,7 +4261,7 @@ export class ConveyorService {
 
   /** Matches the event stream revision to displayed repository facts, excluding volatile report timestamps. */
   private dashboardRevision(repositorySummaries = this.repositorySummaries()): string {
-    const repositoryFacts = repositorySummaries.repositories.map(({ id, health, error, lastReconciledAt }) => ({ id, health, error, lastReconciledAt }));
+    const repositoryFacts = repositorySummaries.repositories.map(({ id, health, error, lastReconciledAt, startup }) => ({ id, health, error, lastReconciledAt, startup }));
     const repositoryDigest = createHash("sha256").update(JSON.stringify(repositoryFacts)).digest("hex");
     return `${this.store.dashboardRevision()}|repositories:${repositoryDigest}`;
   }
@@ -5618,7 +5702,10 @@ export class ConveyorService {
 
   /** Reconciled at least once, not stopping, and every repository onboarded and reconciling. */
   isReady(): boolean {
-    return Boolean(this.#lastReconciledAt) && !this.#shuttingDown && this.#repositoryErrors.size === 0 && this.#onboardingErrors.size === 0;
+    return Boolean(this.#lastReconciledAt) && !this.#shuttingDown &&
+      (!this.#startupStarted || this.#startupCompleted) && !this.#startupRunning &&
+      !this.#startupFailed &&
+      this.#repositoryErrors.size === 0 && this.#onboardingErrors.size === 0;
   }
 
   /** Stops admitting new work; running work continues. Idempotent: the first reason is kept. */
