@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { inFlightAdmission } from "../../src/core/in-flight";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../../src/core/transition";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { ConveyorStore } from "../../src/db/store";
@@ -107,10 +108,19 @@ describe("applyStageTransition", () => {
     const source = {
       async replaceConveyorLabels() { await labelsReplaced; },
     };
-    const admit = () => store.listPendingStageTransitions()
-      .some((transition) => transition.toStage === "implementation")
-      ? "Waiting for an in-progress slot in repo: #7"
-      : null;
+    store.activateEnrollment("issue");
+    store.activateEnrollment("second");
+    store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "hash" });
+    store.setStageState({ issueId: "second", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "hash" });
+    const pipeline = ["refinement", "implementation", "review"];
+    const admitFor = (issueId: string) => () => inFlightAdmission({
+      store,
+      repositoryId: "repo",
+      stages: pipeline.map((id) => ({ id })),
+      interval: { limit: 1, fromIndex: 1, mergeIndex: 2 },
+      issueId,
+      targetStageId: "implementation",
+    });
     const first = applyStageTransition({
       store,
       source,
@@ -122,7 +132,7 @@ describe("applyStageTransition", () => {
       stages: ["refinement", "implementation", "review"],
       labels: labelConfig,
       result: { kind: "advance", stageId: "refinement", nextStageId: "implementation", result: null, feedbackCycles: 0 },
-      admit,
+      admit: admitFor("issue"),
     });
     const second = await applyStageTransition({
       store,
@@ -135,13 +145,66 @@ describe("applyStageTransition", () => {
       stages: ["refinement", "implementation", "review"],
       labels: labelConfig,
       result: { kind: "advance", stageId: "refinement", nextStageId: "implementation", result: null, feedbackCycles: 0 },
-      admit,
+      admit: admitFor("second"),
     });
 
     expect(second).toEqual({ waitingForInFlight: "Waiting for an in-progress slot in repo: #7" });
     expect(store.listPendingStageTransitions()).toMatchObject([{ issueId: "issue", toStage: "implementation" }]);
     releaseLabels!();
     await first;
+    store.close();
+  });
+
+  test("admits a correction back to the from stage while the repository is full, and refuses a newcomer", async () => {
+    const store = await setup();
+    store.upsertIssue({
+      id: "newcomer",
+      repositoryId: "repo",
+      sourceNumber: 8,
+      sourceUrl: "https://example.test/8",
+      title: "Newcomer",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.activateEnrollment("issue");
+    store.activateEnrollment("newcomer");
+    store.setIssueProjection("issue", { stage: "review", state: "active", warning: null });
+    store.setStageState({ issueId: "issue", stageId: "review", status: "awaiting-source", feedbackCycle: 0, configHash: "hash" });
+    store.setStageState({ issueId: "newcomer", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: "hash" });
+    const pipeline = ["refinement", "implementation", "review"];
+    const admit = (issueId: string) => () => inFlightAdmission({
+      store,
+      repositoryId: "repo",
+      stages: pipeline.map((id) => ({ id })),
+      interval: { limit: 1, fromIndex: 1, mergeIndex: 2 },
+      issueId,
+      targetStageId: "implementation",
+    });
+    const labels: string[][] = [];
+    const source = { async replaceConveyorLabels(_a: string, _n: number, next: readonly string[]) { labels.push([...next]); } };
+    const advance = (issueId: string, stageId: string) => applyStageTransition({
+      store,
+      source,
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: `t-${issueId}`,
+      issue: store.getIssue(issueId)!,
+      stages: pipeline,
+      labels: labelConfig,
+      result: stageId === "review"
+        ? { kind: "correction", stageId, targetStageId: "implementation", result: null, feedbackCycles: 1 } as never
+        : { kind: "advance", stageId, nextStageId: "implementation", result: null, feedbackCycles: 0 },
+      admit: admit(issueId),
+    });
+
+    expect(await advance("newcomer", "refinement")).toEqual({ waitingForInFlight: "Waiting for an in-progress slot in repo: #7" });
+    expect(labels).toEqual([]);
+    await advance("issue", "review");
+    expect(store.getStageState("issue")?.stageId).toBe("implementation");
+    expect(labels).toHaveLength(1);
     store.close();
   });
 

@@ -48,3 +48,31 @@ export function inFlightHolders(input: {
     return index !== undefined && index >= input.interval.fromIndex && index <= input.interval.mergeIndex;
   });
 }
+
+/** Names the repository and the issue numbers that hold its in-progress slots. */
+export function inFlightWaitReason(repositoryId: string, holders: readonly { sourceNumber: number }[]): string {
+  return `Waiting for an in-progress slot in ${repositoryId}: ${holders
+    .map((holder) => holder.sourceNumber)
+    .sort((left, right) => left - right)
+    .map((number) => `#${number}`)
+    .join(", ")}`;
+}
+
+/**
+ * Decides whether an item may enter `targetStageId`: only entry into the `from` stage is limited,
+ * and an item that already holds a slot (a correction) is always admitted.
+ * Returns the waiting reason when the repository is full, otherwise null.
+ */
+export function inFlightAdmission(input: {
+  store: ConveyorStore;
+  repositoryId: string;
+  stages: readonly { id: string }[];
+  interval: InFlightInterval;
+  issueId: string;
+  targetStageId: string;
+}): string | null {
+  if (input.stages[input.interval.fromIndex]?.id !== input.targetStageId) return null;
+  const holders = inFlightHolders(input);
+  if (holders.some((holder) => holder.id === input.issueId) || holders.length < input.interval.limit) return null;
+  return inFlightWaitReason(input.repositoryId, holders);
+}

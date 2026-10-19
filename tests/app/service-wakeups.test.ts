@@ -491,10 +491,6 @@ describe("persisted wake-ups", () => {
     schedule(first.service);
     expect(first.executed).toEqual([]);
     expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
-    expect(internals.currentIssueStatus(first.store.getIssue("issue")!)).toMatchObject({
-      kind: "waiting",
-      reason: "Waiting for an in-progress slot in repo: #2",
-    });
     const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(card).toMatchObject({ waiting: { kind: "waiting", reason: "Waiting for an in-progress slot in repo: #2" } });
 
@@ -503,7 +499,22 @@ describe("persisted wake-ups", () => {
     first.store.setStageState({ issueId: "holder", stageId: "release", status: "ready", feedbackCycle: 0, configHash: config.hash });
     schedule(first.service);
     expect(first.store.getStageState("issue")?.status).not.toBe("waiting-in-flight");
-    expect(internals.currentIssueStatus(first.store.getIssue("issue")!)?.kind).not.toBe("waiting");
+    expect(first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason ?? "")
+      .not.toContain("in-progress slot");
+    await first.service.close();
+  });
+
+  test("without inFlight a busy repository shows no in-progress wait and never promotes waiters", async () => {
+    const { config, first } = await setup();
+    addRunningHolder(first.store, config);
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "waiting-in-flight", feedbackCycle: 0, configHash: config.hash });
+
+    schedule(first.service);
+
+    expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
+    const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(card?.waiting?.reason ?? "").not.toContain("in-progress slot");
     await first.service.close();
   });
 });

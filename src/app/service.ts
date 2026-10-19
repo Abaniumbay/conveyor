@@ -14,7 +14,7 @@ import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
-import { inFlightHolders, inFlightInterval, type InFlightInterval } from "../core/in-flight";
+import { inFlightAdmission, inFlightHolders, inFlightInterval, inFlightWaitReason, type InFlightInterval } from "../core/in-flight";
 import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
@@ -1329,21 +1329,17 @@ export class ConveyorService {
       : [];
   }
 
-  private inFlightReason(repositoryId: string, holders: readonly StoredIssue[]): string {
-    return `Waiting for an in-progress slot in ${repositoryId}: ${holders
-      .map((holder) => holder.sourceNumber)
-      .sort((left, right) => left - right)
-      .map((number) => `#${number}`)
-      .join(", ")}`;
-  }
-
   /** Checks the durable holder set immediately before an item writes its stage checkpoint. */
   private inFlightAdmission(issue: StoredIssue, targetStageId: string): string | null {
     const configured = this.repositoryInFlight(issue.repositoryId);
-    if (!configured || configured.stages[configured.interval.fromIndex]?.id !== targetStageId) return null;
-    const holders = this.repositoryInFlightHolders(issue.repositoryId);
-    if (holders.some((holder) => holder.id === issue.id) || holders.length < configured.interval.limit) return null;
-    return this.inFlightReason(issue.repositoryId, holders);
+    if (!configured) return null;
+    return inFlightAdmission({
+      store: this.store,
+      repositoryId: issue.repositoryId,
+      issueId: issue.id,
+      targetStageId,
+      ...configured,
+    });
   }
 
   private inFlightWaitingReason(issue: StoredIssue): string | null {
@@ -1352,7 +1348,7 @@ export class ConveyorService {
     if (state?.status !== "waiting-in-flight") return null;
     const holders = this.repositoryInFlightHolders(issue.repositoryId)
       .filter((holder) => holder.id !== issue.id);
-    return holders.length > 0 ? this.inFlightReason(issue.repositoryId, holders) : issue.warning;
+    return holders.length > 0 ? inFlightWaitReason(issue.repositoryId, holders) : issue.warning;
   }
 
   /** Promotes waiting prior-stage completions in queue order when code-pipeline capacity is free. */
