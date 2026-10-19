@@ -268,6 +268,64 @@ describe("dispatchTool", () => {
       .toBe(await git(w.workspace, ["rev-parse", "HEAD"]));
   });
 
+  test("a no-change lease push publishes a feature rebased onto a moved base", async () => {
+    const w = await leaseWorld();
+    const observedHead = await cliGit.remoteBranchHead(w.workspace, w.branch);
+    if (observedHead === null) throw new Error("published branch unexpectedly disappeared");
+    const server = path.join(path.dirname(w.workspace), "server");
+    await git(path.dirname(w.workspace), ["clone", w.remote, server]);
+    await commit(server, "base-update.txt", "base update\n", "base update");
+    await git(server, ["push", "origin", "main"]);
+    await cliGit.fetch(w.workspace, "origin", "main");
+    await git(w.workspace, ["rebase", "origin/main"]);
+
+    expect(await dispatchTool({
+      name: "workspace.push", input: { forceWithLease: true, headSha: observedHead }, grant: grant(["workspace.push"]), actor,
+    }, w.env)).toEqual({ accepted: true });
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`]))
+      .toBe(await git(w.workspace, ["rev-parse", "HEAD"]));
+  });
+
+  test("a no-change lease push accepts a published patch already on the new base", async () => {
+    const w = await leaseWorld();
+    const observedHead = await cliGit.remoteBranchHead(w.workspace, w.branch);
+    if (observedHead === null) throw new Error("published branch unexpectedly disappeared");
+    const server = path.join(path.dirname(w.workspace), "server");
+    await git(path.dirname(w.workspace), ["clone", w.remote, server]);
+    await git(server, ["cherry-pick", observedHead]);
+    await git(server, ["push", "origin", "main"]);
+    await cliGit.fetch(w.workspace, "origin", "main");
+    await git(w.workspace, ["rebase", "origin/main"]);
+
+    expect(await dispatchTool({
+      name: "workspace.push", input: { forceWithLease: true, headSha: observedHead }, grant: grant(["workspace.push"]), actor,
+    }, w.env)).toEqual({ accepted: true });
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`]))
+      .toBe(await git(w.workspace, ["rev-parse", "HEAD"]));
+  });
+
+  test("a no-change lease push refuses to drop a published branch patch", async () => {
+    const w = await leaseWorld();
+    const observedHead = await cliGit.remoteBranchHead(w.workspace, w.branch);
+    if (observedHead === null) throw new Error("published branch unexpectedly disappeared");
+    const server = path.join(path.dirname(w.workspace), "server");
+    await git(path.dirname(w.workspace), ["clone", w.remote, server]);
+    await commit(server, "base-update.txt", "base update\n", "base update");
+    await git(server, ["push", "origin", "main"]);
+    await cliGit.fetch(w.workspace, "origin", "main");
+    await git(w.workspace, ["reset", "--hard", "origin/main"]);
+
+    const error = await dispatchTool({
+      name: "workspace.push", input: { forceWithLease: true, headSha: observedHead }, grant: grant(["workspace.push"]), actor,
+    }, w.env).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    const omitted = (error as Error).message.match(/[0-9a-f]{40}/i)?.[0];
+    if (omitted === undefined) throw new Error("omitted commit was not named");
+    expect((await git(w.workspace, ["rev-list", "origin/main..origin/" + w.branch])).split("\n")).toContain(omitted);
+    expect((error as Error).message).toContain("reconcile or reapply the missing change");
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`])).toBe(observedHead);
+  });
+
   test("a no-change lease push rejects a stale supplied head despite a stale tracking ref", async () => {
     const w = await leaseWorld();
     const staleHead = await git(w.workspace, ["rev-parse", "HEAD"]);
@@ -293,6 +351,47 @@ describe("dispatchTool", () => {
       name: "workspace.push", input: { forceWithLease: true, headSha: localHead }, grant: grant(["workspace.push"]), actor,
     }, w.env)).rejects.toThrow("push without forceWithLease to create it");
     expect(await gitOptional(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`])).toBeNull();
+  });
+
+  test("a no-change lease push refuses an observed remote head that is unavailable locally", async () => {
+    const w = await leaseWorld();
+    const server = path.join(path.dirname(w.workspace), "server");
+    await git(path.dirname(w.workspace), ["clone", w.remote, server]);
+    await git(server, ["checkout", w.branch]);
+    await commit(server, "server.txt", "server\n", "server");
+    await git(server, ["push", "origin", w.branch]);
+    const observedHead = await git(server, ["rev-parse", "HEAD"]);
+
+    await expect(dispatchTool({
+      name: "workspace.push", input: { forceWithLease: true, headSha: observedHead }, grant: grant(["workspace.push"]), actor,
+    }, w.env)).rejects.toThrow(`The observed remote head ${observedHead} is unavailable locally; use workspace.fetch, rebase onto origin/main, and retry.`);
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`])).toBe(observedHead);
+  });
+
+  test("an ordinary workspace push creates an unpublished branch", async () => {
+    const w = await leaseWorld({ published: false });
+
+    expect(await dispatchTool({
+      name: "workspace.push", input: {}, grant: grant(["workspace.push"]), actor,
+    }, w.env)).toEqual({ accepted: true });
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`]))
+      .toBe(await git(w.workspace, ["rev-parse", "HEAD"]));
+  });
+
+  test("an ordinary workspace push cannot overwrite a divergent remote branch", async () => {
+    const w = await leaseWorld();
+    const server = path.join(path.dirname(w.workspace), "server");
+    await git(path.dirname(w.workspace), ["clone", w.remote, server]);
+    await git(server, ["checkout", w.branch]);
+    await commit(server, "server.txt", "server\n", "server");
+    await git(server, ["push", "origin", w.branch]);
+    const remoteHead = await git(server, ["rev-parse", "HEAD"]);
+    await commit(w.workspace, "local.txt", "local\n", "local");
+
+    await expect(dispatchTool({
+      name: "workspace.push", input: {}, grant: grant(["workspace.push"]), actor,
+    }, w.env)).rejects.toThrow("git push failed");
+    expect(await git(path.dirname(w.workspace), ["--git-dir", w.remote, "rev-parse", `refs/heads/${w.branch}`])).toBe(remoteHead);
   });
 
   test("a no-change lease push preserves a concurrent remote commit that arrives after validation", async () => {

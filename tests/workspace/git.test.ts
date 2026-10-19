@@ -77,7 +77,7 @@ test("cliGit lease push honors an observed head after a server-side update despi
   expect(await sh(root, "--git-dir", remote, "rev-parse", "refs/heads/feat")).toBe(await sh(work, "rev-parse", "HEAD"));
 });
 
-test("cliGit treats an observed remote head that has not been fetched as unreconciled", async () => {
+test("cliGit identifies an observed remote head that has not been fetched as unavailable", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
   directories.push(root);
   const remote = path.join(root, "remote.git");
@@ -97,7 +97,7 @@ test("cliGit treats an observed remote head that has not been fetched as unrecon
   const observedHead = await sh(server, "rev-parse", "HEAD");
 
   expect(await cliGit.revParse(work, observedHead)).toBeNull();
-  expect(await cliGit.isAncestor(work, observedHead, "HEAD")).toBe(false);
+  expect(await cliGit.missingPatchCommits(work, observedHead, "HEAD")).toBeNull();
 });
 
 test("cliGit lease push rejects an unseen remote head without overwriting it", async () => {
