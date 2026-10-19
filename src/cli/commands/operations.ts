@@ -173,7 +173,7 @@ export const itemShow: Command = {
     context.out([
       `${item.item}: ${item.title}`,
       `  ${item.url}`,
-      `Stage: ${item.stage ?? "-"}   State: ${item.paused ? "paused" : item.state ?? "-"}${item.since ? `   Since: ${item.since}` : ""}`,
+      `Stage: ${item.stage ?? "-"}   State: ${item.paused ? "paused" : item.state === "waiting" ? "Waiting" : item.state === "queued" ? "Queued" : item.state ?? "-"}${item.since ? `   Since: ${item.since}` : ""}`,
       ...(item.blocker ? [`Blocker: ${item.blocker}`] : []),
       ...(item.warning && item.warning !== item.blocker ? [`Warning: ${item.warning}`] : []),
       ...(item.childrenContinue ? ["Children can keep running while this parent waits."] : []),

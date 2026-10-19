@@ -1478,6 +1478,7 @@ export class ConveyorService {
   }
 
   private currentIssueStatus(issue: StoredIssue, queue = this.schedulerQueue()): LiveIssueStatus | null {
+    if (this.store.listActiveIssueRuns().some((run) => run.issueId === issue.id)) return null;
     const cursor = this.store.executions().getCursor(issue.id);
     const pending = cursor?.state === "pending" ? this.store.executions().pendingMessage(issue.id) : null;
     const wakeAt = cursor?.state === "pending" ? cursor.wakeAt : null;
@@ -1493,7 +1494,21 @@ export class ConveyorService {
     }
 
     const candidate = queue().candidates.find((item) => item.id === issue.id);
-    if (!candidate || !candidate.eligible || !candidate.dependenciesSatisfied || candidate.rollupOnly) return null;
+    if (!candidate || !candidate.eligible || candidate.rollupOnly) return null;
+    if (!candidate.dependenciesSatisfied) {
+      const dependencies = this.store.listDependencies(issue.id)
+        .map((dependencyId) => this.store.getIssue(dependencyId))
+        .filter((dependency): dependency is StoredIssue => dependency !== null)
+        .filter((dependency) => dependency.sourceState !== "closed" && dependency.projectedState !== "done")
+        .map((dependency) => `#${dependency.sourceNumber}`);
+      return {
+        kind: "waiting",
+        reason: `Waiting for dependencies: ${dependencies.join(", ")}`,
+        since: this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
+        nextCheckAt: null,
+        deadline: null,
+      };
+    }
     const blockers = capacityBlockers(candidate, this.concurrencyLimits(), queue().occupants);
     if (blockers.length === 0) return null;
     const reason = blockers.map((blocker) => {
@@ -1516,6 +1531,12 @@ export class ConveyorService {
       nextCheckAt: null,
       deadline: null,
     };
+  }
+
+  /** The live scheduler status for an item, when it is waiting or queued rather than running. */
+  liveIssueStatus(issueId: string): LiveIssueStatus | null {
+    const issue = this.store.getIssue(issueId);
+    return issue ? this.currentIssueStatus(issue) : null;
   }
 
   private currentCiWaitingReason(issue: StoredIssue, taskInstanceId: string, pending: string | null): string | null {
@@ -5337,10 +5358,11 @@ export class ConveyorService {
     const pending = cursor?.state === "pending";
     const activeRun = this.store.listActiveIssueRuns().find((run) => run.issueId === issueId);
     const stopped = STOPPED_ISSUE_STATES.has(issue.projectedState ?? "");
-    const nowState = pending ? "waiting" : activeRun ? "running" : stopped ? "stopped" : issue.projectedState ?? issue.sourceState;
-    const nowReason = pending
+    const liveStatus = this.liveIssueStatus(issueId);
+    const nowState = liveStatus?.kind ?? (pending ? "waiting" : activeRun ? "running" : stopped ? "stopped" : issue.projectedState ?? issue.sourceState);
+    const nowReason = liveStatus?.reason ?? (pending
       ? this.store.executions().pendingMessage(issueId) ?? issue.warning
-      : stopped ? latestStopReason(this.store, issueId) ?? issue.warning : null;
+      : stopped ? latestStopReason(this.store, issueId) ?? issue.warning : null);
     const actorFor = (stageId: string | null): string => {
       if (!stageId) return "Conveyor · Orchestrator";
       const found = pipeline?.stages.find((candidate) => candidate.id === stageId);
@@ -5358,9 +5380,9 @@ export class ConveyorService {
         stage: cursor?.stage ?? stageState?.stageId ?? issue.projectedStage,
         state: nowState,
         reason: nowReason,
-        since: pending
+        since: liveStatus?.since ?? (pending
           ? cursor.pendingSince
-          : activeRun?.startedAt ?? stageState?.updatedAt ?? issue.sourceUpdatedAt,
+          : activeRun?.startedAt ?? stageState?.updatedAt ?? issue.sourceUpdatedAt),
       },
       transitions: this.store.listStageTransitions(issueId).map((transition) => ({
         id: transition.id,
