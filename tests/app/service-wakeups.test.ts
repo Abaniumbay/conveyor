@@ -103,9 +103,9 @@ function park(store: ConveyorStore, config: ConveyorConfig, wakeAt: string) {
   void config;
 }
 
-function addRunningHolder(store: ConveyorStore, config: ConveyorConfig) {
+function addRunningHolder(store: ConveyorStore, config: ConveyorConfig, sourceNumber = 2) {
   store.upsertIssue({
-    id: "holder", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Holder", body: "",
+    id: "holder", repositoryId: "repo", sourceNumber, sourceUrl: `https://example.test/${sourceNumber}`, title: "Holder", body: "",
     sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
   store.setIssueProjection("holder", { stage: "implementation", state: "active", warning: null });
@@ -116,25 +116,32 @@ function addRunningHolder(store: ConveyorStore, config: ConveyorConfig) {
 const schedule = (service: ConveyorService) => (service as unknown as { schedule(): void }).schedule();
 
 describe("persisted wake-ups", () => {
-  test("shows an unmet dependency before its stage has run, then clears the live status", async () => {
-    const { first } = await setup();
+  test("prioritizes every unmet dependency over capacity before its stage has run, then clears the live status", async () => {
+    const { config, first } = await setup();
     first.store.upsertIssue({
       id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
       sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     first.store.setIssueProjection("blocker", { stage: "implementation", state: "active", warning: null });
-    first.store.replaceRelationships("issue", null, ["blocker"]);
+    first.store.upsertIssue({
+      id: "second-blocker", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Second blocker", body: "",
+      sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    first.store.setIssueProjection("second-blocker", { stage: "implementation", state: "active", warning: null });
+    first.store.replaceRelationships("issue", null, ["blocker", "second-blocker"]);
+    addRunningHolder(first.store, config, 4);
     const before = first.store.getIssue("issue")!;
 
     const board = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
     expect(board.selectedIssue).toMatchObject({
       state: "active",
       working: false,
-      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2" },
+      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2, #3" },
       reason: null,
     });
+    expect(board.selectedIssue!.waiting!.reason).not.toContain("slots");
     expect(first.service.issueDetails("csrf", "issue")).toMatchObject({
-      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2" },
+      waiting: { kind: "waiting", reason: "Waiting for dependencies: #2, #3" },
       reason: null,
     });
 
@@ -142,6 +149,22 @@ describe("persisted wake-ups", () => {
       id: "blocker", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.test/2", title: "Blocker", body: "",
       sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
     });
+    first.store.upsertIssue({
+      id: "second-blocker", repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.test/3", title: "Second blocker", body: "",
+      sourceState: "closed", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-02T00:00:00Z",
+    });
+    const queued = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(queued).toMatchObject({
+      state: "active",
+      waiting: { kind: "queued", reason: "global runner slots 1/1 busy: #4; implementation slots 1/1 busy: #4; repo slots 1/1 busy: #4" },
+      reason: null,
+    });
+    expect(first.service.issueDetails("csrf", "issue")).toMatchObject({
+      waiting: { kind: "queued", reason: "global runner slots 1/1 busy: #4; implementation slots 1/1 busy: #4; repo slots 1/1 busy: #4" },
+      reason: null,
+    });
+
+    first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
     const cleared = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(cleared).toMatchObject({ state: "active", waiting: null, reason: null });
     expect(first.service.issueDetails("csrf", "issue")).toMatchObject({ waiting: null, reason: null });
