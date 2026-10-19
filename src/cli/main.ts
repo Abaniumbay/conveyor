@@ -9,7 +9,7 @@ import { doctor } from "./commands/doctor";
 import { init } from "./commands/init";
 import { events } from "./commands/events";
 import { logs } from "./commands/logs";
-import { board, itemHistory, itemLogs, itemPause, itemResume, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
+import { board, itemHistory, itemLogs, itemPause, itemResume, itemResumeWaiting, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
 import { rollback, upgrade } from "./commands/release";
 import { serve } from "./commands/serve";
 import { serviceInstall, serviceRestart, serviceStart, serviceStatus, serviceStop, serviceUninstall } from "./commands/service";
@@ -62,6 +62,7 @@ export const COMMANDS: Command[] = [
   itemHistory,
   itemLogs,
   itemRetry,
+  itemResumeWaiting,
   itemPause,
   itemResume,
   questionsList,

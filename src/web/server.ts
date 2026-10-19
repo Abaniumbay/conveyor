@@ -1085,6 +1085,29 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
+    const issueResumeRollup = /^\/api\/issues\/([^/]{1,1000})\/resume-waiting$/.exec(path);
+    if (issueResumeRollup) {
+      if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "POST" });
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      let issueId: string;
+      try { issueId = decodeURIComponent(issueResumeRollup[1]!); } catch { return text("Invalid issue id", 400); }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      try {
+        const { result, correlationId } = await dependencies.dispatch("item.resumeRollup", { issueId }, actorOf(currentSession));
+        return json({ accepted: true, result: result ?? null, correlationId }, 202);
+      } catch (error) {
+        const handled = commandError(error);
+        if (handled) return handled;
+        const message = error instanceof Error ? error.message : "Unable to resume roll-up parent";
+        return text(message, message === "issue not found" ? 404 : 409);
+      }
+    }
+
     const issueRunEvents = /^\/api\/issues\/([^/]{1,1000})\/activity\/runs\/([A-Za-z0-9-]{1,100})\/events$/.exec(path);
     if (issueRunEvents) {
       const methodError = requireMethod(request, "GET");

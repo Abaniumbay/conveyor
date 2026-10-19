@@ -42,6 +42,8 @@ const parent: IssueCardViewModel = {
   working: true,
   needsAttention: true,
   retryable: false,
+  resumableRollup: false,
+  stoppedRollup: false,
 };
 
 const backlogIssue: IssueCardViewModel = {
@@ -76,6 +78,8 @@ const backlogIssue: IssueCardViewModel = {
   working: false,
   needsAttention: false,
   retryable: false,
+  resumableRollup: false,
+  stoppedRollup: false,
 };
 
 const completedIssue: IssueCardViewModel = {
@@ -746,6 +750,22 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="action-button action-button--secondary" data-retry-submit="true">Retry</button>');
     expect(html).toContain('maxlength="4000"');
     expect(html).toContain('role="status" aria-live="polite" data-retry-status');
+  });
+
+  test("shows roll-up recovery, rather than stage retry, for a stopped parent", () => {
+    const stoppedParent = { ...backlogIssue, id: "stopped-parent", state: "blocked", blocked: true, retryable: false, resumableRollup: true, stoppedRollup: true, children: [] };
+    const html = renderDashboard({
+      ...dashboard,
+      selectedIssue: stoppedParent,
+      stages: [{ ...dashboard.stages[0]!, issues: [stoppedParent] }],
+      backlog: [backlogIssue],
+    });
+    expect(html.match(/Resume waiting for children/g)).toHaveLength(2);
+    expect(html).toContain('data-resume-rollup-card');
+    expect(html).toContain('data-resume-rollup-form');
+    expect(html).toContain('Children can keep running while this parent waits.');
+    expect(html).not.toContain('data-retry-card');
+    expect(html).not.toContain('data-retry-form');
   });
 
   test("shows todo progress on the card and the escaped checklist in its details; nothing without a list", () => {

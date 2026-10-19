@@ -175,6 +175,10 @@ Retry a blocked, errored or needs-intervention item at its current stage.
 | --- | --- |
 | `--note <text>` | a note added to the item's conversation |
 
+### `conveyor item resume-waiting <item>`
+
+Clear a stopped roll-up parent so it can resume waiting for its children.
+
 ### `conveyor item pause <item>`
 
 Pause an item (removes its enrollment label; its stage and worktree are kept).

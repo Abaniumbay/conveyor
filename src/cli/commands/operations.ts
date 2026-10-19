@@ -158,6 +158,7 @@ const itemPath = (context: CommandContext, suffix = "") => `/v1/items/${encodeUR
 interface ItemPayload {
   item: string; title: string; url: string; stage: string | null; state: string | null; since: string | null;
   blocker: string | null; warning: string | null; paused: boolean;
+  childrenContinue: boolean;
   question: { id: string; prompt: string; options: unknown[] } | null;
   actions: string[];
 }
@@ -175,6 +176,7 @@ export const itemShow: Command = {
       `Stage: ${item.stage ?? "-"}   State: ${item.paused ? "paused" : item.state ?? "-"}${item.since ? `   Since: ${item.since}` : ""}`,
       ...(item.blocker ? [`Blocker: ${item.blocker}`] : []),
       ...(item.warning && item.warning !== item.blocker ? [`Warning: ${item.warning}`] : []),
+      ...(item.childrenContinue ? ["Children can keep running while this parent waits."] : []),
       ...(item.question ? [`Question ${item.question.id}: ${item.question.prompt}`] : []),
       item.actions.length > 0 ? "Actions:" : "No recovery action applies.",
       ...item.actions.map((action) => `  - ${action}`),
@@ -243,6 +245,17 @@ export const itemRetry: Command = {
     const result = await control<{ item: string; status: string; stageId: string }>(context, "POST", itemPath(context, "/retry"), { note: stringOption(context, "note") ?? "" });
     if (context.json) return printJson(context, result);
     context.out(`${result.item}: ${result.stageId} ${result.status === "started" ? "started" : "queued (it starts when capacity and dependencies allow)"}.`);
+  },
+};
+
+export const itemResumeWaiting: Command = {
+  name: "item resume-waiting",
+  usage: "<item>",
+  summary: "clear a stopped roll-up parent so it can resume waiting for its children",
+  async run(context) {
+    const result = await control<{ item: string; stageId: string }>(context, "POST", itemPath(context, "/resume-waiting"));
+    if (context.json) return printJson(context, result);
+    context.out(`${result.item}: resumed waiting for children at ${result.stageId}.`);
   },
 };
 

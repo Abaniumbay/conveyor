@@ -60,7 +60,6 @@ export function resolveItem(service: ConveyorService, reference: string): string
 }
 
 const STOPPED = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
-const RETRYABLE = new Set(["blocked", "error", "needs-intervention"]);
 
 function status(service: ConveyorService, info: ControlInfo) {
   const work = service.activeWork();
@@ -114,9 +113,11 @@ function item(service: ConveyorService, issueId: string) {
   const question = service.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId) ?? null;
   const running = service.activeWork().items.some((entry) => entry.issueId === issueId);
   const enrolled = issue.labels.includes(service.config.labels.enrollment);
+  const stoppedRollup = STOPPED.has(issue.projectedState ?? "") && service.store.listChildren(issueId).length > 0;
   const actions: string[] = [];
   if (question) actions.push(`answer the question: conveyor questions answer ${question.id} <answer>`);
-  if (!running && RETRYABLE.has(issue.projectedState ?? "")) actions.push(`retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`);
+  if (service.canResumeRollupParent(issueId)) actions.push(`resume waiting for children: conveyor item resume-waiting ${itemReference(service, issueId)}`);
+  else if (service.canRetryIssue(issueId)) actions.push(`retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`);
   if (enrolled && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(service, issueId)}`);
   if (!enrolled && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(service, issueId)}`);
   return {
@@ -131,6 +132,7 @@ function item(service: ConveyorService, issueId: string) {
     blocker: journey?.now.reason ?? null,
     warning: issue.warning,
     paused: !enrolled,
+    childrenContinue: stoppedRollup,
     question: question && { id: question.id, prompt: question.prompt, reason: question.reason, options: question.options, allowFreeText: question.allowFreeText },
     actions,
   };
@@ -206,7 +208,7 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         log.info("Question answered", { item: itemReference(service, question.issueId), question: question.id, actor: answeringActor.name });
         return json({ answered: question.id, item: itemReference(service, question.issueId) });
       }
-      const itemRoute = /^(GET|POST) \/v1\/items\/([^/]+)(?:\/(history|logs|retry|pause|resume))?$/.exec(route);
+      const itemRoute = /^(GET|POST) \/v1\/items\/([^/]+)(?:\/(history|logs|retry|resume-waiting|pause|resume))?$/.exec(route);
       if (itemRoute) {
         const [, method, reference, action] = itemRoute;
         const issueId = resolveItem(service, decodeURIComponent(reference!));
@@ -220,6 +222,10 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
         if (method === "POST" && action === "retry") {
           const note = (await body(request)).note;
           const { result } = await service.commands.dispatch("item.retry", { issueId, note: typeof note === "string" ? note : "" }, cliActor(request));
+          return json({ item: itemReference(service, issueId), ...result });
+        }
+        if (method === "POST" && action === "resume-waiting") {
+          const { result } = await service.commands.dispatch("item.resumeRollup", { issueId }, cliActor(request));
           return json({ item: itemReference(service, issueId), ...result });
         }
         if (method === "POST" && action === "pause") {

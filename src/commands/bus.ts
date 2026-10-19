@@ -11,6 +11,7 @@ import { COMMANDS, type CommandInput, type CommandName, type CommandRole } from 
 /** What each command returns to the dashboard or the CLI. */
 export interface CommandResults {
   "item.retry": { status: "started" | "queued"; stageId: string };
+  "item.resumeRollup": { stageId: string };
   "item.pause": { stageId: string | null };
   "item.resume": { status: "started" | "queued"; stageId: string | null };
   "item.postMessage": unknown;
