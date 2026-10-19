@@ -5698,6 +5698,11 @@ export class ConveyorService {
         !this.canResumeRollupParent(issueId)) {
         throw new Error("roll-up parent state changed or is not eligible; refresh before resuming waiting for children");
       }
+      // The local relationship projection can lag a user unlinking every child.
+      // Read GitHub at the mutation boundary so a stale action cannot resume a non-parent.
+      if ((await this.github.listSubIssues(repository.address, issue.sourceNumber)).length === 0) {
+        throw new Error("roll-up parent no longer has children; refresh before resuming waiting for children");
+      }
 
       const stageId = evaluated.stage;
       const conveyorLabels = live.labels.filter((label) =>

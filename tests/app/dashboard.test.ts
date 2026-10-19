@@ -286,6 +286,11 @@ describe("ConveyorService dashboard", () => {
     liveIssues.set(child.number, child);
     liveIssues.set(reviewChild.number, reviewChild);
     liveIssues.set(interventionChild.number, interventionChild);
+    const sourceChildren = new Map<string, typeof child[]>([
+      ["rollup", [child]],
+      ["review-rollup", [reviewChild]],
+      ["intervention-rollup", [interventionChild]],
+    ]);
     store.createRun({ id: "active-run", issueId: "running", stageId: "implementation", attempt: 1, kind: "producer", status: "running", configHash: config.hash, startedAt: "2026-10-01T00:00:00Z" });
 
     store.activateEnrollment("closed");
@@ -322,7 +327,7 @@ describe("ConveyorService dashboard", () => {
       async collaboratorPermission() { return "write" as const; },
       async listSubIssues(_address: string, number: number) {
         const parent = [...liveIssues.values()].find((issue) => issue.number === number);
-        return parent?.id === "rollup" ? [child] : parent?.id === "review-rollup" ? [reviewChild] : parent?.id === "intervention-rollup" ? [interventionChild] : [];
+        return sourceChildren.get(parent?.id ?? "") ?? [];
       },
       async listDependencies() { return []; },
       async upsertStatusComment() { return 1; },
@@ -355,6 +360,13 @@ describe("ConveyorService dashboard", () => {
     const sourceStopLabels = [...rollupLive.labels];
     const rollupProjection = { stage: rollup.projectedStage, state: rollup.projectedState };
     const rollupHistory = store.listIssueRuns("rollup");
+    sourceChildren.set("rollup", []);
+    await expect(service.resumeRollupParent("rollup")).rejects.toThrow("no longer has children");
+    expect(rollupLive.labels).toEqual(sourceStopLabels);
+    expect(store.getIssue("rollup")).toMatchObject({ projectedStage: rollupProjection.stage, projectedState: rollupProjection.state });
+    expect(store.listIssueRuns("rollup")).toEqual(rollupHistory);
+    expect(store.getLatestSourceMutationByKeyPrefix("rollup-resume:rollup:")).toBeNull();
+    sourceChildren.set("rollup", [child]);
     rollupLive.labels = ["conveyor", "conveyor:implementation", "conveyor:order:7", "team:keep"];
     await expect(service.resumeRollupParent("rollup")).rejects.toThrow("refresh before resuming");
     expect(rollupLive.labels).toEqual(["conveyor", "conveyor:implementation", "conveyor:order:7", "team:keep"]);
