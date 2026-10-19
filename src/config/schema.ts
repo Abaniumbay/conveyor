@@ -643,6 +643,13 @@ const repositorySchema = z
       .optional(),
     agentEgress: agentEgressSchema.optional(),
     concurrency: z.number().int().positive().default(1),
+    inFlight: z
+      .object({
+        limit: z.number().int().positive(),
+        from: identifierSchema,
+      })
+      .strict()
+      .optional(),
     extraTrustedLogins: z.array(
       z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/i, "must be a GitHub login"),
     ).default([]),

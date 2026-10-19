@@ -312,7 +312,7 @@ function parseMetadata(value: string | null): IssueMetadata {
 }
 
 /** Status changes the stage executor makes to itself; they never fence the item. */
-const EXECUTOR_STATUSES = new Set(["ready", "running", "error", "interrupted"]);
+const EXECUTOR_STATUSES = new Set(["ready", "running", "error", "interrupted", "waiting-in-flight"]);
 
 const CONVERSATION_MESSAGE_LIMIT = 4_000;
 
@@ -1709,6 +1709,68 @@ export class ConveyorStore {
       );
   }
 
+  /** Atomically records a source mutation and its transition after an optional admission check. */
+  beginStageTransitionWithMutation(input: {
+    transition: {
+      id: string;
+      issueId: string;
+      fromStage: string | null;
+      toStage: string | null;
+      kind: string;
+      detail: StageTransitionDetail;
+    };
+    mutation: {
+      idempotencyKey: string;
+      source: string;
+      operation: string;
+      request: unknown;
+    };
+    admit?: () => string | null;
+  }): { mutation: SourceMutation } | { waitingForInFlight: string } {
+    const existing = this.getSourceMutationByKey(input.mutation.idempotencyKey);
+    if (existing) {
+      this.beginStageTransition({ ...input.transition, sourceMutationId: existing.id });
+      return { mutation: existing };
+    }
+
+    return this.#database.transaction(() => {
+      const waitingForInFlight = input.admit?.() ?? null;
+      if (waitingForInFlight !== null) return { waitingForInFlight };
+
+      const id = randomUUID();
+      const timestamp = now();
+      this.#database
+        .query(
+          `INSERT INTO source_mutations(
+             id, idempotency_key, source, operation, status, request_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.mutation.idempotencyKey,
+          input.mutation.source,
+          input.mutation.operation,
+          json(input.mutation.request),
+          timestamp,
+          timestamp,
+        );
+      this.#events.append("source.mutationStarted", { mutationId: id, operation: input.mutation.operation });
+      this.beginStageTransition({ ...input.transition, sourceMutationId: id });
+      return {
+        mutation: {
+          id,
+          idempotencyKey: input.mutation.idempotencyKey,
+          source: input.mutation.source,
+          operation: input.mutation.operation,
+          status: "pending",
+          request: input.mutation.request,
+          response: null,
+          error: null,
+        },
+      };
+    })();
+  }
+
   completeStageTransition(id: string): void {
     this.#database.transaction(() => {
       const ended = this.#database
@@ -1753,7 +1815,24 @@ export class ConveyorStore {
          ORDER BY st.created_at, st.id`,
       )
       .all(issueId) as Array<Record<string, SQLQueryBindings>>;
-    return rows.map((row) => {
+    return rows.map((row) => this.mapStageTransition(row));
+  }
+
+  /** Pending transitions reserve their target state before the source checkpoint completes. */
+  listPendingStageTransitions(): StoredStageTransition[] {
+    const rows = this.#database
+      .query(
+        `SELECT st.*, sm.error AS source_error
+         FROM stage_transitions st
+         LEFT JOIN source_mutations sm ON sm.id = st.source_mutation_id
+         WHERE st.status = 'pending'
+         ORDER BY st.created_at, st.id`,
+      )
+      .all() as Array<Record<string, SQLQueryBindings>>;
+    return rows.map((row) => this.mapStageTransition(row));
+  }
+
+  private mapStageTransition(row: Record<string, SQLQueryBindings>): StoredStageTransition {
       const detail = parseJson<Partial<StageTransitionDetail>>(String(row.detail_json)) ?? {};
       return {
         id: String(row.id),
@@ -1787,7 +1866,6 @@ export class ConveyorStore {
         createdAt: String(row.created_at),
         completedAt: row.completed_at === null ? null : String(row.completed_at),
       };
-    });
   }
 
   private mapEnrollment(row: Record<string, SQLQueryBindings>): EnrollmentRecord {

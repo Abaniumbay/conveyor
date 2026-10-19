@@ -409,6 +409,31 @@ function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
     if (!config.pipelines[repository.pipeline]) {
       error(["repositories", name, "pipeline"], `references unknown pipeline "${repository.pipeline}"`);
     }
+    if (repository.inFlight) {
+      const pipeline = config.pipelines[repository.pipeline];
+      const fromIndex = pipeline?.stages.findIndex((stage) => stage.id === repository.inFlight!.from) ?? -1;
+      if (fromIndex < 0) {
+        error(
+          ["repositories", name, "inFlight", "from"],
+          `references unknown stage "${repository.inFlight.from}" in pipeline "${repository.pipeline}"`,
+        );
+      } else {
+        const mergeIndex = pipeline!.stages.findIndex(
+          (stage) => isNativeStage(stage) && stage.actions.some((action) => action.task === "change.merge"),
+        );
+        if (mergeIndex < 0) {
+          error(
+            ["repositories", name, "inFlight"],
+            `requires pipeline "${repository.pipeline}" to include a stage with the change.merge action`,
+          );
+        } else if (fromIndex > mergeIndex) {
+          error(
+            ["repositories", name, "inFlight", "from"],
+            `must name a stage at or before the merge stage, not "${repository.inFlight.from}"`,
+          );
+        }
+      }
+    }
     const ciName = repository.ci.provider;
     if (ciName && !config.ci[ciName]) {
       error(["repositories", name, "ci"], `references unknown CI provider "${ciName}"`);

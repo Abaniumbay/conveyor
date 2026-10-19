@@ -57,6 +57,94 @@ const labelConfig = {
 };
 
 describe("applyStageTransition", () => {
+  test("does not begin a source transition when in-flight admission is full", async () => {
+    const store = await setup();
+    const calls: string[][] = [];
+
+    const result = await applyStageTransition({
+      store,
+      source: {
+        async replaceConveyorLabels(_address, _number, labels) { calls.push([...labels]); },
+      },
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "run-1",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: {
+        kind: "advance",
+        stageId: "refinement",
+        nextStageId: "implementation",
+        result: {} as never,
+        feedbackCycles: 0,
+      },
+      admit: () => "Waiting for an in-progress slot in repo: #7, #8",
+    });
+
+    expect(result).toEqual({ waitingForInFlight: "Waiting for an in-progress slot in repo: #7, #8" });
+    expect(calls).toEqual([]);
+    expect(store.listStageTransitions("issue")).toEqual([]);
+    store.close();
+  });
+
+  test("reserves one admission while a concurrent source transition is still pending", async () => {
+    const store = await setup();
+    store.upsertIssue({
+      id: "second",
+      repositoryId: "repo",
+      sourceNumber: 8,
+      sourceUrl: "https://example.test/8",
+      title: "Second feature",
+      body: "",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    let releaseLabels: (() => void) | undefined;
+    const labelsReplaced = new Promise<void>((resolve) => { releaseLabels = resolve; });
+    const source = {
+      async replaceConveyorLabels() { await labelsReplaced; },
+    };
+    const admit = () => store.listPendingStageTransitions()
+      .some((transition) => transition.toStage === "implementation")
+      ? "Waiting for an in-progress slot in repo: #7"
+      : null;
+    const first = applyStageTransition({
+      store,
+      source,
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "first",
+      issue: store.getIssue("issue")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance", stageId: "refinement", nextStageId: "implementation", result: null, feedbackCycles: 0 },
+      admit,
+    });
+    const second = await applyStageTransition({
+      store,
+      source,
+      sourceName: "github",
+      address: "owner/repo",
+      configHash: "hash",
+      transitionId: "second",
+      issue: store.getIssue("second")!,
+      stages: ["refinement", "implementation", "review"],
+      labels: labelConfig,
+      result: { kind: "advance", stageId: "refinement", nextStageId: "implementation", result: null, feedbackCycles: 0 },
+      admit,
+    });
+
+    expect(second).toEqual({ waitingForInFlight: "Waiting for an in-progress slot in repo: #7" });
+    expect(store.listPendingStageTransitions()).toMatchObject([{ issueId: "issue", toStage: "implementation" }]);
+    releaseLabels!();
+    await first;
+    store.close();
+  });
+
   test("journals and applies an advance while preserving metadata labels", async () => {
     const store = await setup();
     const calls: string[][] = [];

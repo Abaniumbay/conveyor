@@ -52,6 +52,8 @@ export interface IssueExecutorDependencies {
   boardApproval?: BoardApprovalResolver;
   /** The fallback deadline of an event wait in a repository; null while it must poll. */
   waitFallback?: (repositoryId: string, kind: WaitKind) => number | null;
+  /** Admits an item before it enters the repository's configured code-pipeline interval. */
+  admitInFlight?: (issue: StoredIssue, targetStageId: string) => string | null;
   signal?: AbortSignal;
 }
 
@@ -216,7 +218,7 @@ export class IssueExecutor {
         }
         return result;
       }
-      await applyStageTransition({
+      const transition = await applyStageTransition({
         store,
         source: this.dependencies.source,
         sourceName: this.dependencies.sourceName,
@@ -241,7 +243,28 @@ export class IssueExecutor {
             title: configured && !isNativeStage(configured) && configured.run.type === "script" ? "Script" : "Orchestrator",
           };
         })(),
+        ...(this.dependencies.admitInFlight
+          ? { admit: (targetStageId: string) => this.dependencies.admitInFlight!(issue, targetStageId) }
+          : {}),
       });
+      if ("waitingForInFlight" in transition) {
+        store.setStageState({
+          issueId: issue.id,
+          stageId,
+          status: "waiting-in-flight",
+          feedbackCycle: state.feedbackCycle,
+          configHash: config.hash,
+        });
+        const current = store.getIssue(issue.id);
+        if (current) {
+          store.setIssueProjection(issue.id, {
+            stage: current.projectedStage,
+            state: current.projectedState ?? "active",
+            warning: transition.waitingForInFlight,
+          });
+        }
+        return { kind: "parked", stageId, reason: "pending", wakeAt: null };
+      }
       if (result.kind === "advance") {
         // Successful stages are part of the story too: without this the conversation goes quiet after review.
         const name = (id: string) => pipeline.stages.find((candidate) => candidate.id === id)?.name ?? displayName(id);

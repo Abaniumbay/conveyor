@@ -309,7 +309,8 @@ export async function reconcileRepository(
       // Once retries are used up the stage stays in error under a stopped label, and nothing else
       // resumes it: removing that label (Retry, or a person on GitHub) must make it ready again.
       const backingOff = !resumed && stageState?.status === "error" && stageState.stageId === projected.stage;
-      if (!awaitingDifferentStage && !backingOff && stageState?.status !== "running") {
+      const waitingForInFlight = stageState?.status === "waiting-in-flight" && stageState.stageId === projected.stage;
+      if (!awaitingDifferentStage && !backingOff && !waitingForInFlight && stageState?.status !== "running") {
         input.store.setStageState({
           issueId,
           stageId: projected.stage,

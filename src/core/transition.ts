@@ -25,6 +25,8 @@ export interface ApplyStageTransitionInput {
   labels: LabelConfiguration;
   result: StageExecutionResult;
   actor?: { name: string; title: string | null };
+  /** Returns a waiting reason when entering the target stage is not currently admitted. */
+  admit?: (targetStageId: string) => string | null;
 }
 
 export interface ApplyRollupTransitionInput {
@@ -144,7 +146,7 @@ function stopWithConfiguredState(input: ApplyStageTransitionInput): ApplyStageTr
 /** Apply the externally visible checkpoint once, then wait for reconciliation. */
 export async function applyStageTransition(
   input: ApplyStageTransitionInput,
-): Promise<{ labels: string[] }> {
+): Promise<{ labels: string[] } | { waitingForInFlight: string }> {
   input = stopWithConfiguredState(input);
   const target = targetFor(input);
   const stageResult = input.result.result?.stageResult;
@@ -169,25 +171,29 @@ export async function applyStageTransition(
   const labels = [...new Set(target.labels)].sort((left, right) =>
     left.localeCompare(right),
   );
-  const mutation = input.store.beginSourceMutation({
-    idempotencyKey: `transition:${input.transitionId}`,
-    source: input.sourceName,
-    operation: "issue.labels.replace",
-    request: {
+  const planned = input.store.beginStageTransitionWithMutation({
+    transition: {
+      id: input.transitionId,
       issueId: input.issue.id,
-      issueNumber: input.issue.sourceNumber,
-      labels,
+      fromStage: input.result.stageId,
+      toStage: target.stageId,
+      kind: input.result.kind,
+      detail,
     },
+    mutation: {
+      idempotencyKey: `transition:${input.transitionId}`,
+      source: input.sourceName,
+      operation: "issue.labels.replace",
+      request: {
+        issueId: input.issue.id,
+        issueNumber: input.issue.sourceNumber,
+        labels,
+      },
+    },
+    ...(input.admit ? { admit: () => input.admit!(target.stageId) } : {}),
   });
-  input.store.beginStageTransition({
-    id: input.transitionId,
-    issueId: input.issue.id,
-    fromStage: input.result.stageId,
-    toStage: target.stageId,
-    kind: input.result.kind,
-    sourceMutationId: mutation.id,
-    detail,
-  });
+  if ("waitingForInFlight" in planned) return planned;
+  const { mutation } = planned;
   if (mutation.status !== "succeeded") {
     try {
       await input.source.replaceConveyorLabels(

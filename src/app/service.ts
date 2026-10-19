@@ -14,6 +14,7 @@ import type { ConveyorConfig } from "../config/load";
 import { isNativeStage } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
+import { inFlightHolders, inFlightInterval, type InFlightInterval } from "../core/in-flight";
 import { RepositoryPausedError } from "../core/repository-pause";
 import { capacityBlockers, selectRunnableIssues, type ConcurrencyLimits, type SchedulerCandidate, type SchedulerOccupant } from "../core/scheduler";
 import { applyClosedItemOffboarding, applyRollupTransition, applyStageTransition } from "../core/transition";
@@ -1266,6 +1267,7 @@ export class ConveyorService {
         },
         actor: { name: "GitHub", title: "External merge" },
       });
+      if ("waitingForInFlight" in applied) return;
       const conveyorLabels = sourceIssue.labels.filter((label) =>
         label === this.config.labels.enrollment || label.startsWith(`${this.config.labels.enrollment}:`));
       const projected = {
@@ -1305,8 +1307,86 @@ export class ConveyorService {
     });
   }
 
+  private repositoryInFlight(repositoryId: string): {
+    stages: readonly { id: string }[];
+    interval: InFlightInterval;
+  } | null {
+    const repository = this.config.repositories[repositoryId];
+    if (!repository?.inFlight) return null;
+    const pipeline = this.config.pipelines[repository.pipeline];
+    if (!pipeline) return null;
+    const mergeIndex = pipeline.stages.findIndex(
+      (stage) => isNativeStage(stage) && stage.actions.some((action) => action.task === "change.merge"),
+    );
+    const interval = inFlightInterval(pipeline.stages, repository.inFlight, mergeIndex);
+    return interval ? { stages: pipeline.stages, interval } : null;
+  }
+
+  private repositoryInFlightHolders(repositoryId: string): StoredIssue[] {
+    const configured = this.repositoryInFlight(repositoryId);
+    return configured
+      ? inFlightHolders({ store: this.store, repositoryId, ...configured })
+      : [];
+  }
+
+  private inFlightReason(repositoryId: string, holders: readonly StoredIssue[]): string {
+    return `Waiting for an in-progress slot in ${repositoryId}: ${holders
+      .map((holder) => holder.sourceNumber)
+      .sort((left, right) => left - right)
+      .map((number) => `#${number}`)
+      .join(", ")}`;
+  }
+
+  /** Checks the durable holder set immediately before an item writes its stage checkpoint. */
+  private inFlightAdmission(issue: StoredIssue, targetStageId: string): string | null {
+    const configured = this.repositoryInFlight(issue.repositoryId);
+    if (!configured || configured.stages[configured.interval.fromIndex]?.id !== targetStageId) return null;
+    const holders = this.repositoryInFlightHolders(issue.repositoryId);
+    if (holders.some((holder) => holder.id === issue.id) || holders.length < configured.interval.limit) return null;
+    return this.inFlightReason(issue.repositoryId, holders);
+  }
+
+  private inFlightWaitingReason(issue: StoredIssue): string | null {
+    if (!this.repositoryInFlight(issue.repositoryId)) return null;
+    const state = this.store.getStageState(issue.id);
+    if (state?.status !== "waiting-in-flight") return null;
+    const holders = this.repositoryInFlightHolders(issue.repositoryId)
+      .filter((holder) => holder.id !== issue.id);
+    return holders.length > 0 ? this.inFlightReason(issue.repositoryId, holders) : issue.warning;
+  }
+
+  /** Promotes waiting prior-stage completions in queue order when code-pipeline capacity is free. */
+  private promoteInFlightWaiters(): string[] {
+    const promoted: string[] = [];
+    for (const repositoryId of Object.keys(this.config.repositories)) {
+      const configured = this.repositoryInFlight(repositoryId);
+      if (!configured) continue;
+      const available = configured.interval.limit - this.repositoryInFlightHolders(repositoryId).length;
+      if (available <= 0) continue;
+      const waiters = this.store.listIssues(repositoryId).filter((issue) => {
+        const state = this.store.getStageState(issue.id);
+        const stageIndex = state ? configured.stages.findIndex((stage) => stage.id === state.stageId) : -1;
+        return issue.projectedState === "active" &&
+          state?.status === "waiting-in-flight" &&
+          stageIndex + 1 === configured.interval.fromIndex;
+      });
+      for (const issue of waiters.slice(0, available)) {
+        const state = this.store.getStageState(issue.id)!;
+        this.store.setStageState({ ...state, status: "ready", configHash: this.config.hash });
+        this.store.setIssueProjection(issue.id, {
+          stage: issue.projectedStage,
+          state: issue.projectedState ?? "active",
+          warning: null,
+        });
+        promoted.push(issue.id);
+      }
+    }
+    return promoted;
+  }
+
   private schedule(): void {
     if (this.#shuttingDown || this.#drain) return;
+    const promotedIds = this.promoteInFlightWaiters();
     const candidates = this.schedulerCandidates();
     const limits = this.concurrencyLimits();
     const occupants = this.schedulerOccupants();
@@ -1362,6 +1442,7 @@ export class ConveyorService {
     }
     const selectedIds = startedIds;
     this.refreshStatusComments([
+      ...promotedIds,
       ...selectedIds,
       ...candidates
         .filter((candidate) => candidate.eligible && candidate.dependenciesSatisfied && !candidate.rollupOnly && !selectedIds.has(candidate.id))
@@ -1479,6 +1560,16 @@ export class ConveyorService {
 
   private currentIssueStatus(issue: StoredIssue, queue = this.schedulerQueue()): LiveIssueStatus | null {
     if (this.store.listActiveIssueRuns().some((run) => run.issueId === issue.id)) return null;
+    const inFlightReason = this.inFlightWaitingReason(issue);
+    if (inFlightReason) {
+      return {
+        kind: "waiting",
+        reason: inFlightReason,
+        since: this.store.getStageState(issue.id)?.updatedAt ?? issue.sourceUpdatedAt,
+        nextCheckAt: null,
+        deadline: null,
+      };
+    }
     const cursor = this.store.executions().getCursor(issue.id);
     const pending = cursor?.state === "pending" ? this.store.executions().pendingMessage(issue.id) : null;
     const wakeAt = cursor?.state === "pending" ? cursor.wakeAt : null;
@@ -2050,6 +2141,7 @@ export class ConveyorService {
       manualGateWaiting: this.manualGateWaiting,
       boardApproval: this.boardApprovalStatus,
       waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
+      admitInFlight: (currentIssue, targetStageId) => this.inFlightAdmission(currentIssue, targetStageId),
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
