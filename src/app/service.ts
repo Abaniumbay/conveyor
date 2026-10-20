@@ -1840,10 +1840,12 @@ export class ConveyorService {
   /** A parked item is schedulable only once its persisted wake-up time has passed. */
   private wakeupReached(issueId: string): boolean {
     const cursor = this.store.executions().getCursor(issueId);
-    // A pending cursor without a due time is a manual-gate wait. It must be
-    // woken explicitly after the human receipt is recorded.
+    // Manual exit gates and configured entry approvals have no clock wake-up.
+    // Their receipt event must explicitly wake the persisted cursor first.
     if (!cursor) return true;
-    if (cursor.state === "pending" && cursor.list === "exit-gate" && cursor.wakeAt === null) return false;
+    if (cursor.state === "pending" && cursor.wakeAt === null &&
+      (cursor.list === "exit-gate" ||
+        (cursor.list === "actions" && cursor.taskInstanceId === ENTRY_APPROVAL_TASK_ID))) return false;
     return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
   }
 

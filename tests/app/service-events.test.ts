@@ -25,6 +25,7 @@ async function setup(options: {
   drained?: boolean;
   sink?: EventSink;
   secondRepository?: boolean;
+  entryApproval?: boolean;
   upsertStatusComment?: (issueNumber: number) => Promise<number>;
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-events-"));
@@ -55,7 +56,7 @@ pipelines:
     stages:
       - id: implementation
         concurrency: 1
-        actions: []
+${options.entryApproval ? "        approval: manual\n" : ""}        actions: []
         exit-gate:
           - { id: ciGate, task: ci.passed, manual: true }
 repositories:
@@ -95,7 +96,7 @@ ${options.secondRepository ? `  repo-two: { source: github, address: owner/other
     }, epoch);
     return epoch;
   };
-  return { service, store, journal, park, records };
+  return { config, service, store, journal, park, records };
 }
 
 describe("waking parked gates", () => {
@@ -212,6 +213,26 @@ describe("scheduling", () => {
     await service.eventsSettled();
     expect(started(records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
     await service.close();
+  });
+
+  test("a parked entry approval does not take a runner before approval, including after restart", async () => {
+    const first = await setup({ drained: false, entryApproval: true });
+    first.park(1, ENTRY_APPROVAL_TASK_ID, "actions");
+    first.store.events().append("command.accepted", { command: "backlog.move" });
+    await first.service.eventsSettled();
+    expect(started(first.records)).toEqual([]);
+
+    await first.service.close();
+    const reopenedStore = await ConveyorStore.open(first.config.settings.database);
+    const reopened = new ConveyorService(first.config, reopenedStore, {} as never);
+    reopenedStore.events().append("command.accepted", { command: "backlog.move" });
+    await reopened.eventsSettled();
+    expect(started(first.records)).toEqual([]);
+
+    reopened.approveManualGate(ISSUE, "implementation", ENTRY_APPROVAL_TASK_ID, { id: "admin", username: "admin" });
+    await reopened.eventsSettled();
+    expect(started(first.records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
+    await reopened.close();
   });
 
   test("retry, follow-on, and operator wake events do not admit a paused repository", async () => {
