@@ -3673,7 +3673,7 @@ export class ConveyorService {
       // delivery. Do not let a cached indicator make that old head look current.
       const liveHead = await this.currentChangeHead(repositoryId, stored.id);
       if (liveHead !== head) continue;
-      this.#liveChangeHeads.set(issueId, liveHead);
+      this.setLiveChangeHead(issueId, liveHead);
       if (repository.ci?.mode === "disabled" || (newHead && known)) continue;
       const change = { repository: repository.address, changeId: String(stored.number), url: stored.url };
       const input = { issueId, headSha: head, changeUrl: stored.url, ignoreChecks: repository.ci?.ignoreChecks ?? [], now: new Date(), authoritative: !known };
@@ -3693,6 +3693,13 @@ export class ConveyorService {
     catch { return null; }
   }
 
+  /** Records a changed source head after the dashboard can read it from the in-memory projection. */
+  private setLiveChangeHead(issueId: string, headSha: string): void {
+    if (this.#liveChangeHeads.get(issueId) === headSha) return;
+    this.#liveChangeHeads.set(issueId, headSha);
+    this.store.events().append("change.headObserved", { headSha }, { issueId });
+  }
+
   /** Existing open changes acquire a current-head CI indicator after a reconcile or restart. */
   /** `scope` limits a webhook pass to the issues it names; null covers every open item. */
   private async backfillCiIndicators(repositoryId: string, scope: ReadonlySet<number> | null = null): Promise<void> {
@@ -3710,7 +3717,7 @@ export class ConveyorService {
       try {
         const head = await this.currentChangeHead(repositoryId, pullRequest.id);
         if (!head) continue;
-        this.#liveChangeHeads.set(issue.id, head);
+        this.setLiveChangeHead(issue.id, head);
         if (ciDisabled) continue;
         const current = stored.get(issue.id);
         // A stored indicator is kept only while it is for the current head and no longer "starting".
@@ -4295,7 +4302,7 @@ export class ConveyorService {
     if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
       // A status comment must agree with the review gate even when a webhook was delayed.
       const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
-      if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
+      if (liveHead) this.setLiveChangeHead(issue.id, liveHead);
     } else {
       this.#liveChangeHeads.delete(issue.id);
     }

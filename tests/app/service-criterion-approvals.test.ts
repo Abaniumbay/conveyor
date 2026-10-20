@@ -138,10 +138,17 @@ test("projects only source-current approvals after head and approval events with
     tests: [{ name: "checks the criterion", file: "tests/criteria.test.ts" }],
     recordedHead: "head-1", sourceLinkHead: "head-1", recordedAt: "2026-01-01T00:00:00Z",
   }]);
+  const refreshes: Array<{ type: string; approved: boolean }> = [];
+  const unsubscribe = w.service.webDependencies({} as never, "operator").subscribeEvents!((event) => {
+    if (event.issueId === "issue" && (event.type === "change.headObserved" || event.type === "criterion.approvalChanged")) {
+      refreshes.push({ type: event.type, approved: w.card().acceptanceCriteria[0]!.approved });
+    }
+  });
   // The execution context remains at head-1 while the source reports the new head.
   w.live.head = "head-2";
   await w.deliver("pull_request", { action: "synchronize", pull_request: { number: 1, head: { sha: "head-2" } } });
   await eventually(() => expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion"));
+  expect(refreshes).toEqual([{ type: "change.headObserved", approved: false }]);
   expect(w.card().acceptanceCriteria[0]).toMatchObject({
     id: "AC-1", approved: false, tests: [{ name: "checks the criterion" }],
   });
@@ -149,11 +156,14 @@ test("projects only source-current approvals after head and approval events with
   approvals.approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-2", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
   await w.service.eventsSettled();
   await eventually(() => expect(w.statusComments.at(-1)).toContain("- [x] Current criterion"));
+  expect(refreshes.at(-1)).toEqual({ type: "criterion.approvalChanged", approved: true });
   expect(w.card().acceptanceCriteria[0]).toMatchObject({ id: "AC-1", approved: true });
 
   approvals.withdraw("issue", "AC-1");
   await w.service.eventsSettled();
   await eventually(() => expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion"));
+  expect(refreshes.at(-1)).toEqual({ type: "criterion.approvalChanged", approved: false });
+  unsubscribe();
   expect(w.card().acceptanceCriteria[0]).toMatchObject({ id: "AC-1", approved: false });
   await w.service.close();
 });
