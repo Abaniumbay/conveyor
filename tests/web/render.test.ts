@@ -1465,6 +1465,20 @@ describe("renderDashboard", () => {
     expect(html).toContain('font-family:"IBM Plex Mono"');
   });
 
+  test("renders the infrastructure waiting reason from a never-started check", () => {
+    const annotation = "The job was not started because account billing needs attention.";
+    const issue: IssueCardViewModel = {
+      ...waitingIssue,
+      waiting: {
+        ...waitingIssue.waiting!,
+        reason: `Execution failed: CI check "Tests" never started: ${annotation}`,
+      },
+    };
+    const html = renderDashboard({ ...dashboard, selectedIssue: issue, stages: [{ ...dashboard.stages[0]!, issues: [issue] }] });
+
+    expect(html).toContain(annotation);
+  });
+
   test("uses Preact escaping and rejects unsafe issue URLs", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 

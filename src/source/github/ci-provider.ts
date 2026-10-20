@@ -2,7 +2,7 @@ import { parse as parseYaml } from "yaml";
 
 import { FOCUSED_LOG_BREAK } from "../../app/ci-gate";
 import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../app/ci-provider";
-import type { GitHubAdapter } from "./adapter";
+import type { GitHubActionsJob, GitHubAdapter, GitHubCheckRun } from "./adapter";
 
 export interface GitHubActionsTrigger {
   label: string;
@@ -27,6 +27,12 @@ export function parseGitHubActionsTriggers(value: unknown, path = "ci provider t
 }
 
 function skipped(run: CiRun): boolean { return run.state === "skipped"; }
+
+function neverStarted(job: GitHubActionsJob): boolean {
+  return job.runner_name === null
+    && Array.isArray(job.steps)
+    && !job.steps.some((step) => step.status === "completed" || step.status === "in_progress");
+}
 
 function neutralState(status: string, conclusion: string | null): CiRun["state"] {
   if (status !== "completed") return status === "queued" || status === "requested" ? "queued" : "running";
@@ -129,7 +135,7 @@ export class GitHubActionsCiProvider implements CiProvider {
 
   async list(change: CiChange, commit: string): Promise<CiRun[]> {
     const runs = await this.github.listCheckRuns(change.repository, commit);
-    const latest = new Map<string, { run: CiRun; skipped: boolean; order: number }>();
+    const latest = new Map<string, { raw: GitHubCheckRun; run: CiRun; skipped: boolean; order: number }>();
     for (const raw of runs) {
       const run: CiRun = {
         id: String(raw.id),
@@ -145,10 +151,20 @@ export class GitHubActionsCiProvider implements CiProvider {
       const current = latest.get(run.name);
       const isSkipped = skipped(run);
       if (!current || (current.skipped && !isSkipped) || (current.skipped === isSkipped && order > current.order)) {
-        latest.set(run.name, { run, skipped: isSkipped, order });
+        latest.set(run.name, { raw, run, skipped: isSkipped, order });
       }
     }
-    return [...latest.values()].map(({ run }) => run).sort((a, b) => a.name.localeCompare(b.name));
+    const selected = await Promise.all([...latest.values()].map(async ({ raw, run }) => {
+      if (run.state !== "failed" || raw.app?.slug !== "github-actions") return run;
+      const job = await this.github.githubActionsJob(change.repository, raw.id);
+      if (!neverStarted(job)) return run;
+      const annotations = await this.github.checkRunAnnotations(change.repository, raw.id);
+      const annotation = annotations
+        .map((candidate) => candidate.message?.trim())
+        .find((message): message is string => Boolean(message)) ?? null;
+      return { ...run, neverStarted: { annotation } };
+    }));
+    return selected.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async rerun(change: CiChange, runId: string): Promise<void> {

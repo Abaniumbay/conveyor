@@ -11,7 +11,7 @@ import { ConveyorStore } from "../../src/db/store";
 import { StageExecutor } from "../../src/engine/stage-executor";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, CiContext, TaskContext } from "../../src/tasks/context";
-import { runTask, type TaskResult } from "../../src/tasks/contract";
+import { InfrastructureError, runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
 import { compilePipeline } from "../../src/tasks/plan";
 
@@ -185,6 +185,17 @@ describe("ci.load", () => {
     expect(out.runs[0]!.log).toBe("(log unavailable: gone)");
   });
 
+  test("preserves a never-started failure without reading its unavailable log", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "failed", { neverStarted: { annotation: "Account billing stopped this job." } })];
+    w.provider.log = async () => { throw new Error("HTTP 404"); };
+
+    const out = (await run("ci.load", { context: { change: change() }, deps: w.deps }) as Pass).output as CiContext;
+
+    expect(out.runs[0]).toMatchObject({ neverStarted: { annotation: "Account billing stopped this job." }, log: null });
+    expect(w.provider.calls.filter((call) => call.startsWith("log"))).toEqual([]);
+  });
+
   test("exposes started label-triggered checks that have not registered a run yet", async () => {
     const w = await world();
     w.provider.waiting = ["Web", "Android"];
@@ -333,6 +344,71 @@ describe("ci.passed", () => {
     expect(details.requiredFixes[0]).toContain("ci.getLogs");
     expect(details.evidence[0]).toContain("### Tests — failed");
     expect(details.evidence[0]).toContain("##[error]boom");
+  });
+
+  test("raises infrastructure retry for a never-started required check with its annotation", async () => {
+    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: "Account billing stopped this job." } })] });
+
+    await expect(run("ci.passed", { context: gateCtx(snapshot) })).rejects.toMatchObject({
+      name: "InfrastructureError",
+      message: expect.stringContaining("Account billing stopped this job."),
+    });
+  });
+
+  test("uses a check name instead of an unavailable log when a never-started check has no annotation", async () => {
+    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null }, log: "(log unavailable: HTTP 404)" })] });
+
+    await expect(run("ci.passed", { context: gateCtx(snapshot) })).rejects.toThrow('CI check "Tests" never started.');
+  });
+
+  test("does not record a never-started check as a repeated required-CI failure", async () => {
+    const w = await world();
+    const normal = ci({ runs: [crun("Tests", "failed", { log: "not ok 1 - creates a widget" })] });
+    const neverStarted = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null } })] });
+    const context = (snapshot: CiContext) => gateCtx(snapshot, {
+      run: {
+        stage: "implementation", stageEpoch: w.store.executions().stageEpoch("i1"), attempt: 1, maxAttempts: 3,
+        taskInstanceId: "ciPassed", enteredAt: new Date(T0).toISOString(), feedback: null,
+      },
+    });
+    const attempt = (id: string, snapshot: CiContext) => run("ci.passed", {
+      context: context(snapshot), issueId: "i1", journal: w.store.executions(),
+      instance: { id: "ciPassed", stage: "implementation", idempotencyKey: id, resumed: false },
+    });
+
+    expect((await attempt("ordinary", normal)) as Fail).toMatchObject({ route: { retry: true } });
+    await expect(attempt("unstarted", neverStarted)).rejects.toBeInstanceOf(InfrastructureError);
+    expect((await attempt("ordinary-again", normal)) as Fail).toMatchObject({ route: { stop: "needs-intervention" } });
+  });
+
+  test("passes after a never-started infrastructure wait when a later run passes", async () => {
+    const w = await world();
+    const context = (snapshot: CiContext) => gateCtx(snapshot, {
+      run: {
+        stage: "implementation", stageEpoch: w.store.executions().stageEpoch("i1"), attempt: 1, maxAttempts: 3,
+        taskInstanceId: "ciPassed", enteredAt: new Date(T0).toISOString(), feedback: null,
+      },
+    });
+    const attempt = (id: string, snapshot: CiContext) => run("ci.passed", {
+      context: context(snapshot), issueId: "i1", journal: w.store.executions(),
+      instance: { id: "ciPassed", stage: "implementation", idempotencyKey: id, resumed: false },
+    });
+
+    await expect(attempt("unstarted", ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null } })] }))).rejects.toBeInstanceOf(InfrastructureError);
+    expect((await attempt("passed", ci({ runs: [crun("Tests", "passed")] })) as Pass).status).toBe("pass");
+  });
+
+  test("keeps an executed failed check on the required-CI failure route when its log is unavailable", async () => {
+    const w = await world();
+    w.provider.runs = [ciRun("Tests", "failed")];
+    w.provider.log = async () => { throw new Error("HTTP 404"); };
+    const snapshot = (await run("ci.load", { context: { change: change() }, deps: w.deps }) as Pass).output as CiContext;
+
+    const result = await run("ci.passed", { context: gateCtx(snapshot) }) as Fail;
+
+    expect(result).toMatchObject({ status: "fail", route: { retry: true } });
+    expect(result.message).toContain("Tests (failed)");
+    expect((result.details as { evidence: string[] }).evidence[0]).toContain("log unavailable: HTTP 404");
   });
 
   test("stops the second consecutive diagnosed failure with both failures as evidence", async () => {

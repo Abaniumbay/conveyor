@@ -1,5 +1,6 @@
 /** Provider-neutral CI gate. A pending gate releases all runner permits. */
 import { RepositoryPausedError } from "../core/repository-pause";
+import { InfrastructureError } from "../tasks/contract";
 import type { CiChange, CiProvider, CiRun, CiRunState } from "./ci-provider";
 
 export class ExternalWaitError extends Error {
@@ -199,6 +200,16 @@ export function describeCiFailure(changeUrl: string, short: string, failed: Fail
   };
 }
 
+/** Explains why GitHub did not start a failed Actions job without relying on its unavailable log. */
+export function describeNeverStartedCi(runs: ReadonlyArray<Pick<CiRun, "name" | "neverStarted">>): string {
+  return runs.map((run) => {
+    const annotation = run.neverStarted?.annotation;
+    return annotation === null || annotation === undefined
+      ? `CI check "${run.name}" never started.`
+      : `CI check "${run.name}" never started: ${annotation}`;
+  }).join("\n");
+}
+
 /** The one conversation message that says CI started for a head. */
 export function ciAnnouncement(changeUrl: string, short: string, runs: Array<{ name: string; url: string | null }>, awaitingStart: string[]): string {
   return [`CI started for ${short}: ${changeUrl}/checks`, ...runs.map((run) => `- ${run.name}: ${run.url ?? "no link"}`), ...awaitingStart.map((name) => `- ${name}: starting`)].join("\n");
@@ -254,9 +265,10 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
     running.push(run);
   }
 
-  if (failed.length > 0) {
+  const ordinaryFailures = failed.filter((run) => run.neverStarted === undefined);
+  if (ordinaryFailures.length > 0) {
     const logged: FailedRun[] = [];
-    for (const run of failed) logged.push({ name: run.name, state: run.state, url: run.url, log: await readRunLog(provider, change, run, options.logLines) });
+    for (const run of ordinaryFailures) logged.push({ name: run.name, state: run.state, url: run.url, log: await readRunLog(provider, change, run, options.logLines) });
     const report = describeCiFailure(change.url, short, logged);
     return {
       outcome: "failure", status: "changes-requested",
@@ -265,6 +277,7 @@ export async function evaluateCiGate(input: CiGateInput): Promise<SourceActionOu
       summary: `CI failed at ${short}: ${report.names}.\n${change.url}/checks\n\n${report.sections.join("\n\n")}`,
     };
   }
+  if (failed.length > 0) throw new InfrastructureError(describeNeverStartedCi(failed));
 
   const waitingOn = [...awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
   if (waitingOn.length > 0 || elapsed < options.settleMs) {

@@ -210,6 +210,8 @@ export interface CiContext {
     url: string | null;
     rerunnable: boolean;
     hasLog: boolean;
+    /** GitHub confirmed this failed job never reached a runner or an executable step. */
+    neverStarted?: { annotation: string | null };
     /** Focused, bounded log of a failed or cancelled run; null when there is none. */
     log: string | null;
   }>;
