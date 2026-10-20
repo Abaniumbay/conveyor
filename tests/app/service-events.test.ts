@@ -172,7 +172,7 @@ describe("waking parked gates", () => {
   test("a dismissed finding wakes an item parked on its exit gate", async () => {
     const { service, store, journal, park } = await setup();
     park();
-    store.events().append("finding.changed", { findingId: "f-1", change: "dismissed" }, { issueId: ISSUE });
+    store.events().append("finding.changed", { findingId: "f-1", type: "general", change: "dismissed" }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
     await service.close();
@@ -181,7 +181,7 @@ describe("waking parked gates", () => {
   test("a new finding does not wake the item", async () => {
     const { service, store, journal, park } = await setup();
     park();
-    store.events().append("finding.changed", { findingId: "f-1", change: "created" }, { issueId: ISSUE });
+    store.events().append("finding.changed", { findingId: "f-1", type: "general", change: "created" }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
     await service.close();
