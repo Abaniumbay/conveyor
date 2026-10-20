@@ -194,12 +194,16 @@ offboarded, or already closed parent is never closed by this reconciliation. If 
 that close uncertain, the recorded source mutation remains visible in the item's history until a
 later reconciliation can verify the source state safely.
 
-These commands talk to the running service through `~/.conveyor/run/control.sock`. Only the service
+These commands talk to the running service through its home's `run/control.sock`. Only the service
 account (and root) can open it, and the commands use the same operations, with the same checks, as
-the dashboard. Under `sudo`, the `service`, `upgrade` and `rollback` commands find the home through
-the installed unit; for other commands, run them as the account (`sudo -u <account> conveyor
-status`) or pass `--home`. Add `--json` for scripts. Exit code 4 means the service is not running,
-and 5 means it refused the request (the reason is printed).
+the dashboard. For `service start`, `stop`, `restart`, and `status`, `--unit` selects a systemd
+unit (default `conveyor`). Their home is selected by `--home`, then `CONVEYOR_HOME`, then the
+selected unit's recorded home. An explicit home that belongs to another installed unit is refused
+before the command contacts or changes a service; select that unit with `--unit <name>`. `--config`
+overrides only the configuration path. `upgrade` and `rollback` can still use an explicit home
+without a matching installed unit. For other commands, run them as the account (`sudo -u <account>
+conveyor status`) or pass `--home`. Add `--json` for scripts. Exit code 4 means the service is not
+running, and 5 means it refused the request (the reason is printed).
 
 ## Logs and disk use
 
@@ -277,7 +281,7 @@ Give each instance:
 
 | Per instance | How |
 | --- | --- |
-| A home | `--home <dir>` (or `CONVEYOR_HOME`) on every command |
+| A home | `--home <dir>` or `CONVEYOR_HOME` |
 | A dashboard port, and public URL if any | `web.listen` and `web.publicUrl` in its `conveyor.yaml` |
 | A systemd unit | `service install --unit <name>`, and `--unit <name>` on the other `service` commands |
 | An install prefix, to upgrade it on its own | `install.sh --prefix <dir> --bin-dir <dir>` |
@@ -302,8 +306,16 @@ sudo ~/.local/bin-b/conveyor service start --unit conveyor-b
 conveyor-b status
 ```
 
-Commands without `--home` use `~/.conveyor`, and `service` commands without `--unit` act on
-`conveyor.service`, so name the instance every time.
+For the lifecycle commands, name the unit and home together. For example, a shell that does not use
+the alias can safely restart the second instance with:
+
+```sh
+CONVEYOR_HOME=~/.conveyor-b conveyor service restart --unit conveyor-b --drain
+```
+
+`--home` takes precedence over `CONVEYOR_HOME`. Without either, lifecycle commands use the selected
+unit's recorded home; without `--unit`, they select `conveyor.service`. A mismatched explicit home
+is refused rather than acting on another instance.
 
 ## Moving an existing installation
 

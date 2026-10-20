@@ -104,11 +104,22 @@ export async function installedUnit(unit = "conveyor"): Promise<{ file: string; 
   return { file, home, config, account: /^User=(.+)$/m.exec(text)?.[1] ?? null };
 }
 
-/** The command's context, with the home and configuration taken from the installed unit unless --home or --config is given. */
-export async function withUnitHome(context: CommandContext, unit = "conveyor"): Promise<CommandContext> {
-  if (context.options.home || context.options.config) return context;
+/** The command's context, with the home taken from the selected unit when appropriate. */
+export async function withUnitHome(context: CommandContext, unit = "conveyor", options: { matchExplicitHome?: boolean } = {}): Promise<CommandContext> {
+  if (!options.matchExplicitHome && (context.options.home || context.options.config)) return context;
   const installed = await installedUnit(unit);
-  return installed ? { ...context, paths: homePaths(installed.home, installed.config ?? undefined) } : context;
+  if (!installed) return context;
+
+  const unitHome = path.resolve(installed.home);
+  if (options.matchExplicitHome && context.homeExplicit) {
+    if (context.paths.home !== unitHome) {
+      throw new CliError(`requested home ${context.paths.home} does not match selected unit ${unit}'s home ${unitHome}; select the matching unit with --unit <name>`, EXIT.failure);
+    }
+    return context;
+  }
+
+  const config = stringOption(context, "config") ?? installed.config ?? undefined;
+  return { ...context, paths: homePaths(unitHome, config) };
 }
 
 async function systemctl(...args: string[]): Promise<string> {
@@ -125,6 +136,7 @@ function requireRoot(action: string): void {
 }
 
 const UNIT_OPTION = { unit: { type: "string", value: "<name>", description: "the systemd unit name (default: conveyor)" } } as const;
+const UNIT_HOME_DETAILS = "The selected --unit (default: conveyor) records its home. --home takes precedence over CONVEYOR_HOME; without either, this command uses that recorded home. An explicit home for a different installed unit is refused before it contacts or changes the service; select that unit with --unit <name>. --config overrides only the configuration path.";
 const DRAIN_OPTIONS = {
   drain: { type: "boolean", description: "stop admitting work and wait for running work to finish first" },
   timeout: { type: "string", value: "<duration>", description: "how long --drain waits (default 30m); then it gives up and admits work again" },
@@ -217,10 +229,11 @@ export const serviceInstall: Command = {
 export const serviceStart: Command = {
   name: "service start",
   summary: "start the service and wait until it answers (sudo)",
+  details: UNIT_HOME_DETAILS,
   options: UNIT_OPTION,
   async run(rawContext) {
     const unit = unitName(rawContext);
-    const context = await withUnitHome(rawContext, unit);
+    const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     await systemctl("start", `${unit}.service`);
     const status = await started(context, 60_000);
     context.out(`Started ${unit}: ${status.version.version}, ${status.ready ? "ready" : "starting up (see conveyor status)"}.`);
@@ -230,10 +243,11 @@ export const serviceStart: Command = {
 export const serviceStop: Command = {
   name: "service stop",
   summary: "stop the service, optionally draining running work first (sudo)",
+  details: UNIT_HOME_DETAILS,
   options: { ...UNIT_OPTION, ...DRAIN_OPTIONS },
   async run(rawContext) {
     const unit = unitName(rawContext);
-    const context = await withUnitHome(rawContext, unit);
+    const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     if (!context.options.drain) {
       await systemctl("stop", `${unit}.service`);
       return context.out(`Stopped ${unit}.`);
@@ -251,14 +265,15 @@ export const serviceStop: Command = {
 export const serviceRestart: Command = {
   name: "service restart",
   summary: "restart the service; with --drain it waits for running work and needs no sudo",
+  details: UNIT_HOME_DETAILS,
   options: { ...UNIT_OPTION, ...DRAIN_OPTIONS },
   async run(rawContext) {
     const unit = unitName(rawContext);
-    const context = await withUnitHome(rawContext, unit);
+    const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     if (!context.options.drain) {
       await systemctl("restart", `${unit}.service`);
       const status = await started(context, 60_000);
-      return context.out(`Restarted ${unit}: ${status.version.version}.`);
+      return context.out(`Restarted ${unit} at ${context.paths.home}: ${status.version.version}.`);
     }
     const before = await control<ControlStatus>(context, "GET", "/v1/status");
     await drained(context);
@@ -268,17 +283,18 @@ export const serviceRestart: Command = {
       throw error;
     });
     const status = await started(context, 120_000, before.startedAt);
-    context.out(`Restarted ${unit} after draining: ${status.version.version}, ${status.ready ? "ready" : "starting up"}.`);
+    context.out(`Restarted ${unit} at ${context.paths.home} after draining: ${status.version.version}, ${status.ready ? "ready" : "starting up"}.`);
   },
 };
 
 export const serviceStatus: Command = {
   name: "service status",
   summary: "show the unit's state and the running service",
+  details: UNIT_HOME_DETAILS,
   options: UNIT_OPTION,
   async run(rawContext) {
     const unit = unitName(rawContext);
-    const context = await withUnitHome(rawContext, unit);
+    const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     const installed = await installedUnit(unit);
     const properties = installed
       ? Object.fromEntries((await systemctl("show", `${unit}.service`, "--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,NRestarts"))

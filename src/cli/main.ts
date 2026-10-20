@@ -156,11 +156,14 @@ export async function runCli(argv: readonly string[], io: CliIo = defaultIo, com
       io.out(commandHelp(command));
       return EXIT.ok;
     }
-    const home = resolveHome(typeof parsed.options.home === "string" ? parsed.options.home : undefined, io.environment ?? process.env);
+    const environment = io.environment ?? process.env;
+    const homeOption = typeof parsed.options.home === "string" ? parsed.options.home : undefined;
+    const home = resolveHome(homeOption, environment);
     const context: CommandContext = {
       positionals: parsed.positionals,
       options: parsed.options,
       paths: homePaths(home, typeof parsed.options.config === "string" ? parsed.options.config : undefined),
+      homeExplicit: homeOption !== undefined || environment.CONVEYOR_HOME !== undefined,
       json: parsed.options.json === true,
       interactive: io.interactive ?? isInteractive(),
       out: io.out,

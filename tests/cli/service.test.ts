@@ -48,13 +48,21 @@ async function machine() {
 }
 
 async function cli(...argv: string[]) {
+  return cliWithEnvironment({}, ...argv);
+}
+
+async function cliWithEnvironment(environment: NodeJS.ProcessEnv, ...argv: string[]) {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runCli(argv, { out: (text) => out.push(text), err: (text) => err.push(text), environment: {}, interactive: false });
+  const code = await runCli(argv, {
+    out: (text) => { out.push(text); },
+    err: (text) => { err.push(text); },
+    environment,
+    interactive: false,
+  });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
-/** A stand-in for the running service's control socket. */
 /** A stand-in for the running service's control socket; like the real one, it refuses an unforced restart while work runs. */
 function controlServer(home: string, state: { active: Array<{ item: string; stage: string }>; startedAt: string; refuseRestart?: boolean }) {
   const requests: string[] = [];
@@ -128,6 +136,120 @@ describe("conveyor service install", () => {
 });
 
 describe("service lifecycle", () => {
+  test("an environment home for another installation refuses every lifecycle command before side effects", async () => {
+    const { root, home } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    const otherHome = path.join(root, "staging");
+    await mkdir(path.join(home, "run"), { recursive: true });
+    await mkdir(path.join(otherHome, "run"), { recursive: true });
+    const requests = controlServer(home, { active: [], startedAt: "before" });
+    calls = [];
+
+    for (const command of [["service", "start"], ["service", "stop"], ["service", "restart"], ["service", "status"], ["service", "restart", "--drain"]]) {
+      calls = [];
+      requests.length = 0;
+      const result = await cliWithEnvironment({ CONVEYOR_HOME: otherHome }, ...command);
+      expect(result.code).toBe(EXIT.failure);
+      expect(result.err).toContain(otherHome);
+      expect(result.err).toContain(home);
+      expect(result.err).toContain("--unit <name>");
+      expect(calls).toEqual([]);
+      expect(requests).toEqual([]);
+    }
+
+    const option = await cli("service", "restart", "--drain", "--home", otherHome);
+    expect(option.code).toBe(EXIT.failure);
+    expect(option.err).toContain(otherHome);
+    expect(option.err).toContain(home);
+    expect(option.err).toContain("--unit <name>");
+    expect(calls).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  test("a matching environment home proceeds with its named unit, while --home takes precedence", async () => {
+    const { root, prefix, units } = await machine();
+    const stagingHome = path.join(root, "staging");
+    await mkdir(path.join(stagingHome, "config"), { recursive: true });
+    await writeFile(path.join(stagingHome, "config/conveyor.yaml"), "");
+    const installed = await cli("service", "install", "--account", "conveyor", "--unit", "conveyor-staging", "--home", stagingHome);
+    expect(installed.err).toBe("");
+    expect(installed.code).toBe(EXIT.ok);
+    calls = [];
+
+    const matching = await cliWithEnvironment({ CONVEYOR_HOME: stagingHome }, "service", "stop", "--unit", "conveyor-staging");
+    expect(matching.code).toBe(EXIT.ok);
+    expect(calls).toEqual([["stop", "conveyor-staging.service"]]);
+
+    calls = [];
+    const overridden = await cliWithEnvironment({ CONVEYOR_HOME: path.join(root, "other") }, "service", "stop", "--unit", "conveyor-staging", "--home", path.join(stagingHome, "."));
+    expect(overridden.code).toBe(EXIT.ok);
+    expect(calls).toEqual([["stop", "conveyor-staging.service"]]);
+    expect(await readFile(path.join(units, "conveyor-staging.service"), "utf8")).toContain(`ExecStart=${prefix}/current/conveyor serve --home ${stagingHome}`);
+  });
+
+  test("an installed unit supplies the home when only a configuration override is given", async () => {
+    const { home, root } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    await mkdir(path.join(home, "run"), { recursive: true });
+    const requests = controlServer(home, { active: [], startedAt: "before" });
+    calls = [];
+
+    const shown = await cli("service", "status", "--config", path.join(root, "custom.yaml"));
+    expect(shown.code).toBe(EXIT.ok);
+    expect(calls[0]).toEqual(["show", "conveyor.service", "--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp,UnitFileState,NRestarts"]);
+    expect(requests).toEqual(["GET /v1/status"]);
+  });
+
+  test("commands keep their lifecycle behavior when no unit is installed", async () => {
+    const { home } = await machine();
+    await mkdir(path.join(home, "run"), { recursive: true });
+    const requests = controlServer(home, { active: [], startedAt: "before" });
+
+    const started = await cliWithEnvironment({ CONVEYOR_HOME: home }, "service", "start");
+    expect(started.code).toBe(EXIT.ok);
+    expect(calls).toEqual([["start", "conveyor.service"]]);
+    expect(requests).toEqual(["GET /v1/status"]);
+
+    calls = [];
+    requests.length = 0;
+    const stopped = await cliWithEnvironment({ CONVEYOR_HOME: home }, "service", "stop");
+    expect(stopped.code).toBe(EXIT.ok);
+    expect(calls).toEqual([["stop", "conveyor.service"]]);
+    expect(requests).toEqual([]);
+
+    calls = [];
+    requests.length = 0;
+    const restarted = await cliWithEnvironment({ CONVEYOR_HOME: home }, "service", "restart");
+    expect(restarted.code).toBe(EXIT.ok);
+    expect(restarted.out).toBe(`Restarted conveyor at ${home}: 1.0.0.`);
+    expect(calls).toEqual([["restart", "conveyor.service"]]);
+    expect(requests).toEqual(["GET /v1/status"]);
+
+    calls = [];
+    requests.length = 0;
+    const status = await cliWithEnvironment({ CONVEYOR_HOME: home }, "service", "status");
+    expect(status.code).toBe(EXIT.unavailable);
+    expect(status.out).toBe("conveyor is not installed (conveyor service install).");
+    expect(calls).toEqual([]);
+    expect(requests).toEqual(["GET /v1/status"]);
+  });
+
+  test("upgrade and rollback retain an explicit home when the default unit names another home", async () => {
+    const { prefix, root } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    const explicitHome = path.join(root, "staging");
+
+    const upgraded = await cli("upgrade", "--home", explicitHome, "--prefix", prefix, "--archive", "release.tar.gz");
+    expect(upgraded.code).toBe(EXIT.usage);
+    expect(upgraded.err).toContain("--archive needs --checksums");
+    expect(upgraded.err).not.toContain("does not match selected unit");
+
+    const rolledBack = await cli("rollback", "--home", explicitHome, "--prefix", prefix);
+    expect(rolledBack.code).toBe(EXIT.failure);
+    expect(rolledBack.err).toContain(`${prefix}/current does not point at an installed release`);
+    expect(rolledBack.err).not.toContain("does not match selected unit");
+  });
+
   test("commands find the home in the installed unit; stop --drain waits for idle before stopping", async () => {
     const { home } = await machine();
     await cli("service", "install", "--account", "conveyor");
@@ -178,9 +300,23 @@ describe("service lifecycle", () => {
     const requests = controlServer(home, { active: [], startedAt: "before" });
     const restarted = await cli("service", "restart", "--drain");
     expect(restarted.err).toBe("");
-    expect(restarted.out).toBe("Restarted conveyor after draining: 1.0.0, ready.");
+    expect(restarted.out).toBe(`Restarted conveyor at ${home} after draining: 1.0.0, ready.`);
     expect(requests).toContain("POST /v1/restart");
     expect(calls).toEqual([]);
+  });
+
+  test("ordinary restart identifies the selected unit and home", async () => {
+    const { home } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    await mkdir(path.join(home, "run"), { recursive: true });
+    controlServer(home, { active: [], startedAt: "before" });
+    calls = [];
+
+    const restarted = await cli("service", "restart");
+    expect(restarted.err).toBe("");
+    expect(restarted.code).toBe(EXIT.ok);
+    expect(restarted.out).toBe(`Restarted conveyor at ${home}: 1.0.0.`);
+    expect(calls).toEqual([["restart", "conveyor.service"]]);
   });
 
   test("restart --drain --force interrupts work that outlived the timeout; a refused restart lifts the drain", async () => {
