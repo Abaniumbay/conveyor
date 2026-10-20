@@ -5,7 +5,16 @@ import type { DashboardItem, DashboardModel } from "../model";
 import type { DashboardAccountViewModel, DashboardViewModel, GraphViewModel, IssueCardViewModel, RecentActivityViewModel, StageColumnViewModel, SystemStatusViewModel } from "../types";
 
 /** The views the application renders itself; every other view is still served by the server. */
-export type AppView = "board" | "graph" | "recent" | "attention" | "repositories" | "repository";
+export type AppView = "board" | "graph" | "recent" | "attention" | "repositories" | "repository"
+  | "team" | "reports" | "agent" | "accounts" | "profile" | "notifications" | "about";
+
+/** The views whose own data is loaded from `/api/v1/views/<name>` when they are shown. */
+export const VIEW_DATA: Partial<Record<AppView, string>> = {
+  team: "team", reports: "reports", agent: "operator", accounts: "accounts", notifications: "notifications", about: "about",
+};
+
+/** What a view loaded for itself, merged into the view model. */
+export type ViewData = Partial<Pick<DashboardViewModel, "team" | "report" | "steering" | "accounts" | "notifications" | "build">>;
 
 /** What the address bar selects. */
 export interface BoardSelection {
@@ -14,6 +23,10 @@ export interface BoardSelection {
   repositoryId: string | null;
   /** The Graph's stage filter. */
   graphStage: string | null;
+  /** The agent whose profile is open on Team. */
+  agentId: string | null;
+  /** The Operator run shown, or null for the latest. */
+  runId: string | null;
   repositoryIds: readonly string[];
   q: string;
   state: string | null;
@@ -28,7 +41,9 @@ export const DEFAULT_DONE_LIMIT = 20;
 /** The application's own address for a server-rendered dashboard path, or null for a view it does not render. */
 export function appPath(pathname: string): string | null {
   if (pathname === "/" || pathname === "/board") return "/app";
-  if (["/graph", "/recent", "/attention", "/repositories"].includes(pathname)) return `/app${pathname}`;
+  if (["/graph", "/recent", "/attention", "/repositories", "/team", "/reports", "/operator", "/accounts", "/profile", "/settings/notifications", "/about"].includes(pathname)) return `/app${pathname}`;
+  const nested = /^\/(team|reports|operator\/runs)\/([^/]+)$/.exec(pathname);
+  if (nested) return `/app/${nested[1]}/${nested[2]}`;
   const repository = /^\/repositories\/([^/]+)$/.exec(pathname);
   if (repository) return `/app/repositories/${repository[1]}`;
   const item = /^\/issues\/([^/]+)\/([1-9]\d*)(?:\/(?:conversation|journey|logs))?$/.exec(pathname);
@@ -36,18 +51,49 @@ export function appPath(pathname: string): string | null {
   return null;
 }
 
-function viewOf(pathname: string): { view: AppView; repositoryId: string | null } {
+type ViewRoute = { view: AppView; repositoryId: string | null; agentId: string | null; runId: string | null };
+
+const decoded = (value: string | undefined): string | null => {
+  try { return value === undefined ? null : decodeURIComponent(value); } catch { return null; }
+};
+
+function viewOf(pathname: string): ViewRoute {
   const path = pathname.replace(/\/+$/, "") || "/app";
-  if (path === "/app/graph") return { view: "graph", repositoryId: null };
-  if (path === "/app/recent") return { view: "recent", repositoryId: null };
-  if (path === "/app/attention") return { view: "attention", repositoryId: null };
-  if (path === "/app/repositories") return { view: "repositories", repositoryId: null };
+  const route = (view: AppView, extra: Partial<ViewRoute> = {}): ViewRoute => ({ view, repositoryId: null, agentId: null, runId: null, ...extra });
+  const simple: Record<string, AppView> = {
+    "/app/graph": "graph", "/app/recent": "recent", "/app/attention": "attention", "/app/repositories": "repositories",
+    "/app/team": "team", "/app/reports": "reports", "/app/operator": "agent", "/app/accounts": "accounts",
+    "/app/profile": "profile", "/app/settings/notifications": "notifications", "/app/about": "about",
+  };
+  const named = simple[path];
+  if (named) return route(named);
   const repository = /^\/app\/repositories\/([^/]+)$/.exec(path);
   if (repository) {
-    try { return { view: "repository", repositoryId: decodeURIComponent(repository[1]!) }; } catch { /* An undecodable id shows the list. */ }
-    return { view: "repositories", repositoryId: null };
+    const id = decoded(repository[1]);
+    return id === null ? route("repositories") : route("repository", { repositoryId: id });
   }
-  return { view: "board", repositoryId: null };
+  const agent = /^\/app\/team\/([^/]+)$/.exec(path);
+  if (agent) return route("team", { agentId: decoded(agent[1]) });
+  const report = /^\/app\/reports\/([^/]+)$/.exec(path);
+  if (report) return route("reports", { repositoryId: decoded(report[1]) });
+  const run = /^\/app\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
+  if (run) return route("agent", { runId: run[1]! });
+  return route("board");
+}
+
+/** The query that loads a view's own data, or null for a view that has none. */
+export function viewDataUrl(selection: BoardSelection, search: string): string | null {
+  const name = VIEW_DATA[selection.view];
+  if (!name) return null;
+  const query = new URLSearchParams();
+  if (selection.view === "reports") {
+    const period = new URLSearchParams(search).get("period");
+    if (period) query.set("period", period);
+    if (selection.repositoryId) query.set("repository", selection.repositoryId);
+  }
+  if (selection.view === "agent" && selection.runId) query.set("run", selection.runId);
+  const text = query.toString();
+  return `/api/v1/views/${name}${text ? `?${text}` : ""}`;
 }
 
 /** Reads the selection from a dashboard application URL (`/app`, `/app/graph`, `/app/issues/<repository>/<number>`, …). */
@@ -101,6 +147,8 @@ export function boardViewModel(input: {
   olderDone?: readonly DashboardItem[];
   /** The Recent page loaded for the address, when the Recent view is shown. */
   recent?: RecentActivityViewModel | null;
+  /** The data the shown view loaded for itself. */
+  viewData?: ViewData | null;
 }): DashboardViewModel {
   const { model, account, csrfToken, selection } = input;
   const items = Object.values(model.items);
@@ -171,6 +219,8 @@ export function boardViewModel(input: {
     selectedIssue: selected ? card(selected, csrfToken) : null,
     csrfToken,
     account,
+    ...(input.viewData ?? {}),
+    ...(input.viewData?.steering ? {} : { steering: { ...model.system.steering, selected: null } }),
   };
 }
 

@@ -506,6 +506,8 @@ export interface DashboardViewModel {
   notifications?: NotificationPreferencesViewModel;
   csrfToken: string;
   account?: DashboardAccountViewModel;
+  /** The running server's build, for About; the server-rendered page reads its own. */
+  build?: { version: string; commit: string; builtAt: string | null; runtime: string };
 }
 
 export interface HarnessQuotaViewModel {

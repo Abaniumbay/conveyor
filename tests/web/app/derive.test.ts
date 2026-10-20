@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { appPath, boardSelectionFromUrl, boardViewModel, DEFAULT_DONE_LIMIT, filteredGraph } from "../../../src/web/app/derive";
+import { appPath, boardSelectionFromUrl, boardViewModel, DEFAULT_DONE_LIMIT, filteredGraph, viewDataUrl } from "../../../src/web/app/derive";
 import type { DashboardItem, DashboardModel } from "../../../src/web/model";
 
 function item(number: number, overrides: Partial<DashboardItem> = {}): DashboardItem {
@@ -89,7 +89,7 @@ describe("boardViewModel", () => {
 describe("boardSelectionFromUrl", () => {
   test("reads the filters and the Done limit", () => {
     expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/app?repo=a&repo=b&q=fix&state=running&doneLimit=40"))).toEqual({
-      view: "board", repositoryId: null, graphStage: null, repositoryIds: ["a", "b"], q: "fix", state: "running", issue: null, doneLimit: 40,
+      view: "board", repositoryId: null, graphStage: null, agentId: null, runId: null, repositoryIds: ["a", "b"], q: "fix", state: "running", issue: null, doneLimit: 40,
     });
   });
 
@@ -118,10 +118,10 @@ describe("views", () => {
     expect(appPath("/issues/repo/7/journey")).toBe("/app/issues/repo/7");
   });
 
-  test("leaves views the application does not render to the server", () => {
-    expect(appPath("/team")).toBeNull();
-    expect(appPath("/reports")).toBeNull();
-    expect(appPath("/operator")).toBeNull();
+  test("leaves pages the application does not render to the server", () => {
+    expect(appPath("/login")).toBeNull();
+    expect(appPath("/agents")).toBeNull();
+    expect(appPath("/settings/other")).toBeNull();
   });
 
   test("passes the Recent page and the repository on to the view", () => {
@@ -157,5 +157,40 @@ describe("filteredGraph", () => {
   test("filters by repository", () => {
     const result = filteredGraph(graph, ["a"], null);
     expect(result.nodes.map((entry) => [entry.id, entry.context])).toEqual([["n1", false], ["n2", true], ["n3", false], ["n9", true]]);
+  });
+});
+
+describe("account and admin views", () => {
+  const selection = (path: string) => boardSelectionFromUrl(new URL(`https://conveyor.example.com${path}`));
+
+  test("reads each view and its parameter from the address", () => {
+    expect(selection("/app/team")).toMatchObject({ view: "team", agentId: null });
+    expect(selection("/app/team/omid")).toMatchObject({ view: "team", agentId: "omid" });
+    expect(selection("/app/reports/repo?period=30d")).toMatchObject({ view: "reports", repositoryId: "repo" });
+    expect(selection("/app/operator/runs/run-7")).toMatchObject({ view: "agent", runId: "run-7" });
+    expect(selection("/app/accounts")).toMatchObject({ view: "accounts" });
+    expect(selection("/app/profile")).toMatchObject({ view: "profile" });
+    expect(selection("/app/settings/notifications")).toMatchObject({ view: "notifications" });
+    expect(selection("/app/about")).toMatchObject({ view: "about" });
+  });
+
+  test("maps their server paths to the application's", () => {
+    expect(appPath("/team/omid")).toBe("/app/team/omid");
+    expect(appPath("/reports/repo")).toBe("/app/reports/repo");
+    expect(appPath("/operator/runs/run-7")).toBe("/app/operator/runs/run-7");
+    expect(appPath("/settings/notifications")).toBe("/app/settings/notifications");
+  });
+
+  test("loads each view's own data from its endpoint", () => {
+    expect(viewDataUrl(selection("/app/team/omid"), "")).toBe("/api/v1/views/team");
+    expect(viewDataUrl(selection("/app/reports/repo"), "?period=30d")).toBe("/api/v1/views/reports?period=30d&repository=repo");
+    expect(viewDataUrl(selection("/app/operator/runs/run-7"), "")).toBe("/api/v1/views/operator?run=run-7");
+    expect(viewDataUrl(selection("/app/profile"), "")).toBeNull();
+    expect(viewDataUrl(selection("/app"), "")).toBeNull();
+  });
+
+  test("puts the loaded data into the view", () => {
+    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: selection("/app/settings/notifications"), viewData: { notifications: { questions: true, stopped: false, done: true } } });
+    expect(view).toMatchObject({ view: "notifications", notifications: { questions: true, stopped: false, done: true } });
   });
 });

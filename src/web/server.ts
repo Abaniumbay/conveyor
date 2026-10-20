@@ -20,7 +20,7 @@ import { SUPERUSER_ENTITIES, type DashboardItem, type DashboardModel, type Dashb
 import { dashboardAppBundle } from "./app-bundle";
 import { dashboardAppShell } from "./app-shell";
 import type { DashboardFeedListener, DashboardFeedSubscription } from "../app/dashboard-feed";
-import type { AgentProfileViewModel, DashboardPageSelection, RecentActivityViewModel, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, RecentActivityViewModel, SteeringViewModel, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -60,6 +60,8 @@ export interface WebHandlerDependencies {
   getDashboardDone?: (limit: number) => DashboardItem[];
   /** One page of the Recent view for its filters and cursor. */
   getRecentActivity?: (selection: DashboardPageSelection) => RecentActivityViewModel;
+  /** The Operator view for a run, or for the latest run when none is named. */
+  getSteeringView?: (runId: string | null) => SteeringViewModel;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -1047,6 +1049,43 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       }
     }
 
+    const viewData = /^\/api\/v1\/views\/([a-z]+)$/.exec(path);
+    if (viewData) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      const send = (body: unknown) => response(JSON.stringify(body), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+      switch (viewData[1]) {
+        case "team":
+          return send({ team: await dependencies.getAgentProfiles() });
+        case "reports": {
+          if (!dependencies.getReport) return json({ error: "unavailable" }, 503);
+          const period = url.searchParams.get("period") ?? "all";
+          if (!(REPORT_PERIOD_VALUES as readonly string[]).includes(period)) return json({ error: "Unknown report period" }, 400);
+          const report = await dependencies.getReport({ period: period as ReportPeriod, repository: url.searchParams.get("repository") || null });
+          return report ? send({ report }) : json({ error: "Repository not found" }, 404);
+        }
+        case "operator": {
+          if (!dependencies.getSteeringView) return json({ error: "unavailable" }, 503);
+          const run = url.searchParams.get("run");
+          if (run !== null && !/^[A-Za-z0-9-]{1,100}$/.test(run)) return json({ error: "Operator run not found" }, 404);
+          return send({ steering: dependencies.getSteeringView(run) });
+        }
+        case "accounts":
+          if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+          return send({ accounts: dependencies.listAccounts?.() ?? [] });
+        case "notifications":
+          return send({ notifications: dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } });
+        case "about":
+          return send({ build: BUILD });
+        case "profile":
+          return send({});
+        default:
+          return json({ error: "not found" }, 404);
+      }
+    }
+
     if (path === "/api/v1/recent") {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
@@ -1349,6 +1388,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!prompt || prompt.length > 12_000) return text("Invalid steering prompt", 400);
       try {
         const { result: runId } = await dependencies.dispatch("steering.start", { prompt }, actorOf(currentSession));
+        if ((request.headers.get("accept") ?? "").includes("application/json")) return json({ ok: true, runId });
         return redirect(`/operator/runs/${encodeURIComponent(runId)}`);
       } catch (error) {
         return commandError(error) ?? text(error instanceof Error ? error.message : "Unable to start steering agent", 409);

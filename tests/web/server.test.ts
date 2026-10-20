@@ -1894,3 +1894,92 @@ describe("recent activity page", () => {
     expect(selections[0]).toMatchObject({ view: "recent", recentTypes: ["done"], repositoryIds: ["repo"], recentCursor: { occurredAt: "2026-10-20T00:00:00.000Z", id: "e1" } });
   });
 });
+
+describe("view data for the dashboard application", () => {
+  type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+  function viewSetup() {
+    const admin: Account = { id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader: Account = { id: "reader-id", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    const accounts = new Map([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const reports: unknown[] = [];
+    const runs: unknown[] = [];
+    const { handler } = setup({
+      auth,
+      getReport: (input: unknown) => { reports.push(input); return (input as { repository: string | null }).repository === "missing" ? null : { period: "30d" }; },
+      getSteeringView: (run: string | null) => { runs.push(run); return { enabled: true, agent: "omid", selected: null, recent: [] }; },
+      listAccounts: () => [{ id: "reader-id", username: "reader", role: "user", avatar: "🦊" }],
+      getPushPreferences: () => ({ questions: true, stopped: false, done: false }),
+      getAgentProfiles: () => [],
+    });
+    const cookie = (account: Account) => auth.createSession(account)!.cookie.split(";", 1)[0]!;
+    const get = (path: string, as: Account | null = reader) => handler(new Request(`http://localhost${path}`, { headers: as ? { cookie: cookie(as) } : {} }));
+    return { get, admin, reports, runs };
+  }
+
+  test("requires a session", async () => {
+    const { get } = viewSetup();
+    expect((await get("/api/v1/views/team", null)).status).toBe(401);
+  });
+
+  test("returns the team", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/team")).json()).toEqual({ team: [] });
+  });
+
+  test("returns a report for its period and repository, and refuses an unknown period", async () => {
+    const { get, reports } = viewSetup();
+    expect(await (await get("/api/v1/views/reports?period=30d&repository=repo")).json()).toEqual({ report: { period: "30d" } });
+    expect(reports).toEqual([{ period: "30d", repository: "repo" }]);
+    expect((await get("/api/v1/views/reports?period=forever")).status).toBe(400);
+    expect((await get("/api/v1/views/reports?repository=missing")).status).toBe(404);
+  });
+
+  test("returns the Operator for a run or the latest one", async () => {
+    const { get, runs } = viewSetup();
+    expect((await get("/api/v1/views/operator?run=run-7")).status).toBe(200);
+    expect((await get("/api/v1/views/operator")).status).toBe(200);
+    expect(runs).toEqual(["run-7", null]);
+  });
+
+  test("returns accounts to a superuser only", async () => {
+    const { get, admin } = viewSetup();
+    expect((await get("/api/v1/views/accounts")).status).toBe(403);
+    expect(await (await get("/api/v1/views/accounts", admin)).json()).toEqual({ accounts: [{ id: "reader-id", username: "reader", role: "user", avatar: "🦊" }] });
+  });
+
+  test("returns the reader's own notification settings", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/notifications")).json()).toEqual({ notifications: { questions: true, stopped: false, done: false } });
+  });
+
+  test("returns the running build for About", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/about")).json()).toEqual({ build: JSON.parse(JSON.stringify(BUILD)) });
+  });
+
+  test("knows no other view", async () => {
+    const { get } = viewSetup();
+    expect((await get("/api/v1/views/secrets")).status).toBe(404);
+  });
+});
+
+describe("operator request from the application", () => {
+  test("answers a JSON request with the new run instead of a redirect", async () => {
+    const auth = createWebAuth({ passwordHash: undefined, sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes", accountById: () => ({ id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1 }), accountByUsername: () => null });
+    const { handler } = setup({ auth });
+    const session = auth.createSession({ id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1 })!;
+    const response = await handler(new Request("http://localhost/steering", {
+      method: "POST",
+      headers: { cookie: session.cookie.split(";", 1)[0]!, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ prompt: "Check the board", csrf: session.csrfToken }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, runId: "run-1" });
+  });
+});

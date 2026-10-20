@@ -1518,19 +1518,19 @@ function AgentPanel({ model }: { model: DashboardViewModel }) {
   );
 }
 
-function About() {
-  const preOne = BUILD.version.startsWith("0.");
+function About({ build = BUILD }: { build?: DashboardViewModel["build"] }) {
+  const preOne = build.version.startsWith("0.");
   return (
     <section class="panel about" aria-labelledby="about-heading">
       <header class="section-heading">
         <div>
           <h2 id="about-heading">About</h2>
-          {preOne && <p>Conveyor {BUILD.version} is pre-1.0 software.</p>}
+          {preOne && <p>Conveyor {build.version} is pre-1.0 software.</p>}
         </div>
       </header>
       <dl class="about-facts">
-        <dt>Version</dt><dd>Version {BUILD.version}</dd>
-        <dt>Build</dt><dd>{BUILD.commit === "development" ? "Development build" : `Commit ${BUILD.commit.slice(0, 12)}`}{BUILD.builtAt ? `, built ${BUILD.builtAt}` : ""}, Bun {BUILD.runtime}</dd>
+        <dt>Version</dt><dd>Version {build.version}</dd>
+        <dt>Build</dt><dd>{build.commit === "development" ? "Development build" : `Commit ${build.commit.slice(0, 12)}`}{build.builtAt ? `, built ${build.builtAt}` : ""}, Bun {build.runtime}</dd>
         <dt>Source</dt><dd><a href="https://github.com/Abaniumbay/conveyor" target="_blank" rel="noopener noreferrer">github.com/Abaniumbay/conveyor</a></dd>
         <dt>Contributors</dt><dd>Conveyor contributors</dd>
         <dt>License</dt><dd>MIT license</dd>
@@ -1754,7 +1754,7 @@ export function DashboardBody({ model }: { model: DashboardViewModel }) {
   else if (model.view === "reports" && model.report) content = <Reports report={model.report} />;
   else if (model.view === "repositories") content = <Repositories model={model} />;
   else if (model.view === "repository") content = <RepositoryDetail model={model} />;
-  else if (model.view === "about") content = <About />;
+  else if (model.view === "about") content = <About {...(model.build ? { build: model.build } : {})} />;
   else if (model.view === "accounts") content = <Accounts accounts={model.accounts ?? []} csrfToken={model.csrfToken} />;
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
   else if (model.view === "notifications" && model.notifications) content = <Notifications preferences={model.notifications} csrfToken={model.csrfToken} />;
