@@ -1701,7 +1701,41 @@ describe("dashboard live refresh position", () => {
       }
       expect(await desktop.getByRole("heading", { name: longStageName }).count()).toBe(1);
 
-      await desktop.locator(".board").evaluate((board) => { board.scrollLeft = 350; });
+      const scrollLeft = await desktop.locator(".board").evaluate((board) => {
+        board.scrollLeft = 350;
+        return board.scrollLeft;
+      });
+      expect(scrollLeft).toBeGreaterThan(0);
+      const scrolledHeaderLayout = await desktop.evaluate(() => {
+        const rect = (element: Element | null) => {
+          const box = element?.getBoundingClientRect();
+          return box ? { left: box.left, right: box.right } : null;
+        };
+        return ["refinement-review", "work-breakdown", "implementation"].map((id) => {
+          const stage = document.getElementById(`station-${id}`);
+          const heading = stage?.querySelector("h2") as HTMLElement | null;
+          const column = document.querySelector(`.board-column:nth-child(${Array.from(document.querySelectorAll(".board-head > .stage")).indexOf(stage as HTMLElement) + 1})`);
+          return {
+            headingFits: heading !== null && heading.scrollWidth <= heading.clientWidth,
+            stage: rect(stage),
+            column: rect(column),
+          };
+        });
+      });
+      for (const header of scrolledHeaderLayout) {
+        expect(header.headingFits).toBe(true);
+        expect(header.stage).not.toBeNull();
+        expect(header.column).not.toBeNull();
+        expect(Math.abs(header.stage!.left - header.column!.left)).toBeLessThanOrEqual(1);
+        expect(Math.abs(header.stage!.right - header.column!.right)).toBeLessThanOrEqual(1);
+      }
+      for (let index = 0; index < scrolledHeaderLayout.length - 1; index += 1) {
+        const header = scrolledHeaderLayout[index];
+        const nextHeader = scrolledHeaderLayout[index + 1];
+        expect(header?.stage).not.toBeNull();
+        expect(nextHeader?.stage).not.toBeNull();
+        expect(header!.stage!.right).toBeLessThanOrEqual(nextHeader!.stage!.left);
+      }
       const workBreakdownInfo = desktop.getByRole("button", { name: "About Work Breakdown" });
       await workBreakdownInfo.click();
       await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
