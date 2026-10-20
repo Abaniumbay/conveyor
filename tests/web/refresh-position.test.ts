@@ -1702,7 +1702,12 @@ describe("dashboard live refresh position", () => {
       expect(await desktop.getByRole("heading", { name: longStageName }).count()).toBe(1);
 
       await desktop.locator(".board").evaluate((board) => { board.scrollLeft = 350; });
-      await desktop.getByRole("button", { name: "About Work Breakdown" }).click();
+      const workBreakdownInfo = desktop.getByRole("button", { name: "About Work Breakdown" });
+      await workBreakdownInfo.click();
+      await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
+      await desktop.locator("#stage-info-work-breakdown .stage-dialog-close").click();
+      await workBreakdownInfo.focus();
+      await desktop.keyboard.press("Enter");
       await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
 
       const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
