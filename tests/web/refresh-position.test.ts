@@ -1274,6 +1274,63 @@ describe("dashboard live refresh position", () => {
     }
   }, 60_000);
 
+  test("filters whole backlog rows and restores their reorder controls in order", async () => {
+    const alpha = { ...issue("backlog-alpha", 401, "Alpha backlog item"), repository: "alpha", needsAttention: true };
+    const beta = { ...issue("backlog-beta", 402, "Beta backlog item"), repository: "beta" };
+    const board = async (selection: DashboardPageSelection) => ({
+      ...dashboard("backlog-filters", []),
+      backlog: [alpha, beta],
+      repositories: [repository("alpha", 1), repository("beta", 2)],
+      boardFilters: {
+        repositories: selection.repositoryIds ?? [],
+        q: selection.q ?? "",
+        state: selection.state ?? null,
+      },
+    });
+    const server = startDashboard({ dashboard: board, revision: () => "backlog-filters", delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+
+      const backlogOrder = () => page.locator('[data-backlog-list] > .backlog-row').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-backlog-id")));
+      const betaRow = page.locator('[data-backlog-id="backlog-beta"]');
+      const betaUp = page.getByRole("button", { name: "Move #402 up" });
+      const expectBetaHidden = async () => {
+        expect(await betaRow.isHidden()).toBe(true);
+        expect(await betaUp.isHidden()).toBe(true);
+        expect(await page.evaluate(() => {
+          const button = document.querySelector<HTMLButtonElement>('[data-backlog-id="backlog-beta"] button');
+          button?.focus();
+          return document.activeElement === button;
+        })).toBe(false);
+      };
+
+      await page.locator('[data-filter-search]').fill("Alpha backlog");
+      await expectBetaHidden();
+      await page.locator('[data-filter-clear]').click();
+      expect(await betaRow.isVisible()).toBe(true);
+      expect(await betaUp.isVisible()).toBe(true);
+      expect(await backlogOrder()).toEqual(["backlog-alpha", "backlog-beta"]);
+
+      await page.locator('.repository-filter label').filter({ hasText: "alpha" }).click();
+      await expectBetaHidden();
+      await page.locator('[data-filter-clear]').click();
+      expect(await backlogOrder()).toEqual(["backlog-alpha", "backlog-beta"]);
+
+      const needsYou = page.getByRole("radio", { name: "Needs you" });
+      await needsYou.focus();
+      await needsYou.press(" ");
+      await expectBetaHidden();
+      await page.locator('[data-filter-clear]').click();
+      expect(await betaRow.isVisible()).toBe(true);
+      expect(await betaUp.isVisible()).toBe(true);
+      expect(await backlogOrder()).toEqual(["backlog-alpha", "backlog-beta"]);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("a family row folds to its header, stays folded across a reload and a live update, and unfolds", async () => {
     const parentRelation = { id: "family", repository: "sample", number: 10, title: "Family parent", url: null, satisfied: false };
     const child = (id: string, number: number) => ({ ...issue(id, number, `Child ${number}`), parent: parentRelation, parentProgress: { done: 0, total: 2 } });
