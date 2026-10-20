@@ -24,6 +24,7 @@ export interface ChangedLineCoverageResult {
   passed: boolean;
   changedLinePassed: boolean;
   uncovered: UncoveredChangedLine[];
+  currentUncovered: UncoveredChangedLine[];
   baseline: BaselineCoverageComparison | null;
 }
 
@@ -111,6 +112,14 @@ function totalLineCoverage(coverage: Map<string, Map<number, number>>, name: str
   return { covered, total, percentage: (covered / total) * 100 };
 }
 
+function isWithinBaselineTolerance(current: TotalLineCoverage, baseline: TotalLineCoverage): boolean {
+  const currentCovered = BigInt(current.covered);
+  const currentTotal = BigInt(current.total);
+  const baselineCovered = BigInt(baseline.covered);
+  const baselineTotal = BigInt(baseline.total);
+  return (baselineCovered * currentTotal - currentCovered * baselineTotal) * 1_000n <= baselineTotal * currentTotal;
+}
+
 function isProductionFile(file: string): boolean {
   const normalized = file.replaceAll("\\", "/");
   if (!SOURCE_EXTENSIONS.has(path.extname(normalized))) return false;
@@ -124,6 +133,21 @@ function isProductionFile(file: string): boolean {
 function isExecutableSourceLine(source: string): boolean {
   const trimmed = source.trim();
   return trimmed.length > 0 && !trimmed.startsWith("//") && !trimmed.startsWith("/*") && !trimmed.startsWith("*") && !["{", "}", "};", ");", "];"].includes(trimmed);
+}
+
+async function uncoveredProductionLines(cwd: string, coverage: Map<string, Map<number, number>>): Promise<UncoveredChangedLine[]> {
+  const uncovered: UncoveredChangedLine[] = [];
+  for (const [file, lines] of coverage) {
+    if (!isProductionFile(file)) continue;
+    const target = path.resolve(cwd, file);
+    const relative = path.relative(cwd, target);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    const source = (await readFile(target, "utf8")).split("\n");
+    for (const [line, hits] of lines) {
+      if (hits === 0) uncovered.push({ file, line, source: source[line - 1] ?? "" });
+    }
+  }
+  return uncovered.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line);
 }
 
 /** Compares added production lines in a Git diff against the LCOV evidence from the test run. */
@@ -151,15 +175,17 @@ export async function checkChangedCoverage(options: ChangedLineCoverageOptions):
 
   const changedLinePassed = total === 0 || (covered / total) * 100 >= THRESHOLD;
   let baseline: BaselineCoverageComparison | null = null;
+  let currentUncovered: UncoveredChangedLine[] = [];
   if (options.baselineLcov !== undefined) {
     const baselineCoverage = parseLcov(options.cwd, await readFile(path.resolve(options.cwd, options.baselineLcov), "utf8"));
     const current = totalLineCoverage(coverage, "Current LCOV report");
     const main = totalLineCoverage(baselineCoverage, "Main LCOV report");
     const drop = main.percentage - current.percentage;
-    baseline = { current, baseline: main, drop, passed: drop <= 0.1 + Number.EPSILON };
+    baseline = { current, baseline: main, drop, passed: isWithinBaselineTolerance(current, main) };
+    if (!baseline.passed) currentUncovered = await uncoveredProductionLines(options.cwd, coverage);
   }
 
-  return { covered, total, changedLinePassed, passed: changedLinePassed && (baseline?.passed ?? true), uncovered, baseline };
+  return { covered, total, changedLinePassed, passed: changedLinePassed && (baseline?.passed ?? true), uncovered, currentUncovered, baseline };
 }
 
 function ranges(lines: UncoveredChangedLine[]): UncoveredChangedLine[][] {
@@ -173,7 +199,11 @@ function ranges(lines: UncoveredChangedLine[]): UncoveredChangedLine[][] {
 }
 
 export function formatChangedCoverageFailure(result: ChangedLineCoverageResult): string {
-  const details = ranges(result.uncovered).flatMap((range) => {
+  const details = ranges([...new Map(
+    [...result.uncovered, ...(result.baseline && !result.baseline.passed ? result.currentUncovered : [])]
+      .sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line)
+      .map((line) => [`${line.file}:${line.line}`, line]),
+  ).values()]).flatMap((range) => {
     const first = range[0]!;
     const last = range.at(-1)!;
     const location = first.line === last.line ? `${first.file}:${first.line}` : `${first.file}:${first.line}-${last.line}`;

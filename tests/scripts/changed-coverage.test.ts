@@ -119,6 +119,16 @@ test("passes the baseline gate when the total line-coverage drop is at most 0.1 
   expect(result.baseline?.drop).toBeCloseTo(0.1, 10);
 });
 
+test("passes an exact 50.0-to-49.9 percentage-point baseline boundary", async () => {
+  const root = await fixture({ "src/covered.ts": "export const covered = 0;\n" }, lcov([...Array(499).fill(1), ...Array(501).fill(0)]));
+  await writeFile(path.join(root, "main.lcov"), lcov([...Array(500).fill(1), ...Array(500).fill(0)]));
+
+  await expect(checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info", baselineLcov: "main.lcov" })).resolves.toMatchObject({
+    passed: true,
+    baseline: { current: { percentage: 49.9 }, baseline: { percentage: 50 }, passed: true },
+  });
+});
+
 test("compares only production-file coverage with the main baseline", async () => {
   const root = await fixture({ "src/covered.ts": "export const covered = 0;\n" }, [
     "SF:src/covered.ts",
@@ -186,6 +196,21 @@ test("keeps uncovered current-source ranges first for a baseline-only failure", 
   const result = await checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info", baselineLcov: "main.lcov" });
 
   expect(result.changedLinePassed).toBe(true);
+  expect(formatChangedCoverageFailure(result)).toStartWith("src/covered.ts:5\n  5 | export const fifth = 5;");
+  expect(formatChangedCoverageFailure(result).trimEnd()).toEndWith("Test what this code does, or remove it if nothing needs it.");
+});
+
+test("renders current uncovered production ranges for a baseline-only failure without a production diff", async () => {
+  const source = "export const first = 1;\nexport const second = 2;\nexport const third = 3;\nexport const fourth = 4;\nexport const fifth = 5;\n";
+  const root = await fixture({ "src/covered.ts": source }, "SF:src/covered.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,0\nend_of_record\n");
+  await writeFiles(root, { "src/covered.ts": source, "tests/baseline.test.ts": "test(\"baseline\", () => {});\n" });
+  await commitChanges(root);
+  await writeFile(path.join(root, "main.lcov"), "SF:src/covered.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,1\nend_of_record\n");
+
+  const result = await checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info", baselineLcov: "main.lcov" });
+
+  expect(result.changedLinePassed).toBe(true);
+  expect(result.uncovered).toEqual([]);
   expect(formatChangedCoverageFailure(result)).toStartWith("src/covered.ts:5\n  5 | export const fifth = 5;");
   expect(formatChangedCoverageFailure(result).trimEnd()).toEndWith("Test what this code does, or remove it if nothing needs it.");
 });
