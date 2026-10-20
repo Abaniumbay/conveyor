@@ -38,7 +38,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -4959,23 +4959,7 @@ export class ConveyorService {
     });
     const total = this.store.costSummary();
     const stageCosts = this.store.costSummaryByStage();
-    const recentSteeringRuns = this.store.listRunsByKind("steering", 10);
-    const selectedSteeringId = pagination.runId ?? recentSteeringRuns[0]?.id ?? null;
-    const selectedSteeringRun = selectedSteeringId
-      ? this.store.getRun(selectedSteeringId)
-      : null;
-    const selectedSteering = selectedSteeringRun?.kind === "steering"
-      ? {
-          id: selectedSteeringRun.id,
-          status: selectedSteeringRun.status,
-          startedAt: selectedSteeringRun.startedAt,
-          finishedAt: selectedSteeringRun.finishedAt,
-          events: this.store.listRunEvents(selectedSteeringRun.id).flatMap((event) => {
-            const visible = userFacingSteeringEvent(event);
-            return visible ? [visible] : [];
-          }),
-        }
-      : null;
+    const steering = this.steeringView(pagination.runId);
     const repositorySummaries = this.repositorySummaries(listedIssues);
     const degradedRepositories = repositorySummaries.repositories.filter((repository) => repository.health === "degraded").length;
     const unassociatedWarnings = [
@@ -5077,16 +5061,35 @@ export class ConveyorService {
       systemWarnings: unassociatedWarnings,
       repositories: repositorySummaries.repositories,
       restrictedRepositories: repositorySummaries.restrictedRepositories,
-      steering: {
-        enabled: Boolean(this.config.web?.steering),
-        agent: this.config.web?.steering?.agent ?? null,
-        selected: selectedSteering,
-        recent: recentSteeringRuns,
-      },
+      steering,
       selectedIssue: pagination.issueId && listedById.has(pagination.issueId)
         ? card(listedById.get(pagination.issueId)!)
         : null,
       csrfToken,
+    };
+  }
+
+  /** The Operator: whether it is configured, its recent runs, and the selected (or latest) run's conversation. */
+  steeringView(runId: string | null): SteeringViewModel {
+    const recent = this.store.listRunsByKind("steering", 10);
+    const selectedId = runId ?? recent[0]?.id ?? null;
+    const run = selectedId ? this.store.getRun(selectedId) : null;
+    return {
+      enabled: Boolean(this.config.web?.steering),
+      agent: this.config.web?.steering?.agent ?? null,
+      selected: run?.kind === "steering"
+        ? {
+            id: run.id,
+            status: run.status,
+            startedAt: run.startedAt,
+            finishedAt: run.finishedAt,
+            events: this.store.listRunEvents(run.id).flatMap((event) => {
+              const visible = userFacingSteeringEvent(event);
+              return visible ? [visible] : [];
+            }),
+          }
+        : null,
+      recent,
     };
   }
 
@@ -6201,6 +6204,7 @@ export class ConveyorService {
       subscribeDashboardFeed: (listener, after) => this.#dashboardFeed.subscribe(listener, after),
       getDashboardFeedStatus: () => this.#dashboardFeed.status,
       getRecentActivity: (selection) => this.recentActivityPage(selection),
+      getSteeringView: (runId) => this.steeringView(runId),
       getDashboardDone: (limit) => Object.values(normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION, doneLimit: limit })).items)
         .filter((item) => item.placement === "done")
         .sort((left, right) => left.order - right.order),

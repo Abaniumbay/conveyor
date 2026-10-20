@@ -4,9 +4,9 @@
 import { render } from "preact";
 
 import { DashboardBody, LiveDetailsContext, prepareDashboardRender, type LiveDetails } from "../render";
-import type { IssueCardViewModel, RecentActivityViewModel } from "../types";
+import type { IssueCardViewModel, RecentActivityViewModel, SteeringEventViewModel } from "../types";
 import { afterRender, bindBoardBehaviour, showConnection, view } from "./behaviour";
-import { boardSelectionFromUrl, boardViewModel } from "./derive";
+import { boardSelectionFromUrl, boardViewModel, viewDataUrl, type ViewData } from "./derive";
 import { ActivityPanel, ConversationPanel, JourneyPanel } from "./details";
 import { LiveStore } from "./store";
 
@@ -71,7 +71,66 @@ function syncRecent(view: string, seq: number): void {
   }
 }
 
-const VIEW_TITLES: Record<string, string> = { board: "Board", graph: "Graph", recent: "Recent", attention: "Label problems", repositories: "Repositories", repository: "Repository" };
+/** What the shown view loaded for itself (Team, Reports, Operator, …), by the address it was loaded for. */
+const viewData: { url: string | null; data: ViewData | null } = { url: null, data: null };
+
+function syncViewData(url: string | null): void {
+  if (url === viewData.url) return;
+  viewData.url = url;
+  viewData.data = null;
+  stopSteering();
+  if (url === null) return;
+  void fetch(url, { headers: { accept: "application/json" }, cache: "no-store" })
+    .then(async (response) => {
+      if (response.status === 401) return location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
+      if (viewData.url !== url) return;
+      const body: unknown = await response.json().catch(() => null);
+      viewData.data = response.ok && body && typeof body === "object" ? body as ViewData : {};
+      followSteering();
+      schedule();
+    })
+    .catch(() => { /* The view stays empty; reopening it tries again. */ });
+}
+
+/** A running Operator run streams its conversation; it is appended as it arrives. */
+let steeringSource: EventSource | null = null;
+
+function stopSteering(): void {
+  steeringSource?.close();
+  steeringSource = null;
+}
+
+function followSteering(): void {
+  const selected = viewData.data?.steering?.selected;
+  if (!selected || selected.status !== "running" || steeringSource) return;
+  const url = viewData.url;
+  const last = selected.events.at(-1)?.sequence ?? 0;
+  const source = new EventSource(`/steering/${encodeURIComponent(selected.id)}/events?after=${last}`);
+  steeringSource = source;
+  source.addEventListener("update", (message) => {
+    const current = viewData.data?.steering?.selected;
+    if (viewData.url !== url || !current) return;
+    try {
+      const event = JSON.parse(message.data) as SteeringEventViewModel;
+      if (!Number.isSafeInteger(event.sequence) || current.events.some((existing) => existing.sequence === event.sequence)) return;
+      viewData.data = { ...viewData.data, steering: { ...viewData.data!.steering!, selected: { ...current, events: [...current.events, event] } } };
+      schedule();
+    } catch { /* A malformed event is skipped. */ }
+  });
+  source.addEventListener("done", () => {
+    stopSteering();
+    // The finished run's status and final report come with a fresh read.
+    if (viewData.url === url) {
+      viewData.url = null;
+      setTimeout(schedule, 500);
+    }
+  });
+}
+
+const VIEW_TITLES: Record<string, string> = {
+  board: "Board", graph: "Graph", recent: "Recent", attention: "Label problems", repositories: "Repositories", repository: "Repository",
+  team: "Team", reports: "Reports", agent: "Operator", accounts: "Accounts", profile: "Profile", notifications: "Notifications", about: "About",
+};
 
 function draw(): void {
   frame = null;
@@ -81,6 +140,7 @@ function draw(): void {
   if (view.backlogBusy) return;
   const selection = boardSelectionFromUrl(new URL(location.href));
   syncRecent(selection.view, state.seq);
+  syncViewData(viewDataUrl(selection, location.search));
   const model = boardViewModel({
     model: state.model,
     account: state.account,
@@ -88,6 +148,7 @@ function draw(): void {
     selection,
     olderDone: state.olderDone,
     recent: recent.page,
+    viewData: viewData.data,
   });
   prepareDashboardRender(model);
   document.body.dataset.dashboardView = model.view;
@@ -99,8 +160,10 @@ function draw(): void {
     bound = true;
     bindBoardBehaviour({ root: root!, store, redraw: schedule });
   }
-  afterRender(root!);
+  afterRender(root!, selection.agentId);
   showConnection(root!, state);
+  // Page parts with their own scripts (browser push settings) bind to what was drawn.
+  document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
 }
 
 /** Many patches in one moment draw once, on the next frame. */
@@ -117,6 +180,8 @@ function ensureDone(): void {
   if (limit > live && limit > state.olderDone.length && state.olderDone.length + live < state.model.system.doneTotal) void store.loadDone(limit);
 }
 
+// A change the view made itself (an account added or removed) reads its data again.
+window.addEventListener("conveyor:view-data-stale", () => { viewData.url = null; });
 store.subscribe(schedule);
 window.addEventListener("conveyor:done-limit", ensureDone);
 window.addEventListener("popstate", schedule);

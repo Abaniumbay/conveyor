@@ -315,9 +315,10 @@ export function showConnection(root: ParentNode, state: LiveState): void {
   status.querySelector("summary")?.setAttribute("aria-label", `Connection state: ${label}${pressure ? "; storage pressure warning" : ""}`);
 }
 
-/** Opens the selected item's dialog, closes any other, and marks the card behind it. */
-function syncDialog(root: ParentNode): void {
-  const selected = root.querySelector("dialog[data-selected-issue='true']");
+/** Opens the selected item's (or agent's) dialog, closes any other, and marks the card behind it. */
+function syncDialog(root: ParentNode, agentId: string | null): void {
+  const agent = agentId === null ? null : [...root.querySelectorAll("dialog[data-agent-id]")].find((dialog) => dialog.getAttribute("data-agent-id") === agentId) ?? null;
+  const selected = agent ?? root.querySelector("dialog[data-selected-issue='true']");
   for (const dialog of root.querySelectorAll("dialog[open]")) if (dialog !== selected && dialog instanceof HTMLDialogElement) dialog.close();
   for (const card of root.querySelectorAll(".issue.is-selected")) card.classList.remove("is-selected");
   if (!(selected instanceof HTMLDialogElement)) return;
@@ -329,11 +330,11 @@ function syncDialog(root: ParentNode): void {
     if (tab instanceof HTMLElement) tab.focus({ preventScroll: true });
   }
   const heading = selected.querySelector(".details-header h2");
-  if (heading) document.title = `#${selected.getAttribute("data-issue-number") ?? ""} ${heading.textContent ?? ""} · Conveyor`;
+  if (heading) document.title = `${agent ? "" : `#${selected.getAttribute("data-issue-number") ?? ""} `}${heading.textContent ?? ""} · Conveyor`;
 }
 
-/** What every redraw re-applies. */
-export function afterRender(root: ParentNode): void {
+/** What every redraw re-applies; `agentId` names the Team profile the address opens. */
+export function afterRender(root: ParentNode, agentId: string | null = null): void {
   localizeTimes(root);
   updateQuotaCountdowns(root);
   syncThemeControls(root);
@@ -342,7 +343,7 @@ export function afterRender(root: ParentNode): void {
   applyBoardFilters(root);
   applyTrace(root);
   syncStickyHeight(root);
-  syncDialog(root);
+  syncDialog(root, agentId);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -393,7 +394,58 @@ function formFields(form: HTMLFormElement, csrfToken: string): URLSearchParams {
 }
 
 /** The forms the application sends itself; any other form posts to the server as it always did. */
-const HANDLED_FORMS = "[data-answer-form], [data-manual-gate-form], [data-retry-form], [data-resume-rollup-form], [data-conversation-form], [data-repository-sync]";
+const HANDLED_FORMS = "[data-answer-form], [data-manual-gate-form], [data-retry-form], [data-resume-rollup-form], [data-conversation-form], [data-repository-sync], [data-account-action-form], [data-profile-avatar-form], [data-account-create-form], form.agent-compose";
+
+/** Shows a form's outcome in its status line. */
+function formStatus(form: HTMLFormElement, message: string, error: boolean): void {
+  const status = form.querySelector("[data-form-status]");
+  if (!(status instanceof HTMLElement)) return;
+  status.textContent = message;
+  status.dataset.error = error ? "true" : "false";
+}
+
+async function submitAccountForm(form: HTMLFormElement, csrfToken: string, onDone: () => void): Promise<void> {
+  const button = form.querySelector("button[type='submit']");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+  formStatus(form, "", false);
+  try {
+    const { body } = await post(form.action, formFields(form, csrfToken));
+    const username = form.dataset.accountUsername ?? "the account";
+    if (form.matches("[data-profile-avatar-form]")) {
+      if (typeof body.avatar !== "string") throw new Error("The server returned an invalid profile update.");
+      for (const avatar of document.querySelectorAll(".account-avatar, [data-profile-avatar]")) avatar.textContent = body.avatar;
+      formStatus(form, "Saved.", false);
+    } else if (form.matches("[data-account-create-form]") || form.hasAttribute("data-account-delete")) {
+      // The list is read again with the new or removed account.
+      onDone();
+    } else {
+      form.reset();
+      formStatus(form, `Password reset for ${username}.`, false);
+    }
+  } catch (error) {
+    formStatus(form, error instanceof Error ? error.message : "The change could not be saved.", true);
+  } finally {
+    if (button instanceof HTMLButtonElement) button.disabled = false;
+  }
+}
+
+async function startSteering(form: HTMLFormElement, csrfToken: string, redraw: () => void): Promise<void> {
+  const button = form.querySelector("button[type='submit']");
+  const field = form.querySelector("textarea[name='prompt']");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+  try {
+    const { body } = await post("/steering", formFields(form, csrfToken));
+    if (typeof body.runId !== "string") throw new Error("The server did not return the new run.");
+    if (field instanceof HTMLTextAreaElement) field.value = "";
+    history.pushState({}, "", `/app/operator/runs/${encodeURIComponent(body.runId)}`);
+    redraw();
+  } catch (error) {
+    const hint = form.querySelector(".compose-actions span");
+    if (hint) hint.textContent = error instanceof Error ? error.message : "The request could not be sent.";
+  } finally {
+    if (button instanceof HTMLButtonElement) button.disabled = false;
+  }
+}
 
 async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boolean> {
   if (form.matches("[data-repository-sync]")) {
@@ -688,7 +740,23 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       // Other views are still served by the server-rendered dashboard.
       return;
     }
+    const cancel = element(target, "[data-account-delete-cancel]", HTMLButtonElement);
+    if (cancel) {
+      const details = cancel.closest("details");
+      if (details instanceof HTMLDetailsElement) {
+        details.open = false;
+        details.querySelector("summary")?.focus();
+      }
+      return;
+    }
     if (!target.closest(".card-open") && target.closest("a, button, input, textarea, select, label, form")) return;
+    const member = target.closest(".team-card");
+    const profile = member?.querySelector("dialog[data-agent-id]");
+    if (profile) {
+      history.pushState({ conveyorAgent: true }, "", `/app/team/${encodeURIComponent(profile.getAttribute("data-agent-id") ?? "")}`);
+      redraw();
+      return;
+    }
     const card = target.closest(".issue[data-issue-id]");
     if (card) {
       const repository = card.getAttribute("data-board-repository") ?? "";
@@ -698,7 +766,12 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
   });
 
   root.addEventListener("close", (event) => {
-    if (event.target instanceof HTMLDialogElement && event.target.matches("[data-selected-issue='true']")) closeItem(redraw);
+    if (!(event.target instanceof HTMLDialogElement)) return;
+    if (event.target.matches("[data-selected-issue='true']")) closeItem(redraw);
+    else if (event.target.matches("[data-agent-id]") && location.pathname.startsWith("/app/team/")) {
+      history.pushState({}, "", "/app/team");
+      redraw();
+    }
   }, true);
 
   root.addEventListener("keydown", (event) => {
@@ -823,6 +896,13 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     }
     if (!form.matches(HANDLED_FORMS)) return;
     event.preventDefault();
+    if (form.matches("form.agent-compose")) return void startSteering(form, csrf(), redraw);
+    if (form.matches("[data-account-action-form], [data-profile-avatar-form], [data-account-create-form]")) {
+      return void submitAccountForm(form, csrf(), () => {
+        window.dispatchEvent(new Event("conveyor:view-data-stale"));
+        redraw();
+      });
+    }
     void submitForm(form, csrf());
   });
 

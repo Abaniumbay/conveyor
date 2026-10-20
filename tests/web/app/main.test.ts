@@ -58,6 +58,17 @@ function board(title: string): DashboardViewModel {
   };
 }
 
+const omid = {
+  id: "omid", name: "Omid", title: "Operator", harness: "codex", model: null, effort: null, access: "read-only",
+  usage: [{ pipeline: null, stage: null, role: "steering" }], tasks: [], instructions: "Watch the board.",
+};
+
+const reportTotals = {
+  delivered: 3, inProgress: 1, runs: 9, failedRuns: 1, inputTokens: 1000, outputTokens: 200, cachedTokens: 0, agentMs: 60_000,
+  avgTokensPerItem: 400, avgRunsPerItem: 3, avgLeadMs: 3_600_000, avgAgentMs: 20_000, avgChecksWaitMs: 0, avgWaitingForYouMs: 0,
+  avgQueuedMs: 0, avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
+};
+
 function startApp() {
   const state = { title: "Before" };
   const feed = new DashboardFeed({ build: () => normalizeDashboard(board(state.title)), settleMs: 5, maxWaitMs: 20 });
@@ -87,6 +98,10 @@ function startApp() {
       types: ["done"], repositoryIds: [], nextCursor: null, rangeStartedAt: "2026-10-19T12:00:00Z",
       events: [{ id: "e1", occurredAt: "2026-10-20T11:00:00Z", type: "done", repository: "sample", repositoryColor: 1, issueNumber: 19, issueTitle: "Shipped thing", issueUrl: "/issues/sample/19", fromStage: "review", toStage: null, reason: null }],
     }),
+    getSteeringView: () => ({ enabled: true, agent: "omid", selected: { id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z", finishedAt: "2026-10-20T10:01:00Z", events: [{ sequence: 1, type: "report", text: "Board checked.", createdAt: "2026-10-20T10:01:00Z" }] }, recent: [{ id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z" }] }),
+    getReport: ({ period, repository }) => ({ period, since: null, repository, repositories: ["sample"], totals: reportTotals, byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-20T12:00:00Z" }),
+    listAccounts: () => [{ id: "operator", username: "operator", role: "superuser", avatar: "🐼" }],
+    getPushPreferences: () => ({ questions: true, stopped: false, done: false }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
     dispatch: (name, input, actor) => commands.dispatch(name, input, actor),
@@ -99,8 +114,8 @@ function startApp() {
     getIssueConversation: () => null,
     getIssueJourney: () => null,
     getIssueRoute: () => null,
-    getAgentProfiles: () => [],
-    getAgentProfile: () => null,
+    getAgentProfiles: () => [omid],
+    getAgentProfile: () => omid,
   });
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
   return {
@@ -210,13 +225,47 @@ describe("dashboard application", () => {
     }
   }, 30_000);
 
+  test("opens a team member's profile at its own address and closes back to Team", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.locator(".tabs a", { hasText: "Team" }).click();
+      await page.locator(".team-card .card-open", { hasText: "Omid" }).click();
+      await page.locator("dialog[open][data-agent-id='omid']").waitFor();
+      expect(new URL(page.url()).pathname).toBe("/app/team/omid");
+      await page.keyboard.press("Escape");
+      await page.waitForURL((url) => url.pathname === "/app/team");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("shows Reports and the Operator from their own data", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.locator(".tabs a", { hasText: "Reports" }).click();
+      await page.locator("main", { hasText: "sample" }).first().waitFor();
+      expect(new URL(page.url()).pathname).toBe("/app/reports");
+      await page.locator(".tabs a", { hasText: "Operator" }).click();
+      await page.locator(".agent-event", { hasText: "Board checked." }).waitFor();
+      expect(new URL(page.url()).pathname).toBe("/app/operator");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
   test("fits a phone screen without horizontal scrolling", async () => {
     const app = startApp();
     try {
       browser = await chromium.launch();
       const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true });
       await signIn(page, app.url);
-      for (const path of ["/app", "/app/graph", "/app/recent", "/app/attention", "/app/repositories", "/app/repositories/sample"]) {
+      for (const path of ["/app", "/app/graph", "/app/recent", "/app/attention", "/app/repositories", "/app/repositories/sample", "/app/team", "/app/reports", "/app/operator", "/app/accounts", "/app/profile", "/app/settings/notifications", "/app/about"]) {
         await page.goto(`${app.url}${path}`);
         await page.locator("main.dashboard").waitFor();
         await page.waitForTimeout(100);
