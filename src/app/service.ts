@@ -494,7 +494,7 @@ export class ConveyorService {
   #shuttingDown = false;
   #tickRunning = false;
   /** While set, no new work is admitted; work already running finishes. */
-  #drain: { since: string; reason: string } | null = null;
+  #drain: { since: string; reason: string; upgrade: { targetVersion: string; releaseTag: string } | null } | null = null;
   #retentionTimer: ReturnType<typeof setInterval> | null = null;
   #retentionActive = 0;
   #githubCallTimer: ReturnType<typeof setInterval> | null = null;
@@ -4966,6 +4966,17 @@ export class ConveyorService {
       project: `${Object.keys(this.config.repositories).length} repositories${degradedRepositories > 0 ? ` · ${degradedRepositories} degraded` : ""}`,
       totalUsage: formatUsage(total) ?? "0 runs",
       harnessUsage,
+      draining: this.#drain
+        ? {
+          reason: this.#drain.reason,
+          upgrade: this.#drain.upgrade
+            ? {
+              version: this.#drain.upgrade.targetVersion,
+              releaseUrl: `https://github.com/Abaniumbay/conveyor/releases/tag/${this.#drain.upgrade.releaseTag}`,
+            }
+            : null,
+        }
+        : null,
       updatedAt: this.#lastReconciledAt ?? new Date().toISOString(),
       revision: this.dashboardRevision(repositorySummaries),
       view: pagination.view,
@@ -5971,16 +5982,16 @@ export class ConveyorService {
   }
 
   /** Stops admitting new work; running work continues. Idempotent: the first reason is kept. */
-  drain(reason: string): { since: string; reason: string } {
+  drain(reason: string, upgrade: { targetVersion: string; releaseTag: string } | null = null): { since: string; reason: string } {
     if (!this.#drain) {
-      this.#drain = { since: new Date().toISOString(), reason };
+      this.#drain = { since: new Date().toISOString(), reason, upgrade };
       this.store.events().append("admission.paused", {});
       log.info("Admission paused: draining", { reason });
       for (const [issueId, active] of this.#active) {
         log.info("Stage waiting during drain", { ...this.itemFields(issueId), stage: active.stageId });
       }
     }
-    return this.#drain;
+    return { since: this.#drain.since, reason: this.#drain.reason };
   }
 
   /** Admits new work again after a drain; false when no drain was in effect. */
@@ -5994,7 +6005,7 @@ export class ConveyorService {
   }
 
   draining(): { since: string; reason: string } | null {
-    return this.#drain;
+    return this.#drain ? { since: this.#drain.since, reason: this.#drain.reason } : null;
   }
 
   /** Rejects an operation that would admit work or mutate the paused repository's source. */

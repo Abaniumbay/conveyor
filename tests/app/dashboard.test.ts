@@ -26,6 +26,42 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("exposes an ordinary drain and a typed upgrade target, then clears them when admission resumes", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-drain-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      runners: {}, sources: {}, repositories: {}, agents: {}, pipelines: {},
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
+    } as unknown as ConveyorConfig;
+    const service = new ConveyorService(config, store, {} as never);
+    try {
+      expect(service.dashboard("csrf").draining).toBeNull();
+
+      service.drain("operator requested <em>maintenance</em>");
+      expect(service.dashboard("csrf").draining).toEqual({
+        reason: "operator requested <em>maintenance</em>",
+        upgrade: null,
+      });
+
+      service.resumeAdmission();
+      expect(service.dashboard("csrf").draining).toBeNull();
+
+      service.drain("upgrade to 9.9.9", { targetVersion: "9.9.9", releaseTag: "v9.9.9" });
+      expect(service.dashboard("csrf").draining).toEqual({
+        reason: "upgrade to 9.9.9",
+        upgrade: {
+          version: "9.9.9",
+          releaseUrl: "https://github.com/Abaniumbay/conveyor/releases/tag/v9.9.9",
+        },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test("serves health and login promptly during cold and expired dashboard quota scans", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-quota-http-"));
     temporaryDirectories.push(root);

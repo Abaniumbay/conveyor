@@ -9,7 +9,7 @@ import { stat } from "node:fs/promises";
 
 import type { ConveyorService } from "../app/service";
 import { log } from "../log/logger";
-import { executableOf, requireInstalled, switchCurrent } from "../release/install";
+import { executableOf, releaseTag, requireInstalled, switchCurrent } from "../release/install";
 import { compareVersions } from "../release/semver";
 import {
   backupState, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, updateRecord, writeReleaseState,
@@ -116,7 +116,10 @@ export class ReleaseCoordinator {
       drainDeadline: new Date(Date.now() + request.drainTimeoutMs).toISOString(),
     };
     await writeReleaseState(this.home, { ...state, pending });
-    this.service.drain(`${request.kind} to ${version}`);
+    this.service.drain(
+      `${request.kind} to ${version}`,
+      request.kind === "upgrade" ? { targetVersion: version, releaseTag: releaseTag(version) } : null,
+    );
     log.info(`Scheduled ${request.kind} to ${version}: draining`, { from: BUILD.version, deadline: pending.drainDeadline });
     this.watch();
     return pending;

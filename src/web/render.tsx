@@ -1701,6 +1701,18 @@ function viewTitle(model: DashboardViewModel): string {
   return names[model.view];
 }
 
+function DrainingNotice({ draining }: { draining: DashboardViewModel["draining"] }) {
+  if (!draining) return null;
+  return <section class="drain-notice" role="status" aria-live="polite" aria-label="Service is draining">
+    <strong class="drain-notice-title">Draining</strong>
+    <div class="drain-notice-content">
+      <span>New work is paused. Work already running continues.</span>
+      <span class="drain-notice-reason">Reason: {draining.reason}</span>
+      {draining.upgrade && <span class="drain-notice-upgrade">Target version: {draining.upgrade.version} <a href={draining.upgrade.releaseUrl}>View release {draining.upgrade.version}</a></span>}
+    </div>
+  </section>;
+}
+
 function Page({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
@@ -1765,6 +1777,7 @@ function Page({ model }: { model: DashboardViewModel }) {
               </div>
               </details>
             </header>
+            <DrainingNotice draining={model.draining} />
             <Navigation model={model} />
           </div>
           {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}

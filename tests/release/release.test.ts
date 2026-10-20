@@ -216,9 +216,14 @@ async function coordinator(options: { supervised?: boolean; versions?: string[] 
   const prefix = await prefixWith(root, ...(options.versions ?? [BUILD.version, "9.9.9"]));
   const activity = { items: [] as Array<{ issueId: string; repositoryId: string; stageId: string }>, steering: 0 };
   const calls: string[] = [];
+  const drains: Array<{ reason: string; upgrade: { targetVersion: string; releaseTag: string } | null }> = [];
   const service = {
     store,
-    drain: (reason: string) => { calls.push(`drain:${reason}`); return { since: "now", reason }; },
+    drain: (reason: string, upgrade?: { targetVersion: string; releaseTag: string }) => {
+      calls.push(`drain:${reason}`);
+      drains.push({ reason, upgrade: upgrade ?? null });
+      return { since: "now", reason };
+    },
     resumeAdmission: () => { calls.push("resume"); return true; },
     activeWork: () => activity,
   };
@@ -229,7 +234,7 @@ async function coordinator(options: { supervised?: boolean; versions?: string[] 
     stop: (reason, code, afterClose) => stops.push({ reason, code, ...(afterClose ? { afterClose } : {}) }),
   }, 10);
   directories.push(root);
-  return { home, prefix, store, activity, calls, stops, releases, close: () => store.close() };
+  return { home, prefix, store, activity, calls, drains, stops, releases, close: () => store.close() };
 }
 
 describe("switching the running service", () => {
@@ -239,6 +244,7 @@ describe("switching the running service", () => {
     world.activity.items.push({ issueId: "conveyor-90", repositoryId: "conveyor", stageId: "deploy" });
     const pending = await world.releases.schedule({ kind: "upgrade", version: "9.9.9", prefix: world.prefix, drainTimeoutMs: 60_000 });
     expect(world.calls).toEqual(["drain:upgrade to 9.9.9"]);
+    expect(world.drains).toEqual([{ reason: "upgrade to 9.9.9", upgrade: { targetVersion: "9.9.9", releaseTag: "v9.9.9" } }]);
     expect((await readReleaseState(world.home)).pending).toMatchObject({ id: pending.id, version: "9.9.9", from: BUILD.version });
     await world.releases.tick();
     expect(world.stops).toEqual([]);
@@ -343,6 +349,7 @@ describe("switching the running service", () => {
     await expect(world.releases.schedule({ kind: "rollback", prefix: world.prefix, drainTimeoutMs: 60_000 })).rejects.toThrow("--restore-backup");
     const pending = await world.releases.schedule({ kind: "rollback", prefix: world.prefix, restoreBackup: true, drainTimeoutMs: 60_000 });
     expect(pending).toMatchObject({ version: "1.0.0", restoreBackup: backup });
+    expect(world.drains).toEqual([{ reason: "rollback to 1.0.0", upgrade: null }]);
     await world.releases.tick();
     expect(world.stops).toHaveLength(1);
     // Nothing switches before the database is closed.

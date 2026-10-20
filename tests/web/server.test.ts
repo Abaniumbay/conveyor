@@ -12,6 +12,7 @@ const model: DashboardViewModel = {
   project: "org/repo",
   totalUsage: "12M in · 80K out",
   harnessUsage: [],
+  draining: null,
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",

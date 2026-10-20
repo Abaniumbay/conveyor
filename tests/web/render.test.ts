@@ -130,6 +130,7 @@ const dashboard: DashboardViewModel = {
     { id: "codex", name: "Codex", windows: { weekly: { remaining: 9, resetsAt: "2026-10-09T21:11:00Z", reportedAt: "2026-10-03T14:04:00Z" } } },
     { id: "claude", name: "Claude Code", windows: { fiveHour: { remaining: 86, resetsAt: "2026-10-03T18:30:00Z", reportedAt: "2026-10-03T14:04:00Z" } } },
   ],
+  draining: null,
   updatedAt: "2026-09-29T12:00:00Z",
   revision: "revision-1",
   view: "board",
@@ -391,6 +392,37 @@ describe("issue type and fields", () => {
 });
 
 describe("renderDashboard", () => {
+  test("renders a safe draining notice and a release link only for a typed upgrade", () => {
+    const ordinary = renderDashboard({
+      ...dashboard,
+      draining: { reason: "operator requested <em>maintenance</em>", upgrade: null },
+    });
+    expect(ordinary).toContain("Draining");
+    expect(ordinary).toContain("Work already running continues.");
+    expect(ordinary).toContain("operator requested &lt;em>maintenance&lt;/em>");
+    expect(ordinary).not.toContain("<em>maintenance</em>");
+    expect(ordinary).not.toContain("Target version:");
+    expect(ordinary).not.toContain("releases/tag/");
+
+    for (const reason of ["service restarted before the switch", "rollback to 1.0.0"]) {
+      const nonUpgrade = renderDashboard({ ...dashboard, draining: { reason, upgrade: null } });
+      expect(nonUpgrade).toContain(`Reason: ${reason}`);
+      expect(nonUpgrade).not.toContain("Target version:");
+      expect(nonUpgrade).not.toContain("releases/tag/");
+    }
+
+    const upgrade = renderDashboard({
+      ...dashboard,
+      draining: {
+        reason: "upgrade to 9.9.9",
+        upgrade: { version: "9.9.9", releaseUrl: "https://github.com/Abaniumbay/conveyor/releases/tag/v9.9.9" },
+      },
+    });
+    expect(upgrade).toContain("Target version: 9.9.9");
+    expect(upgrade).toContain('href="https://github.com/Abaniumbay/conveyor/releases/tag/v9.9.9"');
+    expect(upgrade).toContain("View release 9.9.9");
+  });
+
   test("renders an accessible Graph view with directed, text-labelled relationships", () => {
     const html = renderDashboard({
       ...dashboard,

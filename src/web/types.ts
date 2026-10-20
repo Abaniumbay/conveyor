@@ -462,6 +462,11 @@ export interface DashboardViewModel {
   project: string;
   totalUsage: string;
   harnessUsage: readonly HarnessQuotaViewModel[];
+  /** Admission is paused while this service drains; null when it admits new work. */
+  draining: {
+    reason: string;
+    upgrade: { version: string; releaseUrl: string } | null;
+  } | null;
   updatedAt: string;
   revision: string;
   view: DashboardView;
