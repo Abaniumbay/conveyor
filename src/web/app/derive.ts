@@ -1,10 +1,9 @@
-// Builds the board's view model from the live model, in the browser. The components that render it
-// are the same ones the server-rendered dashboard uses, so the board looks and reads the same.
+// Builds the board's view model from the live model, in the browser.
 
 import type { DashboardItem, DashboardModel } from "../model";
 import type { DashboardAccountViewModel, DashboardViewModel, GraphViewModel, IssueCardViewModel, RecentActivityViewModel, StageColumnViewModel, SystemStatusViewModel } from "../types";
 
-/** The views the application renders itself; every other view is still served by the server. */
+/** The dashboard's views. */
 export type AppView = "board" | "graph" | "recent" | "attention" | "repositories" | "repository"
   | "team" | "reports" | "agent" | "accounts" | "profile" | "notifications" | "about";
 
@@ -38,17 +37,25 @@ export interface BoardSelection {
 
 export const DEFAULT_DONE_LIMIT = 20;
 
-/** The application's own address for a server-rendered dashboard path, or null for a view it does not render. */
-export function appPath(pathname: string): string | null {
-  if (pathname === "/" || pathname === "/board") return "/app";
-  if (["/graph", "/recent", "/attention", "/repositories", "/team", "/reports", "/operator", "/accounts", "/profile", "/settings/notifications", "/about"].includes(pathname)) return `/app${pathname}`;
-  const nested = /^\/(team|reports|operator\/runs)\/([^/]+)$/.exec(pathname);
-  if (nested) return `/app/${nested[1]}/${nested[2]}`;
-  const repository = /^\/repositories\/([^/]+)$/.exec(pathname);
-  if (repository) return `/app/repositories/${repository[1]}`;
-  const item = /^\/issues\/([^/]+)\/([1-9]\d*)(?:\/(?:conversation|journey|logs))?$/.exec(pathname);
-  if (item) return `/app/issues/${item[1]}/${item[2]}`;
+const ITEM_PATH = /^\/issues\/([^/]+)\/([1-9]\d*)(?:\/(conversation|journey|logs))?\/?$/;
+
+/** The dashboard path a link points at, or null for an address the application does not show (login, files, …). */
+export function dashboardPath(pathname: string): string | null {
+  if (pathname === "/" || pathname === "/board") return pathname;
+  if (["/graph", "/recent", "/attention", "/repositories", "/team", "/reports", "/operator", "/accounts", "/profile", "/settings/notifications", "/about"].includes(pathname)) return pathname;
+  if (/^\/(team|reports|operator\/runs|repositories)\/[^/]+$/.test(pathname) || ITEM_PATH.test(pathname)) return pathname;
   return null;
+}
+
+/** Whether a dashboard path opens an item's details. */
+export function isItemPath(pathname: string): boolean {
+  return ITEM_PATH.test(pathname);
+}
+
+/** The details tab an item address opens on: older links name it after the item (`/issues/<repository>/<n>/journey`). */
+export function itemTabOf(pathname: string): "summary" | "conversation" | "journey" | "activity" {
+  const tab = ITEM_PATH.exec(pathname)?.[3];
+  return tab === "logs" ? "activity" : tab === "conversation" || tab === "journey" ? tab : "summary";
 }
 
 type ViewRoute = { view: AppView; repositoryId: string | null; agentId: string | null; runId: string | null };
@@ -58,25 +65,25 @@ const decoded = (value: string | undefined): string | null => {
 };
 
 function viewOf(pathname: string): ViewRoute {
-  const path = pathname.replace(/\/+$/, "") || "/app";
+  const path = pathname.replace(/\/+$/, "") || "/";
   const route = (view: AppView, extra: Partial<ViewRoute> = {}): ViewRoute => ({ view, repositoryId: null, agentId: null, runId: null, ...extra });
   const simple: Record<string, AppView> = {
-    "/app/graph": "graph", "/app/recent": "recent", "/app/attention": "attention", "/app/repositories": "repositories",
-    "/app/team": "team", "/app/reports": "reports", "/app/operator": "agent", "/app/accounts": "accounts",
-    "/app/profile": "profile", "/app/settings/notifications": "notifications", "/app/about": "about",
+    "/graph": "graph", "/recent": "recent", "/attention": "attention", "/repositories": "repositories",
+    "/team": "team", "/reports": "reports", "/operator": "agent", "/accounts": "accounts",
+    "/profile": "profile", "/settings/notifications": "notifications", "/about": "about",
   };
   const named = simple[path];
   if (named) return route(named);
-  const repository = /^\/app\/repositories\/([^/]+)$/.exec(path);
+  const repository = /^\/repositories\/([^/]+)$/.exec(path);
   if (repository) {
     const id = decoded(repository[1]);
     return id === null ? route("repositories") : route("repository", { repositoryId: id });
   }
-  const agent = /^\/app\/team\/([^/]+)$/.exec(path);
+  const agent = /^\/team\/([^/]+)$/.exec(path);
   if (agent) return route("team", { agentId: decoded(agent[1]) });
-  const report = /^\/app\/reports\/([^/]+)$/.exec(path);
+  const report = /^\/reports\/([^/]+)$/.exec(path);
   if (report) return route("reports", { repositoryId: decoded(report[1]) });
-  const run = /^\/app\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
+  const run = /^\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
   if (run) return route("agent", { runId: run[1]! });
   return route("board");
 }
@@ -96,13 +103,17 @@ export function viewDataUrl(selection: BoardSelection, search: string): string |
   return `/api/v1/views/${name}${text ? `?${text}` : ""}`;
 }
 
-/** Reads the selection from a dashboard application URL (`/app`, `/app/graph`, `/app/issues/<repository>/<number>`, …). */
-export function boardSelectionFromUrl(url: URL): BoardSelection {
-  const issue = /^\/app\/issues\/([^/]+)\/(\d+)\/?$/.exec(url.pathname);
+/**
+ * Reads the selection from a dashboard URL (`/`, `/graph`, `/issues/<repository>/<number>`, …). An
+ * item opens over the view it was opened from (`background`), or over the board.
+ */
+export function boardSelectionFromUrl(url: URL, background: string | null = null): BoardSelection {
+  const issue = ITEM_PATH.exec(url.pathname);
+  const viewPath = issue && background !== null && dashboardPath(background) !== null && !ITEM_PATH.test(background) ? background : url.pathname;
   const doneLimit = Number(url.searchParams.get("doneLimit"));
   const stages = url.searchParams.getAll("stage");
   return {
-    ...viewOf(url.pathname),
+    ...viewOf(viewPath),
     graphStage: stages.length === 1 && stages[0]!.length > 0 && stages[0]!.length <= 200 ? stages[0]! : null,
     repositoryIds: [...new Set(url.searchParams.getAll("repo").filter((id) => id.length > 0 && id.length <= 200))],
     q: (url.searchParams.get("q") ?? "").slice(0, 200),
@@ -132,12 +143,18 @@ export function filteredGraph(graph: GraphViewModel, repositoryIds: readonly str
   };
 }
 
+/** The item the address opens, among the items the browser holds. */
+export function selectedItem(selection: BoardSelection, items: readonly DashboardItem[]): DashboardItem | null {
+  const issue = selection.issue;
+  return issue ? items.find((item) => item.repository === issue.repository && item.number === issue.number) ?? null : null;
+}
+
 function card(item: DashboardItem, csrfToken: string): IssueCardViewModel {
   const { placement: _placement, column: _column, order: _order, needsYou: _needsYou, conversation: _conversation, ...rest } = item;
   return { ...rest, csrfToken };
 }
 
-/** The board as the server-rendered dashboard would have built it for this account and selection. */
+/** The board for this account and selection. */
 export function boardViewModel(input: {
   model: DashboardModel;
   account: DashboardAccountViewModel;
@@ -149,6 +166,10 @@ export function boardViewModel(input: {
   recent?: RecentActivityViewModel | null;
   /** The data the shown view loaded for itself. */
   viewData?: ViewData | null;
+  /** The open item when the live model does not hold it (finished long ago or offboarded), loaded on its own. */
+  outsideItem?: IssueCardViewModel | null;
+  /** Older finished items that match the board's search or repositories, found among all of them. */
+  doneMatches?: readonly DashboardItem[] | null;
 }): DashboardViewModel {
   const { model, account, csrfToken, selection } = input;
   const items = Object.values(model.items);
@@ -172,11 +193,16 @@ export function boardViewModel(input: {
   const backlog = cards(items.filter((item) => item.placement === "backlog"));
   const liveDone = items.filter((item) => item.placement === "done");
   const known = new Set(liveDone.map((item) => item.id));
-  const finished = cards([...liveDone, ...(input.olderDone ?? []).filter((item) => !known.has(item.id))]);
+  const loaded = [...liveDone, ...(input.olderDone ?? []).filter((item) => !known.has(item.id))].sort(byOrder);
+  for (const item of loaded) known.add(item.id);
+  // Matches are ordered among themselves; any the browser does not hold are older than all it does.
+  const matches = [...(input.doneMatches ?? [])].filter((item) => !known.has(item.id)).sort(byOrder);
+  const finished = [...loaded, ...matches].map((item) => card(item, csrfToken));
   const attention = cards(items.filter((item) => item.placement === "attention"));
-  const selected = selection.issue
-    ? items.find((item) => item.repository === selection.issue!.repository && item.number === selection.issue!.number)
-    : undefined;
+  const selected = selectedItem(selection, [...items, ...(input.olderDone ?? [])]);
+  const outside = !selected && selection.issue && input.outsideItem?.repository === selection.issue.repository && input.outsideItem.number === selection.issue.number
+    ? { ...input.outsideItem, csrfToken }
+    : null;
   return {
     title: model.system.title,
     project: model.system.project,
@@ -216,7 +242,7 @@ export function boardViewModel(input: {
     repositories: Object.values(model.repositories),
     restrictedRepositories: Object.values(model.restrictedRepositories),
     steering: { ...model.system.steering, selected: null },
-    selectedIssue: selected ? card(selected, csrfToken) : null,
+    selectedIssue: selected ? card(selected, csrfToken) : outside,
     csrfToken,
     account,
     ...(input.viewData ?? {}),

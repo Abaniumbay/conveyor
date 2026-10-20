@@ -6,7 +6,7 @@
 import { serverStatusHasPressure, serverStatusMetrics } from "../server-status";
 import { updateQuotaWindow, quotaCountdown } from "../../usage/quota-time";
 import type { DetailTab } from "../render";
-import { appPath } from "./derive";
+import { dashboardPath, isItemPath, itemTabOf } from "./derive";
 import { formatBytes, formatClock, formatDateTime, formatElapsed } from "./format";
 import type { LiveState, LiveStore } from "./store";
 
@@ -204,13 +204,15 @@ function applyBoardFilters(root: ParentNode): void {
   if (clear instanceof HTMLElement) clear.hidden = !active;
 }
 
-function writeBoardFilters(next: BoardFilters, redraw: () => void): void {
+/** Writes the filters to the address and applies them at once; the redraw then brings the rest (Done matches, counts). */
+function writeBoardFilters(root: ParentNode, next: BoardFilters, redraw: () => void): void {
   const target = new URL(location.href);
   for (const key of ["repo", "q", "state"]) target.searchParams.delete(key);
   for (const repository of new Set(next.repositories.filter(Boolean))) target.searchParams.append("repo", repository);
   if (next.q) target.searchParams.set("q", next.q);
   if (next.state && FILTER_STATES.has(next.state)) target.searchParams.set("state", next.state);
   history.replaceState(history.state, "", target.pathname + target.search + target.hash);
+  applyBoardFilters(root);
   redraw();
 }
 
@@ -262,6 +264,8 @@ function applyTrace(root: ParentNode): void {
     }
   }
   for (const chip of root.querySelectorAll("[data-trace]")) chip.setAttribute("aria-pressed", focus !== null && chip.getAttribute("data-trace") === focus ? "true" : "false");
+  // A trace opens the folded rows its chain runs through; once it clears, they fold again.
+  applyRowFolds(root);
   if (focus !== null) {
     for (const button of root.querySelectorAll("[data-row-fold]")) {
       if (button.closest(".board-row")?.querySelector("[data-trace-role]")) setRowFolded(button, false);
@@ -315,22 +319,105 @@ export function showConnection(root: ParentNode, state: LiveState): void {
   status.querySelector("summary")?.setAttribute("aria-label", `Connection state: ${label}${pressure ? "; storage pressure warning" : ""}`);
 }
 
+/** What had focus when a dialog opened, so focus goes back there when it closes. */
+let opener: { element: Element | null; issueId: string } | null = null;
+
+/** Gives focus back to what opened the closed dialog, or to its item's card when that was redrawn. */
+function restoreFocus(root: ParentNode): void {
+  const from = opener;
+  opener = null;
+  if (!from || (document.activeElement && document.activeElement !== document.body)) return;
+  const fallback = [...root.querySelectorAll(".issue[data-issue-id] .card-open, [data-graph-node]")]
+    .find((candidate) => (candidate.closest("[data-issue-id]")?.getAttribute("data-issue-id") ?? candidate.getAttribute("data-graph-node")) === from.issueId);
+  const target = from.element?.isConnected ? from.element : fallback;
+  if (target instanceof HTMLElement || target instanceof SVGElement) target.focus({ preventScroll: true });
+}
+
 /** Opens the selected item's (or agent's) dialog, closes any other, and marks the card behind it. */
 function syncDialog(root: ParentNode, agentId: string | null): void {
   const agent = agentId === null ? null : [...root.querySelectorAll("dialog[data-agent-id]")].find((dialog) => dialog.getAttribute("data-agent-id") === agentId) ?? null;
   const selected = agent ?? root.querySelector("dialog[data-selected-issue='true']");
-  for (const dialog of root.querySelectorAll("dialog[open]")) if (dialog !== selected && dialog instanceof HTMLDialogElement) dialog.close();
+  // Only the dialogs the address opens are closed here; a stage's information stays open across redraws.
+  for (const dialog of root.querySelectorAll("dialog.issue-details[open], dialog[data-agent-id][open]")) if (dialog !== selected && dialog instanceof HTMLDialogElement) dialog.close();
   for (const card of root.querySelectorAll(".issue.is-selected")) card.classList.remove("is-selected");
-  if (!(selected instanceof HTMLDialogElement)) return;
+  if (!(selected instanceof HTMLDialogElement)) {
+    restoreFocus(root);
+    return;
+  }
   const issueId = selected.getAttribute("data-issue-id") ?? "";
   for (const card of root.querySelectorAll(".issue[data-issue-id]")) if (card.getAttribute("data-issue-id") === issueId) card.classList.add("is-selected");
   if (!selected.open) {
+    opener ??= { element: document.activeElement === document.body ? null : document.activeElement, issueId };
     selected.showModal();
     const tab = selected.querySelector("[role='tab'][aria-selected='true']");
     if (tab instanceof HTMLElement) tab.focus({ preventScroll: true });
   }
   const heading = selected.querySelector(".details-header h2");
   if (heading) document.title = `${agent ? "" : `#${selected.getAttribute("data-issue-number") ?? ""} `}${heading.textContent ?? ""} · Conveyor`;
+}
+
+/** Where the reader is: the card nearest the middle of the screen, its station, and the scroll offsets. */
+export interface ReadingPosition {
+  scrollX: number;
+  boardY: number;
+  scrollY: number;
+  issue: { id: string; top: number } | null;
+  stage: { id: string; left: number } | null;
+}
+
+const clampScroll = (value: number, maximum: number) => Math.min(Math.max(0, value), Math.max(0, maximum));
+const documentScrollMaximum = () => Math.max(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight);
+
+/** Records what the reader is looking at before a redraw. */
+export function captureReadingPosition(root: ParentNode): ReadingPosition {
+  const board = root.querySelector<HTMLElement>(".board");
+  const inView = (element: Element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth;
+  };
+  const middle = window.innerHeight / 2;
+  const issue = [...(board ?? root).querySelectorAll<HTMLElement>("article.issue[data-issue-id]")].filter(inView)
+    .sort((left, right) => Math.abs(left.getBoundingClientRect().top - middle) - Math.abs(right.getBoundingClientRect().top - middle))[0];
+  const boardBounds = board?.getBoundingClientRect();
+  const mostInView = board && boardBounds ? [...board.querySelectorAll("[data-station-cell]")]
+    .map((stage) => {
+      const bounds = stage.getBoundingClientRect();
+      return { stage, overlap: Math.max(0, Math.min(bounds.right, boardBounds.right) - Math.max(bounds.left, boardBounds.left)) };
+    })
+    .sort((left, right) => right.overlap - left.overlap)[0]?.stage : undefined;
+  const stage = issue?.closest("[data-station-cell]") ?? mostInView;
+  return {
+    scrollX: board?.scrollLeft ?? 0,
+    boardY: board?.scrollTop ?? 0,
+    scrollY: window.scrollY,
+    issue: issue ? { id: issue.dataset.issueId ?? "", top: issue.getBoundingClientRect().top } : null,
+    stage: stage ? { id: stage.getAttribute("data-station-cell") ?? "", left: stage.getBoundingClientRect().left } : null,
+  };
+}
+
+/**
+ * Undoes only what a redraw moved: a scroller is written only when the reader's card or station
+ * shifted, and then by that distance, so a scroll or fling in progress is never reset.
+ */
+export function restoreReadingPosition(root: ParentNode, position: ReadingPosition): void {
+  const board = root.querySelector<HTMLElement>(".board");
+  const issue = position.issue ? root.querySelector(`article.issue[data-issue-id="${CSS.escape(position.issue.id)}"]`) : null;
+  if (issue && position.issue) {
+    const shift = issue.getBoundingClientRect().top - position.issue.top;
+    if (Math.abs(shift) >= 1) {
+      // On wide screens the board scrolls vertically inside itself; on phones the page does.
+      if (board && board.contains(issue) && board.scrollHeight > board.clientHeight) board.scrollTop = clampScroll(board.scrollTop + shift, board.scrollHeight - board.clientHeight);
+      else window.scrollTo(0, clampScroll(window.scrollY + shift, documentScrollMaximum()));
+    }
+  } else {
+    // The card the reader was looking at is gone: keep the offsets they had, within the new bounds.
+    if (Math.abs(window.scrollY - position.scrollY) >= 1) window.scrollTo(0, clampScroll(position.scrollY, documentScrollMaximum()));
+    if (board && Math.abs(board.scrollTop - position.boardY) >= 1) board.scrollTop = clampScroll(position.boardY, board.scrollHeight - board.clientHeight);
+  }
+  if (!board) return;
+  const stage = position.stage ? board.querySelector(`[data-station-cell="${CSS.escape(position.stage.id)}"]`) : null;
+  const drift = stage && position.stage ? stage.getBoundingClientRect().left - position.stage.left : board.scrollLeft - position.scrollX;
+  if (Math.abs(drift) >= 1) board.scrollLeft = clampScroll(board.scrollLeft + (stage ? drift : -drift), board.scrollWidth - board.clientWidth);
 }
 
 /** What every redraw re-applies; `agentId` names the Team profile the address opens. */
@@ -349,18 +436,24 @@ export function afterRender(root: ParentNode, agentId: string | null = null): vo
 // ---------------------------------------------------------------------------------------------
 // Navigation inside the application.
 
+/** The history state for an item opened over the current view, which stays behind it. */
+function itemState(): { conveyorItem: true; from: string } {
+  const from: unknown = history.state?.from;
+  return { conveyorItem: true, from: isItemPath(location.pathname) && typeof from === "string" ? from : location.pathname };
+}
+
 function openItem(repository: string, number: string, redraw: () => void): void {
   view.tab = "summary";
-  history.pushState({ conveyorItem: true }, "", `/app/issues/${encodeURIComponent(repository)}/${encodeURIComponent(number)}${location.search}`);
+  history.pushState(itemState(), "", `/issues/${encodeURIComponent(repository)}/${encodeURIComponent(number)}${location.search}`);
   redraw();
 }
 
 function closeItem(redraw: () => void): void {
-  if (!location.pathname.startsWith("/app/issues/")) return;
+  if (!isItemPath(location.pathname)) return;
   // An item opened from a view returns to it; one opened directly returns to the board.
   if (history.state?.conveyorItem === true && history.length > 1) history.back();
   else {
-    history.pushState({}, "", `/app${location.search}`);
+    history.pushState({}, "", `/${location.search}`);
     redraw();
   }
 }
@@ -437,7 +530,7 @@ async function startSteering(form: HTMLFormElement, csrfToken: string, redraw: (
     const { body } = await post("/steering", formFields(form, csrfToken));
     if (typeof body.runId !== "string") throw new Error("The server did not return the new run.");
     if (field instanceof HTMLTextAreaElement) field.value = "";
-    history.pushState({}, "", `/app/operator/runs/${encodeURIComponent(body.runId)}`);
+    history.pushState({}, "", `/operator/runs/${encodeURIComponent(body.runId)}`);
     redraw();
   } catch (error) {
     const hint = form.querySelector(".compose-actions span");
@@ -514,6 +607,10 @@ async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boo
     }
     try {
       await post(form.action, formFields(form, csrfToken));
+      // The redraw does not undo what was set here by hand. The switch keeps its new position;
+      // an approve button stays busy until the change removes it.
+      for (const each of buttons) if (each !== button || isSwitch) each.disabled = false;
+      if (isSwitch) button.removeAttribute("aria-busy");
     } catch (error) {
       for (const each of buttons) each.disabled = false;
       button.removeAttribute("aria-busy");
@@ -549,8 +646,9 @@ async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boo
     return true;
   }
   if (form.matches("[data-conversation-form]")) {
-    const panel = form.closest("[data-conversation-url]");
-    const url = panel?.getAttribute("data-conversation-url");
+    const panel = form.closest("[data-detail-panel='conversation']");
+    const issueId = form.closest("dialog[data-issue-id]")?.getAttribute("data-issue-id");
+    const url = issueId ? `/api/issues/${encodeURIComponent(issueId)}/conversation` : null;
     const button = form.querySelector("button[type='submit']");
     const field = form.querySelector("textarea[name='message']");
     if (!url || !(field instanceof HTMLTextAreaElement)) return true;
@@ -722,22 +820,24 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       }
       return;
     }
-    const link = element(target, "a[href]", HTMLAnchorElement);
-    if (link && event instanceof MouseEvent && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && !link.target) {
-      const url = new URL(link.href, location.href);
-      const destination = url.origin === location.origin ? appPath(url.pathname) : null;
+    // Graph nodes are SVG links, whose address and target are animated strings.
+    const link = target.closest("a[href]");
+    const href = link instanceof HTMLAnchorElement ? link.href : link instanceof SVGAElement ? link.href.baseVal : null;
+    const opensElsewhere = link instanceof HTMLAnchorElement ? link.target !== "" : link instanceof SVGAElement && link.target.baseVal !== "";
+    if (href !== null && event instanceof MouseEvent && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && !opensElsewhere) {
+      const url = new URL(href, location.href);
+      const destination = url.origin === location.origin ? dashboardPath(url.pathname) : null;
       if (destination) {
         event.preventDefault();
-        const item = destination.startsWith("/app/issues/");
-        if (item) view.tab = "summary";
+        const item = isItemPath(destination);
+        if (item) view.tab = itemTabOf(destination);
         // An item opens over the current view; any other view starts at the top.
-        history.pushState(item ? { conveyorItem: true } : {}, "", `${destination}${item ? location.search : url.search}${url.hash}`);
+        history.pushState(item ? itemState() : {}, "", `${destination}${item ? location.search : url.search}${url.hash}`);
         closeHeaderPopovers();
         redraw();
         if (!item) window.scrollTo(0, 0);
         return;
       }
-      // Other views are still served by the server-rendered dashboard.
       return;
     }
     const cancel = element(target, "[data-account-delete-cancel]", HTMLButtonElement);
@@ -750,11 +850,26 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       return;
     }
     if (!target.closest(".card-open") && target.closest("a, button, input, textarea, select, label, form")) return;
+    // A stage's heading and its information button open the stage's dialog.
+    const stageInfo = target.closest("[data-dialog-open]")?.getAttribute("data-dialog-open");
+    const stageDialog = stageInfo ? document.getElementById(stageInfo) : null;
+    if (stageDialog instanceof HTMLDialogElement && stageDialog.matches(".stage-dialog")) {
+      if (!stageDialog.open) stageDialog.showModal();
+      return;
+    }
     const member = target.closest(".team-card");
     const profile = member?.querySelector("dialog[data-agent-id]");
     if (profile) {
-      history.pushState({ conveyorAgent: true }, "", `/app/team/${encodeURIComponent(profile.getAttribute("data-agent-id") ?? "")}`);
+      history.pushState({ conveyorAgent: true }, "", `/team/${encodeURIComponent(profile.getAttribute("data-agent-id") ?? "")}`);
       redraw();
+      return;
+    }
+    // A family row's header opens its parent, which has no card of its own.
+    const family = target.closest(".family-details") ? target.closest("[data-family-row]") : null;
+    if (family) {
+      const repository = family.querySelector(".family-head")?.getAttribute("data-board-repository") ?? "";
+      const number = family.getAttribute("data-number") ?? "";
+      if (repository && number) openItem(repository, number, redraw);
       return;
     }
     const card = target.closest(".issue[data-issue-id]");
@@ -768,8 +883,8 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
   root.addEventListener("close", (event) => {
     if (!(event.target instanceof HTMLDialogElement)) return;
     if (event.target.matches("[data-selected-issue='true']")) closeItem(redraw);
-    else if (event.target.matches("[data-agent-id]") && location.pathname.startsWith("/app/team/")) {
-      history.pushState({}, "", "/app/team");
+    else if (event.target.matches("[data-agent-id]") && location.pathname.startsWith("/team/")) {
+      history.pushState({}, "", "/team");
       redraw();
     }
   }, true);
@@ -818,7 +933,7 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     return { ...filtersFromUrl(), ...(search instanceof HTMLInputElement ? { q: search.value } : {}) };
   };
   root.addEventListener("input", (event) => {
-    if (event.target instanceof HTMLInputElement && event.target.matches("[data-filter-search]")) writeBoardFilters(currentFilters(), redraw);
+    if (event.target instanceof HTMLInputElement && event.target.matches("[data-filter-search]")) writeBoardFilters(root, currentFilters(), redraw);
   });
   root.addEventListener("change", (event) => {
     const input = event.target;
@@ -830,12 +945,17 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       // Choosing the selected state again clears it.
       next.state = input.value === filtersFromUrl().state ? null : input.value;
     } else return;
-    writeBoardFilters(next, redraw);
+    writeBoardFilters(root, next, redraw);
   });
   root.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest("[data-filter-clear]")) writeBoardFilters({ repositories: [], q: "", state: null }, redraw);
+    if (target.closest("[data-filter-clear]")) {
+      // The field empties at once; the board redraws on the next frame.
+      const search = root.querySelector("[data-filter-search]");
+      if (search instanceof HTMLInputElement) search.value = "";
+      writeBoardFilters(root, { repositories: [], q: "", state: null }, redraw);
+    }
     const more = target.closest("[data-filter-more]");
     if (more) {
       const expanded = more.getAttribute("aria-expanded") === "true";
@@ -849,7 +969,7 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     if (!(form instanceof HTMLFormElement)) return;
     if (form.matches("[data-filter-form]")) {
       event.preventDefault();
-      writeBoardFilters(currentFilters(), redraw);
+      writeBoardFilters(root, currentFilters(), redraw);
       return;
     }
     if (form.matches("[data-backlog-list] .reorder form")) {
@@ -882,9 +1002,10 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       redraw();
       return;
     }
-    if (form.method.toLowerCase() === "get") {
-      // A view's filter form (Graph, Recent): its fields become the address.
-      const destination = appPath(new URL(form.action, location.href).pathname);
+    if (form.getAttribute("method")?.toLowerCase() === "get" && form.hasAttribute("action")) {
+      // A view's filter form (Graph, Recent): its fields become the address. Forms the page script
+      // sends itself name no method, so they are not mistaken for one.
+      const destination = dashboardPath(new URL(form.action, location.href).pathname);
       if (!destination) return;
       event.preventDefault();
       const query = new URLSearchParams();

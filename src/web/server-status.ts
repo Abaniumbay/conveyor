@@ -1,5 +1,5 @@
 // The server status line the dashboard header shows: memory, disks and uptime, with a warning when
-// storage runs short. Shared by the page script (spliced in by source) and the browser application.
+// storage runs short.
 
 import type { FilesystemStatusViewModel, SystemStatusViewModel } from "./types";
 

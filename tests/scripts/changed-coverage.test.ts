@@ -66,6 +66,19 @@ test("excludes test files, generated code, and database migrations from changed-
   });
 });
 
+test("excludes the browser application and the scripts that CI runs on their own", async () => {
+  const root = await fixture({}, "");
+  await writeFiles(root, {
+    "src/web/app/main.tsx": "export const draw = () => 1;\n",
+    "scripts/benchmark.ts": "export const measure = () => 1;\n",
+  });
+  await commitChanges(root);
+
+  await expect(checkChangedCoverage({ cwd: root, base: "main", lcov: "lcov.info" })).resolves.toMatchObject({
+    passed: true, covered: 0, total: 0, uncovered: [],
+  });
+});
+
 test("counts executable added lines in a new production file without LCOV as uncovered", async () => {
   const root = await fixture({}, "");
   await writeFiles(root, { "src/new.ts": "export const newCode = () => 1;\n" });

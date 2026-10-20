@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { DashboardFeed, type DashboardFeedMessage } from "../../src/app/dashboard-feed";
+import { changesDashboard, DashboardFeed, type DashboardFeedMessage } from "../../src/app/dashboard-feed";
 import type { DashboardItem, DashboardModel } from "../../src/web/model";
 import type { SystemStatusViewModel } from "../../src/web/types";
 
@@ -145,5 +145,30 @@ describe("DashboardFeed", () => {
     feed.flush();
     expect(dashboard.patches()).toEqual([]);
     feed.close();
+  });
+});
+
+describe("changesDashboard", () => {
+  test("an item change rebuilds the dashboard", () => {
+    expect(changesDashboard("item.stageChanged")).toBe(true);
+  });
+  test("admission changes rebuild the dashboard", () => {
+    expect(changesDashboard("admission.paused")).toBe(true);
+    expect(changesDashboard("admission.resumed")).toBe(true);
+  });
+  test("a conversation message rebuilds the dashboard", () => {
+    expect(changesDashboard("message.posted")).toBe(true);
+  });
+  test("a transcript line does not", () => {
+    expect(changesDashboard("run.progressed")).toBe(false);
+  });
+  test("a run starting or finishing does", () => {
+    expect(changesDashboard("run.started")).toBe(true);
+    expect(changesDashboard("run.finished")).toBe(true);
+  });
+  test("bookkeeping that shows nowhere does not", () => {
+    for (const type of ["webhook.received", "task.planned", "task.pending", "command.accepted", "session.signedIn", "item.fenced", "source.mutationStarted"]) {
+      expect({ type, changes: changesDashboard(type) }).toEqual({ type, changes: false });
+    }
   });
 });

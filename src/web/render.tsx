@@ -1,6 +1,5 @@
 import { createContext, Fragment, type ComponentChildren } from "preact";
 import { useContext } from "preact/hooks";
-import renderToString from "preact-render-to-string";
 import { Accounts, Profile } from "./account-pages";
 import { Notifications } from "./notification-page";
 import { Reports } from "./report-page";
@@ -9,7 +8,6 @@ import { IndicatorChips, IndicatorDetails } from "./indicators";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
 import { renderSafeMarkdown } from "./markdown";
-import { dashboardCss, graphCss, quotaHeaderCss, stickyNavigationCss, stickyNavigationOverridesCss } from "./styles";
 import type {
   DashboardView,
   DashboardViewModel,
@@ -130,7 +128,7 @@ function boardLinksOf(model: DashboardViewModel): NonNullable<typeof boardLinks>
   return { onBoard: new Set(cards.map((card) => card.id)), dependents };
 }
 
-/** For the page script's trace: the ids of an item's unfinished dependencies, or of a parent's unfinished parts. */
+/** For the board's trace: the ids of an item's unfinished dependencies, or of a parent's unfinished parts. */
 function idList(relations: readonly IssueRelationViewModel[]): string | undefined {
   const ids = relations.filter((relation) => !relation.satisfied).map((relation) => relation.id);
   return ids.length > 0 ? ids.join(" ") : undefined;
@@ -213,24 +211,24 @@ export interface LiveDetails {
   activity: ComponentChildren;
 }
 
-/** Provided by the browser application only; the server renders empty tabs its page script fills. */
+/** The application provides each open item's tabs; without it (a test rendering a page) they are empty and Summary is shown. */
 export const LiveDetailsContext = createContext<((issue: IssueCardViewModel) => LiveDetails) | null>(null);
 
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
   const live = useContext(LiveDetailsContext)?.(issue) ?? null;
-  const tabProps = (tab: DetailTab, initiallySelected: boolean) => live
-    ? { "aria-selected": live.tab === tab ? "true" as const : "false" as const, tabIndex: live.tab === tab ? 0 : -1 }
-    : { "aria-selected": initiallySelected ? "true" as const : "false" as const };
-  const hiddenUnless = (tab: DetailTab, initiallyHidden: boolean) => live ? live.tab !== tab : initiallyHidden;
+  const historyOnly = issue.historyOnly === true;
+  // An item no longer enrolled has only its history.
+  const shown: DetailTab = historyOnly ? "journey" : live?.tab ?? "summary";
+  const tabProps = (tab: DetailTab) => ({ "aria-selected": shown === tab ? "true" as const : "false" as const, tabIndex: shown === tab ? 0 : -1 });
+  const hiddenUnless = (tab: DetailTab) => shown !== tab;
   const url = safeUrl(issue.url);
   const stageBadge = issue.stageBadge;
-  const historyOnly = issue.historyOnly === true;
   const summaryId = `${id}-summary`;
   const conversationId = `${id}-conversation`;
   const journeyId = `${id}-journey`;
   const activityId = `${id}-activity`;
   return (
-    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-details-url={`/api/issues/${encodeURIComponent(issue.id)}/details`} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
+    <dialog class="issue-details issue-inspector" id={id} aria-labelledby={`${id}-title`} data-issue-id={issue.id} data-repository-id={issue.repository} data-issue-number={issue.number} data-selected-issue={selected ? "true" : undefined}>
       <header class="details-header">
         <div>
           <p class={`details-kicker repo-color-${issue.repositoryColor}`}>
@@ -250,16 +248,16 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
         {historyOnly
-          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey", true)} data-detail-tab="journey">Journey</button>
+          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey")} data-detail-tab="journey">Journey</button>
           : <>
-            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} {...tabProps("summary", true)} data-detail-tab="summary">Summary</button>
-            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} {...tabProps("conversation", false)} data-detail-tab="conversation">Conversation</button>
-            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey", false)} data-detail-tab="journey">Journey</button>
-            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} {...tabProps("activity", false)} data-detail-tab="activity">Technical logs</button>
+            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} {...tabProps("summary")} data-detail-tab="summary">Summary</button>
+            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} {...tabProps("conversation")} data-detail-tab="conversation">Conversation</button>
+            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey")} data-detail-tab="journey">Journey</button>
+            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} {...tabProps("activity")} data-detail-tab="activity">Technical logs</button>
           </>}
       </nav>
       {!historyOnly && <>
-      <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary" hidden={hiddenUnless("summary", false)}>
+      <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary" hidden={hiddenUnless("summary")}>
         <div class="details-status">
           <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
           <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
@@ -385,13 +383,9 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         role="tabpanel"
         aria-labelledby={`${conversationId}-tab`}
         data-detail-panel="conversation"
-        data-conversation-url={`/api/issues/${encodeURIComponent(issue.id)}/conversation`}
-        hidden={hiddenUnless("conversation", true)}
+        hidden={hiddenUnless("conversation")}
       >
-        {live ? live.conversation : <>
-        <p class="conversation-status" data-conversation-status>Open Conversation to load the shared handoff.</p>
-        <ol class="conversation-messages" data-conversation-messages />
-        </>}
+        {live?.conversation}
         <form class="conversation-compose" data-conversation-form>
           <label for={`${conversationId}-message`}>Message to the current or next agent</label>
           <textarea id={`${conversationId}-message`} name="message" rows={3} maxLength={4000} required placeholder="Add context or steer the work…" />
@@ -407,14 +401,10 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         role="tabpanel"
         aria-labelledby={`${journeyId}-tab`}
         data-detail-panel="journey"
-        data-journey-url={`/api/issues/${encodeURIComponent(issue.id)}/journey`}
-        hidden={hiddenUnless("journey", !historyOnly)}
+        hidden={hiddenUnless("journey")}
       >
         {historyOnly && <p class="details-empty">This item is no longer enrolled. Its history is read-only.</p>}
-        {live ? live.journey : <>
-        <p class="journey-status" data-journey-status>Open Journey to load the stage history.</p>
-        <ol class="journey-list" data-journey-list />
-        </>}
+        {live?.journey}
       </section>
       {!historyOnly && <>
       <section
@@ -422,23 +412,13 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         role="tabpanel"
         aria-labelledby={`${activityId}-tab`}
         data-detail-panel="activity"
-        data-activity-url={`/api/issues/${encodeURIComponent(issue.id)}/activity`}
-        hidden={hiddenUnless("activity", true)}
+        hidden={hiddenUnless("activity")}
       >
-        {live ? live.activity : <>
-        <p class="activity-status" data-activity-status>Open Technical logs to load the persisted run log.</p>
-        <div data-activity-runs />
-        </>}
+        {live?.activity}
       </section>
       </>}
     </dialog>
   );
-}
-
-/** Renders the one details dialog fetched when a board card is opened. */
-export function renderIssueDetails(issue: IssueCardViewModel, canManage = false): string {
-  const id = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
-  return renderToString(<DetailsDialog issue={issue} id={id} canManage={canManage} />);
 }
 
 function RelativeTime({ value }: { value: string }) {
@@ -515,21 +495,6 @@ function stateWords(issue: IssueCardViewModel): string {
 }
 
 /**
- * The cards the browser already holds, by revision, while a live update is rendered; null renders
- * every card. A card whose revision is among them is sent as a placeholder the browser keeps its
- * own node for, so an update carries only the cards that changed.
- */
-let heldCards: ReadonlySet<string> | null = null;
-
-/** Changes whenever anything the card shows does. */
-function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean, stageLabel: string | null, thread: boolean): string {
-  const links = boardLinks && [boardLinks.dependents.get(issue.id) ?? 0, issue.dependencies.map((dependency) => boardLinks!.onBoard.has(dependency.id))];
-  // Revisions serve the server-rendered partial refresh only; the browser application never sends them.
-  if (typeof Bun === "undefined") return "";
-  return Bun.hash(JSON.stringify([issue, actors, canManage, stageLabel, thread, links])).toString(36);
-}
-
-/**
  * `stageLabel`: the card's station, shown on phones where a family row lists its cards in one column.
  * `thread`: the card is outside its family's row, so it links to its parent.
  */
@@ -544,8 +509,6 @@ function boardFilterState(issue: IssueCardViewModel): "needs-you" | "running" | 
 }
 
 function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, thread = false }: { issue: IssueCardViewModel; actors?: StageColumnViewModel["actors"]; canManage?: boolean; stageLabel?: string | null; thread?: boolean }) {
-  const revision = cardRevision(issue, actors, canManage, stageLabel, thread);
-  if (heldCards?.has(revision)) return <article class="issue" data-issue-id={issue.id} data-card-revision={revision} data-keep />;
   const dialogId = `issue-${issue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${issue.number}`;
   const rollup = issue.children.length > 0;
   const glowClass = issue.needsAttention
@@ -565,8 +528,6 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
       class={`issue issue--${issue.tone}${issue.working ? " issue--working" : ""}${glowClass}${rollup ? " issue--rollup" : ""} repo-color-${issue.repositoryColor}`}
       data-issue-id={issue.id}
       data-dialog-open={dialogId}
-      data-details-url={`/api/issues/${encodeURIComponent(issue.id)}/details`}
-      data-card-revision={revision}
       data-number={issue.number}
       data-state-word={issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}
       data-waits={idList(issue.dependencies)}
@@ -719,7 +680,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
   return (
     <section class={`board-row family-row repo-color-${parent.repositoryColor}`} data-family-row={parent.id} data-number={parent.number} data-state-word={stateWords(parent)} data-waits={idList(parent.dependencies)} data-parts={idList(parent.children)} aria-label={`#${parent.number} ${parent.title}`}>
       <div class="row-band">
-      <div class="family-head" data-dialog-open={dialogId} data-details-url={`/api/issues/${encodeURIComponent(parent.id)}/details`} data-filter-card data-board-search={boardSearchText(parent, parentActors)} data-board-repository={parent.repository} data-board-state={boardFilterState(parent)} data-board-station={parentStation?.id ?? "backlog"}>
+      <div class="family-head" data-dialog-open={dialogId} data-filter-card data-board-search={boardSearchText(parent, parentActors)} data-board-repository={parent.repository} data-board-state={boardFilterState(parent)} data-board-station={parentStation?.id ?? "backlog"}>
         <FoldButton target={rowId} label={`the #${parent.number} family`} />
         <RepositoryBadge repository={parent.repository} />
         <span class="family-number">#{parent.number}</span>
@@ -1126,7 +1087,7 @@ function Graph({ model }: { model: DashboardViewModel }) {
           const label = `${node.repository} #${node.number}: ${node.title}${node.stage ? `; stage ${node.stage}` : ""}; state ${node.state}${node.context ? "; context item" : ""}${node.signal === "stop" ? "; stopped" : ""}`;
           const dialogId = `issue-${node.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${node.number}`;
           const clipId = `graph-node-clip-${node.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-          return <a href={issueHref(node.repository, node.number)} class={`graph-node card-open repo-color-${node.repositoryColor}${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id} data-dialog-open={dialogId} data-details-url={`/api/issues/${encodeURIComponent(node.id)}/details`} aria-haspopup="dialog" aria-label={label} tabIndex={0} key={node.id}>
+          return <a href={issueHref(node.repository, node.number)} class={`graph-node card-open repo-color-${node.repositoryColor}${node.context ? " graph-node--context" : ""}${node.signal === "stop" ? " graph-node--stop" : ""}`} data-graph-node={node.id} data-dialog-open={dialogId} aria-haspopup="dialog" aria-label={label} tabIndex={0} key={node.id}>
             <title>{label}</title>
             <rect x={position.x} y={position.y} width={GRAPH_NODE_WIDTH} height={GRAPH_NODE_HEIGHT} rx="4" />
             <rect
@@ -1702,13 +1663,8 @@ function MobileSystemControls({ model }: { model: DashboardViewModel }) {
   </div>;
 }
 
-/** Names the view in the document title, so tabs, history entries and screen readers tell the pages apart. */
-function pageTitle(model: DashboardViewModel): string {
-  return model.selectedIssue ? `#${model.selectedIssue.number} ${model.selectedIssue.title}` : viewTitle(model);
-}
-
-/** The view's own name, which the title returns to when an item's details are closed. */
-function viewTitle(model: DashboardViewModel): string {
+/** The view's name for the document title, which it returns to when an item's details are closed. */
+export function viewTitle(model: DashboardViewModel): string {
   if (model.view === "repository") return model.repositoryId ?? "Repository";
   if (model.view === "reports" && model.report?.repository) return `Reports · ${model.report.repository}`;
   const names: Record<Exclude<DashboardView, "repository">, string> = {
@@ -1740,7 +1696,7 @@ function DrainingNotice({ draining }: { draining: DashboardViewModel["draining"]
   </section>;
 }
 
-/** Everything inside the page body: the server renders it in the page, the browser application on its own. */
+/** Everything inside the page body, as the dashboard application renders it. */
 export function DashboardBody({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
@@ -1814,44 +1770,9 @@ export function DashboardBody({ model }: { model: DashboardViewModel }) {
   );
 }
 
-/** Sets what the board holds before it renders (the browser application renders it the same way). */
+/** Sets what the board holds before it renders. */
 export function prepareDashboardRender(model: DashboardViewModel): void {
   boardLinks = boardLinksOf(model);
 }
 
-function Page({ model }: { model: DashboardViewModel }) {
-  return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="light dark" />
-        <link rel="manifest" href="/manifest.webmanifest" />
-        <meta name="theme-color" content="#087f72" />
-        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-        <title>{pageTitle(model)} · {model.title}</title>
-        <script src="/assets/theme.js" />
-        <style dangerouslySetInnerHTML={{ __html: dashboardCss + graphCss + quotaHeaderCss + stickyNavigationCss + stickyNavigationOverridesCss }} />
-        <script src="/assets/dashboard.js" defer />
-        <script src="/assets/notifications.js" defer />
-      </head>
-      <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-view-title={`${viewTitle(model)} · ${model.title}`} data-csrf-token={model.csrfToken}>
-        <DashboardBody model={model} />
-      </body>
-    </html>
-  );
-}
-
-export function renderDashboard(model: DashboardViewModel, held: ReadonlySet<string> | null = null): string {
-  heldCards = held;
-  boardLinks = boardLinksOf(model);
-  try {
-    return `<!doctype html>${renderToString(<Page model={model} />)}`;
-  } finally {
-    heldCards = null;
-    boardLinks = null;
-  }
-}
-
-export { dashboardCss } from "./styles";
 export type { DashboardViewModel, IssueCardViewModel, QuestionViewModel, StageColumnViewModel } from "./types";

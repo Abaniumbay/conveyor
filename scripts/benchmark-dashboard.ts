@@ -5,7 +5,7 @@ import path from "node:path";
 import { ConveyorService } from "../src/app/service";
 import type { ConveyorConfig } from "../src/config/load";
 import { ConveyorStore } from "../src/db/store";
-import { renderDashboard } from "../src/web/render";
+import type { DashboardFeedMessage } from "../src/app/dashboard-feed";
 
 const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-benchmark-"));
 const assertTiming = process.env.CONVEYOR_BENCHMARK_ASSERT_TIMING === "1";
@@ -41,21 +41,39 @@ try {
   }
 
   const service = new ConveyorService(config, store, {} as never);
+  const web = service.webDependencies({} as never, "operator");
   // Warm the runtime and SQLite statement caches without including that setup in the result.
   service.dashboard("benchmark");
   const started = performance.now();
-  const model = service.dashboard("benchmark");
+  const { model } = web.getDashboardSnapshot!();
   const buildMs = performance.now() - started;
-  const html = renderDashboard(model);
-  const bytes = new TextEncoder().encode(html).byteLength;
-  const visible = model.stages.reduce((total, stage) => total + stage.issues.length, 0) + model.backlog.length + model.done.issues.length;
-  if (model.done.totalIssues !== 350 || visible !== 80) {
-    throw new Error(`board content changed: expected 350 Done items and 80 visible cards, got ${model.done.totalIssues} and ${visible}`);
+  const bytes = new TextEncoder().encode(JSON.stringify(model)).byteLength;
+  const items = Object.values(model.items);
+  const done = items.filter((item) => item.placement === "done").length;
+  if (model.system.doneTotal !== 350 || items.length !== 110 || done !== 50) {
+    throw new Error(`model content changed: expected 350 Done items, 110 in the model and 50 of them finished, got ${model.system.doneTotal}, ${items.length} and ${done}`);
   }
-  if (bytes >= 200_000 || (assertTiming && buildMs >= 100)) {
-    throw new Error(`benchmark target missed: ${buildMs.toFixed(1)} ms model build, ${bytes} byte page`);
+
+  // A change is built and diffed once, however many dashboards are open: each receives the same patch.
+  const dashboards = Array.from({ length: 25 }, () => {
+    const messages: DashboardFeedMessage[] = [];
+    return { messages, subscription: web.subscribeDashboardFeed!((message) => messages.push(message), null) };
+  });
+  store.setIssueProjection("benchmark-400", { stage: "implementation", state: "paused", warning: null });
+  await service.eventsSettled();
+  const changeStarted = performance.now();
+  web.getDashboardSnapshot!();
+  const changeMs = performance.now() - changeStarted;
+  const patches = dashboards.map(({ messages }) => messages.flatMap((message) => message.kind === "patch" ? [message.patch] : []));
+  for (const dashboard of dashboards) dashboard.subscription.unsubscribe();
+  if (patches[0]!.length === 0 || patches.some((received) => received.length !== patches[0]!.length || received.some((patch, index) => patch !== patches[0]![index]))) {
+    throw new Error("a change was not built once and sent to every open dashboard");
   }
-  console.log(JSON.stringify({ items: 410, done: model.done.totalIssues, visibleCards: visible, modelBuildMs: Number(buildMs.toFixed(1)), pageBytes: bytes, timingTargetAsserted: assertTiming }));
+  if (bytes >= 200_000 || (assertTiming && (buildMs >= 100 || changeMs >= 100))) {
+    throw new Error(`benchmark target missed: ${buildMs.toFixed(1)} ms model build, ${changeMs.toFixed(1)} ms per change, ${bytes} byte snapshot`);
+  }
+  console.log(JSON.stringify({ items: 410, done: model.system.doneTotal, modelItems: items.length, modelBuildMs: Number(buildMs.toFixed(1)), snapshotBytes: bytes, openDashboards: dashboards.length, patchesPerChange: patches[0]!.length, changeMs: Number(changeMs.toFixed(1)), timingTargetAsserted: assertTiming }));
+  await service.close();
   store.close();
 } finally {
   await rm(root, { recursive: true, force: true });
