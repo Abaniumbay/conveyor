@@ -4862,6 +4862,7 @@ export class ConveyorService {
           title: issue.title,
           state: displayName(issue.projectedState ?? issue.sourceState),
           stage: issue.projectedStage ? stageNames.get(issue.projectedStage) ?? displayName(issue.projectedStage) : null,
+          stageId: issue.projectedStage,
           context: graphContextIds.has(issue.id),
           signal: status.signal,
         }];
@@ -5087,6 +5088,12 @@ export class ConveyorService {
         : null,
       csrfToken,
     };
+  }
+
+  /** One page of the Recent view, for the browser application. */
+  recentActivityPage(pagination: DashboardPageSelection): RecentActivityViewModel {
+    const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) => [repositoryId, (index % 8) + 1]));
+    return this.recentActivity(pagination, repositoryColors);
   }
 
   private recentActivity(
@@ -6193,6 +6200,7 @@ export class ConveyorService {
       getDashboardSnapshot: () => this.#dashboardFeed.snapshot(),
       subscribeDashboardFeed: (listener, after) => this.#dashboardFeed.subscribe(listener, after),
       getDashboardFeedStatus: () => this.#dashboardFeed.status,
+      getRecentActivity: (selection) => this.recentActivityPage(selection),
       getDashboardDone: (limit) => Object.values(normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION, doneLimit: limit })).items)
         .filter((item) => item.placement === "done")
         .sort((left, right) => left.order - right.order),

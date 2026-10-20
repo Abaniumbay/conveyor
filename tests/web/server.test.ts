@@ -1881,3 +1881,16 @@ describe("older finished items", () => {
     }
   });
 });
+
+describe("recent activity page", () => {
+  test("returns the page for the address's filters and cursor to a signed-in reader", async () => {
+    const selections: unknown[] = [];
+    const page = { types: ["done"], repositoryIds: ["repo"], events: [], nextCursor: null, rangeStartedAt: null };
+    const { handler } = setup({ getRecentActivity: (selection: unknown) => { selections.push(selection); return page; } });
+    expect((await handler(new Request("http://localhost/api/v1/recent"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/recent?type=done&repo=repo&beforeAt=2026-10-20T00:00:00.000Z&beforeId=e1", { headers: { cookie } }));
+    expect(await response.json()).toEqual(page);
+    expect(selections[0]).toMatchObject({ view: "recent", recentTypes: ["done"], repositoryIds: ["repo"], recentCursor: { occurredAt: "2026-10-20T00:00:00.000Z", id: "e1" } });
+  });
+});
