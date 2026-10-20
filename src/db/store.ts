@@ -3098,6 +3098,14 @@ export class ConveyorStore {
     };
   }
 
+  /** The newest conversation message id of every item that has one; a change means the conversation grew. */
+  latestConversationMessageIds(): Map<string, number> {
+    const rows = this.#database
+      .query("SELECT issue_id, MAX(id) AS latest FROM conversation_messages GROUP BY issue_id")
+      .all() as Array<{ issue_id: string; latest: number }>;
+    return new Map(rows.map((row) => [row.issue_id, Number(row.latest)]));
+  }
+
   listConversationMessages(issueId: string, limit = 100): StoredConversationMessage[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
       throw new Error("conversation message limit must be between 1 and 200");

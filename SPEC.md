@@ -972,6 +972,9 @@ The dashboard is moving to a client-rendered application fed by a live model (#4
 - `GET /api/v1/stream` (signed-in session, server-sent events, `Last-Event-ID` or `?after=<seq>`) first replays the patches after that sequence, or sends `reset` when they are no longer all kept (the client then loads a new snapshot). It then sends one `patch` message per change, `{ seq, entity, id, op: "upsert" | "remove", data }`, where an upsert of a known entity carries only its changed top-level fields (a field that became empty is `null`). `status` messages carry the server status when it changes; `keep-alive` arrives at least every four seconds.
 - Changes to state invalidate the model. It is rebuilt once a burst of changes settles (250 ms, at most 1 s), diffed against the previous build, and the patches are sent to every open stream. The work per change does not depend on the number of open dashboards, and nothing is built while none is open. A rebuild that changes nothing sends nothing.
 - Patches are a projection for signed-in dashboards: they may carry the titles and other text the dashboard shows, they are never stored, and they never reach event sinks. Recorded events keep their rule of identifiers and states only.
+- Each item also carries `conversation`, the id of its newest conversation message, so an open conversation reloads when it grows.
+- `GET /api/v1/done?limit=<1-500>` (signed-in session) returns the `limit` most recent finished items, for Done beyond the live model's own.
+- `/app` and every path under it serve one static page, the same for every reader, with a loading skeleton and the application script (`/app/assets/app.js?v=<version>`, cached for good per version). A signed-out reader is sent to sign in and back. The application renders the Board and item details in the browser from the snapshot and patches, with the same components and styles as the server-rendered dashboard.
 
 Primary views:
 

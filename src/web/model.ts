@@ -14,6 +14,7 @@ import type {
   RepositoryDashboardSummary,
   RestrictedRepositoryDashboardSummary,
   StageActorViewModel,
+  SystemStatusViewModel,
 } from "./types";
 
 /** Where an item sits on the board; the client builds the columns from it. */
@@ -22,10 +23,14 @@ export type DashboardItemPlacement = "backlog" | "stage" | "attention" | "done";
 /** One workflow item: the card the dashboard shows, without any per-session data. */
 export interface DashboardItem extends Omit<IssueCardViewModel, "csrfToken"> {
   placement: DashboardItemPlacement;
+  /** The stage column it is in, for an item placed on a stage. */
+  column: string | null;
   /** Position within its placement: backlog rank, stage order, or Done recency. */
   order: number;
   /** Stopped, asking a question or waiting at a manual gate for its owner. */
   needsYou: boolean;
+  /** The newest conversation message, so an open conversation knows when to reload; null before the first. */
+  conversation: number | null;
 }
 
 export interface DashboardStage {
@@ -41,6 +46,8 @@ export interface DashboardStage {
 
 export interface DashboardSystem {
   title: string;
+  /** When Conveyor last reconciled its repositories. */
+  updatedAt: string;
   project: string;
   totalUsage: string;
   harnessUsage: readonly HarnessQuotaViewModel[];
@@ -88,34 +95,46 @@ export const dashboardPatchSchema = z.object({
 }).strict();
 export type DashboardPatch = z.infer<typeof dashboardPatchSchema>;
 
+const modelShape = z.object({
+  items: z.record(z.string(), z.record(z.string(), z.unknown())),
+  stages: z.record(z.string(), z.record(z.string(), z.unknown())),
+  questions: z.record(z.string(), z.record(z.string(), z.unknown())),
+  repositories: z.record(z.string(), z.record(z.string(), z.unknown())),
+  restrictedRepositories: z.record(z.string(), z.record(z.string(), z.unknown())),
+  graph: z.object({ nodes: z.array(z.unknown()), relationships: z.array(z.unknown()) }).passthrough(),
+  system: z.record(z.string(), z.unknown()),
+}).strict();
+
+/** The server status; checked for shape, its fields are the server's own type. */
+export const systemStatusSchema = z.custom<SystemStatusViewModel>((value) =>
+  z.object({ memory: z.object({}).passthrough(), disk: z.object({}).passthrough(), storage: z.object({}).passthrough() }).passthrough().safeParse(value).success,
+);
+
 export const dashboardSnapshotSchema = z.object({
   seq: z.number().int().nonnegative(),
-  model: z.object({
-    items: z.record(z.string(), z.record(z.string(), z.unknown())),
-    stages: z.record(z.string(), z.record(z.string(), z.unknown())),
-    questions: z.record(z.string(), z.record(z.string(), z.unknown())),
-    repositories: z.record(z.string(), z.record(z.string(), z.unknown())),
-    restrictedRepositories: z.record(z.string(), z.record(z.string(), z.unknown())),
-    graph: z.object({ nodes: z.array(z.unknown()), relationships: z.array(z.unknown()) }).passthrough(),
-    system: z.record(z.string(), z.unknown()),
-  }).strict(),
+  model: z.custom<DashboardModel>((value) => modelShape.safeParse(value).success, "not a dashboard model"),
   /** The last server status read (memory, disks), or null before the first read. */
-  status: z.record(z.string(), z.unknown()).nullable(),
+  status: systemStatusSchema.nullable(),
   account: z.object({ id: z.string(), username: z.string(), role: z.enum(["superuser", "user"]), avatar: z.string() }).strict(),
   csrfToken: z.string(),
 }).strict();
 
+/** Finished items beyond the live model's most recent ones, oldest last. */
+export const olderDoneSchema = z.object({
+  items: z.array(z.custom<DashboardItem>((value) => z.object({ id: z.string(), placement: z.literal("done"), order: z.number() }).passthrough().safeParse(value).success)),
+}).strict();
+
 /** Builds the normalized model from the service's board model. */
-export function normalizeDashboard(board: DashboardViewModel): DashboardModel {
+export function normalizeDashboard(board: DashboardViewModel, facts: { conversations?: ReadonlyMap<string, number> } = {}): DashboardModel {
   const items: Record<string, DashboardItem> = {};
   const needsYou = new Set(board.needsYou.map((issue) => issue.id));
-  const add = (issue: IssueCardViewModel, placement: DashboardItemPlacement, order: number) => {
+  const add = (issue: IssueCardViewModel, placement: DashboardItemPlacement, order: number, column: string | null = null) => {
     const { csrfToken: _session, ...card } = issue;
-    items[issue.id] = { ...card, placement, order, needsYou: needsYou.has(issue.id) };
+    items[issue.id] = { ...card, placement, column, order, needsYou: needsYou.has(issue.id), conversation: facts.conversations?.get(issue.id) ?? null };
   };
   board.backlog.forEach((issue, index) => add(issue, "backlog", index));
   let position = 0;
-  for (const stage of board.stages) for (const issue of stage.issues) add(issue, "stage", position++);
+  for (const stage of board.stages) for (const issue of stage.issues) add(issue, "stage", position++, stage.id.replace(/^stage:/, ""));
   board.attention.issues.forEach((issue, index) => add(issue, "attention", index));
   board.done.issues.forEach((issue, index) => add(issue, "done", index));
   // Needs you can name an item that is on no column (for example a stopped item outside the line).
@@ -142,6 +161,7 @@ export function normalizeDashboard(board: DashboardViewModel): DashboardModel {
     graph: board.graph,
     system: {
       title: board.title,
+      updatedAt: board.updatedAt,
       project: board.project,
       totalUsage: board.totalUsage,
       harnessUsage: board.harnessUsage,

@@ -458,7 +458,9 @@ export class ConveyorService {
   readonly #liveChangeHeads = new Map<string, string>();
   /** The live dashboard model, rebuilt once per burst of changes for every open dashboard. */
   readonly #dashboardFeed = new DashboardFeed({
-    build: () => normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION })),
+    build: () => normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION }), {
+      conversations: this.store.latestConversationMessageIds(),
+    }),
     status: () => this.systemStatus(),
   });
   /** Sub-issues and blockers last read per issue, reused while the issue is unchanged (see `relationshipsOf`). */
@@ -6191,6 +6193,9 @@ export class ConveyorService {
       getDashboardSnapshot: () => this.#dashboardFeed.snapshot(),
       subscribeDashboardFeed: (listener, after) => this.#dashboardFeed.subscribe(listener, after),
       getDashboardFeedStatus: () => this.#dashboardFeed.status,
+      getDashboardDone: (limit) => Object.values(normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION, doneLimit: limit })).items)
+        .filter((item) => item.placement === "done")
+        .sort((left, right) => left.order - right.order),
       isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),
