@@ -11,7 +11,9 @@ test("agent guidance > identifies uncovered changed production code as a missing
 });
 
 test("agent guidance > requires real assertions for changed production code", async () => {
-  expect(await guidance()).toContain("Test its behaviour with real\n  assertions");
+  expect(await guidance()).toContain(
+    "Changed production code that no test executes is a missing test case. Test its behaviour with real\n  assertions",
+  );
 });
 
 test("agent guidance > forbids tests added solely to raise coverage", async () => {
