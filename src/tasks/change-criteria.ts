@@ -29,7 +29,9 @@ const MALFORMED = (detail: string) => `PR checklist markers are malformed: ${det
 
 function testNameSegments(name: string): string[] {
   const qualified = name.split(/::|#| > /);
-  const segments = qualified.flatMap((part) => part.includes("/") ? [] : part.split("."));
+  const final = qualified.at(-1)!;
+  const qualifiers = qualified.slice(0, -1).flatMap((part) => part.includes("/") ? [] : part.split("."));
+  const segments = qualified.length === 1 && !final.includes("/") ? final.split(".") : [...qualifiers, final];
   const names = segments.filter((segment) => segment.length > 0);
   return names.length > 0 ? names : [name];
 }

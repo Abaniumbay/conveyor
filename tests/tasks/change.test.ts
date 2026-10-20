@@ -506,6 +506,20 @@ describe("change tools", () => {
     expect((result as Fail).message).toContain("must appear in tests/a.test.ts as written");
   });
 
+  test("criterionTestsVerified requires a slash-containing final test title", async () => {
+    const { result } = await verifyCriterionTestLink("media > serves image/jpeg", "describe(\"media\", () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain('"serves image/jpeg"');
+  });
+
+  test("criterionTestsVerified links a dotted final test title at its full source text", async () => {
+    const { result, w } = await verifyCriterionTestLink("Suite > uses v1.5 seconds", "const delay = \"5 seconds\";\ndescribe(\"Suite\", () => {\n  it(\"uses v1.5 seconds\", () => {});\n});");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
   test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
     const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
     const unlinked = await world({ body: PR_BODY }, true, BODY);
