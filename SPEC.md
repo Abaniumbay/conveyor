@@ -974,7 +974,8 @@ The dashboard is moving to a client-rendered application fed by a live model (#4
 - Patches are a projection for signed-in dashboards: they may carry the titles and other text the dashboard shows, they are never stored, and they never reach event sinks. Recorded events keep their rule of identifiers and states only.
 - Each item also carries `conversation`, the id of its newest conversation message, so an open conversation reloads when it grows.
 - `GET /api/v1/done?limit=<1-500>` (signed-in session) returns the `limit` most recent finished items, for Done beyond the live model's own.
-- `/app` and every path under it serve one static page, the same for every reader, with a loading skeleton and the application script (`/app/assets/app.js?v=<version>`, cached for good per version). A signed-out reader is sent to sign in and back. The application renders the Board and item details in the browser from the snapshot and patches, with the same components and styles as the server-rendered dashboard.
+- `GET /api/v1/recent` (signed-in session) returns one Recent page as JSON for the same `type`, `repo`, `beforeAt` and `beforeId` parameters as `/recent`. Graph nodes carry their `stageId` so the browser can apply the Graph's stage filter.
+- `/app` and every path under it serve one static page, the same for every reader, with a loading skeleton and the application script (`/app/assets/app.js?v=<version>`, cached for good per version). A signed-out reader is sent to sign in and back. The application renders the Board with item details, Graph, Recent, Label problems and Repositories in the browser from the snapshot and patches, with the same components and styles as the server-rendered dashboard.
 
 Primary views:
 

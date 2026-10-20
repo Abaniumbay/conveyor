@@ -292,6 +292,8 @@ export type DashboardView = "board" | "graph" | "recent" | "attention" | "agent"
 /** An item in the relationship graph. Context nodes are non-current items reached from a current item. */
 export interface GraphNodeViewModel {
   id: string;
+  /** The stage id behind `stage`, for filtering by stage. */
+  stageId?: string | null;
   repository: string;
   repositoryColor: number;
   number: number;

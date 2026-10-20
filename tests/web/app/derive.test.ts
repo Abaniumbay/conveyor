@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { boardSelectionFromUrl, boardViewModel, DEFAULT_DONE_LIMIT } from "../../../src/web/app/derive";
+import { appPath, boardSelectionFromUrl, boardViewModel, DEFAULT_DONE_LIMIT, filteredGraph } from "../../../src/web/app/derive";
 import type { DashboardItem, DashboardModel } from "../../../src/web/model";
 
 function item(number: number, overrides: Partial<DashboardItem> = {}): DashboardItem {
@@ -89,11 +89,73 @@ describe("boardViewModel", () => {
 describe("boardSelectionFromUrl", () => {
   test("reads the filters and the Done limit", () => {
     expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/app?repo=a&repo=b&q=fix&state=running&doneLimit=40"))).toEqual({
-      repositoryIds: ["a", "b"], q: "fix", state: "running", issue: null, doneLimit: 40,
+      view: "board", repositoryId: null, graphStage: null, repositoryIds: ["a", "b"], q: "fix", state: "running", issue: null, doneLimit: 40,
     });
   });
 
   test("ignores an unusable Done limit", () => {
     expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/app?doneLimit=-3")).doneLimit).toBe(DEFAULT_DONE_LIMIT);
+  });
+});
+
+describe("views", () => {
+  test("reads each application view from its address", () => {
+    const view = (path: string) => boardSelectionFromUrl(new URL(`https://conveyor.example.com${path}`));
+    expect(view("/app")).toMatchObject({ view: "board", repositoryId: null });
+    expect(view("/app/graph?stage=review")).toMatchObject({ view: "graph", graphStage: "review" });
+    expect(view("/app/recent")).toMatchObject({ view: "recent" });
+    expect(view("/app/attention")).toMatchObject({ view: "attention" });
+    expect(view("/app/repositories")).toMatchObject({ view: "repositories" });
+    expect(view("/app/repositories/my%20app")).toMatchObject({ view: "repository", repositoryId: "my app" });
+    expect(view("/app/issues/repo/7")).toMatchObject({ view: "board", issue: { repository: "repo", number: 7 } });
+  });
+
+  test("maps the server dashboard's paths to the application's", () => {
+    expect(appPath("/board")).toBe("/app");
+    expect(appPath("/")).toBe("/app");
+    expect(appPath("/graph")).toBe("/app/graph");
+    expect(appPath("/repositories/repo")).toBe("/app/repositories/repo");
+    expect(appPath("/issues/repo/7/journey")).toBe("/app/issues/repo/7");
+  });
+
+  test("leaves views the application does not render to the server", () => {
+    expect(appPath("/team")).toBeNull();
+    expect(appPath("/reports")).toBeNull();
+    expect(appPath("/operator")).toBeNull();
+  });
+
+  test("passes the Recent page and the repository on to the view", () => {
+    const recent = { types: [], repositoryIds: [], events: [], nextCursor: null, rangeStartedAt: null };
+    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: boardSelectionFromUrl(new URL("https://conveyor.example.com/app/recent")), recent });
+    expect(view).toMatchObject({ view: "recent", recent });
+    expect(board([], "https://conveyor.example.com/app/repositories/repo")).toMatchObject({ view: "repository", repositoryId: "repo" });
+  });
+});
+
+describe("filteredGraph", () => {
+  const node = (id: string, repository: string, stageId: string | null, context = false) => ({
+    id, repository, repositoryColor: 1, number: Number(id.slice(1)), title: id, state: "Active", stage: stageId, stageId, context, signal: null,
+  });
+  const graph = {
+    nodes: [node("n1", "a", "review"), node("n2", "b", "implementation"), node("n3", "a", "implementation"), node("n9", "c", null, true)],
+    relationships: [
+      { kind: "dependency" as const, from: "n2", to: "n1", status: "outstanding" as const },
+      { kind: "parent-child" as const, from: "n3", to: "n9", status: null },
+    ],
+  };
+
+  test("is unchanged without filters", () => {
+    expect(filteredGraph(graph, [], null)).toBe(graph);
+  });
+
+  test("keeps matching items and shows directly related ones as context", () => {
+    const result = filteredGraph(graph, [], "review");
+    expect(result.nodes.map((entry) => [entry.id, entry.context])).toEqual([["n1", false], ["n2", true]]);
+    expect(result.relationships).toEqual(graph.relationships.slice(0, 1));
+  });
+
+  test("filters by repository", () => {
+    const result = filteredGraph(graph, ["a"], null);
+    expect(result.nodes.map((entry) => [entry.id, entry.context])).toEqual([["n1", false], ["n2", true], ["n3", false], ["n9", true]]);
   });
 });

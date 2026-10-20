@@ -20,7 +20,7 @@ import { SUPERUSER_ENTITIES, type DashboardItem, type DashboardModel, type Dashb
 import { dashboardAppBundle } from "./app-bundle";
 import { dashboardAppShell } from "./app-shell";
 import type { DashboardFeedListener, DashboardFeedSubscription } from "../app/dashboard-feed";
-import type { AgentProfileViewModel, DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
+import type { AgentProfileViewModel, DashboardPageSelection, RecentActivityViewModel, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -58,6 +58,8 @@ export interface WebHandlerDependencies {
   getDashboardFeedStatus?: () => SystemStatusViewModel | null;
   /** The `limit` most recent finished items, for Done beyond the live model's own. */
   getDashboardDone?: (limit: number) => DashboardItem[];
+  /** One page of the Recent view for its filters and cursor. */
+  getRecentActivity?: (selection: DashboardPageSelection) => RecentActivityViewModel;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -1043,6 +1045,14 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       } catch {
         return json({ error: "unavailable" }, 503);
       }
+    }
+
+    if (path === "/api/v1/recent") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      if (!dependencies.getRecentActivity) return json({ error: "unavailable" }, 503);
+      return response(JSON.stringify(dependencies.getRecentActivity(dashboardPage(url, "recent"))), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
     }
 
     if (path === "/api/v1/done") {

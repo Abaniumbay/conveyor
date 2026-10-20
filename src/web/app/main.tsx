@@ -4,7 +4,7 @@
 import { render } from "preact";
 
 import { DashboardBody, LiveDetailsContext, prepareDashboardRender, type LiveDetails } from "../render";
-import type { IssueCardViewModel } from "../types";
+import type { IssueCardViewModel, RecentActivityViewModel } from "../types";
 import { afterRender, bindBoardBehaviour, showConnection, view } from "./behaviour";
 import { boardSelectionFromUrl, boardViewModel } from "./derive";
 import { ActivityPanel, ConversationPanel, JourneyPanel } from "./details";
@@ -35,21 +35,63 @@ function liveDetails(issue: IssueCardViewModel): LiveDetails {
 let frame: number | null = null;
 let bound = false;
 
+/** The Recent page for the address: loaded when Recent is shown, and again after changes arrive. */
+const recent: { key: string | null; page: RecentActivityViewModel | null; timer: ReturnType<typeof setTimeout> | null; seq: number } = { key: null, page: null, timer: null, seq: -1 };
+
+function loadRecent(key: string): void {
+  recent.key = key;
+  void fetch(`/api/v1/recent${key}`, { headers: { accept: "application/json" }, cache: "no-store" })
+    .then(async (response) => {
+      if (response.status === 401) return location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
+      if (!response.ok || recent.key !== key) return;
+      recent.page = await response.json() as RecentActivityViewModel;
+      schedule();
+    })
+    .catch(() => { /* The feed shows its last page; the next change tries again. */ });
+}
+
+function syncRecent(view: string, seq: number): void {
+  if (view !== "recent") {
+    recent.key = null;
+    recent.page = null;
+    return;
+  }
+  const key = location.search;
+  if (recent.key !== key) {
+    recent.page = null;
+    recent.seq = seq;
+    loadRecent(key);
+  } else if (seq !== recent.seq && recent.timer === null) {
+    // A change can add an entry; read the page again once a burst has passed.
+    recent.seq = seq;
+    recent.timer = setTimeout(() => {
+      recent.timer = null;
+      if (recent.key !== null) loadRecent(recent.key);
+    }, 1_000);
+  }
+}
+
+const VIEW_TITLES: Record<string, string> = { board: "Board", graph: "Graph", recent: "Recent", attention: "Label problems", repositories: "Repositories", repository: "Repository" };
+
 function draw(): void {
   frame = null;
   const state = store.state;
   if (!state) return;
   // Rows being dragged or saved are moved by hand; the board redraws once they settle.
   if (view.backlogBusy) return;
+  const selection = boardSelectionFromUrl(new URL(location.href));
+  syncRecent(selection.view, state.seq);
   const model = boardViewModel({
     model: state.model,
     account: state.account,
     csrfToken: state.csrfToken,
-    selection: boardSelectionFromUrl(new URL(location.href)),
+    selection,
     olderDone: state.olderDone,
+    recent: recent.page,
   });
   prepareDashboardRender(model);
-  if (!model.selectedIssue) document.title = `Board · ${model.title}`;
+  document.body.dataset.dashboardView = model.view;
+  if (!model.selectedIssue) document.title = `${model.view === "repository" && model.repositoryId ? model.repositoryId : VIEW_TITLES[model.view] ?? "Board"} · ${model.title}`;
   // The loading skeleton is the shell's own markup, not Preact's; it goes before the first draw.
   if (!bound) root!.replaceChildren();
   render(<LiveDetailsContext.Provider value={liveDetails}><DashboardBody model={model} /></LiveDetailsContext.Provider>, root!);

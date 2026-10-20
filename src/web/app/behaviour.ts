@@ -6,6 +6,7 @@
 import { serverStatusHasPressure, serverStatusMetrics } from "../server-status";
 import { updateQuotaWindow, quotaCountdown } from "../../usage/quota-time";
 import type { DetailTab } from "../render";
+import { appPath } from "./derive";
 import { formatBytes, formatClock, formatDateTime, formatElapsed } from "./format";
 import type { LiveState, LiveStore } from "./store";
 
@@ -347,12 +348,6 @@ export function afterRender(root: ParentNode): void {
 // ---------------------------------------------------------------------------------------------
 // Navigation inside the application.
 
-/** The application's address for an item, from a dashboard item link. */
-function appItemPath(href: string): string | null {
-  const match = /^\/issues\/([^/]+)\/([1-9]\d*)(?:\/(?:conversation|journey|logs))?$/.exec(new URL(href, location.origin).pathname);
-  return match ? `/app/issues/${match[1]}/${match[2]}${location.search}` : null;
-}
-
 function openItem(repository: string, number: string, redraw: () => void): void {
   view.tab = "summary";
   history.pushState({ conveyorItem: true }, "", `/app/issues/${encodeURIComponent(repository)}/${encodeURIComponent(number)}${location.search}`);
@@ -361,9 +356,12 @@ function openItem(repository: string, number: string, redraw: () => void): void 
 
 function closeItem(redraw: () => void): void {
   if (!location.pathname.startsWith("/app/issues/")) return;
-  history.pushState({}, "", `/app${location.search}`);
-  document.title = "Board · Conveyor";
-  redraw();
+  // An item opened from a view returns to it; one opened directly returns to the board.
+  if (history.state?.conveyorItem === true && history.length > 1) history.back();
+  else {
+    history.pushState({}, "", `/app${location.search}`);
+    redraw();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -394,7 +392,37 @@ function formFields(form: HTMLFormElement, csrfToken: string): URLSearchParams {
   return fields;
 }
 
+/** The forms the application sends itself; any other form posts to the server as it always did. */
+const HANDLED_FORMS = "[data-answer-form], [data-manual-gate-form], [data-retry-form], [data-resume-rollup-form], [data-conversation-form], [data-repository-sync]";
+
 async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boolean> {
+  if (form.matches("[data-repository-sync]")) {
+    const button = form.querySelector("[data-repository-sync-submit]");
+    const status = form.closest("section")?.querySelector("[data-repository-sync-status]");
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return true;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "Syncing…";
+    if (status instanceof HTMLElement) {
+      status.textContent = "Reading the repository from GitHub…";
+      delete status.dataset.error;
+    }
+    try {
+      const { body } = await post(form.action, new URLSearchParams({ csrf: csrfToken }));
+      if (body.failed) throw new Error("GitHub could not be read; the repository status shows why.");
+      if (status) status.textContent = `Synced ${typeof body.issues === "number" ? `${body.issues} issues` : "the repository"} just now.`;
+    } catch (error) {
+      if (status instanceof HTMLElement) {
+        status.textContent = `Sync failed: ${error instanceof Error ? error.message : "unknown error"}`;
+        status.dataset.error = "true";
+      }
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.textContent = "Sync now";
+    }
+    return true;
+  }
   if (form.matches("[data-answer-form]")) {
     const button = form.querySelector("button[type='submit']");
     const status = form.querySelector("[data-answer-status]");
@@ -644,19 +672,17 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     }
     const link = element(target, "a[href]", HTMLAnchorElement);
     if (link && event instanceof MouseEvent && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && !link.target) {
-      const item = appItemPath(link.href);
-      if (item) {
-        event.preventDefault();
-        view.tab = "summary";
-        history.pushState({ conveyorItem: true }, "", item);
-        redraw();
-        return;
-      }
       const url = new URL(link.href, location.href);
-      if (url.origin === location.origin && (url.pathname === "/board" || url.pathname === "/")) {
+      const destination = url.origin === location.origin ? appPath(url.pathname) : null;
+      if (destination) {
         event.preventDefault();
-        history.pushState({}, "", `/app${url.search}${url.hash}`);
+        const item = destination.startsWith("/app/issues/");
+        if (item) view.tab = "summary";
+        // An item opens over the current view; any other view starts at the top.
+        history.pushState(item ? { conveyorItem: true } : {}, "", `${destination}${item ? location.search : url.search}${url.hash}`);
+        closeHeaderPopovers();
         redraw();
+        if (!item) window.scrollTo(0, 0);
         return;
       }
       // Other views are still served by the server-rendered dashboard.
@@ -783,7 +809,19 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       redraw();
       return;
     }
-    if (form.matches(".logout-form")) return;
+    if (form.method.toLowerCase() === "get") {
+      // A view's filter form (Graph, Recent): its fields become the address.
+      const destination = appPath(new URL(form.action, location.href).pathname);
+      if (!destination) return;
+      event.preventDefault();
+      const query = new URLSearchParams();
+      for (const [name, value] of new FormData(form)) if (typeof value === "string" && value !== "") query.append(name, value);
+      const search = query.toString();
+      history.pushState({}, "", `${destination}${search ? `?${search}` : ""}`);
+      redraw();
+      return;
+    }
+    if (!form.matches(HANDLED_FORMS)) return;
     event.preventDefault();
     void submitForm(form, csrf());
   });
