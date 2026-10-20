@@ -8,6 +8,9 @@ import { randomUUID } from "node:crypto";
 
 import type { FINDING_CHANGES } from "../events/catalogue";
 import { eventLog } from "../events/log";
+import { isFindingType, type FindingType } from "./finding-types";
+
+export { DEFAULT_FINDING_TYPE, FINDING_TYPES, type FindingType } from "./finding-types";
 
 type FindingChange = (typeof FINDING_CHANGES)[number];
 
@@ -26,6 +29,8 @@ export interface Finding {
   line: number | null;
   url: string;
   body: string;
+  type: FindingType;
+  criterionIds: string[];
   /** How the finding is projected on the code host (opaque to this module). */
   projection: unknown;
   dismissal?: { actor: string; reason: string; at: string };
@@ -50,6 +55,7 @@ export interface NativeArtifact {
 interface Row {
   id: string; issue_id: string; run_id: string | null; provider_key: string | null; author: string; source: string;
   head_sha: string; state: string; path: string | null; line: number | null; url: string; body: string;
+  type: string; criterion_ids_json: string;
   projection_json: string | null; dismissal_json: string | null; withdrawal_json: string | null;
 }
 
@@ -63,11 +69,25 @@ export interface SkippedNativeArtifact {
 
 const parse = (json: string | null): unknown => (json === null ? undefined : JSON.parse(json));
 
+function findingType(value: string): FindingType {
+  if (!isFindingType(value)) throw new Error(`Unknown stored review finding type: ${value}`);
+  return value;
+}
+
+function parseCriterionIds(json: string): string[] {
+  const value: unknown = JSON.parse(json);
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
+    throw new Error("Stored review finding criterion IDs must be strings.");
+  }
+  return value;
+}
+
 function toFinding(row: Row): Finding {
   const finding: Finding = {
     id: row.id, issueId: row.issue_id, runId: row.run_id, providerKey: row.provider_key, author: row.author,
     source: row.source === "human" ? "human" : "agent", headSha: row.head_sha, state: row.state as FindingState,
     path: row.path, line: row.line, url: row.url, body: row.body, projection: parse(row.projection_json) ?? null,
+    type: findingType(row.type), criterionIds: parseCriterionIds(row.criterion_ids_json),
   };
   const dismissal = parse(row.dismissal_json) as Finding["dismissal"];
   const withdrawal = parse(row.withdrawal_json) as Finding["withdrawal"];
