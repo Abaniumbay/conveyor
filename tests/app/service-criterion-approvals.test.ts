@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -21,7 +22,7 @@ const BODY = `<!-- conveyor:acceptance-criteria:start -->
 - [ ] [Manual] Production validation <!-- conveyor:criterion:AC-3 -->
 <!-- conveyor:acceptance-criteria:end -->`;
 
-async function setup(merged = false) {
+async function setup(merged = false, ciDisabled = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-criteria-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -30,7 +31,7 @@ async function setup(merged = false) {
   await writeFile(path.join(root, "config.yml"), `
 settings: { database: ${root}/db.sqlite, logs: ${root}/logs, workspaces: ${root}/workspaces, artifacts: ${root}/artifacts }
 web: {}
-sources: { github: { type: github } }
+sources: { github: { type: github, webhookSecret: hook-secret } }
 runners: { codex: { type: codex } }
 agents: { worker: { runner: codex, instructions: ./instructions.md } }
 checks: {}
@@ -50,7 +51,7 @@ pipelines:
         exit-gate:
           - { id: ciGate, task: ci.passed, with: { settleSeconds: 120 } }
 repositories:
-  repo: { source: github, address: owner/repo, folder: ${repositoryPath}, pipeline: default }
+  repo: { source: github, address: owner/repo, folder: ${repositoryPath}, pipeline: default${ciDisabled ? ", ci: { mode: disabled }" : ""} }
 `);
   const config = await loadConfig(path.join(root, "config.yml"));
   const store = await ConveyorStore.open(config.settings.database);
@@ -66,12 +67,23 @@ repositories:
   if (merged) store.upsertPullRequest({ issueId: "issue", id: "pr-1", number: 1, url: "https://example.test/pr/1", state: "merged", mergedAt: "2026-01-01T00:01:00Z" });
   else store.upsertPullRequest({ issueId: "issue", id: "pr-1", number: 1, url: "https://example.test/pr/1", state: "open" });
 
+  const live = { head: "head-1" };
   const statusComments: string[] = [];
-  const github = { async upsertStatusComment(_address: string, _number: number, markdown: string) { statusComments.push(markdown); return statusComments.length; } };
+  const github = {
+    async getPullRequestChange(_address: string, _number: number) {
+      return {
+        number: 1, url: "https://example.test/pr/1", state: merged ? "merged" : "open", draft: false,
+        mergeState: "clean", headSha: live.head, mergedAt: merged ? "2026-01-01T00:01:00Z" : null,
+      };
+    },
+    async upsertStatusComment(_address: string, _number: number, markdown: string) { statusComments.push(markdown); return statusComments.length; },
+  };
   const service = new ConveyorService(config, store, github as never, { codeHosts: createGitHubCodeHostRegistry(config, github as never) });
   service.drain("tests: nothing executes");
   const internals = service as unknown as { updateStatusComment(id: string): Promise<void> };
   const persist = (state: "open" | "merged", headSha: string, reviewPassed: string | null) => {
+    // Normal execution context capture and the source head agree unless a test deliberately advances it.
+    live.head = headSha;
     const context: TaskContext = {
       schemaVersion: 1, configHash: config.hash,
       run: { stage: "implementation", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "review", enteredAt: "2026-01-01T00:00:00Z", feedback: null },
@@ -83,8 +95,68 @@ repositories:
     store.executions().saveContext("issue", context, { stage: "implementation", taskInstanceId: "review", expectedEpoch: store.executions().stageEpoch("issue") });
   };
   const card = () => service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue!;
-  return { config, store, service, internals, statusComments, persist, card };
+  let delivery = 0;
+  const deliver = async (event: string, payload: Record<string, unknown>) => {
+    const body = new TextEncoder().encode(JSON.stringify({ repository: { full_name: "owner/repo" }, ...payload }));
+    const signature = `sha256=${createHmac("sha256", "hook-secret").update(body).digest("hex")}`;
+    await service.handleWebhook(body, new Headers({
+      "x-hub-signature-256": signature,
+      "x-github-delivery": `delivery-${++delivery}`,
+      "x-github-event": event,
+    }));
+    await service.webhooksSettled();
+  };
+  return { config, store, service, internals, statusComments, persist, card, deliver, live };
 }
+
+async function eventually(assertion: () => void): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await Bun.sleep(5);
+    }
+  }
+  throw lastError;
+}
+
+test("projects only source-current approvals after head and approval events with CI disabled", async () => {
+  const w = await setup(false, true);
+  w.persist("open", "head-1", null);
+  const approvals = new CriterionApprovals(w.store.sqlite());
+  approvals.approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-1", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
+
+  await w.deliver("pull_request", { action: "synchronize", pull_request: { number: 1, head: { sha: "head-1" } } });
+  await eventually(() => expect(w.statusComments.at(-1)).toContain("- [x] Current criterion"));
+  expect(w.card().acceptanceCriteria[0]).toMatchObject({ id: "AC-1", approved: true });
+
+  w.store.replaceCriterionTestEvidence("issue", [{
+    criterionId: "AC-1", manual: false,
+    tests: [{ name: "checks the criterion", file: "tests/criteria.test.ts" }],
+    recordedHead: "head-1", sourceLinkHead: "head-1", recordedAt: "2026-01-01T00:00:00Z",
+  }]);
+  // The execution context remains at head-1 while the source reports the new head.
+  w.live.head = "head-2";
+  await w.deliver("pull_request", { action: "synchronize", pull_request: { number: 1, head: { sha: "head-2" } } });
+  await eventually(() => expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion"));
+  expect(w.card().acceptanceCriteria[0]).toMatchObject({
+    id: "AC-1", approved: false, tests: [{ name: "checks the criterion" }],
+  });
+
+  approvals.approve({ issueId: "issue", criterionId: "AC-1", reviewer: "reviewer", headSha: "head-2", checkedAt: "t", textHash: criterionTextHash("Current criterion") });
+  await w.service.eventsSettled();
+  await eventually(() => expect(w.statusComments.at(-1)).toContain("- [x] Current criterion"));
+  expect(w.card().acceptanceCriteria[0]).toMatchObject({ id: "AC-1", approved: true });
+
+  approvals.withdraw("issue", "AC-1");
+  await w.service.eventsSettled();
+  await eventually(() => expect(w.statusComments.at(-1)).toContain("- [ ] Current criterion"));
+  expect(w.card().acceptanceCriteria[0]).toMatchObject({ id: "AC-1", approved: false });
+  await w.service.close();
+});
 
 test("projects current-head approvals into status comments and dashboard details", async () => {
   const w = await setup();
@@ -115,6 +187,7 @@ test("projects current-head approvals into status comments and dashboard details
 
   // A new head unticks a criterion approved at the old head.
   w.persist("open", "head-2", null);
+  await w.deliver("pull_request", { action: "synchronize", pull_request: { number: 1, head: { sha: "head-2" } } });
   await unticked("new head");
 
   // Text-hash mismatch at the current head stays unticked.

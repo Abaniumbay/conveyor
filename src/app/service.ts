@@ -1765,6 +1765,9 @@ export class ConveyorService {
       }
     });
     for (const type of SCHEDULING_EVENTS) this.events.subscribe(type, "schedule", () => this.requestSchedule());
+    this.events.subscribe("criterion.approvalChanged", "refresh criterion approval status", (event) => {
+      if (event.issueId) this.refreshStatusComments([event.issueId]);
+    });
     for (const type of ["github.issueUpdated", "github.relationshipChanged", "github.changeUpdated", "github.ciUpdated"] as const) {
       this.events.subscribe(type, "webhook projection", (event) => this.reactToGitHubEvent(event));
     }
@@ -3641,7 +3644,7 @@ export class ConveyorService {
    */
   private async applyCiEvent(repositoryId: string, event: StoredEvent): Promise<void> {
     const repository = this.config.repositories[repositoryId];
-    if (!repository || repository.ci?.mode === "disabled") return;
+    if (!repository) return;
     let head: string;
     let numbers: readonly number[];
     let newHead: boolean;
@@ -3666,10 +3669,12 @@ export class ConveyorService {
       if (!stored || stored.state === "merged" || stored.mergedAt) continue;
       const indicator = this.store.listIndicators(issueId).find((entry) => entry.id === CI_INDICATOR_ID);
       const known = indicator?.headSha === head;
-      if (newHead && known) continue;
       // A completion can arrive after the change advanced but before its synchronize
       // delivery. Do not let a cached indicator make that old head look current.
-      if ((await this.currentChangeHead(repositoryId, stored.id)) !== head) continue;
+      const liveHead = await this.currentChangeHead(repositoryId, stored.id);
+      if (liveHead !== head) continue;
+      this.#liveChangeHeads.set(issueId, liveHead);
+      if (repository.ci?.mode === "disabled" || (newHead && known)) continue;
       const change = { repository: repository.address, changeId: String(stored.number), url: stored.url };
       const input = { issueId, headSha: head, changeUrl: stored.url, ignoreChecks: repository.ci?.ignoreChecks ?? [], now: new Date(), authoritative: !known };
       if (newHead) { startCiForHead(this.store, input); continue; }
@@ -3692,8 +3697,11 @@ export class ConveyorService {
   /** `scope` limits a webhook pass to the issues it names; null covers every open item. */
   private async backfillCiIndicators(repositoryId: string, scope: ReadonlySet<number> | null = null): Promise<void> {
     const repository = this.config.repositories[repositoryId];
-    if (!repository || repository.ci?.mode === "disabled") return;
-    const stored = new Map(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => [entry.issueId, entry]));
+    if (!repository) return;
+    const ciDisabled = repository.ci?.mode === "disabled";
+    const stored = ciDisabled
+      ? new Map<string, ReturnType<ConveyorStore["listIndicators"]>[number]>()
+      : new Map(this.store.listIndicators().filter((entry) => entry.id === CI_INDICATOR_ID).map((entry) => [entry.issueId, entry]));
     for (const issue of this.store.listIssues(repositoryId)) {
       if (issue.sourceState !== "open") continue;
       if (scope !== null && !scope.has(issue.sourceNumber)) continue;
@@ -3703,6 +3711,7 @@ export class ConveyorService {
         const head = await this.currentChangeHead(repositoryId, pullRequest.id);
         if (!head) continue;
         this.#liveChangeHeads.set(issue.id, head);
+        if (ciDisabled) continue;
         const current = stored.get(issue.id);
         // A stored indicator is kept only while it is for the current head and no longer "starting".
         if (current?.headSha === head && current.progress !== "starting") continue;
@@ -4284,11 +4293,9 @@ export class ConveyorService {
     });
     const openPullRequest = this.store.getCurrentPullRequest(issue.id);
     if (openPullRequest?.state === "open" && !openPullRequest.mergedAt) {
-      // Every reconcile refreshes the live head (see backfillCiIndicators); read it here only when unknown.
-      if (!this.#liveChangeHeads.has(issue.id)) {
-        const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
-        if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
-      }
+      // A status comment must agree with the review gate even when a webhook was delayed.
+      const liveHead = await this.currentChangeHead(issue.repositoryId, openPullRequest.id);
+      if (liveHead) this.#liveChangeHeads.set(issue.id, liveHead);
     } else {
       this.#liveChangeHeads.delete(issue.id);
     }
