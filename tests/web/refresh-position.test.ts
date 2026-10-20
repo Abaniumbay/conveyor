@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright";
+import { DashboardFeed } from "../../src/app/dashboard-feed";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
+import { normalizeDashboard } from "../../src/web/model";
 import { createWebHandler } from "../../src/web/server";
-import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
+import type { DashboardPageSelection, DashboardViewModel, IssueCardViewModel, RecentActivityType, StageColumnViewModel, SystemStatusViewModel } from "../../src/web/types";
 import { fakeCommandBus } from "../support/web-commands";
 
 const password = "correct horse";
@@ -131,21 +133,20 @@ function recentDashboard(selection: DashboardPageSelection): DashboardViewModel 
   };
 }
 
-function dashboardIssue(model: DashboardViewModel, id: string): IssueCardViewModel | null {
-  const cards = [
+function dashboardIssues(model: DashboardViewModel): IssueCardViewModel[] {
+  return [
     ...model.stages.flatMap((column) => column.issues),
     ...model.backlog,
     ...model.done.issues,
     ...model.attention.issues,
     ...model.needsYou,
   ];
-  return cards.find((card) => card.id === id) ?? null;
 }
 
 function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   return page.evaluate(() => {
     const card = document.querySelector('article.issue[data-issue-id="target"]');
-    const stage = document.querySelector('[data-station-cell="reader"]');
+    const stage = document.querySelector('[data-station-cell="stage:reader"]');
     const board = document.querySelector<HTMLElement>(".board");
     return {
       cardTop: card?.getBoundingClientRect().top ?? null,
@@ -157,8 +158,13 @@ function cardPositions(page: Awaited<ReturnType<Browser["newPage"]>>) {
   });
 }
 
+/** Counts the application's redraws from now on; a live change is drawn by a redraw. */
 async function armReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
-  await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
+  await page.evaluate(() => {
+    const counted = window as typeof window & { redraws?: number };
+    if (counted.redraws === undefined) document.addEventListener("conveyor:dashboard-rendered", () => { counted.redraws = (counted.redraws ?? 0) + 1; });
+    counted.redraws = 0;
+  });
 }
 
 async function waitForArmedReplacement(
@@ -166,23 +172,30 @@ async function waitForArmedReplacement(
   changedCard?: { id: string; present: boolean },
 ) {
   await page.waitForFunction((expected) => {
-    const replaced = !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh");
-    if (!replaced || !expected) return replaced;
+    const redrawn = ((window as typeof window & { redraws?: number }).redraws ?? 0) > 0;
+    if (!redrawn || !expected) return redrawn;
     return (document.querySelector(`article.issue[data-issue-id="${expected.id}"]`) !== null) === expected.present;
   }, changedCard);
 }
 
-async function waitForReplacement(page: Awaited<ReturnType<Browser["newPage"]>>) {
-  await armReplacement(page);
-  await waitForArmedReplacement(page);
-}
+const BOARD_SELECTION: DashboardPageSelection = { view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null };
+const EMPTY_RECENT = { types: [], repositoryIds: [], rangeStartedAt: null, nextCursor: null, events: [] };
+const DEFAULT_STATUS: SystemStatusViewModel = {
+  memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
+  disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
+  storage: { artifacts: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 }, temporaryDirectory: { available: false }, workspaceScratch: { available: false } },
+  uptimeSeconds: 1,
+};
 
-/** A dashboard server whose page, revision and response delay the test controls. */
+/**
+ * A dashboard server whose board the test controls. Changing what `revision` returns is a change of
+ * state: like the service, the live feed then rebuilds the model and streams the patches.
+ */
 function startDashboard(state: {
-  dashboard: (selection: DashboardPageSelection) => DashboardViewModel | Promise<DashboardViewModel>;
+  dashboard: (selection: DashboardPageSelection) => DashboardViewModel;
   revision: () => string;
-  delayMs: () => number;
-  detailsDelayMs?: (issueId: string) => number;
+  /** How long a command takes to be accepted. */
+  commandDelayMs?: () => number;
   answerQuestion?: () => Promise<void>;
   approveManualGate?: () => Promise<void>;
   setBoardApprovalRequirement?: (required: boolean) => void;
@@ -193,50 +206,41 @@ function startDashboard(state: {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  // The test changes `revision` to simulate a change; like the core, publish an event for it.
-  const listeners = new Set<(event: DashboardStreamEvent) => void>();
+  const board = () => state.dashboard(BOARD_SELECTION);
+  const feed = new DashboardFeed({
+    build: () => normalizeDashboard(board()),
+    status: async () => state.systemStatus?.() ?? DEFAULT_STATUS,
+    settleMs: 5,
+    maxWaitMs: 20,
+    statusIntervalMs: 200,
+  });
   let published = state.revision();
-  let seq = 0;
   const watcher = setInterval(() => {
     const current = state.revision();
     if (current === published) return;
     published = current;
-    seq += 1;
-    for (const listener of listeners) listener({ seq, type: "item.updated", repositoryId: "repo", issueId: null, correlationId: null });
+    feed.invalidate();
   }, 50);
+  const delayed = async <T,>(work: () => T | Promise<T>): Promise<T> => {
+    const delay = state.commandDelayMs?.() ?? 0;
+    if (delay > 0) await Bun.sleep(delay);
+    return work();
+  };
   const { commands } = fakeCommandBus({
-    answerQuestion: () => state.answerQuestion?.(), approveManualGate: () => state.approveManualGate?.(),
-    setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => state.setBoardApprovalRequirement?.(required), reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
+    answerQuestion: () => delayed(() => state.answerQuestion?.()), approveManualGate: () => delayed(() => state.approveManualGate?.()),
+    setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => delayed(() => state.setBoardApprovalRequirement?.(required)),
+    reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
     postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
     auth,
     username: "operator",
-    getDashboard: async (csrfToken, selection) => {
-      if (state.delayMs() > 0) await Bun.sleep(state.delayMs());
-      const model = await state.dashboard(selection);
-      return {
-        ...model,
-        selectedIssue: selection.issueId ? dashboardIssue(model, selection.issueId) : model.selectedIssue,
-        csrfToken,
-      };
-    },
-    getIssueDetails: async (_csrfToken, issueId) => {
-      const detailsDelayMs = state.detailsDelayMs?.(issueId) ?? 0;
-      if (detailsDelayMs > 0) await Bun.sleep(detailsDelayMs);
-      const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
-      return dashboardIssue(model, issueId);
-    },
-    subscribeEvents: (listener) => {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
-    getSystemStatus: () => state.systemStatus?.() ?? ({
-      memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
-      disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
-      storage: { artifacts: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 }, temporaryDirectory: { available: false }, workspaceScratch: { available: false } },
-      uptimeSeconds: 1,
-    }),
+    getDashboardSnapshot: () => feed.snapshot(),
+    subscribeDashboardFeed: (listener, after) => feed.subscribe(listener, after),
+    getDashboardFeedStatus: () => feed.status,
+    getRecentActivity: (selection) => state.dashboard(selection).recent ?? EMPTY_RECENT,
+    getDashboardDone: ({ limit, q, repositoryIds }) => Object.values(normalizeDashboard(state.dashboard({ ...BOARD_SELECTION, doneLimit: limit, q, repositoryIds: [...repositoryIds] })).items)
+      .filter((item) => item.placement === "done"),
     isReady: () => true,
     webhookPath: "/hooks/custom",
     dispatch: (name, input, actor) => commands.dispatch(name, input, actor),
@@ -248,18 +252,10 @@ function startDashboard(state: {
     getIssueRunEvents: () => null,
     getIssueConversation: () => null,
     getIssueJourney: () => null,
-    getIssueRoute: async (reference) => {
-      const model = await state.dashboard({ view: "board", column: null, page: 1, doneLimit: 100, runId: null, issueId: null });
-      const cards = [
-        ...model.stages.flatMap((column) => column.issues),
-        ...model.backlog,
-        ...model.done.issues,
-        ...model.attention.issues,
-        ...model.needsYou,
-      ];
-      const card = "id" in reference
-        ? cards.find((candidate) => candidate.id === reference.id)
-        : cards.find((candidate) => candidate.repository === reference.repository && candidate.number === reference.number);
+    getIssueRoute: (reference) => {
+      const card = dashboardIssues(board()).find((candidate) => "id" in reference
+        ? candidate.id === reference.id
+        : candidate.repository === reference.repository && candidate.number === reference.number);
       return card ? { id: card.id, repository: card.repository, number: card.number } : null;
     },
     getAgentProfiles: () => [],
@@ -268,13 +264,23 @@ function startDashboard(state: {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
   const stop = server.stop.bind(server);
   return Object.assign(server, {
-    stop: (force?: boolean) => { clearInterval(watcher); return stop(force); },
-    /** Resolves with the sequence number of the event published for the latest change. */
+    stop: (force?: boolean) => {
+      clearInterval(watcher);
+      feed.close();
+      return stop(force);
+    },
+    /** Resolves once the latest change has been streamed, with the sequence of its last patch. */
     published: async () => {
       while (published !== state.revision()) await Bun.sleep(10);
-      return seq;
+      return feed.snapshot().seq;
     },
   });
+}
+
+/** Loads a dashboard address and waits for the application to draw it. */
+async function openView(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined, path: string) {
+  await page.goto(`http://127.0.0.1:${port}${path}`);
+  await page.locator("main.dashboard").waitFor();
 }
 
 async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined) {
@@ -282,6 +288,7 @@ async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: numbe
   await page.locator('input[name="username"]').fill("operator");
   await page.locator('input[name="password"]').fill(password);
   await Promise.all([page.waitForURL("**/board"), page.locator('button[type="submit"]').click()]);
+  await page.locator("main.dashboard").waitFor();
 }
 
 afterEach(async () => {
@@ -296,7 +303,6 @@ describe("dashboard live refresh position", () => {
     const server = startDashboard({
       dashboard: () => dashboard(revision, [issue("target", 20, title)]),
       revision: () => revision,
-      delayMs: () => 0,
     });
     try {
       browser = await chromium.launch({ headless: true });
@@ -307,7 +313,7 @@ describe("dashboard live refresh position", () => {
         class TrackedEventSource extends NativeEventSource {
           constructor(url: string | URL, init?: EventSourceInit) {
             super(url, init);
-            if (new URL(String(url), location.href).pathname === "/events/dashboard") sources.push(this);
+            if (new URL(String(url), location.href).pathname === "/api/v1/stream") sources.push(this);
           }
         }
         Object.defineProperty(window, "EventSource", { configurable: true, writable: true, value: TrackedEventSource });
@@ -350,8 +356,8 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
-  test("shows a sign-in link and stops reconnecting when the dashboard session expires", async () => {
-    const server = startDashboard({ dashboard: () => dashboard("expired-session", []), revision: () => "expired-session", delayMs: () => 0 });
+  test("sends the reader to sign in, back to the same view, when the dashboard session expires", async () => {
+    const server = startDashboard({ dashboard: () => dashboard("expired-session", []), revision: () => "expired-session" });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage();
@@ -361,7 +367,7 @@ describe("dashboard live refresh position", () => {
         class TrackedEventSource extends NativeEventSource {
           constructor(url: string | URL, init?: EventSourceInit) {
             super(url, init);
-            if (new URL(String(url), location.href).pathname === "/events/dashboard") sources.push(this);
+            if (new URL(String(url), location.href).pathname === "/api/v1/stream") sources.push(this);
           }
         }
         Object.defineProperty(window, "EventSource", { configurable: true, writable: true, value: TrackedEventSource });
@@ -371,32 +377,26 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length === 1);
 
       await page.context().clearCookies();
-      await page.evaluate(() => {
-        const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
-        sources.at(-1)?.close();
-        window.dispatchEvent(new Event("focus"));
-      });
-      await page.waitForFunction(() => {
-        const state = document.querySelector("[data-connection-state]");
-        const signIn = document.querySelector<HTMLAnchorElement>("[data-session-sign-in]");
-        return state?.textContent === "Session ended" && !signIn?.hidden && signIn?.getAttribute("href") === "/login?returnTo=%2Fboard";
-      });
-      const sourceCount = await page.evaluate(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length);
-      await page.waitForTimeout(1_200);
-      expect(await page.evaluate(() => (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources.length)).toBe(sourceCount);
-      await Promise.all([page.waitForURL("**/login?returnTo=%2Fboard"), page.locator("[data-session-sign-in]").click()]);
+      await Promise.all([
+        page.waitForURL("**/login?returnTo=%2Fboard"),
+        page.evaluate(() => {
+          const sources = (window as typeof window & { dashboardEventSources: EventSource[] }).dashboardEventSources;
+          sources.at(-1)?.close();
+          window.dispatchEvent(new Event("focus"));
+        }),
+      ]);
     } finally {
       server.stop(true);
     }
   }, 30_000);
 
   test("keeps Recent usable at phone width while filtering, expanding a reason, and paging", async () => {
-    const server = startDashboard({ dashboard: recentDashboard, revision: () => "recent-1", delayMs: () => 0 });
+    const server = startDashboard({ dashboard: recentDashboard, revision: () => "recent-1" });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(page, server.port);
-      await page.goto(`http://127.0.0.1:${server.port}/recent`);
+      await openView(page, server.port, "/recent");
       for (const type of ["sent-back", "moved-forward", "new", "resumed"]) await page.locator(`input[name="type"][value="${type}"]`).uncheck();
       await page.locator('input[name="repo"][value="sample"]').check();
       await Promise.all([
@@ -416,7 +416,9 @@ describe("dashboard live refresh position", () => {
         page.waitForURL("**/recent?type=done&type=stopped&repo=sample&beforeAt=2026-10-15T11%3A00%3A00.000Z&beforeId=transition%3Aolder"),
         page.locator(".recent-load-more").click(),
       ]);
-      expect(await page.locator(".recent-load-more").count()).toBe(0);
+      // The older page loads after the address changes.
+      await page.locator(".recent-load-more").waitFor({ state: "detached" });
+      await page.locator('a[href="/issues/sample/72"]').waitFor();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {
       server.stop(true);
@@ -426,19 +428,17 @@ describe("dashboard live refresh position", () => {
   test("keeps the Graph usable at 360 px without horizontal page scrolling", async () => {
     const repositories = [repository("sample", 1), repository("foundation", 2)];
     const server = startDashboard({
-      dashboard: (selection) => ({
-        ...dashboard("graph-1", [issue("parent", 41), issue("child", 42), issue("prerequisite", 7)]),
-        view: selection.view,
+      dashboard: () => ({
+        ...dashboard("graph-1", []),
+        stages: [
+          stage("implementation", "Implementation", [issue("parent", 41)]),
+          stage("review", "Review", [issue("child", 42), { ...issue("prerequisite", 7), repository: "foundation-with-a-deliberately-long-name" }]),
+        ],
         repositories,
-        graphFilters: {
-          repositories: selection.repositoryIds ?? [],
-          stage: selection.graphStage ?? null,
-          stages: [{ id: "implementation", name: "Implementation" }, { id: "review", name: "Review" }],
-        },
         graph: {
           nodes: [
-            { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", context: false, signal: "run" },
-            { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "A deliberately long child title that must also wrap inside a phone viewport", state: "Blocked", stage: "Review", context: false, signal: "stop" },
+            { id: "parent", repository: "sample", repositoryColor: 1, number: 41, title: "A deliberately long parent title that must wrap inside a phone viewport", state: "Active", stage: "Implementation", stageId: "implementation", context: false, signal: "run" },
+            { id: "child", repository: "sample", repositoryColor: 1, number: 42, title: "A deliberately long child title that must also wrap inside a phone viewport", state: "Blocked", stage: "Review", stageId: "review", context: false, signal: "stop" },
             { id: "prerequisite", repository: "foundation-with-a-deliberately-long-name", repositoryColor: 2, number: 7, title: "Context prerequisite", state: "Done", stage: null, context: true, signal: null },
           ],
           relationships: [
@@ -448,13 +448,12 @@ describe("dashboard live refresh position", () => {
         },
       }),
       revision: () => "graph-1",
-      delayMs: () => 0,
     });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(page, server.port);
-      await page.goto(`http://127.0.0.1:${server.port}/graph`);
+      await openView(page, server.port, "/graph");
 
       const sampleRepository = page.getByRole("checkbox", { name: "sample" });
       const foundationRepository = page.getByRole("checkbox", { name: "foundation" });
@@ -490,6 +489,8 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'child');
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !document.querySelector('dialog.issue-details[open]'));
+      // Closing goes back in history to the Graph; the next item opens from there.
+      await page.waitForFunction(() => location.pathname === "/graph" && document.activeElement?.getAttribute("data-graph-node") === "child");
 
       const prerequisiteNode = page.locator('[data-graph-node="prerequisite"]');
       await prerequisiteNode.focus();
@@ -502,6 +503,8 @@ describe("dashboard live refresh position", () => {
         page.waitForURL("**/graph"),
         page.getByRole("link", { name: "Clear" }).click(),
       ]);
+      // The view redraws on the next frame after the address changes.
+      await page.waitForFunction(() => document.querySelector("input[name=\"repo\"]:checked") === null);
       expect(await sampleRepository.isChecked()).toBe(false);
       expect(await foundationRepository.isChecked()).toBe(false);
       expect(await page.getByLabel("Graph stage").inputValue()).toBe("");
@@ -517,8 +520,8 @@ describe("dashboard live refresh position", () => {
       view: "graph",
       graph: {
         nodes: [
-          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Active", stage: "Review", context: false, signal: "run" },
-          { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Blocked", stage: "Implementation", context: false, signal: "stop" },
+          { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Active", stage: "Review", stageId: "review", context: false, signal: "run" },
+          { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Blocked", stage: "Implementation", stageId: "implementation", context: false, signal: "stop" },
           { id: "retired", repository: "foundation", repositoryColor: 2, number: 8, title: "Removed context", state: "Done", stage: null, context: true, signal: null },
         ],
         relationships: [
@@ -527,12 +530,12 @@ describe("dashboard live refresh position", () => {
         ],
       },
     };
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
       await signIn(page, server.port);
-      await page.goto(`http://127.0.0.1:${server.port}/graph?stage=implementation`);
+      await openView(page, server.port, "/graph?stage=implementation");
       expect(await page.locator('[data-graph-node="retired"]').count()).toBe(1);
       expect(await page.locator(".graph-relationship--dependency").textContent()).toContain("Status: outstanding prerequisite");
 
@@ -547,9 +550,9 @@ describe("dashboard live refresh position", () => {
         view: "graph",
         graph: {
           nodes: [
-            { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Active", stage: "Implementation", context: false, signal: "run" },
-            { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Done", stage: "Review", context: false, signal: "run" },
-            { id: "added", repository: "sample", repositoryColor: 1, number: 43, title: "New dependent", state: "Active", stage: "Implementation", context: false, signal: "run" },
+            { id: "waiting", repository: "sample", repositoryColor: 1, number: 42, title: "Waiting item", state: "Active", stage: "Implementation", stageId: "implementation", context: false, signal: "run" },
+            { id: "prerequisite", repository: "foundation", repositoryColor: 2, number: 7, title: "Prerequisite", state: "Done", stage: "Review", stageId: "review", context: false, signal: "run" },
+            { id: "added", repository: "sample", repositoryColor: 1, number: 43, title: "New dependent", state: "Active", stage: "Implementation", stageId: "implementation", context: false, signal: "run" },
           ],
           relationships: [
             { kind: "dependency", from: "prerequisite", to: "waiting", status: "satisfied" },
@@ -590,7 +593,6 @@ describe("dashboard live refresh position", () => {
     const server = startDashboard({
       dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]),
       revision: () => "revision-1",
-      delayMs: () => 0,
       systemStatus: () => status,
     });
     try {
@@ -642,8 +644,7 @@ describe("dashboard live refresh position", () => {
     const offscreenIssues = Array.from({ length: 10 }, (_, index) => issue(`before-${index}`, index + 100));
     let revision = "revision-1";
     let currentDashboard = dashboard(revision, [...original, target, ...below], offscreenIssues);
-    let responseDelayMs = 0;
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => responseDelayMs });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
@@ -699,42 +700,39 @@ describe("dashboard live refresh position", () => {
       expect(Math.abs(afterRemoval.scrollY - Math.min(priorOffsets.scrollY, Math.max(0, afterRemoval.maxScrollY)))).toBeLessThanOrEqual(24);
       expect(Math.abs(afterRemoval.scrollX - Math.min(priorOffsets.scrollX, Math.max(0, afterRemoval.maxScrollX)))).toBeLessThanOrEqual(24);
 
-      // A reader who keeps scrolling while a slow refresh is in flight stays where they scrolled to.
-      responseDelayMs = 800;
-      const refreshRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
-      await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
-      currentDashboard = { ...currentDashboard, revision: "revision-3-slow" };
-      revision = "revision-3-slow";
-      await refreshRequest;
+      // A reader who scrolls stays where they scrolled to when a change is drawn.
       const scrolledTo = await page.evaluate(() => {
         const maximum = document.documentElement.scrollHeight - window.innerHeight;
         window.scrollBy(0, window.scrollY >= 150 ? -150 : Math.min(150, maximum - window.scrollY));
         return window.scrollY;
       });
       expect(Math.abs(scrolledTo - afterRemoval.scrollY)).toBeGreaterThan(60);
-      await page.waitForFunction(() => !document.querySelector("main.dashboard")?.hasAttribute("data-before-refresh"));
+      await armReplacement(page);
+      currentDashboard = dashboard(
+        "revision-3-renamed",
+        [...original, ...inserted, ...below.map((card, index) => index === 0 ? { ...card, title: "Renamed below" } : card)],
+        [issue("before-inserted", 200), ...offscreenIssues],
+      );
+      revision = "revision-3-renamed";
+      await waitForArmedReplacement(page);
       expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolledTo)).toBeLessThanOrEqual(24);
-      responseDelayMs = 0;
 
-      const detailsRequest = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/above-0/details");
       await page.locator('article.issue[data-issue-id="above-0"] .card-open').click();
-      expect((await detailsRequest).status()).toBe(200);
+      await page.waitForFunction(() => document.querySelector("dialog[open]"));
       expect(await page.locator("dialog[open]").count()).toBe(1);
       expect(await page.locator("dialog[open] [role=tab][aria-selected=true]").evaluate((element) => document.activeElement === element)).toBe(true);
       await page.locator('dialog[open] [data-detail-tab="conversation"]').click();
       const draft = page.locator('dialog[open] textarea[name="message"]');
       await draft.fill("Keep this draft while the board changes");
-      await page.evaluate(() => document.querySelector("main.dashboard")?.setAttribute("data-before-refresh", "true"));
+      await armReplacement(page);
       currentDashboard = dashboard(
         "revision-4",
         [...inserted, ...original, ...below],
         [issue("before-inserted", 200), ...offscreenIssues],
       );
       revision = "revision-4";
-      // The page hears of the change but keeps the dialog's draft: its refresh waits.
-      await page.waitForFunction((expected) => Number(document.body.dataset.lastEventSeq ?? 0) >= expected, await server.published());
-      await page.waitForTimeout(1100);
-      expect(await page.locator("main.dashboard").getAttribute("data-before-refresh")).toBe("true");
+      // The board redraws around the open dialog, which keeps its tab and the draft.
+      await waitForArmedReplacement(page);
       expect(await page.locator("dialog[open]").count()).toBe(1);
       expect(await page.locator('dialog[open] [data-detail-tab="conversation"]').getAttribute("aria-selected")).toBe("true");
       expect(await draft.inputValue()).toBe("Keep this draft while the board changes");
@@ -746,7 +744,7 @@ describe("dashboard live refresh position", () => {
   test("keeps a phone reader's tab strip position across a live refresh", async () => {
     let revision = "revision-1";
     const withOverflowingTabs = (nextRevision: string) => {
-      const base = dashboard(nextRevision, [issue("card-1", 1)]);
+      const base = dashboard(nextRevision, [issue("card-1", 1, `Card ${nextRevision}`)]);
       return {
         ...base,
         attention: stage("attention", "Attention", [issue("attention-1", 2)]),
@@ -754,7 +752,7 @@ describe("dashboard live refresh position", () => {
       };
     };
     let currentDashboard = withOverflowingTabs(revision);
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
 
     try {
       browser = await chromium.launch({ headless: true });
@@ -774,9 +772,11 @@ describe("dashboard live refresh position", () => {
       expect(tabPosition?.maximum).toBeGreaterThan(0);
       expect(tabPosition?.scrollLeft).toBeGreaterThan(0);
 
+      await armReplacement(page);
       revision = "revision-2";
       currentDashboard = withOverflowingTabs(revision);
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page);
+      await page.locator(".issue-title", { hasText: "Card revision-2" }).waitFor();
       await page.evaluate(() => new Promise(requestAnimationFrame));
 
       const refreshedScrollLeft = await page.evaluate(
@@ -788,21 +788,19 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
-  test("loads card details on demand and keeps the URL, history, and focus in sync", async () => {
+  test("opens card details at their own address and keeps history and focus in sync", async () => {
     let revision = "revision-1";
     const target = issue("target", 20, "Target item");
-    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       await signIn(page, server.port);
       expect(await page.locator("dialog.issue-details").count()).toBe(0);
 
-      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
-      expect((await request).status()).toBe(200);
       await page.waitForURL("**/issues/sample/20");
-      expect(await page.locator("dialog.issue-details[open]").count()).toBe(1);
+      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]"));
 
       await page.goBack();
       await page.waitForURL("**/board");
@@ -824,15 +822,13 @@ describe("dashboard live refresh position", () => {
       ...issue("target", 20, "Target item"),
       stageBadge: { name: "Build", icon: "🛠️", offboarded: false },
     };
-    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => dashboard(revision, [target]), revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
       await signIn(page, server.port);
 
-      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
-      await request;
       await page.waitForURL("**/issues/sample/20");
       await page.waitForFunction(() => document.querySelector('[data-details-stage-badge]')?.textContent?.includes("Stage: Build"));
       await page.getByRole("tab", { name: "Conversation" }).click();
@@ -875,7 +871,7 @@ describe("dashboard live refresh position", () => {
         },
       },
     };
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
@@ -916,13 +912,12 @@ describe("dashboard live refresh position", () => {
     const server = startDashboard({
       dashboard: (selection) => ({ ...dashboard("repository-actions", []), repositoryId: selection.repositoryId ?? null, repositories: [repository] }),
       revision: () => "repository-actions",
-      delayMs: () => 0,
     });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
       await signIn(page, server.port);
-      await page.goto(`http://127.0.0.1:${server.port}/repositories/sample`);
+      await openView(page, server.port, "/repositories/sample");
 
       const sync = page.locator("[data-repository-sync-submit]");
       const pause = page.getByRole("button", { name: "Pause repository" });
@@ -940,7 +935,7 @@ describe("dashboard live refresh position", () => {
 
       const darkPage = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "dark" });
       await signIn(darkPage, server.port);
-      await darkPage.goto(`http://127.0.0.1:${server.port}/repositories/sample`);
+      await openView(darkPage, server.port, "/repositories/sample");
       expect(await darkPage.locator("[data-repository-sync-submit]").evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(touchTarget.minimum);
       expect(await darkPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {
@@ -948,57 +943,24 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
-  test("keeps the newest card selection when an earlier details load finishes late", async () => {
-    let revision = "revision-1";
-    const slow = issue("slow", 20, "Slow item");
-    const fast = issue("fast", 21, "Fast item");
-    const server = startDashboard({
-      dashboard: () => dashboard(revision, [slow, fast]),
-      revision: () => revision,
-      delayMs: () => 0,
-      detailsDelayMs: (issueId) => issueId === "slow" ? 200 : 0,
-    });
-    try {
-      browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-      await signIn(page, server.port);
-
-      const slowRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/issues/slow/details");
-      await page.locator('article.issue[data-issue-id="slow"] .card-open').click();
-      await slowRequest;
-      await page.locator('article.issue[data-issue-id="fast"] .card-open').click();
-      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'fast');
-      await page.waitForTimeout(250);
-
-      expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("fast");
-      expect(page.url()).toContain("/issues/sample/21");
-    } finally {
-      server.stop(true);
-    }
-  }, 30_000);
-
-  test("reloads details after close instead of retaining a stale lazy dialog", async () => {
+  test("shows an item's current details when it is opened again after a change", async () => {
     let revision = "revision-1";
     let currentDashboard = dashboard(revision, [issue("target", 20, "Original item")]);
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       await signIn(page, server.port);
 
-      const firstDetails = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
-      await firstDetails;
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !document.querySelector('dialog.issue-details'));
 
       revision = "revision-2";
       currentDashboard = dashboard(revision, [issue("target", 20, "Updated item")]);
-      await waitForReplacement(page);
-      const refreshedDetails = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
+      await page.locator(".issue-title", { hasText: "Updated item" }).waitFor();
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
-      await refreshedDetails;
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
 
       expect(await page.locator('dialog.issue-details[open] .details-header h2').textContent()).toBe("Updated item");
@@ -1015,15 +977,13 @@ describe("dashboard live refresh position", () => {
       { id: "AC-2", text: "Manual criterion", approved: false, manual: true, tests: [] },
     ];
     let currentDashboard = dashboard(revision, [initial]);
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
 
-      const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/issues/target/details");
       await page.locator('article.issue[data-issue-id="target"] .card-open').click();
-      await request;
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]'));
       const evidence = page.locator("[data-criterion-evidence]");
       expect(await evidence.textContent()).toContain("no tests linked");
@@ -1062,7 +1022,7 @@ describe("dashboard live refresh position", () => {
     const cards = Array.from({ length: 40 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
     let revision = "revision-1";
     let currentDashboard = dashboard(revision, cards);
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "no-preference" });
@@ -1070,8 +1030,7 @@ describe("dashboard live refresh position", () => {
       const destination = await page.evaluate(() => Math.floor((document.documentElement.scrollHeight - innerHeight) * 0.8));
       expect(destination).toBeGreaterThan(1500);
 
-      // A refresh whose only change is below the fold lands while a long smooth scroll is under way.
-      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
+      // A change below the fold is drawn while a long smooth scroll is under way.
       await page.evaluate((top) => {
         (window as unknown as { scrollWrites: number }).scrollWrites = 0;
         const original = window.scrollTo.bind(window);
@@ -1083,7 +1042,6 @@ describe("dashboard live refresh position", () => {
       }, destination);
       currentDashboard = dashboard("revision-2", cards.map((card) => card.id === "card-39" ? { ...card, title: "Card 39 renamed" } : card));
       revision = "revision-2";
-      await refresh;
       await page.locator('[data-issue-id="card-39"] .issue-title').filter({ hasText: "Card 39 renamed" }).waitFor();
       await page.waitForFunction((top) => Math.abs(window.scrollY - top) <= 2, destination, { timeout: 5_000 });
 
@@ -1094,11 +1052,11 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
-  test("a live update replaces only the cards that changed, and the server sends only those", async () => {
+  test("a live update replaces only the cards that changed and keeps the rest of the page", async () => {
     const cards = Array.from({ length: 6 }, (_, index) => issue(`card-${index}`, index + 2, `Card ${index}`));
     let revision = "revision-1";
     let currentDashboard = dashboard(revision, cards);
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -1109,40 +1067,29 @@ describe("dashboard live refresh position", () => {
           (document.querySelector(selector) as unknown as { untouched: boolean }).untouched = true;
         }
       });
-      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
       const changed = cards.map((card) => card.id === "card-3" ? { ...card, title: "Card 3 renamed" } : card);
       currentDashboard = dashboard("revision-2", [changed[0]!, changed[2]!, changed[1]!, ...changed.slice(3, 5), issue("card-new", 90, "New card")]);
       revision = "revision-2";
-      const response = await refresh;
       await page.locator('[data-issue-id="card-3"] .issue-title').filter({ hasText: "Card 3 renamed" }).waitFor();
-
-      // The browser said which cards it holds, and got placeholders for the ones that have not changed.
-      expect(response.request().headers()["x-conveyor-cards"]?.split(" ").length).toBeGreaterThanOrEqual(6);
-      const body = await response.text();
-      expect(body).toContain("Card 3 renamed");
-      expect(body).toContain("New card");
-      expect(body).not.toContain("Card 1<");
-      expect(body.match(/data-keep/g)?.length).toBeGreaterThanOrEqual(4);
 
       const after = await page.evaluate(() => ({
         dashboardKept: (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true,
         unchangedKept: (document.querySelector('[data-issue-id="card-1"]') as unknown as { untouched?: boolean }).untouched === true,
         removedGone: document.querySelector('[data-issue-id="card-5"]') === null,
-        order: [...document.querySelectorAll('[data-station-cell="reader"] article.issue')].map((card) => card.getAttribute("data-issue-id")),
-        titles: [...document.querySelectorAll('[data-station-cell="reader"] article.issue .issue-title')].map((title) => title.textContent),
-        placeholders: document.querySelectorAll("[data-keep]").length,
+        order: [...document.querySelectorAll('[data-station-cell="stage:reader"] article.issue')].map((card) => card.getAttribute("data-issue-id")),
+        titles: [...document.querySelectorAll('[data-station-cell="stage:reader"] article.issue .issue-title')].map((title) => title.textContent),
       }));
       expect(after).toEqual({
         dashboardKept: true, unchangedKept: true, removedGone: true,
         order: ["card-0", "card-2", "card-1", "card-3", "card-4", "card-new"],
         titles: ["Card 0", "Card 2", "Card 1", "Card 3 renamed", "Card 4", "New card"],
-        placeholders: 0,
       });
 
       // A freshly loaded page is the same as the live-updated one.
-      const live = await page.locator('[data-station-cell="reader"]').innerHTML();
+      const live = await page.locator('[data-station-cell="stage:reader"]').innerHTML();
       await page.reload();
-      expect(await page.locator('[data-station-cell="reader"]').innerHTML()).toBe(live);
+      await page.locator('[data-issue-id="card-new"]').waitFor();
+      expect(await page.locator('[data-station-cell="stage:reader"]').innerHTML()).toBe(live);
     } finally {
       server.stop(true);
     }
@@ -1172,16 +1119,15 @@ describe("dashboard live refresh position", () => {
     });
     let revision = "filters-1";
     const doneQueries: string[] = [];
-    const board = async (selection: DashboardPageSelection) => {
-      const query = selection.q ?? "";
-      doneQueries.push(query);
-      if (query === "Find") await Bun.sleep(500);
+    const board = (selection: DashboardPageSelection) => {
+      if (selection.q) doneQueries.push(selection.q);
       const repositories = new Set(selection.repositoryIds ?? []);
       const words = (selection.q ?? "").toLowerCase().trim().split(/\s+/).filter(Boolean);
       const matchesDone = (card: IssueCardViewModel) =>
         (repositories.size === 0 || repositories.has(card.repository)) &&
         words.every((word) => [card.title, card.number, `#${card.number}`, card.repository, ...card.labels, card.issueType ?? "", ...card.issueFields.map((field) => field.value)].join(" ").toLowerCase().includes(word));
-      const base = dashboard(revision, [alpha, beta, family]);
+      const later = revision === "filters-2" ? [{ ...issue("later-card", 251, "Later item"), repository: "beta" }] : [];
+      const base = dashboard(revision, [alpha, beta, family, ...later]);
       return {
         ...base,
         revision,
@@ -1192,18 +1138,18 @@ describe("dashboard live refresh position", () => {
         boardFilters: { repositories: [...repositories], q: selection.q ?? "", state: selection.state ?? null },
       };
     };
-    const server = startDashboard({ dashboard: board, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: board, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
       await signIn(page, server.port);
       doneQueries.length = 0;
 
-      const initialDoneResponse = page.waitForResponse((response) => {
-        if (response.request().resourceType() !== "fetch") return false;
-        const parameters = new URL(response.url()).searchParams;
-        return parameters.get("repo") === "alpha" && !parameters.has("q");
+      const doneSearch = (matches: (parameters: URLSearchParams) => boolean) => page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname === "/api/v1/done" && matches(url.searchParams);
       });
+      const initialDoneResponse = doneSearch((parameters) => parameters.get("repo") === "alpha" && !parameters.has("q"));
       await page.locator('.repository-filter label').filter({ hasText: "alpha" }).click();
       await page.waitForFunction(() => location.search === "?repo=alpha");
       await initialDoneResponse;
@@ -1213,22 +1159,24 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('[data-board-filters] a[href^="/repositories/"]').count()).toBe(0);
 
       await page.locator('[data-filter-clear]').click();
+      // Typing searches finished items on the server once the reader pauses, not on every key.
       await page.locator('[data-filter-search]').fill("F");
       await page.locator('[data-filter-search]').fill("Fi");
-      const firstDoneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "Find");
+      const firstDoneResponse = doneSearch((parameters) => parameters.get("q") === "Find");
       await page.locator('[data-filter-search]').fill("Find");
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
-      await firstDoneRequest;
-      const doneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "#245");
+      await firstDoneResponse;
+      await page.locator('article.issue[data-issue-id="done-alpha"]').waitFor();
+      expect(await page.locator('article.issue[data-issue-id="done-alpha"]').isVisible()).toBe(true);
+      const doneResponse = doneSearch((parameters) => parameters.get("q") === "#245");
       await page.locator('[data-filter-search]').fill("#245");
-      await doneRequest;
-      await page.waitForFunction(() => document.querySelector('.board')?.getAttribute('data-done-total') === '0');
-      await Bun.sleep(550);
+      await doneResponse;
+      await Bun.sleep(350);
       expect(doneQueries).toEqual(["Find", "#245"]);
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
-      expect(await page.locator('[data-board-station-count="reader"]').first().textContent()).toBe("1 of 3");
-      expect(await page.locator('[data-board-line-count="reader"]').first().textContent()).toBe("1 of 3");
+      expect(await page.locator('[data-board-station-count="stage:reader"]').first().textContent()).toBe("1 of 3");
+      expect(await page.locator('[data-board-line-count="stage:reader"]').first().textContent()).toBe("1 of 3");
       expect(await page.locator('[data-board-signal-count="stop"] small').first().textContent()).toBe("1 of 1");
       expect(await page.locator('[data-board-station-count="done"]').first().textContent()).toBe("0 of 2");
       expect(await page.locator('[data-filter-summary]').textContent()).toContain("Showing 1 of 5 active board items");
@@ -1250,25 +1198,11 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('.needs-you-link').textContent()).toContain("1 needs you");
       await page.locator('[data-filter-clear]').click();
       await page.waitForFunction(() => location.search === "");
-      await page.evaluate(() => {
-        history.replaceState({ conveyorPage: true }, "", "/board");
-        const search = document.querySelector('[data-filter-search]');
-        if (search instanceof HTMLInputElement) search.value = "";
-        document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
-      });
 
-      const firstDoneResponse = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).searchParams.get("q") === "#245");
+      // The same search again, after clearing it, asks the server again.
+      const repeatedDoneResponse = doneSearch((parameters) => parameters.get("q") === "#245");
       await page.locator('[data-filter-search]').fill("#245");
-      await firstDoneResponse;
-      await page.evaluate(() => {
-        history.replaceState({ conveyorPage: true }, "", "/board");
-        const search = document.querySelector('[data-filter-search]');
-        if (search instanceof HTMLInputElement) search.value = "";
-        document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
-      });
-      const repeatedDoneRequest = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).searchParams.get("q") === "#245");
-      await page.locator('[data-filter-search]').fill("#245");
-      await repeatedDoneRequest;
+      await repeatedDoneResponse;
       await page.locator('[data-filter-clear]').click();
 
       const needsYou = page.getByRole("radio", { name: "Needs you" });
@@ -1280,10 +1214,12 @@ describe("dashboard live refresh position", () => {
       expect(await page.locator('[data-family-row="family-card"] .family-head').isHidden()).toBe(true);
       expect(await page.locator('[data-family-row="family-card"] .issue--compact').isHidden()).toBe(true);
       expect(await page.locator('[data-board-station-count="done"]').first().textContent()).toBe("0 of 2");
+      await armReplacement(page);
       revision = "filters-2";
-      await waitForReplacement(page);
+      await waitForArmedReplacement(page, { id: "later-card", present: true });
       expect(await page.locator('article.issue[data-issue-id="alpha-card"]').isVisible()).toBe(true);
       expect(await page.locator('article.issue[data-issue-id="beta-card"]').isHidden()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="later-card"]').isHidden()).toBe(true);
 
       await page.locator('[data-filter-clear]').click();
       await page.locator('[data-filter-search]').fill("Running family");
@@ -1302,15 +1238,6 @@ describe("dashboard live refresh position", () => {
       expect(await phone.locator('.repository-filter label').filter({ hasText: "alpha" }).isVisible()).toBe(true);
       expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-      const noScript = await browser.newPage({ javaScriptEnabled: false });
-      await signIn(noScript, server.port);
-      await noScript.locator('[data-filter-repository="alpha"]').check({ force: true });
-      await noScript.locator('[data-filter-search]').fill("#245");
-      await noScript.getByRole("radio", { name: "Waiting / Queued" }).check({ force: true });
-      await Promise.all([
-        noScript.waitForURL((url) => url.pathname === "/board" && url.searchParams.get("repo") === "alpha" && url.searchParams.get("q") === "#245" && url.searchParams.get("state") === "waiting"),
-        noScript.getByRole("button", { name: "Apply filters" }).click(),
-      ]);
     } finally {
       server.stop(true);
     }
@@ -1319,7 +1246,7 @@ describe("dashboard live refresh position", () => {
   test("filters whole backlog rows and restores their reorder controls in order", async () => {
     const alpha = { ...issue("backlog-alpha", 401, "Alpha backlog item"), repository: "alpha", needsAttention: true };
     const beta = { ...issue("backlog-beta", 402, "Beta backlog item"), repository: "beta" };
-    const board = async (selection: DashboardPageSelection) => ({
+    const board = (selection: DashboardPageSelection) => ({
       ...dashboard("backlog-filters", []),
       backlog: [alpha, beta],
       repositories: [repository("alpha", 1), repository("beta", 2)],
@@ -1329,7 +1256,7 @@ describe("dashboard live refresh position", () => {
         state: selection.state ?? null,
       },
     });
-    const server = startDashboard({ dashboard: board, revision: () => "backlog-filters", delayMs: () => 0 });
+    const server = startDashboard({ dashboard: board, revision: () => "backlog-filters" });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
@@ -1389,7 +1316,7 @@ describe("dashboard live refresh position", () => {
       return { ...base, stages: base.stages.map((column) => column.id === "after" ? stage("after", "After", [child("child-b", 12), issue("after-card", 99)]) : column) };
     };
     let currentDashboard = build();
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
@@ -1412,13 +1339,12 @@ describe("dashboard live refresh position", () => {
       await page.locator('[data-row-fold="family-family"]').click();
       expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false", label: "Unfold the #10 family" });
       await page.reload();
+      await page.locator("main.dashboard").waitFor();
       expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false" });
 
       // A live update keeps the row folded.
-      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
       revision = "revision-2";
       currentDashboard = { ...build([issue("newcomer", 40, "Newcomer")]), revision };
-      await refresh;
       await page.locator('article.issue[data-issue-id="newcomer"]').waitFor();
       expect(await state()).toMatchObject({ cellsHidden: true, expanded: "false" });
 
@@ -1456,7 +1382,7 @@ describe("dashboard live refresh position", () => {
       const left = (selector: string) => phone.evaluate((target) => document.querySelector(target)!.getBoundingClientRect().left, selector);
       const bandLeft = await left('[data-family-row="family"] .family-head');
       expect((await left('[data-family-row="family"] article.issue')) - bandLeft).toBeGreaterThanOrEqual(20);
-      expect(Math.abs((await left('[data-station-cell] article.issue[data-issue-id="stranger"]')) - (await left('.other-row [data-station-cell="reader"] .board-cell-label')))).toBeLessThanOrEqual(2);
+      expect(Math.abs((await left('[data-station-cell] article.issue[data-issue-id="stranger"]')) - (await left('.other-row [data-station-cell="stage:reader"] .board-cell-label')))).toBeLessThanOrEqual(2);
       expect(await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
       await phone.locator('[data-row-fold="family-family"]').click();
       expect(await phone.evaluate(() => ({
@@ -1484,7 +1410,7 @@ describe("dashboard live refresh position", () => {
       return { ...base, stages: base.stages.map((column) => column.id === "after" ? stage("after", "After", [partB]) : column) };
     };
     let currentDashboard = build();
-    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision });
     try {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
@@ -1515,10 +1441,8 @@ describe("dashboard live refresh position", () => {
       expect((await state()).roles).toEqual({ family: "focus", "part-a": "up", "part-b": "up", stuck: "up", downstream: "down" });
 
       // A live update keeps the trace.
-      const refresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
       revision = "revision-2";
       currentDashboard = { ...build([issue("newcomer", 40, "Newcomer")]), revision };
-      await refresh;
       await page.locator('article.issue[data-issue-id="newcomer"]').waitFor();
       await page.waitForFunction(() => document.querySelector('[data-family-row="family"]')?.getAttribute("data-trace-role") === "focus");
 
@@ -1539,7 +1463,7 @@ describe("dashboard live refresh position", () => {
     const question = { id: "q-1", issueId: "card-1", repository: "sample", repositoryColor: 1, issueNumber: 3, issueTitle: "Card", prompt: "Which database?", reason: "It decides the schema.", options: [{ id: "postgres", label: "PostgreSQL" }], allowFreeText: false };
     const build = () => ({ ...dashboard(revision, [issue("card-1", 3, "Card")]), questions: answered ? [] : [question] });
     const server = startDashboard({
-      dashboard: build, revision: () => revision, delayMs: () => 0,
+      dashboard: build, revision: () => revision,
       answerQuestion: () => new Promise<void>((resolve) => { finishAnswer = () => { answered = true; revision = "revision-2"; resolve(); }; }),
     });
     try {
@@ -1570,7 +1494,7 @@ describe("dashboard live refresh position", () => {
       return dashboard(revision, [card]);
     };
     const server = startDashboard({
-      dashboard: build, revision: () => revision, delayMs: () => 0,
+      dashboard: build, revision: () => revision,
       approveManualGate: () => new Promise<void>((resolve) => { finishApproval = () => { approved = true; revision = "gate-2"; resolve(); }; }),
       setBoardApprovalRequirement: (required) => { boardRequired = required; revision = `gate-switch-${String(required)}`; },
     });
@@ -1603,18 +1527,17 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
-  test("keeps a newly opened item visible when a delayed approval refresh finishes", async () => {
+  test("keeps a newly opened item visible when a slow approval's change arrives", async () => {
     let revision = "approval-1";
     let approved = false;
-    let refreshDelay = 0;
+    let commandDelay = 0;
     const build = () => {
       const approvedCard = { ...issue("approved", 3, "Approval item"), state: approved ? "active" : "needs-input" };
       approvedCard.manualGates = [{ stageId: "review", gateId: null, kind: "board", required: false, waiting: !approved, approvedBy: approved ? "operator" : null, approvedAt: approved ? "2026-10-17T00:00:00.000Z" : null }];
       return dashboard(revision, [approvedCard, issue("next", 4, "Next item")]);
     };
     const server = startDashboard({
-      dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
-      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
+      dashboard: build, revision: () => revision, commandDelayMs: () => commandDelay,
       approveManualGate: async () => { approved = true; revision = "approval-2"; },
     });
     try {
@@ -1622,44 +1545,36 @@ describe("dashboard live refresh position", () => {
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       await signIn(page, server.port);
 
+      commandDelay = 1_000;
       await page.locator('article.issue[data-issue-id="approved"] .card-open').click();
       await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-approve"));
       await page.locator("dialog.issue-details[open] .manual-gate-approve").click();
-      await page.waitForFunction(() => document.querySelector("dialog.issue-details[open]")?.textContent?.includes("Approved by operator"));
-
-      refreshDelay = 1_000;
-      const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
-      const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
       await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
-      await refreshStarted;
       await page.locator('article.issue[data-issue-id="next"] .card-open').click();
       await page.waitForURL("**/issues/sample/4");
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'next');
-      await delayedRefresh;
+      expect(await page.locator('article.issue[data-issue-id="approved"]').getAttribute("data-state-word")).toBe("Needs input");
 
+      // The approval lands while the next item is open: its card changes behind the dialog.
+      await page.locator('article.issue[data-issue-id="approved"][data-state-word="Queued"]').waitFor({ state: "attached" });
       expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
       expect(page.url()).toContain("/issues/sample/4");
-      expect(await page.locator('article.issue[data-issue-id="approved"]').getAttribute("data-state-word")).toBe("Needs input");
-      await page.keyboard.press("Escape");
-      await page.waitForURL("**/board");
-      await page.locator('article.issue[data-issue-id="approved"][data-state-word="Queued"]').waitFor();
     } finally {
       server.stop(true);
     }
   }, 30_000);
 
-  test("keeps a newly opened item visible when a delayed board-approval switch refresh finishes", async () => {
+  test("keeps a newly opened item visible when a slow board-approval switch's change arrives", async () => {
     let revision = "switch-1";
     let required = false;
-    let refreshDelay = 0;
+    let commandDelay = 0;
     const build = () => {
       const switchCard = issue("switch", 3, required ? "Approval required" : "Approval optional");
       switchCard.manualGates = [{ stageId: "review", gateId: null, kind: "board", required, waiting: false, approvedBy: null, approvedAt: null }];
       return dashboard(revision, [switchCard, issue("next", 4, "Next item")]);
     };
     const server = startDashboard({
-      dashboard: build, revision: () => revision, delayMs: () => refreshDelay,
-      detailsDelayMs: (issueId) => issueId === "next" ? 200 : 0,
+      dashboard: build, revision: () => revision, commandDelayMs: () => commandDelay,
       setBoardApprovalRequirement: (nextRequired) => { required = nextRequired; revision = "switch-2"; },
     });
     try {
@@ -1667,27 +1582,20 @@ describe("dashboard live refresh position", () => {
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       await signIn(page, server.port);
 
+      commandDelay = 1_000;
       await page.locator('article.issue[data-issue-id="switch"] .card-open').click();
       await page.waitForFunction(() => document.querySelector("dialog.issue-details[open] .manual-gate-switch"));
       await page.locator("dialog.issue-details[open] .manual-gate-switch").click();
-      await page.waitForFunction(() => document.querySelector('dialog.issue-details[open] input[name="required"]')?.getAttribute("value") === "false");
-
-      refreshDelay = 1_000;
-      const delayedRefresh = page.waitForResponse((response) => response.request().resourceType() === "fetch" && new URL(response.url()).pathname === "/board");
-      const refreshStarted = page.waitForRequest((request) => request.resourceType() === "fetch" && new URL(request.url()).pathname === "/board");
       await Promise.all([page.waitForURL("**/board"), page.keyboard.press("Escape")]);
-      await refreshStarted;
       await page.locator('article.issue[data-issue-id="next"] .card-open').click();
       await page.waitForURL("**/issues/sample/4");
       await page.waitForFunction(() => document.querySelector('dialog.issue-details[open]')?.getAttribute('data-issue-id') === 'next');
-      await delayedRefresh;
+      expect(await page.locator('article.issue[data-issue-id="switch"] .issue-title').textContent()).toBe("Approval optional");
 
+      // The switch lands while the next item is open: its card changes behind the dialog.
+      await page.locator('article.issue[data-issue-id="switch"] .issue-title').filter({ hasText: "Approval required" }).waitFor({ state: "attached" });
       expect(await page.locator('dialog.issue-details[open]').getAttribute('data-issue-id')).toBe("next");
       expect(page.url()).toContain("/issues/sample/4");
-      expect(await page.locator('article.issue[data-issue-id="switch"] .issue-title').textContent()).toBe("Approval optional");
-      await page.keyboard.press("Escape");
-      await page.waitForURL("**/board");
-      await page.locator('article.issue[data-issue-id="switch"] .issue-title').filter({ hasText: "Approval required" }).waitFor();
     } finally {
       server.stop(true);
     }
@@ -1704,7 +1612,7 @@ describe("dashboard live refresh position", () => {
         stage("configured", longStageName, []),
       ],
     };
-    const server = startDashboard({ dashboard: () => headerDashboard, revision: () => "stage-headers-1", delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => headerDashboard, revision: () => "stage-headers-1" });
     try {
       browser = await chromium.launch({ headless: true });
       const desktop = await browser.newPage({ viewport: { width: 1024, height: 800 }, reducedMotion: "reduce" });
@@ -1716,7 +1624,7 @@ describe("dashboard live refresh position", () => {
           return box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height } : null;
         };
         return ["refinement-review", "work-breakdown", "implementation"].map((id) => {
-          const stage = document.getElementById(`station-${id}`);
+          const stage = document.getElementById(`station-stage-${id}`);
           const heading = stage?.querySelector("h2") as HTMLElement | null;
           const info = stage?.querySelector(".stage-info") ?? null;
           const count = stage?.querySelector(".count") ?? null;
@@ -1754,7 +1662,7 @@ describe("dashboard live refresh position", () => {
           return box ? { left: box.left, right: box.right } : null;
         };
         return ["refinement-review", "work-breakdown", "implementation"].map((id) => {
-          const stage = document.getElementById(`station-${id}`);
+          const stage = document.getElementById(`station-stage-${id}`);
           const heading = stage?.querySelector("h2") as HTMLElement | null;
           const column = document.querySelector(`.board-column:nth-child(${Array.from(document.querySelectorAll(".board-head > .stage")).indexOf(stage as HTMLElement) + 1})`);
           return {
@@ -1780,11 +1688,11 @@ describe("dashboard live refresh position", () => {
       }
       const workBreakdownInfo = desktop.getByRole("button", { name: "About Work Breakdown" });
       await workBreakdownInfo.click();
-      await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
-      await desktop.locator("#stage-info-work-breakdown .stage-dialog-close").click();
+      await desktop.waitForFunction(() => document.querySelector("#stage-info-stage-work-breakdown")?.hasAttribute("open"));
+      await desktop.locator("#stage-info-stage-work-breakdown .stage-dialog-close").click();
       await workBreakdownInfo.focus();
       await desktop.keyboard.press("Enter");
-      await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
+      await desktop.waitForFunction(() => document.querySelector("#stage-info-stage-work-breakdown")?.hasAttribute("open"));
 
       const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(phone, server.port);
@@ -1794,7 +1702,7 @@ describe("dashboard live refresh position", () => {
       const implementationInfo = phone.getByRole("button", { name: "About Implementation" });
       await implementationInfo.focus();
       await phone.keyboard.press("Enter");
-      await phone.waitForFunction(() => document.querySelector("#stage-info-implementation")?.hasAttribute("open"));
+      await phone.waitForFunction(() => document.querySelector("#stage-info-stage-implementation")?.hasAttribute("open"));
       expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     } finally {
       server.stop(true);
@@ -1802,7 +1710,7 @@ describe("dashboard live refresh position", () => {
   }, 30_000);
 
   test("the line is open on a wide screen and closed on a phone until the reader folds or opens it", async () => {
-    const server = startDashboard({ dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]), revision: () => "revision-1", delayMs: () => 0 });
+    const server = startDashboard({ dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]), revision: () => "revision-1" });
     try {
       browser = await chromium.launch({ headless: true });
       const lineState = (page: Awaited<ReturnType<Browser["newPage"]>>) => page.evaluate(() => ({
@@ -1824,6 +1732,7 @@ describe("dashboard live refresh position", () => {
       expect(await lineState(phone)).toMatchObject({ expanded: "true", inert: false });
       // The choice is remembered: after a reload the phone keeps the line open.
       await phone.reload();
+      await phone.locator("main.dashboard").waitFor();
       expect(await lineState(phone)).toMatchObject({ expanded: "true", inert: false });
       expect((await lineState(phone)).height).toBeGreaterThan(20);
     } finally {

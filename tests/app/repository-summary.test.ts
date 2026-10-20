@@ -8,7 +8,7 @@ import { buildReport } from "../../src/app/reports";
 import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
-import { renderDashboard } from "../../src/web/render";
+import { renderDashboard } from "../support/render-dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -254,7 +254,6 @@ describe("buildRepositorySummaries", () => {
     for (const html of [readerList, superuserList, readerDetail, superuserDetail]) {
       expect(html).not.toContain("sentinel-webhook-secret");
     }
-    expect(boardHtml).toContain(`data-dashboard-revision="${board.revision}"`);
 
     store.setIssueProjection("running", { state: "needs-input", stage: "implementation", warning: null });
     const updated = service.dashboard("csrf", { view: "board", repositoryId: null, column: null, page: 1, doneLimit: 20, runId: null, issueId: null });

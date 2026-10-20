@@ -24,8 +24,9 @@ export const BUILD: BuildInfo = {
   version: defined?.version ?? packageJson.version,
   commit: defined?.commit ?? "development",
   builtAt: defined?.builtAt ?? null,
-  runtime: Bun.version,
-  compiled: import.meta.path.startsWith("/$bunfs/"),
+  // The dashboard's browser bundle includes this module too; there is no Bun runtime there.
+  runtime: typeof Bun === "undefined" ? "browser" : Bun.version,
+  compiled: typeof Bun !== "undefined" && import.meta.path.startsWith("/$bunfs/"),
 };
 
 export function versionLine(build: BuildInfo = BUILD): string {

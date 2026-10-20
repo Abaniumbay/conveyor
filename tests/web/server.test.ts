@@ -4,8 +4,10 @@ import { ToolRequestError } from "../../src/tasks/errors";
 import { BUILD } from "../../src/version";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler, PROFILE_AVATARS } from "../../src/web/server";
-import type { DashboardStreamEvent, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
+import type { DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 import { withCommands } from "../support/web-commands";
+import { DashboardFeed } from "../../src/app/dashboard-feed";
+import { dashboardSnapshotSchema, normalizeDashboard } from "../../src/web/model";
 
 const model: DashboardViewModel = {
   title: "Test board",
@@ -112,28 +114,10 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const streamListeners = new Set<(event: DashboardStreamEvent) => void>();
-  const emit = (event: DashboardStreamEvent) => { for (const listener of streamListeners) listener(event); };
   const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], dismissals: [], boardApprovals: [], manualApprovals: [] };
   const dependencies = {
     auth,
     username: "operator",
-    getDashboard: () => model,
-    subscribeEvents: (listener: (event: DashboardStreamEvent) => void) => {
-      streamListeners.add(listener);
-      return () => { streamListeners.delete(listener); };
-    },
-    eventsAfter: (seq: number) => (seq > 100 ? null : [{ seq: seq + 1, type: "item.updated", repositoryId: "repo", issueId: "github:owner/repo#1", correlationId: null }]),
-    getSystemStatus: async () => ({
-      memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
-      disk: { available: true, usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
-      storage: {
-        artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
-        temporaryDirectory: { available: false },
-        workspaceScratch: { available: false },
-      },
-      uptimeSeconds: 3_600,
-    }),
     isReady: () => true,
     webhookPath: "/hooks/custom",
     maxBodyBytes: 128,
@@ -225,7 +209,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   const { dependencies: withDispatch, events } = withCommands(dependencies);
-  return { handler: createWebHandler(withDispatch as never), auth, calls, events, emit, streamListeners };
+  return { handler: createWebHandler(withDispatch as never), auth, calls, events };
 }
 
 async function login(handler: (request: Request) => Promise<Response>) {
@@ -288,14 +272,14 @@ describe("createWebHandler", () => {
 
     expect(await dashboard.text()).toContain('rel="manifest" href="/manifest.webmanifest"');
     expect(policy).toBe("default-src 'none'; manifest-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
-    expect(cspAllows(policy, "script", new URL("http://localhost/assets/dashboard.js"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "script", new URL("http://localhost/assets/app.js"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "style", "inline", "http://localhost")).toBe(true);
     expect(cspAllows(policy, "font", new URL("http://localhost/assets/fonts/ibm-plex-sans-400.woff2"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "image", new URL("http://localhost/favicon.svg"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "manifest", new URL("http://localhost/manifest.webmanifest"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "worker", new URL("http://localhost/service-worker.js"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "connect", new URL("http://localhost/api/dashboard-revision"), "http://localhost")).toBe(true);
-    expect(cspAllows(policy, "connect", new URL("http://localhost/events/dashboard"), "http://localhost")).toBe(true);
+    expect(cspAllows(policy, "connect", new URL("http://localhost/api/v1/stream"), "http://localhost")).toBe(true);
     expect(cspAllows(policy, "manifest", new URL("https://attacker.example/manifest.webmanifest"), "http://localhost")).toBe(false);
   });
 
@@ -334,18 +318,12 @@ describe("createWebHandler", () => {
     const page = await handler(new Request("http://localhost/settings/notifications", { headers: { cookie } }));
     expect(page.status).toBe(200);
     const notificationsPage = await page.text();
+    // The application draws the view; the page brings the push settings script and the theme before first paint.
     expect(notificationsPage).toContain("/assets/notifications.js");
-    expect(notificationsPage).toContain('class="dashboard"');
-    expect(notificationsPage).toContain('data-dashboard-view="notifications"');
-    expect(notificationsPage).toContain('class="header-link header-desktop-control header-link--active" href="/settings/notifications" aria-current="page"');
-    expect(notificationsPage).toContain('id="notification-settings" class="settings-form notification-form"');
-    expect(notificationsPage).not.toContain('class="account-page"');
-    expect(notificationsPage).toContain('class="theme-control" data-theme-control');
-    expect(notificationsPage).toContain('data-theme-choice="dark"');
+    expect(notificationsPage).toContain("data-app-skeleton");
     expect(notificationsPage).toContain('<script src="/assets/theme.js"></script>');
     expect(notificationsPage.indexOf('/assets/theme.js')).toBeLessThan(notificationsPage.indexOf('<style>'));
     expect(notificationsPage).toContain('@media(max-width:760px)');
-    expect(notificationsPage).toContain('href="/board"');
     expect((await handler(new Request("http://localhost/api/notifications/settings", { headers: { cookie } }))).status).toBe(200);
 
     const denied = await handler(new Request("http://localhost/api/notifications/settings", {
@@ -435,24 +413,30 @@ describe("createWebHandler", () => {
     expect(response.headers.get("allow")).toBe("GET");
   });
 
-  test("loads an authenticated item's escaped details as an HTML fragment", async () => {
-    const { handler } = setup({
-      getIssueDetails: async (_csrfToken: string, issueId: string) => issueId === detailIssue.id ? detailIssue : null,
+  test("loads an item the live model does not hold, with the session's own token", async () => {
+    const { handler, auth } = setup({
+      getIssueDetails: (issueId: string) => issueId === detailIssue.id ? { ...detailIssue, csrfToken: "" } : null,
     });
-    const path = "/api/issues/github%3Aowner%2Frepo%231/details";
+    const path = "/api/v1/items/repo/1";
 
     expect((await handler(new Request(`http://localhost${path}`))).status).toBe(401);
     const { cookie } = await login(handler);
     const details = await handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
     expect(details.status).toBe(200);
-    expect(details.headers.get("content-type")).toContain("text/html");
-    const html = await details.text();
-    expect(html).toContain('class="issue-details issue-inspector"');
-    expect(html).toContain("Keep &lt;item> safe");
-    expect(html).toContain("Works safely");
+    expect(details.headers.get("cache-control")).toBe("no-store");
+    expect(await details.json()).toMatchObject({ id: detailIssue.id, title: "Keep <item> safe", csrfToken: auth.getSession(cookie)!.csrfToken });
 
-    expect((await handler(new Request("http://localhost/api/issues/missing/details", { headers: { cookie } }))).status).toBe(404);
+    expect((await handler(new Request("http://localhost/api/v1/items/repo/999", { headers: { cookie } }))).status).toBe(404);
+    expect((await handler(new Request("http://localhost/api/v1/items/unknown/1", { headers: { cookie } }))).status).toBe(404);
     expect((await handler(new Request(`http://localhost${path}`, { method: "POST", headers: { cookie } }))).status).toBe(405);
+  });
+
+  test("answers 503 when an item cannot be read", async () => {
+    const { handler } = setup({ getIssueDetails: () => { throw new Error("database is locked"); } });
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/items/repo/1", { headers: { cookie } }));
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("database is locked");
   });
 
   test("compresses pages on request and lets browsers revalidate the scripts", async () => {
@@ -474,13 +458,13 @@ describe("createWebHandler", () => {
       expect(answered.headers.get("content-encoding")).toBe(encoding);
     }
 
-    const script = await handler(new Request("http://localhost/assets/dashboard.js"));
+    const script = await handler(new Request("http://localhost/assets/notifications.js"));
     const etag = script.headers.get("etag")!;
     expect(script.headers.get("cache-control")).toBe("no-cache");
-    const unchanged = await handler(new Request("http://localhost/assets/dashboard.js", { headers: { "if-none-match": etag } }));
+    const unchanged = await handler(new Request("http://localhost/assets/notifications.js", { headers: { "if-none-match": etag } }));
     expect(unchanged.status).toBe(304);
     expect(await unchanged.text()).toBe("");
-    expect((await handler(new Request("http://localhost/assets/dashboard.js", { headers: { "if-none-match": '"stale"' } }))).status).toBe(200);
+    expect((await handler(new Request("http://localhost/assets/notifications.js", { headers: { "if-none-match": '"stale"' } }))).status).toBe(200);
   });
 
   test("extends an active session on page loads and skips the sign-in form for signed-in visitors", async () => {
@@ -541,13 +525,8 @@ describe("createWebHandler", () => {
   });
 
   test("logs in, serves dashboard, and clears the session on logout", async () => {
-    const dashboardCalls: unknown[][] = [];
     const removedPushSubscriptions: unknown[][] = [];
     const { handler, auth } = setup({
-      getDashboard: (...args: unknown[]) => {
-        dashboardCalls.push(args);
-        return model;
-      },
       deletePushSubscription: (...args: unknown[]) => { removedPushSubscriptions.push(args); },
     });
     const { response, cookie } = await login(handler);
@@ -558,22 +537,7 @@ describe("createWebHandler", () => {
     const page = await handler(new Request("http://localhost/issues/repo/1?column=stage%3Areview&page=4&doneLimit=40", { headers: { cookie } }));
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
-    expect(await page.text()).toContain("Test board");
-    expect(dashboardCalls).toEqual([[expect.any(String), {
-      view: "board",
-      column: "stage:review",
-      page: 4,
-      doneLimit: 40,
-      runId: null,
-      issueId: "github:owner/repo#1",
-      repositoryId: null,
-      repositoryIds: [],
-      q: "",
-      state: null,
-      graphStage: null,
-      recentTypes: [],
-      recentCursor: null,
-    }]]);
+    expect(await page.text()).toContain("data-app-skeleton");
 
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const logout = await handler(new Request("http://localhost/logout", {
@@ -586,17 +550,12 @@ describe("createWebHandler", () => {
     expect(removedPushSubscriptions).toEqual([[auth.getSession(cookie)?.account.id, "https://push.example/browser-a"]]);
   });
 
-  test("serves REST dashboard paths, redirects legacy URLs permanently, and rejects unknown resources", async () => {
-    const dashboardCalls: Array<{ view: string; runId: string | null; issueId: string | null }> = [];
+  test("serves the application on every dashboard path and redirects legacy URLs permanently", async () => {
     const profile = {
       id: "kaveh", name: "Kaveh", title: "Developer", harness: "codex", model: null, effort: null,
       access: "workspace-write", usage: [], tasks: [], instructions: null,
     };
     const { handler } = setup({
-      getDashboard: (_csrf: string, page: { view: string; runId: string | null; issueId: string | null }) => {
-        dashboardCalls.push(page);
-        return { ...model, view: page.view, selectedIssue: null };
-      },
       getIssueRoute: async (reference: { id?: string; repository?: string; number?: number }) => {
         if (reference.id === "github:owner/repo#1" || (reference.repository === "midgame" && reference.number === 1)) {
           return { id: "github:owner/repo#1", repository: "midgame", number: 1 };
@@ -609,107 +568,59 @@ describe("createWebHandler", () => {
     });
     const { cookie } = await login(handler);
     const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
+    const shell = await (await get("/")).text();
+    expect(shell).toContain("data-app-skeleton");
 
-    for (const [path, view] of [["/", "board"], ["/board", "board"], ["/graph", "graph"], ["/recent", "recent"], ["/attention", "attention"], ["/team", "team"], ["/operator", "agent"], ["/settings/notifications", "notifications"]] as const) {
-      expect((await get(path)).status).toBe(200);
-      expect(dashboardCalls.at(-1)?.view).toBe(view);
+    // The application reads the view, its filters and the open item from the address.
+    for (const path of [
+      "/board", "/graph?repo=midgame&stage=review", "/recent?type=done&beforeAt=2026-10-15T12%3A00%3A00.000Z", "/attention", "/repositories",
+      "/repositories/space%2Fname", "/team", "/team/kaveh", "/reports", "/reports/quesshi?period=30d", "/operator", "/operator/runs/run-1",
+      "/accounts", "/profile", "/settings/notifications", "/about", "/issues/midgame/1", "/issues/midgame/1/conversation?column=stage%3Areview&page=2",
+      // Unknown items, agents, runs and repositories are the application's to report.
+      "/issues/unknown/1", "/team/nobody", "/operator/runs/missing", "/repositories/%E0%A4%A",
+    ]) {
+      const response = await get(path);
+      expect({ path, status: response.status }).toEqual({ path, status: 200 });
+      expect(await response.text()).toBe(shell);
     }
-    await get("/recent?type=done&type=stopped&repo=midgame&beforeAt=2026-10-15T12%3A00%3A00.000Z&beforeId=transition%3Aabc");
-    expect(dashboardCalls.at(-1)).toMatchObject({
-      view: "recent", recentTypes: ["done", "stopped"], repositoryIds: ["midgame"],
-      recentCursor: { occurredAt: "2026-10-15T12:00:00.000Z", id: "transition:abc" },
-    });
-    await get("/recent?beforeAt=2026-10-14T12%3A00%3A00.000Z");
-    expect(dashboardCalls.at(-1)).toMatchObject({
-      view: "recent", recentCursor: { occurredAt: "2026-10-14T12:00:00.000Z", id: null },
-    });
-    await get("/graph?repo=midgame&repo=foundation&stage=review");
-    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", repositoryIds: ["midgame", "foundation"], graphStage: "review" });
-    await get("/graph?stage=review&stage=implementation");
-    expect(dashboardCalls.at(-1)).toMatchObject({ view: "graph", graphStage: null });
-    expect((await get("/team/kaveh")).status).toBe(200);
-    expect((await get("/operator/runs/run-1")).status).toBe(200);
-    expect((await get("/issues/midgame/1/conversation?column=stage%3Areview&page=2")).status).toBe(200);
-    expect(dashboardCalls.at(-1)).toMatchObject({ view: "board", issueId: "github:owner/repo#1" });
 
     for (const [oldPath, location] of [
       ["/?view=attention", "/attention"],
       ["/?issue=github%3Aowner%2Frepo%231&tab=journey", "/issues/midgame/1/journey"],
       ["/?view=team&agent=kaveh", "/team/kaveh"],
       ["/?view=agent&run=run-1", "/operator/runs/run-1"],
+      ["/?view=team&repo=midgame", "/team?repo=midgame"],
+      ["/?view=agent", "/operator"],
       ["/agents", "/team"],
       ["/agents/kaveh", "/team/kaveh"],
+      // The addresses the application had while it was previewed beside the server-rendered dashboard.
+      ["/app", "/"],
+      ["/app/issues/midgame/1?q=fix", "/issues/midgame/1?q=fix"],
     ] as const) {
       const response = await get(oldPath);
       expect(response.status).toBe(301);
       expect(response.headers.get("location")).toBe(location);
     }
 
-    for (const path of ["/issues/unknown/1", "/issues/midgame/999", "/team/nobody", "/operator/runs/missing"]) {
-      expect((await get(path)).status).toBe(404);
+    for (const path of ["/?issue=missing", "/?view=team&agent=nobody", "/?view=agent&run=missing", "/?view=agent&run=not%20a%20run"]) {
+      expect({ path, status: (await get(path)).status }).toEqual({ path, status: 404 });
     }
+    expect((await get("/graph/extra")).status).toBe(404);
+    expect((await handler(new Request("http://localhost/graph", { method: "POST", headers: { cookie } }))).status).toBe(405);
   });
 
-  test("serves repository pages with encoded ids and keeps unknown or malformed ids in the dashboard shell", async () => {
-    const repository = {
-      id: "space/name", address: "owner/space-name", color: 1, health: "healthy" as const,
-      addressUrl: "https://github.com/owner/space-name", error: null, errorSummary: null, lastReconciledAt: null,
-      backlog: 0, stages: [], done: 0, items: [], deliveries: [],
-      skippedReviewItems: [],
-      capacity: { busy: 0, slots: 1 },
-      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
-      trust: { visibility: "unknown" as const, checkedAt: null, warning: "Repository visibility has not yet been checked.", permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: ["native review findings", "post-enrollment issue title and body edits", "enrollment labels"] },
-      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
-    };
-    const pages: Array<{ view: string; repositoryId?: string | null }> = [];
-    const { handler } = setup({
-      getDashboard: (_csrf: string, page: { view: string; repositoryId?: string | null }) => {
-        pages.push(page);
-        return { ...model, view: page.view, repositoryId: page.repositoryId ?? null, repositories: [repository] };
-      },
-    });
-    expect((await handler(new Request("http://localhost/repositories"))).headers.get("location")).toBe("/login");
-    const { cookie } = await login(handler);
-    const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
-
-    const list = await get("/repositories");
-    expect(list.status).toBe(200);
-    expect(await list.text()).toContain('data-dashboard-view="repositories"');
-    const detail = await get("/repositories/space%2Fname");
-    expect(detail.status).toBe(200);
-    expect(await detail.text()).toContain('data-dashboard-view="repository"');
-    expect(pages.at(-1)).toMatchObject({ view: "repository", repositoryId: "space/name" });
-
-    for (const path of ["/repositories/missing", "/repositories/%E0%A4%A"]) {
-      const response = await get(path);
-      expect(response.status).toBe(404);
-      expect(await response.text()).toContain('class="dashboard"');
-    }
-  });
-
-  test("serves an authenticated About view with project details", async () => {
+  test("sends a signed-out reader to sign in and back to the address they asked for", async () => {
     const { handler } = setup();
-
-    const anonymous = await handler(new Request("http://localhost/about"));
-    expect(anonymous.status).toBe(303);
-    expect(anonymous.headers.get("location")).toBe("/login");
-
-    const { cookie } = await login(handler);
-    const response = await handler(new Request("http://localhost/about", { headers: { cookie } }));
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain('data-dashboard-view="about"');
-    expect(html).toContain('href="/about"');
-    expect(html).toContain('class="account-menu-link account-menu-link--active"');
-    expect(html).toContain('aria-current="page"');
-    expect(html).toContain("<h2 id=\"about-heading\">About</h2>");
-    expect(html).toContain(`Version ${packageMetadata.version}`);
-    expect(html).toContain("pre-1.0");
-    expect(html).toContain('href="https://github.com/Abaniumbay/conveyor"');
-    expect(html).toContain('target="_blank"');
-    expect(html).toContain('rel="noopener noreferrer"');
-    expect(html).toContain("Conveyor contributors");
-    expect(html).toContain("MIT license");
+    for (const [path, location] of [
+      ["/", "/login"],
+      ["/about", "/login?returnTo=%2Fabout"],
+      ["/repositories", "/login?returnTo=%2Frepositories"],
+      ["/issues/repo/7?q=fix", `/login?returnTo=${encodeURIComponent("/issues/repo/7?q=fix")}`],
+    ] as const) {
+      const response = await handler(new Request(`http://localhost${path}`));
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe(location);
+    }
   });
 
   test("requires CSRF for question answers and backlog reorder callbacks", async () => {
@@ -845,29 +756,12 @@ describe("createWebHandler", () => {
     expect(calls.moves).toEqual([["i-3", "i-1"], ["i-1", null]]);
   });
 
-  test("streams authenticated dashboard updates and starts steering with CSRF", async () => {
-    let statusAttempts = 0;
-    const { handler, auth, calls } = setup({
-      getSystemStatus: async () => {
-        statusAttempts += 1;
-        if (statusAttempts === 1) throw new Error("temporary statfs failure");
-        return {
-          memory: { usedBytes: 8_000, totalBytes: 16_000, processBytes: 1_000 },
-          disk: { available: true, usedBytes: 20_000, totalBytes: 100_000, availableBytes: 80_000 },
-          storage: {
-            artifacts: { available: true, usedBytes: 86_000, totalBytes: 100_000, availableBytes: 14_000 },
-            temporaryDirectory: { available: false },
-            workspaceScratch: { available: false },
-          },
-          uptimeSeconds: 3_600,
-        };
-      },
-    });
-    expect((await handler(new Request("http://localhost/events/dashboard"))).status).toBe(401);
-    expect((await handler(new Request("http://localhost/api/dashboard-revision"))).status).toBe(404);
-    const asset = await handler(new Request("http://localhost/assets/dashboard.js"));
-    expect(asset.status).toBe(200);
-    expect(asset.headers.get("content-type")).toContain("javascript");
+  test("serves the page assets and starts steering with CSRF", async () => {
+    const { handler, auth, calls } = setup();
+    // The old dashboard's page script and event stream are gone.
+    for (const path of ["/assets/dashboard.js", "/events/dashboard", "/api/dashboard-revision"]) {
+      expect((await handler(new Request(`http://localhost${path}`))).status).toBe(404);
+    }
     // The theme runs before first paint; it must be a file, since the CSP forbids inline scripts.
     const theme = await handler(new Request("http://localhost/assets/theme.js"));
     expect(theme.status).toBe(200);
@@ -892,28 +786,6 @@ describe("createWebHandler", () => {
     expect(favicon.headers.get("content-type")).toContain("image/svg+xml");
 
     const { cookie } = await login(handler);
-    const updates = await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }));
-    expect(updates.headers.get("content-type")).toContain("text/event-stream");
-    expect(updates.headers.get("x-accel-buffering")).toBe("no");
-    const reader = updates.body!.getReader();
-    let streamed = "";
-    await Promise.race([
-      (async () => {
-        while (!streamed.includes("event: status")) {
-          const next = await reader.read();
-          if (next.done) throw new Error("dashboard event stream closed");
-          streamed += new TextDecoder().decode(next.value);
-        }
-      })(),
-      Bun.sleep(2_500).then(() => { throw new Error("dashboard event stream timed out"); }),
-    ]);
-    expect(streamed).not.toContain("event: revision");
-    expect(streamed).toContain("event: status");
-    expect(streamed).toContain('"artifacts":{"available":true,"usedBytes":86000');
-    expect(streamed).toContain('"temporaryDirectory":{"available":false}');
-    expect(streamed).toContain('"workspaceScratch":{"available":false}');
-    expect(statusAttempts).toBe(2);
-    await reader.cancel();
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const forbidden = await handler(new Request("http://localhost/steering", {
       method: "POST",
@@ -933,31 +805,6 @@ describe("createWebHandler", () => {
     const events = await handler(new Request("http://localhost/steering/run-1/events", { headers: { cookie } }));
     expect(events.headers.get("content-type")).toContain("text/event-stream");
     expect(await events.text()).toContain('"text":"Done"');
-  });
-
-  test("sends EventSource-observable keep-alives at least every five seconds when status reads fail", async () => {
-    const { handler } = setup({
-      getSystemStatus: async () => { throw new Error("temporary statfs failure"); },
-    });
-    const { cookie } = await login(handler);
-    const updates = await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }));
-    const reader = updates.body!.getReader();
-    const decoder = new TextDecoder();
-    let streamed = "";
-
-    const readThroughTwoKeepAlives = async () => {
-      while ((streamed.match(/event: keep-alive\ndata: \{\}\n\n/g) ?? []).length < 2) {
-        const next = await reader.read();
-        if (next.done) throw new Error("dashboard event stream closed");
-        streamed += decoder.decode(next.value);
-      }
-    };
-
-    await Promise.race([
-      readThroughTwoKeepAlives(),
-      Bun.sleep(5_500).then(() => { throw new Error("dashboard heartbeat took longer than five seconds"); }),
-    ]);
-    await reader.cancel();
   });
 
   test("serves authenticated persisted activity for an encoded issue id", async () => {
@@ -980,42 +827,6 @@ describe("createWebHandler", () => {
     const events = await handler(new Request("http://localhost/api/issues/github%3Aowner%2Frepo%231/activity/runs/run-2/events?before=2", { headers: { cookie } }));
     expect(events.status).toBe(200);
     expect(calls.issueRunEvents).toEqual([["github:owner/repo#1", "run-2", 2]]);
-  });
-
-  test("serves the Reports view for every repository or one, with a period, and refuses unknown ones", async () => {
-    const reports: Array<{ period: string; repository: string | null }> = [];
-    const pages: string[] = [];
-    const report = (period: string, repository: string | null) => ({
-      period, since: null, repository, repositories: ["midgame", "quesshi"],
-      totals: {
-        delivered: 3, inProgress: 1, runs: 9, failedRuns: 1, inputTokens: 1000, outputTokens: 100, cachedTokens: 500, agentMs: 60_000,
-        avgTokensPerItem: 366, avgRunsPerItem: 3, avgLeadMs: 7_200_000, avgAgentMs: 20_000, avgChecksWaitMs: 0, avgWaitingForYouMs: 0, avgQueuedMs: 0,
-        avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
-      },
-      byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
-    });
-    const { handler } = setup({
-      getDashboard: (_csrf: string, page: { view: string }) => { pages.push(page.view); return { ...model, view: page.view, selectedIssue: null }; },
-      getReport: async (input: { period: string; repository: string | null }) => {
-        reports.push(input);
-        return input.repository === "nope" ? null : report(input.period, input.repository);
-      },
-    });
-    expect((await handler(new Request("http://localhost/reports"))).headers.get("location")).toBe("/login");
-    const { cookie } = await login(handler);
-    const get = (path: string) => handler(new Request(`http://localhost${path}`, { headers: { cookie } }));
-
-    const overview = await get("/reports");
-    expect(overview.status).toBe(200);
-    const html = await overview.text();
-    expect(html).toContain("Items delivered");
-    expect(html).toContain('href="/reports/quesshi"');
-    expect(pages.at(-1)).toBe("reports");
-    expect((await get("/reports/quesshi?period=30d")).status).toBe(200);
-    expect(reports).toEqual([{ period: "all", repository: null }, { period: "30d", repository: "quesshi" }]);
-    expect((await get("/reports/nope")).status).toBe(404);
-    expect((await get("/reports?period=forever")).status).toBe(400);
-    expect(reports).toHaveLength(3);
   });
 
   test("serves an authenticated issue journey", async () => {
@@ -1142,15 +953,7 @@ describe("createWebHandler", () => {
     const csrf = auth.getSession(cookie)?.csrfToken ?? "";
     const page = await handler(new Request("http://localhost/accounts", { headers: { cookie } }));
     expect(page.status).toBe(200);
-    const accountsPage = await page.text();
-    expect(accountsPage).toContain('action="/api/accounts"');
-    expect(accountsPage).toContain('class="dashboard"');
-    expect(accountsPage).toContain('data-dashboard-view="accounts"');
-    expect(accountsPage).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
-    expect(accountsPage).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
-    expect(accountsPage).toContain('data-account-create-form="true"');
-    expect(accountsPage).toContain('data-account-list="true"');
-    expect(accountsPage).toContain('action="/logout"');
+    expect(await page.text()).toContain("data-app-skeleton");
     expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(200);
     const create = (username: string, password = "long enough password") => handler(new Request("http://localhost/api/accounts", {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -1243,7 +1046,7 @@ describe("createWebHandler", () => {
         account = { ...account, avatar };
       },
     };
-    const { handler } = setup({ auth, maxBodyBytes: 4096, ...dependencies });
+    const { handler } = setup({ auth, maxBodyBytes: 4096, getDashboardSnapshot: () => ({ seq: 0, model: normalizeDashboard(model) }), ...dependencies });
     const created = auth.createSession(account)!;
     const cookie = created.cookie.split(";")[0]!;
     const csrf = created.csrfToken;
@@ -1255,20 +1058,9 @@ describe("createWebHandler", () => {
     expect((await post("/api/profile/avatar", { avatar: "invalid" })).status).toBe(400);
     expect((await post("/api/profile/avatar", { avatar: "🦊", accountId: "another-user" })).status).toBe(200);
     expect(account.avatar).toBe("🦊");
-    const profile = await handler(new Request("http://localhost/profile", { headers: { cookie } }));
-    const profilePage = await profile.text();
-    expect(profilePage).toContain('data-dashboard-view="profile"');
-    expect(profilePage).toContain('name="avatar" value="🦊" checked');
-    expect(profilePage).toContain('id="change-password" aria-labelledby="password-heading"');
-    expect(profilePage).toContain('action="/api/profile/password"');
-    expect(profilePage).toContain('name="currentPassword"');
-    expect(profilePage).toContain('data-profile-avatar-form="true"');
-    expect(profilePage).toContain('<button type="submit" class="action-button action-button--primary">Save</button>');
-    expect(profilePage).not.toContain('Save avatar');
-    expect(profilePage).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
-    expect(profilePage).not.toContain('href="/profile#change-password" class="account-menu-link">Change password</a>');
-    expect(profilePage).toContain('class="dashboard-header"');
-    expect(profilePage).not.toContain('href="/accounts">Accounts</a>');
+    // The dashboard draws the profile from the account its snapshot carries.
+    const snapshot = await (await handler(new Request("http://localhost/api/v1/snapshot", { headers: { cookie } }))).json() as { account: { avatar: string } };
+    expect(snapshot.account.avatar).toBe("🦊");
 
     expect((await post("/api/profile/password", { currentPassword: "wrong password", newPassword: "replacement password" })).status).toBe(403);
     expect(account.sessionVersion).toBe(1);
@@ -1434,7 +1226,6 @@ describe("createWebHandler", () => {
       access: "workspace-write", usage: [], tasks: [], instructions: null,
     };
     const { handler } = setup({
-      getDashboard: (_csrf: string, page: { view: DashboardViewModel["view"] }) => ({ ...model, view: page.view }),
       getAgentProfiles: async () => [profile],
       getAgentProfile: async (id: string) => (id === "kaveh" ? profile : null),
     });
@@ -1444,11 +1235,8 @@ describe("createWebHandler", () => {
     expect((await handler(new Request("http://localhost/agents/kaveh"))).headers.get("location")).toBe("/login");
 
     const { cookie } = await login(handler);
-    const team = await handler(new Request("http://localhost/team", { headers: { cookie } }));
-    expect(team.status).toBe(200);
-    expect(await team.text()).toContain('data-agent-id="kaveh"');
-    const board = await handler(new Request("http://localhost/", { headers: { cookie } }));
-    expect(await board.text()).not.toContain('data-agent-id="kaveh"');
+    const team = await handler(new Request("http://localhost/api/v1/views/team", { headers: { cookie } }));
+    expect(await team.json()).toEqual({ team: [profile] });
 
     const list = await handler(new Request("http://localhost/agents", { headers: { cookie } }));
     expect(list.status).toBe(301);
@@ -1534,60 +1322,6 @@ describe("dashboard commands", () => {
     }));
     expect(response.status).toBe(503);
     expect(events.read({ type: "command.rejected" }).map((event) => event.payload)).toEqual([{ command: "account.setAvatar", reason: "account.setAvatar is unavailable" }]);
-  });
-});
-
-describe("live dashboard stream", () => {
-  async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, marker: string): Promise<string> {
-    let streamed = "";
-    await Promise.race([
-      (async () => {
-        while (!streamed.includes(marker)) {
-          const next = await reader.read();
-          if (next.done) throw new Error("dashboard event stream closed");
-          streamed += new TextDecoder().decode(next.value);
-        }
-      })(),
-      Bun.sleep(2_500).then(() => { throw new Error(`no ${marker} on the stream: ${streamed}`); }),
-    ]);
-    return streamed;
-  }
-
-  test("forwards each recorded event with its sequence number and no content", async () => {
-    const { handler, emit } = setup();
-    const { cookie } = await login(handler);
-    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
-    await readUntil(reader, "retry: 1000");
-    emit({ seq: 7, type: "message.posted", repositoryId: "repo", issueId: "github:owner/repo#1", correlationId: "c-1" });
-    const streamed = await readUntil(reader, "event: conveyor");
-    expect(streamed).toContain(`id: 7\nevent: conveyor\ndata: {"seq":7,"type":"message.posted","repositoryId":"repo","issueId":"github:owner/repo#1","correlationId":"c-1"}`);
-    await reader.cancel();
-  });
-
-  test("a reconnecting page first receives the events it missed", async () => {
-    const { handler } = setup();
-    const { cookie } = await login(handler);
-    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie, "last-event-id": "41" } }))).body!.getReader();
-    expect(await readUntil(reader, "event: conveyor")).toContain('id: 42\nevent: conveyor\ndata: {"seq":42,"type":"item.updated"');
-    await reader.cancel();
-  });
-
-  test("a page that missed more than is kept is told to reload", async () => {
-    const { handler } = setup();
-    const { cookie } = await login(handler);
-    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie, "last-event-id": "500" } }))).body!.getReader();
-    expect(await readUntil(reader, "event: reset")).toContain("event: reset");
-    await reader.cancel();
-  });
-
-  test("closing the page stops its subscription", async () => {
-    const { handler, streamListeners } = setup();
-    const { cookie } = await login(handler);
-    const reader = (await handler(new Request("http://localhost/events/dashboard", { headers: { cookie } }))).body!.getReader();
-    await readUntil(reader, "retry: 1000");
-    expect(streamListeners.size).toBe(1);
-    await reader.cancel();
-    expect(streamListeners.size).toBe(0);
   });
 });
 
@@ -1689,5 +1423,308 @@ describe("manual gate routes", () => {
     }));
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "Gate approval is not waiting" });
+  });
+});
+
+describe("dashboard snapshot and patch stream", () => {
+  type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+
+  function liveSetup() {
+    const admin: Account = { id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader: Account = { id: "reader-id", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    const accounts = new Map([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const board = { ...model, backlog: [detailIssue], restrictedRepositories: [{ id: "repo", folder: "/srv/repo", agentEgressHosts: [] }] };
+    const state = { board };
+    const feed = new DashboardFeed({ build: () => normalizeDashboard(state.board), settleMs: 5, maxWaitMs: 20 });
+    const { handler } = setup({
+      auth,
+      getDashboardSnapshot: () => feed.snapshot(),
+      subscribeDashboardFeed: (listener: Parameters<DashboardFeed["subscribe"]>[0], after: number | null) => feed.subscribe(listener, after),
+      getDashboardFeedStatus: () => feed.status,
+    });
+    const cookie = (account: Account) => auth.createSession(account)!.cookie.split(";", 1)[0]!;
+    return { handler, feed, state, adminCookie: cookie(admin), readerCookie: cookie(reader) };
+  }
+
+  async function readUntil(response: Response, done: (text: string) => boolean, timeoutMs = 2_000): Promise<string> {
+    const reader = response.body!.getReader();
+    let text = "";
+    try {
+      await Promise.race([
+        (async () => {
+          while (!done(text)) {
+            const next = await reader.read();
+            if (next.done) return;
+            text += new TextDecoder().decode(next.value);
+          }
+        })(),
+        Bun.sleep(timeoutMs).then(() => { throw new Error(`stream timed out with: ${text}`); }),
+      ]);
+    } finally {
+      await reader.cancel();
+    }
+    return text;
+  }
+
+  test("requires a session", async () => {
+    const { handler, feed } = liveSetup();
+    expect((await handler(new Request("http://localhost/api/v1/snapshot"))).status).toBe(401);
+    expect((await handler(new Request("http://localhost/api/v1/stream"))).status).toBe(401);
+    feed.close();
+  });
+
+  test("sends the normalized model with the session's own token and no superuser data to a regular user", async () => {
+    const { handler, feed, readerCookie } = liveSetup();
+    const response = await handler(new Request("http://localhost/api/v1/snapshot", { headers: { cookie: readerCookie } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const snapshot = dashboardSnapshotSchema.parse(await response.json());
+    expect(snapshot.account).toEqual({ id: "reader-id", username: "reader", role: "user", avatar: "🦊" });
+    expect(snapshot.model.items[detailIssue.id]).toMatchObject({ title: "Keep <item> safe", placement: "backlog" });
+    expect(snapshot.model.restrictedRepositories).toEqual({});
+    expect(snapshot.csrfToken).not.toBe("");
+    feed.close();
+  });
+
+  test("sends superuser data to a superuser", async () => {
+    const { handler, feed, adminCookie } = liveSetup();
+    const snapshot = dashboardSnapshotSchema.parse(await (await handler(new Request("http://localhost/api/v1/snapshot", { headers: { cookie: adminCookie } }))).json());
+    expect(Object.keys(snapshot.model.restrictedRepositories)).toEqual(["repo"]);
+    feed.close();
+  });
+
+  test("streams a changed item as a patch of its changed fields", async () => {
+    const { handler, feed, state, readerCookie } = liveSetup();
+    feed.snapshot();
+    const stream = await handler(new Request("http://localhost/api/v1/stream", { headers: { cookie: readerCookie } }));
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    const text = await readUntil(stream, (received) => received.includes("event: patch"));
+    const data = text.split("\n").find((line) => line.startsWith("data: {\"seq\""))!.slice(6);
+    expect(JSON.parse(data)).toEqual({ seq: expect.any(Number), entity: "item", id: detailIssue.id, op: "upsert", data: { title: "Renamed" } });
+    feed.close();
+  });
+
+  test("replays what a reconnecting dashboard missed, and asks it to reload when that is no longer kept", async () => {
+    const { handler, feed, state, readerCookie } = liveSetup();
+    const { seq } = feed.snapshot();
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    feed.flush();
+    const replayed = await readUntil(
+      await handler(new Request("http://localhost/api/v1/stream", { headers: { cookie: readerCookie, "last-event-id": String(seq) } })),
+      (received) => received.includes("event: patch"),
+    );
+    expect(replayed).toContain(`id: ${seq + 1}\nevent: patch`);
+    const reset = await readUntil(
+      await handler(new Request(`http://localhost/api/v1/stream?after=${seq + 50}`, { headers: { cookie: readerCookie } })),
+      (received) => received.includes("event: reset"),
+    );
+    expect(reset).toContain("event: reset");
+    feed.close();
+  });
+
+  test("sends EventSource-observable keep-alives at least every five seconds", async () => {
+    const { handler, feed, readerCookie } = liveSetup();
+    const stream = await handler(new Request("http://localhost/api/v1/stream", { headers: { cookie: readerCookie } }));
+    const started = performance.now();
+    // One keep-alive opens the stream; the second is the first heartbeat.
+    const text = await readUntil(stream, (received) => (received.match(/event: keep-alive\ndata: \{\}\n\n/g) ?? []).length >= 2, 5_500);
+    expect((text.match(/event: keep-alive/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    feed.close();
+  });
+
+  test("keeps superuser entities out of a regular user's stream", async () => {
+    const { handler, feed, state, readerCookie, adminCookie } = liveSetup();
+    const { seq } = feed.snapshot();
+    state.board = { ...state.board, restrictedRepositories: [{ id: "repo", folder: "/srv/other", agentEgressHosts: [] }], backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    feed.flush();
+    // A later change: anything leaked from the first one would arrive before it.
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed again" }] };
+    feed.invalidate();
+    feed.flush();
+    const request = (cookie: string) => handler(new Request(`http://localhost/api/v1/stream?after=${seq}`, { headers: { cookie } }));
+    const forReader = await readUntil(await request(readerCookie), (received) => received.includes("Renamed again"));
+    const forAdmin = await readUntil(await request(adminCookie), (received) => received.includes("Renamed again"));
+    expect(forReader).not.toContain("restrictedRepository");
+    expect(forAdmin).toContain("\"entity\":\"restrictedRepository\"");
+    feed.close();
+  });
+});
+
+describe("dashboard application", () => {
+  test("serves the same data-free shell with a loading skeleton for every dashboard path", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const board = await handler(new Request("http://localhost/", { headers: { cookie } }));
+    const item = await handler(new Request("http://localhost/issues/repo/7", { headers: { cookie } }));
+    expect(board.status).toBe(200);
+    expect(board.headers.get("content-type")).toContain("text/html");
+    expect(board.headers.get("cache-control")).toBe("no-store");
+    const html = await board.text();
+    expect(html).toBe(await item.text());
+    expect(html).toContain("data-app-skeleton");
+    expect(html).toMatch(/<script type="module" src="\/assets\/app\.js\?v=[a-z0-9]+"><\/script>/);
+    expect(html).not.toContain("Keep <item> safe");
+    expect(board.headers.get("content-security-policy")).toContain("script-src 'self'");
+  });
+
+  test("serves the application script, cached for good under its own version", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const html = await (await handler(new Request("http://localhost/", { headers: { cookie } }))).text();
+    const src = /src="(\/assets\/app\.js\?v=[a-z0-9]+)"/.exec(html)![1]!;
+    const script = await handler(new Request(`http://localhost${src}`));
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-type")).toContain("text/javascript");
+    expect(script.headers.get("cache-control")).toContain("immutable");
+    expect((await script.text()).length).toBeGreaterThan(1_000);
+    const unversioned = await handler(new Request("http://localhost/assets/app.js"));
+    expect(unversioned.headers.get("cache-control")).toBe("no-cache");
+  });
+});
+
+describe("older finished items", () => {
+  test("lists the most recent finished items up to a limit, for a signed-in reader only", async () => {
+    const calls: Array<{ limit: number; q: string; repositoryIds: readonly string[] }> = [];
+    const { handler } = setup({
+      getDashboardDone: (selection: { limit: number; q: string; repositoryIds: readonly string[] }) => {
+        calls.push(selection);
+        return [{ id: "github:owner/repo#3", placement: "done", order: 0, title: "Finished" }];
+      },
+    });
+    expect((await handler(new Request("http://localhost/api/v1/done?limit=60"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/done?limit=60", { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [{ id: "github:owner/repo#3", placement: "done", order: 0, title: "Finished" }] });
+    expect(calls).toEqual([{ limit: 60, q: "", repositoryIds: [] }]);
+  });
+
+  test("passes the board's search and repository filters on, to find older finished items", async () => {
+    const calls: Array<{ limit: number; q: string; repositoryIds: readonly string[] }> = [];
+    const { handler } = setup({ getDashboardDone: (selection: { limit: number; q: string; repositoryIds: readonly string[] }) => { calls.push(selection); return []; } });
+    const { cookie } = await login(handler);
+    await handler(new Request("http://localhost/api/v1/done?limit=50&q=%23245&repo=alpha&repo=beta", { headers: { cookie } }));
+    expect(calls).toEqual([{ limit: 50, q: "#245", repositoryIds: ["alpha", "beta"] }]);
+  });
+
+  test("refuses a limit outside 1 to 500", async () => {
+    const { handler } = setup({ getDashboardDone: () => [] });
+    const { cookie } = await login(handler);
+    for (const limit of ["0", "501", "abc"]) {
+      expect((await handler(new Request(`http://localhost/api/v1/done?limit=${limit}`, { headers: { cookie } }))).status).toBe(400);
+    }
+  });
+});
+
+describe("recent activity page", () => {
+  test("returns the page for the address's filters and cursor to a signed-in reader", async () => {
+    const selections: unknown[] = [];
+    const page = { types: ["done"], repositoryIds: ["repo"], events: [], nextCursor: null, rangeStartedAt: null };
+    const { handler } = setup({ getRecentActivity: (selection: unknown) => { selections.push(selection); return page; } });
+    expect((await handler(new Request("http://localhost/api/v1/recent"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/recent?type=done&repo=repo&beforeAt=2026-10-20T00:00:00.000Z&beforeId=e1", { headers: { cookie } }));
+    expect(await response.json()).toEqual(page);
+    expect(selections[0]).toMatchObject({ view: "recent", recentTypes: ["done"], repositoryIds: ["repo"], recentCursor: { occurredAt: "2026-10-20T00:00:00.000Z", id: "e1" } });
+  });
+});
+
+describe("view data for the dashboard application", () => {
+  type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+  function viewSetup() {
+    const admin: Account = { id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader: Account = { id: "reader-id", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    const accounts = new Map([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const reports: unknown[] = [];
+    const runs: unknown[] = [];
+    const { handler } = setup({
+      auth,
+      getReport: (input: unknown) => { reports.push(input); return (input as { repository: string | null }).repository === "missing" ? null : { period: "30d" }; },
+      getSteeringView: (run: string | null) => { runs.push(run); return { enabled: true, agent: "omid", selected: null, recent: [] }; },
+      listAccounts: () => [{ id: "reader-id", username: "reader", role: "user", avatar: "🦊" }],
+      getPushPreferences: () => ({ questions: true, stopped: false, done: false }),
+      getAgentProfiles: () => [],
+    });
+    const cookie = (account: Account) => auth.createSession(account)!.cookie.split(";", 1)[0]!;
+    const get = (path: string, as: Account | null = reader) => handler(new Request(`http://localhost${path}`, { headers: as ? { cookie: cookie(as) } : {} }));
+    return { get, admin, reports, runs };
+  }
+
+  test("requires a session", async () => {
+    const { get } = viewSetup();
+    expect((await get("/api/v1/views/team", null)).status).toBe(401);
+  });
+
+  test("returns the team", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/team")).json()).toEqual({ team: [] });
+  });
+
+  test("returns a report for its period and repository, and refuses an unknown period", async () => {
+    const { get, reports } = viewSetup();
+    expect(await (await get("/api/v1/views/reports?period=30d&repository=repo")).json()).toEqual({ report: { period: "30d" } });
+    expect(reports).toEqual([{ period: "30d", repository: "repo" }]);
+    expect((await get("/api/v1/views/reports?period=forever")).status).toBe(400);
+    expect((await get("/api/v1/views/reports?repository=missing")).status).toBe(404);
+  });
+
+  test("returns the Operator for a run or the latest one", async () => {
+    const { get, runs } = viewSetup();
+    expect((await get("/api/v1/views/operator?run=run-7")).status).toBe(200);
+    expect((await get("/api/v1/views/operator")).status).toBe(200);
+    expect(runs).toEqual(["run-7", null]);
+  });
+
+  test("returns accounts to a superuser only", async () => {
+    const { get, admin } = viewSetup();
+    expect((await get("/api/v1/views/accounts")).status).toBe(403);
+    expect(await (await get("/api/v1/views/accounts", admin)).json()).toEqual({ accounts: [{ id: "reader-id", username: "reader", role: "user", avatar: "🦊" }] });
+  });
+
+  test("returns the reader's own notification settings", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/notifications")).json()).toEqual({ notifications: { questions: true, stopped: false, done: false } });
+  });
+
+  test("returns the running build for About", async () => {
+    const { get } = viewSetup();
+    expect(await (await get("/api/v1/views/about")).json()).toEqual({ build: JSON.parse(JSON.stringify(BUILD)) });
+  });
+
+  test("knows no other view", async () => {
+    const { get } = viewSetup();
+    expect((await get("/api/v1/views/secrets")).status).toBe(404);
+  });
+});
+
+describe("operator request from the application", () => {
+  test("answers a JSON request with the new run instead of a redirect", async () => {
+    const auth = createWebAuth({ passwordHash: undefined, sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes", accountById: () => ({ id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1 }), accountByUsername: () => null });
+    const { handler } = setup({ auth });
+    const session = auth.createSession({ id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1 })!;
+    const response = await handler(new Request("http://localhost/steering", {
+      method: "POST",
+      headers: { cookie: session.cookie.split(";", 1)[0]!, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ prompt: "Check the board", csrf: session.csrfToken }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, runId: "run-1" });
   });
 });

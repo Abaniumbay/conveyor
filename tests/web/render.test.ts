@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { renderDashboard, renderIssueDetails } from "../../src/web/render";
+import { renderDashboard } from "../support/render-dashboard";
+import { viewTitle } from "../../src/web/render";
 import { BUILD } from "../../src/version";
 import { dashboardCss, graphCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
 import type { DashboardView, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
@@ -312,6 +313,13 @@ test("renders the stage badge and source link once in every item-details header"
   expect(offboarded).toContain('aria-hidden="true"');
 });
 
+/** One item's details dialog, as the dashboard shows it when the item is open. */
+function renderIssueDetails(issue: IssueCardViewModel, canManage = false): string {
+  const html = renderDashboard({ ...dashboard, selectedIssue: issue, account: { id: "reader", username: "reader", role: canManage ? "superuser" : "user", avatar: "🦊" } });
+  const start = html.indexOf('<dialog class="issue-details');
+  return html.slice(start, html.indexOf("</dialog>", start) + "</dialog>".length);
+}
+
 const ciView = (state: "passing" | "running" | "failed" | "unknown", progress: string, symbol: string, word: string) => ({
   id: "ci", label: "CI", state, symbol, stateWord: word, progress, detail: `detail for ${state}`, url: "https://github.com/o/r/pull/5/checks",
   observedAt: "2026-09-29T11:59:00Z", reference: { label: "abcdef1", url: "https://github.com/o/r/pull/5" },
@@ -465,7 +473,6 @@ describe("renderDashboard", () => {
       ],
     });
 
-    expect(html).toContain("<title>Graph · Conveyor</title>");
     expect(html).toContain('<a href="/graph" class="tab tab--active" aria-current="page">Graph</a>');
     expect(html).toContain('<a href="/board" class="tab">Board<span class="tab-count">43</span></a>');
     expect(html).toContain('<svg class="graph-svg"');
@@ -498,7 +505,6 @@ describe("renderDashboard", () => {
     expect(html).toContain('clipPath id="graph-node-clip-parent"');
     expect(html).toContain('clip-path="url(#graph-node-clip-parent)"');
     expect(html).toContain('href="/issues/sample/41"');
-    expect(html).toContain('data-details-url="/api/issues/parent/details"');
     expect(html).toContain('aria-haspopup="dialog"');
     expect(html).toContain("Parent #41 (Parent &lt;safe> title that remains available in full) → child #42 (Child)");
     expect(html).toContain("Issue #42 (Child) waits for prerequisite #7 (Finished prerequisite)");
@@ -710,10 +716,31 @@ describe("renderDashboard", () => {
     expect(html).not.toContain("next check");
   });
 
-  test("the About view shows the running build", () => {
+  test("names a repository's startup phase while it is being set up or reconciled", () => {
+    const repository = (id: string, startup: "onboarding" | "reconciling") => ({
+      id, address: `owner/${id}`, addressUrl: null, color: 1, health: "starting" as const, error: null, errorSummary: null, lastReconciledAt: null, pause: null, startup,
+      backlog: 0, stages: [], done: 0, items: [], deliveries: [], skippedReviewItems: [], capacity: { busy: 0, slots: 1 },
+      setup: { pipeline: "delivery", baseBranch: "main", itemProvider: "github", itemSync: "polling" as const, webhooks: null, githubCalls: { total: 0, bySource: [] }, ciProvider: null, ciMode: "disabled" as const, systemLabels: [] },
+      trust: { visibility: "unknown" as const, checkedAt: null, warning: null, permissionThreshold: "write, maintain, or admin", extraTrustedLogins: [], ignoredInputCategories: [] },
+      report30d: { delivered: 0, inputTokens: 0, outputTokens: 0, agentMs: 0 },
+    });
+    const html = renderDashboard({ ...dashboard, repositories: [repository("setting-up", "onboarding"), repository("catching-up", "reconciling")] });
+    expect(html).toContain("Starting repository setup");
+    expect(html).toContain("Reconciling startup state");
+  });
+
+  test("the About view shows the running build and the project's details", () => {
     const html = renderDashboard({ ...dashboard, view: "about" });
     expect(html).toContain(`Version ${BUILD.version}`);
     expect(html).toContain(`Development build, Bun ${BUILD.runtime}`);
+    expect(html).toContain('class="account-menu-link account-menu-link--active" aria-current="page">About Conveyor</a>');
+    expect(html).toContain("<h2 id=\"about-heading\">About</h2>");
+    expect(html).toContain("pre-1.0");
+    expect(html).toContain('href="https://github.com/Abaniumbay/conveyor"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("Conveyor contributors");
+    expect(html).toContain("MIT license");
   });
 
   test("lets header controls wrap instead of overlapping and keeps account-page links compact", () => {
@@ -1374,8 +1401,6 @@ describe("renderDashboard", () => {
     expect(html).toContain("System attention");
     expect(html).toContain("Load 20 more");
     expect(html).toContain('name="doneLimit" value="21"');
-    expect(html).toContain('data-dashboard-revision="revision-1"');
-    expect(html).toContain('src="/assets/dashboard.js"');
     expect(html).toContain('data-dialog-open="issue-parent-41"');
     // The title is the control that opens the details, so assistive technology announces a button.
     expect(html).toContain('<button type="button" class="card-open" aria-haspopup="dialog">');
@@ -1390,16 +1415,13 @@ describe("renderDashboard", () => {
     expect(html).not.toContain(">Permalink</a>");
     expect(html).toContain('data-detail-tab="conversation"');
     expect(html).toContain("Conversation");
-    expect(html).toContain('data-conversation-url="/api/issues/parent/conversation"');
     expect(html).toContain("grid-auto-rows:max-content");
     expect(html).toContain(".agent-events{display:grid;grid-template-columns:minmax(0,1fr);flex:1;");
     expect(html).toContain("align-content:start;grid-auto-rows:max-content");
     expect(html).toContain('data-detail-tab="journey"');
-    expect(html).toContain('data-journey-url="/api/issues/parent/journey"');
     expect(html).toContain("Journey");
     expect(html).toContain("Technical logs");
     expect(html).toContain('data-detail-tab="activity"');
-    expect(html).toContain('/api/issues/parent/activity');
     expect(html).not.toContain(">Details</button>");
     expect(html).not.toContain("details-button");
     expect(html).toContain("<dialog");
@@ -1538,7 +1560,6 @@ describe("renderDashboard", () => {
       account,
       accounts: [account, { id: "reader", username: "reader <safe>", role: "user", avatar: "🐸" }],
     });
-    expect(accountsHtml).toContain('data-dashboard-view="accounts"');
     expect(accountsHtml).toContain('href="/accounts" class="account-menu-link account-menu-link--active" aria-current="page">Accounts</a>');
     expect(accountsHtml).toContain('data-account-list="true"');
     expect(accountsHtml).toContain('data-account-create-form="true"');
@@ -1555,7 +1576,6 @@ describe("renderDashboard", () => {
     expect(accountsHtml).not.toContain('class="account-page"');
 
     const profileHtml = renderDashboard({ ...dashboard, view: "profile", account });
-    expect(profileHtml).toContain('data-dashboard-view="profile"');
     expect(profileHtml).toContain('href="/profile" class="account-menu-link account-menu-link--active" aria-current="page"');
     expect(profileHtml).toContain('name="avatar" value="🦊" checked');
     expect(profileHtml).toContain('data-profile-avatar-form="true"');
@@ -1571,7 +1591,6 @@ describe("renderDashboard", () => {
       account: { id: "reader", username: "reader", role: "user", avatar: "🐸" },
       notifications: { questions: true, stopped: false, done: true },
     });
-    expect(html).toContain('data-dashboard-view="notifications"');
     expect(html).toContain('class="header-link header-desktop-control header-link--active" href="/settings/notifications" aria-current="page"');
     expect(html).toContain('id="notification-settings" class="settings-form notification-form"');
     expect(html).toContain('name="questions" checked');
@@ -1669,24 +1688,21 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-issue-id="completed"');
   });
 
-  test("keeps ordinary board cards compact while exposing their details endpoint", () => {
+  test("keeps ordinary board cards compact, without their details until one is opened", () => {
     const html = renderDashboard(dashboard);
 
-    expect(html).toContain('data-details-url="/api/issues/parent/details"');
+    expect(html).toContain('data-dialog-open="issue-parent-41"');
     expect(html).not.toContain('class="issue-details issue-inspector"');
   });
 
   test("names each view in the document title and offers a skip link past the shared header", () => {
-    expect(renderDashboard(dashboard)).toContain("<title>Board · Conveyor</title>");
-    // The client swaps between an open item's title and the view's own, which the body carries.
-    const item = renderDashboard({ ...dashboard, selectedIssue: dashboard.stages[0]!.issues[0]! });
-    expect(item).toMatch(/<title>#\d+ [^<]+ · Conveyor<\/title>/);
-    expect(item).toContain('data-view-title="Board · Conveyor"');
-    expect(renderDashboard({ ...dashboard, view: "agent" })).toContain("<title>Operator · Conveyor</title>");
-    expect(renderDashboard({ ...dashboard, view: "repository", repositoryId: "demo" })).toContain("<title>demo · Conveyor</title>");
+    expect(viewTitle(dashboard)).toBe("Board");
+    expect(viewTitle({ ...dashboard, view: "graph" })).toBe("Graph");
+    expect(viewTitle({ ...dashboard, view: "agent" })).toBe("Operator");
+    expect(viewTitle({ ...dashboard, view: "repository", repositoryId: "demo" })).toBe("demo");
+    expect(viewTitle({ ...dashboard, view: "about" })).toBe("About");
 
     const html = renderDashboard({ ...dashboard, view: "about" });
-    expect(html).toContain("<title>About · Conveyor</title>");
     expect(html.indexOf('<a class="skip-link" href="#content">')).toBeLessThan(html.indexOf('<main class="dashboard">'));
     expect(html.indexOf('id="content"')).toBeGreaterThan(html.indexOf('aria-label="Dashboard views"'));
     expect(html).toContain('role="status" data-route-announcer');

@@ -310,59 +310,6 @@ describe("scheduling", () => {
   });
 });
 
-describe("the live dashboard's event feed", () => {
-  test("a page that is up to date replays nothing", async () => {
-    const { service, store } = await setup();
-    expect(service.eventsAfter(store.events().latestSeq())).toEqual([]);
-    await service.close();
-  });
-
-  test("a page that missed events replays them as type and identifiers only", async () => {
-    const { service, store } = await setup();
-    const after = store.events().latestSeq();
-    store.setQueueRank(ISSUE, 20);
-    expect(service.eventsAfter(after)).toEqual([{ seq: after + 1, type: "item.queueChanged", repositoryId: "repo", issueId: ISSUE, correlationId: null }]);
-    await service.close();
-  });
-
-  test("a page that missed pruned events must reload", async () => {
-    const { service, store } = await setup();
-    const after = store.events().latestSeq();
-    store.setQueueRank(ISSUE, 20);
-    store.setQueueRank(ISSUE, 30);
-    store.sqlite().query("DELETE FROM events WHERE seq <= ?").run(after + 1);
-    expect(service.eventsAfter(after - 1)).toBeNull();
-    await service.close();
-  });
-
-  test("a page from another database must reload", async () => {
-    const { service, store } = await setup();
-    expect(service.eventsAfter(store.events().latestSeq() + 10)).toBeNull();
-    await service.close();
-  });
-
-  test("a page that missed more than a thousand events must reload", async () => {
-    const { service, store } = await setup();
-    const after = store.events().latestSeq();
-    for (let rank = 1; rank <= 1_001; rank += 1) store.setQueueRank(ISSUE, rank + 100);
-    expect(service.eventsAfter(after)).toBeNull();
-    await service.close();
-  });
-
-  test("the web feed receives every committed event", async () => {
-    const { service, store } = await setup();
-    const seen: string[] = [];
-    const unsubscribe = service.webDependencies({} as never, "operator").subscribeEvents!((event) => { seen.push(event.type); });
-    store.setQueueRank(ISSUE, 20);
-    await service.eventsSettled();
-    unsubscribe();
-    store.setQueueRank(ISSUE, 30);
-    await service.eventsSettled();
-    expect(seen).toEqual(["item.queueChanged"]);
-    await service.close();
-  });
-});
-
 describe("service state events", () => {
   test("draining and resuming admission are recorded", async () => {
     const { service, store } = await setup({ drained: false });

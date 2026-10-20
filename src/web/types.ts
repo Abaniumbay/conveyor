@@ -292,6 +292,8 @@ export type DashboardView = "board" | "graph" | "recent" | "attention" | "agent"
 /** An item in the relationship graph. Context nodes are non-current items reached from a current item. */
 export interface GraphNodeViewModel {
   id: string;
+  /** The stage id behind `stage`, for filtering by stage. */
+  stageId?: string | null;
   repository: string;
   repositoryColor: number;
   number: number;
@@ -504,6 +506,8 @@ export interface DashboardViewModel {
   notifications?: NotificationPreferencesViewModel;
   csrfToken: string;
   account?: DashboardAccountViewModel;
+  /** The running server's build, for About. */
+  build?: { version: string; commit: string; builtAt: string | null; runtime: string };
 }
 
 export interface HarnessQuotaViewModel {
@@ -624,13 +628,4 @@ export interface ReportViewModel {
   /** Done items imported without a recorded delivery; left out of every figure. */
   importedWithoutHistory: number;
   generatedAt: string;
-}
-
-/** One recorded event as the live dashboard stream sends it: what changed, never its content. */
-export interface DashboardStreamEvent {
-  seq: number;
-  type: string;
-  repositoryId: string | null;
-  issueId: string | null;
-  correlationId: string | null;
 }

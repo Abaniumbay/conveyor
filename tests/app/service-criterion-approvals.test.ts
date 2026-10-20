@@ -139,7 +139,7 @@ test("projects only source-current approvals after head and approval events with
     recordedHead: "head-1", sourceLinkHead: "head-1", recordedAt: "2026-01-01T00:00:00Z",
   }]);
   const refreshes: Array<{ type: string; approved: boolean }> = [];
-  const unsubscribe = w.service.webDependencies({} as never, "operator").subscribeEvents!((event) => {
+  const unsubscribe = w.service.events.subscribe("*", "test", (event) => {
     if (event.issueId === "issue" && (event.type === "change.headObserved" || event.type === "criterion.approvalChanged")) {
       refreshes.push({ type: event.type, approved: w.card().acceptanceCriteria[0]!.approved });
     }

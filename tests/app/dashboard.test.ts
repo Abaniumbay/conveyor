@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
-import { renderDashboard } from "../../src/web/render";
+import { renderDashboard } from "../support/render-dashboard";
 import { configSchema } from "../../src/config/schema";
 import { createWebHandler } from "../../src/web/server";
 import type { RuntimeIssueContext, ScopedMcpFactory } from "../../src/app/runtime";
@@ -110,14 +110,15 @@ describe("ConveyorService dashboard", () => {
       const dateNow = spyOn(Date, "now").mockImplementation(() => now);
       try {
         const checkHttpResponsiveness = async () => {
-          const dashboard = fetch(`${baseUrl}/board`, { headers: { cookie } });
+          const dashboard = fetch(`${baseUrl}/api/v1/snapshot`, { headers: { cookie } });
           const healthStarted = performance.now();
           const health = fetch(`${baseUrl}/health/live`);
           const loginStarted = performance.now();
           const login = fetch(`${baseUrl}/login`);
           const [dashboardResponse, healthResponse, loginResponse] = await Promise.all([dashboard, health, login]);
           expect(dashboardResponse.status).toBe(200);
-          expect(await dashboardResponse.text()).toContain("99% left");
+          const snapshot = await dashboardResponse.json() as { model: { system: { harnessUsage: Array<{ windows: Record<string, { remaining: number }> }> } } };
+          expect(Object.values(snapshot.model.system.harnessUsage[0]!.windows).map((window) => window.remaining)).toContain(99);
           expect(healthResponse.status).toBe(200);
           expect(loginResponse.status).toBe(200);
           expect(performance.now() - healthStarted).toBeLessThan(250);

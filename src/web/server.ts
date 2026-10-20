@@ -9,14 +9,16 @@ import { ToolRequestError } from "../tasks/errors";
 import { BUILD } from "../version";
 import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
-import { dashboardClient } from "./client";
 import { agentHref } from "./agent-pages";
 import { REPORT_PERIOD_VALUES } from "./report-page";
-import { renderDashboard, renderIssueDetails } from "./render";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
-import type { AgentProfileViewModel, DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
+import { SUPERUSER_ENTITIES, type DashboardItem, type DashboardModel, type DashboardPatch } from "./model";
+import { dashboardAppBundle } from "./app-bundle";
+import { dashboardAppShell } from "./app-shell";
+import type { DashboardFeedListener, DashboardFeedSubscription } from "../app/dashboard-feed";
+import type { AgentProfileViewModel, DashboardPageSelection, RecentActivityViewModel, SteeringViewModel, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
 export type BacklogDirection = "up" | "down";
@@ -35,17 +37,20 @@ export interface WebHandlerDependencies {
   dispatch: <N extends CommandName>(name: N, input: CommandInput<N>, actor: CommandActor) => Promise<CommandOutcome<N>>;
   /** Records a sign-in or sign-out (never its credentials). */
   recordSession?: (change: "signedIn" | "signedOut", accountId: string | null) => void;
-  getDashboard: (
-    csrfToken: string,
-    pagination: DashboardPageSelection,
-  ) => DashboardViewModel | Promise<DashboardViewModel>;
-  /** Current data for a single board details dialog, without rebuilding the board page. */
-  getIssueDetails?: (csrfToken: string, issueId: string) => IssueCardViewModel | null | Promise<IssueCardViewModel | null>;
-  /** Calls `listener` with every event recorded from now on; returns the unsubscribe. */
-  subscribeEvents?: (listener: (event: DashboardStreamEvent) => void) => () => void;
-  /** The events after `seq` for a reconnecting page; null when they are no longer all kept. */
-  eventsAfter?: (seq: number) => DashboardStreamEvent[] | null;
-  getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
+  /** One item's card, for an item the live model does not hold (finished long ago or offboarded). */
+  getIssueDetails?: (issueId: string) => IssueCardViewModel | null;
+  /** The live dashboard model and the sequence of the last patch it includes. */
+  getDashboardSnapshot?: () => { seq: number; model: DashboardModel };
+  /** Live patches after a sequence; the replay is null when they are no longer all kept. */
+  subscribeDashboardFeed?: (listener: DashboardFeedListener, after: number | null) => DashboardFeedSubscription;
+  /** The last server status the live feed read. */
+  getDashboardFeedStatus?: () => SystemStatusViewModel | null;
+  /** The `limit` most recent finished items that match the board's search and repository filters, for Done beyond the live model's own. */
+  getDashboardDone?: (selection: { limit: number; q: string; repositoryIds: readonly string[] }) => DashboardItem[];
+  /** One page of the Recent view for its filters and cursor. */
+  getRecentActivity?: (selection: DashboardPageSelection) => RecentActivityViewModel;
+  /** The Operator view for a run, or for the latest run when none is named. */
+  getSteeringView?: (runId: string | null) => SteeringViewModel;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -86,7 +91,6 @@ const FONT_ASSETS = new Map<string, string>([
 
 // The scripts change only with a release, so browsers revalidate them instead of downloading them with every page.
 const SCRIPT_ASSETS = new Map(Object.entries({
-  "/assets/dashboard.js": dashboardClient,
   "/assets/notifications.js": notificationClient,
   "/assets/theme.js": themeInitScript,
 }).map(([path, source]) => [path, { source, etag: `"${Bun.hash(source).toString(36)}"` }]));
@@ -362,6 +366,16 @@ function paginationSuffix(url: URL): string {
   return query ? `?${query}` : "";
 }
 
+const DASHBOARD_PATHS = new Set(["/", "/board", "/graph", "/recent", "/attention", "/repositories", "/team", "/reports", "/operator", "/accounts", "/profile", "/settings/notifications", "/about"]);
+
+/** Whether the path is one of the dashboard's addresses: a view, a profile, a report, a run, a repository or an item. */
+function isDashboardPath(path: string): boolean {
+  return DASHBOARD_PATHS.has(path)
+    || /^\/(team|reports|repositories)\/[^/]{1,200}$/.test(path)
+    || /^\/operator\/runs\/[A-Za-z0-9-]{1,100}$/.test(path)
+    || /^\/issues\/[^/]{1,200}\/[1-9]\d*(?:\/(conversation|journey|logs))?$/.test(path);
+}
+
 function issueRoutePath(target: IssueRouteTarget, tab?: string | null): string {
   const suffix = tab === "conversation" || tab === "journey"
     ? `/${tab}`
@@ -420,12 +434,15 @@ function steeringEventStream(
 }
 
 /**
- * The live dashboard stream: one `conveyor` message per recorded event (identifiers and type only;
- * the page re-reads what it shows), the system status every ten seconds and a heartbeat. A browser
- * reconnecting with Last-Event-ID first receives what it missed, or `reset` when that is no
- * longer all kept.
+ * The live dashboard patch stream: the patches a reconnecting dashboard missed (or `reset` when
+ * they are no longer all kept), then every new patch and server status change, and a heartbeat.
+ * Superuser-only entities reach superuser sessions only.
  */
-function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId: number | null): ReadableStream<Uint8Array> {
+function dashboardPatchStream(
+  subscribe: NonNullable<WebHandlerDependencies["subscribeDashboardFeed"]>,
+  superuser: boolean,
+  after: number | null,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let stop = () => {};
   return new ReadableStream<Uint8Array>({
@@ -440,53 +457,22 @@ function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId:
           stop();
         }
       };
-      const forward = (event: DashboardStreamEvent) => send(`id: ${event.seq}\nevent: conveyor\ndata: ${JSON.stringify(event)}\n\n`);
-      let statusTimer: ReturnType<typeof setTimeout> | null = null;
-      // Every ten seconds; a failed read (a transient statfs error) is retried after a second.
-      const status = async () => {
-        let delay = 10_000;
-        try {
-          send(`event: status\ndata: ${JSON.stringify(await dependencies.getSystemStatus())}\n\n`);
-        } catch {
-          delay = 1_000;
-        }
-        if (!closed) statusTimer = setTimeout(() => void status(), delay);
+      const sendPatch = (patch: DashboardPatch) => {
+        if (SUPERUSER_ENTITIES.has(patch.entity) && !superuser) return;
+        send(`id: ${patch.seq}\nevent: patch\ndata: ${JSON.stringify(patch)}\n\n`);
       };
       send("retry: 1000\n\nevent: keep-alive\ndata: {}\n\n");
-      // Subscribe before replaying, so nothing appended in between is lost; replay skips duplicates.
-      const buffered: DashboardStreamEvent[] = [];
-      let replaying = lastEventId !== null;
-      let lastSent = lastEventId ?? 0;
-      const unsubscribe = dependencies.subscribeEvents?.((event) => {
-        if (replaying) buffered.push(event);
-        else if (event.seq > lastSent) {
-          lastSent = event.seq;
-          forward(event);
-        }
-      }) ?? (() => {});
-      if (lastEventId !== null) {
-        const missed = dependencies.eventsAfter ? dependencies.eventsAfter(lastEventId) : [];
-        if (missed === null) send("event: reset\ndata: {}\n\n");
-        else for (const event of missed) {
-          lastSent = Math.max(lastSent, event.seq);
-          forward(event);
-        }
-        replaying = false;
-        for (const event of buffered.splice(0)) {
-          if (event.seq <= lastSent) continue;
-          lastSent = event.seq;
-          forward(event);
-        }
-      }
-      void status();
-      // Comments do not reach EventSource listeners, so use an event that the
-      // client can count as stream activity before its stale-stream deadline.
+      const subscription = subscribe((message) => {
+        if (message.kind === "patch") sendPatch(message.patch);
+        else send(`event: status\ndata: ${JSON.stringify(message.status)}\n\n`);
+      }, after);
+      if (subscription.replay === null) send("event: reset\ndata: {}\n\n");
+      else for (const patch of subscription.replay) sendPatch(patch);
       const heartbeat = setInterval(() => send("event: keep-alive\ndata: {}\n\n"), 4_000);
       stop = () => {
         closed = true;
-        if (statusTimer) clearTimeout(statusTimer);
         clearInterval(heartbeat);
-        unsubscribe();
+        subscription.unsubscribe();
       };
     },
     cancel() {
@@ -815,135 +801,186 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
 
     const legacyDashboardQuery = path === "/" && ["view", "issue", "tab", "agent", "run"]
       .some((key) => url.searchParams.has(key));
-    const teamProfilePath = /^\/team\/([^/]{1,200})$/.exec(path);
-    const operatorRunPath = /^\/operator\/runs\/([A-Za-z0-9-]{1,100})$/.exec(path);
-    const issuePagePath = /^\/issues\/([^/]{1,200})\/([1-9]\d*)(?:\/(conversation|journey|logs))?$/.exec(path);
-    const reportPath = /^\/reports(?:\/([^/]{1,200}))?$/.exec(path);
-    const repositoryPath = /^\/repositories\/([^/]{1,200})$/.exec(path);
-    const dashboardView = path === "/" || path === "/board"
-      ? "board"
-      : path === "/graph"
-        ? "graph"
-      : path === "/recent"
-        ? "recent"
-      : path === "/attention"
-        ? "attention"
-        : path === "/team" || teamProfilePath
-          ? "team"
-          : path === "/operator" || operatorRunPath
-            ? "agent"
-            : reportPath && dependencies.getReport
-              ? "reports"
-              : path === "/repositories"
-                ? "repositories"
-                : repositoryPath
-                  ? "repository"
-              : path === "/about"
-                ? "about"
-              : path === "/accounts"
-                ? "accounts"
-                : path === "/profile"
-                  ? "profile"
-                  : path === "/settings/notifications"
-                    ? "notifications"
-                    : issuePagePath ? "board" : null;
-
-    if (legacyDashboardQuery || dashboardView) {
+    if (legacyDashboardQuery) {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
-      const currentSession = session(request);
-      if (!currentSession) return redirect(issuePagePath || repositoryPath || dashboardView === "recent" || dashboardView === "graph" ? `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}` : "/login");
-      if (dashboardView === "accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      if (!session(request)) return redirect(`/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}`);
       try {
-        if (legacyDashboardQuery) {
-          const legacyIssue = url.searchParams.getAll("issue");
-          if (legacyIssue.length === 1) {
-            const target = await dependencies.getIssueRoute({ id: legacyIssue[0]! });
-            if (!target) return text("Issue not found", 404);
-            return permanentRedirect(`${issueRoutePath(target, url.searchParams.get("tab"))}${paginationSuffix(url)}`);
-          }
-          const requestedView = url.searchParams.get("view");
-          if (requestedView === "team") {
-            const agentId = url.searchParams.get("agent");
-            if (agentId) {
-              const profile = await dependencies.getAgentProfile(agentId);
-              return profile ? permanentRedirect(agentHref(profile.id)) : text("Agent not found", 404);
-            }
-            return permanentRedirect(`/team${paginationSuffix(url)}`);
-          }
-          if (requestedView === "agent") {
-            const runId = url.searchParams.get("run");
-            if (runId) {
-              if (!/^[A-Za-z0-9-]{1,100}$/.test(runId) || !await dependencies.getSteeringRun(runId)) {
-                return text("Operator run not found", 404);
-              }
-              return permanentRedirect(`/operator/runs/${encodeURIComponent(runId)}${paginationSuffix(url)}`);
-            }
-            return permanentRedirect(`/operator${paginationSuffix(url)}`);
-          }
-          const legacyPath = requestedView === "attention" ? "/attention" : "/board";
-          return permanentRedirect(`${legacyPath}${paginationSuffix(url)}`);
-        }
-
-        let issueId: string | null = null;
-        let repositoryId: string | null = null;
-        let repositoryNotFound = false;
-        if (repositoryPath) {
-          try { repositoryId = decodeURIComponent(repositoryPath[1]!); } catch { repositoryNotFound = true; }
-        }
-        if (issuePagePath) {
-          let repository: string;
-          try { repository = decodeURIComponent(issuePagePath[1]!); } catch { return text("Invalid repository id", 400); }
-          const number = Number(issuePagePath[2]);
-          if (!Number.isSafeInteger(number)) return text("Issue not found", 404);
-          const target = await dependencies.getIssueRoute({ repository, number });
+        const legacyIssue = url.searchParams.getAll("issue");
+        if (legacyIssue.length === 1) {
+          const target = await dependencies.getIssueRoute({ id: legacyIssue[0]! });
           if (!target) return text("Issue not found", 404);
-          issueId = target.id;
+          return permanentRedirect(`${issueRoutePath(target, url.searchParams.get("tab"))}${paginationSuffix(url)}`);
         }
-
-        if (teamProfilePath) {
-          let agentId: string;
-          try { agentId = decodeURIComponent(teamProfilePath[1]!); } catch { return text("Invalid agent id", 400); }
-          if (!await dependencies.getAgentProfile(agentId)) return text("Agent not found", 404);
-        }
-
-        const runId = operatorRunPath?.[1] ?? null;
-        if (runId && !await dependencies.getSteeringRun(runId)) return text("Operator run not found", 404);
-
-        let report: ReportViewModel | undefined;
-        if (dashboardView === "reports") {
-          let repository: string | null = null;
-          if (reportPath![1]) {
-            try { repository = decodeURIComponent(reportPath![1]); } catch { return text("Invalid repository id", 400); }
+        const requestedView = url.searchParams.get("view");
+        if (requestedView === "team") {
+          const agentId = url.searchParams.get("agent");
+          if (agentId) {
+            const profile = await dependencies.getAgentProfile(agentId);
+            return profile ? permanentRedirect(agentHref(profile.id)) : text("Agent not found", 404);
           }
-          const requestedPeriod = url.searchParams.get("period") ?? "all";
-          if (!(REPORT_PERIOD_VALUES as readonly string[]).includes(requestedPeriod)) return text("Unknown report period", 400);
-          const built = await dependencies.getReport!({ period: requestedPeriod as ReportPeriod, repository });
-          if (!built) return text("Repository not found", 404);
-          report = built;
+          return permanentRedirect(`/team${paginationSuffix(url)}`);
         }
-
-        const page = dashboardPage(url, dashboardView!, repositoryId, runId, issueId);
-        // A live update names the card revisions the browser holds; those come back as placeholders.
-        const held = request.headers.get("x-conveyor-cards");
-        const heldCards = held ? new Set(held.split(" ").filter(Boolean).slice(0, 2_000)) : null;
-        const model = await dependencies.getDashboard(currentSession.csrfToken, page);
-        if (repositoryPath && (!repositoryId || !model.repositories.some((repository) => repository.id === repositoryId))) repositoryNotFound = true;
-        const team = page.view === "team" ? await dependencies.getAgentProfiles() : undefined;
-        const accounts = page.view === "accounts" ? dependencies.listAccounts?.() ?? [] : undefined;
-        const notifications = page.view === "notifications" ? dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } : undefined;
-        return response(renderDashboard({ ...model, view: page.view, account: currentSession.account, ...(team ? { team } : {}), ...(report ? { report } : {}), ...(accounts ? { accounts } : {}), ...(notifications ? { notifications } : {}) }, heldCards), repositoryNotFound ? 404 : 200, "text/html; charset=utf-8");
+        if (requestedView === "agent") {
+          const runId = url.searchParams.get("run");
+          if (runId) {
+            if (!/^[A-Za-z0-9-]{1,100}$/.test(runId) || !await dependencies.getSteeringRun(runId)) {
+              return text("Operator run not found", 404);
+            }
+            return permanentRedirect(`/operator/runs/${encodeURIComponent(runId)}${paginationSuffix(url)}`);
+          }
+          return permanentRedirect(`/operator${paginationSuffix(url)}`);
+        }
+        const legacyPath = requestedView === "attention" ? "/attention" : "/board";
+        return permanentRedirect(`${legacyPath}${paginationSuffix(url)}`);
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
     }
 
-    if (path === "/events/dashboard") {
+    // The addresses the application had while it was previewed beside the server-rendered dashboard.
+    if (path === "/app" || path.startsWith("/app/")) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      return permanentRedirect(`${path.slice("/app".length) || "/"}${url.search}`);
+    }
+
+    if (path === "/assets/app.js") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      try {
+        const bundle = await dashboardAppBundle();
+        const current = url.searchParams.get("v") === bundle.version;
+        return response(bundle.js, 200, "text/javascript; charset=utf-8", {
+          "cache-control": current ? "public, max-age=31536000, immutable" : "no-cache",
+        });
+      } catch {
+        return text("The dashboard application is temporarily unavailable", 503);
+      }
+    }
+
+    // Every dashboard address serves the application, which reads its view and item from the address.
+    if (isDashboardPath(path)) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return redirect(path === "/" && !url.search ? "/login" : `/login?returnTo=${encodeURIComponent(`${path}${url.search}`)}`);
+      if (path === "/accounts" && currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      try {
+        const bundle = await dashboardAppBundle();
+        return response(dashboardAppShell(bundle.version), 200, "text/html; charset=utf-8", { "cache-control": "no-store" });
+      } catch {
+        return text("The dashboard application is temporarily unavailable", 503);
+      }
+    }
+
+    if (path === "/api/v1/snapshot") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (!dependencies.getDashboardSnapshot) return json({ error: "unavailable" }, 503);
+      try {
+        const { seq, model } = dependencies.getDashboardSnapshot();
+        const superuser = currentSession.account.role === "superuser";
+        return response(JSON.stringify({
+          seq,
+          model: superuser ? model : { ...model, restrictedRepositories: {} },
+          status: dependencies.getDashboardFeedStatus?.() ?? null,
+          account: { id: currentSession.account.id, username: currentSession.account.username, role: currentSession.account.role, avatar: currentSession.account.avatar },
+          csrfToken: currentSession.csrfToken,
+        }), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+      } catch {
+        return json({ error: "unavailable" }, 503);
+      }
+    }
+
+    const viewData = /^\/api\/v1\/views\/([a-z]+)$/.exec(path);
+    if (viewData) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      const send = (body: unknown) => response(JSON.stringify(body), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+      switch (viewData[1]) {
+        case "team":
+          return send({ team: await dependencies.getAgentProfiles() });
+        case "reports": {
+          if (!dependencies.getReport) return json({ error: "unavailable" }, 503);
+          const period = url.searchParams.get("period") ?? "all";
+          if (!(REPORT_PERIOD_VALUES as readonly string[]).includes(period)) return json({ error: "Unknown report period" }, 400);
+          const report = await dependencies.getReport({ period: period as ReportPeriod, repository: url.searchParams.get("repository") || null });
+          return report ? send({ report }) : json({ error: "Repository not found" }, 404);
+        }
+        case "operator": {
+          if (!dependencies.getSteeringView) return json({ error: "unavailable" }, 503);
+          const run = url.searchParams.get("run");
+          if (run !== null && !/^[A-Za-z0-9-]{1,100}$/.test(run)) return json({ error: "Operator run not found" }, 404);
+          return send({ steering: dependencies.getSteeringView(run) });
+        }
+        case "accounts":
+          if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+          return send({ accounts: dependencies.listAccounts?.() ?? [] });
+        case "notifications":
+          return send({ notifications: dependencies.getPushPreferences?.(currentSession.account.id) ?? { questions: false, stopped: false, done: false } });
+        case "about":
+          return send({ build: BUILD });
+        case "profile":
+          return send({});
+        default:
+          return json({ error: "not found" }, 404);
+      }
+    }
+
+    if (path === "/api/v1/recent") {
       const methodError = requireMethod(request, "GET");
       if (methodError) return methodError;
       if (!session(request)) return json({ error: "unauthorized" }, 401);
-      const lastEventId = /^\d{1,15}$/.test(request.headers.get("last-event-id") ?? "") ? Number(request.headers.get("last-event-id")) : null;
-      return response(dashboardEventStream(dependencies, lastEventId), 200, "text/event-stream; charset=utf-8", {
+      if (!dependencies.getRecentActivity) return json({ error: "unavailable" }, 503);
+      return response(JSON.stringify(dependencies.getRecentActivity(dashboardPage(url, "recent"))), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+    }
+
+    const itemPath = /^\/api\/v1\/items\/([^/]{1,200})\/([1-9]\d{0,9})$/.exec(path);
+    if (itemPath) {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (!dependencies.getIssueDetails) return json({ error: "unavailable" }, 503);
+      let repository: string;
+      try { repository = decodeURIComponent(itemPath[1]!); } catch { return json({ error: "Invalid repository id" }, 400); }
+      try {
+        const target = await dependencies.getIssueRoute({ repository, number: Number(itemPath[2]) });
+        const issue = target ? dependencies.getIssueDetails(target.id) : null;
+        return issue
+          ? response(JSON.stringify({ ...issue, csrfToken: currentSession.csrfToken }), 200, "application/json; charset=utf-8", { "cache-control": "no-store" })
+          : json({ error: "Issue not found" }, 404);
+      } catch {
+        return json({ error: "unavailable" }, 503);
+      }
+    }
+
+    if (path === "/api/v1/done") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      if (!dependencies.getDashboardDone) return json({ error: "unavailable" }, 503);
+      const limit = Number(url.searchParams.get("limit"));
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) return json({ error: "limit must be between 1 and 500" }, 400);
+      const { q = "", repositoryIds = [] } = dashboardPage(url, "board");
+      return response(JSON.stringify({ items: dependencies.getDashboardDone({ limit, q, repositoryIds }) }), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+    }
+
+    if (path === "/api/v1/stream") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      const subscribe = dependencies.subscribeDashboardFeed;
+      if (!subscribe) return json({ error: "unavailable" }, 503);
+      const requested = request.headers.get("last-event-id") ?? url.searchParams.get("after") ?? "";
+      const after = /^\d{1,15}$/.test(requested) ? Number(requested) : null;
+      return response(dashboardPatchStream(subscribe, currentSession.account.role === "superuser", after), 200, "text/event-stream; charset=utf-8", {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
         "x-accel-buffering": "no",
@@ -975,30 +1012,6 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
           : text("Agent not found", 404);
       } catch {
         return text("Agent profile is temporarily unavailable", 503);
-      }
-    }
-
-    const issueDetails = /^\/api\/issues\/([^/]{1,1000})\/details$/.exec(path);
-    if (issueDetails) {
-      const methodError = requireMethod(request, "GET");
-      if (methodError) return methodError;
-      const currentSession = session(request);
-      if (!currentSession) return json({ error: "unauthorized" }, 401);
-      let issueId: string;
-      try {
-        issueId = decodeURIComponent(issueDetails[1]!);
-      } catch {
-        return text("Invalid issue id", 400);
-      }
-      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
-      if (!dependencies.getIssueDetails) return text("Issue details are temporarily unavailable", 503);
-      try {
-        const issue = await dependencies.getIssueDetails(currentSession.csrfToken, issueId);
-        return issue
-          ? response(renderIssueDetails(issue, currentSession.account.role === "superuser"), 200, "text/html; charset=utf-8")
-          : text("Issue not found", 404);
-      } catch {
-        return text("Issue details are temporarily unavailable", 503);
       }
     }
 
@@ -1206,6 +1219,7 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       if (!prompt || prompt.length > 12_000) return text("Invalid steering prompt", 400);
       try {
         const { result: runId } = await dependencies.dispatch("steering.start", { prompt }, actorOf(currentSession));
+        if ((request.headers.get("accept") ?? "").includes("application/json")) return json({ ok: true, runId });
         return redirect(`/operator/runs/${encodeURIComponent(runId)}`);
       } catch (error) {
         return commandError(error) ?? text(error instanceof Error ? error.message : "Unable to start steering agent", 409);
