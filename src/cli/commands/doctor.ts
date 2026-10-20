@@ -27,7 +27,17 @@ export interface DoctorReport {
   filesystems: FilesystemPressure[];
 }
 
-async function run(argv: string[], timeoutMs = 15_000): Promise<{ code: number; output: string }> {
+export interface DoctorCommand {
+  (argv: string[], timeoutMs?: number): Promise<{ code: number; output: string }>;
+}
+
+interface CodexIsolationConfig {
+  agents: Record<string, { runner: string }>;
+  runners: Record<string, { type: string }>;
+  repositories: Record<string, { agentEgress?: object | undefined }>;
+}
+
+const run: DoctorCommand = async (argv, timeoutMs = 15_000) => {
   try {
     const child = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -35,10 +45,56 @@ async function run(argv: string[], timeoutMs = 15_000): Promise<{ code: number; 
   } catch (error) {
     return { code: 127, output: error instanceof Error ? error.message : String(error) };
   }
-}
+};
 
 function tool(name: string, command: string, install: string): DoctorCheck | null {
   return Bun.which(command) ? null : { name, status: "fail", detail: `${command} is not on PATH`, fix: install };
+}
+
+function codexIsolationConfigured(config: Pick<CodexIsolationConfig, "agents" | "runners">): boolean {
+  return Object.values(config.agents).some((agent) => config.runners[agent.runner]?.type === "codex");
+}
+
+/** Checks the namespace and mount capabilities used by each configured Codex isolation mode. */
+export async function configuredCodexIsolationChecks(
+  config: CodexIsolationConfig,
+  execute: DoctorCommand = run,
+): Promise<DoctorCheck[]> {
+  if (!codexIsolationConfigured(config)) return [];
+  const repositories = Object.values(config.repositories);
+  const checks: DoctorCheck[] = [];
+  if (repositories.some((repository) => repository.agentEgress)) {
+    const namespaces = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--ro-bind", "/", "/", "--", "true"]);
+    checks.push(namespaces.code === 0
+      ? { name: "Codex egress namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" }
+      : {
+          name: "Codex egress namespaces",
+          status: "fail",
+          detail: `bwrap cannot create the network and PID namespaces required for Codex egress isolation: ${namespaces.output}`,
+          fix: "allow unprivileged user namespaces and network/PID namespace creation for bwrap (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
+        });
+    const mounts = await execute(["bwrap", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"]);
+    checks.push(mounts.code === 0
+      ? { name: "Codex egress mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" }
+      : {
+          name: "Codex egress mounts",
+          status: "fail",
+          detail: `bwrap cannot create the filesystem mounts required for Codex egress isolation: ${mounts.output}`,
+          fix: "allow bwrap to create mount namespaces and bind, proc, and tmpfs mounts (for example: grant the required AppArmor profile permissions)",
+        });
+  }
+  if (repositories.some((repository) => !repository.agentEgress)) {
+    const namespaces = await execute(["bwrap", "--unshare-user", "--die-with-parent", "--ro-bind", "/", "/", "--", "true"]);
+    checks.push(namespaces.code === 0
+      ? { name: "Codex sandbox namespaces", status: "ok", detail: "bwrap can create the user namespace required by the Codex sandbox" }
+      : {
+          name: "Codex sandbox namespaces",
+          status: "fail",
+          detail: `bwrap cannot create the user namespace required by the Codex sandbox: ${namespaces.output}`,
+          fix: "allow unprivileged user namespaces for Codex (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
+        });
+  }
+  return checks;
 }
 
 async function portAvailable(hostname: string, port: number): Promise<boolean> {
@@ -97,13 +153,10 @@ export async function doctorReport(
 
   const githubReady = !gh && checks[checks.length - 1]?.status === "ok";
   const transport = github ?? (githubReady ? new GhCliTransport() : null);
-  const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)");
-  if (bwrap) checks.push(bwrap);
-  else {
-    const probe = await run(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "true"]);
-    checks.push(probe.code === 0
-      ? { name: "sandbox", status: "ok", detail: "bwrap can create network and PID namespaces" }
-      : { name: "sandbox", status: "fail", detail: `bwrap cannot create namespaces: ${probe.output}`, fix: "allow unprivileged user namespaces (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)" });
+  if (config && codexIsolationConfigured(config)) {
+    const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)");
+    if (bwrap) checks.push(bwrap);
+    else checks.push(...await configuredCodexIsolationChecks(config));
   }
 
   if (config) {
