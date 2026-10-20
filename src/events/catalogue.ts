@@ -95,6 +95,7 @@ export const EVENT_CATALOGUE = {
   // Changes and CI
   "change.opened": define("Changes and CI", "Conveyor recorded a pull request for an item.", z.object({ number, state: z.string() }).strict()),
   "change.stateChanged": define("Changes and CI", "A recorded pull request's state changed (merged, closed, reopened).", z.object({ number, state: z.string() }).strict()),
+  "change.headObserved": define("Changes and CI", "Conveyor observed a new current head for an open pull request.", z.object({ headSha: sha }).strict()),
   "indicator.changed": define("Changes and CI", "A board indicator (such as CI) changed state, progress or head.", z.object({
     indicatorId: id, state: z.string(), progress: z.string(), headSha: sha.nullable(),
   }).strict()),

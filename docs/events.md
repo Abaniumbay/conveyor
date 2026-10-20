@@ -81,6 +81,7 @@ Each event has:
 | --- | --- | --- |
 | `advisoryCi.finished` | An advisory CI watch posted its result. | `watchId`: string<br>`state`: string |
 | `advisoryCi.watchStarted` | An advisory CI watch started for a head. | `watchId`: string<br>`headSha`: string |
+| `change.headObserved` | Conveyor observed a new current head for an open pull request. | `headSha`: string |
 | `change.opened` | Conveyor recorded a pull request for an item. | `number`: integer<br>`state`: string |
 | `change.stateChanged` | A recorded pull request's state changed (merged, closed, reopened). | `number`: integer<br>`state`: string |
 | `indicator.changed` | A board indicator (such as CI) changed state, progress or head. | `indicatorId`: string<br>`state`: string<br>`progress`: string<br>`headSha`: string \| null |
