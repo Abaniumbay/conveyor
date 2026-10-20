@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -42,7 +44,12 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Check release-note fragments
         run: bun run changelog > /dev/null
-      - run: bun run check
+      - name: Run tests with coverage
+        run: bun test --coverage --coverage-reporter=lcov
+      - name: Check changed production-line coverage
+        run: bun run scripts/check-changed-coverage.ts --base origin/main --lcov coverage/lcov.info
+      - run: bun run benchmark:dashboard
+      - run: bun run typecheck
       - name: Verify release tests after release preparation
         shell: bash
         run: |
