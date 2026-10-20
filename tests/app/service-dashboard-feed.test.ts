@@ -57,10 +57,10 @@ repositories:
   const store = await ConveyorStore.open(config.settings.database);
   store.recordConfigSnapshot(config.hash, config);
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/repo", folder, configHash: config.hash });
-  const source = { labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-01-01T00:00:00Z" };
+  const source = { labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-01-01T00:00:00Z", state: "open" };
   const github = {
     async listIssues() {
-      return [{ id: "github:owner/repo#1", number: 1, url: "u", title: "Feature", body: "", state: "open", labels: source.labels, updatedAt: source.updatedAt }];
+      return [{ id: "github:owner/repo#1", number: 1, url: "u", title: "Feature", body: "", state: source.state, labels: source.labels, updatedAt: source.updatedAt }];
     },
     async repositoryVisibility() { return "private" as const; },
     async getIssueProvenance() {
@@ -143,6 +143,25 @@ test("an item that leaves Conveyor is removed from open dashboards", async () =>
 
     expect(dashboard.patches()).toContainEqual({ seq: expect.any(Number), entity: "item", id: "github:owner/repo#1", op: "remove" });
     dashboard.subscription.unsubscribe();
+  } finally {
+    await service.close();
+    store.close();
+  }
+});
+
+test("finds finished items that match the board's search and repositories", async () => {
+  const { store, service, source, web } = await setup();
+  try {
+    source.labels = ["conveyor", "conveyor:done"];
+    source.state = "closed";
+    await service.reconcileAll();
+    const done = (q: string, repositoryIds: string[]) => web.getDashboardDone!({ limit: 50, q, repositoryIds }).map((item) => item.id);
+
+    expect(done("", [])).toEqual(["github:owner/repo#1"]);
+    expect(done("feature", ["repo"])).toEqual(["github:owner/repo#1"]);
+    expect(done("#1", [])).toEqual(["github:owner/repo#1"]);
+    expect(done("unrelated", [])).toEqual([]);
+    expect(done("", ["other"])).toEqual([]);
   } finally {
     await service.close();
     store.close();

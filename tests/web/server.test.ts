@@ -431,6 +431,14 @@ describe("createWebHandler", () => {
     expect((await handler(new Request(`http://localhost${path}`, { method: "POST", headers: { cookie } }))).status).toBe(405);
   });
 
+  test("answers 503 when an item cannot be read", async () => {
+    const { handler } = setup({ getIssueDetails: () => { throw new Error("database is locked"); } });
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/items/repo/1", { headers: { cookie } }));
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("database is locked");
+  });
+
   test("compresses pages on request and lets browsers revalidate the scripts", async () => {
     const { handler } = setup();
     const { cookie } = await login(handler);
@@ -581,6 +589,8 @@ describe("createWebHandler", () => {
       ["/?issue=github%3Aowner%2Frepo%231&tab=journey", "/issues/midgame/1/journey"],
       ["/?view=team&agent=kaveh", "/team/kaveh"],
       ["/?view=agent&run=run-1", "/operator/runs/run-1"],
+      ["/?view=team&repo=midgame", "/team?repo=midgame"],
+      ["/?view=agent", "/operator"],
       ["/agents", "/team"],
       ["/agents/kaveh", "/team/kaveh"],
       // The addresses the application had while it was previewed beside the server-rendered dashboard.
@@ -592,7 +602,9 @@ describe("createWebHandler", () => {
       expect(response.headers.get("location")).toBe(location);
     }
 
-    expect((await get("/?issue=missing")).status).toBe(404);
+    for (const path of ["/?issue=missing", "/?view=team&agent=nobody", "/?view=agent&run=missing", "/?view=agent&run=not%20a%20run"]) {
+      expect({ path, status: (await get(path)).status }).toEqual({ path, status: 404 });
+    }
     expect((await get("/graph/extra")).status).toBe(404);
     expect((await handler(new Request("http://localhost/graph", { method: "POST", headers: { cookie } }))).status).toBe(405);
   });

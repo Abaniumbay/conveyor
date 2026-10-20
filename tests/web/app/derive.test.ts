@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { boardSelectionFromUrl, boardViewModel, dashboardPath, DEFAULT_DONE_LIMIT, filteredGraph, itemTabOf, viewDataUrl } from "../../../src/web/app/derive";
+import { boardSelectionFromUrl, boardViewModel, dashboardPath, DEFAULT_DONE_LIMIT, filteredGraph, isItemPath, itemTabOf, viewDataUrl } from "../../../src/web/app/derive";
 import type { DashboardItem, DashboardModel } from "../../../src/web/model";
 
 function item(number: number, overrides: Partial<DashboardItem> = {}): DashboardItem {
@@ -146,6 +146,13 @@ describe("views", () => {
     expect(boardSelectionFromUrl(url)).toMatchObject({ view: "board" });
     expect(boardSelectionFromUrl(url, "/login")).toMatchObject({ view: "board" });
     expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/graph"), "/recent")).toMatchObject({ view: "graph", issue: null });
+  });
+
+  test("knows which addresses open an item", () => {
+    expect(isItemPath("/issues/repo/7")).toBe(true);
+    expect(isItemPath("/issues/repo/7/logs")).toBe(true);
+    expect(isItemPath("/issues/repo")).toBe(false);
+    expect(isItemPath("/graph")).toBe(false);
   });
 
   test("opens an item on the tab an older address names", () => {

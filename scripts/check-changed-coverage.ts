@@ -87,6 +87,9 @@ function isProductionFile(file: string): boolean {
   if (normalized.startsWith("test/") || normalized.startsWith("tests/") || normalized.includes("/__tests__/")) return false;
   if (/\.(?:test|spec)\.[^.]+$/.test(normalized)) return false;
   if (normalized === "src/db/migrations.ts" || /(?:^|\/)migrations?(?:\/|$)/.test(normalized)) return false;
+  // The dashboard application runs only in a browser, where the Playwright suites exercise it; the
+  // scripts (packaging, smoke test, benchmark) run as their own CI steps. Neither reaches `bun test --coverage`.
+  if (normalized.startsWith("src/web/app/") || normalized.startsWith("scripts/")) return false;
   if (/(?:^|\/)generated(?:\/|$)/.test(normalized) || /(?:^|\/)generated\.[^.]+$/.test(normalized) || /\.generated\.[^.]+$/.test(normalized)) return false;
   return true;
 }
