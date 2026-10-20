@@ -976,6 +976,7 @@ Primary views:
 - Waiting for input.
 - Blocked, rejected, needs-intervention, done, closable, paused, and source-closed status presentation on cards.
 - Run, stage, repository, issue, agent, and total cost summaries.
+- A persistent draining notice on every authenticated view while service admission is paused. It names the recorded reason and makes clear that work already running continues. A pending upgrade additionally names its target version and links to that release's GitHub tag; operator, restart, rollback, and other drains do not infer a release from their reason text.
 
 Every card links directly to its source issue. Its detail header shows a stage badge beside the repository and issue number, using the configured stage icon when one exists, and one source-issue link that opens safely in a new tab from every detail tab. The badge reads Backlog or Done for those board positions; a history-only item retains its last stage marked offboarded. Issue detail shows:
 

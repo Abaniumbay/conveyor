@@ -71,6 +71,7 @@ function dashboard(
     project: "sample/repo",
     totalUsage: "0 tokens",
     harnessUsage: [],
+    draining: null,
     updatedAt: "2026-10-12T12:00:00Z",
     revision,
     view: "board",
@@ -857,6 +858,47 @@ describe("dashboard live refresh position", () => {
         const dialog = document.querySelector<HTMLElement>("dialog.issue-details[open]");
         return document.documentElement.scrollWidth <= window.innerWidth && (dialog === null || dialog.scrollWidth <= dialog.clientWidth);
       })).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("keeps drain details accessible at phone width and clears them through live refresh", async () => {
+    let revision = "draining-1";
+    let currentDashboard: DashboardViewModel = {
+      ...dashboard(revision, []),
+      draining: {
+        reason: "upgrade to 9.9.9",
+        upgrade: {
+          version: "9.9.9",
+          releaseUrl: "https://github.com/Abaniumbay/conveyor/releases/tag/v9.9.9",
+        },
+      },
+    };
+    const server = startDashboard({ dashboard: () => currentDashboard, revision: () => revision, delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "light" });
+      await signIn(page, server.port);
+
+      const release = page.getByRole("link", { name: "View release 9.9.9" });
+      await page.waitForFunction(() => document.querySelector(".drain-notice")?.textContent?.includes("Draining"));
+      expect(await page.locator(".drain-notice").textContent()).toContain("Work already running continues.");
+      expect(await release.getAttribute("href")).toBe("https://github.com/Abaniumbay/conveyor/releases/tag/v9.9.9");
+      await release.focus();
+      expect(await release.evaluate((element) => document.activeElement === element)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+      const darkPage = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme: "dark" });
+      await signIn(darkPage, server.port);
+      expect(await darkPage.locator(".drain-notice").textContent()).toContain("Reason: upgrade to 9.9.9");
+      expect(await darkPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+      await armReplacement(page);
+      revision = "draining-2";
+      currentDashboard = { ...dashboard(revision, []), draining: null };
+      await waitForArmedReplacement(page);
+      expect(await page.locator(".drain-notice").count()).toBe(0);
     } finally {
       server.stop(true);
     }

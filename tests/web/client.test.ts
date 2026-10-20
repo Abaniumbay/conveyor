@@ -631,6 +631,10 @@ describe("dashboardViewsForEvent", () => {
   test("an item change refreshes the board", () => {
     expect(dashboardViewsForEvent("item.stageChanged")).toEqual(["board"]);
   });
+  test("admission changes refresh the board", () => {
+    expect(dashboardViewsForEvent("admission.paused")).toEqual(["board"]);
+    expect(dashboardViewsForEvent("admission.resumed")).toEqual(["board"]);
+  });
   test("a conversation message refreshes the board and the conversation", () => {
     expect(dashboardViewsForEvent("message.posted")).toEqual(["board", "conversation"]);
   });
