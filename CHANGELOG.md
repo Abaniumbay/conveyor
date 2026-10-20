@@ -10,6 +10,42 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.12.0] - 2026-10-20
+
+This release adds a per-repository limit on items in progress in the code pipeline, so parallel branches in one repository stop colliding, and lets implementers record criterion tests before a pull request exists. The dashboard explains why an eligible item is waiting, stays available during startup reconciliation and reconnects its live updates. Conveyor also recovers lost workspaces, replaces closed unmerged pull requests and resumes stopped roll-up parents.
+
+### Added
+
+- A repository can set `inFlight: { limit, from }` to limit how many of its items are in progress in the code pipeline, counting items waiting for CI or review and not counting refinement. Items over the limit wait in the stage before `from` with the holders named on the dashboard and in `conveyor item show`.
+
+### Changed
+
+- Item details now show the current stage and a direct source-issue link in their header, including on the standalone item page.
+
+- Implementation agents can now record named criterion tests before a pull request exists. Conveyor carries those unverified claims into the pull request and verifies them during review.
+
+- Dashboard action buttons now use consistent primary and secondary styles across repository, item, board, and settings views.
+
+- Graph filters now use the same repository chips, grouped controls, and responsive actions as the dashboard board.
+
+### Fixed
+
+- The dashboard now reconnects its live updates after returning to the page, keeps idle streams alive, and directs expired sessions to sign in again.
+
+- The dashboard, health endpoint, and status command stay available during startup reconciliation, with per-repository progress and degraded failures shown until readiness is reached.
+
+- Stopped roll-up parents can now resume waiting for their children from the dashboard or CLI without starting parent work again.
+
+- The dashboard and `conveyor item show` now explain when an eligible item is waiting on dependencies or queued for runner capacity, including the items holding full slots.
+
+- Conveyor now recovers an item's existing worktree or branch after its local workspace record is lost, preserving unfinished work and reconnecting an existing pull request.
+
+- Conveyor now replaces a closed, unmerged pull request with the branch's open pull request or a new one before pre-merge work continues.
+
+- Conveyor can now lease-push a feature branch after rebasing it onto a moved base branch, while refusing to discard published branch changes.
+
+- Board filters now hide backlog reorder controls together with excluded issues.
+
 ## [0.11.3] - 2026-10-18
 
 Items start their next stage as soon as the previous one finishes, opened item details stay open through board refreshes, and a CI failure that repeats stops the item instead of retrying.
