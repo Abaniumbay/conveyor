@@ -9,6 +9,7 @@ export interface ChangedLineCoverageOptions {
   cwd: string;
   base: string;
   lcov: string;
+  baselineLcov?: string;
 }
 
 export interface UncoveredChangedLine {
@@ -21,7 +22,22 @@ export interface ChangedLineCoverageResult {
   covered: number;
   total: number;
   passed: boolean;
+  changedLinePassed: boolean;
   uncovered: UncoveredChangedLine[];
+  baseline: BaselineCoverageComparison | null;
+}
+
+export interface TotalLineCoverage {
+  covered: number;
+  total: number;
+  percentage: number;
+}
+
+export interface BaselineCoverageComparison {
+  current: TotalLineCoverage;
+  baseline: TotalLineCoverage;
+  drop: number;
+  passed: boolean;
 }
 
 interface ChangedLine {
@@ -81,6 +97,20 @@ function parseLcov(cwd: string, lcov: string): Map<string, Map<number, number>> 
   return coverage;
 }
 
+function totalLineCoverage(coverage: Map<string, Map<number, number>>, name: string): TotalLineCoverage {
+  let covered = 0;
+  let total = 0;
+  for (const [file, lines] of coverage) {
+    if (!isProductionFile(file)) continue;
+    for (const hits of lines.values()) {
+      total += 1;
+      if (hits > 0) covered += 1;
+    }
+  }
+  if (total === 0) throw new Error(`${name} contains no line coverage`);
+  return { covered, total, percentage: (covered / total) * 100 };
+}
+
 function isProductionFile(file: string): boolean {
   const normalized = file.replaceAll("\\", "/");
   if (!SOURCE_EXTENSIONS.has(path.extname(normalized))) return false;
@@ -119,7 +149,17 @@ export async function checkChangedCoverage(options: ChangedLineCoverageOptions):
     uncovered.push(changed);
   }
 
-  return { covered, total, passed: total === 0 || (covered / total) * 100 >= THRESHOLD, uncovered };
+  const changedLinePassed = total === 0 || (covered / total) * 100 >= THRESHOLD;
+  let baseline: BaselineCoverageComparison | null = null;
+  if (options.baselineLcov !== undefined) {
+    const baselineCoverage = parseLcov(options.cwd, await readFile(path.resolve(options.cwd, options.baselineLcov), "utf8"));
+    const current = totalLineCoverage(coverage, "Current LCOV report");
+    const main = totalLineCoverage(baselineCoverage, "Main LCOV report");
+    const drop = main.percentage - current.percentage;
+    baseline = { current, baseline: main, drop, passed: drop <= 0.1 + Number.EPSILON };
+  }
+
+  return { covered, total, changedLinePassed, passed: changedLinePassed && (baseline?.passed ?? true), uncovered, baseline };
 }
 
 function ranges(lines: UncoveredChangedLine[]): UncoveredChangedLine[][] {
@@ -140,13 +180,17 @@ export function formatChangedCoverageFailure(result: ChangedLineCoverageResult):
     return [location, ...range.map((line) => `  ${line.line} | ${line.source}`)];
   });
   const percentage = result.total === 0 ? 100 : (result.covered / result.total) * 100;
-  return [...details, `Changed-line coverage: ${result.covered}/${result.total} (${percentage.toFixed(1)}%)`, ADVICE].join("\n");
+  const baseline = result.baseline && !result.baseline.passed
+    ? [`Total line coverage: ${result.baseline.current.percentage.toFixed(1)}% (main baseline: ${result.baseline.baseline.percentage.toFixed(1)}%; drop: ${result.baseline.drop.toFixed(1)} percentage points; maximum: 0.1)`]
+    : [];
+  return [...details, `Changed-line coverage: ${result.covered}/${result.total} (${percentage.toFixed(1)}%)`, ...baseline, ADVICE].join("\n");
 }
 
 /** Parses the command-line options accepted by the changed-line coverage check. */
-export function parseChangedCoverageArguments(args: string[]): Pick<ChangedLineCoverageOptions, "base" | "lcov"> {
+export function parseChangedCoverageArguments(args: string[]): { base: string; lcov: string; baselineLcov: string | undefined } {
   let base = "origin/main";
   let lcov = "coverage/lcov.info";
+  let baselineLcov: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const value = args[index + 1];
@@ -156,16 +200,19 @@ export function parseChangedCoverageArguments(args: string[]): Pick<ChangedLineC
     } else if (argument === "--lcov" && value) {
       lcov = value;
       index += 1;
+    } else if (argument === "--baseline-lcov" && value) {
+      baselineLcov = value;
+      index += 1;
     } else {
-      throw new Error("usage: check-changed-coverage.ts [--base <git-ref>] [--lcov <file>]");
+      throw new Error("usage: check-changed-coverage.ts [--base <git-ref>] [--lcov <file>] [--baseline-lcov <file>]");
     }
   }
-  return { base, lcov };
+  return { base, lcov, baselineLcov };
 }
 
 async function main(): Promise<void> {
-  const options = parseChangedCoverageArguments(Bun.argv.slice(2));
-  const result = await checkChangedCoverage({ cwd: process.cwd(), ...options });
+  const { baselineLcov, ...options } = parseChangedCoverageArguments(Bun.argv.slice(2));
+  const result = await checkChangedCoverage({ cwd: process.cwd(), ...options, ...(baselineLcov === undefined ? {} : { baselineLcov }) });
   if (result.passed) {
     const percentage = result.total === 0 ? 100 : (result.covered / result.total) * 100;
     console.log(`Changed-line coverage: ${result.covered}/${result.total} (${percentage.toFixed(1)}%)`);
