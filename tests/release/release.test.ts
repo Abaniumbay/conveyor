@@ -363,7 +363,7 @@ describe("release command readiness waiting", () => {
   }
 
   function context(home: string): CommandContext {
-    return { positionals: [], options: {}, paths: homePaths(home), json: false, interactive: false, out: () => {}, err: () => {} };
+    return { positionals: [], options: {}, paths: homePaths(home), homeExplicit: false, json: false, interactive: false, out: () => {}, err: () => {} };
   }
 
   async function statusServer(home: string, status: () => { version: { version: string }; ready: boolean } | Promise<Response>) {

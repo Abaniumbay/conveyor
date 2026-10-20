@@ -16,9 +16,11 @@ options, and \`--json\` prints machine-readable output where a command has any. 
 plaintext credential from a command argument: passwords come from a prompt without echo, a file, or
 stdin (\`-\`).
 
-The home is \`--home\`, else \`CONVEYOR_HOME\`, else \`~/.conveyor\`; the \`service\` commands, \`upgrade\` and
-\`rollback\` default to the home recorded in the installed systemd unit, so they also work under
-\`sudo\`. The configuration is \`--config\`, else \`<home>/config/conveyor.yaml\`.
+The home is \`--home\`, else \`CONVEYOR_HOME\`, else \`~/.conveyor\`. For installed \`service start\`,
+\`stop\`, \`restart\`, and \`status\`, the selected \`--unit\` supplies its recorded home only when neither
+\`--home\` nor \`CONVEYOR_HOME\` is set; an explicit home must match that unit. \`upgrade\` and \`rollback\`
+can use an explicit \`--home\` without a matching unit. The configuration is \`--config\`, else
+\`<home>/config/conveyor.yaml\`.
 
 ## Exit codes
 

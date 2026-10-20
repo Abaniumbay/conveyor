@@ -16,6 +16,8 @@ export interface CommandContext {
   positionals: string[];
   options: Record<string, string | boolean | undefined>;
   paths: HomePaths;
+  /** Whether --home or CONVEYOR_HOME chose the resolved home. */
+  homeExplicit: boolean;
   json: boolean;
   /** Whether the command may prompt (a terminal is attached); otherwise it needs every input as an option. */
   interactive: boolean;

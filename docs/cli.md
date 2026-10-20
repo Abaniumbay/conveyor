@@ -7,9 +7,11 @@ options, and `--json` prints machine-readable output where a command has any. No
 plaintext credential from a command argument: passwords come from a prompt without echo, a file, or
 stdin (`-`).
 
-The home is `--home`, else `CONVEYOR_HOME`, else `~/.conveyor`; the `service` commands, `upgrade` and
-`rollback` default to the home recorded in the installed systemd unit, so they also work under
-`sudo`. The configuration is `--config`, else `<home>/config/conveyor.yaml`.
+The home is `--home`, else `CONVEYOR_HOME`, else `~/.conveyor`. For installed `service start`,
+`stop`, `restart`, and `status`, the selected `--unit` supplies its recorded home only when neither
+`--home` nor `CONVEYOR_HOME` is set; an explicit home must match that unit. `upgrade` and `rollback`
+can use an explicit `--home` without a matching unit. The configuration is `--config`, else
+`<home>/config/conveyor.yaml`.
 
 ## Exit codes
 
@@ -101,6 +103,8 @@ Records the home, configuration and executable in the unit; enables but does not
 
 Start the service and wait until it answers (sudo).
 
+The selected --unit (default: conveyor) records its home. --home takes precedence over CONVEYOR_HOME; without either, this command uses that recorded home. An explicit home for a different installed unit is refused before it contacts or changes the service; select that unit with --unit &lt;name>. --config overrides only the configuration path.
+
 | Option | Description |
 | --- | --- |
 | `--unit <name>` | the systemd unit name (default: conveyor) |
@@ -108,6 +112,8 @@ Start the service and wait until it answers (sudo).
 ### `conveyor service stop`
 
 Stop the service, optionally draining running work first (sudo).
+
+The selected --unit (default: conveyor) records its home. --home takes precedence over CONVEYOR_HOME; without either, this command uses that recorded home. An explicit home for a different installed unit is refused before it contacts or changes the service; select that unit with --unit &lt;name>. --config overrides only the configuration path.
 
 | Option | Description |
 | --- | --- |
@@ -120,6 +126,8 @@ Stop the service, optionally draining running work first (sudo).
 
 Restart the service; with --drain it waits for running work and needs no sudo.
 
+The selected --unit (default: conveyor) records its home. --home takes precedence over CONVEYOR_HOME; without either, this command uses that recorded home. An explicit home for a different installed unit is refused before it contacts or changes the service; select that unit with --unit &lt;name>. --config overrides only the configuration path.
+
 | Option | Description |
 | --- | --- |
 | `--unit <name>` | the systemd unit name (default: conveyor) |
@@ -130,6 +138,8 @@ Restart the service; with --drain it waits for running work and needs no sudo.
 ### `conveyor service status`
 
 Show the unit's state and the running service.
+
+The selected --unit (default: conveyor) records its home. --home takes precedence over CONVEYOR_HOME; without either, this command uses that recorded home. An explicit home for a different installed unit is refused before it contacts or changes the service; select that unit with --unit &lt;name>. --config overrides only the configuration path.
 
 | Option | Description |
 | --- | --- |
