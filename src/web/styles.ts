@@ -3,7 +3,7 @@ export const themeInitScript = `try{const theme=localStorage.getItem("conveyor-t
 
 const darkThemeTokens = "color-scheme:dark;--concrete:#151A1D;--panel:#20272B;--ink:#F2F5F3;--steel:#AEB9BD;--run:#4DCE91;--wait:#F0B35B;--stop:#FF7B69;--run-text:#4DCE91;--wait-text:#F0B35B;--stop-text:#FF7B69;--signal:#83A7FF;--line:#465157;--on-signal:#0E1A34;--run-glow:rgba(77,206,145,.42);--stop-glow:rgba(255,123,105,.46);--overlay:rgba(0,0,0,.68);--popover-shadow:0 12px 32px rgba(0,0,0,.48);--inspector-shadow:-16px 0 44px rgba(0,0,0,.58);--loader-bg:rgba(21,26,29,.9);--repo-1:#7BA8FF;--repo-2:#BEA3FF;--repo-3:#63D5C5;--repo-4:#C5D66D;--repo-5:#66C7F0;--repo-6:#7ED68F;--repo-7:#9FA8FF;--repo-8:#A8BAC4";
 
-/** CSS for the Preact server-rendered dashboard. */
+/** CSS for the dashboard. */
 export const dashboardCss = `
 @font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-400.woff2") format("woff2")}
 @font-face{font-family:"IBM Plex Sans";font-style:normal;font-weight:500;font-display:swap;src:url("/assets/fonts/ibm-plex-sans-500.woff2") format("woff2")}

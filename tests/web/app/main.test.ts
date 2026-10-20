@@ -84,13 +84,6 @@ function startApp() {
   const handler = createWebHandler({
     auth,
     username: "operator",
-    getDashboard: () => board(state.title),
-    getSystemStatus: () => ({
-      memory: { usedBytes: 1, totalBytes: 2, processBytes: 1 },
-      disk: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 },
-      storage: { artifacts: { available: true, usedBytes: 1, totalBytes: 2, availableBytes: 1 }, temporaryDirectory: { available: false }, workspaceScratch: { available: false } },
-      uptimeSeconds: 1,
-    }),
     getDashboardSnapshot: () => feed.snapshot(),
     subscribeDashboardFeed: (listener, after) => feed.subscribe(listener, after),
     getDashboardFeedStatus: () => feed.status,
@@ -113,7 +106,8 @@ function startApp() {
     getIssueRunEvents: () => null,
     getIssueConversation: () => null,
     getIssueJourney: () => null,
-    getIssueRoute: () => null,
+    getIssueRoute: (reference) => "repository" in reference && reference.repository === "sample" && reference.number === 7 ? { id: "github:sample/repo#7", repository: "sample", number: 7 } : null,
+    getIssueDetails: (issueId) => issueId === "github:sample/repo#7" ? { ...issue(7, "Finished long ago", { state: "done", tone: "success" }), csrfToken: "" } : null,
     getAgentProfiles: () => [omid],
     getAgentProfile: () => omid,
   });
@@ -132,10 +126,10 @@ function startApp() {
 }
 
 async function signIn(page: Page, url: string) {
-  await page.goto(`${url}/login?returnTo=${encodeURIComponent("/app")}`);
+  await page.goto(`${url}/login?returnTo=${encodeURIComponent("/")}`);
   await page.locator('input[name="username"]').fill("operator");
   await page.locator('input[name="password"]').fill(password);
-  await Promise.all([page.waitForURL("**/app"), page.locator('button[type="submit"]').click()]);
+  await Promise.all([page.waitForURL((url) => url.pathname === "/"), page.locator('button[type="submit"]').click()]);
   await page.locator(".issue-title", { hasText: "Before" }).waitFor();
 }
 
@@ -170,11 +164,124 @@ describe("dashboard application", () => {
       await page.locator(".issue-title", { hasText: "Before" }).click();
 
       await page.locator("dialog[open] .details-header h2", { hasText: "Before" }).waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/issues/sample/20");
+      expect(new URL(page.url()).pathname).toBe("/issues/sample/20");
       await page.keyboard.press("Escape");
       // The dialog closes first; its close event then moves the address back to the board.
-      await page.waitForURL((url) => url.pathname === "/app");
+      await page.waitForURL((url) => url.pathname === "/");
       expect(await page.locator("dialog[open]").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("names the open item in the title and returns to the view's name when it closes", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      expect(await page.title()).toBe("Board · Conveyor");
+
+      await page.locator(".issue-title", { hasText: "Before" }).click();
+      await page.locator("dialog[open]").waitFor();
+      expect(await page.title()).toBe("#20 Before · Conveyor");
+      await page.keyboard.press("Escape");
+      // The board redraws on the next frame after the address changes.
+      await page.waitForFunction(() => document.title === "Board · Conveyor");
+      expect(new URL(page.url()).pathname).toBe("/");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("opens an older item address on the tab it names", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+
+      await page.goto(`${app.url}/issues/sample/20/journey`);
+
+      await page.locator("dialog[open] .details-header h2", { hasText: "Before" }).waitFor();
+      expect(await page.locator("dialog[open] [role='tab'][aria-selected='true']").textContent()).toBe("Journey");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("opens an item the board no longer holds from its own address", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+
+      await page.goto(`${app.url}/issues/sample/7`);
+
+      await page.locator("dialog[open] .details-header h2", { hasText: "Finished long ago" }).waitFor();
+      expect(await page.locator(".issue-title", { hasText: "Finished long ago" }).count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("an idle dashboard sends no requests", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.waitForFunction(() => document.querySelector("[data-connection-state]")?.textContent === "Connected");
+      const requests: string[] = [];
+      page.on("request", (request) => requests.push(request.url()));
+
+      // Longer than the heartbeat and the stream check, so both have run.
+      await page.waitForTimeout(6_000);
+
+      expect(requests).toEqual([]);
+      expect(await page.locator("[data-connection-state]").textContent()).toBe("Connected");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("sends a message from an open item's conversation", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.locator(".issue-title", { hasText: "Before" }).click();
+      await page.locator("dialog[open] [data-detail-tab='conversation']").click();
+
+      await page.locator("dialog[open] textarea[name='message']").fill("Use the existing helper.");
+      const [response] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST" && new URL(candidate.url()).pathname === "/api/issues/github%3Asample%2Frepo%2320/conversation"),
+        page.locator("dialog[open] .conversation-compose button[type='submit']").click(),
+      ]);
+
+      expect(response.status()).toBe(201);
+      expect(new URLSearchParams(response.request().postData() ?? "").get("message")).toBe("Use the existing helper.");
+      expect(await page.locator("dialog[open] textarea[name='message']").inputValue()).toBe("");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("keeps a stage's information open while a change is drawn", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await signIn(page, app.url);
+      await page.getByRole("button", { name: "About Implementation" }).first().click();
+      await page.waitForFunction(() => document.querySelector("#stage-info-stage-implementation")?.hasAttribute("open"));
+
+      app.rename("After");
+
+      await page.locator(".issue-title", { hasText: "After" }).waitFor();
+      expect(await page.locator("#stage-info-stage-implementation").getAttribute("open")).not.toBeNull();
     } finally {
       app.stop();
     }
@@ -190,16 +297,16 @@ describe("dashboard application", () => {
 
       await page.locator(".tabs a", { hasText: "Graph" }).click();
       await page.locator("[data-graph-node]").first().waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/graph");
+      expect(new URL(page.url()).pathname).toBe("/graph");
       expect(await page.locator("[data-graph-node]").count()).toBe(2);
 
       await page.locator(".tabs a", { hasText: "Recent" }).click();
       await page.locator(".recent-feed, main", { hasText: "Shipped thing" }).first().waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/recent");
+      expect(new URL(page.url()).pathname).toBe("/recent");
 
       await page.locator(".tabs a", { hasText: "Repositories" }).click();
       await page.locator("main", { hasText: "owner/sample" }).first().waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/repositories");
+      expect(new URL(page.url()).pathname).toBe("/repositories");
 
       expect(await page.evaluate(() => Reflect.get(window, "stayed"))).toBe(true);
     } finally {
@@ -213,7 +320,7 @@ describe("dashboard application", () => {
       browser = await chromium.launch();
       const page = await browser.newPage();
       await signIn(page, app.url);
-      await page.goto(`${app.url}/app/graph`);
+      await page.goto(`${app.url}/graph`);
       await page.locator("[data-graph-node]").first().waitFor();
       await page.locator("select[name='stage']").selectOption("review");
       await page.locator(".graph-view button[type='submit']").click();
@@ -234,9 +341,9 @@ describe("dashboard application", () => {
       await page.locator(".tabs a", { hasText: "Team" }).click();
       await page.locator(".team-card .card-open", { hasText: "Omid" }).click();
       await page.locator("dialog[open][data-agent-id='omid']").waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/team/omid");
+      expect(new URL(page.url()).pathname).toBe("/team/omid");
       await page.keyboard.press("Escape");
-      await page.waitForURL((url) => url.pathname === "/app/team");
+      await page.waitForURL((url) => url.pathname === "/team");
     } finally {
       app.stop();
     }
@@ -250,10 +357,10 @@ describe("dashboard application", () => {
       await signIn(page, app.url);
       await page.locator(".tabs a", { hasText: "Reports" }).click();
       await page.locator("main", { hasText: "sample" }).first().waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/reports");
+      expect(new URL(page.url()).pathname).toBe("/reports");
       await page.locator(".tabs a", { hasText: "Operator" }).click();
       await page.locator(".agent-event", { hasText: "Board checked." }).waitFor();
-      expect(new URL(page.url()).pathname).toBe("/app/operator");
+      expect(new URL(page.url()).pathname).toBe("/operator");
     } finally {
       app.stop();
     }
@@ -265,7 +372,7 @@ describe("dashboard application", () => {
       browser = await chromium.launch();
       const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true });
       await signIn(page, app.url);
-      for (const path of ["/app", "/app/graph", "/app/recent", "/app/attention", "/app/repositories", "/app/repositories/sample", "/app/team", "/app/reports", "/app/operator", "/app/accounts", "/app/profile", "/app/settings/notifications", "/app/about"]) {
+      for (const path of ["/", "/graph", "/recent", "/attention", "/repositories", "/repositories/sample", "/team", "/reports", "/operator", "/accounts", "/profile", "/settings/notifications", "/about"]) {
         await page.goto(`${app.url}${path}`);
         await page.locator("main.dashboard").waitFor();
         await page.waitForTimeout(100);

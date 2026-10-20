@@ -29,6 +29,7 @@ class FakeStream implements LiveEventSource {
 }
 
 function setup(responses: Array<{ status: number; body?: unknown }>) {
+  const clock = { now: 1_000 };
   const requests: string[] = [];
   const streams: FakeStream[] = [];
   let signedOut = 0;
@@ -44,10 +45,11 @@ function setup(responses: Array<{ status: number; body?: unknown }>) {
       return stream;
     },
     onSignedOut: () => { signedOut += 1; },
+    now: () => clock.now,
   });
   const states: LiveState[] = [];
   store.subscribe((state) => states.push(state));
-  return { store, requests, streams, states, signedOut: () => signedOut };
+  return { store, requests, streams, states, clock, signedOut: () => signedOut };
 }
 
 const snapshot = (seq: number, title = "Item 1") => ({
@@ -119,4 +121,55 @@ describe("LiveStore", () => {
     expect(signedOut()).toBe(1);
     expect(streams).toHaveLength(0);
   });
+
+  test("keeps a stream that is still sending heartbeats", async () => {
+    const { store, streams, clock } = setup([snapshot(7)]);
+    await store.start();
+    streams[0]!.onopen?.(new Event("open"));
+    clock.now += 10_000;
+    streams[0]!.send("keep-alive", {});
+    clock.now += 10_000;
+    store.check();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]!.closed).toBe(false);
+  });
+
+  test("reopens a silent stream from the last patch it applied", async () => {
+    const { store, requests, streams, clock } = setup([snapshot(7)]);
+    await store.start();
+    streams[0]!.onopen?.(new Event("open"));
+    streams[0]!.send("patch", { seq: 9, entity: "item", id: "i1", op: "upsert", data: { title: "Renamed" } });
+    clock.now += 13_000;
+    store.check();
+    expect(streams[0]!.closed).toBe(true);
+    expect(streams[1]?.url).toBe("/api/v1/stream?after=9");
+    expect(requests).toEqual(["/api/v1/snapshot"]);
+  });
+
+  test("reopens a stream the browser closed", async () => {
+    const { store, streams } = setup([snapshot(7)]);
+    await store.start();
+    streams[0]!.readyState = 2;
+    store.check();
+    expect(streams).toHaveLength(2);
+  });
+
+  test("waits longer after each failed restart", async () => {
+    const { store, requests, streams } = setup([snapshot(7), { status: 500 }, { status: 500 }, snapshot(8)]);
+    await store.start();
+    streams[0]!.readyState = 2;
+    streams[0]!.onerror?.(new Event("error"));
+    await Bun.sleep(0);
+    expect(requests).toHaveLength(2);
+    // A pending retry is not doubled by a check.
+    store.check();
+    expect(streams).toHaveLength(1);
+    await Bun.sleep(1_100);
+    expect(requests).toHaveLength(3);
+    await Bun.sleep(1_100);
+    expect(requests).toHaveLength(3);
+    await Bun.sleep(1_000);
+    expect(requests).toHaveLength(4);
+    expect(streams[1]?.url).toBe("/api/v1/stream?after=8");
+  }, 10_000);
 });

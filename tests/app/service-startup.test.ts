@@ -191,13 +191,13 @@ describe("startup reconciliation", () => {
       const [live, ready, dashboard, status] = await Promise.all([
         fetch(new URL("/health/live", web.url)),
         fetch(new URL("/health/ready", web.url), { headers: { cookie } }),
-        fetch(new URL("/board", web.url), { headers: { cookie } }),
+        fetch(new URL("/api/v1/snapshot", web.url), { headers: { cookie } }),
         fetch("http://example.com/v1/status", { unix: socket }),
       ]);
 
       expect(live.status).toBe(200);
       expect(ready.status).toBe(503);
-      expect(await dashboard.text()).toContain("Reconciling startup state");
+      expect(await dashboard.text()).toContain(`"startup":"reconciling"`);
       expect(await status.json()).toMatchObject({
         ready: false,
         startup: { state: "starting", repository: "app", phase: "reconciling" },
@@ -213,7 +213,7 @@ describe("startup reconciliation", () => {
         ready: true,
         startup: { state: "ready", repository: null, phase: null },
       });
-      expect(await (await fetch(new URL("/board", web.url), { headers: { cookie } })).text()).not.toContain("Reconciling startup state");
+      expect(await (await fetch(new URL("/api/v1/snapshot", web.url), { headers: { cookie } })).text()).not.toContain(`"startup":"reconciling"`);
       expect(records).toEqual(expect.arrayContaining([
         expect.objectContaining({
           message: "Startup repository reconciliation completed", repository: "app", issues: 0, success: true,
@@ -286,14 +286,14 @@ describe("startup reconciliation", () => {
       const [live, ready, dashboard, status] = await Promise.all([
         fetch(new URL("/health/live", web.url)),
         fetch(new URL("/health/ready", web.url), { headers: { cookie } }),
-        fetch(new URL("/board", web.url), { headers: { cookie } }),
+        fetch(new URL("/api/v1/snapshot", web.url), { headers: { cookie } }),
         fetch("http://example.com/v1/status", { unix: socket }),
       ]);
 
       expect(live.status).toBe(200);
       expect(ready.status).toBe(503);
-      expect(await dashboard.text()).toContain("Starting repository setup");
-      expect(await (await fetch(new URL("/board", web.url), { headers: { cookie } })).text()).toContain("Cached issue");
+      expect(await dashboard.text()).toContain(`"startup":"onboarding"`);
+      expect(await (await fetch(new URL("/api/v1/snapshot", web.url), { headers: { cookie } })).text()).toContain("Cached issue");
       expect(await status.json()).toMatchObject({
         ready: false,
         startup: { state: "starting", repository: "app", phase: "onboarding" },
@@ -304,7 +304,7 @@ describe("startup reconciliation", () => {
       const [failedLive, failedReady, failedDashboard, failedStatus] = await Promise.all([
         fetch(new URL("/health/live", web.url)),
         fetch(new URL("/health/ready", web.url), { headers: { cookie } }),
-        fetch(new URL("/board", web.url), { headers: { cookie } }),
+        fetch(new URL("/api/v1/snapshot", web.url), { headers: { cookie } }),
         fetch("http://example.com/v1/status", { unix: socket }),
       ]);
       expect(failedLive.status).toBe(200);

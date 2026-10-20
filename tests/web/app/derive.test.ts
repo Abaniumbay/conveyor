@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { appPath, boardSelectionFromUrl, boardViewModel, DEFAULT_DONE_LIMIT, filteredGraph, viewDataUrl } from "../../../src/web/app/derive";
+import { boardSelectionFromUrl, boardViewModel, dashboardPath, DEFAULT_DONE_LIMIT, filteredGraph, itemTabOf, viewDataUrl } from "../../../src/web/app/derive";
 import type { DashboardItem, DashboardModel } from "../../../src/web/model";
 
 function item(number: number, overrides: Partial<DashboardItem> = {}): DashboardItem {
@@ -35,7 +35,7 @@ function model(items: DashboardItem[]): DashboardModel {
 }
 
 const account = { id: "a", username: "owner", role: "superuser" as const, avatar: "🐼" };
-const board = (items: DashboardItem[], url = "https://conveyor.example.com/app") =>
+const board = (items: DashboardItem[], url = "https://conveyor.example.com/") =>
   boardViewModel({ model: model(items), account, csrfToken: "token", selection: boardSelectionFromUrl(new URL(url)) });
 
 describe("boardViewModel", () => {
@@ -77,58 +77,90 @@ describe("boardViewModel", () => {
   });
 
   test("selects the item the address names", () => {
-    const view = board([item(7)], "https://conveyor.example.com/app/issues/repo/7");
+    const view = board([item(7)], "https://conveyor.example.com/issues/repo/7");
     expect(view.selectedIssue?.number).toBe(7);
   });
 
   test("selects nothing for an item that is not on the board", () => {
-    expect(board([item(7)], "https://conveyor.example.com/app/issues/repo/8").selectedIssue).toBeNull();
+    expect(board([item(7)], "https://conveyor.example.com/issues/repo/8").selectedIssue).toBeNull();
+  });
+
+  test("selects an older finished item loaded for Done", () => {
+    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/9")), olderDone: [item(9, { placement: "done" })] });
+    expect(view.selectedIssue?.number).toBe(9);
+  });
+
+  test("shows an item loaded on its own when the board does not hold it", () => {
+    const { placement: _placement, column: _column, order: _order, needsYou: _needsYou, conversation: _conversation, ...outside } = item(8, { historyOnly: true });
+    const selection = boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/8"));
+    expect(boardViewModel({ model: model([]), account, csrfToken: "token", selection, outsideItem: { ...outside, csrfToken: "stale" } }).selectedIssue)
+      .toMatchObject({ number: 8, historyOnly: true, csrfToken: "token" });
+    // One loaded for another address is not shown.
+    const other = boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/5"));
+    expect(boardViewModel({ model: model([]), account, csrfToken: "token", selection: other, outsideItem: outside }).selectedIssue).toBeNull();
   });
 });
 
 describe("boardSelectionFromUrl", () => {
   test("reads the filters and the Done limit", () => {
-    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/app?repo=a&repo=b&q=fix&state=running&doneLimit=40"))).toEqual({
+    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/?repo=a&repo=b&q=fix&state=running&doneLimit=40"))).toEqual({
       view: "board", repositoryId: null, graphStage: null, agentId: null, runId: null, repositoryIds: ["a", "b"], q: "fix", state: "running", issue: null, doneLimit: 40,
     });
   });
 
   test("ignores an unusable Done limit", () => {
-    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/app?doneLimit=-3")).doneLimit).toBe(DEFAULT_DONE_LIMIT);
+    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/?doneLimit=-3")).doneLimit).toBe(DEFAULT_DONE_LIMIT);
   });
 });
 
 describe("views", () => {
   test("reads each application view from its address", () => {
     const view = (path: string) => boardSelectionFromUrl(new URL(`https://conveyor.example.com${path}`));
-    expect(view("/app")).toMatchObject({ view: "board", repositoryId: null });
-    expect(view("/app/graph?stage=review")).toMatchObject({ view: "graph", graphStage: "review" });
-    expect(view("/app/recent")).toMatchObject({ view: "recent" });
-    expect(view("/app/attention")).toMatchObject({ view: "attention" });
-    expect(view("/app/repositories")).toMatchObject({ view: "repositories" });
-    expect(view("/app/repositories/my%20app")).toMatchObject({ view: "repository", repositoryId: "my app" });
-    expect(view("/app/issues/repo/7")).toMatchObject({ view: "board", issue: { repository: "repo", number: 7 } });
+    expect(view("/")).toMatchObject({ view: "board", repositoryId: null });
+    expect(view("/graph?stage=review")).toMatchObject({ view: "graph", graphStage: "review" });
+    expect(view("/recent")).toMatchObject({ view: "recent" });
+    expect(view("/attention")).toMatchObject({ view: "attention" });
+    expect(view("/repositories")).toMatchObject({ view: "repositories" });
+    expect(view("/repositories/my%20app")).toMatchObject({ view: "repository", repositoryId: "my app" });
+    expect(view("/issues/repo/7")).toMatchObject({ view: "board", issue: { repository: "repo", number: 7 } });
   });
 
-  test("maps the server dashboard's paths to the application's", () => {
-    expect(appPath("/board")).toBe("/app");
-    expect(appPath("/")).toBe("/app");
-    expect(appPath("/graph")).toBe("/app/graph");
-    expect(appPath("/repositories/repo")).toBe("/app/repositories/repo");
-    expect(appPath("/issues/repo/7/journey")).toBe("/app/issues/repo/7");
+  test("recognises the dashboard's own addresses", () => {
+    expect(dashboardPath("/board")).toBe("/board");
+    expect(dashboardPath("/")).toBe("/");
+    expect(dashboardPath("/graph")).toBe("/graph");
+    expect(dashboardPath("/repositories/repo")).toBe("/repositories/repo");
+    expect(dashboardPath("/issues/repo/7/journey")).toBe("/issues/repo/7/journey");
   });
 
-  test("leaves pages the application does not render to the server", () => {
-    expect(appPath("/login")).toBeNull();
-    expect(appPath("/agents")).toBeNull();
-    expect(appPath("/settings/other")).toBeNull();
+  test("leaves pages that are not the dashboard to the server", () => {
+    expect(dashboardPath("/login")).toBeNull();
+    expect(dashboardPath("/agents")).toBeNull();
+    expect(dashboardPath("/settings/other")).toBeNull();
+  });
+
+  test("keeps the view an item was opened from behind it, and the board otherwise", () => {
+    const url = new URL("https://conveyor.example.com/issues/repo/7?stage=review");
+    expect(boardSelectionFromUrl(url, "/graph")).toMatchObject({ view: "graph", graphStage: "review", issue: { repository: "repo", number: 7 } });
+    expect(boardSelectionFromUrl(url, "/repositories/repo")).toMatchObject({ view: "repository", repositoryId: "repo" });
+    expect(boardSelectionFromUrl(url)).toMatchObject({ view: "board" });
+    expect(boardSelectionFromUrl(url, "/login")).toMatchObject({ view: "board" });
+    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/graph"), "/recent")).toMatchObject({ view: "graph", issue: null });
+  });
+
+  test("opens an item on the tab an older address names", () => {
+    expect(itemTabOf("/issues/repo/7")).toBe("summary");
+    expect(itemTabOf("/issues/repo/7/conversation")).toBe("conversation");
+    expect(itemTabOf("/issues/repo/7/journey")).toBe("journey");
+    expect(itemTabOf("/issues/repo/7/logs")).toBe("activity");
+    expect(boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/7/logs")).issue).toEqual({ repository: "repo", number: 7 });
   });
 
   test("passes the Recent page and the repository on to the view", () => {
     const recent = { types: [], repositoryIds: [], events: [], nextCursor: null, rangeStartedAt: null };
-    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: boardSelectionFromUrl(new URL("https://conveyor.example.com/app/recent")), recent });
+    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: boardSelectionFromUrl(new URL("https://conveyor.example.com/recent")), recent });
     expect(view).toMatchObject({ view: "recent", recent });
-    expect(board([], "https://conveyor.example.com/app/repositories/repo")).toMatchObject({ view: "repository", repositoryId: "repo" });
+    expect(board([], "https://conveyor.example.com/repositories/repo")).toMatchObject({ view: "repository", repositoryId: "repo" });
   });
 });
 
@@ -164,33 +196,33 @@ describe("account and admin views", () => {
   const selection = (path: string) => boardSelectionFromUrl(new URL(`https://conveyor.example.com${path}`));
 
   test("reads each view and its parameter from the address", () => {
-    expect(selection("/app/team")).toMatchObject({ view: "team", agentId: null });
-    expect(selection("/app/team/omid")).toMatchObject({ view: "team", agentId: "omid" });
-    expect(selection("/app/reports/repo?period=30d")).toMatchObject({ view: "reports", repositoryId: "repo" });
-    expect(selection("/app/operator/runs/run-7")).toMatchObject({ view: "agent", runId: "run-7" });
-    expect(selection("/app/accounts")).toMatchObject({ view: "accounts" });
-    expect(selection("/app/profile")).toMatchObject({ view: "profile" });
-    expect(selection("/app/settings/notifications")).toMatchObject({ view: "notifications" });
-    expect(selection("/app/about")).toMatchObject({ view: "about" });
+    expect(selection("/team")).toMatchObject({ view: "team", agentId: null });
+    expect(selection("/team/omid")).toMatchObject({ view: "team", agentId: "omid" });
+    expect(selection("/reports/repo?period=30d")).toMatchObject({ view: "reports", repositoryId: "repo" });
+    expect(selection("/operator/runs/run-7")).toMatchObject({ view: "agent", runId: "run-7" });
+    expect(selection("/accounts")).toMatchObject({ view: "accounts" });
+    expect(selection("/profile")).toMatchObject({ view: "profile" });
+    expect(selection("/settings/notifications")).toMatchObject({ view: "notifications" });
+    expect(selection("/about")).toMatchObject({ view: "about" });
   });
 
-  test("maps their server paths to the application's", () => {
-    expect(appPath("/team/omid")).toBe("/app/team/omid");
-    expect(appPath("/reports/repo")).toBe("/app/reports/repo");
-    expect(appPath("/operator/runs/run-7")).toBe("/app/operator/runs/run-7");
-    expect(appPath("/settings/notifications")).toBe("/app/settings/notifications");
+  test("are dashboard addresses", () => {
+    expect(dashboardPath("/team/omid")).toBe("/team/omid");
+    expect(dashboardPath("/reports/repo")).toBe("/reports/repo");
+    expect(dashboardPath("/operator/runs/run-7")).toBe("/operator/runs/run-7");
+    expect(dashboardPath("/settings/notifications")).toBe("/settings/notifications");
   });
 
   test("loads each view's own data from its endpoint", () => {
-    expect(viewDataUrl(selection("/app/team/omid"), "")).toBe("/api/v1/views/team");
-    expect(viewDataUrl(selection("/app/reports/repo"), "?period=30d")).toBe("/api/v1/views/reports?period=30d&repository=repo");
-    expect(viewDataUrl(selection("/app/operator/runs/run-7"), "")).toBe("/api/v1/views/operator?run=run-7");
-    expect(viewDataUrl(selection("/app/profile"), "")).toBeNull();
-    expect(viewDataUrl(selection("/app"), "")).toBeNull();
+    expect(viewDataUrl(selection("/team/omid"), "")).toBe("/api/v1/views/team");
+    expect(viewDataUrl(selection("/reports/repo"), "?period=30d")).toBe("/api/v1/views/reports?period=30d&repository=repo");
+    expect(viewDataUrl(selection("/operator/runs/run-7"), "")).toBe("/api/v1/views/operator?run=run-7");
+    expect(viewDataUrl(selection("/profile"), "")).toBeNull();
+    expect(viewDataUrl(selection("/"), "")).toBeNull();
   });
 
   test("puts the loaded data into the view", () => {
-    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: selection("/app/settings/notifications"), viewData: { notifications: { questions: true, stopped: false, done: true } } });
+    const view = boardViewModel({ model: model([]), account, csrfToken: "token", selection: selection("/settings/notifications"), viewData: { notifications: { questions: true, stopped: false, done: true } } });
     expect(view).toMatchObject({ view: "notifications", notifications: { questions: true, stopped: false, done: true } });
   });
 });

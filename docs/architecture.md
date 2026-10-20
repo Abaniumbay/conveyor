@@ -65,7 +65,7 @@ flowchart LR
 | Scoped MCP server | Serves the registry's `tool` tasks to each live run under an exact grant, through one dispatcher that re-checks the grant and preconditions. Grants expire with the run. |
 | Agent isolation | Sanitized agent environment and, per repository, a network namespace with allowlisting proxies (`src/isolation`). |
 | SQLite store | Persists source projections, stage state, attempts, events, transitions, questions, costs, artifacts, leases, review findings, criterion approvals, advisory CI watches and idempotency records in WAL mode. |
-| Web control plane | Serves an authenticated Preact dashboard, issue conversations, questions, stage history, technical logs, steering runs, health endpoints, and live SSE refresh. The live dashboard model (`src/app/dashboard-feed.ts`, `src/web/model.ts`) is rebuilt once per burst of changes and sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
+| Web control plane | Serves the authenticated dashboard application (a Preact application that runs in the browser), its JSON endpoints for issue conversations, stage history, technical logs, views and steering runs, health endpoints, and the live SSE stream. The live dashboard model (`src/app/dashboard-feed.ts`, `src/web/model.ts`) is rebuilt once per burst of changes and sent as a snapshot plus field-level patches (`/api/v1/snapshot`, `/api/v1/stream`), so the work per change does not grow with the number of open dashboards. |
 | Control interface and releases | Serves the CLI over a private Unix socket with the same operations as the dashboard; drains, backs up, switches the installed release and restarts under systemd for upgrades and rollbacks (`src/control`). |
 | Service logging | Structured, redacted service logs on stdout/stderr and in a rotated JSON-lines file (`src/log`). |
 
@@ -195,7 +195,7 @@ src/
 ├── runner/       Codex, legacy verifier, steering, and strict JSON-process runners
 ├── source/       source contracts and the GitHub adapter
 ├── tasks/        task contract, registry, groups, plan compiler, legacy compiler
-├── web/          authentication, HTTP/SSE server, Preact rendering, styles, and client script
+├── web/          authentication, HTTP/SSE server, the live dashboard model, Preact components, styles, and the browser application (app/)
 └── workspace/    managed Git worktree lifecycle
 examples/         packaged default configuration (config/, embedded as builtin:) and machine-local samples (local/)
 docs/             operations, configuration, generated CLI and task references, releasing, migration

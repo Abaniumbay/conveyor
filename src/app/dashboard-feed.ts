@@ -7,6 +7,14 @@ import { log } from "../log/logger";
 import { diffDashboard, type DashboardModel, type DashboardPatch } from "../web/model";
 import type { SystemStatusViewModel } from "../web/types";
 
+const DASHBOARD_EVENT_GROUPS = new Set(["item.", "stage.", "journey.", "gate.", "finding.", "todo.", "criterion.", "change.", "indicator.", "advisoryCi.", "repository.", "service.", "admission.", "account.", "question.", "answer.", "message.", "workspace."]);
+
+/** Whether a recorded event can change what the dashboard shows; bookkeeping events change nothing there. */
+export function changesDashboard(type: string): boolean {
+  if (type === "run.started" || type === "run.finished") return true;
+  return type !== "item.fenced" && DASHBOARD_EVENT_GROUPS.has(type.slice(0, type.indexOf(".") + 1));
+}
+
 export interface DashboardFeedOptions {
   /** Builds the whole model from the current state. */
   build: () => DashboardModel;

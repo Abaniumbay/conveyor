@@ -32,9 +32,14 @@ export interface LiveStoreOptions {
   openStream: (url: string) => LiveEventSource;
   /** Called when the session is gone; the page goes to the sign-in form. */
   onSignedOut: () => void;
+  now?: () => number;
 }
 
 const CLOSED = 2;
+/** The server sends a heartbeat every four seconds; a stream silent for longer than this is dead. */
+const STALE_STREAM_MS = 12_000;
+/** Retries after a failed restart wait longer each time, up to this. */
+const MAX_RETRY_MS = 30_000;
 
 export class LiveStore {
   readonly #options: LiveStoreOptions;
@@ -42,6 +47,9 @@ export class LiveStore {
   #state: LiveState | null = null;
   #stream: LiveEventSource | null = null;
   #reloading: Promise<void> | null = null;
+  #lastActivity = 0;
+  #failures = 0;
+  #retry: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: LiveStoreOptions) {
     this.#options = options;
@@ -73,9 +81,26 @@ export class LiveStore {
     this.#emit();
   }
 
+  /**
+   * Reopens the stream when it closed or went silent: a phone suspends a hidden page, and a proxy can
+   * drop a connection without the browser noticing. The replay brings the model up to date.
+   */
+  check(): void {
+    const state = this.#state;
+    if (!state || state.connection === "signed-out" || this.#retry) return;
+    const stream = this.#stream;
+    if (stream && stream.readyState !== CLOSED && this.#now() - this.#lastActivity <= STALE_STREAM_MS) return;
+    this.close();
+    this.#connect();
+  }
+
   close(): void {
     this.#stream?.close();
     this.#stream = null;
+  }
+
+  #now(): number {
+    return this.#options.now?.() ?? Date.now();
   }
 
   async #load(): Promise<void> {
@@ -101,14 +126,25 @@ export class LiveStore {
   #connect(): void {
     const stream = this.#options.openStream(`/api/v1/stream?after=${this.#state?.seq ?? 0}`);
     this.#stream = stream;
-    stream.onopen = () => this.#setConnection("live");
+    this.#lastActivity = this.#now();
+    const alive = () => { if (this.#stream === stream) this.#lastActivity = this.#now(); };
+    stream.onopen = () => {
+      alive();
+      this.#failures = 0;
+      this.#setConnection("live");
+    };
+    stream.addEventListener("keep-alive", alive);
     stream.onerror = () => {
       this.#setConnection("offline");
       // EventSource retries by itself; a closed stream (for example a 401) needs a fresh start.
       if (stream.readyState === CLOSED) void this.#restart();
     };
-    stream.addEventListener("patch", (event) => this.#patch(event.data));
+    stream.addEventListener("patch", (event) => {
+      alive();
+      this.#patch(event.data);
+    });
     stream.addEventListener("status", (event) => {
+      alive();
       if (!this.#state) return;
       this.#state = { ...this.#state, status: systemStatusSchema.parse(JSON.parse(event.data)) };
       this.#emit();
@@ -137,8 +173,12 @@ export class LiveStore {
     try {
       await this.#load();
     } catch {
-      // The server is unreachable; try again shortly.
-      setTimeout(() => void this.#restart(), 2_000);
+      // The server is unreachable; try again, a little later each time.
+      this.#failures += 1;
+      this.#retry = setTimeout(() => {
+        this.#retry = null;
+        void this.#restart();
+      }, Math.min(1_000 * 2 ** (this.#failures - 1), MAX_RETRY_MS));
       return;
     }
     if (this.#state && this.#state.connection !== "signed-out") this.#connect();

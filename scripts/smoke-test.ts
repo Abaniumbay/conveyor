@@ -196,27 +196,6 @@ async function main(): Promise<void> {
     const bytes = new Uint8Array(await font.arrayBuffer());
     check(font.ok && new TextDecoder().decode(bytes.slice(0, 4)) === "wOF2", "the embedded dashboard fonts are served");
 
-    // The browser script embeds the quota helpers by their source; in a minified build they must
-    // still run on their own, or the dashboard stops at load.
-    const client = await (await fetch(`${url}/assets/dashboard.js`)).text();
-    const quota = /^\(\(\) => \{\n([\s\S]*?)\n  const body = document\.body;/.exec(client)?.[1];
-    let countdown = "";
-    try {
-      const [countdownOf, update] = new Function(`${quota}\nreturn [quotaCountdown, updateQuotaWindow];`)();
-      const text = { textContent: "" };
-      update({
-        getAttribute: (name: string) => name === "data-reset-at" ? "2026-10-05T22:00:00.000Z" : null,
-        querySelector: (selector: string) => selector === "[data-countdown]" ? text : null,
-        classList: { toggle: () => {} },
-        closest: () => null,
-        setAttribute: () => {},
-      }, countdownOf, Date.parse("2026-10-03T14:04:00.000Z"));
-      countdown = text.textContent;
-    } catch (error) {
-      console.error(error);
-    }
-    check(countdown === "resets in 2d 7h 56m", "the dashboard script's embedded quota code runs");
-
     const login = await fetch(`${url}/login`, {
       method: "POST",
       redirect: "manual",
@@ -225,13 +204,13 @@ async function main(): Promise<void> {
     });
     const cookie = login.headers.get("set-cookie")?.split(";")[0];
     check(login.status === 303 || login.status === 302 ? Boolean(cookie) : false, "the administrator from init signs in");
-    const page = await (await fetch(`${url}/operator`, { headers: { cookie: cookie! } })).text();
-    const csrf = /name="csrf" value="([^"]+)"/.exec(page)?.[1];
-    check(csrf, "the signed-in dashboard renders");
-    const shell = await (await fetch(`${url}/app`, { headers: { cookie: cookie! } })).text();
-    const appScript = /src="(\/app\/assets\/app\.js\?v=[a-z0-9]+)"/.exec(shell)?.[1];
+    const shell = await (await fetch(`${url}/operator`, { headers: { cookie: cookie! } })).text();
+    const appScript = /src="(\/assets\/app\.js\?v=[a-z0-9]+)"/.exec(shell)?.[1];
     const appBundle = appScript ? await fetch(`${url}${appScript}`) : null;
     check(Boolean(appBundle?.ok) && (await appBundle!.text()).length > 10_000 && shell.includes("data-app-skeleton"), "the embedded dashboard application is served");
+    const snapshot = await (await fetch(`${url}/api/v1/snapshot`, { headers: { cookie: cookie! } })).json() as { csrfToken?: string; model?: { system?: unknown } };
+    const csrf = snapshot.csrfToken;
+    check(csrf && snapshot.model?.system, "the signed-in dashboard model loads");
 
     const started = await fetch(`${url}/steering`, {
       method: "POST",

@@ -11,10 +11,10 @@ describe("dashboard documentation", () => {
       readFile(path.join(root, "SPEC.md"), "utf8"),
     ]);
 
-    expect(dashboard).toContain("server-rendered SVG");
+    expect(dashboard).toContain("draws an SVG");
     expect(dashboard).toContain("Repository and stage controls");
     expect(dashboard).toContain("screen-reader-only relationship list");
-    expect(specification).toContain("A read-only Graph view server-renders a drawn SVG");
+    expect(specification).toContain("A read-only Graph view draws an SVG");
     expect(specification).toContain("Repository and stage filters");
     expect(specification).toContain("screen-reader relationship list");
   });
@@ -49,8 +49,9 @@ describe("dashboard documentation", () => {
 
     expect(dashboard).toContain("Reconnecting…");
     expect(dashboard).toContain("keep-alive event every four seconds");
-    expect(dashboard).toContain("Sign in again");
+    expect(dashboard).toContain("goes to the sign-in form and returns to the same address");
     expect(specification).toContain("EventSource-observable keep-alive every four seconds");
-    expect(specification).toContain("An expired session stops those retries and exposes a sign-in link");
+    expect(specification).toContain("a stream silent for twelve seconds or closed by the browser is reopened from the last applied patch");
+    expect(specification).toContain("A page whose session ended goes to the sign-in form");
   });
 });
