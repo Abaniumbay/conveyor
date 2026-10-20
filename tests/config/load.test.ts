@@ -590,4 +590,59 @@ repositories:
     const config = await loadConfig(directory);
     expect(config.repositories.sample?.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
   });
+
+  test("validates a repository in-flight interval against its merge stage", async () => {
+    const document = (inFlight: string, stages = `
+      - { id: refinement, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+      - { id: implementation, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+      - { id: merge, concurrency: 1, actions: [{ id: merge, task: change.merge }], exit-gate: [{ task: item.criteriaDefined }] }
+      - { id: deploy, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }`) => `
+settings: {}
+labels:
+  stageTemplate: "ci:{stage}"
+  states: { done: done }
+  metadata: { closable: close, orderTemplate: "order:{number}" }
+sources: { github: { type: github } }
+pipelines:
+  default:
+    stages:${stages}
+repositories:
+  sample:
+    source: github
+    address: owner/sample
+    folder: /tmp/sample
+    pipeline: default
+    inFlight: ${inFlight}
+`;
+    const valid = await temporaryDirectory();
+    await writeFile(path.join(valid, "conveyor.yml"), document("{ limit: 2, from: implementation }"));
+    await expect(loadConfig(valid)).resolves.toMatchObject({
+      repositories: { sample: { inFlight: { limit: 2, from: "implementation" } } },
+    });
+
+    const zero = await temporaryDirectory();
+    await writeFile(path.join(zero, "conveyor.yml"), document("{ limit: 0, from: implementation }"));
+    await expect(loadConfig(zero)).rejects.toThrow(/repositories.sample.inFlight.limit.*>0/);
+
+    const fractional = await temporaryDirectory();
+    await writeFile(path.join(fractional, "conveyor.yml"), document("{ limit: 1.5, from: implementation }"));
+    await expect(loadConfig(fractional)).rejects.toThrow(/repositories.sample.inFlight.limit.*expected int/);
+
+    const unknown = await temporaryDirectory();
+    await writeFile(path.join(unknown, "conveyor.yml"), document("{ limit: 2, from: absent }"));
+    await expect(loadConfig(unknown)).rejects.toThrow(/repositories.sample.inFlight.from references unknown stage "absent"/);
+
+    const afterMerge = await temporaryDirectory();
+    await writeFile(path.join(afterMerge, "conveyor.yml"), document("{ limit: 2, from: deploy }"));
+    await expect(loadConfig(afterMerge)).rejects.toThrow(/repositories.sample.inFlight.from must name a stage at or before the merge stage/);
+
+    const withoutMerge = await temporaryDirectory();
+    await writeFile(
+      path.join(withoutMerge, "conveyor.yml"),
+      document("{ limit: 2, from: implementation }", `
+      - { id: refinement, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+      - { id: implementation, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }`),
+    );
+    await expect(loadConfig(withoutMerge)).rejects.toThrow(/repositories.sample.inFlight requires pipeline "default" to include a stage with the change.merge action/);
+  });
 });

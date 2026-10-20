@@ -103,6 +103,7 @@ async function setup() {
   const producers: string[] = [];
   let failure = false;
   let fenceNextProducer = false;
+  let inFlightReason: string | null = null;
   let wait: ExternalWaitError | null = new ExternalWaitError("Waiting for CI at abc1234: Tests.", 60_000, "CI started");
   const executorFor = (current: ConveyorConfig) => new IssueExecutor({
     config: current,
@@ -127,6 +128,7 @@ async function setup() {
       async runAction() {},
     } satisfies PipelineDependencies),
     sourceGuidance: "",
+    admitInFlight: () => inFlightReason,
   });
   return {
     config, store, labels, producers, executorFor,
@@ -136,6 +138,8 @@ async function setup() {
       return loadConfig(file);
     },
     stopWaiting() { wait = null; },
+    holdInFlight(reason: string) { inFlightReason = reason; },
+    releaseInFlight() { inFlightReason = null; },
     failNext() { wait = null; failure = true; },
     fenceNextProducer() { fenceNextProducer = true; },
     messages: () => store.listConversationMessages("issue").map((message) => message.message),
@@ -143,6 +147,30 @@ async function setup() {
 }
 
 describe("IssueExecutor parked stages", () => {
+  test("holds a completed prior stage without rerunning it until an in-flight slot opens", async () => {
+    const h = await setup();
+    h.stopWaiting();
+    h.holdInFlight("Waiting for an in-progress slot in repo: #3, #5");
+
+    const blocked = await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+
+    expect(blocked).toMatchObject({ kind: "parked", stageId: "implementation", reason: "pending" });
+    expect(h.labels).toEqual([]);
+    expect(h.producers).toEqual(["implementation"]);
+    expect(h.store.getStageState("issue")).toMatchObject({ stageId: "implementation", status: "waiting-in-flight" });
+    expect(h.store.getIssue("issue")?.warning).toBe("Waiting for an in-progress slot in repo: #3, #5");
+
+    h.releaseInFlight();
+    const waiting = h.store.getStageState("issue")!;
+    h.store.setStageState({ ...waiting, status: "ready", configHash: h.config.hash });
+    const advanced = await h.executorFor(h.config).execute(h.store.getIssue("issue")!);
+
+    expect(advanced).toMatchObject({ kind: "advance", nextStageId: "review" });
+    expect(h.producers).toEqual(["implementation"]);
+    expect(h.labels).toEqual([["conveyor", "conveyor:review"]]);
+    h.store.close();
+  });
+
   test("parks a waiting stage: no transition, stage ready, status line set, wake-up persisted, no duplicate note", async () => {
     const h = await setup();
     const before = Date.now();

@@ -16,7 +16,7 @@ afterEach(async () => {
 
 const MESSAGE = "Waiting for CI at abc1234: Tests.";
 
-async function setup(followUps = false) {
+async function setup(followUps = false, withInFlight = false) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-wakeups-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
@@ -43,18 +43,23 @@ pipelines:
     successStatuses: [done]
     failureStatuses: [blocked]
     stages:
+${withInFlight ? `      - { id: refinement, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
+` : ""}
       - id: implementation
 ${followUps ? `        concurrency: 1
         actions: []
         exit-gate:
           - { id: acknowledge, task: item.followUps, manual: true }` : `        run: { agent: worker }
         concurrency: 1`}
+${withInFlight ? `      - { id: merge, concurrency: 1, actions: [{ id: merge, task: change.merge }], exit-gate: [{ task: item.criteriaDefined }] }
+` : ""}
 repositories:
   repo:
     source: github
     address: owner/repo
     folder: ${repositoryPath}
     pipeline: default
+${withInFlight ? "    inFlight: { limit: 2, from: implementation }" : ""}
 `);
   const config = await loadConfig(path.join(root, "config.yml"));
   const open = async () => {
@@ -82,9 +87,10 @@ repositories:
     id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Feature", body: "",
     sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
-  first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+  const initialStage = withInFlight ? "refinement" : "implementation";
+  first.store.setIssueProjection("issue", { stage: initialStage, state: "active", warning: null });
   first.store.setQueueRank("issue", first.store.nextQueueRank());
-  first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+  first.store.setStageState({ issueId: "issue", stageId: initialStage, status: "ready", feedbackCycle: 0, configHash: config.hash });
   return { config, first, open };
 }
 
@@ -466,5 +472,49 @@ describe("persisted wake-ups", () => {
       spy.mockRestore();
       await h.service.close();
     }
+  });
+
+  test("an item waiting for an in-progress slot names the holders, then resumes when one releases", async () => {
+    const { config, first } = await setup(false, true);
+    config.repositories.repo!.inFlight = { limit: 1, from: "implementation" };
+    // #2 finished implementing and waits for CI: it holds the only slot with no agent running.
+    addRunningHolder(first.store, config);
+    first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "awaiting-source", feedbackCycle: 0, configHash: config.hash });
+    first.store.activateEnrollment("holder");
+    first.store.activateEnrollment("issue");
+    first.store.setStageState({ issueId: "issue", stageId: "refinement", status: "waiting-in-flight", feedbackCycle: 0, configHash: config.hash });
+    first.store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: "Waiting for an in-progress slot in repo: #2" });
+
+    const internals = first.service as unknown as {
+      currentIssueStatus(issue: StoredIssue): { kind: string; reason: string } | null;
+    };
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
+    const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(card).toMatchObject({ waiting: { kind: "waiting", reason: "Waiting for an in-progress slot in repo: #2" } });
+
+    // The holder leaves the code pipeline: the waiter is promoted without an operator retry.
+    first.store.setIssueProjection("holder", { stage: "release", state: "active", warning: null });
+    first.store.setStageState({ issueId: "holder", stageId: "release", status: "ready", feedbackCycle: 0, configHash: config.hash });
+    schedule(first.service);
+    expect(first.store.getStageState("issue")?.status).not.toBe("waiting-in-flight");
+    expect(first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue?.waiting?.reason ?? "")
+      .not.toContain("in-progress slot");
+    await first.service.close();
+  });
+
+  test("without inFlight a busy repository shows no in-progress wait and never promotes waiters", async () => {
+    const { config, first } = await setup();
+    addRunningHolder(first.store, config);
+    first.store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "waiting-in-flight", feedbackCycle: 0, configHash: config.hash });
+
+    schedule(first.service);
+
+    expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
+    const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
+    expect(card?.waiting?.reason ?? "").not.toContain("in-progress slot");
+    await first.service.close();
   });
 });

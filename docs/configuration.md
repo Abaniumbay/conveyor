@@ -571,6 +571,26 @@ repositories:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
 
+### Repository in-progress limit
+
+`inFlight` limits how many items of one repository are in progress in the code pipeline, because parallel branches in a repository cause merge conflicts:
+
+```yaml
+repositories:
+  project:
+    concurrency: 2
+    inFlight:
+      limit: 2             # positive integer
+      from: implementation # a stage of the pipeline at or before its change.merge stage
+```
+
+- **Counted interval.** An enrolled leaf item holds one slot from the moment it enters the `from` stage until it leaves the stage with the `change.merge` action (merged, sent back to a stage before `from`, rejected, individually paused or offboarded). It keeps the slot while it waits for CI or review and while it is blocked or in error, whether or not an agent is running. A repository pause retains the slots. Stages before `from`, stages after merge and roll-up parents hold no slot.
+- **Waiting.** While the repository is at its limit, an item that finishes the stage before `from` stays there, without rerunning completed work, and the dashboard and `conveyor item show` say "Waiting for an in-progress slot in <repository>: #303, #305". When a slot opens, waiting items advance in queue order without a retry. A restart keeps the same holders and waiters.
+- **Corrections.** An item sent back from review or merge to a stage inside the interval keeps its slot and is not blocked by the limit.
+- **Relation to `concurrency`.** `concurrency` still limits running agents (including refinement) in the repository; `inFlight` limits items, and is checked independently for each repository. Stage and global runner limits are unchanged. Without `inFlight` nothing changes.
+
+An unknown `from` stage, a `from` after the merge stage, or a pipeline without a `change.merge` stage fails configuration loading.
+
 Native review findings are trusted only when GitHub reports that the author has `write`,
 `maintain`, or `admin` permission for that repository. `extraTrustedLogins` adds named accounts,
 such as an approved review bot (GitHub App bot logins use the `name[bot]` form), and login
