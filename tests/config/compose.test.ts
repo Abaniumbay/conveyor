@@ -282,6 +282,17 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(instructions).not.toContain("when `change.get` shows a change, before finishing use `change.recordCriterionTests`");
   });
 
+  test("the packaged breakdown reviewer instructions reject bundled acceptance criteria", async () => {
+    const paths = await home({ "conveyor.yaml": DEFAULTS });
+    const config = await loadConfig(paths.entrypoint, null, { home: paths.home });
+    const instructions = await readFile(config.agents.parisa!.instructions, "utf8");
+
+    expect(instructions).toContain("one condition and one expected outcome");
+    expect(instructions).toContain("no-split decision and every child in a split plan");
+    expect(instructions).toContain("Reject the plan if any criterion bundles distinct cases or outcomes");
+    expect(instructions).toContain("which cases or outcomes must be separated into individual criteria");
+  });
+
   test("a configuration directory still loads, with a deprecation warning", async () => {
     const paths = await home({ "a.yaml": "web: {}\n", "b.yaml": `settings: { runners: 3 }\nlabels: ${LABELS}\n` });
     const config = await loadConfig(paths.config, null);
