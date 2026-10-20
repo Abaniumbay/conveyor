@@ -10,6 +10,34 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.13.0] - 2026-10-20
+
+The dashboard is now an application that runs in the browser. It loads the board once and follows live changes as small patches, so an open dashboard no longer reloads pages or polls the server, and moving between views is instant. This release also adds a draining notice, a doctor check for Codex isolation support, a coverage gate for pull requests, and fixes for criterion approvals, stage headers and service commands.
+
+### Added
+
+- The dashboard now shows when service admission is draining, including the recorded reason. Pending upgrades also show their target version and link to its release.
+
+- `conveyor doctor` now verifies configuration-specific Codex isolation namespace and mount support, with remediation for denied host capabilities.
+
+- The dashboard has a live model API: `GET /api/v1/snapshot` returns everything the board shows as JSON, and `GET /api/v1/stream` sends field-level patches as items change. The model is rebuilt once per burst of changes for all open dashboards together, so more open dashboards no longer mean more work on the server per change.
+
+- Pull-request Check runs now reject changes whose newly added production lines are less than 80% exercised. The failure identifies each untested line and its source so the missing test can be added or unnecessary code removed. The browser dashboard application and the repository scripts are not counted: the browser test suites and their own CI steps exercise them.
+
+### Changed
+
+- The dashboard now runs in the browser. It loads the board once and then applies live changes as they arrive, so an open dashboard no longer reloads its page or asks the server for anything to stay current. Moving between views and opening an item does not load a page either. While it loads you see a skeleton of the board instead of a blank page. Every address and bookmark still works, an item's address can name its tab, and the preview addresses under `/app` redirect to the same view. Searching the Board still finds finished items older than the 50 it holds. The dashboard now needs JavaScript; the sign-in page does not. `/events/dashboard` and `/assets/dashboard.js` are gone.
+
+- Product refinement now instructs Darya to define atomic, boundary-aware acceptance criteria and to split independently shippable work that exceeds eight criteria.
+
+### Fixed
+
+- Board stage headers stay readable at narrower desktop widths: empty stages keep their full name, count and information control instead of collapsing into a clipped narrow column.
+
+- Criterion approvals made at the change's current head now show as Approved on the dashboard and in the status comment, even when the cached head lagged or CI is disabled. Approving or withdrawing refreshes the status comment.
+
+- Service lifecycle commands now honour `CONVEYOR_HOME` and refuse to operate on a selected systemd unit for a different Conveyor home. Restart output identifies both the unit and home that restarted.
+
 ## [0.12.0] - 2026-10-20
 
 This release adds a per-repository limit on items in progress in the code pipeline, so parallel branches in one repository stop colliding, and lets implementers record criterion tests before a pull request exists. The dashboard explains why an eligible item is waiting, stays available during startup reconciliation and reconnects its live updates. Conveyor also recovers lost workspaces, replaces closed unmerged pull requests and resumes stopped roll-up parents.
