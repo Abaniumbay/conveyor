@@ -113,6 +113,18 @@ describe("ReviewFindings", () => {
     expect(findings.events(finding!.id).map((e) => e.kind)).toEqual(["created", "edited"]);
   });
 
+  test("imports trusted native human and bot reviews as general findings", async () => {
+    const findings = await open();
+    findings.importNative("i1", [
+      artifact({ providerKey: "thread:human", author: "maintainer" }),
+      artifact({ providerKey: "thread:bot", author: "review-bot[bot]" }),
+    ], "h1", "t1");
+    const byKey = Object.fromEntries(findings.list("i1").map((finding) => [finding.providerKey, finding]));
+
+    expect(byKey["thread:human"]!.type).toBe("general");
+    expect(byKey["thread:bot"]!.type).toBe("general");
+  });
+
   test("import resolves a finding whose thread was resolved, and withdraws a vanished one", async () => {
     const findings = await open();
     findings.importNative("i1", [artifact(), artifact({ providerKey: "thread:T2", url: "https://x/c2" })], "h1", "t1");
