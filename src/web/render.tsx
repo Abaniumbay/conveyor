@@ -588,11 +588,6 @@ function Pagination({ column, view }: { column: StageColumnViewModel; view: Dash
   );
 }
 
-/** An empty stage in the middle of the line collapses to a narrow heading; Backlog and Done never do. */
-function narrowStation(station: { kind: "backlog" | "stage" | "done"; count: number }): boolean {
-  return station.kind === "stage" && station.count === 0;
-}
-
 interface Station {
   id: string;
   name: string;
@@ -634,9 +629,8 @@ function StationInfoButton({ station }: { station: Station }) {
 /** A stage's heading on the board: its name, an information button and its count. */
 function StationHeading({ station }: { station: Station }) {
   const headingId = `stage-${stationSlug(station)}`;
-  const narrow = narrowStation(station);
   return (
-    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}${narrow ? " stage--empty" : ""}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={`stage-info-${stationSlug(station)}`}>
+    <section class={`stage${station.kind === "stage" ? "" : ` stage--${station.kind}`}`} id={stationId(station.id)} aria-labelledby={headingId} data-dialog-open={`stage-info-${stationSlug(station)}`}>
       <header class="stage-heading">
         {station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon}</span>}
         <h2 id={headingId}>{station.name}</h2>
@@ -715,7 +709,7 @@ function FamilyRow({ parent, stations, canManage }: { parent: IssueCardViewModel
         {stations.map((station) => {
           const cards = station.kind === "done" ? [] : station.issues.filter((issue) => issue.parent?.id === parent.id && !doneIds.has(issue.id));
           return (
-          <div class={`board-cell${narrowStation(station) ? " board-cell--narrow" : ""}`} data-board-filter-station={station.id} key={station.id}>
+          <div class="board-cell" data-board-filter-station={station.id} key={station.id}>
               {cards.length > 0 && <ol class="issue-list">{cards.map((issue) => <li key={issue.id}><IssueCard issue={issue} actors={station.actors} canManage={canManage} stageLabel={station.name} /></li>)}</ol>}
               {station.kind === "done" && done.length > 0 && (
                 <ol class="issue-list">{done.map((child) => (
@@ -832,8 +826,8 @@ function Board({ model }: { model: DashboardViewModel }) {
   const elsewhere = (station: Station) => station.issues.filter((issue) =>
     !openIds.has(issue.id) && !inFamilyRow(issue) && !(station.kind === "done" && issue.parent && doneIds.has(issue.parent.id)));
   const thread = (issue: IssueCardViewModel) => Boolean(issue.parent);
-  const columns = (wide: string, narrow: string) => stations.map((station) => narrowStation(station) ? narrow : wide).join(" ");
-  const style = `--board-columns:${columns("min(20rem,86vw)", "4.5rem")};--board-columns-phone:${columns("calc(100vw - 1.5rem)", "3.25rem")}`;
+  const columns = (width: string) => stations.map(() => width).join(" ");
+  const style = `--board-columns:${columns("min(20rem,86vw)")};--board-columns-phone:${columns("calc(100vw - 1.5rem)")}`;
   return (
     <>
     <p class="trace-banner" data-trace-banner role="status" hidden>
@@ -842,7 +836,7 @@ function Board({ model }: { model: DashboardViewModel }) {
     </p>
     <section class="board board--rows" aria-label="Delivery board" data-done-total={model.done.totalIssues}>
       <div class="board-track" style={style}>
-        <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class={`board-column${narrowStation(station) ? " board-column--narrow" : ""}`} key={station.id} />)}</div>
+        <div class="board-columns" aria-hidden="true">{stations.map((station) => <span class="board-column" key={station.id} />)}</div>
         <div class="board-head">{stations.map((station) => <StationHeading station={station} key={station.id} />)}</div>
         {openParents.map((parent) => <FamilyRow parent={parent} stations={stations} canManage={canManage} key={parent.id} />)}
         <section class={`board-row other-row${openParents.length === 0 ? " other-row--alone" : ""}`} aria-label="Items without a parent">
@@ -858,12 +852,11 @@ function Board({ model }: { model: DashboardViewModel }) {
           <div class="board-cells" id="board-other-cells">
             {stations.map((station) => {
               const issues = elsewhere(station);
-              const narrow = narrowStation(station);
               const done = station.kind === "done" ? model.done : null;
               const remaining = done ? done.totalIssues - done.issues.length : 0;
               const increment = Math.min(20, remaining);
               return (
-                <div class={`board-cell${narrow ? " board-cell--narrow" : ""}${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} data-board-filter-station={station.id} aria-label={station.name} key={station.id}>
+                <div class={`board-cell${station.kind === "backlog" ? " stage--backlog" : ""}`} data-station-cell={station.id} data-board-filter-station={station.id} aria-label={station.name} key={station.id}>
                   <p class="board-cell-label"><span>{station.icon && <span class="stage-emoji" aria-hidden="true">{station.icon} </span>}{station.name}</span><StationInfoButton station={station} /><span class="count" data-board-station-count={station.id} data-board-total={station.count}>{station.count}</span></p>
                   {station.kind === "backlog"
                     ? issues.length > 0 && <BacklogCell issues={issues} model={model} canManage={canManage} thread={thread} />
