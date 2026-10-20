@@ -50,11 +50,11 @@ export interface IssueCriterionTestViewModel {
   sourceUrl: string | null;
 }
 
-/** A configured manual gate, Follow-ups acknowledgement, or final board approval shown for this item. */
+/** A configured entry or exit gate, Follow-ups acknowledgement, or board approval shown for this item. */
 export interface ManualGateViewModel {
   stageId: string;
   gateId: string | null;
-  kind: "board" | "configured" | "follow-up";
+  kind: "board" | "entry" | "configured" | "follow-up";
   /** Human-authored post-delivery work, present for a waiting Follow-ups acknowledgement. */
   notes?: readonly string[];
   required: boolean;

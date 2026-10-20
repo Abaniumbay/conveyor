@@ -8,6 +8,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ENTRY_APPROVAL_TASK_ID } from "../../src/engine/stage-executor";
 import type { StoredEvent } from "../../src/events/catalogue";
 import type { EventSink } from "../../src/events/sinks";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
@@ -86,10 +87,10 @@ ${options.secondRepository ? `  repo-two: { source: github, address: owner/other
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
   /** Parks the item on its exit gate for one visit, as the executor does. */
-  const park = (attempt = 1, taskInstanceId = "ciGate") => {
+  const park = (attempt = 1, taskInstanceId = "ciGate", list: "actions" | "exit-gate" = "exit-gate") => {
     const epoch = journal.stageEpoch(ISSUE);
     journal.saveCursor({
-      issueId: ISSUE, stage: "implementation", stageEpoch: epoch, attempt, returns: 0, list: "exit-gate",
+      issueId: ISSUE, stage: "implementation", stageEpoch: epoch, attempt, returns: 0, list,
       taskInstanceId, state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
     }, epoch);
     return epoch;
@@ -104,6 +105,20 @@ describe("waking parked gates", () => {
     store.events().append("gate.approved", { stageId: "implementation", gateId: "ciGate", stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
+    await service.close();
+  });
+
+  test("an entry approval wakes only its matching action visit", async () => {
+    const { service, store, journal, park } = await setup();
+    const epoch = park(1, ENTRY_APPROVAL_TASK_ID, "actions");
+    store.events().append("gate.approved", { stageId: "implementation", gateId: ENTRY_APPROVAL_TASK_ID, stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
+
+    park(1, "ciGate", "exit-gate");
+    store.events().append("gate.approved", { stageId: "implementation", gateId: ENTRY_APPROVAL_TASK_ID, stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
     await service.close();
   });
 

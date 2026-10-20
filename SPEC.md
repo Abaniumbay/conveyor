@@ -5,7 +5,7 @@ Runtime: Bun + TypeScript
 Primary source adapter: GitHub  
 Persistence: SQLite + filesystem logs
 
-Execution model: every stage is a task chain, `actions` followed by a deterministic `exit-gate` (GitHub issue #19). The earlier `run` / `enterCheck` / `exitCheck` stage shape with AI verifier agents is **legacy**: deprecated but still supported through a compatibility compiler. Text that applies only to it is marked *Legacy*.
+Execution model: every stage is an optional configured entry approval, `actions`, then a deterministic `exit-gate` (GitHub issue #19). The earlier `run` / `enterCheck` / `exitCheck` stage shape with AI verifier agents is **legacy**: deprecated but still supported through a compatibility compiler. Text that applies only to it is marked *Legacy*.
 
 ## 1. Purpose
 
@@ -114,7 +114,7 @@ Every task declares `reads`, `writes` (loads and engine-captured outputs only) a
 
 ### Stage
 
-A stage is configuration tying together `id`, `concurrency`, `retries` (default 2), an optional `childrenStartAt`, an `actions` list, and a non-empty `exit-gate` list. It has no semantics beyond its tasks; the engine assigns none to a stage name. Execution is specified in section 8. *Legacy:* a stage may instead be written with exactly one producer (`run`: an agent, a JSON process or a source action), enter and exit checks, concurrency, labels, retry policy and `afterSuccess` lifecycle actions; the compatibility compiler turns it into a task plan (section 8, Legacy lifecycle).
+A stage is configuration tying together `id`, `concurrency`, `retries` (default 2), an optional `childrenStartAt`, an optional `approval: manual`, an `actions` list, and a non-empty `exit-gate` list. It has no semantics beyond its tasks; the engine assigns none to a stage name. Execution is specified in section 8. *Legacy:* a stage may instead be written with exactly one producer (`run`: an agent, a JSON process or a source action), enter and exit checks, concurrency, labels, retry policy and `afterSuccess` lifecycle actions; the compatibility compiler turns it into a task plan (section 8, Legacy lifecycle).
 
 ## 6. Configuration
 
@@ -145,6 +145,17 @@ The canonical configuration names the three provider roles and the harnesses: `p
 A task entry has `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when that name occurs once in the list and is required otherwise; instance ids are unique within a stage. Overrides, execution records, script results and idempotency keys address the instance id, never an array index or task name. `with` is validated against the task's schema at load time. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires); each field comes from the repository override, else the entry, else the task's own default, else `settings.taskDefaults.wait` (default timeout 30m, poll 1m). `onFail` is `retry`, `{ return: <stage> }` or `{ stop: <state> }` (section 8). `when` is a guard from a closed vocabulary, `ci.enabled`, `ci.required` or `ci.advisory`, evaluated at load time from the repository's CI mode; a task whose guard is false is left out of the plan, and an exit gate must still be non-empty. There are no expressions, loops, variables or message templates.
 
 A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`). Naming a stage, list or instance that does not exist is an error. A repository may declare `agentEgress` (section 19; optional, and without it agents get the sanitized environment only); these are security inputs, not task expressions. A repository's `ci` is `{ provider, mode: required | advisory | disabled, ignoreChecks }` (section 8, CI modes).
+
+### Native stage entry approvals
+
+A native stage may set `approval: manual`; no other approval value is valid, and legacy stages do
+not accept the field. On entry, before any action, Conveyor persists a wait and releases its runner
+permit. The Board displays the item in that stage and offers a configured entry approval only to a
+signed-in superuser through the CSRF-protected command. The receipt records the account and time
+and is scoped to the item, stage, stage epoch and attempt. It survives a service restart for the
+same visit, while a retry, return or plan restart creates a fresh visit that needs a fresh receipt.
+The approval event wakes only that waiting visit. Entry approval is independent of configured
+manual exit gates and board approvals: they retain their existing post-check timing and controls.
 
 ### Follow-up acknowledgement stages
 
@@ -601,12 +612,13 @@ These names are defaults, not core constants; the configuration maps logical pre
 
 ### Stage semantics
 
-A stage is two task lists run for one item by the stage executor:
+A stage has an optional entry approval followed by two task lists run for one item by the stage executor:
 
-1. **`actions`** do the stage's job, in order. Before each task the engine runs the load task for every snapshot key the task reads that is not loaded or was invalidated by an earlier act. A passing act's output is captured only for engine-captured keys, and the snapshots it invalidates are marked stale.
-2. **`exit-gate`** proves the job is done. On entering the gate (and re-entering after a park) nothing it reads is trusted; checks run in order and the first that does not pass decides. When every check passes the gate is open, gate-scoped checkpoints are recorded, the cursor is cleared, and the item advances: Conveyor records the pending source transition and the next stage becomes schedulable only after the source label change is confirmed.
+1. **Entry approval** is present only when the native stage sets `approval: manual`. The item waits before actions until a superuser records a visit-scoped receipt; the durable wait releases the runner permit and resumes after the receipt's approval event.
+2. **`actions`** do the stage's job, in order. Before each task the engine runs the load task for every snapshot key the task reads that is not loaded or was invalidated by an earlier act. A passing act's output is captured only for engine-captured keys, and the snapshots it invalidates are marked stale.
+3. **`exit-gate`** proves the job is done. On entering the gate (and re-entering after a park) nothing it reads is trusted; checks run in order and the first that does not pass decides. When every check passes the gate is open, gate-scoped checkpoints are recorded, the cursor is cleared, and the item advances: Conveyor records the pending source transition and the next stage becomes schedulable only after the source label change is confirmed.
 
-There are no entrance gates. Conditions the next stage requires belong to the previous exit gate. A person may relabel an item straight into a stage and so skip that gate; acts therefore validate their own safety preconditions (for example `change.merge` checks the reviewed head and `workspace.ensure` checks the workspace).
+There are no arbitrary entrance tasks; `approval: manual` is the sole configured entry gate. Conditions the next stage requires otherwise belong to the previous exit gate. A person may relabel an item straight into a stage and so skip that gate; acts therefore validate their own safety preconditions (for example `change.merge` checks the reviewed head and `workspace.ensure` checks the workspace).
 
 A task returns `pass`, `pending` or `fail`. A thrown error is an infrastructure error, not a domain failure, and uses the bounded infrastructure and usage-limit retry policy without consuming a stage retry. Retries back off exponentially from `settings.retries.minBackoff`, doubling up to `maxBackoff`. After `infrastructureAttempts` consecutive failures of the same stage the item stops as `error`, with one conversation note giving the reason; usage-limit failures (runner usage limits, provider rate limits) are bounded by `usageLimitAttempts` instead, which defaults to unlimited. A successful execution resets the count.
 
@@ -651,8 +663,9 @@ Native stages contain no AI verifier. The AI verifier agent and the `checks:` se
 - **Epochs and fencing.** Each item has a stage epoch. Every stage, state or enrollment change bumps it and drops the cursor in one transaction. Every context and journal write is fenced by the epoch the executor started with; a late task from before a pause, relabel or return fails the fence and the run ends as superseded without mutating or advancing the item.
 - **Cursor.** The stage cursor records stage, epoch, attempt, return count, current list and task instance, state (`planned`, `running`, `pending`, `completed`), feedback, and the pending time, wake-up and deadline. A restart resumes from it.
 - **Board approvals.** A superuser may require one board approval for an enrolled item's current or future native stage. It is a final synthetic exit gate after every configured task has passed, including a configured `manual: true` task, and it can be the only gate on a native stage. Configured manual gates remain separate, task-specific requirements: their receipts do not authorize the board gate and a board receipt does not authorize them. A board receipt records the item, stage, stage epoch, attempt, account and time, and is fresh for every retry, return and plan restart. Adding a board approval while the current exit gate is evaluated fences its epoch; removing an unapproved waiting requirement wakes that visit.
+- **Entry approvals.** A configured `approval: manual` is a durable synthetic action-list wait before the first action. Its receipt records the item, stage, stage epoch, attempt, account and time, and authorizes no other item, stage or visit. A duplicate approval is harmless; a stale receipt cannot authorize a retry, return or plan restart. It does not change configured manual exit gates or board approvals, which remain separate post-action controls.
 - **Checkpoints.** `ci.passed` records `checkpoints.ciPassed` with the head SHA when required CI passes. When the complete review gate passes (`change.findingsResolved`, `change.criteriaChecked`, `change.headUnchanged`, `change.mergeable`) the engine records `checkpoints.reviewPassed` atomically with the head SHA. `change.merge` squashes only when the live head equals `reviewPassed.sha` and, when CI is required, `ciPassed.sha`. A changed head, conflict, or outdated base returns to implementation through the bounded return route, so required CI and non-manual approvals must be recorded again for the new head before fresh review and merge. An already merged change passes idempotently; closed, policy, and permission refusals stop, while transient code-host errors use infrastructure retries.
-- **Restart on plan change.** When the item has a cursor in the stage and the stored context's `stagePlanHash`, written by that stage, differs from the hash of the stage's current compiled plan, the stage restarts from the beginning under a new epoch with one note ("The pipeline plan changed since <stage> started; the stage restarted from the beginning."). The stage plan covers its actions and exit gate with each task's settings, route, wait and manual flag; concurrency is excluded. Changes to other repositories, other pipelines, other stages or unrelated settings do not restart it, so a manual approval bound to its epoch stays valid. A context without a `stagePlanHash` for the stage (written by an earlier version, or last written by another stage) falls back to comparing `configHash` with the running configuration. Completed acts are reconciled, not repeated, so the restart does not duplicate pushes, pull requests or merges. Migrate and roll back while the board is idle.
+- **Restart on plan change.** When the item has a cursor in the stage and the stored context's `stagePlanHash`, written by that stage, differs from the hash of the stage's current compiled plan, the stage restarts from the beginning under a new epoch with one note ("The pipeline plan changed since <stage> started; the stage restarted from the beginning."). The stage plan covers its entry approval, actions and exit gate with each task's settings, route, wait and manual flag; concurrency is excluded. Changes to other repositories, other pipelines, other stages or unrelated settings do not restart it, so a manual approval bound to its epoch stays valid. A context without a `stagePlanHash` for the stage (written by an earlier version, or last written by another stage) falls back to comparing `configHash` with the running configuration. Completed acts are reconciled, not repeated, so the restart does not duplicate pushes, pull requests or merges. Migrate and roll back while the board is idle.
 
 ### CI modes
 

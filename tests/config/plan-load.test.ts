@@ -105,6 +105,38 @@ describe("plan compilation at load", () => {
     expect(config.plans[0]?.stages[0]?.exitGate[0]).toMatchObject({ id: "operator", manual: true });
   });
 
+  test("keeps a configured native entry approval in the compiled plan", async () => {
+    const config = await loadConfig(await write(`
+    stages:
+      - id: merge
+        concurrency: 1
+        approval: manual
+        actions: [{ task: demo.act }]
+        exit-gate: [{ task: demo.gate }]
+`), registry());
+    expect(config.plans[0]?.stages[0]).toMatchObject({ id: "merge", approval: "manual" });
+  });
+
+  test("rejects unsupported and legacy entry approvals", async () => {
+    await expect(loadConfig(await write(`
+    stages:
+      - id: build
+        concurrency: 1
+        approval: automatic
+        actions: [{ task: demo.act }]
+        exit-gate: [{ task: demo.gate }]
+`), registry())).rejects.toThrow(/approval/);
+    await expect(loadConfig(await write(`
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - id: old
+        concurrency: 1
+        approval: manual
+        run: { sourceAction: noop }
+`), registry())).rejects.toThrow(/approval/);
+  });
+
   test("rejects manual requirements outside native exit gates", async () => {
     await expect(loadConfig(await write(`
     stages:
@@ -131,6 +163,18 @@ describe("check-config", () => {
     expect(manual).toMatch(/2\. automatic: demo\.gate \[check\]/);
     expect(manual).toContain("1. demo.act [act]");
     expect(manual).toContain("wait timeout 30m, poll 1m");
+  });
+
+  test("prints a configured stage entry approval", async () => {
+    const output = await checkConfig(await write(`
+    stages:
+      - id: merge
+        concurrency: 1
+        approval: manual
+        actions: [{ task: demo.act }]
+        exit-gate: [{ task: demo.gate }]
+`), registry());
+    expect(output).toContain("Stage merge (concurrency 1, retries 2, entry approval manual)");
   });
 
   test("prints the hash then the rendered plan of each compilable repository", async () => {

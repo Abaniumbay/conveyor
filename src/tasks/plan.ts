@@ -32,6 +32,7 @@ export interface CompiledTask {
 
 export interface CompiledStage {
   id: string;
+  approval?: "manual";
   concurrency: number;
   retries: number;
   childrenStartAt: string | null;
@@ -218,6 +219,7 @@ function compileStage(input: StageInput): CompiledStage {
 
   return {
     id: stage.id,
+    ...(stage.approval === undefined ? {} : { approval: stage.approval }),
     concurrency: stage.concurrency,
     retries: stage.retries,
     childrenStartAt: stage.childrenStartAt ?? null,

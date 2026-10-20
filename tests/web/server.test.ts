@@ -772,7 +772,7 @@ describe("createWebHandler", () => {
     expect((await post("/manual-gates/requirement", { ...requirement, csrf: adminSession.csrfToken })).status).toBe(303);
     expect(calls.boardApprovals).toEqual([["issue-1", "implementation", true]]);
 
-    const approval = { issueId: "issue-1", stageId: "implementation", gateId: "human" };
+    const approval = { issueId: "issue-1", stageId: "implementation", gateId: "entry-approval" };
     expect((await post("/manual-gates/approve", approval, "")).status).toBe(401);
     expect((await post("/manual-gates/approve", approval, readerCookie)).status).toBe(403);
     expect((await post("/manual-gates/approve", approval)).status).toBe(403);
@@ -782,7 +782,7 @@ describe("createWebHandler", () => {
     expect((await post("/manual-gates/approve", { ...approval, csrf: adminSession.csrfToken })).status).toBe(303);
     expect((await post("/manual-gates/approve", { issueId: "issue-1", stageId: "implementation", csrf: adminSession.csrfToken })).status).toBe(303);
     expect(calls.manualApprovals).toHaveLength(2);
-    expect(calls.manualApprovals[0]?.slice(0, 3)).toEqual(["issue-1", "implementation", "human"]);
+    expect(calls.manualApprovals[0]?.slice(0, 3)).toEqual(["issue-1", "implementation", "entry-approval"]);
     expect(calls.manualApprovals[0]?.[3]).toMatchObject({ id: "admin-id", username: "admin" });
     expect(calls.manualApprovals[1]?.slice(0, 3)).toEqual(["issue-1", "implementation", null]);
   });
