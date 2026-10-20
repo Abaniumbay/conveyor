@@ -6,6 +6,8 @@ import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler, PROFILE_AVATARS } from "../../src/web/server";
 import type { DashboardStreamEvent, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
 import { withCommands } from "../support/web-commands";
+import { DashboardFeed } from "../../src/app/dashboard-feed";
+import { dashboardSnapshotSchema, normalizeDashboard } from "../../src/web/model";
 
 const model: DashboardViewModel = {
   title: "Test board",
@@ -1689,5 +1691,129 @@ describe("manual gate routes", () => {
     }));
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "Gate approval is not waiting" });
+  });
+});
+
+describe("dashboard snapshot and patch stream", () => {
+  type Account = { id: string; username: string; role: "superuser" | "user"; avatar: string; sessionVersion: number; passwordHash: string };
+
+  function liveSetup() {
+    const admin: Account = { id: "admin-id", username: "admin", role: "superuser", avatar: "🐼", sessionVersion: 1, passwordHash: hashPassword("admin password", { salt: "0123456789abcdef" }) };
+    const reader: Account = { id: "reader-id", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1, passwordHash: hashPassword("reader password", { salt: "abcdef0123456789" }) };
+    const accounts = new Map([[admin.id, admin], [reader.id, reader]]);
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: (id) => accounts.get(id) ?? null,
+      accountByUsername: (username) => [...accounts.values()].find((account) => account.username === username) ?? null,
+    });
+    const board = { ...model, backlog: [detailIssue], restrictedRepositories: [{ id: "repo", folder: "/srv/repo", agentEgressHosts: [] }] };
+    const state = { board };
+    const feed = new DashboardFeed({ build: () => normalizeDashboard(state.board), settleMs: 5, maxWaitMs: 20 });
+    const { handler } = setup({
+      auth,
+      getDashboardSnapshot: () => feed.snapshot(),
+      subscribeDashboardFeed: (listener: Parameters<DashboardFeed["subscribe"]>[0], after: number | null) => feed.subscribe(listener, after),
+      getDashboardFeedStatus: () => feed.status,
+    });
+    const cookie = (account: Account) => auth.createSession(account)!.cookie.split(";", 1)[0]!;
+    return { handler, feed, state, adminCookie: cookie(admin), readerCookie: cookie(reader) };
+  }
+
+  async function readUntil(response: Response, done: (text: string) => boolean): Promise<string> {
+    const reader = response.body!.getReader();
+    let text = "";
+    try {
+      await Promise.race([
+        (async () => {
+          while (!done(text)) {
+            const next = await reader.read();
+            if (next.done) return;
+            text += new TextDecoder().decode(next.value);
+          }
+        })(),
+        Bun.sleep(2_000).then(() => { throw new Error(`stream timed out with: ${text}`); }),
+      ]);
+    } finally {
+      await reader.cancel();
+    }
+    return text;
+  }
+
+  test("requires a session", async () => {
+    const { handler, feed } = liveSetup();
+    expect((await handler(new Request("http://localhost/api/v1/snapshot"))).status).toBe(401);
+    expect((await handler(new Request("http://localhost/api/v1/stream"))).status).toBe(401);
+    feed.close();
+  });
+
+  test("sends the normalized model with the session's own token and no superuser data to a regular user", async () => {
+    const { handler, feed, readerCookie } = liveSetup();
+    const response = await handler(new Request("http://localhost/api/v1/snapshot", { headers: { cookie: readerCookie } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const snapshot = dashboardSnapshotSchema.parse(await response.json());
+    expect(snapshot.account).toEqual({ id: "reader-id", username: "reader", role: "user", avatar: "🦊" });
+    expect(snapshot.model.items[detailIssue.id]).toMatchObject({ title: "Keep <item> safe", placement: "backlog" });
+    expect(snapshot.model.restrictedRepositories).toEqual({});
+    expect(snapshot.csrfToken).not.toBe("");
+    feed.close();
+  });
+
+  test("sends superuser data to a superuser", async () => {
+    const { handler, feed, adminCookie } = liveSetup();
+    const snapshot = dashboardSnapshotSchema.parse(await (await handler(new Request("http://localhost/api/v1/snapshot", { headers: { cookie: adminCookie } }))).json());
+    expect(Object.keys(snapshot.model.restrictedRepositories)).toEqual(["repo"]);
+    feed.close();
+  });
+
+  test("streams a changed item as a patch of its changed fields", async () => {
+    const { handler, feed, state, readerCookie } = liveSetup();
+    feed.snapshot();
+    const stream = await handler(new Request("http://localhost/api/v1/stream", { headers: { cookie: readerCookie } }));
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    const text = await readUntil(stream, (received) => received.includes("event: patch"));
+    const data = text.split("\n").find((line) => line.startsWith("data: {\"seq\""))!.slice(6);
+    expect(JSON.parse(data)).toEqual({ seq: expect.any(Number), entity: "item", id: detailIssue.id, op: "upsert", data: { title: "Renamed" } });
+    feed.close();
+  });
+
+  test("replays what a reconnecting dashboard missed, and asks it to reload when that is no longer kept", async () => {
+    const { handler, feed, state, readerCookie } = liveSetup();
+    const { seq } = feed.snapshot();
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    feed.flush();
+    const replayed = await readUntil(
+      await handler(new Request("http://localhost/api/v1/stream", { headers: { cookie: readerCookie, "last-event-id": String(seq) } })),
+      (received) => received.includes("event: patch"),
+    );
+    expect(replayed).toContain(`id: ${seq + 1}\nevent: patch`);
+    const reset = await readUntil(
+      await handler(new Request(`http://localhost/api/v1/stream?after=${seq + 50}`, { headers: { cookie: readerCookie } })),
+      (received) => received.includes("event: reset"),
+    );
+    expect(reset).toContain("event: reset");
+    feed.close();
+  });
+
+  test("keeps superuser entities out of a regular user's stream", async () => {
+    const { handler, feed, state, readerCookie, adminCookie } = liveSetup();
+    const { seq } = feed.snapshot();
+    state.board = { ...state.board, restrictedRepositories: [{ id: "repo", folder: "/srv/other", agentEgressHosts: [] }], backlog: [{ ...detailIssue, title: "Renamed" }] };
+    feed.invalidate();
+    feed.flush();
+    // A later change: anything leaked from the first one would arrive before it.
+    state.board = { ...state.board, backlog: [{ ...detailIssue, title: "Renamed again" }] };
+    feed.invalidate();
+    feed.flush();
+    const request = (cookie: string) => handler(new Request(`http://localhost/api/v1/stream?after=${seq}`, { headers: { cookie } }));
+    const forReader = await readUntil(await request(readerCookie), (received) => received.includes("Renamed again"));
+    const forAdmin = await readUntil(await request(adminCookie), (received) => received.includes("Renamed again"));
+    expect(forReader).not.toContain("restrictedRepository");
+    expect(forAdmin).toContain("\"entity\":\"restrictedRepository\"");
+    feed.close();
   });
 });

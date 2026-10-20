@@ -78,6 +78,9 @@ import { normalizeGitHubEvent } from "../source/github/events";
 import { deliveredIssueChange } from "../source/github/delivery-issue";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
+import { DashboardFeed } from "./dashboard-feed";
+import { normalizeDashboard } from "../web/model";
+import { dashboardViewsForEvent } from "../web/client";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
@@ -207,6 +210,11 @@ export async function collectSystemStatus(options: {
 
 const SOURCE_GUIDANCE = `GitHub is the source of truth. Use only Conveyor MCP tools for source mutations. Agents never close source issues; Conveyor itself closes only an active completed roll-up parent after its descendant-completion rule passes. Preserve human-authored body text, use managed sections for acceptance criteria, pull-request descriptions, and dependencies, and report blockers with a concrete reason.`;
 const DASHBOARD_PAGE_SIZE = 20;
+/** The live model holds every current item and the most recent finished ones; older ones are paged. */
+const DASHBOARD_SNAPSHOT_SELECTION: DashboardPageSelection = {
+  view: "board", repositoryId: null, column: null, page: 1, doneLimit: 50, runId: null, issueId: null,
+  repositoryIds: [], q: "", state: null, recentTypes: [], recentCursor: null,
+};
 const ACTIVITY_RUN_PAGE_SIZE = 1;
 const ACTIVITY_EVENT_PAGE_SIZE = 5;
 const STOPPED_ISSUE_STATES = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
@@ -448,6 +456,11 @@ export class ConveyorService {
   readonly #statusCommentIds = new Map<string, number>();
   /** The live head of an open change, as last read from the code host; newer than the persisted context. */
   readonly #liveChangeHeads = new Map<string, string>();
+  /** The live dashboard model, rebuilt once per burst of changes for every open dashboard. */
+  readonly #dashboardFeed = new DashboardFeed({
+    build: () => normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION })),
+    status: () => this.systemStatus(),
+  });
   /** Sub-issues and blockers last read per issue, reused while the issue is unchanged (see `relationshipsOf`). */
   readonly #relationships = new Map<string, { updatedAt: string; readAt: number; children: SourceIssue[]; dependencies: SourceIssue[] }>();
   /** Per repository: the time the next listing of changed issues may start from. */
@@ -1099,6 +1112,7 @@ export class ConveyorService {
 
   async close(): Promise<void> {
     this.#shuttingDown = true;
+    this.#dashboardFeed.close();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     if (this.#periodicOperatorTimer) clearInterval(this.#periodicOperatorTimer);
@@ -1742,6 +1756,10 @@ export class ConveyorService {
 
   /** Reactions to committed changes: waking parked items and scheduling. */
   private subscribeToEvents(): void {
+    // Anything the board shows may have changed; the feed rebuilds once the burst settles.
+    this.events.subscribe("*", "dashboard feed", (event) => {
+      if (dashboardViewsForEvent(event.type).includes("board")) this.#dashboardFeed.invalidate();
+    });
     // A parked exit gate re-evaluates as soon as a person changes what it waits on.
     const wakeParkedGate = (issueId: string | null, stageId: string, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
       if (!issueId) return;
@@ -6170,6 +6188,9 @@ export class ConveyorService {
       subscribeEvents: (listener) => this.events.subscribe("*", "dashboard stream", (event) => listener(streamEvent(event))),
       eventsAfter: (seq) => this.eventsAfter(seq),
       getSystemStatus: () => this.systemStatus(),
+      getDashboardSnapshot: () => this.#dashboardFeed.snapshot(),
+      subscribeDashboardFeed: (listener, after) => this.#dashboardFeed.subscribe(listener, after),
+      getDashboardFeedStatus: () => this.#dashboardFeed.status,
       isReady: () => this.isReady(),
       webhookPath: githubSource?.webhookPath ?? "/hooks/github",
       handleWebhook: (body, headers) => this.handleWebhook(body, headers),

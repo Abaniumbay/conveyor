@@ -16,6 +16,8 @@ import { renderDashboard, renderIssueDetails } from "./render";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
+import { SUPERUSER_ENTITIES, type DashboardModel, type DashboardPatch } from "./model";
+import type { DashboardFeedListener, DashboardFeedSubscription } from "../app/dashboard-feed";
 import type { AgentProfileViewModel, DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventsViewModel, ReportPeriod, ReportViewModel, SystemStatusViewModel } from "./types";
 
 export type WebAuthApi = ReturnType<typeof createWebAuth>;
@@ -46,6 +48,12 @@ export interface WebHandlerDependencies {
   /** The events after `seq` for a reconnecting page; null when they are no longer all kept. */
   eventsAfter?: (seq: number) => DashboardStreamEvent[] | null;
   getSystemStatus: () => SystemStatusViewModel | Promise<SystemStatusViewModel>;
+  /** The live dashboard model and the sequence of the last patch it includes. */
+  getDashboardSnapshot?: () => { seq: number; model: DashboardModel };
+  /** Live patches after a sequence; the replay is null when they are no longer all kept. */
+  subscribeDashboardFeed?: (listener: DashboardFeedListener, after: number | null) => DashboardFeedSubscription;
+  /** The last server status the live feed read. */
+  getDashboardFeedStatus?: () => SystemStatusViewModel | null;
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
@@ -495,6 +503,54 @@ function dashboardEventStream(dependencies: WebHandlerDependencies, lastEventId:
   });
 }
 
+/**
+ * The live dashboard patch stream: the patches a reconnecting dashboard missed (or `reset` when
+ * they are no longer all kept), then every new patch and server status change, and a heartbeat.
+ * Superuser-only entities reach superuser sessions only.
+ */
+function dashboardPatchStream(
+  subscribe: NonNullable<WebHandlerDependencies["subscribeDashboardFeed"]>,
+  superuser: boolean,
+  after: number | null,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let stop = () => {};
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      const send = (text: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(text));
+        } catch {
+          closed = true;
+          stop();
+        }
+      };
+      const sendPatch = (patch: DashboardPatch) => {
+        if (SUPERUSER_ENTITIES.has(patch.entity) && !superuser) return;
+        send(`id: ${patch.seq}\nevent: patch\ndata: ${JSON.stringify(patch)}\n\n`);
+      };
+      send("retry: 1000\n\nevent: keep-alive\ndata: {}\n\n");
+      const subscription = subscribe((message) => {
+        if (message.kind === "patch") sendPatch(message.patch);
+        else send(`event: status\ndata: ${JSON.stringify(message.status)}\n\n`);
+      }, after);
+      if (subscription.replay === null) send("event: reset\ndata: {}\n\n");
+      else for (const patch of subscription.replay) sendPatch(patch);
+      const heartbeat = setInterval(() => send("event: keep-alive\ndata: {}\n\n"), 4_000);
+      stop = () => {
+        closed = true;
+        clearInterval(heartbeat);
+        subscription.unsubscribe();
+      };
+    },
+    cancel() {
+      stop();
+    },
+  });
+}
+
 export function createWebHandler(dependencies: WebHandlerDependencies): (request: Request) => Promise<Response> {
   if (!dependencies.webhookPath.startsWith("/") || dependencies.webhookPath.startsWith("//")) {
     throw new Error("webhookPath must be an absolute URL path");
@@ -936,6 +992,43 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       } catch {
         return text("Dashboard is temporarily unavailable", 503);
       }
+    }
+
+    if (path === "/api/v1/snapshot") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (!dependencies.getDashboardSnapshot) return json({ error: "unavailable" }, 503);
+      try {
+        const { seq, model } = dependencies.getDashboardSnapshot();
+        const superuser = currentSession.account.role === "superuser";
+        return response(JSON.stringify({
+          seq,
+          model: superuser ? model : { ...model, restrictedRepositories: {} },
+          status: dependencies.getDashboardFeedStatus?.() ?? null,
+          account: { id: currentSession.account.id, username: currentSession.account.username, role: currentSession.account.role, avatar: currentSession.account.avatar },
+          csrfToken: currentSession.csrfToken,
+        }), 200, "application/json; charset=utf-8", { "cache-control": "no-store" });
+      } catch {
+        return json({ error: "unavailable" }, 503);
+      }
+    }
+
+    if (path === "/api/v1/stream") {
+      const methodError = requireMethod(request, "GET");
+      if (methodError) return methodError;
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      const subscribe = dependencies.subscribeDashboardFeed;
+      if (!subscribe) return json({ error: "unavailable" }, 503);
+      const requested = request.headers.get("last-event-id") ?? url.searchParams.get("after") ?? "";
+      const after = /^\d{1,15}$/.test(requested) ? Number(requested) : null;
+      return response(dashboardPatchStream(subscribe, currentSession.account.role === "superuser", after), 200, "text/event-stream; charset=utf-8", {
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
     }
 
     if (path === "/events/dashboard") {
