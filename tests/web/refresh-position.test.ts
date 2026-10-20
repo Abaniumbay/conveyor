@@ -1650,6 +1650,115 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+
+  test("keeps empty desktop stage headers readable after scrolling and preserves the phone stage controls", async () => {
+    const longStageName = "A configured stage name that remains available to assistive technology";
+    const headerDashboard = {
+      ...dashboard("stage-headers-1", [issue("implementation-card", 20, "Implementation card")]),
+      stages: [
+        stage("refinement-review", "Refinement Review", []),
+        stage("work-breakdown", "Work Breakdown", []),
+        stage("implementation", "Implementation", [issue("implementation-card", 20, "Implementation card")]),
+        stage("configured", longStageName, []),
+      ],
+    };
+    const server = startDashboard({ dashboard: () => headerDashboard, revision: () => "stage-headers-1", delayMs: () => 0 });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const desktop = await browser.newPage({ viewport: { width: 1024, height: 800 }, reducedMotion: "reduce" });
+      await signIn(desktop, server.port);
+
+      const headerLayout = await desktop.evaluate(() => {
+        const rect = (element: Element | null) => {
+          const box = element?.getBoundingClientRect();
+          return box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height } : null;
+        };
+        return ["refinement-review", "work-breakdown", "implementation"].map((id) => {
+          const stage = document.getElementById(`station-${id}`);
+          const heading = stage?.querySelector("h2") as HTMLElement | null;
+          const info = stage?.querySelector(".stage-info") ?? null;
+          const count = stage?.querySelector(".count") ?? null;
+          const column = document.querySelector(`.board-column:nth-child(${Array.from(document.querySelectorAll(".board-head > .stage")).indexOf(stage as HTMLElement) + 1})`);
+          return {
+            id,
+            headingFits: heading !== null && heading.scrollWidth <= heading.clientWidth && heading.scrollHeight <= heading.clientHeight,
+            stage: rect(stage),
+            column: rect(column),
+            info: rect(info),
+            count: rect(count),
+          };
+        });
+      });
+      for (const header of headerLayout) {
+        expect(header.headingFits).toBe(true);
+        expect(header.stage).not.toBeNull();
+        expect(header.column).not.toBeNull();
+        expect(header.info).not.toBeNull();
+        expect(header.count).not.toBeNull();
+        expect(Math.abs(header.stage!.left - header.column!.left)).toBeLessThanOrEqual(1);
+        expect(header.info!.width).toBeGreaterThanOrEqual(24);
+        expect(header.info!.right).toBeLessThanOrEqual(header.count!.left);
+      }
+      expect(await desktop.getByRole("heading", { name: longStageName }).count()).toBe(1);
+
+      const scrollLeft = await desktop.locator(".board").evaluate((board) => {
+        board.scrollLeft = 350;
+        return board.scrollLeft;
+      });
+      expect(scrollLeft).toBeGreaterThan(0);
+      const scrolledHeaderLayout = await desktop.evaluate(() => {
+        const rect = (element: Element | null) => {
+          const box = element?.getBoundingClientRect();
+          return box ? { left: box.left, right: box.right } : null;
+        };
+        return ["refinement-review", "work-breakdown", "implementation"].map((id) => {
+          const stage = document.getElementById(`station-${id}`);
+          const heading = stage?.querySelector("h2") as HTMLElement | null;
+          const column = document.querySelector(`.board-column:nth-child(${Array.from(document.querySelectorAll(".board-head > .stage")).indexOf(stage as HTMLElement) + 1})`);
+          return {
+            headingFits: heading !== null && heading.scrollWidth <= heading.clientWidth,
+            stage: rect(stage),
+            column: rect(column),
+          };
+        });
+      });
+      for (const header of scrolledHeaderLayout) {
+        expect(header.headingFits).toBe(true);
+        expect(header.stage).not.toBeNull();
+        expect(header.column).not.toBeNull();
+        expect(Math.abs(header.stage!.left - header.column!.left)).toBeLessThanOrEqual(1);
+        expect(Math.abs(header.stage!.right - header.column!.right)).toBeLessThanOrEqual(1);
+      }
+      for (let index = 0; index < scrolledHeaderLayout.length - 1; index += 1) {
+        const header = scrolledHeaderLayout[index];
+        const nextHeader = scrolledHeaderLayout[index + 1];
+        expect(header?.stage).not.toBeNull();
+        expect(nextHeader?.stage).not.toBeNull();
+        expect(header!.stage!.right).toBeLessThanOrEqual(nextHeader!.stage!.left);
+      }
+      const workBreakdownInfo = desktop.getByRole("button", { name: "About Work Breakdown" });
+      await workBreakdownInfo.click();
+      await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
+      await desktop.locator("#stage-info-work-breakdown .stage-dialog-close").click();
+      await workBreakdownInfo.focus();
+      await desktop.keyboard.press("Enter");
+      await desktop.waitForFunction(() => document.querySelector("#stage-info-work-breakdown")?.hasAttribute("open"));
+
+      const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(phone, server.port);
+      const labels = phone.locator(".board-cell-label");
+      expect(await labels.count()).toBeGreaterThanOrEqual(3);
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      const implementationInfo = phone.getByRole("button", { name: "About Implementation" });
+      await implementationInfo.focus();
+      await phone.keyboard.press("Enter");
+      await phone.waitForFunction(() => document.querySelector("#stage-info-implementation")?.hasAttribute("open"));
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("the line is open on a wide screen and closed on a phone until the reader folds or opens it", async () => {
     const server = startDashboard({ dashboard: () => dashboard("revision-1", [issue("card-1", 3, "Card")]), revision: () => "revision-1", delayMs: () => 0 });
     try {
