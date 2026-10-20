@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 
 import type { FINDING_CHANGES } from "../events/catalogue";
 import { eventLog } from "../events/log";
-import { isFindingType, type FindingType } from "./finding-types";
+import { DEFAULT_FINDING_TYPE, isFindingType, type FindingType } from "./finding-types";
 
 export { DEFAULT_FINDING_TYPE, FINDING_TYPES, type FindingType } from "./finding-types";
 
@@ -74,6 +74,18 @@ function findingType(value: string): FindingType {
   return value;
 }
 
+function inputFindingType(value: string | undefined): FindingType {
+  if (value === undefined) return DEFAULT_FINDING_TYPE;
+  if (!isFindingType(value)) throw new TypeError(`Unknown review finding type: ${value}`);
+  return value;
+}
+
+function inputCriterionIds(value: readonly string[] | undefined): string[] {
+  if (value === undefined) return [];
+  if (value.some((id) => typeof id !== "string")) throw new TypeError("Review finding criterion IDs must be strings.");
+  return [...value];
+}
+
 function parseCriterionIds(json: string): string[] {
   const value: unknown = JSON.parse(json);
   if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
@@ -113,22 +125,23 @@ export class ReviewFindings {
 
   #insert(input: {
     issueId: string; runId: string | null; providerKey: string | null; author: string; source: "agent" | "human";
-    headSha: string; path: string | null; line: number | null; url: string; body: string; at: string;
+    headSha: string; path: string | null; line: number | null; url: string; body: string; type: FindingType; criterionIds: string[]; at: string;
   }): Finding {
     const id = randomUUID();
     this.#db
-      .query(`INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`)
-      .run(id, input.issueId, input.runId, input.providerKey, input.author, input.source, input.headSha, input.path, input.line, input.url, input.body, input.at);
+      .query(`INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, type, criterion_ids_json, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.issueId, input.runId, input.providerKey, input.author, input.source, input.headSha, input.path, input.line, input.url, input.body, input.type, JSON.stringify(input.criterionIds), input.at);
     this.#event(id, "created", input.author, input.at);
     return this.get(input.issueId, id)!;
   }
 
   /** An agent's finding: open, before any projection to the code host. */
-  create(input: { issueId: string; runId: string | null; author: string; headSha: string; path?: string | null; line?: number | null; body: string; at?: string }): Finding {
+  create(input: { issueId: string; runId: string | null; author: string; headSha: string; path?: string | null; line?: number | null; body: string; type?: FindingType; criterionIds?: readonly string[]; at?: string }): Finding {
     return this.#db.transaction(() => this.#insert({
       issueId: input.issueId, runId: input.runId, providerKey: null, author: input.author, source: "agent", headSha: input.headSha,
-      path: input.path ?? null, line: input.line ?? null, url: "", body: input.body, at: input.at ?? new Date().toISOString(),
+      path: input.path ?? null, line: input.line ?? null, url: "", body: input.body,
+      type: inputFindingType(input.type), criterionIds: inputCriterionIds(input.criterionIds), at: input.at ?? new Date().toISOString(),
     }))();
   }
 
@@ -253,7 +266,8 @@ export class ReviewFindings {
       if (!existing) {
         const finding = this.#insert({
           issueId, runId: null, providerKey: artifact.providerKey, author: artifact.author, source: "human", headSha,
-          path: artifact.path, line: artifact.line, url: artifact.url, body: artifact.body, at,
+          path: artifact.path, line: artifact.line, url: artifact.url, body: artifact.body,
+          type: DEFAULT_FINDING_TYPE, criterionIds: [], at,
         });
         if (artifact.resolved) this.resolve(issueId, finding.id, "provider", at);
         continue;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ConveyorStore } from "../../src/db/store";
-import { ReviewFindings, type NativeArtifact } from "../../src/engine/review-findings";
+import { FINDING_TYPES, ReviewFindings, type NativeArtifact } from "../../src/engine/review-findings";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -35,6 +35,25 @@ describe("ReviewFindings", () => {
     expect(finding).toMatchObject({ state: "open", source: "agent", author: "reviewer", headSha: "h1", path: "a.ts", line: 3, providerKey: null, url: "" });
     expect(findings.list("i1")).toHaveLength(1);
     expect(findings.events(finding.id).map((e) => [e.kind, e.actor])).toEqual([["created", "reviewer"]]);
+  });
+
+  test("persists every fixed finding type and rejects an unknown type", async () => {
+    const findings = await open();
+    for (const type of FINDING_TYPES) {
+      const finding = findings.create({ ...created, body: type, type });
+      expect(findings.get("i1", finding.id)!.type).toBe(type);
+    }
+    expect(() => findings.create({
+      ...created,
+      // @ts-expect-error This verifies the runtime input boundary for untyped callers.
+      type: "not-a-finding-type",
+    })).toThrow("Unknown review finding type");
+  });
+
+  test("persists an agent finding's criterion IDs", async () => {
+    const findings = await open();
+    const finding = findings.create({ ...created, criterionIds: ["AC-1", "AC-3"] });
+    expect(findings.get("i1", finding.id)!.criterionIds).toEqual(["AC-1", "AC-3"]);
   });
 
   test("resolve moves open to resolved once and audits it; a second resolve changes nothing", async () => {
