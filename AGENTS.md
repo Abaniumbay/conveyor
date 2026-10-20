@@ -225,6 +225,8 @@ a service mutation directly.
   (hand-written SQL, a re-implemented algorithm).
 - When an acceptance criterion lists several cases, write one assertion per case.
 - A bug fix comes with a test that fails without the fix.
+- Changed production code that no test executes is a missing test case. Test its behaviour with real
+  assertions; never add a test solely to raise coverage.
 - Browser tests (Playwright, `tests/web/refresh-position.test.ts`) are only for behaviour that needs
   a real browser: layout, scrolling, live refresh. Everything else is a plain unit test of
   `render.tsx` output or `server.ts` responses.
