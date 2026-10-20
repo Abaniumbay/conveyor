@@ -1213,10 +1213,10 @@ describe("renderDashboard", () => {
     expect(familyRow).not.toContain("family-thread");
     expect(familyRow).not.toContain(">Store sign-in data</button>");
     expect(familyRow.match(/<span class="issue-title">Store sign-in data<\/span>/g)?.length).toBe(1);
-    // An empty stage is a narrow column with its heading in the strip like any other.
+    // An empty stage keeps a regular column so its complete heading remains readable.
     const withEmpty = renderDashboard({ ...dashboard });
-    expect(withEmpty).toContain('<section class="stage stage--empty" id="station-stage-review"');
-    expect(withEmpty).toContain(' 4.5rem ');
+    expect(withEmpty).toContain('<section class="stage" id="station-stage-review"');
+    expect(withEmpty).not.toContain(' 4.5rem ');
     // Everything else is in the bottom row; a child of an off-board parent links to it.
     expect(otherRow).toContain('data-row-fold="board-other"');
     expect(otherRow).toContain(">Unrelated work</button>");
@@ -1231,10 +1231,10 @@ describe("renderDashboard", () => {
     expect(html).not.toContain('data-family-row="finished"');
     // The columns line up: one grid template for the header strip and every row.
     expect(html).toContain('class="board-track" style="--board-columns:min(20rem,86vw) min(20rem,86vw) min(20rem,86vw);--board-columns-phone:calc(100vw - 1.5rem) calc(100vw - 1.5rem) calc(100vw - 1.5rem)"');
-    // An empty stage in the middle is a narrow column; an empty Backlog (or Done) keeps its width.
+    // Empty pipeline stages use the same column width as Backlog and Done.
     const empty = renderDashboard({ ...dashboard, backlog: [] });
-    expect(empty).toContain('style="--board-columns:min(20rem,86vw) min(20rem,86vw) 4.5rem min(20rem,86vw);');
-    expect(empty).toContain('class="stage stage--empty" id="station-stage-review"');
+    expect(empty).toContain('style="--board-columns:min(20rem,86vw) min(20rem,86vw) min(20rem,86vw) min(20rem,86vw);');
+    expect(empty).toContain('class="stage" id="station-stage-review"');
     expect(empty).toContain('class="stage stage--backlog" id="station-backlog"');
     expect(html).toContain('data-station-cell="stage:build"');
   });
@@ -1375,8 +1375,8 @@ describe("renderDashboard", () => {
     expect(html).toContain('class="line-station line-station--running"');
     expect(html).toContain("andon--run");
     expect(html).toContain('<time datetime="2026-09-29T11:30:00Z" data-relative-time="true" title="2026-09-29T11:30:00Z" aria-label="2026-09-29T11:30:00Z" tabindex="0">recently</time>');
-    expect(html).toContain('class="stage stage--empty" id="station-stage-review"');
-    expect(html).toContain(".stage--empty .stage-heading h2{writing-mode:vertical-rl");
+    expect(html).toContain('class="stage" id="station-stage-review"');
+    expect(html).not.toContain("stage--empty");
     const parentCardStart = html.indexOf('data-issue-id="parent" data-dialog-open');
     const parentCard = html.slice(parentCardStart, html.indexOf("<dialog", parentCardStart));
     expect(parentCard).toContain("Implementer");
@@ -1450,7 +1450,7 @@ describe("renderDashboard", () => {
 
     expect(html).toContain(`class="issue-status-context" title="${reason}"`);
     expect(html).toContain(`<section class="blocked-summary" aria-label="Blocking reason"><h3>Blocking reason</h3><p>${reason}</p>`);
-    expect(html).toContain(".stage:not(.stage--empty){width:min(20rem,86vw);min-width:min(20rem,86vw);max-width:min(20rem,86vw);flex:0 0 min(20rem,86vw)}");
+    expect(html).toContain(".stage{width:min(20rem,86vw);min-width:min(20rem,86vw);max-width:min(20rem,86vw);flex:0 0 min(20rem,86vw)}");
     expect(html).toContain(".issue-status-context{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}");
   });
 
