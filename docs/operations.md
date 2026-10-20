@@ -120,9 +120,10 @@ conveyor config check
 ```
 
 `doctor` checks the home and the configuration. It also checks Git, the GitHub CLI's
-authentication, every harness and script interpreter the loaded configuration uses (so a custom
-agent configuration changes which harness executables it checks; it does not validate Codex or
-Claude Code sign-in), each repository checkout, the dashboard account and the listen port.
+authentication, bubblewrap namespaces, every harness and script interpreter the loaded configuration
+uses (so a custom agent configuration changes which harness executables it checks; it does not
+validate Codex or Claude Code sign-in), each repository checkout, the dashboard account and the
+listen port.
 For configured Codex runs, repositories with `agentEgress` report network and PID namespace support
 and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, the
 check instead reports the user namespace required by Codex's own sandbox. A denied capability names

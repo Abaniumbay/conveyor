@@ -31,6 +31,13 @@ export interface DoctorCommand {
   (argv: string[], timeoutMs?: number): Promise<{ code: number; output: string }>;
 }
 
+type ToolFinder = (command: string) => string | null;
+
+export interface DoctorRuntime {
+  execute?: DoctorCommand;
+  findTool?: ToolFinder;
+}
+
 interface CodexIsolationConfig {
   agents: Record<string, { runner: string }>;
   runners: Record<string, { type: string }>;
@@ -47,8 +54,10 @@ const run: DoctorCommand = async (argv, timeoutMs = 15_000) => {
   }
 };
 
-function tool(name: string, command: string, install: string): DoctorCheck | null {
-  return Bun.which(command) ? null : { name, status: "fail", detail: `${command} is not on PATH`, fix: install };
+const findTool: ToolFinder = (command) => Bun.which(command);
+
+function tool(name: string, command: string, install: string, find: ToolFinder = findTool): DoctorCheck | null {
+  return find(command) ? null : { name, status: "fail", detail: `${command} is not on PATH`, fix: install };
 }
 
 function codexIsolationConfigured(config: Pick<CodexIsolationConfig, "agents" | "runners">): boolean {
@@ -64,7 +73,7 @@ export async function configuredCodexIsolationChecks(
   const repositories = Object.values(config.repositories);
   const checks: DoctorCheck[] = [];
   if (repositories.some((repository) => repository.agentEgress)) {
-    const namespaces = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--ro-bind", "/", "/", "--", "true"]);
+    const namespaces = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--", "true"]);
     checks.push(namespaces.code === 0
       ? { name: "Codex egress namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" }
       : {
@@ -73,14 +82,14 @@ export async function configuredCodexIsolationChecks(
           detail: `bwrap cannot create the network and PID namespaces required for Codex egress isolation: ${namespaces.output}`,
           fix: "allow unprivileged user namespaces and network/PID namespace creation for bwrap (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)",
         });
-    const mounts = await execute(["bwrap", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"]);
+    const mounts = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"]);
     checks.push(mounts.code === 0
       ? { name: "Codex egress mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" }
       : {
           name: "Codex egress mounts",
           status: "fail",
           detail: `bwrap cannot create the filesystem mounts required for Codex egress isolation: ${mounts.output}`,
-          fix: "allow bwrap to create mount namespaces and bind, proc, and tmpfs mounts (for example: grant the required AppArmor profile permissions)",
+          fix: "allow bwrap to create the bind, proc, and tmpfs mounts in its mount namespace (for example: grant bwrap mount permissions in the host's AppArmor profile)",
         });
   }
   if (repositories.some((repository) => !repository.agentEgress)) {
@@ -112,9 +121,12 @@ export async function doctorReport(
   serviceRunning: () => Promise<boolean>,
   github?: GitHubTransport,
   measureFilesystem?: FilesystemMeasure,
+  runtime: DoctorRuntime = {},
 ): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   const filesystems: FilesystemPressure[] = [];
+  const execute = runtime.execute ?? run;
+  const find = runtime.findTool ?? findTool;
   const homeInfo = await stat(home).catch(() => undefined);
   if (!homeInfo?.isDirectory()) {
     checks.push({ name: "home", status: "fail", detail: `${home} does not exist`, fix: `conveyor init --home ${home}` });
@@ -139,13 +151,13 @@ export async function doctorReport(
     });
   }
 
-  const git = tool("git", "git", "install Git (for example: sudo apt install git)");
-  checks.push(git ?? { name: "git", status: "ok", detail: (await run(["git", "--version"])).output });
+  const git = tool("git", "git", "install Git (for example: sudo apt install git)", find);
+  checks.push(git ?? { name: "git", status: "ok", detail: (await execute(["git", "--version"])).output });
 
-  const gh = tool("github cli", "gh", "install the GitHub CLI: https://cli.github.com");
+  const gh = tool("github cli", "gh", "install the GitHub CLI: https://cli.github.com", find);
   if (gh) checks.push(gh);
   else {
-    const status = await run(["gh", "auth", "status"]);
+    const status = await execute(["gh", "auth", "status"]);
     checks.push(status.code === 0
       ? { name: "github cli", status: "ok", detail: "authenticated" }
       : { name: "github cli", status: "fail", detail: "gh is not authenticated", fix: "gh auth login (as the account Conveyor runs under)" });
@@ -153,10 +165,14 @@ export async function doctorReport(
 
   const githubReady = !gh && checks[checks.length - 1]?.status === "ok";
   const transport = github ?? (githubReady ? new GhCliTransport() : null);
-  if (config && codexIsolationConfigured(config)) {
-    const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)");
-    if (bwrap) checks.push(bwrap);
-    else checks.push(...await configuredCodexIsolationChecks(config));
+  const bwrap = tool("sandbox", "bwrap", "install bubblewrap (for example: sudo apt install bubblewrap)", find);
+  if (bwrap) checks.push(bwrap);
+  else {
+    const probe = await execute(["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "true"]);
+    checks.push(probe.code === 0
+      ? { name: "sandbox", status: "ok", detail: "bwrap can create network and PID namespaces" }
+      : { name: "sandbox", status: "fail", detail: `bwrap cannot create namespaces: ${probe.output}`, fix: "allow unprivileged user namespaces (for example: sysctl kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile for bwrap)" });
+    if (config && codexIsolationConfigured(config)) checks.push(...await configuredCodexIsolationChecks(config, execute));
   }
 
   if (config) {
@@ -172,17 +188,17 @@ export async function doctorReport(
     for (const name of [...used].sort()) {
       const runner = config.runners[name];
       if (!runner || !("command" in runner)) continue;
-      const missing = tool(`harness ${name}`, runner.command, `install ${runner.command} and authenticate it as the account Conveyor runs under`);
-      checks.push(missing ?? { name: `harness ${name}`, status: "ok", detail: Bun.which(runner.command)! });
+      const missing = tool(`harness ${name}`, runner.command, `install ${runner.command} and authenticate it as the account Conveyor runs under`, find);
+      checks.push(missing ?? { name: `harness ${name}`, status: "ok", detail: find(runner.command)! });
     }
     for (const command of scriptInterpreters(config)) {
       const missing = tool(`script interpreter ${command}`, command, command === "bun"
         ? "install Bun (https://bun.sh), or set an interpreter for the scripts that need another one"
-        : `install ${command}, or change the scripts' interpreter`);
-      checks.push(missing ?? { name: `script interpreter ${command}`, status: "ok", detail: Bun.which(command)! });
+        : `install ${command}, or change the scripts' interpreter`, find);
+      checks.push(missing ?? { name: `script interpreter ${command}`, status: "ok", detail: find(command)! });
     }
     for (const [id, repository] of Object.entries(config.repositories)) {
-      const probe = await run(["git", "-C", repository.folder, "rev-parse", "--is-inside-work-tree"]);
+      const probe = await execute(["git", "-C", repository.folder, "rev-parse", "--is-inside-work-tree"]);
       checks.push(probe.code === 0
         ? { name: `repository ${id}`, status: "ok", detail: repository.folder }
         : { name: `repository ${id}`, status: "fail", detail: `${repository.folder} is not a Git checkout`, fix: `git clone the repository into ${repository.folder}` });
@@ -211,8 +227,9 @@ export async function doctorChecks(
   serviceRunning: () => Promise<boolean>,
   github?: GitHubTransport,
   measureFilesystem?: FilesystemMeasure,
+  runtime?: DoctorRuntime,
 ): Promise<DoctorCheck[]> {
-  return (await doctorReport(home, configPath, serviceRunning, github, measureFilesystem)).checks;
+  return (await doctorReport(home, configPath, serviceRunning, github, measureFilesystem, runtime)).checks;
 }
 
 /**

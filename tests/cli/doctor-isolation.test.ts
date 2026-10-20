@@ -37,11 +37,19 @@ describe("configured Codex isolation doctor checks", () => {
   });
 
   test("reports egress namespace and filesystem-mount isolation as available", async () => {
-    const checks = await configuredCodexIsolationChecks(config(true), succeeds);
+    const commands: string[][] = [];
+    const checks = await configuredCodexIsolationChecks(config(true), async (argv) => {
+      commands.push(argv);
+      return { code: 0, output: "" };
+    });
 
     expect(checks).toEqual([
       { name: "Codex egress namespaces", status: "ok", detail: "bwrap can create network and PID namespaces" },
       { name: "Codex egress mounts", status: "ok", detail: "bwrap can create the required filesystem mounts" },
+    ]);
+    expect(commands).toEqual([
+      ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--", "true"],
+      ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", "--", "true"],
     ]);
   });
 
@@ -67,7 +75,7 @@ describe("configured Codex isolation doctor checks", () => {
       name: "Codex egress mounts",
       status: "fail",
       detail: "bwrap cannot create the filesystem mounts required for Codex egress isolation: Creating new namespace failed: Operation not permitted",
-      fix: "allow bwrap to create mount namespaces and bind, proc, and tmpfs mounts (for example: grant the required AppArmor profile permissions)",
+      fix: "allow bwrap to create the bind, proc, and tmpfs mounts in its mount namespace (for example: grant bwrap mount permissions in the host's AppArmor profile)",
     });
   });
 
