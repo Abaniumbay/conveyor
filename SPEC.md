@@ -964,6 +964,15 @@ Every action a person or the CLI takes is a command (`src/commands`): validated,
 
 The UI is an operations console, not a general Kanban editor. It is implemented as server-rendered Preact components. V0.1 ships no client hydration bundle; links and forms retain simple HTTP semantics.
 
+### Live dashboard model
+
+The dashboard is moving to a client-rendered application fed by a live model (#411). The server keeps one normalized model of what the dashboard shows: `items` (each item's card, its board `placement` and `order`, and whether it needs its owner), `stages`, `questions`, `repositories`, `restrictedRepositories` (superuser only), the relationship `graph`, and `system` (usage, draining, runner capacity, active runs, warnings). It holds every current item and the 50 most recent finished items; `system.doneTotal` counts all of them.
+
+- `GET /api/v1/snapshot` (signed-in session) returns `{ seq, model, status, account, csrfToken }`. `seq` is the last patch the model includes. A regular user receives no superuser-only entities.
+- `GET /api/v1/stream` (signed-in session, server-sent events, `Last-Event-ID` or `?after=<seq>`) first replays the patches after that sequence, or sends `reset` when they are no longer all kept (the client then loads a new snapshot). It then sends one `patch` message per change, `{ seq, entity, id, op: "upsert" | "remove", data }`, where an upsert of a known entity carries only its changed top-level fields (a field that became empty is `null`). `status` messages carry the server status when it changes; `keep-alive` arrives at least every four seconds.
+- Changes to state invalidate the model. It is rebuilt once a burst of changes settles (250 ms, at most 1 s), diffed against the previous build, and the patches are sent to every open stream. The work per change does not depend on the number of open dashboards, and nothing is built while none is open. A rebuild that changes nothing sends nothing.
+- Patches are a projection for signed-in dashboards: they may carry the titles and other text the dashboard shows, they are never stored, and they never reach event sinks. Recorded events keep their rule of identifiers and states only.
+
 Primary views:
 
 - A single horizontally scrolling Kanban row ordered as the built-in Backlog lane, exactly one column for every configured stage including the first stage, and the built-in Done lane.
