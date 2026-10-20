@@ -119,8 +119,9 @@ export class ReviewFindings {
     this.#db
       .query("INSERT INTO finding_events(finding_id, kind, actor, reason, at, detail_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(findingId, kind, actor, reason, at, detail === null ? null : JSON.stringify(detail));
-    const owner = this.#db.query("SELECT issue_id FROM findings WHERE id = ?").get(findingId) as { issue_id: string } | null;
-    eventLog(this.#db).append("finding.changed", { findingId, change: kind }, { issueId: owner?.issue_id ?? null });
+    const owner = this.#db.query("SELECT issue_id, type FROM findings WHERE id = ?").get(findingId) as { issue_id: string; type: string } | null;
+    if (owner === null) throw new Error(`Cannot record a change for missing finding ${findingId}.`);
+    eventLog(this.#db).append("finding.changed", { findingId, type: findingType(owner.type), change: kind }, { issueId: owner.issue_id });
   }
 
   #insert(input: {

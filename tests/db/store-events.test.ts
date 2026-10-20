@@ -173,8 +173,12 @@ describe("run, conversation and review events", () => {
     const { store, during } = await world();
     const findings = new ReviewFindings(store.sqlite());
     let findingId = "";
-    expect(during(() => { findingId = findings.create({ issueId: ISSUE, runId: null, author: "reviewer", headSha: "abc", body: "Fix" }).id; }).map((event) => event.payload)).toEqual([{ findingId, change: "created" }]);
-    expect(during(() => findings.dismiss(ISSUE, findingId, { actor: "a", reason: "fine", at: "2026-10-17T00:00:00Z" })).map((event) => event.payload)).toEqual([{ findingId, change: "dismissed" }]);
+    const body = "Fix the confidential review text";
+    const created = during(() => { findingId = findings.create({ issueId: ISSUE, runId: null, author: "reviewer", headSha: "abc", body, type: "security" }).id; }).map((event) => event.payload);
+    expect(created).toEqual([{ findingId, type: "security", change: "created" }]);
+    const dismissed = during(() => findings.dismiss(ISSUE, findingId, { actor: "a", reason: "fine", at: "2026-10-17T00:00:00Z" })).map((event) => event.payload);
+    expect(dismissed).toEqual([{ findingId, type: "security", change: "dismissed" }]);
+    expect(JSON.stringify([...created, ...dismissed])).not.toContain(body);
   });
   test("a to-do list change", async () => {
     const { store, types } = await world();
