@@ -228,6 +228,10 @@ async function main(): Promise<void> {
     const page = await (await fetch(`${url}/operator`, { headers: { cookie: cookie! } })).text();
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)?.[1];
     check(csrf, "the signed-in dashboard renders");
+    const shell = await (await fetch(`${url}/app`, { headers: { cookie: cookie! } })).text();
+    const appScript = /src="(\/app\/assets\/app\.js\?v=[a-z0-9]+)"/.exec(shell)?.[1];
+    const appBundle = appScript ? await fetch(`${url}${appScript}`) : null;
+    check(Boolean(appBundle?.ok) && (await appBundle!.text()).length > 10_000 && shell.includes("data-app-skeleton"), "the embedded dashboard application is served");
 
     const started = await fetch(`${url}/steering`, {
       method: "POST",

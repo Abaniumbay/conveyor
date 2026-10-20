@@ -11,7 +11,7 @@ function item(number: number, title = `Item ${number}`): DashboardItem {
     activity: null, reason: null, cost: null, duration: null, stateChangedAt: null, waiting: null, blocked: false,
     inconsistent: false, closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [],
     working: false, needsAttention: false, retryable: false, resumableRollup: false, stoppedRollup: false,
-    placement: "backlog", order: number, needsYou: false,
+    placement: "backlog", column: null, order: number, needsYou: false, conversation: null,
   };
 }
 
@@ -24,7 +24,7 @@ function model(items: DashboardItem[]): DashboardModel {
     restrictedRepositories: {},
     graph: { nodes: [], relationships: [] },
     system: {
-      title: "Conveyor", project: "", totalUsage: "", harnessUsage: [], draining: null,
+      title: "Conveyor", updatedAt: "2026-10-20T00:00:00Z", project: "", totalUsage: "", harnessUsage: [], draining: null,
       activeWork: { runnerCount: 0, runnerCapacity: 1, runs: [] }, doneTotal: 0, systemWarnings: [],
       steering: { enabled: false, agent: null, recent: [] },
     },

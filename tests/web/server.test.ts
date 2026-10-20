@@ -1817,3 +1817,67 @@ describe("dashboard snapshot and patch stream", () => {
     feed.close();
   });
 });
+
+describe("dashboard application", () => {
+  test("sends a signed-out reader to sign in and back", async () => {
+    const { handler } = setup();
+    const response = await handler(new Request("http://localhost/app/issues/repo/7?q=fix"));
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(`/login?returnTo=${encodeURIComponent("/app/issues/repo/7?q=fix")}`);
+  });
+
+  test("serves the same data-free shell with a loading skeleton for every application path", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const board = await handler(new Request("http://localhost/app", { headers: { cookie } }));
+    const item = await handler(new Request("http://localhost/app/issues/repo/7", { headers: { cookie } }));
+    expect(board.status).toBe(200);
+    expect(board.headers.get("content-type")).toContain("text/html");
+    const html = await board.text();
+    expect(html).toBe(await item.text());
+    expect(html).toContain("data-app-skeleton");
+    expect(html).toMatch(/<script type="module" src="\/app\/assets\/app\.js\?v=[a-z0-9]+"><\/script>/);
+    expect(html).not.toContain("Keep <item> safe");
+    expect(board.headers.get("content-security-policy")).toContain("script-src 'self'");
+  });
+
+  test("serves the application script, cached for good under its own version", async () => {
+    const { handler } = setup();
+    const { cookie } = await login(handler);
+    const html = await (await handler(new Request("http://localhost/app", { headers: { cookie } }))).text();
+    const src = /src="(\/app\/assets\/app\.js\?v=[a-z0-9]+)"/.exec(html)![1]!;
+    const script = await handler(new Request(`http://localhost${src}`));
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-type")).toContain("text/javascript");
+    expect(script.headers.get("cache-control")).toContain("immutable");
+    expect((await script.text()).length).toBeGreaterThan(1_000);
+    const unversioned = await handler(new Request("http://localhost/app/assets/app.js"));
+    expect(unversioned.headers.get("cache-control")).toBe("no-cache");
+  });
+});
+
+describe("older finished items", () => {
+  test("lists the most recent finished items up to a limit, for a signed-in reader only", async () => {
+    const calls: number[] = [];
+    const { handler } = setup({
+      getDashboardDone: (limit: number) => {
+        calls.push(limit);
+        return [{ id: "github:owner/repo#3", placement: "done", order: 0, title: "Finished" }];
+      },
+    });
+    expect((await handler(new Request("http://localhost/api/v1/done?limit=60"))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const response = await handler(new Request("http://localhost/api/v1/done?limit=60", { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [{ id: "github:owner/repo#3", placement: "done", order: 0, title: "Finished" }] });
+    expect(calls).toEqual([60]);
+  });
+
+  test("refuses a limit outside 1 to 500", async () => {
+    const { handler } = setup({ getDashboardDone: () => [] });
+    const { cookie } = await login(handler);
+    for (const limit of ["0", "501", "abc"]) {
+      expect((await handler(new Request(`http://localhost/api/v1/done?limit=${limit}`, { headers: { cookie } }))).status).toBe(400);
+    }
+  });
+});

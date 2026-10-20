@@ -1,4 +1,5 @@
-import { Fragment, type ComponentChildren } from "preact";
+import { createContext, Fragment, type ComponentChildren } from "preact";
+import { useContext } from "preact/hooks";
 import renderToString from "preact-render-to-string";
 import { Accounts, Profile } from "./account-pages";
 import { Notifications } from "./notification-page";
@@ -202,7 +203,25 @@ function FamilySquares({ parent }: { parent: IssueCardViewModel }) {
   );
 }
 
+export type DetailTab = "summary" | "conversation" | "journey" | "activity";
+
+/** The browser application's live details: the selected tab and the content of the loaded tabs. */
+export interface LiveDetails {
+  tab: DetailTab;
+  conversation: ComponentChildren;
+  journey: ComponentChildren;
+  activity: ComponentChildren;
+}
+
+/** Provided by the browser application only; the server renders empty tabs its page script fills. */
+export const LiveDetailsContext = createContext<((issue: IssueCardViewModel) => LiveDetails) | null>(null);
+
 function DetailsDialog({ issue, id, selected = false, canManage = false }: { issue: IssueCardViewModel; id: string; selected?: boolean; canManage?: boolean }) {
+  const live = useContext(LiveDetailsContext)?.(issue) ?? null;
+  const tabProps = (tab: DetailTab, initiallySelected: boolean) => live
+    ? { "aria-selected": live.tab === tab ? "true" as const : "false" as const, tabIndex: live.tab === tab ? 0 : -1 }
+    : { "aria-selected": initiallySelected ? "true" as const : "false" as const };
+  const hiddenUnless = (tab: DetailTab, initiallyHidden: boolean) => live ? live.tab !== tab : initiallyHidden;
   const url = safeUrl(issue.url);
   const stageBadge = issue.stageBadge;
   const historyOnly = issue.historyOnly === true;
@@ -231,16 +250,16 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
       </header>
       <nav class="details-tabs" aria-label="Issue detail sections" role="tablist">
         {historyOnly
-          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="true" data-detail-tab="journey">Journey</button>
+          ? <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey", true)} data-detail-tab="journey">Journey</button>
           : <>
-            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} aria-selected="true" data-detail-tab="summary">Summary</button>
-            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} aria-selected="false" data-detail-tab="conversation">Conversation</button>
-            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} aria-selected="false" data-detail-tab="journey">Journey</button>
-            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} aria-selected="false" data-detail-tab="activity">Technical logs</button>
+            <button type="button" role="tab" id={`${summaryId}-tab`} aria-controls={summaryId} {...tabProps("summary", true)} data-detail-tab="summary">Summary</button>
+            <button type="button" role="tab" id={`${conversationId}-tab`} aria-controls={conversationId} {...tabProps("conversation", false)} data-detail-tab="conversation">Conversation</button>
+            <button type="button" role="tab" id={`${journeyId}-tab`} aria-controls={journeyId} {...tabProps("journey", false)} data-detail-tab="journey">Journey</button>
+            <button type="button" role="tab" id={`${activityId}-tab`} aria-controls={activityId} {...tabProps("activity", false)} data-detail-tab="activity">Technical logs</button>
           </>}
       </nav>
       {!historyOnly && <>
-      <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary">
+      <section id={summaryId} role="tabpanel" aria-labelledby={`${summaryId}-tab`} data-detail-panel="summary" hidden={hiddenUnless("summary", false)}>
         <div class="details-status">
           <span class={`andon andon--${issueSignal(issue)}`} aria-hidden="true" />
           <strong>{issue.waiting ? waitingStateWord(issue.waiting.kind) : stateWords(issue)}</strong>
@@ -367,10 +386,12 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         aria-labelledby={`${conversationId}-tab`}
         data-detail-panel="conversation"
         data-conversation-url={`/api/issues/${encodeURIComponent(issue.id)}/conversation`}
-        hidden
+        hidden={hiddenUnless("conversation", true)}
       >
+        {live ? live.conversation : <>
         <p class="conversation-status" data-conversation-status>Open Conversation to load the shared handoff.</p>
         <ol class="conversation-messages" data-conversation-messages />
+        </>}
         <form class="conversation-compose" data-conversation-form>
           <label for={`${conversationId}-message`}>Message to the current or next agent</label>
           <textarea id={`${conversationId}-message`} name="message" rows={3} maxLength={4000} required placeholder="Add context or steer the work…" />
@@ -387,11 +408,13 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         aria-labelledby={`${journeyId}-tab`}
         data-detail-panel="journey"
         data-journey-url={`/api/issues/${encodeURIComponent(issue.id)}/journey`}
-        hidden={!historyOnly}
+        hidden={hiddenUnless("journey", !historyOnly)}
       >
         {historyOnly && <p class="details-empty">This item is no longer enrolled. Its history is read-only.</p>}
+        {live ? live.journey : <>
         <p class="journey-status" data-journey-status>Open Journey to load the stage history.</p>
         <ol class="journey-list" data-journey-list />
+        </>}
       </section>
       {!historyOnly && <>
       <section
@@ -400,10 +423,12 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
         aria-labelledby={`${activityId}-tab`}
         data-detail-panel="activity"
         data-activity-url={`/api/issues/${encodeURIComponent(issue.id)}/activity`}
-        hidden
+        hidden={hiddenUnless("activity", true)}
       >
+        {live ? live.activity : <>
         <p class="activity-status" data-activity-status>Open Technical logs to load the persisted run log.</p>
         <div data-activity-runs />
+        </>}
       </section>
       </>}
     </dialog>
@@ -499,6 +524,8 @@ let heldCards: ReadonlySet<string> | null = null;
 /** Changes whenever anything the card shows does. */
 function cardRevision(issue: IssueCardViewModel, actors: StageColumnViewModel["actors"], canManage: boolean, stageLabel: string | null, thread: boolean): string {
   const links = boardLinks && [boardLinks.dependents.get(issue.id) ?? 0, issue.dependencies.map((dependency) => boardLinks!.onBoard.has(dependency.id))];
+  // Revisions serve the server-rendered partial refresh only; the browser application never sends them.
+  if (typeof Bun === "undefined") return "";
   return Bun.hash(JSON.stringify([issue, actors, canManage, stageLabel, thread, links])).toString(36);
 }
 
@@ -1713,7 +1740,8 @@ function DrainingNotice({ draining }: { draining: DashboardViewModel["draining"]
   </section>;
 }
 
-function Page({ model }: { model: DashboardViewModel }) {
+/** Everything inside the page body: the server renders it in the page, the browser application on its own. */
+export function DashboardBody({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   let content: ComponentChildren;
   if (model.view === "graph") content = <Graph model={model} />;
@@ -1729,7 +1757,67 @@ function Page({ model }: { model: DashboardViewModel }) {
   else if (model.view === "profile" && model.account) content = <Profile account={model.account} csrfToken={model.csrfToken} />;
   else if (model.view === "notifications" && model.notifications) content = <Notifications preferences={model.notifications} csrfToken={model.csrfToken} />;
   else content = <Board model={model} />;
+  return (
+    <>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <main class="dashboard">
+      <div class="dashboard-sticky">
+        <header class="dashboard-header">
+          <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
+          <details class="server-status" data-server-status>
+            <summary aria-label="Connection state: Connecting"><span class="server-dot" aria-hidden="true" /><strong class="connection-state" data-connection-state>Connecting</strong><a data-session-sign-in hidden>Sign in again</a><span class="server-storage-warning" data-storage-warning hidden><span aria-hidden="true">!</span><span class="sr-only">Storage pressure warning</span></span></summary>
+          <div class="header-popover server-popover">
+            <h2>System</h2>
+            <p data-server-metrics>Waiting for server status…</p>
+            <p class="updated"><span>Dashboard updated</span> <LocalTime value={model.updatedAt} /></p>
+            <MobileSystemControls model={model} />
+          </div>
+          </details>
+          <a href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true" /><span><strong>{needsYouItems(model).total}</strong> {needsYouItems(model).total === 1 ? "needs" : "need"} you</span></a>
+          <StickyFilterSummary model={model} />
+          <span class="header-desktop-control"><RunnerStatus model={model} /></span>
+          <span class="header-desktop-control"><HarnessUsage model={model} /></span>
+          <span class="total-usage header-desktop-control" title={model.totalUsage}>{model.totalUsage}</span>
+          <span class="header-desktop-control"><ThemeControl /></span>
+          <a class={`header-link header-desktop-control${model.view === "notifications" ? " header-link--active" : ""}`} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
+          <details class="account-menu">
+          <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
+          <div class="header-popover account-popover">
+            <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
+            {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
+            <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
+            <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout action-button action-button--secondary" type="submit">Sign out</button></form>
+          </div>
+          </details>
+        </header>
+        <DrainingNotice draining={model.draining} />
+        <Navigation model={model} />
+      </div>
+      {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
+      <div class="content-anchor" id="content" tabIndex={-1} />
+      {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><BoardFilters model={model} /><NeedsYou model={model} /></>}
+      {content}
+      {model.selectedIssue && (
+        <DetailsDialog
+          issue={model.selectedIssue}
+          id={`selected-issue-${model.selectedIssue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${model.selectedIssue.number}`}
+          selected
+          canManage={canManageDashboard(model)}
+        />
+      )}
+      <div class="page-loader" role="status" aria-live="polite"><span />Loading…</div>
+    </main>
+    <p class="sr-only" role="status" data-route-announcer />
+    </>
+  );
+}
 
+/** Sets what the board holds before it renders (the browser application renders it the same way). */
+export function prepareDashboardRender(model: DashboardViewModel): void {
+  boardLinks = boardLinksOf(model);
+}
+
+function Page({ model }: { model: DashboardViewModel }) {
   return (
     <html lang="en">
       <head>
@@ -1746,55 +1834,7 @@ function Page({ model }: { model: DashboardViewModel }) {
         <script src="/assets/notifications.js" defer />
       </head>
       <body data-dashboard-revision={model.revision} data-dashboard-view={model.view} data-view-title={`${viewTitle(model)} · ${model.title}`} data-csrf-token={model.csrfToken}>
-        <a class="skip-link" href="#content">Skip to content</a>
-        <main class="dashboard">
-          <div class="dashboard-sticky">
-            <header class="dashboard-header">
-              <h1 class="wordmark"><a href="/board">Conveyor</a></h1>
-              <details class="server-status" data-server-status>
-                <summary aria-label="Connection state: Connecting"><span class="server-dot" aria-hidden="true" /><strong class="connection-state" data-connection-state>Connecting</strong><a data-session-sign-in hidden>Sign in again</a><span class="server-storage-warning" data-storage-warning hidden><span aria-hidden="true">!</span><span class="sr-only">Storage pressure warning</span></span></summary>
-              <div class="header-popover server-popover">
-                <h2>System</h2>
-                <p data-server-metrics>Waiting for server status…</p>
-                <p class="updated"><span>Dashboard updated</span> <LocalTime value={model.updatedAt} /></p>
-                <MobileSystemControls model={model} />
-              </div>
-              </details>
-              <a href="/board#needs-you-heading" class="needs-you-link"><i class="andon andon--stop" aria-hidden="true" /><span><strong>{needsYouItems(model).total}</strong> {needsYouItems(model).total === 1 ? "needs" : "need"} you</span></a>
-              <StickyFilterSummary model={model} />
-              <span class="header-desktop-control"><RunnerStatus model={model} /></span>
-              <span class="header-desktop-control"><HarnessUsage model={model} /></span>
-              <span class="total-usage header-desktop-control" title={model.totalUsage}>{model.totalUsage}</span>
-              <span class="header-desktop-control"><ThemeControl /></span>
-              <a class={`header-link header-desktop-control${model.view === "notifications" ? " header-link--active" : ""}`} href="/settings/notifications" aria-current={model.view === "notifications" ? "page" : undefined}>Notifications</a>
-              <details class="account-menu">
-              <summary aria-label={`Account menu for ${model.account?.username ?? "user"}`}><span class="account-avatar">{model.account?.avatar ?? "🐼"}</span><span class="account-username">{model.account?.username}</span></summary>
-              <div class="header-popover account-popover">
-                <a href="/profile" class={model.view === "profile" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "profile" ? "page" : undefined}>Profile</a>
-                {canManageDashboard(model) && <a href="/accounts" class={model.view === "accounts" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "accounts" ? "page" : undefined}>Accounts</a>}
-                <a href="/about" class={model.view === "about" ? "account-menu-link account-menu-link--active" : "account-menu-link"} aria-current={model.view === "about" ? "page" : undefined}>About Conveyor</a>
-                <form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value={model.csrfToken} /><input type="hidden" name="pushEndpoint" value="" /><button class="logout action-button action-button--secondary" type="submit">Sign out</button></form>
-              </div>
-              </details>
-            </header>
-            <DrainingNotice draining={model.draining} />
-            <Navigation model={model} />
-          </div>
-          {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
-          <div class="content-anchor" id="content" tabIndex={-1} />
-          {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><BoardFilters model={model} /><NeedsYou model={model} /></>}
-          {content}
-          {model.selectedIssue && (
-            <DetailsDialog
-              issue={model.selectedIssue}
-              id={`selected-issue-${model.selectedIssue.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${model.selectedIssue.number}`}
-              selected
-              canManage={canManageDashboard(model)}
-            />
-          )}
-          <div class="page-loader" role="status" aria-live="polite"><span />Loading…</div>
-        </main>
-        <p class="sr-only" role="status" data-route-announcer />
+        <DashboardBody model={model} />
       </body>
     </html>
   );

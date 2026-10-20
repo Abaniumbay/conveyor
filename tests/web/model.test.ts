@@ -83,7 +83,7 @@ describe("normalizeDashboard", () => {
   test("places each item by its column and keeps no session data", () => {
     const model = normalizeDashboard(board());
     expect(model.items["github:owner/repo#1"]).toMatchObject({ placement: "backlog", order: 0, needsYou: false });
-    expect(model.items["github:owner/repo#2"]).toMatchObject({ placement: "stage", order: 0 });
+    expect(model.items["github:owner/repo#2"]).toMatchObject({ placement: "stage", column: "implementation", order: 0 });
     expect(model.items["github:owner/repo#3"]).toMatchObject({ placement: "done", state: "completed" });
     expect(JSON.stringify(model)).not.toContain("session-token");
   });
@@ -130,7 +130,7 @@ describe("diffDashboard", () => {
     const before = normalizeDashboard(board());
     const after = normalizeDashboard(board({ backlog: [], stages: [{ ...column("stage:implementation", [card(1), card(2)]), description: "Build it", icon: "🛠️" }] }));
     const item = diffDashboard(before, after).find((change) => change.id === "github:owner/repo#1");
-    expect(item).toEqual({ entity: "item", id: "github:owner/repo#1", op: "upsert", data: { placement: "stage" } });
+    expect(item).toEqual({ entity: "item", id: "github:owner/repo#1", op: "upsert", data: { placement: "stage", column: "implementation" } });
   });
 
   test("an item that leaves the model is removed", () => {
