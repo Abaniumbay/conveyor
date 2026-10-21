@@ -1,5 +1,6 @@
 import { resolveFilesystemPath } from "../core/paths";
 import type { ConveyorConfig } from "../config/load";
+import { parseLoopbackTcp } from "./egress-policy";
 import { mcpSocketPath } from "./mcp-socket";
 import type { EgressInput } from "./run-network";
 
@@ -31,11 +32,17 @@ export function agentEgressFor(
   if (!egress) return undefined;
   const services = egress.localServices ?? [];
   for (const service of services) {
-    if (isDockerSocket(service.socket)) {
+    if (service.socket !== undefined && isDockerSocket(service.socket)) {
       throw new Error(`agentEgress.localServices.${service.name}.socket must not forward the host Docker socket`);
     }
   }
-  const localServices = services.map((service) => ({ port: endpointPort(service.endpoint), socket: service.socket }));
+  const localServices = services.map((service) => {
+    const port = endpointPort(service.endpoint);
+    if (service.socket !== undefined) return { port, socket: service.socket };
+    const tcp = parseLoopbackTcp(service.tcp ?? "");
+    if (!tcp) throw new Error(`agentEgress.localServices.${service.name} must declare a socket or a loopback tcp endpoint`);
+    return { port, tcp };
+  });
   if (egress.allowLoopbackMcp) {
     const mcpPort = listenPort(config.web.listen);
     const clash = services.find((service) => endpointPort(service.endpoint) === mcpPort);

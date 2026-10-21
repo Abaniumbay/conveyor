@@ -98,4 +98,14 @@ describe("agentEgressFor", () => {
     });
     expect(agentEgressFor(config({}), "legacy", {})).toBeUndefined();
   });
+
+  test("maps a TCP local service to its host listener and sandbox port", () => {
+    const policy = agentEgressFor(config({
+      allowLoopbackMcp: false,
+      httpsHosts: [],
+      localServices: [{ name: "redis", tcp: "127.0.0.1:6379", endpoint: "127.0.0.1:16379", environment: { REDIS_URL: "redis://127.0.0.1:16379" } }],
+    }), "app", {});
+    expect(policy?.localServices).toEqual([{ port: 16379, tcp: { host: "127.0.0.1", port: 6379 } }]);
+    expect(policy?.localServiceEnvironment).toEqual({ REDIS_URL: "redis://127.0.0.1:16379" });
+  });
 });
