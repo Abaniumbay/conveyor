@@ -404,6 +404,8 @@ describe("dashboard live refresh position", () => {
         page.locator(".recent-filter-submit").click(),
       ]);
 
+      // The filtered page loads after the address changes.
+      await page.locator('a[href="/issues/sample/72"]').waitFor();
       expect(await page.locator('input[name="type"][value="done"]').isChecked()).toBe(true);
       expect(await page.locator('input[name="type"][value="stopped"]').isChecked()).toBe(true);
       expect(await page.locator('input[name="repo"][value="sample"]').isChecked()).toBe(true);
