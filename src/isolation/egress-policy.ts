@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { z } from "zod";
 
 /** Source-provider API hosts: never reachable from agent sandboxes. */
@@ -46,15 +48,50 @@ export function validateHttpsHosts(hosts: readonly string[]): HostIssue[] {
   return issues;
 }
 
+const loopbackEndpoint = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
+
+const localServiceSchema = z
+  .object({
+    name: z.string().trim().min(1).max(100),
+    /** The host Unix socket the per-run bridge may reach. */
+    socket: z.string().min(1).refine(path.isAbsolute, "must be an absolute Unix socket path"),
+    /** The fixed loopback endpoint available inside this repository's agent sandbox. */
+    endpoint: z.string().refine((value) => {
+      const match = loopbackEndpoint.exec(value);
+      return match !== null && Number(match[1]) <= 65_535;
+    }, "must be a 127.0.0.1 endpoint with a port between 1 and 65535"),
+    /** Connection details passed only to this repository's agent commands. */
+    environment: z.record(z.string(), z.string()).default({}),
+  })
+  .strict();
+
+function validateLocalServiceNames(services: readonly { name: string }[]): HostIssue[] {
+  const issues: HostIssue[] = [];
+  const firstSeen = new Map<string, number>();
+  services.forEach((service, index) => {
+    const earlier = firstSeen.get(service.name);
+    if (earlier !== undefined) {
+      issues.push({ index, message: `agentEgress.localServices[${index}].name "${service.name}": duplicate of localServices[${earlier}]` });
+      return;
+    }
+    firstSeen.set(service.name, index);
+  });
+  return issues;
+}
+
 export const agentEgressSchema = z
   .object({
     allowLoopbackMcp: z.boolean().default(true),
     httpsHosts: z.array(z.string()).default([]),
+    localServices: z.array(localServiceSchema).default([]),
   })
   .strict()
   .superRefine((egress, context) => {
     for (const issue of validateHttpsHosts(egress.httpsHosts)) {
       context.addIssue({ code: "custom", path: ["httpsHosts"], message: issue.message });
+    }
+    for (const issue of validateLocalServiceNames(egress.localServices)) {
+      context.addIssue({ code: "custom", path: ["localServices", issue.index, "name"], message: issue.message });
     }
   });
 

@@ -343,7 +343,7 @@ describe("repository agentEgress", () => {
 
   test("an empty block enforces loopback MCP only", async () => {
     const { config } = await load(NATIVE_PIPELINE + repository("    agentEgress: {}\n"));
-    expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [] });
+    expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [], localServices: [] });
   });
 
   test("accepts exact hosts", async () => {
@@ -353,7 +353,43 @@ describe("repository agentEgress", () => {
     expect(config.repositories.sample!.agentEgress).toEqual({
       allowLoopbackMcp: false,
       httpsHosts: ["registry.npmjs.org", "github.com"],
+      localServices: [],
     });
+  });
+
+  test("accepts named Unix local services at fixed loopback endpoints", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: postgres://conveyor@127.0.0.1:5432/test
+`));
+    expect(config.repositories.sample!.agentEgress!.localServices).toEqual([{
+      name: "postgres",
+      socket: "/run/postgresql/.s.PGSQL.5432",
+      endpoint: "127.0.0.1:5432",
+      environment: { DATABASE_URL: "postgres://conveyor@127.0.0.1:5432/test" },
+    }]);
+  });
+
+  test("rejects unknown local-service keys", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          unexpected: true
+`))).rejects.toThrow();
+  });
+
+  test("rejects duplicate local-service names", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5432, endpoint: 127.0.0.1:5432 }
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5433, endpoint: 127.0.0.1:5433 }
+`))).rejects.toThrow('duplicate of localServices[0]');
   });
 
   test("names the offending entry and rule", async () => {
