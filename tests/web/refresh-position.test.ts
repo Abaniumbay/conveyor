@@ -399,12 +399,17 @@ describe("dashboard live refresh position", () => {
       await openView(page, server.port, "/recent");
       for (const type of ["sent-back", "moved-forward", "new", "resumed"]) await page.locator(`input[name="type"][value="${type}"]`).uncheck();
       await page.locator('input[name="repo"][value="sample"]').check();
+      // The filtered page loads after the address changes; the unfiltered page shows the same item,
+      // so wait for the filtered page's own request rather than for the item.
+      const filtered = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname === "/api/v1/recent" && url.searchParams.get("repo") === "sample";
+      });
       await Promise.all([
         page.waitForURL("**/recent?type=done&type=stopped&repo=sample"),
         page.locator(".recent-filter-submit").click(),
       ]);
-
-      // The filtered page loads after the address changes.
+      await filtered;
       await page.locator('a[href="/issues/sample/72"]').waitFor();
       expect(await page.locator('input[name="type"][value="done"]').isChecked()).toBe(true);
       expect(await page.locator('input[name="type"][value="stopped"]').isChecked()).toBe(true);

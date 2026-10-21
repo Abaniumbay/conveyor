@@ -382,6 +382,49 @@ describe("repository agentEgress", () => {
     }]);
   });
 
+  test("accepts a named local TCP service at a numeric loopback address", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: redis, tcp: "127.0.0.1:6379", endpoint: 127.0.0.1:6379 }
+`));
+    expect(config.repositories.sample!.agentEgress!.localServices).toEqual([
+      { name: "redis", tcp: "127.0.0.1:6379", endpoint: "127.0.0.1:6379", environment: {} },
+    ]);
+  });
+
+  test.each(["10.0.0.5:6379", "192.168.1.2:6379", "localhost:6379", "example.com:6379"])("rejects a non-loopback local TCP host %p", async (tcp) => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: redis, tcp: "${tcp}", endpoint: 127.0.0.1:6379 }
+`))).rejects.toThrow("numeric loopback address");
+  });
+
+  test.each(["0.0.0.0:6379", "[::]:6379"])("rejects a wildcard local TCP bind address %p", async (tcp) => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: redis, tcp: "${tcp}", endpoint: 127.0.0.1:6379 }
+`))).rejects.toThrow("wildcard and non-loopback addresses are not allowed");
+  });
+
+  test("rejects a duplicate name across Unix-socket and TCP entries", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: db, socket: /run/db.sock, endpoint: 127.0.0.1:5432 }
+        - { name: db, tcp: "127.0.0.1:6379", endpoint: 127.0.0.1:6379 }
+`))).rejects.toThrow('duplicate of localServices[0]');
+  });
+
+  test("rejects a service that declares both or neither of socket and tcp", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: db, socket: /run/db.sock, tcp: "127.0.0.1:6379", endpoint: 127.0.0.1:6379 }
+`))).rejects.toThrow("exactly one of socket or tcp");
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: db, endpoint: 127.0.0.1:6379 }
+`))).rejects.toThrow("exactly one of socket or tcp");
+  });
+
   test("rejects unknown local-service keys", async () => {
     await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
       localServices:

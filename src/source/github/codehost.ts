@@ -1,3 +1,4 @@
+import type { FindingType } from "../../engine/finding-types";
 import { InfrastructureError } from "../../tasks/contract";
 import type {
   BranchPushResult,
@@ -66,9 +67,10 @@ function refusalResult(detail: string): MergeChangeResult | null {
   return refusal ? { merged: false, refusal, reason: detail } : null;
 }
 
-function findingComment(findingId: string, body: string, where: string | null, resolution?: string): string {
+function findingComment(findingId: string, body: string, where: string | null, type?: FindingType, resolution?: string): string {
   const heading = resolution ?? "**Review finding**";
-  return `${findingMarker(findingId)}\n${heading}${where ? ` (${where})` : ""}\n\n${body}`;
+  const kind = type ? `\nType: \`${type}\`` : "";
+  return `${findingMarker(findingId)}\n${heading}${where ? ` (${where})` : ""}${kind}\n\n${body}`;
 }
 
 const reaction = (verdict: FindingVerdict): "+1" | "-1" => (verdict === "fixed" ? "+1" : "-1");
@@ -278,14 +280,14 @@ export class GitHubCodeHost implements CodeHost {
   }
 
   async createFinding(input: {
-    address: string; id: string; findingId: string; body: string; headSha: string; path?: string; line?: number;
+    address: string; id: string; findingId: string; body: string; headSha: string; type?: FindingType; path?: string; line?: number;
   }): Promise<{ url: string; projection: string }> {
     const number = reference(input.address, input.id);
     const positioned = input.path !== undefined && input.line !== undefined;
     if (positioned) {
       try {
         const created = await this.github.createReviewComment(input.address, number, {
-          body: findingComment(input.findingId, input.body, null), commitId: input.headSha, path: input.path!, line: input.line!,
+          body: findingComment(input.findingId, input.body, null, input.type), commitId: input.headSha, path: input.path!, line: input.line!,
         });
         return { url: created.url, projection: `inline:${created.id}` };
       } catch (error) {
@@ -294,12 +296,12 @@ export class GitHubCodeHost implements CodeHost {
       }
     }
     const where = input.path ? `${input.path}${input.line !== undefined ? `:${input.line}` : ""}` : null;
-    const created = await this.github.createComment(input.address, number, findingComment(input.findingId, input.body, where));
+    const created = await this.github.createComment(input.address, number, findingComment(input.findingId, input.body, where, input.type));
     return { url: created.url, projection: `comment:${created.id}` };
   }
 
   async resolveFindingProjection(input: {
-    address: string; id: string; findingId: string; projection: string; body: string; actor: string;
+    address: string; id: string; findingId: string; projection: string; body: string; type?: FindingType; actor: string;
     verdict: FindingVerdict; message: string;
   }): Promise<void> {
     const [kind, rawId] = input.projection.split(":");
@@ -315,7 +317,7 @@ export class GitHubCodeHost implements CodeHost {
         if (thread && !thread.isResolved) await this.github.resolveReviewThread(thread.id);
       });
     } else {
-      await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.message));
+      await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.type, input.message));
       await bestEffort(() => this.github.reactToIssueComment(input.address, commentId, reaction(input.verdict)));
     }
   }

@@ -1,3 +1,4 @@
+import net from "node:net";
 import path from "node:path";
 
 import { z } from "zod";
@@ -50,11 +51,27 @@ export function validateHttpsHosts(hosts: readonly string[]): HostIssue[] {
 
 const loopbackEndpoint = /^127\.0\.0\.1:([1-9]\d{0,4})$/;
 
+/** Splits a numeric `127.x.x.x:<port>` or `[::1]:<port>` host endpoint; null when it is anything else. */
+export function parseLoopbackTcp(value: string): { host: string; port: number } | null {
+  const match = /^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[(::1)\]):([1-9]\d{0,4})$/.exec(value);
+  if (!match) return null;
+  const host = match[1] ?? match[2]!;
+  const port = Number(match[3]);
+  if (port > 65_535) return null;
+  if (match[1] && (net.isIPv4(host) === false || Number(host.split(".")[0]) !== 127)) return null;
+  return { host, port };
+}
+
 const localServiceSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
-    /** The host Unix socket the per-run bridge may reach. */
-    socket: z.string().min(1).refine(path.isAbsolute, "must be an absolute Unix socket path"),
+    /** The host Unix socket the per-run bridge may reach (exclusive with `tcp`). */
+    socket: z.string().min(1).refine(path.isAbsolute, "must be an absolute Unix socket path").optional(),
+    /** The numeric loopback host TCP listener the per-run bridge may reach (exclusive with `socket`). */
+    tcp: z
+      .string()
+      .refine((value) => parseLoopbackTcp(value) !== null, "must be a numeric loopback address (127.0.0.0/8 or [::1]) with a port between 1 and 65535; wildcard and non-loopback addresses are not allowed")
+      .optional(),
     /** The fixed loopback endpoint available inside this repository's agent sandbox. */
     endpoint: z.string().refine((value) => {
       const match = loopbackEndpoint.exec(value);
@@ -63,7 +80,10 @@ const localServiceSchema = z
     /** Connection details passed only to this repository's agent commands. */
     environment: z.record(z.string(), z.string()).default({}),
   })
-  .strict();
+  .strict()
+  .refine((service) => (service.socket === undefined) !== (service.tcp === undefined), {
+    message: "declare exactly one of socket or tcp",
+  });
 
 function validateLocalServiceNames(services: readonly { name: string }[]): HostIssue[] {
   const issues: HostIssue[] = [];
