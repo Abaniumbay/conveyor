@@ -1032,4 +1032,16 @@ export const migrations: readonly Migration[] = [
         ON criterion_test_evidence_tests(issue_id, criterion_id);
     `,
   },
+  {
+    version: 41,
+    sql: `
+      -- Classify every durable finding and retain its links to the reviewed acceptance criteria.
+      ALTER TABLE findings ADD COLUMN type TEXT NOT NULL DEFAULT 'general' CHECK(type IN (
+        'criterion-not-met', 'test-missing-case', 'test-not-real', 'test-not-discriminating',
+        'test-not-run', 'bug', 'concurrency', 'security', 'error-handling', 'performance',
+        'design', 'docs', 'style', 'general'
+      ));
+      ALTER TABLE findings ADD COLUMN criterion_ids_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];

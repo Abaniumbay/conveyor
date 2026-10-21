@@ -1121,10 +1121,24 @@ describe("findings", () => {
     const w = await world({ artifacts: [artifact()] });
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
     expect((result.output as ChangeContext).findings).toEqual([
-      { id: expect.any(String), providerKey: "thread:T1", author: "alice", source: "human", headSha: "head1", state: "open", path: "a.ts", line: 3, url: "https://x/t1" },
+      { id: expect.any(String), providerKey: "thread:T1", author: "alice", source: "human", headSha: "head1", state: "open", path: "a.ts", line: 3, url: "https://x/t1", type: "general", criterionIds: [] },
     ]);
     await run("change.load", { context: {}, deps: w.deps });
     expect(findings(w).list("i1")).toHaveLength(1);
+  });
+
+  test("change.load exposes a finding's stored type and criterion IDs", async () => {
+    const w = await world();
+    const finding = findings(w).create({
+      issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "Validate access control",
+      type: "security", criterionIds: ["AC-1", "AC-4"],
+    });
+
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+
+    expect((result.output as ChangeContext).findings).toContainEqual(expect.objectContaining({
+      id: finding.id, type: "security", criterionIds: ["AC-1", "AC-4"],
+    }));
   });
 
   test("change.load retains body-free provenance for untrusted artifacts and exposes only a trusted adoption", async () => {
@@ -1174,7 +1188,7 @@ describe("findings", () => {
     expect(task.kind).toBe("check");
     expect(task.checkpoint).toEqual({ name: "reviewPassed", scope: "gate" });
     const finding = (state: "open" | "resolved" | "dismissed" | "withdrawn", id: string): ChangeContext["findings"][number] =>
-      ({ id, providerKey: null, author: "a", source: "agent", headSha: "head1", state, path: "a.ts", line: 3, url: `https://x/${id}` });
+      ({ id, providerKey: null, author: "a", source: "agent", headSha: "head1", state, path: "a.ts", line: 3, url: `https://x/${id}`, type: "general", criterionIds: [] });
     expect((await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("resolved", "r"), finding("dismissed", "d"), finding("withdrawn", "w")] }) }) })).status).toBe("pass");
     const failed = await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("open", "o1"), finding("resolved", "r")] }) }) }) as Fail;
     expect(failed.status).toBe("fail");

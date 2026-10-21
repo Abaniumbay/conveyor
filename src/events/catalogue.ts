@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 
+import { FINDING_TYPES } from "../engine/finding-types";
 import { WAIT_KINDS } from "./topics";
 
 interface Definition<S extends z.ZodType> {
@@ -83,8 +84,8 @@ export const EVENT_CATALOGUE = {
   "gate.boardApproved": define("Gates and review", "A person approved the board gate for one stage visit.", z.object({
     stageId: id, stageEpoch: z.number().int().nonnegative(), attempt: z.number().int().positive(),
   }).strict()),
-  "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` says which.", z.object({
-    findingId: id, change: z.enum(FINDING_CHANGES),
+  "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` and its fixed `type` say which.", z.object({
+    findingId: id, type: z.enum(FINDING_TYPES), change: z.enum(FINDING_CHANGES),
   }).strict()),
   "todo.changed": define("Gates and review", "An item's to-do list changed.", z.object({}).strict()),
   "criterion.approvalChanged": define("Gates and review", "A reviewer approved an acceptance criterion at a head, or withdrew the approval.", z.object({

@@ -50,7 +50,7 @@ function codeHostOf(deps: Deps): CodeHost {
 export function findingsView(deps: Deps): ChangeContext["findings"] {
   return findingsOf(deps).listVisible(deps.issueId).map((finding) => ({
     id: finding.id, providerKey: finding.providerKey, author: finding.author, source: finding.source, headSha: finding.headSha,
-    state: finding.state, path: finding.path, line: finding.line, url: finding.url,
+    state: finding.state, path: finding.path, line: finding.line, url: finding.url, type: finding.type, criterionIds: finding.criterionIds,
     ...(finding.dismissal ? { dismissal: finding.dismissal } : {}),
     ...(finding.withdrawal ? { withdrawal: finding.withdrawal } : {}),
   }));
