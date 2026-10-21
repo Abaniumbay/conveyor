@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -169,23 +169,68 @@ function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
   };
 }
 
+function isWithin(pathname: string, directory: string): boolean {
+  return pathname === directory || pathname.startsWith(`${directory}/`);
+}
+
+/** Returns active filesystem sockets at the paths the host network namespace exposes. */
+function hostSocketPaths(): string[] {
+  let table: string;
+  try {
+    table = readFileSync("/proc/net/unix", "utf8");
+  } catch (error) {
+    // Continuing without the host's socket table would make the egress boundary fail open.
+    throw new Error("Cannot inspect host Unix sockets for egress isolation.", { cause: error });
+  }
+  const sockets = new Set<string>();
+  for (const line of table.split("\n").slice(1)) {
+    const pathname = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line)?.[1];
+    if (!pathname || !path.isAbsolute(pathname)) continue;
+    try {
+      const resolved = resolveFilesystemPath(pathname);
+      if (statSync(resolved).isSocket()) sockets.add(resolved);
+    } catch {
+      // Socket entries can disappear while the kernel table is being read.
+    }
+  }
+  // Keep Docker explicitly covered even if its entry races with the kernel-table snapshot.
+  for (const pathname of ["/var/run/docker.sock", "/run/docker.sock"]) {
+    try {
+      const resolved = resolveFilesystemPath(pathname);
+      if (statSync(resolved).isSocket()) sockets.add(resolved);
+    } catch {
+      // Docker is optional and its socket can disappear while a run is starting.
+    }
+  }
+  return [...sockets];
+}
+
 /**
- * Hides common host path-based sockets and processes: a private /proc (PID namespace), /tmp and
- * /run/user/<uid> (user bus, ssh/gpg agents), and the Docker socket. Other path sockets stay reachable.
+ * Hides host path-based sockets from egress-isolated commands. The bridge is allowed to keep only
+ * explicitly forwarded Unix sockets, which it translates into loopback TCP ports before the
+ * wrapped command begins.
  */
-function isolationMounts(runTmp: string | undefined): string[] {
+function isolationMounts(runTmp: string | undefined, allowedSockets?: readonly string[]): string[] {
   const mounts = ["--proc", "/proc", "--tmpfs", resolveFilesystemPath("/tmp")];
   // The run's own temporary directory would vanish behind the private /tmp.
   const resolvedTmp = runTmp ? resolveFilesystemPath(runTmp) : undefined;
   if (resolvedTmp?.startsWith("/tmp/") && existsSync(resolvedTmp)) mounts.push("--bind", resolvedTmp, resolvedTmp);
   const runtime = `/run/user/${process.getuid?.() ?? 0}`;
-  if (existsSync(runtime)) mounts.push("--tmpfs", resolveFilesystemPath(runtime));
-  // /var/run is usually a symlink to /run; bwrap cannot mount through it, so mask resolved paths once.
-  const sockets = new Set<string>();
-  for (const socket of ["/var/run/docker.sock", "/run/docker.sock"]) {
-    if (existsSync(socket)) sockets.add(resolveFilesystemPath(socket));
+  const resolvedRuntime = resolveFilesystemPath(runtime);
+  if (existsSync(runtime)) mounts.push("--tmpfs", resolvedRuntime);
+  if (!allowedSockets) return mounts;
+  const allowed = new Set<string>();
+  for (const socket of allowedSockets) {
+    try {
+      allowed.add(resolveFilesystemPath(socket));
+    } catch {
+      // A forward that disappears is reported by the bridge when it accepts a connection.
+    }
   }
-  for (const socket of sockets) mounts.push("--ro-bind", "/dev/null", socket);
+  for (const socket of hostSocketPaths()) {
+    if (allowed.has(socket) || isWithin(socket, "/tmp") || isWithin(socket, resolvedRuntime)) continue;
+    mounts.push("--ro-bind", "/dev/null", socket);
+  }
   return mounts;
 }
 
@@ -220,8 +265,9 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   }
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
   const spec = JSON.stringify({ forwards, command: options.argv });
+  const allowedSockets = forwards.map((forward) => forward.socket);
   return {
-    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR), "--", ...selfCommand(INTERNAL.bridge, spec)],
+    argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR, allowedSockets), "--", ...selfCommand(INTERNAL.bridge, spec)],
     env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
     dataEnv,
   };

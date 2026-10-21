@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -20,6 +20,20 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
   expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
+
+test("SPEC documents default denial of host path-based sockets for egress runs", async () => {
+  const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
+  expect(specification).toContain("Host path-based Unix sockets are denied by default");
+  expect(specification).toContain("The only retained sockets are the data-plane, control-plane and MCP endpoints explicitly forwarded for that run");
+  expect(specification).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
+  expect(specification).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+});
+
+test("architecture documents the socket-denial residual risk", async () => {
+  const architecture = await readFile(path.join(import.meta.dir, "../../docs/architecture.md"), "utf8");
+  expect(architecture).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
+  expect(architecture).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
 });
 
 describeSandbox("confined command exposes only its fresh scratch directory", () => {
@@ -135,6 +149,41 @@ test("network isolation normalizes a symlinked run temporary directory", async (
   }
 });
 
+test("network isolation masks an undeclared active host Unix socket in its launch plan", async () => {
+  const root = await shortTemporaryDirectory("conveyor-plan-socket-", { socketPath: "host.sock", visibleInSandbox: true });
+  const socket = path.join(root, "host.sock");
+  const server = await listenUnixSocket(socket);
+  try {
+    const launch = sandboxCommand({ argv: ["echo", "x"], env: { PATH: process.env.PATH ?? "" }, dataProxySocket: "/tmp/conveyor-proxy.sock" });
+    expect(launch.argv).toContain("--ro-bind");
+    expect(launch.argv.join("\u0000")).toContain(`--ro-bind\u0000/dev/null\u0000${socket}`);
+  } finally {
+    await closeServer(server);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("network isolation retains explicitly forwarded proxy and MCP sockets in its launch plan", async () => {
+  const root = await shortTemporaryDirectory("conveyor-forward-sockets-", { socketPath: "data.sock", visibleInSandbox: true });
+  const dataSocket = path.join(root, "data.sock");
+  const mcpSocket = path.join(root, "mcp.sock");
+  const [dataServer, mcpServer] = await Promise.all([listenUnixSocket(dataSocket), listenUnixSocket(mcpSocket)]);
+  try {
+    const launch = sandboxCommand({
+      argv: ["echo", "x"],
+      env: { PATH: process.env.PATH ?? "" },
+      dataProxySocket: dataSocket,
+      mcp: { port: 41_234, socket: mcpSocket },
+    });
+    const mounts = launch.argv.join("\u0000");
+    expect(mounts).not.toContain(`--ro-bind\u0000/dev/null\u0000${dataSocket}`);
+    expect(mounts).not.toContain(`--ro-bind\u0000/dev/null\u0000${mcpSocket}`);
+  } finally {
+    await Promise.all([closeServer(dataServer), closeServer(mcpServer)]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 const TOKEN = "per-run-token-1234";
 const PROBES = `
 import net from "node:net";
@@ -213,6 +262,38 @@ async function echo(): Promise<{ server: net.Server; port: number }> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   upstreams.push(server);
   return { server, port: (server.address() as net.AddressInfo).port };
+}
+
+async function listenUnixSocket(socket: string): Promise<net.Server> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socket, () => resolve());
+  });
+  return server;
+}
+
+async function closeServer(server: net.Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+async function sandboxSocketProbe(socketPath: string): Promise<string> {
+  const sandboxed = sandboxCommand({
+    argv: [process.execPath, "-e", `
+      const net = require("node:net");
+      const socket = net.connect(process.argv[1]);
+      const done = (result) => { console.log(result); process.exit(0); };
+      const timeout = setTimeout(() => done("timeout"), 1000);
+      socket.on("connect", () => { clearTimeout(timeout); socket.destroy(); done("connected"); });
+      socket.on("error", () => { clearTimeout(timeout); done("denied"); });
+    `, socketPath],
+    env: { PATH: process.env.PATH ?? "" },
+    dataProxySocket: data.socketPath,
+  });
+  const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  if (code !== 0) throw new Error(`socket probe exited ${code}: ${err}`);
+  return out.trim();
 }
 
 beforeAll(async () => {
@@ -372,6 +453,44 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     } finally {
       server.close();
     }
+  });
+
+  test("denies an undeclared host Unix socket outside the temporary-directory masks", async () => {
+    const root = await shortTemporaryDirectory("conveyor-host-socket-", { socketPath: "host.sock", visibleInSandbox: true });
+    const socket = path.join(root, "host.sock");
+    const server = await listenUnixSocket(socket);
+    try {
+      expect(await sandboxSocketProbe(socket)).toBe("denied");
+    } finally {
+      await closeServer(server);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("denies a symlink to an undeclared host Unix socket", async () => {
+    const root = await shortTemporaryDirectory("conveyor-host-symlink-", { socketPath: "target.sock", visibleInSandbox: true });
+    const socket = path.join(root, "target.sock");
+    const link = path.join(root, "link.sock");
+    const server = await listenUnixSocket(socket);
+    try {
+      await symlink(socket, link);
+      expect(await sandboxSocketProbe(link)).toBe("denied");
+    } finally {
+      await closeServer(server);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("denies the host Docker socket when present", async () => {
+    const dockerSocket = ["/var/run/docker.sock", "/run/docker.sock"].find((socket) => {
+      try {
+        return statSync(socket).isSocket();
+      } catch {
+        return false;
+      }
+    });
+    if (!dockerSocket) return;
+    expect(await sandboxSocketProbe(dockerSocket)).toBe("denied");
   });
 
   test("host processes are not visible inside the sandbox", async () => {
