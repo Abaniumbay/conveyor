@@ -1,3 +1,5 @@
+import type { FindingType } from "../engine/finding-types";
+
 export interface ChangeRequest {
   id: string;
   number: number;
@@ -121,6 +123,8 @@ export interface CodeHost {
     findingId: string;
     body: string;
     headSha: string;
+    /** Shown in the projected comment. */
+    type?: FindingType;
     path?: string;
     line?: number;
   }): Promise<{ url: string; projection: string }>;
@@ -134,6 +138,7 @@ export interface CodeHost {
     findingId: string;
     projection: string;
     body: string;
+    type?: FindingType;
     actor: string;
     verdict: FindingVerdict;
     message: string;
