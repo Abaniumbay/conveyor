@@ -3,11 +3,14 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { describeNeverStartedCi } from "../../src/app/ci-gate";
 import { IssueExecutor } from "../../src/app/issue-executor";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
 import type { GitHubAdapter } from "../../src/source/github/adapter";
+import { InfrastructureError } from "../../src/tasks/contract";
+import { renderDashboard } from "../support/render-dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -411,6 +414,27 @@ describe("persisted wake-ups", () => {
     expect(status).not.toBeNull();
     expect(status).toMatchObject({ kind: "queued", reason: expect.stringContaining("global runner slots 1/1 busy: #2") });
     expect(String(status?.reason)).not.toContain("Execution failed");
+    await first.service.close();
+  });
+
+  test("renders a never-started CI annotation from infrastructure failure in the dashboard", async () => {
+    const { config, first } = await setup();
+    const annotation = "The job was not started because recent account payments have failed.";
+    const internals = first.service as unknown as {
+      handleInfrastructureFailure(issue: StoredIssue, error: unknown): Promise<void>;
+    };
+    first.store.setStageState({ issueId: "issue", stageId: "implementation", status: "error", feedbackCycle: 0, configHash: config.hash });
+
+    await internals.handleInfrastructureFailure(first.store.getIssue("issue")!, new InfrastructureError(describeNeverStartedCi([
+      { name: "Tests", neverStarted: { annotation } },
+    ])));
+
+    const dashboard = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" });
+    expect(dashboard.selectedIssue?.waiting).toMatchObject({
+      kind: "waiting",
+      reason: `Execution failed: CI check "Tests" never started: ${annotation}`,
+    });
+    expect(renderDashboard(dashboard)).toContain(annotation);
     await first.service.close();
   });
 
