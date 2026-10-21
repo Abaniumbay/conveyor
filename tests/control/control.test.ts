@@ -24,34 +24,54 @@ afterEach(async () => {
 interface FakeIssue { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason: null; labels: string[]; updatedAt: string }
 
 /** A running service with a control socket under a fresh home, two stopped items and a fake GitHub. */
-async function running({ rollup = false }: { rollup?: boolean } = {}) {
+async function running(options: {
+  rollup?: boolean;
+  childCreationStage?: "implementation" | "refinement" | "work-breakdown";
+  childCreationTask?: "item.createChild" | "breakdown.createChildren";
+  includeChildImplementationStage?: boolean;
+} = {}) {
+  const { rollup = false, childCreationStage = "implementation", childCreationTask, includeChildImplementationStage = false } = options;
   const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
   directories.push(home);
   log.configure({ sinks: [] });
+  const repository = path.join(home, "repository");
+  if (childCreationTask) {
+    await mkdir(repository);
+    Bun.spawnSync(["git", "init", "-q", "-b", "main", repository]);
+    Bun.spawnSync(["git", "-C", repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"]);
+  }
   const store = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
   const config = {
     hash: "config-hash", root: home,
-    settings: { artifacts: path.join(home, "artifacts"), workspaces: path.join(home, "worktrees"), runners: 2, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
+    settings: { artifacts: path.join(home, "artifacts"), workspaces: path.join(home, "worktrees"), runners: 2, retries: { infrastructureAttempts: 0, usageLimitAttempts: 0, minBackoff: 1, maxBackoff: 1 }, labelPrefix: "conveyor", retention: { runHistoryMs: null, artifactsMs: null } },
     web: { listen: "127.0.0.1:7788" }, sources: { github: { type: "github" } },
     labels: {
       enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
       states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
       metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
     },
-    pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
-    repositories: { app: { source: "github", address: "owner/app", folder: home, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
-    agents: {},
+    runners: {},
+    plans: [],
+    pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [
+      { id: childCreationStage, run: { type: "agent", agent: childCreationTask ? "worker" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ...(includeChildImplementationStage && childCreationStage !== "implementation"
+        ? [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }]
+        : []),
+    ] } },
+    repositories: { app: { source: "github", address: "owner/app", folder: childCreationTask ? repository : home, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], ci: { mode: "disabled" } } },
+    agents: childCreationTask ? { worker: { runner: "codex", instructions: path.join(home, "worker.md"), name: "Worker", title: "Builder", tasks: [childCreationTask] } } : {},
   } as unknown as ConveyorConfig;
-  store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: home, configHash: config.hash });
+  if (childCreationTask) await writeFile(path.join(home, "worker.md"), "Work.");
+  store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: childCreationTask ? repository : home, configHash: config.hash });
   const issues: FakeIssue[] = [1, 2].map((number) => ({
     id: `issue-${number}`, number, url: `https://github.com/owner/app/issues/${number}`, title: `Item ${number}`, body: "",
-    state: "open", stateReason: null, labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"], updatedAt: "2026-10-01T00:00:00Z",
+    state: "open", stateReason: null, labels: ["conveyor", `conveyor:${childCreationStage}`, "conveyor:blocked"], updatedAt: "2026-10-01T00:00:00Z",
   }));
   for (const issue of issues) {
     store.upsertIssue({ id: issue.id, repositoryId: "app", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: "", sourceState: "open", sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
     store.setQueueRank(issue.id, issue.number);
-    store.setIssueProjection(issue.id, { stage: "implementation", state: "blocked", warning: "The agent needs the API key rotated" });
-    store.setStageState({ issueId: issue.id, stageId: "implementation", status: "blocked", feedbackCycle: 0, configHash: config.hash });
+    store.setIssueProjection(issue.id, { stage: childCreationStage, state: "blocked", warning: "The agent needs the API key rotated" });
+    store.setStageState({ issueId: issue.id, stageId: childCreationStage, status: "blocked", feedbackCycle: 0, configHash: config.hash });
   }
   if (rollup) {
     const child: FakeIssue = {
@@ -79,15 +99,18 @@ async function running({ rollup = false }: { rollup?: boolean } = {}) {
     async listSubIssues(_address: string, number: number) { return rollup && number === 1 ? [issues.find((issue) => issue.id === "issue-3")!] : []; }, async listDependencies() { return []; },
     async upsertStatusComment() { return 1; }, async addComment() { return 1; },
   };
+  if (childCreationTask) {
+    store.activateEnrollment("issue-1");
+  }
   const service = new ConveyorService(config, store, github as never);
-  // Nothing executes in these tests: admission is drained, so retried and resumed items queue.
-  service.drain("tests");
+  // Most control tests keep admission drained; child-creation retries exercise the scheduler.
+  if (!childCreationTask) service.drain("tests");
   const socket = path.join(home, "run/control.sock");
   const control = await serveControlSocket(socket, createControlHandler(service, {
     home, config: path.join(home, "config/conveyor.yaml"), logs: path.join(home, "logs"), database: path.join(home, "state/conveyor.sqlite"),
     dashboardUrl: "http://127.0.0.1:7788/", startedAt: "2026-10-06T10:00:00.000Z", supervised: false,
   }));
-  cleanups.push(async () => { await control.stop(); store.close(); });
+  cleanups.push(async () => { await control.stop(); await service.close(); });
   const cli = async (...argv: string[]) => {
     const out: string[] = [];
     const err: string[] = [];
@@ -298,6 +321,42 @@ describe("operating through the CLI", () => {
     expect(store.listActiveIssueRuns().filter((run) => run.issueId === "issue-1")).toEqual([]);
     expect(store.getIssue("issue-3")?.projectedState).toBe("active");
     expect(store.events().read({ afterSeq: after, type: "command.accepted" }).map((event) => event.payload)).toEqual([{ command: "item.resumeRollup" }]);
+  });
+
+  test("retry starts a stopped custom refinement parent with an existing child", async () => {
+    const { cli, service, store } = await running({
+      rollup: true,
+      childCreationStage: "refinement",
+      childCreationTask: "item.createChild",
+      includeChildImplementationStage: true,
+    });
+    const shown = await cli("item", "show", "app:1");
+    expect(shown.out).toContain("retry the refinement stage: conveyor item retry app:1");
+    expect(shown.out).not.toContain("conveyor item resume-waiting app:1");
+
+    const retried = await cli("item", "retry", "app:1");
+    expect(retried.code).toBe(0);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedState: "active" });
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "refinement", labels: ["conveyor", "conveyor:refinement"] });
+    expect(service.activeWork().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId: "issue-1", stageId: "refinement" }),
+    ]));
+  });
+
+  test("retry starts a stopped work-breakdown parent with an existing child", async () => {
+    const { cli, service, store } = await running({
+      rollup: true,
+      childCreationStage: "work-breakdown",
+      childCreationTask: "breakdown.createChildren",
+      includeChildImplementationStage: true,
+    });
+
+    const retried = await cli("item", "retry", "app:1");
+    expect(retried.code).toBe(0);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "work-breakdown", labels: ["conveyor", "conveyor:work-breakdown"] });
+    expect(service.activeWork().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId: "issue-1", stageId: "work-breakdown" }),
+    ]));
   });
 
   test("retry reports the stage and whether it started or queued; a refusal exits 5 with the reason", async () => {
