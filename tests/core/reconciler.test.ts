@@ -476,6 +476,25 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("keeps an explicit child-creation retry ready for scheduler admission", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement", "review"],
+      labels,
+    };
+    const source = { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } };
+    await reconcileRepository({ ...common, source });
+    store.setStageState({ issueId: "github:owner/repo#1", stageId: "refinement", status: "retry-ready", feedbackCycle: 0, configHash: "hash-1" });
+
+    await reconcileRepository({ ...common, source });
+
+    expect(store.getStageState("github:owner/repo#1")).toMatchObject({ stageId: "refinement", status: "retry-ready" });
+    store.close();
+  });
+
   test("removing the error label after retries ran out makes the errored stage ready again", async () => {
     const store = await openStore();
     const common = {

@@ -207,6 +207,15 @@ export interface GitHubCheckRun {
   completed_at: string | null;
 }
 
+export interface GitHubActionsJob {
+  runner_name?: string | null;
+  steps?: Array<{ status?: string | null }> | null;
+}
+
+export interface GitHubCheckRunAnnotation {
+  message?: string | null;
+}
+
 export interface GitHubDeliveryState {
   pullRequest: PullRequestReference & {
     merged: boolean;
@@ -1304,6 +1313,22 @@ export class GitHubAdapter {
     });
     const runs = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page?.check_runs ?? []);
     return runs;
+  }
+
+  async githubActionsJob(address: string, jobId: number): Promise<GitHubActionsJob> {
+    return await this.transport.request<GitHubActionsJob>({
+      method: "GET",
+      path: `repos/${address}/actions/jobs/${jobId}`,
+    });
+  }
+
+  async checkRunAnnotations(address: string, checkRunId: number): Promise<GitHubCheckRunAnnotation[]> {
+    const pages = await this.transport.request<GitHubCheckRunAnnotation[][] | GitHubCheckRunAnnotation[]>({
+      method: "GET",
+      path: `repos/${address}/check-runs/${checkRunId}/annotations?per_page=100`,
+      paginate: true,
+    });
+    return pages.flat();
   }
 
   async workflowExists(address: string, workflow: string, ref: string): Promise<boolean> {

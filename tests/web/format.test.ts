@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { formatDuration, formatUsage } from "../../src/web/format";
+import { formatDuration, formatUsage, reasonSummary } from "../../src/web/format";
 
 describe("formatDuration", () => {
   test("uses readable seconds, minutes, and hours", () => {
@@ -25,5 +25,22 @@ describe("formatUsage", () => {
 
   test("is empty without runs", () => {
     expect(formatUsage({ ...usage, runs: 0 })).toBeNull();
+  });
+});
+
+describe("reasonSummary", () => {
+  test("keeps a short one-paragraph reason as it is", () => {
+    expect(reasonSummary("The agent needs the API key rotated")).toBe("The agent needs the API key rotated");
+  });
+
+  test("keeps only the first paragraph of a reason that quotes logs after it", () => {
+    const reason = "The same required CI failure repeated. Another automatic retry will not fix it.\n\nFirst failure: https://example.com/pull/1 at abc1234.\n\n```\n(fail) a test\n```";
+    expect(reasonSummary(reason)).toBe("The same required CI failure repeated. Another automatic retry will not fix it.");
+  });
+
+  test("cuts a long first paragraph at the limit with an ellipsis", () => {
+    const summary = reasonSummary("word ".repeat(200), 100);
+    expect(summary.length).toBe(100);
+    expect(summary.endsWith("…")).toBe(true);
   });
 });

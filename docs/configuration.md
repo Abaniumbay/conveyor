@@ -351,13 +351,13 @@ conveyor config compare /path/to/other/conveyor.yaml
 ```
 
 `config check` prints the configuration hash and then, for every repository that compiles, the
-expanded plan of each stage: the `actions` and `exit-gate` task instances in order with their
+expanded plan of each stage: any configured `entry approval`, then the `actions` and `exit-gate` task instances in order with their
 implicit loads (`(load item)`, `(load change)`...), `with` values, `wait` timeout and poll and the
-effective `onFail` (marked `(default)` when not configured). A configured manually approved exit gate is
-marked `[check, manual approval]`; ordinary checks remain `[check]`. Legacy stages appear as their
+effective `onFail` (marked `(default)` when not configured). A configured `approval: manual` entry
+approval and manually approved exit gate are both shown; ordinary checks remain `[check]`. Legacy stages appear as their
 `legacy.*` tasks. An invalid task, instance id, route or dataflow is reported with its file and path
 before the service can start. `config compare` prints two configurations' compiled plans side by
-side, marking any manual exit gate and reporting a manual approval setting change in its summary;
+side, marking entry and exit approvals and reporting an approval-setting change in its summary;
 it exits 1 when the plans differ, including when only that setting differs.
 
 ## Follow-up acknowledgement
@@ -474,7 +474,7 @@ agents:
         gitExclude: [.serena/]         # files it writes in the worktree; never committed
     tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
             agent.reportProgress, agent.askQuestion, workspace.fetch, workspace.push,
-            change.listFindings, change.comment, change.resolveFinding]
+            change.listFindings, change.comment, change.resolveFinding, change.recordCriterionTests]
   reviewer:
     name: Reviewer
     title: Senior Reviewer
@@ -525,12 +525,14 @@ pipelines:
         exit-gate:
           - { id: pushed, task: workspace.pushed }
           - { id: criteriaSynced, task: change.criteriaInSync }
+          - { id: criterionTests, task: change.criterionTestsVerified }
           - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
           - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
       - id: review
         concurrency: 1
         actions:
           - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
+          - { id: criterionTests, task: change.criterionTestsVerified, onFail: { return: implementation } }
           - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
@@ -539,6 +541,7 @@ pipelines:
           - { id: mergeable, task: change.mergeable, wait: { timeout: 30m, poll: 1m }, onFail: { return: implementation } }
       - id: merge
         concurrency: 1
+        approval: manual
         actions:
           - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
         exit-gate:
@@ -570,6 +573,8 @@ repositories:
           actions:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
+
+The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
 
 ### Repository in-progress limit
 
@@ -612,6 +617,23 @@ exit-gate:
 ```
 
 Configured manual approvals remain task-specific and configuration-owned: the board cannot turn them off. They appear separately from board approvals and retain their own approval button and receipt.
+
+### Manual stage-entry approval
+
+Set `approval: manual` on a **native** stage to pause it before its first action. The board shows
+the item in that stage with a configured entry-approval control; for example, placing it on
+`merge` keeps the item in Merge and prevents `change.merge` from running until a signed-in
+superuser approves through the CSRF-protected control. `approval` accepts only `manual`, is not
+available on legacy stages, and is configuration-owned, so the board-approval switch cannot remove
+it.
+
+An entry receipt records the approving account and time and is valid only for that item, stage and
+visit (stage epoch and attempt). Repeating the same approval is harmless, but a retry, return, or
+plan restart needs a new receipt. A service restart resumes the same waiting visit with its receipt
+intact. While it waits, the item consumes no runner; recording its approval emits the normal
+approval event and wakes only that visit. Entry approval happens before actions. Configured manual
+exit gates and optional board approvals still run after the configured checks, so a stage may use
+both entry and exit approvals.
 
 On the board, a signed-in superuser can require or remove one **board approval** for an enrolled item's current or future native stage. It is not attached to a configured task. After all configured exit-gate tasks have passed, including any configured manual approval, the stage waits at this final board gate. A board approval can also be the only gate for a native stage with no configured exit tasks. Adding the same requirement again is a no-op; legacy stages cannot have one. The board shows one switch per remaining native stage and offers approvals only to superusers through CSRF-protected actions. A receipt records the account and time in the item history, then wakes the item to re-evaluate the gate without repeating completed actions. It is valid only for that item, stage, and visit: a retry, return, or plan restart needs a fresh approval. Removing an unapproved requirement while it is waiting wakes the item; adding one during the current stage's exit gate fences an in-flight decision before it can advance.
 

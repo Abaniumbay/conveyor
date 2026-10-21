@@ -10,13 +10,13 @@ import { z } from "zod";
 
 import { RepositoryPausedError } from "../core/repository-pause";
 import { observeCi, observeCiError } from "../app/indicators";
-import { boundLog, boundSnapshotLogs, ciFailureFingerprint, classifyRuns, ciAnnouncement, describeCiFailure, readRunLog } from "../app/ci-gate";
+import { boundLog, boundSnapshotLogs, ciFailureFingerprint, classifyRuns, ciAnnouncement, describeCiFailure, describeNeverStartedCi, readRunLog } from "../app/ci-gate";
 import type { CiChange, CiProvider } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { changeTopic, ciTopic } from "../events/topics";
 import type { CiGateObservation } from "../engine/journal";
 import type { ChangeContext, CiContext } from "./context";
-import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
+import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -86,9 +86,18 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
     for (const run of listed) {
       const state = run.state === "cancelled" && rerunIds.has(run.id) ? "running" : run.state;
       const wantsRerun = state === "cancelled" && run.canRerun && !reruns.includes(run.name);
-      const log = (state === "failed" || state === "cancelled") && !wantsRerun
+      const log = (state === "failed" || state === "cancelled") && !wantsRerun && run.neverStarted === undefined
         ? await readRunLog(provider, target, run, LOAD_LOG_LINES) : null;
-      runs.push({ id: run.id, name: run.name, state, url: run.url, rerunnable: run.canRerun, hasLog: run.hasLog, log });
+      runs.push({
+        id: run.id,
+        name: run.name,
+        state,
+        url: run.url,
+        rerunnable: run.canRerun,
+        hasLog: run.hasLog,
+        ...(run.neverStarted === undefined ? {} : { neverStarted: run.neverStarted }),
+        log,
+      });
     }
     const snapshot: CiContext = {
       headSha: head,
@@ -197,8 +206,9 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const reran = new Set(snapshot.reruns);
     const { running, failed, rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable && !reran.has(run.name));
 
-    if (failed.length > 0) {
-      const bounded = boundedFailureRuns(failed, config.logLines);
+    const ordinaryFailures = failed.filter((run) => run.neverStarted === undefined);
+    if (ordinaryFailures.length > 0) {
+      const bounded = boundedFailureRuns(ordinaryFailures, config.logLines);
       const report = describeCiFailure(change.url, sha, bounded);
       const fingerprint = ciFailureFingerprint(bounded);
       const observation = context.run && issueId && journal ? journal.recordCiGateObservation({
@@ -221,6 +231,7 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
       }
       return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }
+    if (failed.length > 0) throw new InfrastructureError(describeNeverStartedCi(failed));
     if (rerun.length > 0) {
       const names = rerun.map((run) => run.name).join(", ");
       return fail(`CI run ${names} was cancelled at ${sha}; it will be rerun once.`, {

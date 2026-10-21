@@ -79,6 +79,13 @@ describe("comparePlans", () => {
     expect(reversed).toMatch(/mergeable: change\.mergeable \[check, manual approval\]\s+\| mergeable: change\.mergeable/);
     expect(reversed).toContain("changed: exit-gate change.mergeable [mergeable]: manual approval yes -> no");
   });
+
+  test("reports a stage entry approval change", () => {
+    const automatic = plan("repo", [stage("merge", [], [task("merged", "change.merged")])]);
+    const manual = plan("repo", [stage("merge", [], [task("merged", "change.merged")], { approval: "manual" })]);
+    const out = comparePlans([automatic], [manual], { left: "automatic", right: "manual" });
+    expect(out).toContain("changed: stage merge entry approval none -> manual");
+  });
 });
 
 describe("config compare", () => {
@@ -129,5 +136,19 @@ describe("config compare", () => {
     expect(code).toBe(1);
     expect(out).toMatch(/mergeable: change\.mergeable\s+\| mergeable: change\.mergeable \[check, manual approval\]/);
     expect(out).toContain("manual approval no -> yes");
+  });
+
+  test("returns failure when configurations differ only by entry approval", async () => {
+    const left = await referenceConfigEntrypoint();
+    const right = await referenceConfigEntrypoint();
+    bases.push(left.base, right.base);
+    const pipelines = path.join(right.directory, "defaults/pipelines.yaml");
+    const original = await Bun.file(pipelines).text();
+    await Bun.write(pipelines, original.replace("      id: merge\n", "      id: merge\n      approval: manual\n"));
+
+    const lines: string[] = [];
+    const code = await runCli(["config", "compare", left.entrypoint, right.entrypoint], { out: (text) => lines.push(text), err: () => {}, interactive: false });
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("entry approval none -> manual");
   });
 });

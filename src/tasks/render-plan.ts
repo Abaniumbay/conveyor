@@ -40,6 +40,7 @@ export function renderPlan(plan: CompiledPipeline): string {
   const lines = [`Repository ${plan.repositoryId} (pipeline ${plan.id})`];
   for (const stage of plan.stages) {
     const details = [`concurrency ${stage.concurrency}`, `retries ${stage.retries}`];
+    if (stage.approval !== undefined) details.push(`entry approval ${stage.approval}`);
     if (stage.childrenStartAt) details.push(`childrenStartAt ${stage.childrenStartAt}`);
     if (stage.legacy) details.push("legacy");
     lines.push("", `Stage ${stage.id} (${details.join(", ")})`);

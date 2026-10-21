@@ -4,6 +4,8 @@ The dashboard is where you watch and steer delivery: the board, each item's stor
 
 The shared header is followed by the view navigation: **Board**, **Graph**, **Recent**, **Team**, **Reports**, and **Operator**. **Label problems** appears when enrolled issues have missing, unknown, or conflicting stage labels (and remains available on its empty page). The Board alone shows **The line** and its **Needs you** panel. The line folds with the arrow beside its name: it is open on wide screens and closed on phones until you choose, and the choice is remembered in the browser; when questions or stopped items need a person, every view links to that panel with the same count. The account menu contains Profile, About Conveyor, Sign out, and Accounts for administrators; Notifications remains in the header.
 
+In **Needs you**, a stopped item shows the first paragraph of its reason, at most three lines; open the item for the full reason, including any CI log excerpts.
+
 An enrolled item can still need attention after its source issue closes: if its current Conveyor pull request merged, whether Conveyor or a person performed the merge, and configured post-merge work remains stopped or needs input, **Needs you** keeps the item with its current reason and link. A source-closed item without that merged change is offboarded after Conveyor removes its control labels, so it no longer appears on the Board; its Journey records `closed without a merged change`. Closure deliveries resolve this promptly, and an hourly recovery pass covers missed deliveries and older stopped items.
 
 ## How the dashboard loads and stays current

@@ -103,6 +103,8 @@ repositories:
     },
     async getPullRequestHead() { return { sha: "abc123" }; },
     async listCheckRuns() { return rawRuns; },
+    async githubActionsJob() { return { runner_name: "runner", steps: [] }; },
+    async checkRunAnnotations() { return []; },
     async jobLog(_address: string, id: number) { logCalls.push(String(id)); return `log-${id}`; },
     async workflowExists(_address: string, workflow: string) { workflowCalls.push(workflow); return true; },
     async retriggerLabel(_address: string, _number: number, label: string) { retriggerCalls.push(label); },

@@ -5,9 +5,12 @@ import path from "node:path";
 
 import { IssueExecutor } from "../../src/app/issue-executor";
 import { ConveyorService } from "../../src/app/service";
+import { CodeHostRegistry } from "../../src/codehost/registry";
+import type { CodeHost } from "../../src/codehost/types";
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { ConveyorStore, type StoredIssue } from "../../src/db/store";
-import type { GitHubAdapter } from "../../src/source/github/adapter";
+import { GitHubAdapter, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
+import { renderDashboard } from "../support/render-dashboard";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -92,6 +95,124 @@ ${withInFlight ? "    inFlight: { limit: 2, from: implementation }" : ""}
   first.store.setQueueRank("issue", first.store.nextQueueRank());
   first.store.setStageState({ issueId: "issue", stageId: initialStage, status: "ready", feedbackCycle: 0, configHash: config.hash });
   return { config, first, open };
+}
+
+/** GitHub's Actions and check-run responses for a job stopped before a runner accepted it. */
+class NeverStartedCiTransport implements GitHubTransport {
+  readonly requests: GitHubTransportRequest[] = [];
+
+  constructor(readonly annotation: string) {}
+
+  async request<T>(request: GitHubTransportRequest): Promise<T> {
+    this.requests.push(request);
+    if (request.path.endsWith("/check-runs?per_page=100")) {
+      return [{
+        check_runs: [{
+          id: 12, name: "Tests", status: "completed", conclusion: "failure",
+          details_url: "https://example.com/checks/12", app: { slug: "github-actions" },
+          started_at: null, completed_at: "2026-01-01T00:01:00Z",
+        }],
+      }] as T;
+    }
+    if (request.path.endsWith("/actions/jobs/12")) {
+      return { runner_name: null, steps: [] } as T;
+    }
+    if (request.path.endsWith("/check-runs/12/annotations?per_page=100")) {
+      return [[{ message: this.annotation }]] as T;
+    }
+    if (request.path === "repos/owner/repo/contents/.github/workflows?ref=commit-1") {
+      return [{ name: "ci.yml", type: "file" }] as T;
+    }
+    if (request.path === "repos/owner/repo/contents/.github/workflows/ci.yml?ref=commit-1") {
+      return { encoding: "base64", content: Buffer.from("on: pull_request").toString("base64") } as T;
+    }
+    if (request.path === "repos/owner/repo/issues/1/comments?per_page=100") return [] as T;
+    if (request.path === "repos/owner/repo/issues/1/comments" && request.method === "POST") return { id: 1 } as T;
+    if (request.path === "repos/owner/repo/issues/comments/1" && request.method === "PATCH") return { id: 1 } as T;
+    throw new Error(`unexpected GitHub request: ${request.method} ${request.path}`);
+  }
+}
+
+/** Starts the public scheduler against the real GitHub Actions provider boundary. */
+async function neverStartedCiService(annotation: string) {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-never-started-ci-"));
+  directories.push(root);
+  const repositoryPath = path.join(root, "repo");
+  await mkdir(repositoryPath);
+  await writeFile(path.join(root, "config.yml"), `
+settings:
+  database: ${root}/db.sqlite
+  logs: ${root}/logs
+  workspaces: ${root}/workspaces
+  artifacts: ${root}/artifacts
+web: { publicUrl: https://example.com }
+sources: { github: { type: github, autoConfigureWebhook: true } }
+checks: {}
+labels:
+  enrollment: conveyor
+  stageTemplate: "conveyor:{stage}"
+  states: { done: "conveyor:done", blocked: "conveyor:blocked" }
+  metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" }
+pipelines:
+  default:
+    successStatuses: [done]
+    failureStatuses: [blocked]
+    stages:
+      - id: implementation
+        concurrency: 1
+        actions: []
+        exit-gate:
+          - { task: ci.defined }
+          - { task: ci.passed, with: { settleSeconds: 1 } }
+repositories:
+  repo:
+    source: github
+    address: owner/repo
+    folder: ${repositoryPath}
+    pipeline: default
+    ci: { mode: required }
+`);
+  const config = await loadConfig(path.join(root, "config.yml"));
+  const store = await ConveyorStore.open(config.settings.database);
+  store.upsertRepository({
+    id: "repo", configName: "repo", source: "github", address: "owner/repo", folder: repositoryPath, configHash: config.hash,
+  });
+  store.upsertIssue({
+    id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.com/issues/1", title: "Feature", body: "",
+    sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+  });
+  store.setIssueProjection("issue", { stage: "implementation", state: "active", warning: null });
+  store.setQueueRank("issue", store.nextQueueRank());
+  store.setStageState({ issueId: "issue", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: config.hash });
+  store.activateEnrollment("issue");
+  store.upsertPullRequest({ issueId: "issue", id: "github:owner/repo#9", number: 9, url: "https://example.com/pull/9", state: "open" });
+
+  const codeHost: CodeHost = {
+    async pushBranch() { throw new Error("not expected"); },
+    async ensureChange() { throw new Error("not expected"); },
+    async getChange() { throw new Error("not expected"); },
+    async readFileAtRevision() { throw new Error("not expected"); },
+    sourceFileUrl() { return "https://example.com/change"; },
+    async mergeChange() { throw new Error("not expected"); },
+    async setChangeChecklist() { throw new Error("not expected"); },
+    async setChangeDescription() { throw new Error("not expected"); },
+    async getChangeDelivery(input) {
+      return {
+        change: { id: input.id, number: 9, url: "https://example.com/pull/9", state: "open", headSha: "commit-1", draft: false, mergeable: true },
+        checks: [],
+      };
+    },
+    async createFinding() { throw new Error("not expected"); },
+    async resolveFindingProjection() { throw new Error("not expected"); },
+    async resolveNativeFinding() { throw new Error("not expected"); },
+    async deleteBranch() { throw new Error("not expected"); },
+    async listReviewArtifacts() { return []; },
+  };
+  const transport = new NeverStartedCiTransport(annotation);
+  const service = new ConveyorService(config, store, new GitHubAdapter(transport, "conveyor"), {
+    codeHosts: new CodeHostRegistry().register("github", codeHost),
+  });
+  return { service, transport };
 }
 
 /** What StageExecutor leaves behind when a task returns pending. */
@@ -412,6 +533,27 @@ describe("persisted wake-ups", () => {
     expect(status).toMatchObject({ kind: "queued", reason: expect.stringContaining("global runner slots 1/1 busy: #2") });
     expect(String(status?.reason)).not.toContain("Execution failed");
     await first.service.close();
+  });
+
+  test("renders a never-started GitHub Actions annotation after the public service tick", async () => {
+    const annotation = "The job was not started because recent account payments have failed.";
+    const { service, transport } = await neverStartedCiService(annotation);
+    await service.tick();
+
+    const query = { view: "board" as const, column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" };
+    const deadline = Date.now() + 1_000;
+    let dashboard = service.dashboard("csrf", query);
+    while (dashboard.selectedIssue?.waiting?.kind !== "waiting" && Date.now() < deadline) {
+      await Bun.sleep(10);
+      dashboard = service.dashboard("csrf", query);
+    }
+    expect(dashboard.selectedIssue?.waiting).toMatchObject({
+      kind: "waiting",
+      reason: `Execution failed: CI check "Tests" never started: ${annotation}`,
+    });
+    expect(renderDashboard(dashboard)).toContain(annotation);
+    expect(transport.requests.map((request) => request.path)).toContain("repos/owner/repo/check-runs/12/annotations?per_page=100");
+    await service.close();
   });
 
   test("closing the service cancels delayed infrastructure retries", async () => {

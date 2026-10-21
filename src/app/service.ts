@@ -82,7 +82,7 @@ import { changesDashboard, DashboardFeed } from "./dashboard-feed";
 import { normalizeDashboard } from "../web/model";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
-import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
+import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
 const FOLLOW_UP_GATE_TASK = "item.followUps";
 const CLOSED_ITEM_RECOVERY_AGE_MS = 60 * 60 * 1000;
@@ -1423,8 +1423,15 @@ export class ConveyorService {
       // item never starts a new run after becoming a roll-up parent.
       if (
         this.store.listChildren(issue.id).length > 0 &&
-        !this.hasResumableQuestionExecution(issue.id)
+        !this.hasResumableQuestionExecution(issue.id) &&
+        !this.childCreationRetryQueued(issue, candidate.stageId)
       ) continue;
+      // The retry marker is only an admission permit. Restore the executor's
+      // ordinary ready state immediately before it claims the stage.
+      const stage = this.store.getStageState(issue.id);
+      if (stage?.status === "retry-ready" && stage.stageId === candidate.stageId) {
+        this.store.setStageState({ ...stage, status: "ready" });
+      }
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
@@ -1482,7 +1489,7 @@ export class ConveyorService {
         siblingOrder: null,
         eligible:
           issue.projectedState === "active" &&
-          state.status === "ready" &&
+          (state.status === "ready" || state.status === "retry-ready") &&
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
           this.store.repositoryPause(issue.repositoryId) === null &&
@@ -1491,7 +1498,9 @@ export class ConveyorService {
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly:
-          children(issue.id).length > 0 && !this.hasResumableQuestionExecution(issue.id),
+          children(issue.id).length > 0 &&
+          !this.hasResumableQuestionExecution(issue.id) &&
+          !this.childCreationRetryQueued(issue, state.stageId),
         lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
@@ -1753,11 +1762,13 @@ export class ConveyorService {
     this.events.subscribe("*", "dashboard feed", (event) => {
       if (changesDashboard(event.type)) this.#dashboardFeed.invalidate();
     });
-    // A parked exit gate re-evaluates as soon as a person changes what it waits on.
+    // A parked configured gate re-evaluates as soon as a person changes what it waits on.
     const wakeParkedGate = (issueId: string | null, stageId: string, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
       if (!issueId) return;
       const cursor = this.store.executions().getCursor(issueId);
-      if (cursor?.state !== "pending" || cursor.stage !== stageId || cursor.list !== "exit-gate" || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
+      const waitingForGate = cursor?.list === "exit-gate" ||
+        (cursor?.list === "actions" && gateId === ENTRY_APPROVAL_TASK_ID && cursor.taskInstanceId === ENTRY_APPROVAL_TASK_ID);
+      if (cursor?.state !== "pending" || cursor.stage !== stageId || !waitingForGate || (gateId !== null && cursor.taskInstanceId !== gateId)) return;
       // An approval belongs to one visit of the gate; a later visit waits for its own.
       if (visit && (cursor.stageEpoch !== visit.stageEpoch || cursor.attempt !== visit.attempt)) return;
       this.wakeParked(issueId);
@@ -1838,10 +1849,12 @@ export class ConveyorService {
   /** A parked item is schedulable only once its persisted wake-up time has passed. */
   private wakeupReached(issueId: string): boolean {
     const cursor = this.store.executions().getCursor(issueId);
-    // A pending cursor without a due time is a manual-gate wait. It must be
-    // woken explicitly after the human receipt is recorded.
+    // Manual exit gates and configured entry approvals have no clock wake-up.
+    // Their receipt event must explicitly wake the persisted cursor first.
     if (!cursor) return true;
-    if (cursor.state === "pending" && cursor.list === "exit-gate" && cursor.wakeAt === null) return false;
+    if (cursor.state === "pending" && cursor.wakeAt === null &&
+      (cursor.list === "exit-gate" ||
+        (cursor.list === "actions" && cursor.taskInstanceId === ENTRY_APPROVAL_TASK_ID))) return false;
     return cursor.wakeAt === null || Date.parse(cursor.wakeAt) <= Date.now();
   }
 
@@ -1943,9 +1956,12 @@ export class ConveyorService {
     return stage;
   }
 
-  /** A configured manual gate is selected by its native exit-gate task. */
+  /** A configured manual gate is selected by its native stage entry or exit-gate task. */
   private manualGateCandidate(issue: StoredIssue, stageId: string, gateId: string) {
     const stage = this.boardApprovalCandidate(issue, stageId);
+    if (gateId === ENTRY_APPROVAL_TASK_ID && stage.approval === "manual") {
+      return { stageId, gateId, configured: true, task: ENTRY_APPROVAL_TASK_ID };
+    }
     const task = stage.exitGate.find((candidate) => candidate.id === gateId);
     if (!task?.manual) throw new Error("manual approval is available only for configured manual gates");
     return { stageId, gateId, configured: true, task: task.task };
@@ -1957,7 +1973,9 @@ export class ConveyorService {
     return {
       required: configured && (task !== FOLLOW_UP_GATE_TASK || followUps.length > 0),
       approved: approval !== null,
-      message: task === FOLLOW_UP_GATE_TASK ? "Waiting for follow-up acknowledgement." : `Waiting for configured manual gate \"${gateId}\".`,
+      message: task === FOLLOW_UP_GATE_TASK ? "Waiting for follow-up acknowledgement."
+        : task === ENTRY_APPROVAL_TASK_ID ? "Waiting for configured entry approval."
+        : `Waiting for configured manual gate \"${gateId}\".`,
     };
   };
 
@@ -2026,6 +2044,18 @@ export class ConveyorService {
           approvedBy: boardApproval?.accountName ?? null,
           approvedAt: boardApproval?.approvedAt ?? null,
         };
+        const entryApproval = visit
+          ? this.#manualGateApprovals.getApproval(issue.id, stage.id, ENTRY_APPROVAL_TASK_ID, epoch, visit.attempt)
+          : null;
+        const entry = stage.approval === "manual" ? [{
+          stageId: stage.id,
+          gateId: ENTRY_APPROVAL_TASK_ID,
+          kind: "entry" as const,
+          required: true,
+          waiting: visit?.list === "actions" && visit.taskInstanceId === ENTRY_APPROVAL_TASK_ID && visit.state === "pending" && visit.wakeAt === null,
+          approvedBy: entryApproval?.accountName ?? null,
+          approvedAt: entryApproval?.approvedAt ?? null,
+        }] : [];
         const configured = stage.exitGate.flatMap((task) => {
           if (!task.manual) return [];
           const approval = visit ? this.#manualGateApprovals.getApproval(issue.id, stage.id, task.id, epoch, visit.attempt) : null;
@@ -2041,7 +2071,7 @@ export class ConveyorService {
             ...(followUp ? { notes: followUpsFromBody(issue.body) } : {}),
           }];
         });
-        return [board, ...configured];
+        return [board, ...entry, ...configured];
       });
     } catch {
       return [];
@@ -2081,7 +2111,8 @@ export class ConveyorService {
     const journal = this.store.executions();
     const cursor = journal.getCursor(issueId);
     const stageEpoch = journal.stageEpoch(issueId);
-    if (!cursor || cursor.stage !== stageId || cursor.stageEpoch !== stageEpoch || cursor.list !== "exit-gate" ||
+    const expectedList = gateId === ENTRY_APPROVAL_TASK_ID ? "actions" : "exit-gate";
+    if (!cursor || cursor.stage !== stageId || cursor.stageEpoch !== stageEpoch || cursor.list !== expectedList ||
       cursor.taskInstanceId !== (gateId ?? BOARD_APPROVAL_TASK_ID) || cursor.state !== "pending") {
       throw new Error(gateId === null ? "board approval is not waiting for approval" : "manual gate is not waiting for approval");
     }
@@ -2104,7 +2135,10 @@ export class ConveyorService {
       this.store.appendConversationMessage({
         issueId, runId: null, stageId, actorType: "user", actorId: account.id,
         actorName: account.username, actorTitle: "Superuser",
-        message: gateId === null ? "Approved board approval." : candidate!.task === FOLLOW_UP_GATE_TASK ? "Acknowledged Follow-ups." : `Approved configured manual gate \"${gateId}\".`,
+        message: gateId === null ? "Approved board approval."
+          : candidate!.task === FOLLOW_UP_GATE_TASK ? "Acknowledged Follow-ups."
+          : candidate!.task === ENTRY_APPROVAL_TASK_ID ? "Approved configured entry approval."
+          : `Approved configured manual gate \"${gateId}\".`,
       });
     }
     // The approval event wakes the item.
@@ -2893,6 +2927,10 @@ export class ConveyorService {
       // A live parent run owns its outcome, including any question it asks.
       // Child roll-up must not fence that run or replace its source state.
       if (runningIssueIds.has(parent.id)) continue;
+      // A retried child-creation stage may be queued behind available capacity.
+      // Keep its stage intact until it can run; otherwise roll-up would replace
+      // it with a child's frontier before it creates the remaining children.
+      if (this.childCreationStageIsReady(parent)) continue;
       // A parked question has already finished its producer run, but its cursor
       // still belongs to that run and must survive until its answer resumes it.
       if (this.hasResumableQuestionExecution(parent.id)) continue;
@@ -4607,7 +4645,9 @@ export class ConveyorService {
         // Live waiting/queued text supersedes the persisted warning, which can describe the
         // gate state from before the item became runnable.
         reason: stopReason ?? (manualWaiting
-          ? manualWaiting.kind === "board" ? "Waiting for board approval" : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
+          ? manualWaiting.kind === "board" ? "Waiting for board approval"
+            : manualWaiting.kind === "entry" ? "Waiting for configured entry approval."
+              : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
           : waiting ? null : issue.warning ?? options.reason ?? null),
         cost: formatUsage(cost),
         duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
@@ -5410,7 +5450,9 @@ export class ConveyorService {
       indicators,
       activity: cursor?.state === "pending" ? `${cursor.stage} › ${cursor.taskInstanceId ?? cursor.list}` : state ? `${state.stageId} · ${state.status}` : null,
       reason: stopReason ?? (manualWaiting
-        ? manualWaiting.kind === "board" ? "Waiting for board approval" : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
+        ? manualWaiting.kind === "board" ? "Waiting for board approval"
+          : manualWaiting.kind === "entry" ? "Waiting for configured entry approval."
+            : `Waiting for configured manual gate \"${manualWaiting.gateId}\".`
         : liveWaiting ? null : issue.warning ?? doneReason ?? null),
       cost: formatUsage(cost),
       duration: cost.durationMs > 0 ? formatDuration(cost.durationMs) : null,
@@ -5769,13 +5811,41 @@ export class ConveyorService {
     return this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId);
   }
 
+  /** Whether this stage's agent is allowed to create children. */
+  private stageCreatesChildren(repositoryId: string, stageId: string | null): boolean {
+    if (!stageId) return false;
+    const repository = this.config.repositories[repositoryId];
+    const stage = repository && this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId);
+    if (!stage) return false;
+    const agentIds = isNativeStage(stage)
+      ? stage.actions.flatMap((task) => task.task !== "agent.run" ? [] : [
+        ...(typeof task.with?.agent === "string" ? [task.with.agent] : []),
+        ...(Array.isArray(task.with?.agents) ? task.with.agents.filter((agent): agent is string => typeof agent === "string") : []),
+      ])
+      : "run" in stage && stage.run?.type === "agent" ? [stage.run.agent] : [];
+    return agentIds.some((agentId) => this.config.agents[agentId]?.tasks.some((task) =>
+      task === "item.createChild" || task === "breakdown.createChildren",
+    ));
+  }
+
+  private childCreationStageIsReady(issue: StoredIssue): boolean {
+    return issue.projectedState === "active" &&
+      this.childCreationRetryQueued(issue, issue.projectedStage);
+  }
+
+  /** Only an explicit retry may schedule a parent that already has children. */
+  private childCreationRetryQueued(issue: StoredIssue, stageId: string | null): boolean {
+    return this.stageCreatesChildren(issue.repositoryId, stageId) &&
+      this.store.getStageState(issue.id)?.status === "retry-ready";
+  }
+
   private retryableStoppedIssue(issue: StoredIssue, children: number, running: boolean): boolean {
     return (issue.sourceState === "open" ||
       (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
       issue.labels.includes(this.config.labels.enrollment) &&
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
-      !running && children === 0;
+      !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
   }
 
   private resumableRollupIssue(issue: StoredIssue, children: number, running: boolean, hasOpenQuestion: boolean): boolean {
@@ -5783,7 +5853,7 @@ export class ConveyorService {
       issue.labels.includes(this.config.labels.enrollment) &&
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
-      !running && children > 0 && !hasOpenQuestion;
+      !running && children > 0 && !this.stageCreatesChildren(issue.repositoryId, issue.projectedStage) && !hasOpenQuestion;
   }
 
   /** Whether the stored state permits a stage retry before the command verifies the source snapshot. */
@@ -5966,6 +6036,17 @@ export class ConveyorService {
         if (error instanceof RepositoryPausedError) throw error;
         this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
         throw error;
+      }
+
+      // Reconciliation runs the roll-up pass. Keep the durable retry marker in
+      // place before it observes the cleared stop label, or it can advance this
+      // parent to an unfinished child's later stage instead of retrying child
+      // creation.
+      if (this.store.listChildren(issueId).length > 0 && this.stageCreatesChildren(issue.repositoryId, stageId)) {
+        const stage = this.store.getStageState(issueId);
+        if (stage?.stageId === stageId) {
+          this.store.setStageState({ ...stage, status: "retry-ready", configHash: this.config.hash });
+        }
       }
 
       // A retry is a deliberate fresh attempt, so only failures observed after it may form a repeat.

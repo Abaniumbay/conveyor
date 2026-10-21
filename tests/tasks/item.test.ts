@@ -288,7 +288,7 @@ async function world(options: {
     store, config, items, repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main" }, issueId, sourceGuidance: "GUIDE",
     git: {} as TaskDeps["git"], workspaces: {} as TaskDeps["workspaces"],
   });
-  return { store, add, updateLiveSource, source, deps, calls };
+  return { store, add, updateLiveSource, source, sourceIssues: () => [...sources.values()], deps, calls };
 }
 
 describe("item.load", () => {
@@ -953,6 +953,7 @@ describe("work breakdown tasks", () => {
 
     expect(rerun.output).toEqual({ decision: "split", children: [{ entryId: "api", number: 100 }, { entryId: "ui", number: 101 }] });
     expect(w.calls.filter(([name]) => name === "createChildIssue")).toHaveLength(4);
+    expect(w.sourceIssues().filter((issue) => issue.body.includes("<!-- conveyor:breakdown-entry:")).map((issue) => issue.body.match(/<!-- conveyor:breakdown-entry:([^ ]+) -->/)?.[1]).sort()).toEqual(["api", "ui"]);
     expect(w.source(100).labels).toContain("conveyor:implementation");
     const loaded = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
     expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");

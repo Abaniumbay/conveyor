@@ -103,6 +103,8 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   checkpoint?: { name: "ciPassed" | "reviewPassed"; scope: "task" | "gate" };
   /** Checks only: a failure here is repaired by the stage's own non-agent actions on the next round, so it is not the agent's to fix. */
   repairedByActions?: boolean;
+  /** Checks only: permits an idempotent refresh of a derived external projection after verification. */
+  refreshesProjection?: true;
   /** Tools only: whether the tool changes external state. */
   mutating?: boolean;
   /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */
@@ -136,6 +138,9 @@ export function defineGroup(group: string, definitions: TaskDefinition<any, any,
     }
     if (def.kind === "check" && (def.writes.length > 0 || def.invalidates.length > 0)) {
       throw new Error(`${where}: a check must not write or invalidate anything`);
+    }
+    if (def.refreshesProjection && def.kind !== "check") {
+      throw new Error(`${where}: only a check may refresh a projection`);
     }
     if (def.kind === "act") {
       const bad = def.writes.filter((key) => !isCapturedKey(key));
@@ -251,9 +256,9 @@ export async function runTask<C, I, D>(
     ...(input === undefined ? {} : { input }),
     context,
     config,
-    // Checks have no task dependencies, but retain their planned-execution identity so a
-    // deterministic gate can record fenced evidence without gaining external capabilities.
-    deps: (isCheck ? undefined : args.deps) as D,
+    // Pure checks have no task dependencies. A projection-refreshing check receives them only
+    // to reconcile its derived display after it has deterministically verified the evidence.
+    deps: (isCheck && !definition.refreshesProjection ? undefined : args.deps) as D,
     instance: args.instance,
   });
   return validateResult(definition.name, result);

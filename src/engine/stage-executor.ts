@@ -34,7 +34,7 @@ export interface StageExecutorOptions {
   notify: (message: string) => void | Promise<void>;
   /** Sets (or clears with null) the board status line. */
   setStatus: (message: string | null) => void | Promise<void>;
-  /** Reads the human-approval state after an exit check has passed. */
+  /** Reads the human-approval state before native actions and after exit checks. */
   manualGate?: ManualGateResolver;
   /** Records that a configured manual gate began waiting after its cursor is durable. */
   manualGateWaiting?: ManualGateWaitingNotifier;
@@ -74,6 +74,8 @@ export type ManualGateWaitingNotifier = (input: {
 }) => void | Promise<void>;
 
 export const BOARD_APPROVAL_TASK_ID = "board-approval";
+/** Synthetic cursor task for a stage-level approval that happens before actions. */
+export const ENTRY_APPROVAL_TASK_ID = "entry-approval";
 
 export type BoardApprovalResolver = (input: {
   issueId: string;
@@ -162,8 +164,17 @@ export class StageExecutor {
 
   /** Runs the remaining actions; returns an outcome to end execution, or null to continue (gate or retry). */
   async #actions(run: Run): Promise<StageOutcome | null> {
+    const entry = this.#o.manualGate?.({
+      issueId: run.input.issueId, stageId: run.stage.id, gateId: ENTRY_APPROVAL_TASK_ID, stageEpoch: run.epoch,
+      attempt: run.cursor.attempt, configured: run.stage.approval === "manual", task: ENTRY_APPROVAL_TASK_ID,
+    });
+    if (entry?.required && !entry.approved) {
+      return this.#waitForApproval(run, "actions", ENTRY_APPROVAL_TASK_ID, entry.message);
+    }
     const tasks = run.stage.actions;
-    const start = run.cursor.taskInstanceId === null ? 0 : tasks.findIndex((t) => t.id === run.cursor.taskInstanceId);
+    const start = run.cursor.taskInstanceId === null || run.cursor.taskInstanceId === ENTRY_APPROVAL_TASK_ID
+      ? 0
+      : tasks.findIndex((t) => t.id === run.cursor.taskInstanceId);
     if (start < 0) throw new Error(`Cursor task ${run.cursor.taskInstanceId} is not in ${run.stage.id} actions`);
     for (const task of tasks.slice(start)) {
       const step = await this.#runTask(run, task, "actions");
@@ -193,7 +204,7 @@ export class StageExecutor {
         attempt: run.cursor.attempt, configured: task.manual === true, task: task.task,
       });
       if (manual?.required && !manual.approved) {
-        const outcome = await this.#waitForApproval(run, task.id, manual.message);
+        const outcome = await this.#waitForApproval(run, "exit-gate", task.id, manual.message);
         if (!wasWaitingForApproval) {
           await this.#o.manualGateWaiting?.({
             issueId: run.input.issueId, stageId: run.stage.id, gateId: task.id, stageEpoch: run.epoch,
@@ -207,7 +218,7 @@ export class StageExecutor {
     const board = this.#o.boardApproval?.({
       issueId: run.input.issueId, stageId: run.stage.id, stageEpoch: run.epoch, attempt: run.cursor.attempt,
     });
-    if (board?.required && !board.approved) return this.#waitForApproval(run, BOARD_APPROVAL_TASK_ID, board.message);
+    if (board?.required && !board.approved) return this.#waitForApproval(run, "exit-gate", BOARD_APPROVAL_TASK_ID, board.message);
     const at = this.#o.clock().toISOString();
     for (const task of tasks) {
       const definition = this.#o.registry.require(task.task);
@@ -228,10 +239,10 @@ export class StageExecutor {
     };
   }
 
-  async #waitForApproval(run: Run, taskId: string, message: string): Promise<StageOutcome> {
+  async #waitForApproval(run: Run, list: List, taskId: string, message: string): Promise<StageOutcome> {
     const now = this.#o.clock().toISOString();
     await this.#save(run, {
-      list: "exit-gate", taskInstanceId: taskId, state: "pending", pendingSince: now, wakeAt: null, deadlineAt: null,
+      list, taskInstanceId: taskId, state: "pending", pendingSince: now, wakeAt: null, deadlineAt: null,
     });
     this.#persist(run, taskId);
     await this.#o.setStatus(message);

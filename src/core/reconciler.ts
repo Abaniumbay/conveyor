@@ -310,7 +310,10 @@ export async function reconcileRepository(
       // resumes it: removing that label (Retry, or a person on GitHub) must make it ready again.
       const backingOff = !resumed && stageState?.status === "error" && stageState.stageId === projected.stage;
       const waitingForInFlight = stageState?.status === "waiting-in-flight" && stageState.stageId === projected.stage;
-      if (!awaitingDifferentStage && !backingOff && !waitingForInFlight && stageState?.status !== "running") {
+      // An explicit child-creation retry is admitted by the scheduler from this durable marker.
+      // Reconciliation must not replace it with ready before the scheduler claims it.
+      const childCreationRetry = stageState?.status === "retry-ready" && stageState.stageId === projected.stage;
+      if (!awaitingDifferentStage && !backingOff && !waitingForInFlight && !childCreationRetry && stageState?.status !== "running") {
         input.store.setStageState({
           issueId,
           stageId: projected.stage,

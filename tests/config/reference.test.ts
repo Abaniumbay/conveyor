@@ -122,7 +122,11 @@ describe("reference configuration", () => {
     const { actions, gate, reviewActions, review } = gates("service");
     expect(actions).toEqual(["workspace", "implement", "ensureChange", "startCi"]);
     expect(actions).toContain("startCi");
-    expect(gate).toEqual(expect.arrayContaining(["ciDefined", "ciGate"]));
+    expect(gate).toEqual(["pushed", "criteriaSynced", "criterionTests", "ciDefined", "ciGate"]);
+    const implementation = config.plans[0]!.stages.find((stage) => stage.id === "implementation")!;
+    expect(implementation.exitGate.find((task) => task.id === "criterionTests")).toMatchObject({
+      task: "change.criterionTestsVerified", kind: "check", onFail: null,
+    });
     expect(reviewActions).toEqual(["ciSettled", "criterionTests", "review"]);
     expect(review).toContain("ciHead");
   });
@@ -156,6 +160,21 @@ describe("reference configuration", () => {
       expect(text).not.toMatch(/mitra|verifier/i);
       expect(text).not.toMatch(/\b(source|run|delivery)\.[a-z]+_[a-z_]+|workspace\.(request|get_)\w*/);
     }
+  });
+
+  test("packaged implementer and reviewer instructions record and approve criteria incrementally", () => {
+    const kaveh = BUILTIN_FILES["instructions/kaveh.md"]!;
+    expect(kaveh).toContain("as soon as that criterion's proving test is committed, immediately record its exact test name");
+    expect(kaveh).toContain("omit `headSha` before a change exists, otherwise use the live current head from `change.get`");
+    expect(kaveh).toContain("Record one criterion at a time; do not wait for the remaining criteria or the end of the run");
+    expect(kaveh).toContain("individually in the item details");
+
+    const reviewer = BUILTIN_FILES["instructions/reviewer.md"]!;
+    expect(reviewer).toContain("As soon as you trace each non-manual acceptance criterion to code and credible test evidence at the current head");
+    expect(reviewer).toContain("do not wait for the remaining criteria, the end of the review, or the findings round");
+    expect(reviewer).toContain("immediately withdraw it with `change.uncheckCriterion`");
+    expect(reviewer).toContain("whole review in one findings round");
+    expect(reviewer).toContain("criterion explicitly marked manual or post-deployment");
   });
 
   test("reviews go to Shaghayegh on Claude Code first, then Shirin on Codex; a writable Claude agent without network is refused", async () => {

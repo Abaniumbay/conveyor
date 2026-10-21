@@ -487,6 +487,7 @@ const nativeStageSchema = z
     description: z.string().trim().min(1).max(280).optional(),
     /** An emoji the dashboard shows beside the stage's name. */
     icon: z.string().trim().min(1).max(16).optional(),
+    approval: z.literal("manual").optional(),
     concurrency: z.number().int().positive(),
     retries: z.number().int().nonnegative().default(2),
     childrenStartAt: identifierSchema.optional(),

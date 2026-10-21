@@ -130,6 +130,16 @@ const ctx = (over: Partial<TaskContext> = {}): Partial<TaskContext> => ({
 });
 const cp = (sha: string) => ({ sha, at: "t", taskInstanceId: "x" });
 
+async function verifyCriterionTestLink(name: string, source: string) {
+  const w = await world({ body: PR_BODY, files: { "tests/a.test.ts": source } }, true, BODY);
+  await dispatchTool(
+    { name: "change.recordCriterionTests", input: { headSha: "head1", criteria: [{ criterionId: "a", tests: [{ name, file: "tests/a.test.ts" }] }] }, actor: { id: "kaveh" } as never, grant: { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) } },
+    { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store: w.store },
+  );
+  const result = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: w.deps });
+  return { result, w };
+}
+
 describe("change.load", () => {
   test("writes null when no change request exists yet", async () => {
     const w = await world({}, false);
@@ -361,6 +371,10 @@ describe("change tools", () => {
     expect(w.store.criterionTestEvidence("i1")).toMatchObject([{ criterionId: "a", tests: [{ name: "does work", file: "tests/a.test.ts" }] }]);
   });
 
+  test("recordCriterionTests describes test names as source text optionally qualified by class", () => {
+    expect(registry.require("change.recordCriterionTests").description).toContain("name appears in its file as written, optionally qualified by its class");
+  });
+
   test("recordCriterionTests rejects invalid batches without recording evidence", async () => {
     const w = await world({ body: PR_BODY }, true, BODY);
     const grant = { runId: "run1", stageId: "implementation", issueScoped: true, actor: null, tasks: new Set(["change.recordCriterionTests"]) };
@@ -428,7 +442,7 @@ describe("change tools", () => {
   test("criterionTestsVerified returns pre-change claims with missing or renamed tests to implementation", async () => {
     for (const { files, message } of [
       { files: {}, message: "a: file tests/a.test.ts is missing at head1" },
-      { files: { "tests/a.test.ts": "it(\"renamed test\", () => {})" }, message: 'a: test "does work" is not in tests/a.test.ts' },
+      { files: { "tests/a.test.ts": "it(\"renamed test\", () => {})" }, message: 'a: test "does work" must appear in tests/a.test.ts as written' },
     ]) {
       const w = await world({ body: PR_BODY, files }, false, BODY);
       await dispatchTool(
@@ -445,7 +459,71 @@ describe("change tools", () => {
     }
   });
 
+  test("criterionTestsVerified accepts class-qualified test names on separate source lines", async () => {
+    const { result, w } = await verifyCriterionTestLink("MediaSampleTests.Jpeg_sample_is_classified_as_image_jpeg", "class MediaSampleTests {}\n\ntest(\"Jpeg_sample_is_classified_as_image_jpeg\", () => {})");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
+  test("criterionTestsVerified accepts pytest-style path qualification without requiring the path in source", async () => {
+    const { result, w } = await verifyCriterionTestLink("tests/test_media.py::test_jpeg", "def test_jpeg():\n  pass");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(1);
+  });
+
+  test("criterionTestsVerified accepts hash-qualified test names on separate source lines", async () => {
+    const { result } = await verifyCriterionTestLink("MediaSampleTests#Jpeg_sample_is_classified_as_image_jpeg", "class MediaSampleTests {}\n\ntest(\"Jpeg_sample_is_classified_as_image_jpeg\", () => {})");
+
+    expect(result.status).toBe("pass");
+  });
+
+  test("criterionTestsVerified accepts suite-qualified test titles on separate source lines", async () => {
+    const { result } = await verifyCriterionTestLink("media > classifies jpeg", "describe(\"media\", () => {\n  it(\"classifies jpeg\", () => {});\n});");
+
+    expect(result.status).toBe("pass");
+  });
+
+  test("criterionTestsVerified continues to accept unqualified test names", async () => {
+    const { result } = await verifyCriterionTestLink("classifies jpeg", "it(\"classifies jpeg\", () => {})");
+
+    expect(result.status).toBe("pass");
+  });
+
+  test("criterionTestsVerified rejects a qualified test whose non-path qualifier is absent", async () => {
+    const { result } = await verifyCriterionTestLink("MediaSampleTests.Jpeg_sample_is_classified_as_image_jpeg", "test(\"Jpeg_sample_is_classified_as_image_jpeg\", () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain('"MediaSampleTests"');
+  });
+
+  test("criterionTestsVerified identifies the missing final test-name segment", async () => {
+    const { result } = await verifyCriterionTestLink("MediaSampleTests.Jpeg_sample_is_classified_as_image_jpeg", "class MediaSampleTests {}");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain('"Jpeg_sample_is_classified_as_image_jpeg"');
+    expect((result as Fail).message).toContain("must appear in tests/a.test.ts as written");
+  });
+
+  test("criterionTestsVerified requires a slash-containing final test title", async () => {
+    const { result } = await verifyCriterionTestLink("media > serves image/jpeg", "describe(\"media\", () => {})");
+
+    expect(result).toMatchObject({ status: "fail" });
+    expect((result as Fail).message).toContain('"serves image/jpeg"');
+  });
+
+  test("criterionTestsVerified links a dotted final test title at its full source text", async () => {
+    const { result, w } = await verifyCriterionTestLink("Suite > uses v1.5 seconds", "const delay = \"5 seconds\";\ndescribe(\"Suite\", () => {\n  it(\"uses v1.5 seconds\", () => {});\n});");
+
+    expect(result.status).toBe("pass");
+    expect(w.store.criterionTestEvidence("i1")[0]!.tests[0]!.line).toBe(3);
+  });
+
   test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
+    expect(registry.require("change.criterionTestsVerified")).toMatchObject({
+      kind: "check", writes: [], invalidates: [],
+    });
     const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
     const unlinked = await world({ body: PR_BODY }, true, BODY);
     const missing = await run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: unlinked.deps }) as Fail;
@@ -478,7 +556,7 @@ describe("change tools", () => {
       { registry, deps: () => stale.deps, liveHeadSha: async () => "head1", store: stale.store },
     );
     const renamed = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: stale.deps }) as Fail;
-    expect(renamed.message).toContain('a: test "does work" is not in tests/a.test.ts');
+    expect(renamed.message).toContain('a: test "does work" must appear in tests/a.test.ts as written');
 
     const moved = await world({ body: PR_BODY, change: request({ headSha: "head2" }) }, true, BODY);
     const changedHead = await run("change.criterionTestsVerified", { context: ctx({ item: { criteria: [{ id: "a", text: "It works", manual: false }] } as never }), deps: moved.deps }) as Fail;

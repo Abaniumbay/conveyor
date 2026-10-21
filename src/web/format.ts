@@ -42,3 +42,12 @@ export function formatUsage(usage: {
   if (usage.unavailableRuns === 0) parts.unshift(`$${usage.amount.toFixed(4)}`);
   return parts.join(" · ");
 }
+
+/**
+ * A stop reason short enough for a list: its first paragraph, cut at `limit` characters. Some
+ * reasons carry whole log excerpts after that; the item's own view shows them in full.
+ */
+export function reasonSummary(reason: string, limit = 280): string {
+  const first = reason.trim().split(/\n\s*\n/)[0]!.replace(/\s+/g, " ").trim();
+  return first.length <= limit ? first : `${first.slice(0, limit - 1).trimEnd()}…`;
+}

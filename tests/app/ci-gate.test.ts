@@ -3,6 +3,7 @@ import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
 import { boundLog, boundSnapshotLogs, ciFailureFingerprint, createCiGateMemory, evaluateCiGate, ExternalWaitError, FOCUSED_LOG_BREAK, parseCiGateOptions } from "../../src/app/ci-gate";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import { focusGitHubActionsLog } from "../../src/source/github/ci-provider";
+import { InfrastructureError } from "../../src/tasks/contract";
 
 class FakeProvider implements CiProvider {
   sha = "abcdef1234567890";
@@ -58,6 +59,13 @@ describe("provider-neutral CI gate", () => {
     expect(outcome.status).toBe("changes-requested");
     expect(outcome.summary).toContain("##[error]boom");
     expect(outcome.requiredFixes?.[0]).toContain("ci.getLogs");
+  });
+  test("raises infrastructure retry for a never-started failed GitHub Actions job", async () => {
+    const provider = new FakeProvider();
+    provider.runs = [run("1", "Tests", "failed", { neverStarted: { annotation: "Account billing stopped this job." } })];
+
+    await expect(gate(provider)).rejects.toBeInstanceOf(InfrastructureError);
+    await expect(gate(provider)).rejects.toThrow("Account billing stopped this job.");
   });
   test("reruns a cancelled capable run once, and times out pending CI", async () => {
     const provider = new FakeProvider(); provider.runs = [run("1", "Tests", "cancelled", { canRerun: true })];
