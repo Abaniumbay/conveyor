@@ -6,7 +6,7 @@ import path from "node:path";
 import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
-import { BOARD_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
+import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
 import type { WaitKind } from "../../src/events/topics";
 import type { CiContext, TaskContext } from "../../src/tasks/context";
@@ -155,8 +155,8 @@ function ct(reg: TaskRegistry, id: string, task: string, extra: Partial<Compiled
   };
 }
 
-function stage(id: string, actions: CompiledTask[], exitGate: CompiledTask[], retries = 2): CompiledStage {
-  return { id, concurrency: 1, retries, childrenStartAt: null, legacy: false, actions, exitGate };
+function stage(id: string, actions: CompiledTask[], exitGate: CompiledTask[], retries = 2, approval?: "manual"): CompiledStage {
+  return { id, ...(approval === undefined ? {} : { approval }), concurrency: 1, retries, childrenStartAt: null, legacy: false, actions, exitGate };
 }
 
 function pipeline(...stages: CompiledStage[]): CompiledPipeline {
@@ -264,6 +264,59 @@ describe("happy path", () => {
     expect(h.journal.wakeNow("issue-1")).toBe(true);
     expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
     expect(h.world.calls.filter((call) => call === "act")).toHaveLength(1);
+  });
+
+  test("parks before native stage actions until its entry approval is recorded", async () => {
+    const h = await harness();
+    h.activate();
+    let approved = false;
+    h.setManualGate(({ gateId, configured }) => ({
+      required: configured && gateId === ENTRY_APPROVAL_TASK_ID,
+      approved,
+      message: "Waiting for entry approval",
+    }));
+    const plan = pipeline(
+      stage("merge", [ct(h.registry, "merge", "test.act")], [ct(h.registry, "merged", "test.check")], 2, "manual"),
+    );
+
+    expect(await h.run(plan, "merge")).toEqual({ kind: "parked", stageId: "merge", reason: "pending", wakeAt: null });
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "actions", taskInstanceId: ENTRY_APPROVAL_TASK_ID, state: "pending", wakeAt: null });
+    expect(h.world.calls).not.toContain("merge");
+
+    const restarted = h.executorFor();
+    expect(await h.run(plan, "merge", restarted)).toMatchObject({ kind: "parked", stageId: "merge", reason: "pending" });
+    expect(h.world.calls).not.toContain("merge");
+
+    approved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "merge", restarted)).toMatchObject({ kind: "advance", stageId: "merge" });
+    expect(h.world.calls.filter((call) => call === "merge")).toHaveLength(1);
+  });
+
+  test("holds configured exit approval after an approved native entry approval", async () => {
+    const h = await harness();
+    h.activate();
+    let entryApproved = false;
+    let exitApproved = false;
+    h.setManualGate(({ gateId, configured }) => ({
+      required: configured,
+      approved: gateId === ENTRY_APPROVAL_TASK_ID ? entryApproved : exitApproved,
+      message: "Waiting for approval",
+    }));
+    const plan = pipeline(
+      stage("merge", [ct(h.registry, "merge", "test.act")], [ct(h.registry, "human", "test.check", { manual: true })], 2, "manual"),
+    );
+
+    await h.run(plan, "merge");
+    entryApproved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "merge")).toMatchObject({ kind: "parked", stageId: "merge" });
+    expect(h.world.calls.filter((call) => call === "merge")).toHaveLength(1);
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "exit-gate", taskInstanceId: "human" });
+
+    exitApproved = true;
+    expect(h.journal.wakeNow("issue-1")).toBe(true);
+    expect(await h.run(plan, "merge")).toMatchObject({ kind: "advance", stageId: "merge" });
   });
 
   test("notifies once after parking a configured manual gate", async () => {

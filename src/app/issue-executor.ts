@@ -44,7 +44,7 @@ export interface IssueExecutorDependencies {
     issue: StoredIssue,
     repository: { id: string; address: string; folder: string; baseBranch: string },
   ) => TaskDeps;
-  /** Resolves the durable human-approval state for native exit gates. */
+  /** Resolves the durable human-approval state for native stage entry and exit gates. */
   manualGate?: ManualGateResolver;
   /** Records a newly waiting native manual gate. */
   manualGateWaiting?: ManualGateWaitingNotifier;

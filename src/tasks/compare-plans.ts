@@ -84,6 +84,7 @@ function stageSummary(left: CompiledStage, right: CompiledStage): string[] {
     concurrency: String(stage.concurrency),
     retries: String(stage.retries),
     childrenStartAt: stage.childrenStartAt ?? "none",
+    "entry approval": stage.approval ?? "none",
   });
   const before = settings(left);
   const after = settings(right);

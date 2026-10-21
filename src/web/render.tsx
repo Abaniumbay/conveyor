@@ -296,9 +296,9 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
             <h3>Manual gate approvals</h3>
             <ul class="criteria-list">{issue.manualGates.map((gate) => (
               <li key={`${gate.stageId}:${gate.kind}:${gate.gateId ?? "board"}`}>
-                <strong>{gate.kind === "board" ? gate.stageId : gate.kind === "follow-up" ? `${gate.stageId} · Follow-ups` : `${gate.stageId} · ${gate.gateId}`}</strong>{" "}
-                <span>{gate.kind === "board" ? (gate.required ? "Board approval required" : "No board approval required") : gate.kind === "follow-up" ? "Follow-up acknowledgement required" : "Configured manual requirement"}</span>
-                {gate.waiting && <p>{gate.kind === "board" ? "Waiting for board approval" : gate.kind === "follow-up" ? "Waiting for follow-up acknowledgement." : `Waiting for configured manual gate \"${gate.gateId}\".`}</p>}
+                <strong>{gate.kind === "board" ? gate.stageId : gate.kind === "entry" ? `${gate.stageId} · Entry approval` : gate.kind === "follow-up" ? `${gate.stageId} · Follow-ups` : `${gate.stageId} · ${gate.gateId}`}</strong>{" "}
+                <span>{gate.kind === "board" ? (gate.required ? "Board approval required" : "No board approval required") : gate.kind === "entry" ? "Configured entry approval" : gate.kind === "follow-up" ? "Follow-up acknowledgement required" : "Configured manual requirement"}</span>
+                {gate.waiting && <p>{gate.kind === "board" ? "Waiting for board approval" : gate.kind === "entry" ? "Waiting for configured entry approval." : gate.kind === "follow-up" ? "Waiting for follow-up acknowledgement." : `Waiting for configured manual gate \"${gate.gateId}\".`}</p>}
                 {gate.kind === "follow-up" && gate.notes?.map((note) => <p key={note}>{note}</p>)}
                 {gate.approvedBy && <p>Approved by {gate.approvedBy}{gate.approvedAt ? ` at ${new Date(gate.approvedAt).toLocaleString()}` : ""}.</p>}
                 {canManage && <div class="manual-gate-actions">

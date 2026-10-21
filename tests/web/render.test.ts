@@ -645,6 +645,7 @@ describe("renderDashboard", () => {
       csrfToken: "csrf-token",
       manualGates: [
         { stageId: "implementation", gateId: null, kind: "board", required: true, waiting: true, approvedBy: "admin", approvedAt: "2026-10-14T12:00:00Z" },
+        { stageId: "merge", gateId: "entry-approval", kind: "entry", required: true, waiting: true, approvedBy: null, approvedAt: null },
         { stageId: "implementation", gateId: "ciGate", kind: "configured", required: true, waiting: false, approvedBy: null, approvedAt: null },
       ],
     } satisfies IssueCardViewModel;
@@ -654,6 +655,9 @@ describe("renderDashboard", () => {
     expect(reader).toContain("Manual gate approvals");
     expect(reader).toContain("implementation");
     expect(reader).toContain("Configured manual requirement");
+    expect(reader).toContain("merge · Entry approval");
+    expect(reader).toContain("Configured entry approval");
+    expect(reader).toContain("Waiting for configured entry approval.");
     expect(reader).toContain("Waiting for board approval");
     expect(reader).toContain("Approved by admin");
     expect(reader).not.toContain("/manual-gates/requirement");
@@ -661,10 +665,18 @@ describe("renderDashboard", () => {
     const superuser = renderDashboard({ ...base, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(superuser).toContain('action="/manual-gates/requirement"');
     expect(superuser).toContain('action="/manual-gates/approve"');
+    expect(superuser).toContain('name="gateId" value="entry-approval"');
     expect(superuser).toContain('name="csrf" value="csrf-token"');
     // The switch shows the stage board approval and turns it off.
     expect(superuser).toContain('<input type="hidden" name="required" value="false"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="true">');
     expect(superuser).toContain("Require board approval before leaving implementation");
+    const entryOnly = renderDashboard({
+      ...base,
+      selectedIssue: { ...selectedIssue, manualGates: [selectedIssue.manualGates[1]!] },
+      account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" },
+    });
+    expect(entryOnly).toContain('action="/manual-gates/approve"');
+    expect(entryOnly).not.toContain("/manual-gates/requirement");
     const optional = renderDashboard({ ...base, selectedIssue: { ...selectedIssue, manualGates: [{ ...selectedIssue.manualGates[0]!, required: false }] }, account: { id: "admin", username: "admin", role: "superuser", avatar: "🦊" } });
     expect(optional).toContain('<input type="hidden" name="required" value="true"/><button type="submit" class="manual-gate-switch" role="switch" aria-checked="false">');
     expect(superuser).toContain('<button type="submit" class="manual-gate-approve action-button action-button--secondary">Approve</button>');

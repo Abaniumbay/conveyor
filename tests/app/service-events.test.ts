@@ -8,6 +8,7 @@ import path from "node:path";
 import { ConveyorService } from "../../src/app/service";
 import { loadConfig } from "../../src/config/load";
 import { ConveyorStore } from "../../src/db/store";
+import { ENTRY_APPROVAL_TASK_ID } from "../../src/engine/stage-executor";
 import type { StoredEvent } from "../../src/events/catalogue";
 import type { EventSink } from "../../src/events/sinks";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
@@ -24,6 +25,7 @@ async function setup(options: {
   drained?: boolean;
   sink?: EventSink;
   secondRepository?: boolean;
+  entryApproval?: boolean;
   upsertStatusComment?: (issueNumber: number) => Promise<number>;
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-service-events-"));
@@ -54,7 +56,7 @@ pipelines:
     stages:
       - id: implementation
         concurrency: 1
-        actions: []
+${options.entryApproval ? "        approval: manual\n" : ""}        actions: []
         exit-gate:
           - { id: ciGate, task: ci.passed, manual: true }
 repositories:
@@ -86,15 +88,15 @@ ${options.secondRepository ? `  repo-two: { source: github, address: owner/other
   if (options.drained !== false) service.drain("tests: nothing executes");
   const journal = store.executions();
   /** Parks the item on its exit gate for one visit, as the executor does. */
-  const park = (attempt = 1, taskInstanceId = "ciGate") => {
+  const park = (attempt = 1, taskInstanceId = "ciGate", list: "actions" | "exit-gate" = "exit-gate") => {
     const epoch = journal.stageEpoch(ISSUE);
     journal.saveCursor({
-      issueId: ISSUE, stage: "implementation", stageEpoch: epoch, attempt, returns: 0, list: "exit-gate",
+      issueId: ISSUE, stage: "implementation", stageEpoch: epoch, attempt, returns: 0, list,
       taskInstanceId, state: "pending", feedback: null, pendingSince: new Date().toISOString(), wakeAt: null, deadlineAt: null,
     }, epoch);
     return epoch;
   };
-  return { service, store, journal, park, records };
+  return { config, service, store, journal, park, records };
 }
 
 describe("waking parked gates", () => {
@@ -104,6 +106,20 @@ describe("waking parked gates", () => {
     store.events().append("gate.approved", { stageId: "implementation", gateId: "ciGate", stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
     await service.eventsSettled();
     expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
+    await service.close();
+  });
+
+  test("an entry approval wakes only its matching action visit", async () => {
+    const { service, store, journal, park } = await setup();
+    const epoch = park(1, ENTRY_APPROVAL_TASK_ID, "actions");
+    store.events().append("gate.approved", { stageId: "implementation", gateId: ENTRY_APPROVAL_TASK_ID, stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toEqual(expect.any(String));
+
+    park(1, "ciGate", "exit-gate");
+    store.events().append("gate.approved", { stageId: "implementation", gateId: ENTRY_APPROVAL_TASK_ID, stageEpoch: epoch, attempt: 1 }, { issueId: ISSUE });
+    await service.eventsSettled();
+    expect(journal.getCursor(ISSUE)?.wakeAt).toBeNull();
     await service.close();
   });
 
@@ -197,6 +213,26 @@ describe("scheduling", () => {
     await service.eventsSettled();
     expect(started(records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
     await service.close();
+  });
+
+  test("a parked entry approval does not take a runner before approval, including after restart", async () => {
+    const first = await setup({ drained: false, entryApproval: true });
+    first.park(1, ENTRY_APPROVAL_TASK_ID, "actions");
+    first.store.events().append("command.accepted", { command: "backlog.move" });
+    await first.service.eventsSettled();
+    expect(started(first.records)).toEqual([]);
+
+    await first.service.close();
+    const reopenedStore = await ConveyorStore.open(first.config.settings.database);
+    const reopened = new ConveyorService(first.config, reopenedStore, {} as never);
+    reopenedStore.events().append("command.accepted", { command: "backlog.move" });
+    await reopened.eventsSettled();
+    expect(started(first.records)).toEqual([]);
+
+    reopened.approveManualGate(ISSUE, "implementation", ENTRY_APPROVAL_TASK_ID, { id: "admin", username: "admin" });
+    await reopened.eventsSettled();
+    expect(started(first.records)).toEqual([expect.objectContaining({ item: "repo:1", stage: "implementation" })]);
+    await reopened.close();
   });
 
   test("retry, follow-on, and operator wake events do not admit a paused repository", async () => {
