@@ -8,6 +8,8 @@ export interface CiRun {
   state: CiRunState;
   canRerun: boolean;
   hasLog: boolean;
+  /** GitHub proved this failed check's job never reached a runner or an executable step. */
+  neverStarted?: { annotation: string | null };
   /** When the provider started / finished the run; absent or null when it did not say. */
   startedAt?: string | null;
   completedAt?: string | null;

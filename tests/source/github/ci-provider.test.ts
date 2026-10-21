@@ -7,10 +7,20 @@ class FakeTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];
   workflows = new Set<string>();
   runs: unknown[] = [];
+  jobs: Record<number, unknown> = {};
+  annotations: Record<number, unknown[]> = {};
   async request<T>(request: GitHubTransportRequest): Promise<T> {
     this.requests.push(request);
     if (request.path.includes("/pulls/")) return { head: { sha: "commit-1" } } as T;
+    if (request.path.includes("/check-runs/") && request.path.includes("/annotations")) {
+      const id = Number(request.path.split("/").at(-2));
+      return [this.annotations[id] ?? []] as T;
+    }
     if (request.path.includes("/check-runs")) return [{ check_runs: this.runs }] as T;
+    if (request.path.includes("/actions/jobs/") && !request.path.endsWith("/logs") && !request.path.endsWith("/rerun")) {
+      const id = Number(request.path.split("/").at(-1));
+      return this.jobs[id] as T;
+    }
     if (request.path.includes("/actions/jobs/") && request.path.endsWith("/logs")) return "build log" as T;
     if (request.path.includes("/actions/jobs/") && request.path.endsWith("/rerun")) return {} as T;
     if (request.path.includes("/contents/.github/workflows/")) {
@@ -65,6 +75,33 @@ describe("GitHub Actions CiProvider contract", () => {
     const runs = await provider(transport).list(change, "commit-1");
     expect(runs.find((run) => run.name === "Build")).toMatchObject({ id: "4", state: "passed" });
     expect(runs.find((run) => run.name === "Skipped")?.id).toBe("7");
+  });
+  test("identifies a failed GitHub Actions job with no runner or executed steps as never started", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(12, "Tests", "completed", "failure")];
+    transport.jobs[12] = { runner_name: null, steps: [] };
+    transport.annotations[12] = [{ message: "Account billing stopped this job." }];
+
+    const [result] = await provider(transport).list(change, "commit-1");
+
+    expect(result).toMatchObject({
+      name: "Tests",
+      state: "failed",
+      neverStarted: { annotation: "Account billing stopped this job." },
+    });
+    expect(transport.requests.map((request) => request.path)).toContain("repos/owner/repo/actions/jobs/12");
+    expect(transport.requests.map((request) => request.path)).toContain("repos/owner/repo/check-runs/12/annotations?per_page=100");
+  });
+
+  test("does not classify a failed job with an executed step as never started", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(12, "Tests", "completed", "failure")];
+    transport.jobs[12] = { runner_name: null, steps: [{ status: "completed" }] };
+
+    const [result] = await provider(transport).list(change, "commit-1");
+
+    expect(result?.neverStarted).toBeUndefined();
+    expect(transport.requests.some((request) => request.path.includes("/annotations"))).toBe(false);
   });
   test("reruns and reads logs only when the mapped run advertises those capabilities", async () => {
     const transport = new FakeTransport(); transport.runs = [check(12, "Cancelled", "completed", "cancelled")];
@@ -164,4 +201,3 @@ describe("GitHub Actions CI definitions", () => {
     expect(transport.requests.length).toBeGreaterThan(first);
   });
 });
-
