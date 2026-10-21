@@ -506,7 +506,7 @@ export interface DashboardViewModel {
   notifications?: NotificationPreferencesViewModel;
   csrfToken: string;
   account?: DashboardAccountViewModel;
-  /** The running server's build, for About; the server-rendered page reads its own. */
+  /** The running server's build, for About. */
   build?: { version: string; commit: string; builtAt: string | null; runtime: string };
 }
 
@@ -628,13 +628,4 @@ export interface ReportViewModel {
   /** Done items imported without a recorded delivery; left out of every figure. */
   importedWithoutHistory: number;
   generatedAt: string;
-}
-
-/** One recorded event as the live dashboard stream sends it: what changed, never its content. */
-export interface DashboardStreamEvent {
-  seq: number;
-  type: string;
-  repositoryId: string | null;
-  issueId: string | null;
-  correlationId: string | null;
 }

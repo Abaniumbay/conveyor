@@ -3,10 +3,11 @@
 
 import { render } from "preact";
 
-import { DashboardBody, LiveDetailsContext, prepareDashboardRender, type LiveDetails } from "../render";
+import { DashboardBody, LiveDetailsContext, prepareDashboardRender, viewTitle, type LiveDetails } from "../render";
+import { olderDoneSchema, type DashboardItem } from "../model";
 import type { IssueCardViewModel, RecentActivityViewModel, SteeringEventViewModel } from "../types";
-import { afterRender, bindBoardBehaviour, showConnection, view } from "./behaviour";
-import { boardSelectionFromUrl, boardViewModel, viewDataUrl, type ViewData } from "./derive";
+import { afterRender, bindBoardBehaviour, captureReadingPosition, restoreReadingPosition, showConnection, view } from "./behaviour";
+import { boardSelectionFromUrl, boardViewModel, itemTabOf, selectedItem, viewDataUrl, type BoardSelection, type ViewData } from "./derive";
 import { ActivityPanel, ConversationPanel, JourneyPanel } from "./details";
 import { LiveStore } from "./store";
 
@@ -34,6 +35,8 @@ function liveDetails(issue: IssueCardViewModel): LiveDetails {
 
 let frame: number | null = null;
 let bound = false;
+/** The address last drawn: a redraw of the same address keeps the reader's place, a new one starts at the top. */
+let drawnAddress: string | null = null;
 
 /** The Recent page for the address: loaded when Recent is shown, and again after changes arrive. */
 const recent: { key: string | null; page: RecentActivityViewModel | null; timer: ReturnType<typeof setTimeout> | null; seq: number } = { key: null, page: null, timer: null, seq: -1 };
@@ -127,10 +130,59 @@ function followSteering(): void {
   });
 }
 
-const VIEW_TITLES: Record<string, string> = {
-  board: "Board", graph: "Graph", recent: "Recent", attention: "Label problems", repositories: "Repositories", repository: "Repository",
-  team: "Team", reports: "Reports", agent: "Operator", accounts: "Accounts", profile: "Profile", notifications: "Notifications", about: "About",
-};
+/** Finished items matching the board's search or repositories, searched on the server among all of them. */
+const doneSearch: { key: string | null; items: DashboardItem[] | null; timer: ReturnType<typeof setTimeout> | null } = { key: null, items: null, timer: null };
+
+function syncDoneSearch(selection: BoardSelection): void {
+  const q = selection.q.trim();
+  const active = selection.view === "board" && (q !== "" || selection.repositoryIds.length > 0);
+  const query = new URLSearchParams({ limit: String(selection.doneLimit) });
+  if (q) query.set("q", q);
+  for (const repository of selection.repositoryIds) query.append("repo", repository);
+  const key = active ? `/api/v1/done?${query}` : null;
+  if (key === doneSearch.key) return;
+  doneSearch.key = key;
+  if (doneSearch.timer !== null) clearTimeout(doneSearch.timer);
+  doneSearch.timer = null;
+  // The last matches stay until the new ones arrive, so the column does not flicker while typing.
+  if (key === null) {
+    doneSearch.items = null;
+    return;
+  }
+  doneSearch.timer = setTimeout(() => {
+    doneSearch.timer = null;
+    void fetch(key, { headers: { accept: "application/json" }, cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) return location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
+        if (!response.ok || doneSearch.key !== key) return;
+        doneSearch.items = olderDoneSchema.parse(await response.json()).items;
+        schedule();
+      })
+      .catch(() => { /* Done shows the matches among the items the browser holds. */ });
+  }, 300);
+}
+
+/** An open item the live model does not hold (finished long ago or offboarded), loaded on its own. */
+const outside: { key: string | null; item: IssueCardViewModel | null } = { key: null, item: null };
+
+function syncOutsideItem(selection: BoardSelection): void {
+  const state = store.state;
+  const issue = selection.issue;
+  const held = state && selectedItem(selection, [...Object.values(state.model.items), ...state.olderDone]);
+  const key = issue && !held ? `/api/v1/items/${encodeURIComponent(issue.repository)}/${issue.number}` : null;
+  if (key === outside.key) return;
+  outside.key = key;
+  outside.item = null;
+  if (key === null) return;
+  void fetch(key, { headers: { accept: "application/json" }, cache: "no-store" })
+    .then(async (response) => {
+      if (response.status === 401) return location.assign(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
+      if (!response.ok || outside.key !== key) return;
+      outside.item = await response.json() as IssueCardViewModel;
+      schedule();
+    })
+    .catch(() => { /* The board shows without the item; opening it again tries again. */ });
+}
 
 function draw(): void {
   frame = null;
@@ -138,9 +190,12 @@ function draw(): void {
   if (!state) return;
   // Rows being dragged or saved are moved by hand; the board redraws once they settle.
   if (view.backlogBusy) return;
-  const selection = boardSelectionFromUrl(new URL(location.href));
+  const from: unknown = history.state?.from;
+  const selection = boardSelectionFromUrl(new URL(location.href), typeof from === "string" ? from : null);
   syncRecent(selection.view, state.seq);
   syncViewData(viewDataUrl(selection, location.search));
+  syncOutsideItem(selection);
+  syncDoneSearch(selection);
   const model = boardViewModel({
     model: state.model,
     account: state.account,
@@ -149,18 +204,24 @@ function draw(): void {
     olderDone: state.olderDone,
     recent: recent.page,
     viewData: viewData.data,
+    outsideItem: outside.item,
+    doneMatches: doneSearch.items,
   });
   prepareDashboardRender(model);
   document.body.dataset.dashboardView = model.view;
-  if (!model.selectedIssue) document.title = `${model.view === "repository" && model.repositoryId ? model.repositoryId : VIEW_TITLES[model.view] ?? "Board"} · ${model.title}`;
+  if (!model.selectedIssue) document.title = `${viewTitle(model)} · ${model.title}`;
   // The loading skeleton is the shell's own markup, not Preact's; it goes before the first draw.
   if (!bound) root!.replaceChildren();
+  const address = location.pathname + location.search;
+  const position = bound && address === drawnAddress ? captureReadingPosition(root!) : null;
+  drawnAddress = address;
   render(<LiveDetailsContext.Provider value={liveDetails}><DashboardBody model={model} /></LiveDetailsContext.Provider>, root!);
   if (!bound) {
     bound = true;
     bindBoardBehaviour({ root: root!, store, redraw: schedule });
   }
   afterRender(root!, selection.agentId);
+  if (position) restoreReadingPosition(root!, position);
   showConnection(root!, state);
   // Page parts with their own scripts (browser push settings) bind to what was drawn.
   document.dispatchEvent(new CustomEvent("conveyor:dashboard-rendered"));
@@ -182,9 +243,16 @@ function ensureDone(): void {
 
 // A change the view made itself (an account added or removed) reads its data again.
 window.addEventListener("conveyor:view-data-stale", () => { viewData.url = null; });
+// An item address can name the tab to open (`/issues/<repository>/<n>/journey`).
+view.tab = itemTabOf(location.pathname);
 store.subscribe(schedule);
 window.addEventListener("conveyor:done-limit", ensureDone);
 window.addEventListener("popstate", schedule);
+// A page that comes back (unlocked phone, restored tab, network again) checks its stream at once.
+const checkStream = () => store.check();
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkStream(); });
+for (const type of ["focus", "online", "pageshow"]) window.addEventListener(type, checkStream);
+setInterval(checkStream, 5_000);
 if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch(() => {});
 void store.start().then(ensureDone).catch(() => {
   root.querySelector("[data-app-skeleton]")?.setAttribute("data-failed", "true");

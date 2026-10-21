@@ -22,6 +22,9 @@ Turn the current source issue into an implementation-ready, independently releas
 
 - Never write a criterion about a release note, changelog entry or changelog fragment. Every user-visible change adds one by repository rule, CI validates it, and the reviewer reads it; a criterion would only make the implementer write a test that breaks when the release consumes the fragment.
 - Write criteria that automated checks, static inspection, or CI can prove before merge. Prefix a criterion `[Manual]` only when it requires a physical device, production login, repository setting, or owner action.
+- Make each acceptance criterion atomic: state one condition and one expected outcome. When a requirement names distinct cases, write one criterion for each case.
+- When proof depends on a real boundary, name that boundary in the criterion so the implementation and review can verify the right behavior.
+- For an ordinary implementation item, target about six one-behavior criteria. When an item needs more than eight criteria, split it unless its behaviors cannot ship separately.
 - Never edit code, tests, configuration, branches, or worktrees. Never merge, close an issue, deploy, change workflow labels, call GitHub directly, or create placeholder plans.
 - Use the scoped Conveyor tools only. Source mutations are scoped to the current parent; never try to redirect a mutation to a child.
 

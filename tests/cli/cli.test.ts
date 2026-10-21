@@ -562,6 +562,17 @@ describe("commands that open the database directly", () => {
 
 describe("conveyor doctor", () => {
   const find = (checks: Awaited<ReturnType<typeof doctorChecks>>, name: string) => checks.find((check) => check.name === name);
+  const runtime = (bwrapAvailable: boolean) => ({
+    execute: async (argv: string[]) => ({ code: 0, output: argv.join(" ") }),
+    findTool: (command: string) => command === "gh" || (command === "bwrap" && !bwrapAvailable) ? null : `/usr/bin/${command}`,
+  });
+
+  async function useClaudeOnlyAgents(home: string): Promise<void> {
+    const config = path.join(home, "config/conveyor.yaml");
+    const agents = parse(await readFile(path.join(EXAMPLES, "agents.yaml"), "utf8")) as Record<string, unknown>;
+    await writeFile(path.join(home, "config/agents.yaml"), stringify({ jamshid: agents.jamshid }));
+    await writeFile(config, (await readFile(config, "utf8")).replace("agents: !include builtin:agents.yaml", "agents: !include agents.yaml"));
+  }
 
   test("a missing home fails with the init fix", async () => {
     const root = await temporary();
@@ -570,6 +581,25 @@ describe("conveyor doctor", () => {
     const report = JSON.parse(result.out) as { ok: boolean; checks: Array<{ name: string; status: string; fix?: string }> };
     expect(report.ok).toBe(false);
     expect(report.checks.find((check) => check.name === "home")).toMatchObject({ status: "fail", fix: `conveyor init --home ${path.join(root, "absent")}` });
+  });
+
+  test("keeps the general bubblewrap check outside configured Codex isolation", async () => {
+    const claudeHome = await initialisedHome();
+    await useClaudeOnlyAgents(claudeHome);
+    const claudeChecks = await doctorChecks(claudeHome, path.join(claudeHome, "config/conveyor.yaml"), async () => false, undefined, undefined, runtime(true));
+
+    expect(find(claudeChecks, "sandbox")).toEqual({ name: "sandbox", status: "ok", detail: "bwrap can create network and PID namespaces" });
+    expect(claudeChecks.some((check) => check.name.startsWith("Codex "))).toBe(false);
+
+    const codexHome = await initialisedHome();
+    const codexChecks = await doctorChecks(codexHome, path.join(codexHome, "config/conveyor.yaml"), async () => false, undefined, undefined, runtime(false));
+
+    expect(find(codexChecks, "sandbox")).toEqual({
+      name: "sandbox",
+      status: "fail",
+      detail: "bwrap is not on PATH",
+      fix: "install bubblewrap (for example: sudo apt install bubblewrap)",
+    });
   });
 
   test("reports artifact and temporary filesystem pressure in its text-ready checks and JSON report", async () => {

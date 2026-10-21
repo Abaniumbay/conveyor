@@ -38,7 +38,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
-import type { DashboardPageSelection, DashboardStreamEvent, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../web/types";
+import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
 import { deliverPushEvents, type PushConfiguration } from "../web/push";
@@ -78,9 +78,8 @@ import { normalizeGitHubEvent } from "../source/github/events";
 import { deliveredIssueChange } from "../source/github/delivery-issue";
 import type { WaitKind } from "../events/topics";
 import { WaitDispatcher } from "./wait-dispatcher";
-import { DashboardFeed } from "./dashboard-feed";
+import { changesDashboard, DashboardFeed } from "./dashboard-feed";
 import { normalizeDashboard } from "../web/model";
-import { dashboardViewsForEvent } from "../web/client";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
 import { ReviewFindings } from "../engine/review-findings";
 import { BOARD_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
@@ -232,14 +231,6 @@ type ScheduledOperatorCheck = {
 const RELATIONSHIP_REUSE_MS = 60 * 60_000;
 /** The same while the repository's webhooks are healthy and report relationship changes. */
 const HEALTHY_RELATIONSHIP_REUSE_MS = 6 * 60 * 60_000;
-/** A reconnecting dashboard replays at most this many missed events; with more it reloads. */
-const REPLAY_LIMIT = 1_000;
-
-/** What the dashboard stream sends for an event: what changed, never its content. */
-function streamEvent(event: StoredEvent): DashboardStreamEvent {
-  return { seq: event.seq, type: event.type, repositoryId: event.repositoryId, issueId: event.issueId, correlationId: event.correlationId };
-}
-
 /** Changes that can make an item runnable; the scheduler runs after them. */
 // Reconciles and stage runs schedule as part of the scheduler's own loop; these are the changes a
 // person's action makes that can let an item run.
@@ -1760,7 +1751,7 @@ export class ConveyorService {
   private subscribeToEvents(): void {
     // Anything the board shows may have changed; the feed rebuilds once the burst settles.
     this.events.subscribe("*", "dashboard feed", (event) => {
-      if (dashboardViewsForEvent(event.type).includes("board")) this.#dashboardFeed.invalidate();
+      if (changesDashboard(event.type)) this.#dashboardFeed.invalidate();
     });
     // A parked exit gate re-evaluates as soon as a person changes what it waits on.
     const wakeParkedGate = (issueId: string | null, stageId: string, gateId: string | null, visit?: { stageEpoch: number; attempt: number }) => {
@@ -5203,7 +5194,7 @@ export class ConveyorService {
     };
   }
 
-  /** Builds the same details view used by a direct issue URL without rendering board cards. */
+  /** One item's card, for an item the live dashboard model does not hold (finished long ago or offboarded). */
   issueDetails(csrfToken: string, issueId: string): IssueCardViewModel | null {
     // This route is deliberately independent from dashboard(). A dialog is normally opened for
     // one card, so rebuilding every board column, rollup, and repository summary here would make
@@ -6195,17 +6186,13 @@ export class ConveyorService {
       dispatch: (name, input, actor) => this.commands.dispatch(name, input, actor),
       recordSession: (change, accountId) => withEventContext({ actor: { kind: "user", id: accountId } }, () =>
         this.store.events().append(change === "signedIn" ? "session.signedIn" : "session.signedOut", { accountId })),
-      getDashboard: (csrfToken, pagination) => this.dashboard(csrfToken, pagination),
-      getIssueDetails: (csrfToken, issueId) => this.issueDetails(csrfToken, issueId),
-      subscribeEvents: (listener) => this.events.subscribe("*", "dashboard stream", (event) => listener(streamEvent(event))),
-      eventsAfter: (seq) => this.eventsAfter(seq),
-      getSystemStatus: () => this.systemStatus(),
+      getIssueDetails: (issueId) => this.issueDetails("", issueId),
       getDashboardSnapshot: () => this.#dashboardFeed.snapshot(),
       subscribeDashboardFeed: (listener, after) => this.#dashboardFeed.subscribe(listener, after),
       getDashboardFeedStatus: () => this.#dashboardFeed.status,
       getRecentActivity: (selection) => this.recentActivityPage(selection),
       getSteeringView: (runId) => this.steeringView(runId),
-      getDashboardDone: (limit) => Object.values(normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION, doneLimit: limit })).items)
+      getDashboardDone: ({ limit, q, repositoryIds }) => Object.values(normalizeDashboard(this.dashboard("", { ...DASHBOARD_SNAPSHOT_SELECTION, doneLimit: limit, q, repositoryIds: [...repositoryIds] })).items)
         .filter((item) => item.placement === "done")
         .sort((left, right) => left.order - right.order),
       isReady: () => this.isReady(),
@@ -6232,21 +6219,6 @@ export class ConveyorService {
       getAgentProfile: async (agentId) =>
         (await buildAgentProfiles(this.config)).find((profile) => profile.id === agentId) ?? null,
     };
-  }
-
-  /**
-   * The events after `seq` for a reconnecting dashboard, or null when some of them are gone
-   * (pruned, from another database, or too many to replay) and the page must reload instead.
-   */
-  eventsAfter(seq: number): DashboardStreamEvent[] | null {
-    const log = this.store.events();
-    const latest = log.latestSeq();
-    if (seq > latest) return null;
-    if (seq === latest) return [];
-    const oldest = log.oldestSeq();
-    if (oldest === null || seq < oldest - 1) return null;
-    const missed = log.read({ afterSeq: seq, limit: REPLAY_LIMIT + 1 });
-    return missed.length > REPLAY_LIMIT ? null : missed.map(streamEvent);
   }
 
   seedDashboardSuperuser(username: string, passwordHash: string): void {

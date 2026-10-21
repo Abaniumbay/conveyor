@@ -293,6 +293,18 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(instructions).toContain("which cases or outcomes must be separated into individual criteria");
   });
 
+  test("the packaged refinement instructions require atomic, right-sized criteria", async () => {
+    const paths = await home({ "conveyor.yaml": DEFAULTS });
+    const config = await loadConfig(paths.entrypoint, null, { home: paths.home });
+    const instructions = await readFile(config.agents.darya!.instructions, "utf8");
+
+    expect(instructions).toContain("state one condition and one expected outcome");
+    expect(instructions).toContain("distinct cases, write one criterion for each case");
+    expect(instructions).toContain("proof depends on a real boundary, name that boundary");
+    expect(instructions).toContain("target about six one-behavior criteria");
+    expect(instructions).toContain("more than eight criteria, split it unless its behaviors cannot ship separately");
+  });
+
   test("a configuration directory still loads, with a deprecation warning", async () => {
     const paths = await home({ "a.yaml": "web: {}\n", "b.yaml": `settings: { runners: 3 }\nlabels: ${LABELS}\n` });
     const config = await loadConfig(paths.config, null);

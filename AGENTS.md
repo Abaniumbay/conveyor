@@ -15,8 +15,8 @@ Background reading, only when the task needs it:
 Conveyor is a TypeScript service on **Bun 1.4** that moves GitHub issues through a configured
 pipeline of stages (refinement, implementation, review, merge, …). Agents do the work; each stage
 ends in a deterministic **exit gate** written in code. State lives in **SQLite** (`bun:sqlite`).
-A **Preact** dashboard is rendered on the server. The CLI talks to the running service over a Unix
-socket.
+The **Preact** dashboard is an application that runs in the browser, fed by a live model the server
+keeps and streams as patches. The CLI talks to the running service over a Unix socket.
 
 This repository is **public**. Never write a real hostname, domain, IP address, login, repository
 address other than `Abaniumbay/conveyor`, machine path or secret into code, tests, examples, docs,
@@ -55,7 +55,7 @@ Run these from the repository root.
 | `src/source/`, `src/codehost/` | GitHub issue adapter, managed body sections, pull requests and reviews. |
 | `src/harness/`, `src/runner/` | Agent harnesses (Codex, Claude Code) and process runners. |
 | `src/isolation/` | Sanitized agent environment, network sandbox, egress proxies. |
-| `src/web/` | `server.ts` (HTTP routes, SSE), `render.tsx` (Preact markup), `types.ts` (view models), `client.ts` (browser script), `styles.ts` (CSS). |
+| `src/web/` | `server.ts` (HTTP routes, SSE), `model.ts` (the live dashboard model and its patches), `render.tsx` (Preact markup), `types.ts` (view models), `styles.ts` (CSS), `app/` (the browser application: `main.tsx`, `store.ts`, `derive.ts`, `behaviour.ts`). |
 | `src/cli/` | `main.ts` (command table) and `commands/*.ts`. |
 | `src/log/` | Structured logging (`log` from `src/log/logger.ts`). |
 | `tests/` | Mirrors `src/`: the test for `src/x/y.ts` is `tests/x/y.test.ts`. |
@@ -63,9 +63,9 @@ Run these from the repository root.
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
 | `docs/` | User and operator documentation. `tasks.md`, `cli.md` and `events.md` are generated; never edit them by hand. |
 
-Some files are very large: `src/app/service.ts` (~3,600 lines), `src/db/store.ts` (~2,200),
-`src/web/client.ts` (~2,000), `src/web/render.tsx` and `src/web/server.ts` (~1,250 each). Never
-read them whole. Find the symbol you need (code index or `rg -n "methodName" src`) and read a
+Some files are very large: `src/app/service.ts` (~6,000 lines), `src/db/store.ts` (~3,100),
+`src/web/render.tsx` (~1,800), `src/web/server.ts` (~1,500) and `src/web/app/behaviour.ts`
+(~1,000). Never read them whole. Find the symbol you need (code index or `rg -n "methodName" src`) and read a
 narrow range around it.
 
 ## 4. Rules that protect correctness
@@ -186,14 +186,17 @@ a service mutation directly.
 
 ### Dashboard
 
-1. Data for the page is built in `src/app/service.ts` into the view models in `src/web/types.ts`.
-   `src/web/render.tsx` only renders; keep logic out of it.
+1. Data is built in `src/app/service.ts` into the view models in `src/web/types.ts`, then
+   normalized into the live model (`src/web/model.ts`) that the browser receives as a snapshot and
+   patches. Data a view loads on its own comes from a JSON endpoint. `src/web/render.tsx` only
+   renders; keep logic out of it.
 2. Routes and JSON endpoints live in `src/web/server.ts`. A route that changes state requires a
    signed-in session and the CSRF token, and sends a command (see above); a superuser-only action
    checks the role on the server, not only by hiding a button.
-3. `src/web/client.ts` exports browser code inside a `String.raw` template (`dashboardClient`).
-   Functions spliced in with `.toString()` must be self-contained: no imports, no references to
-   module-level names. Inside the template, a backtick or `${` must be escaped.
+3. The browser application is `src/web/app/`: `store.ts` holds the live model, `derive.ts` builds
+   the view model for the address, `main.tsx` draws it with the components from `render.tsx`, and
+   `behaviour.ts` handles clicks, forms and what a redraw re-applies. It is bundled by Bun, so it
+   may import other modules, but nothing that needs Bun or Node at run time.
 4. Styles are in `src/web/styles.ts`. Use the existing CSS variables (`--ink`, `--panel`, `--run`,
    `--stop`, `--text-sm`, …) for colour and size; never hard-code a colour. Both light and dark
    themes must work.
@@ -225,8 +228,8 @@ a service mutation directly.
   (hand-written SQL, a re-implemented algorithm).
 - When an acceptance criterion lists several cases, write one assertion per case.
 - A bug fix comes with a test that fails without the fix.
-- Browser tests (Playwright, `tests/web/refresh-position.test.ts`) are only for behaviour that needs
-  a real browser: layout, scrolling, live refresh. Everything else is a plain unit test of
+- Browser tests (Playwright, `tests/web/refresh-position.test.ts` and `tests/web/app/main.test.ts`)
+  are only for behaviour that needs a real browser: layout, scrolling, live refresh. Everything else is a plain unit test of
   `render.tsx` output or `server.ts` responses.
 - Never weaken, skip or delete a failing test to get a green run.
 
