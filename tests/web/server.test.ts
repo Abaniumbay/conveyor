@@ -1153,6 +1153,23 @@ describe("createWebHandler", () => {
     expect((await post({ cookie, "x-csrf-token": csrf, "content-type": "text/plain" }, "{}")).status).toBe(415);
     expect((await handler(new Request(url, { headers: { cookie } }))).status).toBe(405);
     expect(reclassified).toEqual([]);
+    const reader = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1 };
+    const hash = hashPassword("correct horse", { salt: "0123456789abcdef" });
+    const readerAuth = createWebAuth({
+      passwordHash: hash,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: () => reader,
+      accountByUsername: (username) => username === reader.username ? { ...reader, passwordHash: hash } : null,
+    });
+    const nonSuperuser = setup({ auth: readerAuth, reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; } });
+    const readerSession = readerAuth.createSession(reader)!;
+    const refused = await nonSuperuser.handler(new Request(url, {
+      method: "POST",
+      headers: { ...json, cookie: readerSession.cookie.split(";")[0]!, "x-csrf-token": readerSession.csrfToken },
+      body: JSON.stringify({ type: "bug" }),
+    }));
+    expect(refused.status).toBe(403);
+    expect(reclassified).toEqual([]);
     const ok = await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ type: "security" }));
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ ok: true, changed: true, correlationId: expect.any(String) });
