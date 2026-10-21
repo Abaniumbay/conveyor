@@ -10,6 +10,34 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.14.0] - 2026-10-21
+
+A stage can now wait for a superuser's approval before it starts, for example before merge. Linked criterion tests are checked before waiting for CI, framework-qualified test names are accepted, a blocked parent can be retried to finish creating its children, and CI jobs GitHub refuses to start no longer send work back. Needs you shows a short reason instead of whole CI logs, and agent sandboxes can no longer reach host sockets such as Docker's.
+
+### Added
+
+- Native pipeline stages can now set `approval: manual` to wait for a superuser before their actions begin. Entry approvals appear in the stage’s Board column, retain a visit-scoped approval receipt across service restarts, and leave existing exit-gate and board approvals unchanged.
+
+### Changed
+
+- The packaged delivery flow now verifies linked criterion tests before waiting for CI and returns missing or stale evidence to implementation; it rechecks that evidence before review. Packaged implementer and reviewer guidance now records test links and criterion approvals incrementally.
+
+- Breakdown-plan reviews now reject acceptance criteria that combine distinct cases or expected outcomes, and identify the criteria that need to be separated.
+
+- Check now compares total pull-request line coverage with the latest available main report and fails only when it drops by more than 0.1 percentage points. It continues to report untested current source ranges first and keeps the changed-line rule in force until a main baseline exists.
+
+### Fixed
+
+- Egress-sandboxed agent commands now deny host path-based Unix sockets by default, including Docker. Only the run's explicitly forwarded proxy and MCP sockets remain available through the sandbox bridge.
+
+- Criterion test evidence now accepts framework-qualified test names when the relevant test and class identifiers appear in the linked source file, and reports the missing source text when verification fails.
+
+- Required CI now treats GitHub Actions jobs that never started as temporary infrastructure waits, showing GitHub's reason when available instead of returning the item to implementation.
+
+- Blocked roll-up parents can retry an interrupted child-creation stage, allowing them to create remaining approved children; parents already waiting for children keep their resume-waiting recovery action.
+
+- **Needs you** and `conveyor status` show only the first paragraph of a stopped item's reason, at most a few lines. A repeated CI failure no longer fills a phone screen with two log excerpts. The item's own view and `conveyor item show` still show the reason in full.
+
 ## [0.13.0] - 2026-10-20
 
 The dashboard is now an application that runs in the browser. It loads the board once and follows live changes as small patches, so an open dashboard no longer reloads pages or polls the server, and moving between views is instant. This release also adds a draining notice, a doctor check for Codex isolation support, a coverage gate for pull requests, and fixes for criterion approvals, stage headers and service commands.
