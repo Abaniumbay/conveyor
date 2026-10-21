@@ -1423,8 +1423,15 @@ export class ConveyorService {
       // item never starts a new run after becoming a roll-up parent.
       if (
         this.store.listChildren(issue.id).length > 0 &&
-        !this.hasResumableQuestionExecution(issue.id)
+        !this.hasResumableQuestionExecution(issue.id) &&
+        !this.childCreationRetryQueued(issue, candidate.stageId)
       ) continue;
+      // The retry marker is only an admission permit. Restore the executor's
+      // ordinary ready state immediately before it claims the stage.
+      const stage = this.store.getStageState(issue.id);
+      if (stage?.status === "retry-ready" && stage.stageId === candidate.stageId) {
+        this.store.setStageState({ ...stage, status: "ready" });
+      }
       this.#active.set(issue.id, {
         repositoryId: issue.repositoryId,
         stageId: candidate.stageId,
@@ -1482,7 +1489,7 @@ export class ConveyorService {
         siblingOrder: null,
         eligible:
           issue.projectedState === "active" &&
-          state.status === "ready" &&
+          (state.status === "ready" || state.status === "retry-ready") &&
           !this.#active.has(issue.id) &&
           this.wakeupReached(issue.id) &&
           this.store.repositoryPause(issue.repositoryId) === null &&
@@ -1491,7 +1498,9 @@ export class ConveyorService {
           !this.#repositoryErrors.has(issue.repositoryId),
         dependenciesSatisfied,
         rollupOnly:
-          children(issue.id).length > 0 && !this.hasResumableQuestionExecution(issue.id),
+          children(issue.id).length > 0 &&
+          !this.hasResumableQuestionExecution(issue.id) &&
+          !this.childCreationRetryQueued(issue, state.stageId),
         lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
       }];
     });
@@ -2893,6 +2902,10 @@ export class ConveyorService {
       // A live parent run owns its outcome, including any question it asks.
       // Child roll-up must not fence that run or replace its source state.
       if (runningIssueIds.has(parent.id)) continue;
+      // A retried child-creation stage may be queued behind available capacity.
+      // Keep its stage intact until it can run; otherwise roll-up would replace
+      // it with a child's frontier before it creates the remaining children.
+      if (this.childCreationStageIsReady(parent)) continue;
       // A parked question has already finished its producer run, but its cursor
       // still belongs to that run and must survive until its answer resumes it.
       if (this.hasResumableQuestionExecution(parent.id)) continue;
@@ -5769,13 +5782,41 @@ export class ConveyorService {
     return this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId);
   }
 
+  /** Whether this stage's agent is allowed to create children. */
+  private stageCreatesChildren(repositoryId: string, stageId: string | null): boolean {
+    if (!stageId) return false;
+    const repository = this.config.repositories[repositoryId];
+    const stage = repository && this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === stageId);
+    if (!stage) return false;
+    const agentIds = isNativeStage(stage)
+      ? stage.actions.flatMap((task) => task.task !== "agent.run" ? [] : [
+        ...(typeof task.with?.agent === "string" ? [task.with.agent] : []),
+        ...(Array.isArray(task.with?.agents) ? task.with.agents.filter((agent): agent is string => typeof agent === "string") : []),
+      ])
+      : "run" in stage && stage.run?.type === "agent" ? [stage.run.agent] : [];
+    return agentIds.some((agentId) => this.config.agents[agentId]?.tasks.some((task) =>
+      task === "item.createChild" || task === "breakdown.createChildren",
+    ));
+  }
+
+  private childCreationStageIsReady(issue: StoredIssue): boolean {
+    return issue.projectedState === "active" &&
+      this.childCreationRetryQueued(issue, issue.projectedStage);
+  }
+
+  /** Only an explicit retry may schedule a parent that already has children. */
+  private childCreationRetryQueued(issue: StoredIssue, stageId: string | null): boolean {
+    return this.stageCreatesChildren(issue.repositoryId, stageId) &&
+      this.store.getStageState(issue.id)?.status === "retry-ready";
+  }
+
   private retryableStoppedIssue(issue: StoredIssue, children: number, running: boolean): boolean {
     return (issue.sourceState === "open" ||
       (issue.sourceState === "closed" && this.store.hasMergedPullRequest(issue.id))) &&
       issue.labels.includes(this.config.labels.enrollment) &&
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
-      !running && children === 0;
+      !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
   }
 
   private resumableRollupIssue(issue: StoredIssue, children: number, running: boolean, hasOpenQuestion: boolean): boolean {
@@ -5783,7 +5824,7 @@ export class ConveyorService {
       issue.labels.includes(this.config.labels.enrollment) &&
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
-      !running && children > 0 && !hasOpenQuestion;
+      !running && children > 0 && !this.stageCreatesChildren(issue.repositoryId, issue.projectedStage) && !hasOpenQuestion;
   }
 
   /** Whether the stored state permits a stage retry before the command verifies the source snapshot. */
@@ -5978,6 +6019,14 @@ export class ConveyorService {
         });
       }
       await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
+      // A roll-up parent normally follows its children rather than running again.
+      // Preserve the exception durably until this explicit retry claims the stage.
+      if (this.store.listChildren(issueId).length > 0 && this.stageCreatesChildren(issue.repositoryId, stageId)) {
+        const stage = this.store.getStageState(issueId);
+        if (stage?.stageId === stageId) {
+          this.store.setStageState({ ...stage, status: "retry-ready", configHash: this.config.hash });
+        }
+      }
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "retry" }, { issueId });
