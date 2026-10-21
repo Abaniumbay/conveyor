@@ -3,8 +3,13 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type net from "node:net";
 
+import { startTcpRelay } from "./tcp-relay";
+
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
 import { privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type SandboxedCommand } from "./sandbox";
+
+/** A sandbox loopback port and the host source it reaches: a Unix socket or a loopback TCP listener. */
+export type LocalServiceForward = { port: number; socket: string } | { port: number; tcp: { host: string; port: number } };
 
 export interface AgentNetworkPolicy {
   /** Hosts commands run by the agent may reach on 443 (the repository's `agentEgress.httpsHosts`). */
@@ -14,7 +19,7 @@ export interface AgentNetworkPolicy {
   /** The service's MCP endpoint, present when `agentEgress.allowLoopbackMcp` is true. */
   mcp?: { port: number; socket: string };
   /** Repository-declared host Unix services, each exposed only at its fixed sandbox loopback port. */
-  localServices?: readonly { port: number; socket: string }[];
+  localServices?: readonly LocalServiceForward[];
   /** Connection details for those services, passed to commands but never to the host environment. */
   localServiceEnvironment?: Readonly<Record<string, string>>;
   /** Test seams: DNS resolution and upstream dialing. */
@@ -48,7 +53,17 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
   const token = randomBytes(32).toString("base64url");
   const seams = { ...(policy.resolve ? { resolve: policy.resolve } : {}), ...(policy.dial ? { dial: policy.dial } : {}) };
   const proxies: EgressProxy[] = [];
+  const localServices: { port: number; socket: string }[] = [];
   try {
+    for (const service of policy.localServices ?? []) {
+      if ("socket" in service) {
+        localServices.push(service);
+        continue;
+      }
+      const relay = await startTcpRelay({ socketPath: path.join(directory, `service-${service.port}.sock`), ...service.tcp });
+      proxies.push(relay);
+      localServices.push({ port: service.port, socket: relay.socketPath });
+    }
     proxies.push(await startEgressProxy({ socketPath: dataSocket, allowedHosts: policy.httpsHosts, ...seams }));
     proxies.push(await startEgressProxy({ socketPath: controlSocket, allowedHosts: policy.controlPlaneHosts, token, ...seams }));
   } catch (error) {
@@ -59,7 +74,7 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
   return {
     wrap(env, build) {
       const commandEnvironment = { ...env, ...policy.localServiceEnvironment };
-      const forwards = policy.localServices ? { localServices: policy.localServices } : {};
+      const forwards = localServices.length > 0 ? { localServices } : {};
       const probe = sandboxCommand({ argv: [], env: commandEnvironment, dataProxySocket: dataSocket, ...(policy.mcp ? { mcp: policy.mcp } : {}), ...forwards });
       return sandboxCommand({
         argv: build(probe.dataEnv),
