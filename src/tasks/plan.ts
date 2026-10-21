@@ -239,12 +239,12 @@ function compileTask(
     errors.push(`${path}: unknown task "${entry.config.task}"`);
     return undefined;
   }
-  const expected: TaskKind = list === "actions" ? "act" : "check";
-  if (definition.kind !== expected) {
+  const allowed = list === "actions" ? definition.kind === "act" || definition.kind === "check" : definition.kind === "check";
+  if (!allowed) {
     const why =
       definition.kind === "tool" || definition.kind === "load"
         ? `a ${definition.kind} task is never listed in a stage`
-        : `${list} accept only ${expected} tasks`;
+        : list === "actions" ? "actions accept only act or check tasks" : "exit-gate accept only check tasks";
     errors.push(`${path}: task "${definition.name}" is a ${definition.kind}; ${why}`);
     return undefined;
   }

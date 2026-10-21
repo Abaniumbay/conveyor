@@ -7,8 +7,8 @@ A stage is a chain of tasks. Every stage has two lists: `actions` (do the stage'
 ## Kinds
 
 - **load**: the sole writer of one provider snapshot (`item`, `workspace`, `change`, `ci`). Safe to re-run. Loads are implicit and never appear in stage lists.
-- **check**: a pure function of the context it declares in `reads`. It performs no I/O and writes nothing. Only checks appear in an `exit-gate`.
-- **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it `invalidates` and is safe to resume after a crash. Only acts appear in `actions`.
+- **check**: deterministic validation over the context it declares in `reads`. It writes no context snapshots. Normally it performs no I/O; a check declaring `refreshesProjection: true` may idempotently refresh derived display evidence after verification. Only checks appear in an `exit-gate`; an `actions` list may also run a check before a later action.
+- **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it `invalidates` and is safe to resume after a crash. Acts appear in `actions`.
 - **tool**: callable only through an agent's MCP grant. Never listed in a stage.
 
 ## Advisory CI
@@ -106,7 +106,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `change.comment` | tool | - | invalidates change | Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). headSha must be the current head. |
 | `change.criteriaChecked` | check | item, change | - | Passes when every non-manual criterion is approved for the current change head; manual criteria are excluded. |
 | `change.criteriaInSync` | check | item, change | - | Passes when the pull request checklist lists exactly the item's criteria ids. |
-| `change.criterionTestsVerified` | act | item, change | invalidates change | Before review, requires test evidence for every non-manual criterion and verifies each linked test name exists in its file at the current change head. It refreshes stored display lines and source-link heads only when all links verify. |
+| `change.criterionTestsVerified` | check | item, change | - | At implementation exit and before review, requires test evidence for every non-manual criterion and verifies each linked test name exists in its file at the current change head. It refreshes stored display lines and source-link heads only when all links verify. |
 | `change.dismissFinding` | tool | - | invalidates change | Dismiss an open finding with a reason. Operator only: never grantable to an agent; called by the authenticated web route. |
 | `change.ensure` | act | repository | invalidates change, workspace | Pushes the workspace branch and opens the change request for it, reusing an existing one. A rejected push fails and retries the stage. |
 | `change.findingsResolved` | check | change | - | Passes when no review finding is open (resolved, dismissed and withdrawn findings do not block); the message lists the open ones with their URLs. The review gate passing at this head records the `reviewPassed` checkpoint. |

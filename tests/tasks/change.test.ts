@@ -521,6 +521,9 @@ describe("change tools", () => {
   });
 
   test("criterionTestsVerified fails unlinked, stale, and renamed evidence without naming a stage and refreshes a moved line", async () => {
+    expect(registry.require("change.criterionTestsVerified")).toMatchObject({
+      kind: "check", writes: [], invalidates: [],
+    });
     const item = { criteria: [{ id: "a", text: "It works", manual: false }, { id: "m", text: "[Manual] Looks right", manual: true }] };
     const unlinked = await world({ body: PR_BODY }, true, BODY);
     const missing = await run("change.criterionTestsVerified", { context: ctx({ item: item as never }), deps: unlinked.deps }) as Fail;

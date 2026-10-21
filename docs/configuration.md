@@ -474,7 +474,7 @@ agents:
         gitExclude: [.serena/]         # files it writes in the worktree; never committed
     tasks: [item.get, item.guidance, workspace.get, change.get, ci.getLogs, conversation.get,
             agent.reportProgress, agent.askQuestion, workspace.fetch, workspace.push,
-            change.listFindings, change.comment, change.resolveFinding]
+            change.listFindings, change.comment, change.resolveFinding, change.recordCriterionTests]
   reviewer:
     name: Reviewer
     title: Senior Reviewer
@@ -525,12 +525,14 @@ pipelines:
         exit-gate:
           - { id: pushed, task: workspace.pushed }
           - { id: criteriaSynced, task: change.criteriaInSync }
+          - { id: criterionTests, task: change.criterionTestsVerified }
           - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
           - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
       - id: review
         concurrency: 1
         actions:
           - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
+          - { id: criterionTests, task: change.criterionTestsVerified, onFail: { return: implementation } }
           - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
@@ -571,6 +573,8 @@ repositories:
           actions:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
+
+The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
 
 ### Repository in-progress limit
 
