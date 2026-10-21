@@ -29,13 +29,25 @@ const NO_CHANGE = "No change request exists yet";
 type JunitCase = { name: string; suite: string | null; outcome: "passed" | "skipped" | "failed" | "errored" };
 const JUNIT_SIMILAR_LIMIT = 5;
 
+function decodeXml(value: string): string {
+  return value.replace(/&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (entity, body: string) => {
+    if (body === "amp") return "&";
+    if (body === "lt") return "<";
+    if (body === "gt") return ">";
+    if (body === "quot") return '"';
+    if (body === "apos") return "'";
+    const code = body[1] === "x" ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+    return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
 function junitCases(xml: string, path: string): JunitCase[] | { error: string } {
   if (!/<(?:testsuites?|testcase)\b/.test(xml)) return { error: `report ${path} is not JUnit XML` };
   const cases: JunitCase[] = [];
   const matcher = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
   for (const match of xml.matchAll(matcher)) {
     const attrs = new Map<string, string>();
-    for (const attr of match[1]!.matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) attrs.set(attr[1]!, attr[3]!);
+    for (const attr of match[1]!.matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) attrs.set(attr[1]!, decodeXml(attr[3]!));
     const name = attrs.get("name");
     if (!name) return { error: `report ${path} has a testcase without a name` };
     const body = match[2] ?? "";
@@ -353,7 +365,7 @@ export const criterionTestsPassed: TaskDefinition<unknown, unknown, Deps> = {
       for (const link of links) {
         const matches = matchJunitCase(link.name, cases);
         if (matches.length === 0) { gaps.push(`${criterion.id}: linked test "${link.name}" did not match a JUnit case.${similarJunitCases(link.name, cases)}`); continue; }
-        if (!link.name.includes("#") && matches.length > 1) { gaps.push(`${criterion.id}: linked test "${link.name}" is ambiguous; it matches ${matches.length} JUnit cases. Use suite#test.${similarJunitCases(link.name, matches)}`); continue; }
+        if (matches.length > 1) { gaps.push(`${criterion.id}: linked test "${link.name}" is ambiguous; it matches ${matches.length} JUnit cases.${link.name.includes("#") ? " Rename the duplicate tests." : " Use suite#test."}${similarJunitCases(link.name, matches)}`); continue; }
         const outcome = matches[0]!.outcome;
         if (outcome !== "passed") gaps.push(`${criterion.id}: linked test "${link.name}" ${outcome === "errored" ? "errored" : `was ${outcome}`} in JUnit`);
       }

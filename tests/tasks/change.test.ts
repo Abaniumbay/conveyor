@@ -339,6 +339,25 @@ describe("change checks", () => {
     expect(result.message).not.toContain("manual:");
   });
 
+  test("criterionTestsPassed decodes XML entities in names and flags duplicate qualified cases as ambiguous", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "**/*.xml" } } } } } as never;
+    w.deps.ci = { provider: () => ({
+      reports: async () => [{ runId: "run", artifactId: "artifact", path: "result.xml", content: `<testsuite><testcase classname="check-config" name="shows each repository&apos;s &quot;q&quot; &lt;x&gt; &amp; y"/><testcase classname="dup" name="twice"/><testcase classname="dup" name="twice"><failure/></testcase></testsuite>` }],
+    }) as never };
+    const at = "2026-10-21T00:00:00.000Z";
+    w.store.replaceCriterionTestEvidence("i1", [
+      { criterionId: "entity", manual: false, tests: [{ name: `shows each repository's "q" <x> & y`, file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: at },
+      { criterionId: "dup", manual: false, tests: [{ name: "dup#twice", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: at },
+    ]);
+    const result = await run("change.criterionTestsPassed", { context: ctx({
+      item: { criteria: ["entity", "dup"].map((id) => ({ id, text: id, manual: false })) } as never,
+      ci: { headSha: "head1", awaitingStart: [], runs: [{ id: "1", name: "Tests", state: "passed", url: null, rerunnable: false, hasLog: false, log: null }] } as never,
+    }), deps: w.deps }) as Fail;
+    expect(result.message).not.toContain("entity:");
+    expect(result.message).toContain('dup: linked test "dup#twice" is ambiguous');
+  });
+
   test("criterionTestsPassed is pending for current CI and falls back when JUnit is not configured", async () => {
     const w = await world();
     w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "report.xml" } } } } } as never;
