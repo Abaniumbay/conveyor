@@ -119,13 +119,17 @@ describe("reference configuration", () => {
     };
     expect(config.repositories.service!.ci.mode).toBe("required");
     expect(config.repositories.service!.ci.provider).toBe("actions");
+    expect(config.repositories.service!.ci.junit).toEqual({ artifact: "junit-test-results", path: "**/junit.xml" });
     const { actions, gate, reviewActions, review } = gates("service");
     expect(actions).toEqual(["workspace", "implement", "ensureChange", "startCi"]);
     expect(actions).toContain("startCi");
-    expect(gate).toEqual(["pushed", "criteriaSynced", "criterionTests", "ciDefined", "ciGate"]);
+    expect(gate).toEqual(["pushed", "criteriaSynced", "criterionTests", "ciDefined", "ciGate", "criterionTestReports"]);
     const implementation = config.plans[0]!.stages.find((stage) => stage.id === "implementation")!;
     expect(implementation.exitGate.find((task) => task.id === "criterionTests")).toMatchObject({
       task: "change.criterionTestsVerified", kind: "check", onFail: null,
+    });
+    expect(implementation.exitGate.find((task) => task.id === "criterionTestReports")).toMatchObject({
+      task: "change.criterionTestsPassed", kind: "check", onFail: null,
     });
     expect(reviewActions).toEqual(["ciSettled", "criterionTests", "review"]);
     expect(review).toContain("ciHead");

@@ -115,8 +115,8 @@ describe("config compare", () => {
     bases.push(base);
     const child = Bun.spawn(["bun", CLI, "check-config", "--config", LEGACY, "--compare", directory], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    // Both sides are deprecated configuration directories: one warning each, nothing else.
-    expect(stderr.trim().split("\n").every((line) => line.startsWith("warning: loading a configuration directory is deprecated"))).toBe(true);
+    // Both sides are deprecated configuration directories: one warning each, plus the missing-report fallback warning.
+    expect(stderr.trim().split("\n").every((line) => line.startsWith("warning: loading a configuration directory is deprecated") || line.includes(".ci.junit is not configured"))).toBe(true);
     expect(code).toBe(0);
     expect(stdout).toContain("Configuration is valid");
     expect(stdout).toContain("Repository service");

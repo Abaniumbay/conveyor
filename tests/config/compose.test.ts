@@ -59,7 +59,9 @@ describe("single entrypoint", () => {
     });
     const config = await loadConfig(paths.entrypoint, undefined, { home: paths.home });
     expect(config.mode).toBe("entrypoint");
-    expect(config.warnings).toEqual([]);
+    expect(config.warnings).toEqual([
+      "repositories.meal-planner.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI",
+    ]);
     expect(config.settings.database).toBe(path.join(paths.home, "state/conveyor.sqlite"));
     expect(config.settings.logs).toBe(path.join(paths.home, "logs"));
     expect(config.settings.workspaces).toBe(path.join(paths.home, "worktrees"));
@@ -279,6 +281,7 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(instructions).toContain("immediately record its exact test name");
     expect(instructions).toContain("implement until the test passes, commit the change, and mark the todo done");
     expect(instructions).toContain("every non-manual acceptance criterion has a linked test at the head you will push");
+    expect(instructions).toContain("record test names exactly as their JUnit report emits them");
     expect(instructions).not.toContain("when `change.get` shows a change, before finishing use `change.recordCriterionTests`");
   });
 

@@ -274,6 +274,7 @@ describe("repository ci and overrides", () => {
   test("absent ci is source-native and required", async () => {
     const { config } = await load(pipeline + repository());
     expect(config.repositories.sample!.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
+    expect(config.warnings?.some((warning) => warning.includes("repositories.sample.ci.junit is not configured"))).toBe(true);
   });
 
   test("legacy string names the provider", async () => {
@@ -292,6 +293,13 @@ ci:
   actions: { type: github-actions }
 ` + pipeline + repository("    ci: { provider: actions, mode: disabled }\n"));
     expect(named.config.repositories.sample!.ci).toEqual({ provider: "actions", mode: "disabled", ignoreChecks: [] });
+  });
+
+  test("accepts a JUnit artifact locator and rejects unsafe locator values", async () => {
+    const { config } = await load(pipeline + repository("    ci: { mode: required, junit: { artifact: test-results, path: reports/**/*.xml } }\n"));
+    expect(config.repositories.sample!.ci.junit).toEqual({ artifact: "test-results", path: "reports/**/*.xml" });
+    await expect(load(pipeline + repository("    ci: { mode: required, junit: { artifact: '', path: /reports.xml } }\n"))).rejects.toThrow(/artifact|path/);
+    await expect(load(pipeline + repository("    ci: { mode: required, junit: { artifact: test-results, path: ../reports.xml } }\n"))).rejects.toThrow(/relative path pattern/);
   });
 
   test("rejects an unknown mode and an unknown provider", async () => {

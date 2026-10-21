@@ -40,7 +40,7 @@ delivery:
         - { id: completedBreakdown, task: breakdown.complete, onFail: { return: refinement } }
 
     - id: implementation
-      description: "Writes the change on its own branch, opens a pull request, and waits for CI to pass."
+      description: "Writes the change on its own branch, opens a pull request, and verifies its linked tests passed in CI."
       icon: "🛠️"
       concurrency: 2
       retries: 3
@@ -63,6 +63,9 @@ delivery:
           task: ci.passed
           when: ci.required
           wait: { timeout: 3h, poll: 1m }
+        - id: criterionTestReports
+          task: change.criterionTestsPassed
+          when: ci.required
 
     - &review
       id: review

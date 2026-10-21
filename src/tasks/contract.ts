@@ -105,6 +105,8 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   repairedByActions?: boolean;
   /** Checks only: permits an idempotent refresh of a derived external projection after verification. */
   refreshesProjection?: true;
+  /** Checks only: permits reading an authoritative external source without making writes. */
+  observesExternal?: true;
   /** Tools only: whether the tool changes external state. */
   mutating?: boolean;
   /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */
@@ -141,6 +143,9 @@ export function defineGroup(group: string, definitions: TaskDefinition<any, any,
     }
     if (def.refreshesProjection && def.kind !== "check") {
       throw new Error(`${where}: only a check may refresh a projection`);
+    }
+    if (def.observesExternal && def.kind !== "check") {
+      throw new Error(`${where}: only a check may observe external state`);
     }
     if (def.kind === "act") {
       const bad = def.writes.filter((key) => !isCapturedKey(key));
@@ -256,9 +261,9 @@ export async function runTask<C, I, D>(
     ...(input === undefined ? {} : { input }),
     context,
     config,
-    // Pure checks have no task dependencies. A projection-refreshing check receives them only
-    // to reconcile its derived display after it has deterministically verified the evidence.
-    deps: (isCheck && !definition.refreshesProjection ? undefined : args.deps) as D,
+    // Pure checks have no task dependencies. The two explicit exceptions make no task-context
+    // writes: one refreshes a derived projection and the other observes an external authority.
+    deps: (isCheck && !definition.refreshesProjection && !definition.observesExternal ? undefined : args.deps) as D,
     instance: args.instance,
   });
   return validateResult(definition.name, result);

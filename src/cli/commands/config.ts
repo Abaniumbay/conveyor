@@ -18,7 +18,20 @@ export async function checkConfig(configPath: string, registry?: TaskRegistry, h
 }
 
 function checkReport(config: ConveyorConfig): string {
-  return [`Configuration is valid (${config.hash})`, ...config.plans.map(renderPlan)].join("\n\n");
+  const warnings = (config.warnings ?? []).map((warning) => `Warning: ${warning}`);
+  const junit = Object.entries(config.repositories)
+    .map(([id, repository]) => {
+      const locator = repository.ci.junit;
+      return locator
+        ? `  ${id}: artifact "${locator.artifact}", path "${locator.path}"`
+        : `  ${id}: not configured (source-link fallback)`;
+    });
+  return [
+    `Configuration is valid (${config.hash})`,
+    ...(junit.length === 0 ? [] : [`JUnit report locators:\n${junit.join("\n")}`]),
+    ...warnings,
+    ...config.plans.map(renderPlan),
+  ].join("\n\n");
 }
 
 export const configCheck: Command = {

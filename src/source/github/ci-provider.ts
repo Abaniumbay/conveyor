@@ -1,7 +1,8 @@
 import { parse as parseYaml } from "yaml";
+import { inflateRawSync } from "node:zlib";
 
 import { FOCUSED_LOG_BREAK } from "../../app/ci-gate";
-import type { CiChange, CiDefinition, CiProvider, CiRun } from "../../app/ci-provider";
+import type { CiChange, CiDefinition, CiProvider, CiRun, CiTestReport, CiTestReportLocator } from "../../app/ci-provider";
 import type { GitHubActionsJob, GitHubAdapter, GitHubCheckRun } from "./adapter";
 
 export interface GitHubActionsTrigger {
@@ -90,6 +91,42 @@ export function focusGitHubActionsLog(text: string, lines: number): string {
 
 const CHANGE_EVENTS = ["pull_request", "pull_request_target", "push"];
 
+function u16(bytes: Uint8Array, offset: number): number { return bytes[offset]! | (bytes[offset + 1]! << 8); }
+function u32(bytes: Uint8Array, offset: number): number { return (bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16) | (bytes[offset + 3]! << 24)) >>> 0; }
+
+/** Extracts matching regular ZIP entries. Actions artifacts are ZIP files. */
+function zipEntries(bytes: Uint8Array, pattern: string): Array<{ path: string; content: string }> {
+  let eocd = -1;
+  for (let at = bytes.length - 22; at >= Math.max(0, bytes.length - 65_557); at -= 1) {
+    if (u32(bytes, at) === 0x06054b50) { eocd = at; break; }
+  }
+  if (eocd < 0) throw new Error("artifact is not a ZIP archive");
+  const glob = new Bun.Glob(pattern);
+  const decoder = new TextDecoder();
+  const entries: Array<{ path: string; content: string }> = [];
+  let at = u32(bytes, eocd + 16);
+  const end = at + u32(bytes, eocd + 12);
+  while (at < end) {
+    if (u32(bytes, at) !== 0x02014b50) throw new Error("artifact ZIP central directory is malformed");
+    const compression = u16(bytes, at + 10);
+    const compressed = u32(bytes, at + 20);
+    const nameLength = u16(bytes, at + 28);
+    const extraLength = u16(bytes, at + 30);
+    const commentLength = u16(bytes, at + 32);
+    const local = u32(bytes, at + 42);
+    const path = decoder.decode(bytes.slice(at + 46, at + 46 + nameLength));
+    at += 46 + nameLength + extraLength + commentLength;
+    if (!glob.match(path)) continue;
+    if (u32(bytes, local) !== 0x04034b50) throw new Error(`artifact entry ${path} is malformed`);
+    const localName = u16(bytes, local + 26);
+    const localExtra = u16(bytes, local + 28);
+    const data = bytes.slice(local + 30 + localName + localExtra, local + 30 + localName + localExtra + compressed);
+    const content = compression === 0 ? data : compression === 8 ? inflateRawSync(data) : (() => { throw new Error(`artifact entry ${path} uses unsupported ZIP compression`); })();
+    entries.push({ path, content: decoder.decode(content) });
+  }
+  return entries;
+}
+
 /** The change-triggering events a workflow listens to (`on` as a string, list or map). Branch filters are ignored. */
 function changeEvents(source: string): string[] {
   let on: unknown;
@@ -173,6 +210,34 @@ export class GitHubActionsCiProvider implements CiProvider {
 
   async log(change: CiChange, runId: string, lines = 200): Promise<string> {
     return focusGitHubActionsLog(await this.github.jobLog(change.repository, Number(runId)), lines);
+  }
+
+  async reports(change: CiChange, commit: string, runs: readonly CiRun[], locator: CiTestReportLocator): Promise<CiTestReport[]> {
+    const reports: CiTestReport[] = [];
+    const workflowIds = new Set<number>();
+    for (const run of runs.filter((candidate) => candidate.hasLog)) {
+      const job = await this.github.githubActionsJob(change.repository, Number(run.id));
+      if (job.run_id !== undefined) workflowIds.add(job.run_id);
+    }
+    const workflowRuns = await this.github.listWorkflowRuns(change.repository, commit);
+    for (const run of workflowRuns.filter((candidate) => workflowIds.has(candidate.id) && candidate.status === "completed" && candidate.head_sha === commit)) {
+      const artifacts = await this.github.listWorkflowArtifacts(change.repository, run.id);
+      for (const artifact of artifacts.filter((candidate) => candidate.name === locator.artifact && !candidate.expired)) {
+        const archive = await this.github.downloadWorkflowArtifact(change.repository, artifact.id);
+        try {
+          for (const report of zipEntries(archive, locator.path)) reports.push({ runId: String(run.id), artifactId: String(artifact.id), ...report });
+        } catch (error) {
+          reports.push({
+            runId: String(run.id),
+            artifactId: String(artifact.id),
+            path: locator.path,
+            content: "",
+            error: `artifact ${artifact.name} is not a readable ZIP archive: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+    }
+    return reports;
   }
 
   /** Workflow files at the commit that run for a change, plus configured label triggers whose workflow exists. */

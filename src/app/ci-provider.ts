@@ -21,6 +21,21 @@ export interface CiChange {
   url: string;
 }
 
+/** A JUnit XML file obtained from an artifact belonging to this change's commit. */
+export interface CiTestReport {
+  runId: string;
+  artifactId: string;
+  path: string;
+  content: string;
+  /** A completed artifact was found but could not be read as a report. */
+  error?: string;
+}
+
+export interface CiTestReportLocator {
+  artifact: string;
+  path: string;
+}
+
 /** Whether CI is defined for a commit. `provable: false` means the provider could not tell. */
 export interface CiDefinition {
   defined: boolean;
@@ -34,6 +49,8 @@ export interface CiProvider {
   rerun(change: CiChange, runId: string): Promise<void>;
   definitions(change: CiChange, commit: string): Promise<CiDefinition>;
   log(change: CiChange, runId: string, lines?: number): Promise<string>;
+  /** Reports are optional so non-GitHub and older providers retain the source-link fallback. */
+  reports?(change: CiChange, commit: string, runs: readonly CiRun[], locator: CiTestReportLocator): Promise<CiTestReport[]>;
 }
 
 export function isCiRunState(value: unknown): value is CiRunState {

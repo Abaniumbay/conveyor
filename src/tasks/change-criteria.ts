@@ -4,11 +4,12 @@
 
 import { z } from "zod";
 
+import type { CiTestReport } from "../app/ci-provider";
 import type { CodeHost } from "../codehost/types";
 import { CriterionApprovals, criterionTextHash, isCriterionApprovedAt } from "../engine/review-records";
 import { formatAcceptanceCriteria, ManagedSectionError, parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
-import { fail, pass, type TaskArgs, type TaskDefinition } from "./contract";
+import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 import { criteriaOf } from "./item";
 
@@ -24,6 +25,53 @@ const recordEvidenceInput = z.object({ headSha: z.string().min(1).optional(), cr
 type RecordEvidenceInput = z.output<typeof recordEvidenceInput>;
 
 const NO_CHANGE = "No change request exists yet";
+
+type JunitCase = { name: string; suite: string | null; outcome: "passed" | "skipped" | "failed" | "errored" };
+const JUNIT_SIMILAR_LIMIT = 5;
+
+function decodeXml(value: string): string {
+  return value.replace(/&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (entity, body: string) => {
+    if (body === "amp") return "&";
+    if (body === "lt") return "<";
+    if (body === "gt") return ">";
+    if (body === "quot") return '"';
+    if (body === "apos") return "'";
+    const code = body[1] === "x" ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+    return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
+function junitCases(xml: string, path: string): JunitCase[] | { error: string } {
+  if (!/<(?:testsuites?|testcase)\b/.test(xml)) return { error: `report ${path} is not JUnit XML` };
+  const cases: JunitCase[] = [];
+  const matcher = /<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g;
+  for (const match of xml.matchAll(matcher)) {
+    const attrs = new Map<string, string>();
+    for (const attr of match[1]!.matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) attrs.set(attr[1]!, decodeXml(attr[3]!));
+    const name = attrs.get("name");
+    if (!name) return { error: `report ${path} has a testcase without a name` };
+    const body = match[2] ?? "";
+    const outcome = /<skipped\b/.test(body) ? "skipped" : /<failure\b/.test(body) ? "failed" : /<error\b/.test(body) ? "errored" : "passed";
+    cases.push({ name, suite: attrs.get("classname") ?? null, outcome });
+  }
+  return cases.length > 0 ? cases : { error: `report ${path} contains no test cases` };
+}
+
+function displayJunitCase(test: JunitCase): string { return test.suite ? `${test.suite}#${test.name}` : test.name; }
+
+function similarJunitCases(test: string, cases: JunitCase[]): string {
+  const needle = test.toLowerCase();
+  const names = [...new Set(cases.map(displayJunitCase).filter((name) => name.toLowerCase().includes(needle) || needle.includes(name.toLowerCase())))].slice(0, JUNIT_SIMILAR_LIMIT);
+  return names.length > 0 ? ` Similar report cases: ${names.map((name) => `"${name}"`).join(", ")}.` : " No similar report cases were found.";
+}
+
+function matchJunitCase(link: string, cases: JunitCase[]): JunitCase[] {
+  const hash = link.indexOf("#");
+  if (hash < 0) return cases.filter((test) => test.name === link);
+  const suite = link.slice(0, hash);
+  const name = link.slice(hash + 1);
+  return suite.length > 0 && name.length > 0 ? cases.filter((test) => test.suite === suite && test.name === name) : [];
+}
 
 const MALFORMED = (detail: string) => `PR checklist markers are malformed: ${detail}; restore or remove the conveyor managed section`;
 
@@ -270,6 +318,59 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
     deps.store.refreshCriterionTestEvidence(deps.issueId, live.headSha, lines);
     const synced = await syncChecklist(host, deps, change.ref.id);
     return synced.ok ? pass() : fail(`Criterion test evidence was verified, but the PR checklist could not be updated: ${synced.message}`);
+  },
+};
+
+/** Confirms linked tests executed successfully in head-bound JUnit artifacts when configured. */
+export const criterionTestsPassed: TaskDefinition<unknown, unknown, Deps> = {
+  name: "change.criterionTestsPassed",
+  kind: "check",
+  description: "After required CI passes, verifies every linked non-manual criterion test has one exact, passing JUnit case in configured artifacts from the current change head. Without a JUnit locator, retains the source-link verification fallback.",
+  observesExternal: true,
+  reads: ["item", "change", "ci"], writes: [], invalidates: [],
+  async run({ context, deps }: TaskArgs<unknown, unknown, Deps>) {
+    const locator = deps.config.repositories[deps.repository.id]?.ci.junit;
+    if (!locator) return pass({ fallback: "source-link verification" });
+    const change = context.change;
+    if (!change) return fail(NO_CHANGE);
+    const ci = context.ci;
+    if (!ci || ci.headSha !== change.headSha || ci.awaitingStart.length > 0 || ci.runs.some((run) => run.state === "queued" || run.state === "running")) {
+      return pending("JUnit test report verification is waiting for CI for the current change head");
+    }
+    const host = deps.codeHost;
+    if (!host) throw new Error(`no code host configured for ${deps.issueId}`);
+    const live = await host.getChange({ address: deps.repository.address, id: change.ref.id });
+    if (live.headSha !== change.headSha) return pending(`Change head moved from ${change.headSha} to ${live.headSha}; waiting for CI for the new head`);
+    const provider = deps.ci?.provider();
+    if (!provider?.reports) throw new InfrastructureError(`CI provider cannot retrieve configured JUnit reports for ${deps.repository.id}`);
+    let reports: CiTestReport[];
+    try {
+      reports = await provider.reports({ repository: deps.repository.address, changeId: String(change.ref.number ?? change.ref.id), url: change.url }, live.headSha, ci.runs.map((run) => ({ id: run.id, name: run.name, url: run.url, state: run.state, canRerun: run.rerunnable, hasLog: run.hasLog })), locator);
+    } catch (error) {
+      throw new InfrastructureError(`Could not retrieve configured JUnit reports for ${deps.repository.id}`, { cause: error });
+    }
+    if (reports.length === 0) return fail(`No JUnit report matched artifact "${locator.artifact}" and path "${locator.path}" for CI head ${live.headSha}`);
+    const unreadable = reports.find((report) => report.error !== undefined);
+    if (unreadable?.error) return fail(`Configured JUnit report is unusable: ${unreadable.error}`);
+    const parsed = reports.map((report) => junitCases(report.content, report.path));
+    const malformed = parsed.find((result): result is { error: string } => "error" in result);
+    if (malformed) return fail(`Configured JUnit report is unusable: ${malformed.error}`);
+    const cases = parsed.flat() as JunitCase[];
+    const entries = new Map(deps.store.criterionTestEvidence(deps.issueId).map((entry) => [entry.criterionId, entry]));
+    const gaps: string[] = [];
+    for (const criterion of context.item!.criteria) {
+      if (criterion.manual) continue;
+      const links = entries.get(criterion.id)?.tests ?? [];
+      if (links.length === 0) { gaps.push(`${criterion.id}: no tests linked`); continue; }
+      for (const link of links) {
+        const matches = matchJunitCase(link.name, cases);
+        if (matches.length === 0) { gaps.push(`${criterion.id}: linked test "${link.name}" did not match a JUnit case.${similarJunitCases(link.name, cases)}`); continue; }
+        if (matches.length > 1) { gaps.push(`${criterion.id}: linked test "${link.name}" is ambiguous; it matches ${matches.length} JUnit cases.${link.name.includes("#") ? " Rename the duplicate tests." : " Use suite#test."}${similarJunitCases(link.name, matches)}`); continue; }
+        const outcome = matches[0]!.outcome;
+        if (outcome !== "passed") gaps.push(`${criterion.id}: linked test "${link.name}" ${outcome === "errored" ? "errored" : `was ${outcome}`} in JUnit`);
+      }
+    }
+    return gaps.length > 0 ? fail(`Criterion test report verification failed: ${gaps.join("; ")}`) : pass({ reports: reports.length, headSha: live.headSha });
   },
 };
 

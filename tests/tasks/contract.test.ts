@@ -216,6 +216,15 @@ describe("runTask", () => {
   test("only checks may declare projection refreshes", () => {
     expect(() => defineGroup("g", [check({ kind: "act", refreshesProjection: true })])).toThrow("only a check may refresh a projection");
   });
+  test("an external-observing check gets dependencies without gaining context writes", async () => {
+    let seen: TaskArgs | undefined;
+    const def = check({ observesExternal: true, run: (a) => ((seen = a), pass()) });
+    await runTask(def, args(context(), { deps: { db: 1 } }));
+    expect(seen?.deps).toEqual({ db: 1 });
+  });
+  test("only checks may observe external state", () => {
+    expect(() => defineGroup("g", [check({ kind: "act", observesExternal: true })])).toThrow("only a check may observe external state");
+  });
   test("acts keep deps and instance", async () => {
     let seen: TaskArgs | undefined;
     const def = check({ kind: "act", name: "g.do", run: (a) => ((seen = a), pass()) });
