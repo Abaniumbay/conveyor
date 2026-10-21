@@ -23,7 +23,7 @@ const sha = z.string().min(1);
 const number = z.number().int().positive();
 
 /** The changes a review finding goes through, as its own history records them. */
-export const FINDING_CHANGES = ["created", "resolved", "dismissed", "withdrawn", "edited", "reopened"] as const;
+export const FINDING_CHANGES = ["created", "resolved", "dismissed", "withdrawn", "edited", "reopened", "reclassified"] as const;
 
 export const EVENT_CATALOGUE = {
   // Items
@@ -84,7 +84,7 @@ export const EVENT_CATALOGUE = {
   "gate.boardApproved": define("Gates and review", "A person approved the board gate for one stage visit.", z.object({
     stageId: id, stageEpoch: z.number().int().nonnegative(), attempt: z.number().int().positive(),
   }).strict()),
-  "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited or reopened; `change` and its fixed `type` say which.", z.object({
+  "finding.changed": define("Gates and review", "A review finding was created, resolved, dismissed, withdrawn, edited, reopened or reclassified; `change` and its fixed `type` say which.", z.object({
     findingId: id, type: z.enum(FINDING_TYPES), change: z.enum(FINDING_CHANGES),
   }).strict()),
   "todo.changed": define("Gates and review", "An item's to-do list changed.", z.object({}).strict()),

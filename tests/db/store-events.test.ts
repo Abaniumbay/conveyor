@@ -180,6 +180,14 @@ describe("run, conversation and review events", () => {
     expect(dismissed).toEqual([{ findingId, type: "security", change: "dismissed" }]);
     expect(JSON.stringify([...created, ...dismissed])).not.toContain(body);
   });
+  test("a finding is reclassified once and a repeated type records nothing", async () => {
+    const { store, during } = await world();
+    const findings = new ReviewFindings(store.sqlite());
+    const id = findings.create({ issueId: ISSUE, runId: null, author: "reviewer", headSha: "abc", body: "text" }).id;
+    const changed = during(() => findings.reclassify(ISSUE, id, "security", "operator")).map((event) => event.payload);
+    expect(changed).toEqual([{ findingId: id, type: "security", change: "reclassified" }]);
+    expect(during(() => findings.reclassify(ISSUE, id, "security", "operator"))).toEqual([]);
+  });
   test("a to-do list change", async () => {
     const { store, types } = await world();
     expect(types(() => new ItemTodos(store.sqlite()).set(ISSUE, [{ id: "a", text: "A", status: "pending" }], null, "2026-10-17T00:00:00Z"))).toEqual(["todo.changed"]);

@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 
+import { FINDING_TYPES } from "../engine/finding-types";
+
 export type CommandRole = "user" | "superuser";
 
 interface Definition<I extends z.ZodType> {
@@ -31,6 +33,7 @@ export const COMMANDS = {
   "gate.approve": define("superuser", "Approve the configured entry or exit gate, or board approval, the item is waiting on.", z.object({ issueId: id, stageId: id, gateId: id.nullable() }).strict()),
   "gate.setItemApproval": define("superuser", "Require or remove a final board approval for one item stage.", z.object({ issueId: id, stageId: id, required: z.boolean() }).strict()),
   "finding.dismiss": define("superuser", "Dismiss an open review finding with a reason.", z.object({ issueId: id, findingId: id, reason: z.string().trim().min(1).max(2_000) }).strict()),
+  "finding.reclassify": define("superuser", "Change the type of a stored review finding; the same type again changes nothing.", z.object({ issueId: id, findingId: id, type: z.enum(FINDING_TYPES) }).strict()),
 
   // Backlog
   "backlog.reorder": define("superuser", "Move a queued item one place up or down.", z.object({ issueId: id, direction: z.enum(["up", "down"]) }).strict()),

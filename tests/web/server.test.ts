@@ -204,6 +204,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
     resumeRollupParent: async () => ({ stageId: "implementation" }),
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
+    reclassifyFinding: () => ({ changed: true }),
     setBoardApprovalRequirement: async (...args: unknown[]) => { calls.boardApprovals.push(args); },
     approveManualGate: async (...args: unknown[]) => { calls.manualApprovals.push(args); },
     ...overrides,
@@ -927,6 +928,10 @@ describe("createWebHandler", () => {
       method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ reason: "resolved" }),
     }));
     expect(dismissal.status).toBe(403);
+    const reclassification = await handler(new Request("http://localhost/api/issues/i-1/findings/f-1/type", {
+      method: "POST", headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ type: "bug" }),
+    }));
+    expect(reclassification.status).toBe(403);
     expect((await handler(new Request("http://localhost/accounts", { headers: { cookie } }))).status).toBe(403);
     expect((await handler(new Request("http://localhost/api/accounts", { headers: { cookie } }))).status).toBe(403);
     expect(calls.retries).toHaveLength(0);
@@ -1130,6 +1135,45 @@ describe("createWebHandler", () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ ok: true, correlationId: expect.any(String) });
     expect(calls.dismissals).toEqual([["github:owner/repo#1", "F-1", "Not applicable", "operator"]]);
+  });
+
+  test("reclassifies a finding only for a signed-in superuser with CSRF and a known type", async () => {
+    const reclassified: unknown[][] = [];
+    const { handler, auth } = setup({ maxBodyBytes: 4096, reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; } });
+    const url = "http://localhost/api/issues/github%3Aowner%2Frepo%231/findings/F-1/type";
+    const post = (headers: Record<string, string>, body: string) => handler(new Request(url, { method: "POST", headers, body }));
+    const json = { "content-type": "application/json" };
+    expect((await post(json, JSON.stringify({ type: "bug" }))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    expect((await post({ ...json, cookie }, JSON.stringify({ type: "bug" }))).status).toBe(403);
+    expect((await post({ ...json, cookie, "x-csrf-token": "wrong" }, JSON.stringify({ type: "bug" }))).status).toBe(403);
+    expect((await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ type: "nonsense" }))).status).toBe(400);
+    expect((await post({ ...json, cookie, "x-csrf-token": csrf }, "not json")).status).toBe(400);
+    expect((await post({ cookie, "x-csrf-token": csrf, "content-type": "text/plain" }, "{}")).status).toBe(415);
+    expect((await handler(new Request(url, { headers: { cookie } }))).status).toBe(405);
+    expect(reclassified).toEqual([]);
+    const reader = { id: "reader-id", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1 };
+    const hash = hashPassword("correct horse", { salt: "0123456789abcdef" });
+    const readerAuth = createWebAuth({
+      passwordHash: hash,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: () => reader,
+      accountByUsername: (username) => username === reader.username ? { ...reader, passwordHash: hash } : null,
+    });
+    const nonSuperuser = setup({ auth: readerAuth, reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; } });
+    const readerSession = readerAuth.createSession(reader)!;
+    const refused = await nonSuperuser.handler(new Request(url, {
+      method: "POST",
+      headers: { ...json, cookie: readerSession.cookie.split(";")[0]!, "x-csrf-token": readerSession.csrfToken },
+      body: JSON.stringify({ type: "bug" }),
+    }));
+    expect(refused.status).toBe(403);
+    expect(reclassified).toEqual([]);
+    const ok = await post({ ...json, cookie, "x-csrf-token": csrf }, JSON.stringify({ type: "security" }));
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, changed: true, correlationId: expect.any(String) });
+    expect(reclassified).toEqual([["github:owner/repo#1", "F-1", "security", "operator"]]);
   });
 
   test("a rejected dismissal is a conflict with the reason", async () => {

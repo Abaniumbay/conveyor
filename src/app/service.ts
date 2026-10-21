@@ -81,7 +81,7 @@ import { WaitDispatcher } from "./wait-dispatcher";
 import { changesDashboard, DashboardFeed } from "./dashboard-feed";
 import { normalizeDashboard } from "../web/model";
 import { GITHUB_CALL_SOURCES, GitHubCallMeter, withGitHubCallSource, type GitHubCallSource, type GitHubCallSummary } from "../source/github/call-meter";
-import { ReviewFindings } from "../engine/review-findings";
+import { ReviewFindings, type FindingType } from "../engine/review-findings";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, type BoardApprovalResolver, type ManualGateResolver, type ManualGateWaitingNotifier } from "../engine/stage-executor";
 
 const FOLLOW_UP_GATE_TASK = "item.followUps";
@@ -1713,6 +1713,7 @@ export class ConveyorService {
     commands.handle("gate.approve", (input, actor) => this.approveManualGate(input.issueId, input.stageId, input.gateId, account(actor)));
     commands.handle("gate.setItemApproval", (input) => this.setBoardApprovalRequirement(input.issueId, input.stageId, input.required));
     commands.handle("finding.dismiss", (input, actor) => this.dismissFinding(input.issueId, input.findingId, input.reason, actor.name));
+    commands.handle("finding.reclassify", (input, actor) => this.reclassifyFinding(input.issueId, input.findingId, input.type, actor.name));
     commands.handle("backlog.reorder", (input) => this.reorderBacklog(input.issueId, input.direction));
     commands.handle("backlog.move", (input) => this.moveBacklogIssue(input.issueId, input.beforeIssueId));
     commands.handle("steering.start", (input) => this.startSteering(input.prompt));
@@ -5575,6 +5576,15 @@ export class ConveyorService {
         createdAt: transition.createdAt,
         completedAt: transition.completedAt,
       })),
+      findings: new ReviewFindings(this.store.sqlite()).listVisible(issueId).map((finding) => ({
+        id: finding.id,
+        type: finding.type,
+        state: finding.state,
+        author: finding.author,
+        location: finding.path === null ? null : finding.line === null ? finding.path : `${finding.path}:${finding.line}`,
+        url: finding.url,
+        summary: finding.body.length > 240 ? `${finding.body.slice(0, 240)}…` : finding.body,
+      })),
       skippedReviews: new ReviewFindings(this.store.sqlite()).skippedNative(issueId).map((review) => ({
         author: review.author,
         url: review.url,
@@ -6247,6 +6257,11 @@ export class ConveyorService {
     });
     // The finding.changed event wakes an item parked on its review gate.
     await this.updateStatusComment(issue.id);
+  }
+
+  /** An operator's change of a finding's type; the write, its history row and its event share one transaction. */
+  reclassifyFinding(issueId: string, findingId: string, type: FindingType, username: string): { changed: boolean } {
+    return { changed: new ReviewFindings(this.store.sqlite()).reclassify(issueId, findingId, type, username) };
   }
 
   webDependencies(auth: WebAuthApi, username: string, push: PushConfiguration | null = null): WebHandlerDependencies {

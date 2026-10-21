@@ -11,6 +11,7 @@ import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
 import { agentHref } from "./agent-pages";
 import { REPORT_PERIOD_VALUES } from "./report-page";
+import { isFindingType } from "../engine/finding-types";
 import { pwaIcons, pwaManifest, serviceWorker } from "./pwa";
 import { notificationClient } from "./notifications-client";
 import { themeInitScript } from "./styles";
@@ -1203,6 +1204,43 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json({ ok: true, correlationId });
       } catch (error) {
         return commandError(error) ?? json({ error: error instanceof Error ? error.message : "Unable to dismiss finding" }, 409);
+      }
+    }
+
+    const findingType = /^\/api\/issues\/([^/]{1,1000})\/findings\/([^/]{1,200})\/type$/.exec(path);
+    if (findingType) {
+      const methodError = requireMethod(request, "POST");
+      if (methodError) return methodError;
+      if (!session(request)) return json({ error: "unauthorized" }, 401);
+      const denied = requireSuperuser(request);
+      if (denied) return denied;
+      const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+      if (mediaType !== "application/json") return text("Expected application/json", 415);
+      if (!dependencies.auth.validateCsrf(request.headers.get("cookie") ?? undefined, request.headers.get("x-csrf-token") ?? undefined)) {
+        return json({ error: "forbidden" }, 403);
+      }
+      let issueId: string;
+      let findingId: string;
+      try {
+        issueId = decodeURIComponent(findingType[1]!);
+        findingId = decodeURIComponent(findingType[2]!);
+      } catch {
+        return text("Invalid finding path", 400);
+      }
+      const body = await readBody(request, maxBodyBytes);
+      if (isBodyError(body)) return body;
+      let type: unknown;
+      try {
+        type = (JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as { type?: unknown } | null)?.type;
+      } catch {
+        return json({ error: "malformed JSON" }, 400);
+      }
+      if (typeof type !== "string" || !isFindingType(type)) return json({ error: "a known finding type is required" }, 400);
+      try {
+        const { correlationId, result } = await dependencies.dispatch("finding.reclassify", { issueId, findingId, type }, actorOf(session(request)!));
+        return json({ ok: true, changed: result.changed, correlationId });
+      } catch (error) {
+        return commandError(error) ?? json({ error: error instanceof Error ? error.message : "Unable to change finding type" }, 409);
       }
     }
 

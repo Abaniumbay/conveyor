@@ -175,3 +175,37 @@ describe("ReviewFindings", () => {
     }]);
   });
 });
+
+describe("ReviewFindings.reclassify", () => {
+  test("changes the stored type, records the history and the finding.changed event once", async () => {
+    const findings = await open();
+    const finding = findings.create(created);
+    expect(findings.reclassify("i1", finding.id, "security", "operator")).toBe(true);
+    expect(findings.get("i1", finding.id)?.type).toBe("security");
+    expect(findings.events(finding.id).at(-1)).toMatchObject({ kind: "reclassified", actor: "operator", detail: { from: "general", to: "security" } });
+  });
+
+  test("a repeated type changes nothing and records nothing", async () => {
+    const findings = await open();
+    const finding = findings.create(created);
+    findings.reclassify("i1", finding.id, "bug", "operator");
+    const before = findings.events(finding.id).length;
+    expect(findings.reclassify("i1", finding.id, "bug", "operator")).toBe(false);
+    expect(findings.events(finding.id)).toHaveLength(before);
+  });
+
+  test("reclassifies an imported finding without touching its code-host text", async () => {
+    const findings = await open();
+    findings.importNative("i1", [artifact()], "h1", "2026-01-01T00:00:00Z");
+    const imported = findings.list("i1")[0]!;
+    findings.reclassify("i1", imported.id, "style", "operator");
+    expect(findings.get("i1", imported.id)).toMatchObject({ type: "style", body: imported.body, url: imported.url });
+  });
+
+  test("rejects an unknown type and a missing finding", async () => {
+    const findings = await open();
+    const finding = findings.create(created);
+    expect(() => findings.reclassify("i1", finding.id, "nope" as never, "operator")).toThrow();
+    expect(() => findings.reclassify("i1", "missing", "bug", "operator")).toThrow();
+  });
+});

@@ -234,6 +234,17 @@ export interface SkippedReviewViewModel {
   active: boolean;
 }
 
+/** A stored review finding as the issue inspector lists it; `type` is the fixed taxonomy value. */
+export interface FindingViewModel {
+  id: string;
+  type: string;
+  state: string;
+  author: string;
+  location: string | null;
+  url: string;
+  summary: string;
+}
+
 export interface IssueJourneyViewModel {
   issueId: string;
   now: {
@@ -244,6 +255,7 @@ export interface IssueJourneyViewModel {
   };
   transitions: readonly IssueJourneyTransitionViewModel[];
   skippedReviews: readonly SkippedReviewViewModel[];
+  findings: readonly FindingViewModel[];
 }
 
 export interface StageActorViewModel {
