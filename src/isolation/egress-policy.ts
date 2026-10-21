@@ -79,6 +79,20 @@ function validateLocalServiceNames(services: readonly { name: string }[]): HostI
   return issues;
 }
 
+function validateLocalServiceEndpoints(services: readonly { endpoint: string }[]): HostIssue[] {
+  const issues: HostIssue[] = [];
+  const firstSeen = new Map<string, number>();
+  services.forEach((service, index) => {
+    const earlier = firstSeen.get(service.endpoint);
+    if (earlier !== undefined) {
+      issues.push({ index, message: `agentEgress.localServices[${index}].endpoint "${service.endpoint}": duplicate of localServices[${earlier}]` });
+      return;
+    }
+    firstSeen.set(service.endpoint, index);
+  });
+  return issues;
+}
+
 export const agentEgressSchema = z
   .object({
     allowLoopbackMcp: z.boolean().default(true),
@@ -92,6 +106,9 @@ export const agentEgressSchema = z
     }
     for (const issue of validateLocalServiceNames(egress.localServices)) {
       context.addIssue({ code: "custom", path: ["localServices", issue.index, "name"], message: issue.message });
+    }
+    for (const issue of validateLocalServiceEndpoints(egress.localServices)) {
+      context.addIssue({ code: "custom", path: ["localServices", issue.index, "endpoint"], message: issue.message });
     }
   });
 

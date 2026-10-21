@@ -36,6 +36,13 @@ export function agentEgressFor(
     }
   }
   const localServices = services.map((service) => ({ port: endpointPort(service.endpoint), socket: service.socket }));
+  if (egress.allowLoopbackMcp) {
+    const mcpPort = listenPort(config.web.listen);
+    const clash = services.find((service) => endpointPort(service.endpoint) === mcpPort);
+    if (clash) {
+      throw new Error(`agentEgress.localServices.${clash.name}.endpoint port ${mcpPort} collides with the loopback MCP port`);
+    }
+  }
   const localServiceEnvironment = Object.assign({}, ...services.map((service) => service.environment));
   return {
     httpsHosts: egress.httpsHosts,

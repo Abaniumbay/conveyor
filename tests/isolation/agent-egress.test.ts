@@ -34,6 +34,16 @@ describe("agentEgressFor", () => {
     expect(agentEgressFor(config({ allowLoopbackMcp: false, httpsHosts: [] }), "app", {})?.mcp).toBeUndefined();
   });
 
+  test("rejects a local service port that collides with the loopback MCP port", () => {
+    const egress = (allowLoopbackMcp: boolean) => config({
+      allowLoopbackMcp,
+      httpsHosts: [],
+      localServices: [{ name: "postgres", socket: "/run/pg.sock", endpoint: "127.0.0.1:8123", environment: {} }],
+    });
+    expect(() => agentEgressFor(egress(true), "app", {})).toThrow("collides with the loopback MCP port");
+    expect(agentEgressFor(egress(false), "app", {})?.localServices).toEqual([{ port: 8123, socket: "/run/pg.sock" }]);
+  });
+
   test("rejects a Docker socket before starting an agent", () => {
     expect(() => agentEgressFor(config({
       allowLoopbackMcp: false,

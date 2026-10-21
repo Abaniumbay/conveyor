@@ -392,6 +392,14 @@ describe("repository agentEgress", () => {
 `))).rejects.toThrow('duplicate of localServices[0]');
   });
 
+  test("rejects duplicate local-service endpoints", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5432, endpoint: 127.0.0.1:5432 }
+        - { name: replica, socket: /run/postgresql/.s.PGSQL.5433, endpoint: 127.0.0.1:5432 }
+`))).rejects.toThrow('localServices[1].endpoint "127.0.0.1:5432": duplicate of localServices[0]');
+  });
+
   test("names the offending entry and rule", async () => {
     await expect(
       load(NATIVE_PIPELINE + repository('    agentEgress: { httpsHosts: [a.example.com, b.example.com, "*.npmjs.org"] }\n')),
