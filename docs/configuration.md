@@ -528,6 +528,7 @@ pipelines:
           - { id: criterionTests, task: change.criterionTestsVerified }
           - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
           - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
+          - { id: criterionTestReports, task: change.criterionTestsPassed, when: ci.required, onFail: { return: implementation } }
       - id: review
         concurrency: 1
         actions:
@@ -557,7 +558,7 @@ repositories:
   example:
     items: github
     code: github
-    ci: { provider: actions, mode: required, ignoreChecks: [] }   # required | advisory | disabled
+    ci: { provider: actions, mode: required, ignoreChecks: [], junit: { artifact: junit-test-results, path: "**/junit.xml" } }   # required | advisory | disabled
     address: example/project
     folder: /srv/repositories/project
     baseBranch: main
@@ -567,12 +568,20 @@ repositories:
     agentEgress:
       allowLoopbackMcp: true
       httpsHosts: [registry.npmjs.org]
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: !secret postgres_test_url
     overrides:
       stages:
         deploy:
           actions:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
+
+`localServices` exposes a Unix test service only to agent commands for the declaring repository, including legacy verifier commands. Each name is unique within the repository. `socket` is an absolute host Unix-socket path and `endpoint` is the fixed `127.0.0.1:<port>` address bridged into each run's sandbox; no other repository receives that bridge. Docker's host socket, including paths that resolve to it through an alias, is rejected before the agent starts. Values under `environment` are set only for those commands; use `!secret` for credentials so they are resolved from `secrets.yaml` and redacted from configuration displays and logs.
 
 The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
 
@@ -695,8 +704,10 @@ providers:
 
 repositories:
   example:
-    ci: { provider: actions, mode: required, ignoreChecks: [Optional lint] }
+    ci: { provider: actions, mode: required, ignoreChecks: [Optional lint], junit: { artifact: junit-test-results, path: "**/junit.xml" } }
 ```
+
+`ci.junit` binds criterion-test execution evidence to one Actions artifact name and a relative glob path inside its ZIP archive. Publish JUnit XML with an upload-artifact step (including `if: always()` so failing tests remain inspectable). A linked test name is exact and case-sensitive: use its JUnit `name`, or `classname#name` when the unqualified name is not unique. The implementation gate runs this check after `ci.passed`; missing, skipped, failed, errored, malformed, or ambiguous cases return the item to implementation. `conveyor config check` warns when this locator is absent: the legacy source-text link check remains, but cannot prove a test executed. Reviewers judge whether a passing linked test is valid evidence for its criterion.
 
 `mode` is one of:
 

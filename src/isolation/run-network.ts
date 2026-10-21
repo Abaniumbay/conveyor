@@ -13,6 +13,10 @@ export interface AgentNetworkPolicy {
   controlPlaneHosts: readonly string[];
   /** The service's MCP endpoint, present when `agentEgress.allowLoopbackMcp` is true. */
   mcp?: { port: number; socket: string };
+  /** Repository-declared host Unix services, each exposed only at its fixed sandbox loopback port. */
+  localServices?: readonly { port: number; socket: string }[];
+  /** Connection details for those services, passed to commands but never to the host environment. */
+  localServiceEnvironment?: Readonly<Record<string, string>>;
   /** Test seams: DNS resolution and upstream dialing. */
   resolve?: (host: string) => Promise<string[]>;
   dial?: (address: string, port: number) => net.Socket;
@@ -54,14 +58,17 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
   let closed: Promise<void> | undefined;
   return {
     wrap(env, build) {
-      const probe = sandboxCommand({ argv: [], env, dataProxySocket: dataSocket, ...(policy.mcp ? { mcp: policy.mcp } : {}) });
+      const commandEnvironment = { ...env, ...policy.localServiceEnvironment };
+      const forwards = policy.localServices ? { localServices: policy.localServices } : {};
+      const probe = sandboxCommand({ argv: [], env: commandEnvironment, dataProxySocket: dataSocket, ...(policy.mcp ? { mcp: policy.mcp } : {}), ...forwards });
       return sandboxCommand({
         argv: build(probe.dataEnv),
-        env,
+        env: commandEnvironment,
         dataProxySocket: dataSocket,
         controlProxySocket: controlSocket,
         controlToken: token,
         ...(policy.mcp ? { mcp: policy.mcp } : {}),
+        ...forwards,
       });
     },
     close() {

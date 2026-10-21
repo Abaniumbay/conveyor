@@ -25,7 +25,7 @@ test("private-tmp command mounts an isolated /tmp", () => {
 test("SPEC documents default denial of host path-based sockets for egress runs", async () => {
   const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
   expect(specification).toContain("Host path-based Unix sockets are denied by default");
-  expect(specification).toContain("The only retained sockets are the data-plane, control-plane and MCP endpoints explicitly forwarded for that run");
+  expect(specification).toContain("The only retained sockets are the data-plane, control-plane, MCP, and repository-declared local-service endpoints explicitly forwarded for that run");
   expect(specification).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
   expect(specification).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
 });
@@ -167,19 +167,31 @@ test("network isolation retains explicitly forwarded proxy and MCP sockets in it
   const root = await shortTemporaryDirectory("conveyor-forward-sockets-", { socketPath: "data.sock", visibleInSandbox: true });
   const dataSocket = path.join(root, "data.sock");
   const mcpSocket = path.join(root, "mcp.sock");
-  const [dataServer, mcpServer] = await Promise.all([listenUnixSocket(dataSocket), listenUnixSocket(mcpSocket)]);
+  const postgresSocket = path.join(root, "postgres.sock");
+  const [dataServer, mcpServer, postgresServer] = await Promise.all([
+    listenUnixSocket(dataSocket),
+    listenUnixSocket(mcpSocket),
+    listenUnixSocket(postgresSocket),
+  ]);
   try {
     const launch = sandboxCommand({
       argv: ["echo", "x"],
       env: { PATH: process.env.PATH ?? "" },
       dataProxySocket: dataSocket,
+      localServices: [{ port: 54_321, socket: postgresSocket }],
       mcp: { port: 41_234, socket: mcpSocket },
     });
     const mounts = launch.argv.join("\u0000");
     expect(mounts).not.toContain(`--ro-bind\u0000/dev/null\u0000${dataSocket}`);
     expect(mounts).not.toContain(`--ro-bind\u0000/dev/null\u0000${mcpSocket}`);
+    expect(mounts).not.toContain(`--ro-bind\u0000/dev/null\u0000${postgresSocket}`);
+    expect(launch.dataEnv.NO_PROXY).toBe("127.0.0.1");
   } finally {
-    await Promise.all([closeServer(dataServer), closeServer(mcpServer)]);
+    await Promise.all([
+      closeServer(dataServer),
+      closeServer(mcpServer),
+      closeServer(postgresServer),
+    ]);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -293,6 +305,27 @@ async function sandboxSocketProbe(socketPath: string): Promise<string> {
   const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(`socket probe exited ${code}: ${err}`);
+  return out.trim();
+}
+
+async function sandboxServiceProbe(port: number, localServices: readonly { port: number; socket: string }[] = []): Promise<string> {
+  const sandboxed = sandboxCommand({
+    argv: [process.execPath, "-e", `
+      const net = require("node:net");
+      const socket = net.connect(Number(process.argv[1]), "127.0.0.1");
+      const done = (result) => { console.log(result); process.exit(0); };
+      const timeout = setTimeout(() => done("timeout"), 1000);
+      socket.on("connect", () => socket.write("ping"));
+      socket.on("data", (chunk) => { clearTimeout(timeout); socket.destroy(); done(chunk.toString()); });
+      socket.on("error", () => { clearTimeout(timeout); done("denied"); });
+    `, String(port)],
+    env: { PATH: process.env.PATH ?? "" },
+    dataProxySocket: data.socketPath,
+    ...(localServices.length > 0 ? { localServices } : {}),
+  });
+  const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  if (code !== 0) throw new Error(`service probe exited ${code}: ${err}`);
   return out.trim();
 }
 
@@ -421,6 +454,24 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     });
     const child = Bun.spawn(sandboxed.argv, { env: sandboxed.env, stdout: "pipe" });
     expect((await new Response(child.stdout).text()).trim()).toBe("ECONNREFUSED");
+  });
+
+  test("forwards a declared Unix service only into the sandbox that declares it", async () => {
+    const root = await shortTemporaryDirectory("conveyor-local-service-", { socketPath: "postgres.sock", visibleInSandbox: true });
+    const socket = path.join(root, "postgres.sock");
+    const port = 45_432;
+    const service = net.createServer((connection) => connection.on("data", (chunk) => connection.write(`postgres:${chunk}`)));
+    await new Promise<void>((resolve, reject) => {
+      service.once("error", reject);
+      service.listen(socket, () => resolve());
+    });
+    try {
+      expect(await sandboxServiceProbe(port, [{ port, socket }])).toBe("postgres:ping");
+      expect(await sandboxServiceProbe(port)).toBe("denied");
+    } finally {
+      await closeServer(service);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("propagates the wrapped command's exit code", async () => {

@@ -710,6 +710,11 @@ export async function loadConfig(
   }
 
   const data = normalizeRunPaths(parsed.data);
+  for (const [id, repository] of Object.entries(data.repositories)) {
+    if (repository.ci.junit === undefined) {
+      warnings.push(`repositories.${id}.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI`);
+    }
+  }
   const referenceErrors = crossReferenceErrors(data);
   if (referenceErrors.length > 0) {
     throw new ConfigError(formatErrors("configuration references are invalid:", referenceErrors, locate));

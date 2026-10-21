@@ -257,6 +257,17 @@ test("the existing Check job writes LCOV before it runs the changed-line gate", 
   expect(workflow.indexOf("bun test --coverage --coverage-reporter=lcov")).toBeLessThan(workflow.indexOf("bun run scripts/check-changed-coverage.ts"));
 });
 
+test("the Check workflow always uploads the JUnit report used by criterion verification", async () => {
+  const workflow = await readFile(path.resolve(import.meta.dir, "../../.github/workflows/check.yml"), "utf8");
+  const testRun = workflow.indexOf("bun test --coverage --coverage-reporter=lcov --reporter=junit");
+  const upload = workflow.indexOf("name: junit-test-results");
+
+  expect(testRun).toBeGreaterThanOrEqual(0);
+  expect(upload).toBeGreaterThan(testRun);
+  expect(workflow).toContain("test-results/junit.xml");
+  expect(workflow).toContain("if: always()");
+});
+
 test("the Check workflow stores main LCOV and conditionally compares pull requests with the latest main artifact", async () => {
   const workflow = await readFile(path.resolve(import.meta.dir, "../../.github/workflows/check.yml"), "utf8");
   const coverageRun = workflow.indexOf("bun test --coverage --coverage-reporter=lcov");

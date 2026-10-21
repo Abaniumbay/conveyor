@@ -8,7 +8,7 @@ repositories:
   service:
     items: github
     code: github
-    ci: { provider: actions, mode: required }
+    ci: { provider: actions, mode: required, junit: { artifact: junit-test-results, path: "**/junit.xml" } }
     address: example/service
     folder: /srv/conveyor/repos/service
     baseBranch: main

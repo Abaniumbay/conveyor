@@ -66,6 +66,22 @@ describe("Logger", () => {
     expect(records[1]).toMatchObject({ level: "error", repository: "conveyor", error: "token <redacted> rejected" });
   });
 
+  test("redacts a secret-backed local-service connection value from records", () => {
+    const connection = "postgres://test-user:test-password@127.0.0.1:5432/test";
+    const records: LogRecord[] = [];
+    const logger = new Logger();
+    logger.configure({
+      level: "info",
+      redactor: new Redactor([connection], {}),
+      sinks: [{ write: (entry) => records.push(entry) }],
+    });
+
+    logger.info("Agent service configured", { databaseUrl: connection });
+
+    expect(records).toEqual([expect.objectContaining({ databaseUrl: "<redacted>" })]);
+    expect(JSON.stringify(records)).not.toContain(connection);
+  });
+
   test("formats a readable line with the correlation fields", () => {
     expect(formatRecord(record("2026-10-06T10:00:00.000Z", "warn", "Stage stopped", { item: "conveyor:90", reason: "two words" })))
       .toBe('2026-10-06T10:00:00.000Z WARN  Stage stopped item=conveyor:90 reason="two words"');

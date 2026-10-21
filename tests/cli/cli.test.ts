@@ -181,15 +181,37 @@ describe("conveyor init", () => {
 describe("conveyor config", () => {
   test("show prints the effective configuration with !secret values redacted", async () => {
     const home = await initialisedHome();
-    await writeFile(path.join(home, "config/secrets.yaml"), `session: "${"x".repeat(40)}"\n`);
+    const databaseUrl = "postgres://conveyor:password@127.0.0.1:5432/test";
+    await writeFile(path.join(home, "config/secrets.yaml"), `session: "${"x".repeat(40)}"\ndatabase_url: "${databaseUrl}"\n`);
     const config = path.join(home, "config/conveyor.yaml");
-    await writeFile(config, (await readFile(config, "utf8")).replace("web:\n", "web:\n  sessionSecret: !secret session\n"));
+    await writeFile(config, (await readFile(config, "utf8"))
+      .replace("web:\n", "web:\n  sessionSecret: !secret session\n")
+      .replace("repositories: !include_dir_named repositories/", `repositories:
+  sample:
+    items: github
+    code: github
+    ci: { mode: disabled }
+    address: owner/my-app
+    folder: /tmp/my-app
+    pipeline: delivery
+    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: !secret database_url`));
     const shown = await cli("config", "show", "--home", home);
     expect(shown.code).toBe(0);
     expect(shown.out).not.toContain("x".repeat(40));
+    expect(shown.out).not.toContain(databaseUrl);
     expect(shown.out).toContain("sessionSecret: <redacted>");
-    const json = JSON.parse((await cli("config", "show", "--home", home, "--json")).out) as { web: { sessionSecret: string } };
+    const json = JSON.parse((await cli("config", "show", "--home", home, "--json")).out) as {
+      web: { sessionSecret: string };
+      repositories: { sample: { agentEgress: { localServices: Array<{ environment: { DATABASE_URL: string } }> } } };
+    };
     expect(json.web.sessionSecret).toBe("<redacted>");
+    expect(json.repositories.sample.agentEgress.localServices[0]!.environment.DATABASE_URL).toBe("<redacted>");
   });
 
   test("an invalid configuration exits 3 and names the file and key", async () => {

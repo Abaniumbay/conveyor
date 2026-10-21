@@ -313,6 +313,86 @@ describe("change.merge", () => {
 });
 
 describe("change checks", () => {
+  test("criterionTestsPassed requires exact passing JUnit cases and reports missing, skipped, failed, errored, and ambiguous links", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "**/*.xml" } } } } } as never;
+    w.deps.ci = { provider: () => ({
+      reports: async () => [{ runId: "run", artifactId: "artifact", path: "result.xml", content: `<testsuite><testcase classname="suite.a" name="passes"/><testcase classname="suite.b" name="passes"/><testcase name="skipped"><skipped/></testcase><testcase name="failed"><failure/></testcase><testcase name="errored"><error/></testcase></testsuite>` }],
+    }) as never };
+    w.store.replaceCriterionTestEvidence("i1", [
+      { criterionId: "pass", manual: false, tests: [{ name: "suite.a#passes", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+      { criterionId: "missing", manual: false, tests: [{ name: "missing", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+      { criterionId: "ambiguous", manual: false, tests: [{ name: "passes", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+      { criterionId: "skipped", manual: false, tests: [{ name: "skipped", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+      { criterionId: "failed", manual: false, tests: [{ name: "failed", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+      { criterionId: "errored", manual: false, tests: [{ name: "errored", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: "2026-10-21T00:00:00.000Z" },
+    ]);
+    const result = await run("change.criterionTestsPassed", { context: ctx({
+      item: { criteria: ["pass", "missing", "ambiguous", "skipped", "failed", "errored", "manual"].map((id) => ({ id, text: id, manual: id === "manual" })) } as never,
+      ci: { headSha: "head1", awaitingStart: [], runs: [{ id: "1", name: "Tests", state: "passed", url: null, rerunnable: false, hasLog: false, log: null }] } as never,
+    }), deps: w.deps }) as Fail;
+    expect(result.message).toContain('missing: linked test "missing" did not match');
+    expect(result.message).toContain('ambiguous: linked test "passes" is ambiguous');
+    expect(result.message).toContain('skipped: linked test "skipped" was skipped');
+    expect(result.message).toContain('failed: linked test "failed" was failed');
+    expect(result.message).toContain('errored: linked test "errored" errored');
+    expect(result.message).not.toContain("manual:");
+  });
+
+  test("criterionTestsPassed decodes XML entities in names and flags duplicate qualified cases as ambiguous", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "**/*.xml" } } } } } as never;
+    w.deps.ci = { provider: () => ({
+      reports: async () => [{ runId: "run", artifactId: "artifact", path: "result.xml", content: `<testsuite><testcase classname="check-config" name="shows each repository&apos;s &quot;q&quot; &lt;x&gt; &amp; y"/><testcase classname="dup" name="twice"/><testcase classname="dup" name="twice"><failure/></testcase></testsuite>` }],
+    }) as never };
+    const at = "2026-10-21T00:00:00.000Z";
+    w.store.replaceCriterionTestEvidence("i1", [
+      { criterionId: "entity", manual: false, tests: [{ name: `shows each repository's "q" <x> & y`, file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: at },
+      { criterionId: "dup", manual: false, tests: [{ name: "dup#twice", file: "tests/a.test.ts" }], recordedHead: "head1", sourceLinkHead: "head1", recordedAt: at },
+    ]);
+    const result = await run("change.criterionTestsPassed", { context: ctx({
+      item: { criteria: ["entity", "dup"].map((id) => ({ id, text: id, manual: false })) } as never,
+      ci: { headSha: "head1", awaitingStart: [], runs: [{ id: "1", name: "Tests", state: "passed", url: null, rerunnable: false, hasLog: false, log: null }] } as never,
+    }), deps: w.deps }) as Fail;
+    expect(result.message).not.toContain("entity:");
+    expect(result.message).toContain('dup: linked test "dup#twice" is ambiguous');
+  });
+
+  test("criterionTestsPassed is pending for current CI and falls back when JUnit is not configured", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "report.xml" } } } } } as never;
+    const pendingResult = await run("change.criterionTestsPassed", { context: ctx({ ci: { headSha: "head1", awaitingStart: [], runs: [{ id: "1", name: "Tests", state: "running", url: null, rerunnable: false, hasLog: false, log: null }] } as never }), deps: w.deps });
+    expect(pendingResult.status).toBe("pending");
+    w.deps.config = { repositories: { repo: { ci: {} } } } as never;
+    expect((await run("change.criterionTestsPassed", { context: ctx(), deps: w.deps })).status).toBe("pass");
+  });
+
+  test("criterionTestsPassed waits for a live head change", async () => {
+    const w = await world({ change: request({ headSha: "head2" }) });
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "report.xml" } } } } } as never;
+    const result = await run("change.criterionTestsPassed", { context: ctx({ ci: { headSha: "head1", awaitingStart: [], runs: [{ id: "1", name: "Tests", state: "passed", url: null, rerunnable: false, hasLog: false, log: null }] } as never }), deps: w.deps });
+    expect(result.status).toBe("pending");
+    expect(result).toMatchObject({ message: expect.stringContaining("head moved") });
+  });
+
+  test("criterionTestsPassed rejects missing and unusable configured reports", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "report.xml" } } } } } as never;
+    w.deps.ci = { provider: () => ({ reports: async () => [] }) as never };
+    const missing = await run("change.criterionTestsPassed", { context: ctx({ ci: { headSha: "head1", awaitingStart: [], runs: [] } as never }), deps: w.deps }) as Fail;
+    expect(missing.message).toContain('No JUnit report matched artifact "junit"');
+    w.deps.ci = { provider: () => ({ reports: async () => [{ runId: "run", artifactId: "artifact", path: "report.xml", content: "not xml" }] }) as never };
+    const malformed = await run("change.criterionTestsPassed", { context: ctx({ ci: { headSha: "head1", awaitingStart: [], runs: [] } as never }), deps: w.deps }) as Fail;
+    expect(malformed.message).toContain("report report.xml is not JUnit XML");
+  });
+
+  test("criterionTestsPassed preserves provider access failures for infrastructure retry", async () => {
+    const w = await world();
+    w.deps.config = { repositories: { repo: { ci: { junit: { artifact: "junit", path: "report.xml" } } } } } as never;
+    w.deps.ci = { provider: () => ({ reports: async () => { throw new Error("provider unavailable"); } }) as never };
+    await expect(run("change.criterionTestsPassed", { context: ctx({ ci: { headSha: "head1", awaitingStart: [], runs: [] } as never }), deps: w.deps })).rejects.toBeInstanceOf(InfrastructureError);
+  });
+
   test("headUnchanged compares the head with the CI-passed SHA", async () => {
     expect((await run("change.headUnchanged", { context: ctx() })).status).toBe("pass");
     const moved = await run("change.headUnchanged", { context: ctx({ change: change({ headSha: "head2" }) }) }) as Fail;

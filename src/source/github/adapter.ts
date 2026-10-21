@@ -18,6 +18,8 @@ export interface GitHubTransportRequest {
   paginate?: boolean;
   /** Return stdout as text instead of parsing JSON (e.g. job logs). */
   raw?: boolean;
+  /** Return the response bytes instead of parsing JSON (e.g. artifact archives). */
+  binary?: boolean;
 }
 
 export interface GitHubTransport {
@@ -83,7 +85,7 @@ export class GhCliTransport implements GitHubTransport {
       child.stdin.end();
     }
     const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
+      request.binary ? new Response(child.stdout).arrayBuffer() : new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
@@ -95,9 +97,11 @@ export class GhCliTransport implements GitHubTransport {
         stderr,
       );
     }
-    if (request.raw) return stdout as T;
-    if (stdout.trim().length === 0) return null as T;
-    const decoded = JSON.parse(stdout) as unknown;
+    if (request.binary) return new Uint8Array(stdout as ArrayBuffer) as T;
+    const text = stdout as string;
+    if (request.raw) return text as T;
+    if (text.trim().length === 0) return null as T;
+    const decoded = JSON.parse(text) as unknown;
     if (request.paginate && Array.isArray(decoded)) {
       return decoded.flat() as T;
     }
@@ -210,6 +214,19 @@ export interface GitHubCheckRun {
 export interface GitHubActionsJob {
   runner_name?: string | null;
   steps?: Array<{ status?: string | null }> | null;
+  run_id?: number;
+}
+
+export interface GitHubActionsWorkflowRun {
+  id: number;
+  head_sha: string;
+  status: string;
+}
+
+export interface GitHubActionsArtifact {
+  id: number;
+  name: string;
+  expired: boolean;
 }
 
 export interface GitHubCheckRunAnnotation {
@@ -1313,6 +1330,27 @@ export class GitHubAdapter {
     });
     const runs = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page?.check_runs ?? []);
     return runs;
+  }
+
+  /** Workflow runs are fetched by commit so report artifacts cannot bleed across change heads. */
+  async listWorkflowRuns(address: string, sha: string): Promise<GitHubActionsWorkflowRun[]> {
+    const response = await this.transport.request<{ workflow_runs?: GitHubActionsWorkflowRun[] }>({
+      method: "GET",
+      path: `repos/${address}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`,
+    });
+    return (response.workflow_runs ?? []).filter((run) => run.head_sha === sha);
+  }
+
+  async listWorkflowArtifacts(address: string, runId: number): Promise<GitHubActionsArtifact[]> {
+    const response = await this.transport.request<{ artifacts?: GitHubActionsArtifact[] }>({
+      method: "GET",
+      path: `repos/${address}/actions/runs/${runId}/artifacts?per_page=100`,
+    });
+    return response.artifacts ?? [];
+  }
+
+  async downloadWorkflowArtifact(address: string, artifactId: number): Promise<Uint8Array> {
+    return this.transport.request<Uint8Array>({ method: "GET", path: `repos/${address}/actions/artifacts/${artifactId}/zip`, binary: true });
   }
 
   async githubActionsJob(address: string, jobId: number): Promise<GitHubActionsJob> {

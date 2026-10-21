@@ -274,6 +274,7 @@ describe("repository ci and overrides", () => {
   test("absent ci is source-native and required", async () => {
     const { config } = await load(pipeline + repository());
     expect(config.repositories.sample!.ci).toEqual({ provider: null, mode: "required", ignoreChecks: [] });
+    expect(config.warnings?.some((warning) => warning.includes("repositories.sample.ci.junit is not configured"))).toBe(true);
   });
 
   test("legacy string names the provider", async () => {
@@ -292,6 +293,13 @@ ci:
   actions: { type: github-actions }
 ` + pipeline + repository("    ci: { provider: actions, mode: disabled }\n"));
     expect(named.config.repositories.sample!.ci).toEqual({ provider: "actions", mode: "disabled", ignoreChecks: [] });
+  });
+
+  test("accepts a JUnit artifact locator and rejects unsafe locator values", async () => {
+    const { config } = await load(pipeline + repository("    ci: { mode: required, junit: { artifact: test-results, path: reports/**/*.xml } }\n"));
+    expect(config.repositories.sample!.ci.junit).toEqual({ artifact: "test-results", path: "reports/**/*.xml" });
+    await expect(load(pipeline + repository("    ci: { mode: required, junit: { artifact: '', path: /reports.xml } }\n"))).rejects.toThrow(/artifact|path/);
+    await expect(load(pipeline + repository("    ci: { mode: required, junit: { artifact: test-results, path: ../reports.xml } }\n"))).rejects.toThrow(/relative path pattern/);
   });
 
   test("rejects an unknown mode and an unknown provider", async () => {
@@ -343,7 +351,7 @@ describe("repository agentEgress", () => {
 
   test("an empty block enforces loopback MCP only", async () => {
     const { config } = await load(NATIVE_PIPELINE + repository("    agentEgress: {}\n"));
-    expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [] });
+    expect(config.repositories.sample!.agentEgress).toEqual({ allowLoopbackMcp: true, httpsHosts: [], localServices: [] });
   });
 
   test("accepts exact hosts", async () => {
@@ -353,7 +361,51 @@ describe("repository agentEgress", () => {
     expect(config.repositories.sample!.agentEgress).toEqual({
       allowLoopbackMcp: false,
       httpsHosts: ["registry.npmjs.org", "github.com"],
+      localServices: [],
     });
+  });
+
+  test("accepts named Unix local services at fixed loopback endpoints", async () => {
+    const { config } = await load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: postgres://conveyor@127.0.0.1:5432/test
+`));
+    expect(config.repositories.sample!.agentEgress!.localServices).toEqual([{
+      name: "postgres",
+      socket: "/run/postgresql/.s.PGSQL.5432",
+      endpoint: "127.0.0.1:5432",
+      environment: { DATABASE_URL: "postgres://conveyor@127.0.0.1:5432/test" },
+    }]);
+  });
+
+  test("rejects unknown local-service keys", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          unexpected: true
+`))).rejects.toThrow();
+  });
+
+  test("rejects duplicate local-service names", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5432, endpoint: 127.0.0.1:5432 }
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5433, endpoint: 127.0.0.1:5433 }
+`))).rejects.toThrow('duplicate of localServices[0]');
+  });
+
+  test("rejects duplicate local-service endpoints", async () => {
+    await expect(load(NATIVE_PIPELINE + repository(`    agentEgress:
+      localServices:
+        - { name: postgres, socket: /run/postgresql/.s.PGSQL.5432, endpoint: 127.0.0.1:5432 }
+        - { name: replica, socket: /run/postgresql/.s.PGSQL.5433, endpoint: 127.0.0.1:5432 }
+`))).rejects.toThrow('localServices[1].endpoint "127.0.0.1:5432": duplicate of localServices[0]');
   });
 
   test("names the offending entry and rule", async () => {

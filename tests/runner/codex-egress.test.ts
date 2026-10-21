@@ -31,11 +31,11 @@ const status = !proxy ? "none" : await new Promise((resolve) => {
   const auth = Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64");
   socket.write("CONNECT model.fake.test:443 HTTP/1.1\\r\\nHost: model.fake.test:443\\r\\nProxy-Authorization: Basic " + auth + "\\r\\n\\r\\n");
 });
-await Bun.write(process.env.CAPTURE, JSON.stringify({ args, status, proxy: process.env.HTTPS_PROXY, httpProxy: process.env.HTTP_PROXY }));
+await Bun.write(process.env.CAPTURE, JSON.stringify({ args, status, proxy: process.env.HTTPS_PROXY, httpProxy: process.env.HTTP_PROXY, databaseUrl: process.env.DATABASE_URL }));
 await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
 `;
 
-async function run(egress: boolean) {
+async function run(egress: boolean, localServiceEnvironment?: Record<string, string>) {
   const directory = await shortTemporaryDirectory("conveyor-cx-", {
     socketPath: "artifacts/run-1/net/control.sock",
     visibleInSandbox: true,
@@ -65,6 +65,7 @@ async function run(egress: boolean) {
           egress: {
             httpsHosts: ["registry.fake.test"],
             controlPlaneHosts: ["model.fake.test"],
+            ...(localServiceEnvironment ? { localServiceEnvironment } : {}),
             resolve: async () => ["203.0.113.1"],
             dial: () => net.connect((model.address() as net.AddressInfo).port, "127.0.0.1"),
           },
@@ -98,5 +99,13 @@ describeSandbox("runCodex with agent egress", () => {
     const { capture } = await run(false);
     expect(capture.status).toBe("none");
     expect(capture.args.some((arg: string) => arg.startsWith("shell_environment_policy"))).toBe(false);
+  });
+
+  test("passes declared local-service connection variables to the sandboxed command", async () => {
+    const { capture } = await run(true, {
+      DATABASE_URL: "postgres://conveyor:password@127.0.0.1:5432/test",
+    });
+
+    expect(capture.databaseUrl).toBe("postgres://conveyor:password@127.0.0.1:5432/test");
   });
 });

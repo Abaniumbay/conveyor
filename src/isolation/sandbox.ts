@@ -23,6 +23,8 @@ export interface SandboxOptions {
   controlToken?: string;
   /** Forward this exact loopback port to the service's MCP-only Unix socket. */
   mcp?: { port: number; socket: string };
+  /** Repository-declared services exposed only through their configured loopback ports. */
+  localServices?: readonly { port: number; socket: string }[];
 }
 
 export interface SandboxedCommand {
@@ -159,8 +161,8 @@ function findOnPath(command: string, pathValue: string | undefined): string | un
 }
 
 
-function proxyEnvironment(proxy: string, mcp: boolean): Record<string, string> {
-  const noProxy = mcp ? "127.0.0.1" : "";
+function proxyEnvironment(proxy: string, loopbackService: boolean): Record<string, string> {
+  const noProxy = loopbackService ? "127.0.0.1" : "";
   return {
     HTTPS_PROXY: proxy, HTTP_PROXY: proxy, ALL_PROXY: proxy,
     https_proxy: proxy, http_proxy: proxy, all_proxy: proxy,
@@ -240,7 +242,9 @@ function isolationMounts(runTmp: string | undefined, allowedSockets?: readonly s
  * the one MCP port) and then runs the command with the proxy environment set.
  */
 export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
-  const taken = new Set<number>(options.mcp ? [options.mcp.port] : []);
+  const servicePorts = options.localServices?.map((service) => service.port) ?? [];
+  const taken = new Set<number>([...servicePorts, ...(options.mcp ? [options.mcp.port] : [])]);
+  const loopbackService = Boolean(options.mcp || options.localServices?.length);
   const freePort = (preferred: number): number => {
     let port = preferred;
     while (taken.has(port)) port += 2;
@@ -249,7 +253,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   };
   const dataPort = freePort(3128);
   const forwards = [{ port: dataPort, socket: options.dataProxySocket }];
-  const dataEnv = proxyEnvironment(`http://127.0.0.1:${dataPort}`, Boolean(options.mcp));
+  const dataEnv = proxyEnvironment(`http://127.0.0.1:${dataPort}`, loopbackService);
   let commandEnv = dataEnv;
   if (options.controlProxySocket) {
     if (!options.controlToken) throw new Error("a control-plane proxy requires a token");
@@ -258,12 +262,13 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
     const credentials = `conveyor:${encodeURIComponent(options.controlToken)}`;
     const control = `http://${credentials}@127.0.0.1:${controlPort}`;
     commandEnv = {
-      ...proxyEnvironment(control, Boolean(options.mcp)),
+      ...proxyEnvironment(control, loopbackService),
       HTTP_PROXY: "", http_proxy: "", ALL_PROXY: "", all_proxy: "",
       npm_config_proxy: "", npm_config_https_proxy: "",
     };
   }
   if (options.mcp) forwards.push({ port: options.mcp.port, socket: options.mcp.socket });
+  if (options.localServices) forwards.push(...options.localServices);
   const spec = JSON.stringify({ forwards, command: options.argv });
   const allowedSockets = forwards.map((forward) => forward.socket);
   return {
