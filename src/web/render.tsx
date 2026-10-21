@@ -7,6 +7,7 @@ import { Reports } from "./report-page";
 import { IndicatorChips, IndicatorDetails } from "./indicators";
 import { Team } from "./agent-pages";
 import { AgentAvatar } from "./avatar";
+import { reasonSummary } from "./format";
 import { renderSafeMarkdown } from "./markdown";
 import type {
   DashboardView,
@@ -1138,7 +1139,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
             <span class="andon andon--stop" aria-hidden="true" />
             <div>
               <h3><RepositoryBadge repository={issue.repository} /> · #{issue.number} {issue.title}</h3>
-              <p>{issue.reason ?? issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
+              <p>{issue.reason ? reasonSummary(issue.reason) : issue.activity ?? `${issue.state.replaceAll("-", " ")} needs intervention`}</p>
             </div>
             <a class="needs-you-action action-button action-button--secondary" href={issueHref(issue.repository, issue.number)}>Open</a>
           </li>

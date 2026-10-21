@@ -729,6 +729,15 @@ describe("renderDashboard", () => {
     expect(html).toContain("Reconciling startup state");
   });
 
+  test("Needs you shows a stopped item's reason only up to its first paragraph", () => {
+    const excerpt = "(fail) dashboard live refresh position > keeps Recent usable";
+    const stopped = { ...parent, reason: `The same required CI failure repeated. Another automatic retry will not fix it.\n\nFirst failure: https://example.com/pull/1 at abc1234.\n\n${excerpt}` };
+    const html = renderDashboard({ ...dashboard, needsYou: [stopped] });
+    const needsYou = html.slice(html.indexOf('<section class="needs-you"'), html.indexOf("</section>", html.indexOf('<section class="needs-you"')));
+    expect(needsYou).toContain("<p>The same required CI failure repeated. Another automatic retry will not fix it.</p>");
+    expect(needsYou).not.toContain(excerpt);
+  });
+
   test("the About view shows the running build and the project's details", () => {
     const html = renderDashboard({ ...dashboard, view: "about" });
     expect(html).toContain(`Version ${BUILD.version}`);

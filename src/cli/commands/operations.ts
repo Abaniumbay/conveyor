@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 
 import { loadConfig } from "../../config/load";
 import { BUILD, versionLine } from "../../version";
+import { reasonSummary } from "../../web/format";
 import { CliError, EXIT } from "../args";
 import { positional, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
@@ -124,7 +125,8 @@ export const status: Command = {
         `Runners: ${service.runners.busy} of ${service.runners.limit} busy${service.steering ? `, ${service.steering} steering run` : ""}`,
         ...service.active.map((entry) => `  running ${entry.item} ${entry.stage}`),
         `Stopped items: ${service.stopped.length}`,
-        ...service.stopped.map((entry) => `  ${entry.item} ${entry.stage ?? "-"} ${entry.state}: ${entry.reason ?? entry.title}`),
+        // The full reason can hold whole CI log excerpts; `conveyor item show` prints it.
+        ...service.stopped.map((entry) => `  ${entry.item} ${entry.stage ?? "-"} ${entry.state}: ${entry.reason ? reasonSummary(entry.reason, 200) : entry.title}`),
         `Open questions: ${service.openQuestions}${service.openQuestions ? " (conveyor questions list)" : ""}`,
       );
     }
