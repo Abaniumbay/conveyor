@@ -1014,7 +1014,7 @@ describe("findings", () => {
 
   test("change.comment rejects an unknown type before recording anything", async () => {
     const w = await world();
-    await expect(dispatch(w, "change.comment", { body: "x", headSha: "head1", type: "nit" })).rejects.toThrow();
+    await expect(dispatch(w, "change.comment", { body: "x", headSha: "head1", type: "nit" })).rejects.toBeInstanceOf(TaskInputError);
     expect(findings(w).list("i1")).toHaveLength(0);
   });
 
