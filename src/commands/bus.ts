@@ -19,6 +19,7 @@ export interface CommandResults {
   "gate.approve": void;
   "gate.setItemApproval": void;
   "finding.dismiss": void;
+  "finding.reclassify": { changed: boolean };
   "backlog.reorder": void;
   "backlog.move": void;
   "steering.start": string;

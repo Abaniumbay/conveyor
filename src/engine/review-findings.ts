@@ -208,6 +208,24 @@ export class ReviewFindings {
     })();
   }
 
+  /**
+   * Sets a finding's type, in one transaction with its history row and `finding.changed` event.
+   * Returns false, recording nothing, when the finding is missing or already has `type`. The
+   * code-host text of an imported finding is never touched.
+   */
+  reclassify(issueId: string, id: string, type: FindingType, actor: string, at = new Date().toISOString()): boolean {
+    const next = inputFindingType(type);
+    return this.#db.transaction(() => {
+      const row = this.#db.query("SELECT type FROM findings WHERE issue_id = ? AND id = ?").get(issueId, id) as { type: string } | null;
+      if (row === null) throw new Error(`Finding ${id} was not found on this issue.`);
+      const from = findingType(row.type);
+      if (from === next) return false;
+      this.#db.query("UPDATE findings SET type = ? WHERE issue_id = ? AND id = ?").run(next, issueId, id);
+      this.#event(id, "reclassified", actor, at, null, { from, to: next });
+      return true;
+    })();
+  }
+
   #resolvedByAgent(id: string): boolean {
     const resolution = this.events(id).filter((event) => event.kind === "resolved").at(-1);
     return resolution !== undefined && resolution.actor !== "provider";

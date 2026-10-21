@@ -4,7 +4,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 
 import { renderSafeMarkdown } from "../markdown";
-import type { IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventViewModel, IssueRunViewModel } from "../types";
+import { FINDING_TYPES } from "../../engine/finding-types";
+import type { FindingViewModel, IssueActivityViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRunEventViewModel, IssueRunViewModel } from "../types";
 import { formatDateTime } from "./format";
 
 type Load<T> = { status: "idle" | "loading" | "ready" | "failed"; data: T | null };
@@ -111,8 +112,51 @@ function safeExternalUrl(value: string): string | null {
   }
 }
 
-export function JourneyPanel({ issueId, active, revision }: { issueId: string; active: boolean; revision: unknown }) {
+/** One stored finding with its type; a superuser also gets the control that changes the type. */
+function FindingRow({ issueId, finding, csrfToken, canReclassify }: { issueId: string; finding: FindingViewModel; csrfToken: string; canReclassify: boolean }) {
+  const [type, setType] = useState(finding.type);
+  const [choice, setChoice] = useState(finding.type);
+  const [status, setStatus] = useState<"idle" | "saving" | "failed">("idle");
+  useEffect(() => { setType(finding.type); setChoice(finding.type); }, [finding.type]);
+  const url = safeExternalUrl(finding.url);
+  const save = async (event: Event) => {
+    event.preventDefault();
+    setStatus("saving");
+    try {
+      const response = await fetch(`/api/issues/${encodeURIComponent(issueId)}/findings/${encodeURIComponent(finding.id)}/type`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": csrfToken },
+        body: JSON.stringify({ type: choice }),
+      });
+      if (!response.ok) throw new Error(`request failed with ${response.status}`);
+      setType(choice);
+      setStatus("idle");
+    } catch {
+      setStatus("failed");
+    }
+  };
+  return (
+    <li class="finding" data-finding-id={finding.id}>
+      <header><strong class="finding-type" data-finding-type>{humanize(type)}</strong><span class="journey-kind">{humanize(finding.state)}</span></header>
+      <p class="journey-meta">{finding.author}{finding.location && ` · ${finding.location}`}</p>
+      {finding.summary && <p class="journey-reason">{finding.summary}</p>}
+      {url && <a href={url} target="_blank" rel="noopener noreferrer">Open on the code host ↗</a>}
+      {canReclassify && (
+        <form class="finding-type-form" onSubmit={(event) => void save(event)}>
+          <label>Type <select name="type" value={choice} onChange={(event) => setChoice(event.currentTarget.value)}>
+            {FINDING_TYPES.map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
+          </select></label>
+          <button type="submit" class="action-button action-button--secondary" disabled={status === "saving" || choice === type}>Change type</button>
+          {status === "failed" && <small class="journey-lifecycle" role="alert">The type could not be changed.</small>}
+        </form>
+      )}
+    </li>
+  );
+}
+
+export function JourneyPanel({ issueId, active, revision, csrfToken, canReclassify }: { issueId: string; active: boolean; revision: unknown; csrfToken: string; canReclassify: boolean }) {
   const { status, data } = useJson<IssueJourneyViewModel>(`/api/issues/${encodeURIComponent(issueId)}/journey`, active, revision);
+  const findings = data?.findings ?? [];
   const transitions = data?.transitions ?? [];
   const skipped = data?.skippedReviews ?? [];
   const summary = status === "failed" && !data
@@ -125,6 +169,12 @@ export function JourneyPanel({ issueId, active, revision }: { issueId: string; a
   const now = data?.now ?? null;
   return <>
     <p class={`journey-status${status === "loading" ? " status--loading" : ""}`} data-journey-status>{summary}</p>
+    {findings.length > 0 && (
+      <section class="findings" data-findings>
+        <h3>Review findings</h3>
+        <ul class="finding-list">{findings.map((finding) => <FindingRow key={finding.id} issueId={issueId} finding={finding} csrfToken={csrfToken} canReclassify={canReclassify} />)}</ul>
+      </section>
+    )}
     <ol class="journey-list" data-journey-list>
       {transitions.map((transition) => {
         const kind = (transition.kind || "observed").replace(/[^a-z0-9_-]/gi, "");

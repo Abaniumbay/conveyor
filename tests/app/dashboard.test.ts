@@ -2433,6 +2433,23 @@ describe("ConveyorService dashboard", () => {
       }],
     });
     expect(JSON.stringify(service.issueJourney("github:owner/repo#31"))).not.toContain("Never expose this skipped review body");
+    const findingStore = new ReviewFindings(store.sqlite());
+    findingStore.importNative("github:owner/repo#31", [{
+      providerKey: "thread:T9", author: "owner", trusted: true, body: "Rename this", url: "https://example.com/reviews/2", path: "a.ts", line: 4, resolved: false,
+    }], "head", "2026-09-29T03:01:00Z");
+    const finding = findingStore.list("github:owner/repo#31").find((f) => f.providerKey === "thread:T9")!;
+    expect(service.issueJourney("github:owner/repo#31")?.findings).toEqual([
+      { id: finding.id, type: "general", state: "open", author: "owner", location: "a.ts:4", url: "https://example.com/reviews/2", summary: "Rename this" },
+    ]);
+    const reclassifications = () => store.events().read({ type: "finding.changed" }).filter((event) => (event.payload as { change: string }).change === "reclassified");
+    const superuser = { kind: "user" as const, id: "operator", name: "operator", role: "superuser" as const };
+    await service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "security" }, superuser);
+    expect(findingStore.get("github:owner/repo#31", finding.id)).toMatchObject({ type: "security", body: "Rename this", url: "https://example.com/reviews/2" });
+    expect(reclassifications().map((event) => event.payload)).toEqual([{ findingId: finding.id, type: "security", change: "reclassified" }]);
+    await service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "security" }, superuser);
+    expect(reclassifications()).toHaveLength(1);
+    await expect(service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "bug" }, { ...superuser, role: "user" })).rejects.toThrow();
+    expect(findingStore.get("github:owner/repo#31", finding.id)?.type).toBe("security");
     store.setIssueProjection("github:owner/repo#31", {
       stage: null,
       state: "offboarded",

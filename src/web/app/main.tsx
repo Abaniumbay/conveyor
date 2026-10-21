@@ -28,7 +28,7 @@ function liveDetails(issue: IssueCardViewModel): LiveDetails {
   return {
     tab: view.tab,
     conversation: <ConversationPanel issueId={issue.id} active={view.tab === "conversation"} revision={item?.conversation ?? null} />,
-    journey: <JourneyPanel issueId={issue.id} active={view.tab === "journey"} revision={[issue.stage, issue.state, issue.stateChangedAt]} />,
+    journey: <JourneyPanel issueId={issue.id} active={view.tab === "journey"} revision={[issue.stage, issue.state, issue.stateChangedAt]} csrfToken={store.state?.csrfToken ?? ""} canReclassify={store.state?.account.role === "superuser"} />,
     activity: <ActivityPanel issueId={issue.id} active={view.tab === "activity"} revision={[issue.activity, issue.working, issue.stateChangedAt]} />,
   };
 }

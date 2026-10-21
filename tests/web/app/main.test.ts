@@ -71,6 +71,7 @@ const reportTotals = {
 
 function startApp() {
   const state = { title: "Before" };
+  const reclassified: unknown[][] = [];
   const feed = new DashboardFeed({ build: () => normalizeDashboard(board(state.title)), settleMs: 5, maxWaitMs: 20 });
   const auth = createWebAuth({
     passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
@@ -80,6 +81,7 @@ function startApp() {
   const { commands } = fakeCommandBus({
     answerQuestion: () => {}, approveManualGate: () => {}, setBoardApprovalRequirement: () => {}, reorderBacklog: () => {},
     moveBacklogIssue: () => {}, startSteering: () => "run-1", postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
+    reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; },
   });
   const handler = createWebHandler({
     auth,
@@ -105,7 +107,12 @@ function startApp() {
     getIssueActivity: () => null,
     getIssueRunEvents: () => null,
     getIssueConversation: () => null,
-    getIssueJourney: () => null,
+    getIssueJourney: (issueId) => issueId === "github:sample/repo#20"
+      ? { issueId, now: { stage: "implementation", state: "active", reason: null, since: null }, transitions: [], skippedReviews: [], findings: [{
+        id: "finding-1", type: "test-not-discriminating", state: "open", author: "a-reviewer-with-a-rather-long-login", location: "src/web/app/a/very/long/path/to/a/file-with-a-long-name.tsx:120",
+        url: "https://example.com/reviews/1", summary: "A_very_long_unbroken_review_summary_that_must_wrap_instead_of_widening_the_page_".repeat(3),
+      }] }
+      : null,
     getIssueRoute: (reference) => "repository" in reference && reference.repository === "sample" && reference.number === 7 ? { id: "github:sample/repo#7", repository: "sample", number: 7 } : null,
     getIssueDetails: (issueId) => issueId === "github:sample/repo#7" ? { ...issue(7, "Finished long ago", { state: "done", tone: "success" }), csrfToken: "" } : null,
     getAgentProfiles: () => [omid],
@@ -114,6 +121,7 @@ function startApp() {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
   return {
     url: `http://127.0.0.1:${server.port}`,
+    reclassified,
     rename(title: string) {
       state.title = title;
       feed.invalidate();
@@ -205,6 +213,37 @@ describe("dashboard application", () => {
 
       await page.locator("dialog[open] .details-header h2", { hasText: "Before" }).waitFor();
       expect(await page.locator("dialog[open] [role='tab'][aria-selected='true']").textContent()).toBe("Journey");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("shows a finding's type and lets a superuser change it at 360 px without sideways scrolling", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true });
+      await signIn(page, app.url);
+
+      await page.goto(`${app.url}/issues/sample/20/journey`);
+
+      const finding = page.locator("dialog[open] [data-finding-id='finding-1']");
+      await finding.waitFor();
+      expect(await finding.locator("[data-finding-type]").textContent()).toBe("Test Not Discriminating");
+      const select = finding.locator("select[name='type']");
+      const button = finding.getByRole("button", { name: "Change type" });
+      expect(await select.isVisible() && await button.isVisible()).toBe(true);
+      const overflow = await page.evaluate(() => [document.documentElement, ...document.querySelectorAll("dialog[open], dialog[open] *")]
+        .some((element) => element.scrollWidth > element.clientWidth + 1 && getComputedStyle(element).overflowX === "visible" && element.getBoundingClientRect().right > window.innerWidth + 1));
+      expect(overflow).toBe(false);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+      const box = await button.boundingBox();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+
+      await select.selectOption("security");
+      await button.click();
+      await page.waitForFunction(() => document.querySelector("[data-finding-id='finding-1'] [data-finding-type]")?.textContent === "Security");
+      expect(app.reclassified).toEqual([["github:sample/repo#20", "finding-1", "security", "operator"]]);
     } finally {
       app.stop();
     }
