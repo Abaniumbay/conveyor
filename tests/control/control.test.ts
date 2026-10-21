@@ -213,6 +213,15 @@ describe("restart route", () => {
 });
 
 describe("operating through the CLI", () => {
+  test("status shows only the first paragraph of a long stop reason", async () => {
+    const { cli, store } = await running();
+    const excerpt = "(fail) dashboard live refresh position > keeps Recent usable";
+    store.setIssueProjection("issue-1", { stage: "implementation", state: "blocked", warning: `The same required CI failure repeated. Another automatic retry will not fix it.\n\nFirst failure: https://example.com/pull/1 at abc1234.\n\n\`\`\`\n${excerpt}\n\`\`\`` });
+    const result = await cli("status");
+    expect(result.out).toContain("app:1 implementation blocked: The same required CI failure repeated. Another automatic retry will not fix it.");
+    expect(result.out).not.toContain(excerpt);
+  });
+
   test("status shows capacity, stopped items with their blocker, and paths", async () => {
     const { cli, home } = await running();
     const result = await cli("status");
