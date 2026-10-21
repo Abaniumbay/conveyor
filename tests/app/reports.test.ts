@@ -136,4 +136,59 @@ describe("buildReport", () => {
     const report = buildReport({ store, config, period: "all", repository: "alpha", now: NOW });
     expect(report.items[0]).toMatchObject({ number: 2, waitingForYouMs: H, stops: 1 });
   });
+
+  describe("findings", () => {
+    async function withFindings() {
+      const store = await world();
+      const db = store.sqlite();
+      const review = (db.query("SELECT id FROM runs WHERE issue_id = 'a1' AND stage_id = 'review'").get() as { id: string }).id;
+      db.query("INSERT INTO runs(id, issue_id, stage_id, attempt, kind, status, config_hash, started_at, finished_at) VALUES ('rb', 'b7', 'review', 1, 'reviewer', 'succeeded', 'h', '2026-09-02T00:00:00.000Z', '2026-09-02T01:00:00.000Z')").run();
+      const finding = (id: string, issue: string, runId: string, type: string, author: string, at: string) =>
+        db.query("INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, body, created_at, type) VALUES (?, ?, ?, NULL, ?, 'agent', 'sha', 'open', 'b', ?, ?)").run(id, issue, runId, author, at, type);
+      finding("f1", "a1", review, "bug", "reviewer", "2026-10-12T00:00:00.000Z");
+      finding("f2", "a1", review, "bug", "reviewer", "2026-10-12T00:00:00.000Z");
+      finding("f3", "a1", review, "docs", "alice", "2026-10-20T00:00:00.000Z");
+      finding("f4", "b7", "rb", "security", "reviewer", "2026-09-02T00:00:00.000Z");
+      return store;
+    }
+    const counts = (rows: readonly { key: string; count: number }[]) => rows.map((row) => [row.key, row.count]);
+
+    test("the global report carries counts by type, repository, author and UTC ISO week, with each type's share of rounds", async () => {
+      const report = buildReport({ store: await withFindings(), config, period: "all", repository: null, now: NOW });
+      const findings = report.findings;
+      expect(findings.total).toBe(4);
+      expect(findings.reviewRounds).toBe(2);
+      const type = (name: string) => findings.byType.find((row) => row.type === name);
+      expect(type("bug")).toEqual({ type: "bug", findings: 2, rounds: 1, share: 0.5 });
+      expect(type("docs")).toMatchObject({ findings: 1, share: 0.5 });
+      expect(type("security")).toMatchObject({ findings: 1, share: 0.5 });
+      expect(type("style")).toEqual({ type: "style", findings: 0, rounds: 0, share: 0 });
+      expect(counts(findings.byRepository)).toEqual([["alpha", 3], ["beta", 1]]);
+      expect(counts(findings.byAuthor)).toEqual([["reviewer", 3], ["alice", 1]]);
+      expect(counts(findings.byWeek)).toEqual([["2026-W43", 1], ["2026-W42", 2], ["2026-W36", 1]]);
+    });
+
+    test("a selected repository keeps only that repository's findings", async () => {
+      const findings = buildReport({ store: await withFindings(), config, period: "all", repository: "beta", now: NOW }).findings;
+      expect(findings.total).toBe(1);
+      expect(findings.reviewRounds).toBe(1);
+      expect(counts(findings.byRepository)).toEqual([["beta", 1]]);
+      expect(counts(findings.byAuthor)).toEqual([["reviewer", 1]]);
+      expect(findings.byType.find((row) => row.type === "bug")).toMatchObject({ findings: 0, share: 0 });
+    });
+
+    test("a selected period keeps only that period's findings", async () => {
+      const findings = buildReport({ store: await withFindings(), config, period: "30d", repository: null, now: NOW }).findings;
+      expect(findings.total).toBe(3);
+      expect(findings.reviewRounds).toBe(1);
+      expect(counts(findings.byRepository)).toEqual([["alpha", 3]]);
+      expect(findings.byType.find((row) => row.type === "security")).toMatchObject({ findings: 0 });
+      expect(findings.byType.find((row) => row.type === "bug")).toMatchObject({ findings: 2, rounds: 1, share: 1 });
+    });
+
+    test("no findings give an empty report", async () => {
+      const findings = buildReport({ store: await world(), config, period: "all", repository: null, now: NOW }).findings;
+      expect(findings).toMatchObject({ total: 0, reviewRounds: 1, byRepository: [], byAuthor: [], byWeek: [] });
+    });
+  });
 });

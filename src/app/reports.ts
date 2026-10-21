@@ -7,8 +7,11 @@ import type { Database } from "bun:sqlite";
 
 import type { ConveyorConfig } from "../config/load";
 import type { ConveyorStore } from "../db/store";
+import { buildFindingReport } from "./finding-report";
 import { displayName } from "../tasks/agent-support";
 import type {
+  ReportFindingCountRow,
+  ReportFindings,
   ReportItemRow,
   ReportMonthRow,
   ReportPeriod,
@@ -216,6 +219,23 @@ function itemRows(items: readonly ItemFacts[], since: string | null): ReportItem
     }));
 }
 
+const byCount = (counts: Record<string, number>, order: (a: string, b: string) => number): ReportFindingCountRow[] =>
+  Object.entries(counts).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count || order(a.key, b.key));
+
+/** The shared finding report as view rows: types in taxonomy order, others by count, weeks newest first. */
+function findings(db: Database, repository: string | null, since: string | null): ReportFindings {
+  const report = buildFindingReport(db, { ...(repository ? { repositoryId: repository } : {}), ...(since ? { since } : {}) });
+  const byKey = (a: string, b: string) => a.localeCompare(b);
+  return {
+    total: report.total,
+    reviewRounds: report.reviewRounds,
+    byType: report.typeShares,
+    byRepository: byCount(report.byRepository, byKey),
+    byAuthor: byCount(report.byAuthor, byKey),
+    byWeek: Object.entries(report.byWeek).map(([key, count]) => ({ key, count })).sort((a, b) => b.key.localeCompare(a.key)),
+  };
+}
+
 export function buildReport(input: {
   store: ConveyorStore;
   config: ConveyorConfig;
@@ -242,6 +262,7 @@ export function buildReport(input: {
     byMonth: months(scope, since, now),
     byStage: stages(scope, since, now, input.config, scopeRepositories),
     items: input.repository ? itemRows(scope, since) : [],
+    findings: findings(input.store.sqlite(), input.repository, since),
     importedWithoutHistory: facts.filter((item) => imported(item) && (!input.repository || item.issue.repository_id === input.repository)).length,
     generatedAt: nowDate.toISOString(),
   };

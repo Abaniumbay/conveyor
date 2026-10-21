@@ -2,7 +2,7 @@
 // HTML bars (one series, one hue each) with a focusable tooltip; every chart sits beside a table of
 // the same numbers.
 
-import type { ReportItemRow, ReportPeriod, ReportTotals, ReportViewModel } from "./types";
+import type { ReportFindingCountRow, ReportItemRow, ReportPeriod, ReportTotals, ReportViewModel } from "./types";
 
 export const REPORT_PERIOD_VALUES: readonly ReportPeriod[] = ["7d", "30d", "90d", "12m", "all"];
 
@@ -263,6 +263,50 @@ function Items({ report }: { report: ReportViewModel }) {
   );
 }
 
+function FindingCounts({ id, title, label, rows }: { id: string; title: string; label: string; rows: readonly ReportFindingCountRow[] }) {
+  return (
+    <div class="report-table-wrap" role="group" aria-labelledby={id} tabIndex={0}>
+      <table class="report-table report-table--findings">
+        <caption id={id}>{title}</caption>
+        <thead><tr><th scope="col">{label}</th><th scope="col">Findings</th></tr></thead>
+        <tbody>{rows.map((row) => <tr key={row.key}><th scope="row">{row.key}</th><td>{row.count}</td></tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function Findings({ report }: { report: ReportViewModel }) {
+  const findings = report.findings;
+  return (
+    <section class="report-section" aria-labelledby="report-findings">
+      <h3 id="report-findings">Review findings</h3>
+      {findings.total === 0
+        ? <p class="report-empty">No review findings{report.repository ? ` for ${report.repository}` : ""} in this period.</p>
+        : (
+          <>
+            <p class="report-notes">{findings.total} {findings.total === 1 ? "finding" : "findings"} across {findings.reviewRounds} review {findings.reviewRounds === 1 ? "round" : "rounds"}. Each counts once by its stored type; a type's share is the review rounds that raised at least one finding of it.</p>
+            <div class="report-table-wrap" role="group" aria-labelledby="report-finding-types" tabIndex={0}>
+              <table class="report-table report-table--findings">
+                <caption id="report-finding-types">By type</caption>
+                <thead><tr><th scope="col">Type</th><th scope="col">Findings</th><th scope="col">Rounds</th><th scope="col">Share of rounds</th></tr></thead>
+                <tbody>
+                  {findings.byType.map((row) => (
+                    <tr key={row.type}><th scope="row">{row.type}</th><td>{row.findings}</td><td>{row.rounds}</td><td>{orDash(row.share, percent)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div class="report-chart-row">
+              {report.repository === null && <FindingCounts id="report-finding-repositories" title="By repository" label="Repository" rows={findings.byRepository} />}
+              <FindingCounts id="report-finding-authors" title="By author" label="Author" rows={findings.byAuthor} />
+              <FindingCounts id="report-finding-weeks" title="By UTC ISO week" label="Week" rows={findings.byWeek} />
+            </div>
+          </>
+        )}
+    </section>
+  );
+}
+
 export function Reports({ report }: { report: ReportViewModel }) {
   return (
     <section class="report" aria-labelledby="report-heading">
@@ -277,6 +321,7 @@ export function Reports({ report }: { report: ReportViewModel }) {
       {report.repository === null && <RepositoryTable report={report} />}
       {report.repository !== null && <Items report={report} />}
       <TimeAndStages report={report} />
+      <Findings report={report} />
       <Months report={report} />
       <p class="report-notes">
         Agent time is the wall time of runs. Waiting on CI and checks is time a stage spent parked on CI, a deploy or a dependency; waiting for you is time an item spent stopped (blocked, needs input, error) until it resumed; queued and other is the rest of the lead time.
