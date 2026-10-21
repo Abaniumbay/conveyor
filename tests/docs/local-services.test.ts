@@ -12,6 +12,14 @@ test("configuration guide shows a Unix local service and its secret-backed comma
   expect(configuration).toContain("Values under `environment` are set only for those commands");
 });
 
+test("operations guide explains test-database provisioning without the Docker socket", async () => {
+  const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
+
+  expect(operations).toContain("Provision one test database per repository");
+  expect(operations).toContain("agentEgress.localServices");
+  expect(operations).toContain("they never receive the Docker socket");
+});
+
 test("configuration guide shows a loopback TCP local service using the environment contract", async () => {
   const configuration = await readFile(path.join(import.meta.dir, "../../docs/configuration.md"), "utf8");
 

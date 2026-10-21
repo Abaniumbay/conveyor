@@ -132,6 +132,21 @@ also reads (never writes) whether the GitHub credentials can read the organizati
 issue fields and write them on the repository. Each failure comes with the fix. Agent sign-ins are
 separate from the dashboard administrator.
 
+### Test databases for agents
+
+Provision one test database per repository on the host, outside Conveyor: create a database and a
+role for that repository only, run the server with a Unix socket (for example PostgreSQL's
+`/run/postgresql/.s.PGSQL.5432`), and put the connection URL in `secrets.yaml`. Then declare the
+socket under that repository's `agentEgress.localServices` with a fixed `127.0.0.1:<port>` endpoint
+and `environment: { DATABASE_URL: !secret <name> }` (see the configuration guide). Agents reach the
+database only through that bridged endpoint; they never receive the Docker socket, and Conveyor
+rejects a service that forwards it. If the database runs in a container, publish its Unix socket to
+the host yourself rather than mounting Docker into the sandbox.
+
+Verify with `bun scripts/check-agent-egress.ts <repository-id> --config <dir>`: it requires each
+configured service to accept a connection from inside the sandbox and the Docker socket to be
+refused.
+
 ## 5. First run
 
 ```sh
