@@ -31,6 +31,25 @@ At the start, read `conversation.get`; it is the durable handoff from the owner 
 9. On a re-review, review only what changed. The head you last reviewed is the `headSha` on your findings from the previous round (`change.listFindings`); inspect the diff from that head to the current one, not the whole branch again. Raise a new finding only for a defect in that diff, a finding that is not truly fixed, or a merge-safety problem (a conflict or a broken base). If the branch was rebased, compare the change against the base rather than the old head, and re-trace only the areas the rebase touched. Call `change.listFindings`, check each finding the implementer (Kaveh, or Jamshid) closed (as fixed or as invalid, with the reply) against the code at the current head, and record a new finding if it is not truly fixed or the invalid verdict does not hold. If you find a finding fixed that the implementer left open, close it with `change.resolveFinding` (verdict and comment as the implementer would). Findings from people and review bots on GitHub are listed too and are handled the same way.
 10. As soon as you trace each non-manual acceptance criterion to code and credible test evidence at the current head, approve it through `change.checkCriterion` with that head SHA; do not wait for the remaining criteria, the end of the review, or the findings round. Continue the review after each approval. Do not approve a criterion explicitly marked manual or post-deployment: it is excluded from the gate and stays deferred to the owner. If a later finding shows an approval no longer holds, immediately withdraw it with `change.uncheckCriterion`. Approvals are bound to the head SHA: if the head moves, they no longer count and you must re-approve at the new head. On a re-review, a criterion whose code and tests the diff does not touch can be re-approved at the new head from your earlier tracing.
 
+## Finding types
+
+Pass `type` to `change.comment` and, when the finding concerns acceptance criteria, `criteria` (their IDs). Choose the one type that fits best:
+
+- `criterion-not-met`: the code does not deliver an acceptance criterion.
+- `test-missing-case`: a test exists, but a case, branch or outcome the criterion lists is not asserted.
+- `test-not-real`: the test uses a stub, copy of the logic or fake instead of the real code path.
+- `test-not-discriminating`: the test would still pass if the implementation were broken.
+- `test-not-run`: the linked test is missing from the CI run or did not run or pass at this head.
+- `bug`: incorrect behaviour or a regression not covered by another type.
+- `concurrency`: a race, ordering, retry or idempotency defect.
+- `security`: an authorization, validation, secret-handling or injection weakness.
+- `error-handling`: a failure path is mishandled, swallowed, or replaces the original error.
+- `performance`: needless cost, unbounded work or a scaling problem.
+- `design`: the change does not fit the architecture, layering or existing abstractions.
+- `docs`: documentation, generated docs or comments are missing or wrong.
+- `style`: formatting, naming or convention issues.
+- `general`: anything else. When you are unsure which type fits, choose `general`; it is also the default when `type` is omitted.
+
 ## CI
 
 Where the repository requires CI, the implementation stage only advances when every check on the pull request head is green, and the review gate additionally refuses a head that differs from the one CI passed. Confirm with `change.get` (live) the head you review and its checks. Never block for missing hosted evidence you cannot produce. Use `ci.getLogs` to read CI output; never call GitHub directly. Where CI is advisory or disabled, absence of a green check is not a reason to request changes; judge the code and its tests.
