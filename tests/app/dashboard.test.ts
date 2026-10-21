@@ -26,6 +26,31 @@ afterEach(async () => {
 });
 
 describe("ConveyorService dashboard", () => {
+  test("puts a stage only one pipeline has after its predecessor in that pipeline", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-stage-order-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const stage = (id: string) => ({ id, run: { type: "agent", agent: "worker" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] });
+    const config = {
+      hash: "config-hash", root,
+      settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+      runners: {}, sources: {}, repositories: {}, agents: {},
+      pipelines: {
+        delivery: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["implementation", "review", "merge", "cleanup"].map(stage) },
+        gated: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["implementation", "review", "ci-gate", "merge", "cleanup"].map(stage) },
+      },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: {}, metadata: { closable: "conveyor:closable" } },
+    } as unknown as ConveyorConfig;
+    const service = new ConveyorService(config, store, {} as never);
+    try {
+      expect(service.dashboard("csrf").stages.map((column) => column.id)).toEqual(
+        ["stage:implementation", "stage:review", "stage:ci-gate", "stage:merge", "stage:cleanup"],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test("exposes an ordinary drain and a typed upgrade target, then clears them when admission resumes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-drain-"));
     temporaryDirectories.push(root);

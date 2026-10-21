@@ -4677,14 +4677,20 @@ export class ConveyorService {
     const stageNames = new Map<string, string>();
     const stageDescriptions = new Map<string, string>();
     const stageIcons = new Map<string, string>();
+    // One line for every pipeline: a stage only some pipelines have goes right after the stage
+    // that precedes it in its own pipeline, so each pipeline's order holds on the board.
+    const stages: string[] = [];
     for (const pipeline of Object.values(this.config.pipelines)) {
-      for (const stage of pipeline.stages) {
-        if (!stageNames.has(stage.id)) stageNames.set(stage.id, stage.name ?? displayName(stage.id));
+      pipeline.stages.forEach((stage, index) => {
+        if (!stageNames.has(stage.id)) {
+          const previous = index > 0 ? stages.indexOf(pipeline.stages[index - 1]!.id) : -1;
+          stages.splice(previous + 1, 0, stage.id);
+          stageNames.set(stage.id, stage.name ?? displayName(stage.id));
+        }
         if (stage.description && !stageDescriptions.has(stage.id)) stageDescriptions.set(stage.id, stage.description);
         if (stage.icon && !stageIcons.has(stage.id)) stageIcons.set(stage.id, stage.icon);
-      }
+      });
     }
-    const stages = [...stageNames.keys()];
     const recent = pagination.view === "recent"
       ? this.recentActivity(pagination, repositoryColors)
       : undefined;
