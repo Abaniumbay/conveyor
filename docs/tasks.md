@@ -103,7 +103,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | Task | Kind | Reads | Writes / invalidates | Description |
 | --- | --- | --- | --- | --- |
 | `change.checkCriterion` | tool | - | invalidates change | Approve one acceptance criterion for the current change head and tick it in the pull request checklist. headSha must be the current head. |
-| `change.comment` | tool | - | invalidates change | Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). headSha must be the current head. |
+| `change.comment` | tool | - | invalidates change | Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). Optional type classifies it (default general) and criteria lists the acceptance criterion IDs it concerns. headSha must be the current head. |
 | `change.criteriaChecked` | check | item, change | - | Passes when every non-manual criterion is approved for the current change head; manual criteria are excluded. |
 | `change.criteriaInSync` | check | item, change | - | Passes when the pull request checklist lists exactly the item's criteria ids. |
 | `change.criterionTestsPassed` | check | item, change, ci | - | After required CI passes, verifies every linked non-manual criterion test has one exact, passing JUnit case in configured artifacts from the current change head. Without a JUnit locator, retains the source-link verification fallback. |

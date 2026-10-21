@@ -32,6 +32,16 @@ describe("GitHub findings projection", () => {
     expect((transport.requests[0]!.body as { body: string }).body).toContain("<!-- conveyor:finding:F1 -->");
   });
 
+  test("names the stored type in the inline and managed comments and keeps it when resolved", async () => {
+    const inline = host([{ id: 21, html_url: "https://x/c21" }, { id: 22, html_url: "https://x/c22" }, {}]);
+    await inline.host.createFinding({ address: "o/r", id: ID, findingId: "F1", body: "Fix it", headSha: "h1", path: "a.ts", line: 4, type: "concurrency" });
+    await inline.host.createFinding({ address: "o/r", id: ID, findingId: "F2", body: "Fix it", headSha: "h1", type: "security" });
+    expect((inline.transport.requests[0]!.body as { body: string }).body).toContain("Type: `concurrency`");
+    expect((inline.transport.requests[1]!.body as { body: string }).body).toContain("Type: `security`");
+    await inline.host.resolveFindingProjection({ address: "o/r", id: ID, findingId: "F2", projection: "comment:22", body: "Fix it", type: "security", actor: "k", verdict: "fixed", message: "Done" });
+    expect((inline.transport.requests[2]!.body as { body: string }).body).toContain("Type: `security`");
+  });
+
   test("falls back to a managed PR comment when GitHub rejects the position", async () => {
     const { transport, host: h } = host([unprocessable, { id: 12, html_url: "https://x/c12" }]);
     const result = await h.createFinding({ address: "o/r", id: ID, findingId: "F1", body: "Fix it", headSha: "h1", path: "a.ts", line: 400 });

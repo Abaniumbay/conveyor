@@ -12,6 +12,7 @@ import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { ChangeContext, TaskContext } from "../../src/tasks/context";
 import { InfrastructureError, runTask, TaskInputError, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
+import { FINDING_TYPES } from "../../src/engine/finding-types";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -991,6 +992,32 @@ describe("findings", () => {
     expect(findings(w).list("i1")[0]).toMatchObject({ path: null, line: null, projection: "comment:12" });
   });
 
+  test("change.comment stores any defined type and returns it with the criterion IDs through change.listFindings", async () => {
+    const w = await world();
+    for (const type of FINDING_TYPES) {
+      const output = await dispatch(w, "change.comment", { body: `About ${type}`, headSha: "head1", type, criteria: ["AC-1", "AC-2", "AC-1"] }) as { findingId: string; type: string };
+      expect(output.type).toBe(type);
+      expect(findings(w).get("i1", output.findingId)).toMatchObject({ type, criterionIds: ["AC-1", "AC-2"] });
+      expect(w.host.calls.filter(([name]) => name === "createFinding").at(-1)![1]).toMatchObject({ type });
+    }
+    const listed = await dispatch(w, "change.listFindings", {}) as { findings: { type: string; criterionIds: string[] }[] };
+    expect(listed.findings.map((f) => f.type)).toEqual([...FINDING_TYPES]);
+    expect(listed.findings.every((f) => f.criterionIds.join() === "AC-1,AC-2")).toBe(true);
+  });
+
+  test("change.comment without a type records general and no criteria", async () => {
+    const w = await world();
+    const output = await dispatch(w, "change.comment", { body: "x", headSha: "head1" }) as { findingId: string; type: string };
+    expect(output.type).toBe("general");
+    expect(findings(w).get("i1", output.findingId)).toMatchObject({ type: "general", criterionIds: [] });
+  });
+
+  test("change.comment rejects an unknown type before recording anything", async () => {
+    const w = await world();
+    await expect(dispatch(w, "change.comment", { body: "x", headSha: "head1", type: "nit" })).rejects.toBeInstanceOf(TaskInputError);
+    expect(findings(w).list("i1")).toHaveLength(0);
+  });
+
   test("a retried change.comment returns the journaled response instead of creating a second finding", async () => {
     const w = await world();
     const input = { body: "Fix this", headSha: "head1" };
@@ -1121,10 +1148,24 @@ describe("findings", () => {
     const w = await world({ artifacts: [artifact()] });
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
     expect((result.output as ChangeContext).findings).toEqual([
-      { id: expect.any(String), providerKey: "thread:T1", author: "alice", source: "human", headSha: "head1", state: "open", path: "a.ts", line: 3, url: "https://x/t1" },
+      { id: expect.any(String), providerKey: "thread:T1", author: "alice", source: "human", headSha: "head1", state: "open", path: "a.ts", line: 3, url: "https://x/t1", type: "general", criterionIds: [] },
     ]);
     await run("change.load", { context: {}, deps: w.deps });
     expect(findings(w).list("i1")).toHaveLength(1);
+  });
+
+  test("change.load exposes a finding's stored type and criterion IDs", async () => {
+    const w = await world();
+    const finding = findings(w).create({
+      issueId: "i1", runId: "run1", author: "reviewer", headSha: "head1", body: "Validate access control",
+      type: "security", criterionIds: ["AC-1", "AC-4"],
+    });
+
+    const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
+
+    expect((result.output as ChangeContext).findings).toContainEqual(expect.objectContaining({
+      id: finding.id, type: "security", criterionIds: ["AC-1", "AC-4"],
+    }));
   });
 
   test("change.load retains body-free provenance for untrusted artifacts and exposes only a trusted adoption", async () => {
@@ -1174,7 +1215,7 @@ describe("findings", () => {
     expect(task.kind).toBe("check");
     expect(task.checkpoint).toEqual({ name: "reviewPassed", scope: "gate" });
     const finding = (state: "open" | "resolved" | "dismissed" | "withdrawn", id: string): ChangeContext["findings"][number] =>
-      ({ id, providerKey: null, author: "a", source: "agent", headSha: "head1", state, path: "a.ts", line: 3, url: `https://x/${id}` });
+      ({ id, providerKey: null, author: "a", source: "agent", headSha: "head1", state, path: "a.ts", line: 3, url: `https://x/${id}`, type: "general", criterionIds: [] });
     expect((await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("resolved", "r"), finding("dismissed", "d"), finding("withdrawn", "w")] }) }) })).status).toBe("pass");
     const failed = await run("change.findingsResolved", { context: ctx({ change: change({ findings: [finding("open", "o1"), finding("resolved", "r")] }) }) }) as Fail;
     expect(failed.status).toBe("fail");

@@ -19,3 +19,12 @@ test("operations guide explains test-database provisioning without the Docker so
   expect(operations).toContain("agentEgress.localServices");
   expect(operations).toContain("they never receive the Docker socket");
 });
+
+test("configuration guide shows a loopback TCP local service using the environment contract", async () => {
+  const configuration = await readFile(path.join(import.meta.dir, "../../docs/configuration.md"), "utf8");
+
+  expect(configuration).toContain('tcp: "127.0.0.1:6379"');
+  expect(configuration).toContain("endpoint: 127.0.0.1:6379");
+  expect(configuration).toContain("REDIS_URL: !secret redis_test_url");
+  expect(configuration).toContain("`tcp` is a numeric loopback host listener");
+});

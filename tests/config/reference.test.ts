@@ -5,6 +5,7 @@ import { parse, stringify } from "yaml";
 
 import { loadConfig, type ConveyorConfig } from "../../src/config/load";
 import { BUILTIN_FILES } from "../../src/config/builtin";
+import { FINDING_TYPES } from "../../src/engine/finding-types";
 import { referenceConfigDirectory, referenceConfigEntrypoint, referenceYamlFiles } from "./reference-fixture";
 
 const bases: string[] = [];
@@ -259,6 +260,9 @@ describe("reference configuration", () => {
     await mentions("kaveh", ["todo.get", "todo.set", "todo.update", "workspace.push", "workspace.fetch", "ci.getLogs", "change.resolveFinding", "change.listFindings", "item.addFollowUp"]);
     for (const reviewer of ["shaghayegh", "shirin"]) {
       await mentions(reviewer, ["change.comment", "change.checkCriterion", "change.listFindings", "change.resolveFinding"]);
+      const text = await read(reviewer);
+      for (const type of FINDING_TYPES) expect(text).toMatch(new RegExp(`^- \`${type}\`: .+\\.$`, "m"));
+      expect(text).toMatch(/unsure[^\n]*choose `general`/);
     }
   });
 });

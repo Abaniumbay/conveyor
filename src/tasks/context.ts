@@ -1,5 +1,6 @@
 // Task context and snapshot types. Appendix B of issue #19 is the source.
 
+import type { FindingType } from "../engine/finding-types";
 import type { RunEnvelope } from "../runner/result";
 
 export const CONTEXT_SCHEMA_VERSION = 1;
@@ -181,6 +182,8 @@ export interface ChangeContext {
     path: string | null;
     line: number | null;
     url: string;
+    type: FindingType;
+    criterionIds: string[];
     dismissal?: { actor: string; reason: string; at: string };
     withdrawal?: { actor: string; reason: "provider-artifact-deleted" | "provider-artifact-untrusted"; at: string };
   }>;

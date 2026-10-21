@@ -8,6 +8,9 @@ import { randomUUID } from "node:crypto";
 
 import type { FINDING_CHANGES } from "../events/catalogue";
 import { eventLog } from "../events/log";
+import { DEFAULT_FINDING_TYPE, isFindingType, type FindingType } from "./finding-types";
+
+export { DEFAULT_FINDING_TYPE, FINDING_TYPES, type FindingType } from "./finding-types";
 
 type FindingChange = (typeof FINDING_CHANGES)[number];
 
@@ -26,6 +29,8 @@ export interface Finding {
   line: number | null;
   url: string;
   body: string;
+  type: FindingType;
+  criterionIds: string[];
   /** How the finding is projected on the code host (opaque to this module). */
   projection: unknown;
   dismissal?: { actor: string; reason: string; at: string };
@@ -50,6 +55,7 @@ export interface NativeArtifact {
 interface Row {
   id: string; issue_id: string; run_id: string | null; provider_key: string | null; author: string; source: string;
   head_sha: string; state: string; path: string | null; line: number | null; url: string; body: string;
+  type: string; criterion_ids_json: string;
   projection_json: string | null; dismissal_json: string | null; withdrawal_json: string | null;
 }
 
@@ -63,11 +69,37 @@ export interface SkippedNativeArtifact {
 
 const parse = (json: string | null): unknown => (json === null ? undefined : JSON.parse(json));
 
+function findingType(value: string): FindingType {
+  if (!isFindingType(value)) throw new Error(`Unknown stored review finding type: ${value}`);
+  return value;
+}
+
+function inputFindingType(value: string | undefined): FindingType {
+  if (value === undefined) return DEFAULT_FINDING_TYPE;
+  if (!isFindingType(value)) throw new TypeError(`Unknown review finding type: ${value}`);
+  return value;
+}
+
+function inputCriterionIds(value: readonly string[] | undefined): string[] {
+  if (value === undefined) return [];
+  if (value.some((id) => typeof id !== "string")) throw new TypeError("Review finding criterion IDs must be strings.");
+  return [...value];
+}
+
+function parseCriterionIds(json: string): string[] {
+  const value: unknown = JSON.parse(json);
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
+    throw new Error("Stored review finding criterion IDs must be strings.");
+  }
+  return value;
+}
+
 function toFinding(row: Row): Finding {
   const finding: Finding = {
     id: row.id, issueId: row.issue_id, runId: row.run_id, providerKey: row.provider_key, author: row.author,
     source: row.source === "human" ? "human" : "agent", headSha: row.head_sha, state: row.state as FindingState,
     path: row.path, line: row.line, url: row.url, body: row.body, projection: parse(row.projection_json) ?? null,
+    type: findingType(row.type), criterionIds: parseCriterionIds(row.criterion_ids_json),
   };
   const dismissal = parse(row.dismissal_json) as Finding["dismissal"];
   const withdrawal = parse(row.withdrawal_json) as Finding["withdrawal"];
@@ -87,28 +119,30 @@ export class ReviewFindings {
     this.#db
       .query("INSERT INTO finding_events(finding_id, kind, actor, reason, at, detail_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(findingId, kind, actor, reason, at, detail === null ? null : JSON.stringify(detail));
-    const owner = this.#db.query("SELECT issue_id FROM findings WHERE id = ?").get(findingId) as { issue_id: string } | null;
-    eventLog(this.#db).append("finding.changed", { findingId, change: kind }, { issueId: owner?.issue_id ?? null });
+    const owner = this.#db.query("SELECT issue_id, type FROM findings WHERE id = ?").get(findingId) as { issue_id: string; type: string } | null;
+    if (owner === null) throw new Error(`Cannot record a change for missing finding ${findingId}.`);
+    eventLog(this.#db).append("finding.changed", { findingId, type: findingType(owner.type), change: kind }, { issueId: owner.issue_id });
   }
 
   #insert(input: {
     issueId: string; runId: string | null; providerKey: string | null; author: string; source: "agent" | "human";
-    headSha: string; path: string | null; line: number | null; url: string; body: string; at: string;
+    headSha: string; path: string | null; line: number | null; url: string; body: string; type: FindingType; criterionIds: string[]; at: string;
   }): Finding {
     const id = randomUUID();
     this.#db
-      .query(`INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`)
-      .run(id, input.issueId, input.runId, input.providerKey, input.author, input.source, input.headSha, input.path, input.line, input.url, input.body, input.at);
+      .query(`INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, type, criterion_ids_json, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.issueId, input.runId, input.providerKey, input.author, input.source, input.headSha, input.path, input.line, input.url, input.body, input.type, JSON.stringify(input.criterionIds), input.at);
     this.#event(id, "created", input.author, input.at);
     return this.get(input.issueId, id)!;
   }
 
   /** An agent's finding: open, before any projection to the code host. */
-  create(input: { issueId: string; runId: string | null; author: string; headSha: string; path?: string | null; line?: number | null; body: string; at?: string }): Finding {
+  create(input: { issueId: string; runId: string | null; author: string; headSha: string; path?: string | null; line?: number | null; body: string; type?: FindingType; criterionIds?: readonly string[]; at?: string }): Finding {
     return this.#db.transaction(() => this.#insert({
       issueId: input.issueId, runId: input.runId, providerKey: null, author: input.author, source: "agent", headSha: input.headSha,
-      path: input.path ?? null, line: input.line ?? null, url: "", body: input.body, at: input.at ?? new Date().toISOString(),
+      path: input.path ?? null, line: input.line ?? null, url: "", body: input.body,
+      type: inputFindingType(input.type), criterionIds: inputCriterionIds(input.criterionIds), at: input.at ?? new Date().toISOString(),
     }))();
   }
 
@@ -233,7 +267,8 @@ export class ReviewFindings {
       if (!existing) {
         const finding = this.#insert({
           issueId, runId: null, providerKey: artifact.providerKey, author: artifact.author, source: "human", headSha,
-          path: artifact.path, line: artifact.line, url: artifact.url, body: artifact.body, at,
+          path: artifact.path, line: artifact.line, url: artifact.url, body: artifact.body,
+          type: DEFAULT_FINDING_TYPE, criterionIds: [], at,
         });
         if (artifact.resolved) this.resolve(issueId, finding.id, "provider", at);
         continue;

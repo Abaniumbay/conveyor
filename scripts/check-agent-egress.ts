@@ -12,8 +12,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/config/load";
+import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
 import { sanitizedAgentEnvironment } from "../src/isolation/environment";
+import { startTcpRelay } from "../src/isolation/tcp-relay";
 import { sandboxCommand } from "../src/isolation/sandbox";
 
 export interface RestoreStep {
@@ -91,8 +93,10 @@ export interface SandboxedCheckOptions {
   /** Unix socket of the data-plane egress proxy. */
   proxySocket: string;
   /** Repository-declared services, forwarded exactly as they are for agent commands. */
-  localServices?: readonly { endpoint: string; socket: string }[];
+  localServices?: readonly LocalServiceEntry[];
 }
+
+type LocalServiceEntry = { endpoint: string } & ({ socket: string } | { tcp: string });
 
 export interface SandboxedCheckResult {
   passed: boolean;
@@ -102,10 +106,28 @@ export interface SandboxedCheckResult {
 
 /** Runs one probe inside the same sandbox as agent commands and decides whether it behaved as required. */
 export async function runSandboxedCheck(options: SandboxedCheckOptions): Promise<SandboxedCheckResult> {
-  const forwards = (options.localServices ?? []).map((service) => ({
-    port: Number(service.endpoint.slice(service.endpoint.lastIndexOf(":") + 1)),
-    socket: service.socket,
-  }));
+  const relays: { close(): Promise<void> }[] = [];
+  const forwards: { port: number; socket: string }[] = [];
+  try {
+    for (const service of options.localServices ?? []) {
+      const port = Number(service.endpoint.slice(service.endpoint.lastIndexOf(":") + 1));
+      if ("socket" in service) {
+        forwards.push({ port, socket: service.socket });
+        continue;
+      }
+      const tcp = parseLoopbackTcp(service.tcp);
+      if (!tcp) throw new Error(`local service ${service.endpoint} declares an invalid loopback tcp endpoint`);
+      const relay = await startTcpRelay({ socketPath: path.join(path.dirname(options.proxySocket), `service-${port}.sock`), ...tcp });
+      relays.push(relay);
+      forwards.push({ port, socket: relay.socketPath });
+    }
+    return await runInSandbox(options, forwards);
+  } finally {
+    await Promise.all(relays.map((relay) => relay.close()));
+  }
+}
+
+async function runInSandbox(options: SandboxedCheckOptions, forwards: { port: number; socket: string }[]): Promise<SandboxedCheckResult> {
   const sandboxed = sandboxCommand({
     argv: options.check.argv,
     env: { ...options.base, ...options.env },
@@ -148,7 +170,9 @@ async function main(): Promise<number> {
     await mkdir(home, { recursive: true });
     const base = sanitizedAgentEnvironment(process.env, { home, controlPlane: [] });
 
-    const localServices = repository.agentEgress.localServices ?? [];
+    const localServices = (repository.agentEgress.localServices ?? []).map((service): LocalServiceEntry & { name: string } =>
+      service.socket !== undefined ? { name: service.name, endpoint: service.endpoint, socket: service.socket } : { name: service.name, endpoint: service.endpoint, tcp: service.tcp ?? "" },
+    );
     const run = async (name: string, argv: string[], env: Record<string, string> = {}, expectFailure = false): Promise<void> => {
       const result = await runSandboxedCheck({ check: { argv, expectFailure }, cwd: work, base, env, proxySocket: proxy.socketPath, localServices });
       if (!result.passed) failures += 1;
