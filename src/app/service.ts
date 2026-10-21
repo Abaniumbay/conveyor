@@ -6009,6 +6009,17 @@ export class ConveyorService {
         throw error;
       }
 
+      // Reconciliation runs the roll-up pass. Keep the durable retry marker in
+      // place before it observes the cleared stop label, or it can advance this
+      // parent to an unfinished child's later stage instead of retrying child
+      // creation.
+      if (this.store.listChildren(issueId).length > 0 && this.stageCreatesChildren(issue.repositoryId, stageId)) {
+        const stage = this.store.getStageState(issueId);
+        if (stage?.stageId === stageId) {
+          this.store.setStageState({ ...stage, status: "retry-ready", configHash: this.config.hash });
+        }
+      }
+
       // A retry is a deliberate fresh attempt, so only failures observed after it may form a repeat.
       this.store.executions().resetCiFailureWindow(issueId);
 
@@ -6019,14 +6030,6 @@ export class ConveyorService {
         });
       }
       await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
-      // A roll-up parent normally follows its children rather than running again.
-      // Preserve the exception durably until this explicit retry claims the stage.
-      if (this.store.listChildren(issueId).length > 0 && this.stageCreatesChildren(issue.repositoryId, stageId)) {
-        const stage = this.store.getStageState(issueId);
-        if (stage?.stageId === stageId) {
-          this.store.setStageState({ ...stage, status: "retry-ready", configHash: this.config.hash });
-        }
-      }
       const refreshed = this.store.getIssue(issueId);
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "retry" }, { issueId });

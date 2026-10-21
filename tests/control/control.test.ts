@@ -28,8 +28,9 @@ async function running(options: {
   rollup?: boolean;
   childCreationStage?: "implementation" | "refinement" | "work-breakdown";
   childCreationTask?: "item.createChild" | "breakdown.createChildren";
+  includeChildImplementationStage?: boolean;
 } = {}) {
-  const { rollup = false, childCreationStage = "implementation", childCreationTask } = options;
+  const { rollup = false, childCreationStage = "implementation", childCreationTask, includeChildImplementationStage = false } = options;
   const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
   directories.push(home);
   log.configure({ sinks: [] });
@@ -51,7 +52,12 @@ async function running(options: {
     },
     runners: {},
     plans: [],
-    pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: childCreationStage, run: { type: "agent", agent: childCreationTask ? "worker" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+    pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [
+      { id: childCreationStage, run: { type: "agent", agent: childCreationTask ? "worker" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ...(includeChildImplementationStage && childCreationStage !== "implementation"
+        ? [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }]
+        : []),
+    ] } },
     repositories: { app: { source: "github", address: "owner/app", folder: childCreationTask ? repository : home, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [], ci: { mode: "disabled" } } },
     agents: childCreationTask ? { worker: { runner: "codex", instructions: path.join(home, "worker.md"), name: "Worker", title: "Builder", tasks: [childCreationTask] } } : {},
   } as unknown as ConveyorConfig;
@@ -322,6 +328,7 @@ describe("operating through the CLI", () => {
       rollup: true,
       childCreationStage: "refinement",
       childCreationTask: "item.createChild",
+      includeChildImplementationStage: true,
     });
     const shown = await cli("item", "show", "app:1");
     expect(shown.out).toContain("retry the refinement stage: conveyor item retry app:1");
@@ -330,20 +337,23 @@ describe("operating through the CLI", () => {
     const retried = await cli("item", "retry", "app:1");
     expect(retried.code).toBe(0);
     expect(store.getIssue("issue-1")).toMatchObject({ projectedState: "active" });
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "refinement", labels: ["conveyor", "conveyor:refinement"] });
     expect(service.activeWork().items).toEqual(expect.arrayContaining([
       expect.objectContaining({ issueId: "issue-1", stageId: "refinement" }),
     ]));
   });
 
   test("retry starts a stopped work-breakdown parent with an existing child", async () => {
-    const { cli, service } = await running({
+    const { cli, service, store } = await running({
       rollup: true,
       childCreationStage: "work-breakdown",
       childCreationTask: "breakdown.createChildren",
+      includeChildImplementationStage: true,
     });
 
     const retried = await cli("item", "retry", "app:1");
     expect(retried.code).toBe(0);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "work-breakdown", labels: ["conveyor", "conveyor:work-breakdown"] });
     expect(service.activeWork().items).toEqual(expect.arrayContaining([
       expect.objectContaining({ issueId: "issue-1", stageId: "work-breakdown" }),
     ]));
