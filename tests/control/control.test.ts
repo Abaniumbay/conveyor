@@ -249,7 +249,7 @@ describe("finding report", () => {
 
   test("an invalid --since is a CLI input error, and the service rejects one too", async () => {
     const { cli, service } = await seeded();
-    for (const value of ["yesterday", "2026-13-45", "2026-10"]) {
+    for (const value of ["yesterday", "2026-13-45", "2026-10", "2026-02-30", "2026-04-31T10:00:00Z"]) {
       const result = await cli("report", "findings", "--since", value);
       expect(result.code).toBe(EXIT.usage);
       expect(result.err).toContain("ISO 8601");
