@@ -2443,10 +2443,10 @@ describe("ConveyorService dashboard", () => {
     ]);
     const reclassifications = () => store.events().read({ type: "finding.changed" }).filter((event) => (event.payload as { change: string }).change === "reclassified");
     const superuser = { kind: "user" as const, id: "operator", name: "operator", role: "superuser" as const };
-    await service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "security" }, superuser);
+    service.reclassifyFinding("github:owner/repo#31", finding.id, "security", superuser.name);
     expect(findingStore.get("github:owner/repo#31", finding.id)).toMatchObject({ type: "security", body: "Rename this", url: "https://example.com/reviews/2" });
     expect(reclassifications().map((event) => event.payload)).toEqual([{ findingId: finding.id, type: "security", change: "reclassified" }]);
-    await service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "security" }, superuser);
+    service.reclassifyFinding("github:owner/repo#31", finding.id, "security", superuser.name);
     expect(reclassifications()).toHaveLength(1);
     await expect(service.commands.dispatch("finding.reclassify", { issueId: "github:owner/repo#31", findingId: finding.id, type: "bug" }, { ...superuser, role: "user" })).rejects.toThrow();
     expect(findingStore.get("github:owner/repo#31", finding.id)?.type).toBe("security");
