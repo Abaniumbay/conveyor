@@ -6,8 +6,13 @@ import path from "node:path";
 
 import { CodexRunnerError } from "../../src/runner/codex";
 import { checkResultSchema, runCodexCheck } from "../../src/runner/codex-check";
+import { bwrapUnavailableReason } from "../support/bwrap";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
 const temporaryDirectories: string[] = [];
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED Codex check egress tests: \`bwrap --unshare-net\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
 
 async function fixture(source: string) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-codex-check-"));
@@ -302,5 +307,50 @@ describe("runCodexCheck", () => {
       automaticApprovals: false,
       mcp: { command: "bun", args: [] },
     })).rejects.toMatchObject({ kind: "protocol", exitCode: 0 });
+  });
+});
+
+describeSandbox("runCodexCheck with agent egress", () => {
+  test("passes local-service connection variables to legacy verifier runs", async () => {
+    const directory = await shortTemporaryDirectory("conveyor-codex-check-egress-", {
+      socketPath: "artifacts/net/control.sock",
+      visibleInSandbox: true,
+    });
+    temporaryDirectories.push(directory);
+    const workspace = path.join(directory, "workspace");
+    const artifacts = path.join(directory, "artifacts");
+    const executable = path.join(directory, "fake-codex");
+    const capture = path.join(directory, "capture.json");
+    await mkdir(workspace);
+    await mkdir(artifacts);
+    await writeFile(executable, `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+await new Response(Bun.stdin.stream()).text();
+await Bun.write(process.env.CAPTURE!, JSON.stringify({ databaseUrl: process.env.DATABASE_URL }));
+await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+  version: 1, decision: "pass", status: "done", reason: null, evidence: [], requiredFixes: [], criteria: []
+}));
+`);
+    await chmod(executable, 0o755);
+
+    await runCodexCheck({
+      command: executable,
+      workspace,
+      artifactsDirectory: artifacts,
+      prompt: "Check",
+      sandbox: "read-only",
+      automaticApprovals: false,
+      mcp: { command: "bun", args: [] },
+      env: { CAPTURE: capture },
+      egress: {
+        httpsHosts: [],
+        localServiceEnvironment: {
+          DATABASE_URL: "postgres://conveyor:password@127.0.0.1:5432/test",
+        },
+      },
+    });
+
+    const captured = JSON.parse(await readFile(capture, "utf8")) as { databaseUrl: string };
+    expect(captured.databaseUrl).toBe("postgres://conveyor:password@127.0.0.1:5432/test");
   });
 });

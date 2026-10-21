@@ -568,12 +568,20 @@ repositories:
     agentEgress:
       allowLoopbackMcp: true
       httpsHosts: [registry.npmjs.org]
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: !secret postgres_test_url
     overrides:
       stages:
         deploy:
           actions:
             deployScript: { with: { script: /srv/conveyor/stages/deploy-example.ts, recovery: reconcile } }
 ```
+
+`localServices` exposes a Unix test service only to agent commands for the declaring repository, including legacy verifier commands. Each name is unique within the repository. `socket` is an absolute host Unix-socket path and `endpoint` is the fixed `127.0.0.1:<port>` address bridged into each run's sandbox; no other repository receives that bridge. Docker's host socket, including paths that resolve to it through an alias, is rejected before the agent starts. Values under `environment` are set only for those commands; use `!secret` for credentials so they are resolved from `secrets.yaml` and redacted from configuration displays and logs.
 
 The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
 

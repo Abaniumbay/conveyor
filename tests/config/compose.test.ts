@@ -188,6 +188,35 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(shown).toContain("<redacted>");
   });
 
+  test("resolves a local-service connection variable from secrets.yaml for redaction", async () => {
+    const databaseUrl = "postgres://conveyor:password@127.0.0.1:5432/test";
+    const paths = await home({
+      "conveyor.yaml": `${DEFAULTS}repositories:
+  meal-planner:
+    items: github
+    code: github
+    ci: { mode: disabled }
+    address: owner/meal-planner
+    folder: /tmp/meal-planner
+    pipeline: delivery
+    agentEgress:
+      localServices:
+        - name: postgres
+          socket: /run/postgresql/.s.PGSQL.5432
+          endpoint: 127.0.0.1:5432
+          environment:
+            DATABASE_URL: !secret database_url
+`,
+      "secrets.yaml": `database_url: "${databaseUrl}"\n`,
+    });
+
+    const config = await loadConfig(paths.entrypoint, null, { home: paths.home });
+    const service = config.repositories["meal-planner"]!.agentEgress!.localServices[0]!;
+    expect(service.environment.DATABASE_URL).toBe(databaseUrl);
+    expect(config.secrets).toContain(databaseUrl);
+    expect(JSON.stringify(redactSecrets(config, config.secrets!))).not.toContain(databaseUrl);
+  });
+
   test("a malformed secret source reports only its file and parser position", async () => {
     const marker = "known-secret-marker";
     const paths = await home({
