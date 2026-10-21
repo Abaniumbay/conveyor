@@ -27,6 +27,23 @@ const NO_CHANGE = "No change request exists yet";
 
 const MALFORMED = (detail: string) => `PR checklist markers are malformed: ${detail}; restore or remove the conveyor managed section`;
 
+function testNameSegments(name: string): string[] {
+  const qualified = name.split(/::|#| > /);
+  const final = qualified.at(-1)!;
+  const qualifiers = qualified.slice(0, -1).flatMap((part) => part.includes("/") ? [] : part.split("."));
+  const segments = qualified.length === 1 && !final.includes("/") ? final.split(".") : [...qualifiers, final];
+  const names = segments.filter((segment) => segment.length > 0);
+  return names.length > 0 ? names : [name];
+}
+
+function sourceLineForTest(source: string, name: string): { line: number } | { missing: string } {
+  const segments = testNameSegments(name);
+  const missing = segments.find((segment) => !source.includes(segment));
+  if (missing) return { missing };
+  const final = segments.at(-1)!;
+  return { line: source.split(/\r?\n/).findIndex((sourceLine) => sourceLine.includes(final)) + 1 };
+}
+
 /** The item's criteria with their approval at `headSha` (an approval for another head or other text is none). */
 export function criteriaView(deps: Deps, body: string, headSha: string): ChangeContext["criteria"] {
   const approvals = new Map(new CriterionApprovals(deps.store.sqlite()).list(deps.issueId).map((a) => [a.criterionId, a]));
@@ -171,7 +188,7 @@ export const uncheckCriterion = criterionTool(
 export const recordCriterionTests: TaskDefinition<unknown, RecordEvidenceInput, Deps> = {
   name: "change.recordCriterionTests",
   kind: "tool",
-  description: "Records exact tests or a permitted manual designation for item criteria. Before a pull request exists this is an unverified claim; the review gate verifies every linked test at the pull request head. With a pull request, headSha must be its current head and the managed checklist is refreshed.",
+  description: "Records tests whose name appears in its file as written, optionally qualified by its class, or a permitted manual designation for item criteria. Before a pull request exists this is an unverified claim; the review gate verifies every linked test at the pull request head. With a pull request, headSha must be its current head and the managed checklist is refreshed.",
   reads: [], writes: [], invalidates: ["change"], mutating: true, journal: false,
   input: recordEvidenceInput,
   async run({ deps, input }: TaskArgs<unknown, RecordEvidenceInput, Deps>) {
@@ -243,9 +260,9 @@ export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
           files.set(test.file, source);
         }
         if (source === null) { gaps.push(`${criterion.id}: file ${test.file} is missing at ${live.headSha}`); continue; }
-        const line = source.split(/\r?\n/).findIndex((sourceLine) => sourceLine.includes(test.name)) + 1;
-        if (line === 0) { gaps.push(`${criterion.id}: test "${test.name}" is not in ${test.file} at ${live.headSha}`); continue; }
-        foundLines.push(line);
+        const match = sourceLineForTest(source, test.name);
+        if ("missing" in match) { gaps.push(`${criterion.id}: test "${match.missing}" must appear in ${test.file} as written at ${live.headSha}`); continue; }
+        foundLines.push(match.line);
       }
       if (foundLines.length === entry.tests.length) lines.set(criterion.id, foundLines);
     }
