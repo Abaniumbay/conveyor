@@ -6,7 +6,7 @@
 import { z } from "zod";
 
 import type { CodeHost } from "../codehost/types";
-import { ReviewFindings, type Finding } from "../engine/review-findings";
+import { DEFAULT_FINDING_TYPE, FINDING_TYPES, ReviewFindings, type Finding } from "../engine/review-findings";
 import type { ChangeContext } from "./context";
 import { fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
@@ -20,6 +20,10 @@ const commentInput = z.object({
   headSha: z.string().min(1),
   path: z.string().min(1).optional(),
   line: z.number().int().positive().optional(),
+  /** What kind of problem this is; omit it (or pick `general`) when unsure. */
+  type: z.enum(FINDING_TYPES).optional(),
+  /** The acceptance criterion IDs the finding concerns. */
+  criteria: z.array(z.string().trim().min(1)).optional(),
 }).strict().refine((input) => input.line === undefined || input.path !== undefined, { message: "line needs a path" });
 type CommentInput = z.output<typeof commentInput>;
 
@@ -76,7 +80,7 @@ export async function importNativeReview(deps: Deps, changeId: string, headSha: 
 const comment: TaskDefinition<unknown, CommentInput, Deps> = {
   name: "change.comment",
   kind: "tool",
-  description: "Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). headSha must be the current head.",
+  description: "Record a review finding on the change: it blocks the review gate until it is resolved or dismissed. Give path and line to anchor it to the diff (otherwise, or when the host rejects the position, it becomes a change comment). Optional type classifies it (default general) and criteria lists the acceptance criterion IDs it concerns. headSha must be the current head.",
   reads: [], writes: [], invalidates: ["change"],
   mutating: true,
   input: commentInput,
@@ -89,18 +93,19 @@ const comment: TaskDefinition<unknown, CommentInput, Deps> = {
     const finding = findings.create({
       issueId: deps.issueId, runId: deps.run?.id ?? null, author, headSha: input!.headSha,
       path: input!.path ?? null, line: input!.line ?? null, body: input!.body,
+      type: input!.type ?? DEFAULT_FINDING_TYPE, criterionIds: [...new Set(input!.criteria ?? [])],
     });
     try {
       const projected = await codeHostOf(deps).createFinding({
-        address: deps.repository.address, id: stored.id, findingId: finding.id, body: input!.body, headSha: input!.headSha,
+        address: deps.repository.address, id: stored.id, findingId: finding.id, body: input!.body, headSha: input!.headSha, type: finding.type,
         ...(input!.path ? { path: input!.path } : {}), ...(input!.line ? { line: input!.line } : {}),
       });
       findings.project(finding.id, projected.url, projected.projection);
-      return pass({ findingId: finding.id, url: projected.url });
+      return pass({ findingId: finding.id, url: projected.url, type: finding.type, criterionIds: finding.criterionIds });
     } catch (error) {
       // The record stands (and blocks the gate); only the code host copy is missing.
       const message = error instanceof Error ? error.message : String(error);
-      return pass({ findingId: finding.id, url: "", projection: `Recorded, but the code host comment could not be created: ${message}` });
+      return pass({ findingId: finding.id, url: "", type: finding.type, criterionIds: finding.criterionIds, projection: `Recorded, but the code host comment could not be created: ${message}` });
     }
   },
 };
@@ -143,7 +148,7 @@ const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Dep
     if (finding.projection && stored) {
       try {
         await host!.resolveFindingProjection({
-          address: deps.repository.address, id: stored.id, findingId: finding.id, projection: String(finding.projection), body: finding.body, actor,
+          address: deps.repository.address, id: stored.id, findingId: finding.id, projection: String(finding.projection), body: finding.body, type: finding.type, actor,
           verdict: input!.verdict, message,
         });
       } catch {
