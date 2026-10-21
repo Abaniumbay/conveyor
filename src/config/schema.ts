@@ -565,7 +565,15 @@ const ciProviderSchema = z.object({
 
 const ciModeSchema = z.enum(["required", "advisory", "disabled"]);
 
-/** A legacy provider name, or an object; normalised to { provider, mode, ignoreChecks }. */
+const junitReportSchema = z.object({
+  artifact: z.string().trim().min(1, "must name an artifact").max(256),
+  path: z.string().trim().min(1, "must name a report path").max(512).refine(
+    (value) => !value.startsWith("/") && !value.split("/").includes(".."),
+    "must be a relative path pattern without '..'",
+  ),
+}).strict();
+
+/** A legacy provider name, or an object; normalised to { provider, mode, ignoreChecks, junit }. */
 const repositoryCiSchema = z
   .union([
     identifierSchema,
@@ -574,6 +582,7 @@ const repositoryCiSchema = z
         provider: identifierSchema.optional(),
         mode: ciModeSchema,
         ignoreChecks: z.array(identifierSchema).default([]),
+        junit: junitReportSchema.optional(),
       })
       .strict(),
   ])
@@ -585,7 +594,7 @@ const repositoryCiSchema = z
     if (typeof value === "string") {
       return { provider: value as string | null, mode: "required" as z.infer<typeof ciModeSchema>, ignoreChecks: [] as string[] };
     }
-    return { provider: (value.provider ?? null) as string | null, mode: value.mode, ignoreChecks: value.ignoreChecks };
+    return { provider: (value.provider ?? null) as string | null, mode: value.mode, ignoreChecks: value.ignoreChecks, ...(value.junit === undefined ? {} : { junit: value.junit }) };
   });
 
 /** What refinement may write on the issue page and what it must fill before leaving the stage. */

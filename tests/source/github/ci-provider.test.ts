@@ -9,8 +9,20 @@ class FakeTransport implements GitHubTransport {
   runs: unknown[] = [];
   jobs: Record<number, unknown> = {};
   annotations: Record<number, unknown[]> = {};
+  workflowRuns: unknown[] = [];
+  artifacts: Record<number, unknown[]> = {};
+  archives: Record<number, Uint8Array> = {};
   async request<T>(request: GitHubTransportRequest): Promise<T> {
     this.requests.push(request);
+    if (request.path.includes("/actions/runs?") && request.path.includes("head_sha=")) return { workflow_runs: this.workflowRuns } as T;
+    if (request.path.includes("/actions/runs/") && request.path.includes("/artifacts")) {
+      const id = Number(request.path.split("/").at(-2));
+      return { artifacts: this.artifacts[id] ?? [] } as T;
+    }
+    if (request.path.includes("/actions/artifacts/") && request.path.endsWith("/zip")) {
+      const id = Number(request.path.split("/").at(-2));
+      return this.archives[id]! as T;
+    }
     if (request.path.includes("/pulls/")) return { head: { sha: "commit-1" } } as T;
     if (request.path.includes("/check-runs/") && request.path.includes("/annotations")) {
       const id = Number(request.path.split("/").at(-2));
@@ -31,6 +43,22 @@ class FakeTransport implements GitHubTransport {
     if (request.path.includes("/labels")) return {} as T;
     throw new Error(`unexpected transport path: ${request.path}`);
   }
+}
+
+function storedZip(path: string, content: string): Uint8Array {
+  const name = new TextEncoder().encode(path);
+  const data = new TextEncoder().encode(content);
+  const bytes: number[] = [];
+  const u16 = (value: number) => bytes.push(value & 0xff, value >>> 8 & 0xff);
+  const u32 = (value: number) => bytes.push(value & 0xff, value >>> 8 & 0xff, value >>> 16 & 0xff, value >>> 24 & 0xff);
+  u32(0x04034b50); u16(20); u16(0); u16(0); u16(0); u16(0); u32(0); u32(data.length); u32(data.length); u16(name.length); u16(0);
+  bytes.push(...name, ...data);
+  const centralStart = bytes.length;
+  u32(0x02014b50); u16(20); u16(20); u16(0); u16(0); u16(0); u16(0); u32(0); u32(data.length); u32(data.length); u16(name.length); u16(0); u16(0); u16(0); u16(0); u32(0); u32(0);
+  bytes.push(...name);
+  const centralSize = bytes.length - centralStart;
+  u32(0x06054b50); u16(0); u16(0); u16(1); u16(1); u32(centralSize); u32(centralStart); u16(0);
+  return new Uint8Array(bytes);
 }
 
 const triggerSet = [
@@ -112,6 +140,29 @@ describe("GitHub Actions CiProvider contract", () => {
     await expect(instance.log(change, run!.id)).resolves.toBe("build log");
     expect(transport.requests.some((request) => request.path.endsWith("/rerun"))).toBe(true);
     expect(transport.requests.some((request) => request.path.endsWith("/logs"))).toBe(true);
+  });
+  test("reads only matching reports from the current check's completed workflow run at the requested head", async () => {
+    const transport = new FakeTransport();
+    transport.jobs[101] = { run_id: 1 };
+    transport.workflowRuns = [
+      { id: 1, head_sha: "commit-1", status: "completed" },
+      { id: 2, head_sha: "other-commit", status: "completed" },
+      { id: 3, head_sha: "commit-1", status: "in_progress" },
+      { id: 4, head_sha: "commit-1", status: "completed" },
+    ];
+    transport.artifacts[1] = [
+      { id: 11, name: "junit", expired: false },
+      { id: 12, name: "other", expired: false },
+    ];
+    transport.archives[11] = storedZip("reports/results.xml", "<testsuite><testcase name=\"passes\"/></testsuite>");
+    transport.artifacts[4] = [{ id: 41, name: "junit", expired: false }];
+
+    await expect(provider(transport).reports(change, "commit-1", [{ id: "101", name: "Check", state: "passed", url: null, canRerun: false, hasLog: true }], { artifact: "junit", path: "reports/*.xml" })).resolves.toEqual([
+      { runId: "1", artifactId: "11", path: "reports/results.xml", content: "<testsuite><testcase name=\"passes\"/></testsuite>" },
+    ]);
+    expect(transport.requests.map((request) => request.path)).toContain("repos/owner/repo/actions/runs?head_sha=commit-1&per_page=100");
+    expect(transport.requests.some((request) => request.path.includes("/runs/2/artifacts") || request.path.includes("/runs/3/artifacts") || request.path.includes("/runs/4/artifacts"))).toBe(false);
+    expect(transport.requests.some((request) => request.path.includes("/artifacts/12/zip"))).toBe(false);
   });
   test("starts only present workflows, honors replacement, and does not restart running jobs", async () => {
     const transport = new FakeTransport();

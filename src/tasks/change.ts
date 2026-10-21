@@ -9,7 +9,7 @@ import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
-import { checkCriterion, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";
+import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";
 import { findingsResolved, findingsView, findingTools, importNativeReview } from "./change-findings";
 import type { TaskDeps } from "./deps";
 
@@ -234,4 +234,4 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
   },
 };
 
-export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, ...findingTools]);
+export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, criterionTestsPassed, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, ...findingTools]);

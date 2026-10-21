@@ -528,6 +528,7 @@ pipelines:
           - { id: criterionTests, task: change.criterionTestsVerified }
           - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
           - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
+          - { id: criterionTestReports, task: change.criterionTestsPassed, when: ci.required, onFail: { return: implementation } }
       - id: review
         concurrency: 1
         actions:
@@ -557,7 +558,7 @@ repositories:
   example:
     items: github
     code: github
-    ci: { provider: actions, mode: required, ignoreChecks: [] }   # required | advisory | disabled
+    ci: { provider: actions, mode: required, ignoreChecks: [], junit: { artifact: junit-test-results, path: "**/junit.xml" } }   # required | advisory | disabled
     address: example/project
     folder: /srv/repositories/project
     baseBranch: main
@@ -695,8 +696,10 @@ providers:
 
 repositories:
   example:
-    ci: { provider: actions, mode: required, ignoreChecks: [Optional lint] }
+    ci: { provider: actions, mode: required, ignoreChecks: [Optional lint], junit: { artifact: junit-test-results, path: "**/junit.xml" } }
 ```
+
+`ci.junit` binds criterion-test execution evidence to one Actions artifact name and a relative glob path inside its ZIP archive. Publish JUnit XML with an upload-artifact step (including `if: always()` so failing tests remain inspectable). A linked test name is exact and case-sensitive: use its JUnit `name`, or `classname#name` when the unqualified name is not unique. The implementation gate runs this check after `ci.passed`; missing, skipped, failed, errored, malformed, or ambiguous cases return the item to implementation. `conveyor config check` warns when this locator is absent: the legacy source-text link check remains, but cannot prove a test executed. Reviewers judge whether a passing linked test is valid evidence for its criterion.
 
 `mode` is one of:
 

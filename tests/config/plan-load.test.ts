@@ -47,7 +47,7 @@ const LEGACY = `
         run: { sourceAction: noop }
 `;
 
-async function write(pipeline: string): Promise<string> {
+async function write(pipeline: string, repositoryCi = ""): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-plan-load-"));
   directories.push(directory);
   await writeFile(
@@ -72,7 +72,7 @@ repositories:
     address: owner/sample
     folder: /tmp/sample
     pipeline: default
-`,
+${repositoryCi}`,
   );
   return directory;
 }
@@ -183,6 +183,11 @@ describe("check-config", () => {
     expect(output).toContain("Repository sample (pipeline default)");
     expect(output).toContain("(load item)");
     expect(output).toContain("1. demo.gate [check]");
+  });
+
+  test("shows each repository's effective JUnit report locator", async () => {
+    const output = await checkConfig(await write(NATIVE, "    ci: { mode: required, junit: { artifact: junit-results, path: reports/**/*.xml } }\n"), registry());
+    expect(output).toContain('JUnit report locators:\n  sample: artifact "junit-results", path "reports/**/*.xml"');
   });
 
   test("prints the plan of a legacy repository", async () => {

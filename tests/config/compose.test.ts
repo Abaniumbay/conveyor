@@ -279,6 +279,7 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(instructions).toContain("immediately record its exact test name");
     expect(instructions).toContain("implement until the test passes, commit the change, and mark the todo done");
     expect(instructions).toContain("every non-manual acceptance criterion has a linked test at the head you will push");
+    expect(instructions).toContain("record test names exactly as their JUnit report emits them");
     expect(instructions).not.toContain("when `change.get` shows a change, before finishing use `change.recordCriterionTests`");
   });
 
