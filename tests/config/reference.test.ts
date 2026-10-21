@@ -129,7 +129,7 @@ describe("reference configuration", () => {
       task: "change.criterionTestsVerified", kind: "check", onFail: null,
     });
     expect(implementation.exitGate.find((task) => task.id === "criterionTestReports")).toMatchObject({
-      task: "change.criterionTestsPassed", kind: "check", onFail: { return: "implementation" },
+      task: "change.criterionTestsPassed", kind: "check", onFail: null,
     });
     expect(reviewActions).toEqual(["ciSettled", "criterionTests", "review"]);
     expect(review).toContain("ciHead");

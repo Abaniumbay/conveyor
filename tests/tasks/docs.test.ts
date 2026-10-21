@@ -54,7 +54,7 @@ describe("docs/tasks.md", () => {
     expect(configuration).toContain("Implementers record each non-manual criterion's test evidence as soon as its proving test is committed");
     expect(configuration).toContain("reviewers approve each traced non-manual criterion as they review");
     expect(specification).toContain("The implementation exit gate runs `change.criterionTestsVerified` after the change is ensured and before it waits for CI");
-    expect(specification).toContain("Review entry runs the same verification again as a safety net if the change moved");
+    expect(specification).toContain("Review entry runs the source verification again as a safety net if the change moved");
     expect(specification).toContain("`change.criterionTestsPassed` runs after `ci.passed`");
     expect(specification).toContain("Reviewers approve each non-manual criterion as soon as they trace it to code and credible test evidence");
   });

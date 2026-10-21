@@ -48,7 +48,7 @@ jobs:
       - name: Run tests with coverage and JUnit report
         run: |
           mkdir -p test-results
-          bun test --coverage --coverage-reporter=lcov --reporter=junit > test-results/junit.xml
+          bun test --coverage --coverage-reporter=lcov --reporter=junit --reporter-outfile=test-results/junit.xml
       - name: Upload JUnit test report
         if: always()
         uses: actions/upload-artifact@v4

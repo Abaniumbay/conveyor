@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 
-import type { CiChange, CiProvider, CiRun } from "../../src/app/ci-provider";
+import type { CiChange, CiProvider, CiRun, CiTestReportLocator } from "../../src/app/ci-provider";
 import { ConveyorService } from "../../src/app/service";
 import { CodeHostRegistry } from "../../src/codehost/registry";
 import type { ChangeDelivery, ChangeRequest, CodeHost } from "../../src/codehost/types";
@@ -204,6 +204,9 @@ export async function deliveryWorld(options: {
     async rerun() { ci.reruns += 1; },
     async definitions() { return { defined: true, provable: true, summary: "Tests workflow" }; },
     async log() { return ""; },
+    async reports(_change: CiChange, _commit: string, _runs: readonly CiRun[], locator: CiTestReportLocator) {
+      return [{ runId: "1", artifactId: "1", path: locator.path, content: '<testsuite><testcase name="feature"/></testsuite>' }];
+    },
   };
   const agentRuns: string[] = [];
   let implementationRuns = 0;

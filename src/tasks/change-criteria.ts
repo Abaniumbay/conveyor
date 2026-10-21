@@ -333,7 +333,7 @@ export const criterionTestsPassed: TaskDefinition<unknown, unknown, Deps> = {
     if (!provider?.reports) throw new InfrastructureError(`CI provider cannot retrieve configured JUnit reports for ${deps.repository.id}`);
     let reports: CiTestReport[];
     try {
-      reports = await provider.reports({ repository: deps.repository.address, changeId: String(change.ref.number ?? change.ref.id), url: change.url }, live.headSha, ci.runs, locator);
+      reports = await provider.reports({ repository: deps.repository.address, changeId: String(change.ref.number ?? change.ref.id), url: change.url }, live.headSha, ci.runs.map((run) => ({ id: run.id, name: run.name, url: run.url, state: run.state, canRerun: run.rerunnable, hasLog: run.hasLog })), locator);
     } catch (error) {
       throw new InfrastructureError(`Could not retrieve configured JUnit reports for ${deps.repository.id}`, { cause: error });
     }
