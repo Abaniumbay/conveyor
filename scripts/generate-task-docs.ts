@@ -13,8 +13,8 @@ A stage is a chain of tasks. Every stage has two lists: \`actions\` (do the stag
 ## Kinds
 
 - **load**: the sole writer of one provider snapshot (\`item\`, \`workspace\`, \`change\`, \`ci\`). Safe to re-run. Loads are implicit and never appear in stage lists.
-- **check**: a pure function of the context it declares in \`reads\`. It performs no I/O and writes nothing. Only checks appear in an \`exit-gate\`.
-- **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it \`invalidates\` and is safe to resume after a crash. Only acts appear in \`actions\`.
+- **check**: deterministic validation over the context it declares in \`reads\`. It writes no context snapshots. Normally it performs no I/O; a check declaring \`refreshesProjection: true\` may idempotently refresh derived display evidence after verification. Only checks appear in an \`exit-gate\`; an \`actions\` list may also run a check before a later action.
+- **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it \`invalidates\` and is safe to resume after a crash. Acts appear in \`actions\`.
 - **tool**: callable only through an agent's MCP grant. Never listed in a stage.
 
 ## Advisory CI

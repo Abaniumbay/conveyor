@@ -207,6 +207,15 @@ describe("runTask", () => {
     expect(seen?.deps).toBeUndefined();
     expect(seen?.instance.idempotencyKey).toBe("k");
   });
+  test("a projection-refreshing check gets dependencies without gaining context writes", async () => {
+    let seen: TaskArgs | undefined;
+    const def = check({ refreshesProjection: true, run: (a) => ((seen = a), pass()) });
+    await runTask(def, args(context(), { deps: { db: 1 } }));
+    expect(seen?.deps).toEqual({ db: 1 });
+  });
+  test("only checks may declare projection refreshes", () => {
+    expect(() => defineGroup("g", [check({ kind: "act", refreshesProjection: true })])).toThrow("only a check may refresh a projection");
+  });
   test("acts keep deps and instance", async () => {
     let seen: TaskArgs | undefined;
     const def = check({ kind: "act", name: "g.do", run: (a) => ((seen = a), pass()) });

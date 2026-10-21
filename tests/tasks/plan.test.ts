@@ -272,7 +272,7 @@ describe("compilePipeline", () => {
         [{ task: "workspace.ensure" }],
       ),
     );
-    expect(message).toMatch(/actions\[0\].*check.*only act/);
+    expect(message).not.toMatch(/actions\[0\]/);
     expect(message).toMatch(/actions\[1\].*tool/);
     expect(message).toMatch(/actions\[2\].*load/);
     expect(message).toMatch(/actions\[3\].*unknown task "no.such"/);

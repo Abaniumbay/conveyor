@@ -227,9 +227,9 @@ export const recordCriterionTests: TaskDefinition<unknown, RecordEvidenceInput, 
 /** A deterministic admission gate which also refreshes source lines at the verified head. */
 export const criterionTestsVerified: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.criterionTestsVerified",
-  kind: "act",
-  description: "Before review, requires test evidence for every non-manual criterion and verifies each linked test name exists in its file at the current change head. It refreshes stored display lines and source-link heads only when all links verify.",
-  reads: ["item", "change"], writes: [], invalidates: ["change"],
+  kind: "check",
+  description: "At implementation exit and before review, requires test evidence for every non-manual criterion and verifies each linked test name exists in its file at the current change head. It refreshes stored display lines and source-link heads only when all links verify.",
+  reads: ["item", "change"], writes: [], invalidates: [], refreshesProjection: true,
   async run({ context, deps }: TaskArgs<unknown, unknown, Deps>) {
     const change = context.change;
     if (!change) return fail(NO_CHANGE);

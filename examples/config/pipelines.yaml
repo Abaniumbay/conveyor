@@ -54,6 +54,7 @@ delivery:
       exit-gate:
         - { id: pushed, task: workspace.pushed }
         - { id: criteriaSynced, task: change.criteriaInSync }
+        - { id: criterionTests, task: change.criterionTestsVerified }
         - id: ciDefined
           task: ci.defined
           when: ci.required

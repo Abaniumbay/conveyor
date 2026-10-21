@@ -23,8 +23,10 @@ At the start, read `conversation.get`; it is the durable handoff from the owner 
 4. Translate each acceptance criterion into a verification plan and record the work as a todo list (see "Todo list" below) before editing code. Identify the smallest relevant test boundary before coding. Classify criteria explicitly marked manual or post-deployment separately: implement and automate their code prerequisites, but do not pretend to perform a physical-device, authenticated-production, or other owner-only acceptance check that the run environment cannot perform. Carry those checks forward as deferred owner verification rather than treating their missing manual evidence as an implementation blocker.
 5. Work test-first for each acceptance criterion. Every todo names the criteria it covers. For each non-manual criterion:
    - add or update the test that proves the criterion and see it fail for the intended reason;
-   - immediately record its exact test name and safe repository-relative file with `change.recordCriterionTests` (without `headSha` before a pull request exists, or with the live change head after one exists);
-   - implement until the test passes, commit the change, and mark the todo done.
+   - implement until the test passes and commit the change;
+   - as soon as that criterion's proving test is committed, immediately record its exact test name and safe repository-relative file with `change.recordCriterionTests`: omit `headSha` before a change exists, otherwise use the live current head from `change.get`. Record one criterion at a time; do not wait for the remaining criteria or the end of the run. Each recording appears individually in the item details;
+   - mark the todo done.
+   Complete the loop in order: implement until the test passes, commit the change, and mark the todo done only after its evidence has been recorded.
 6. Follow existing architecture, naming, formatting, generated-code rules, and package boundaries. Include migrations, fixtures, documentation, telemetry, accessibility, security, and error handling only where the issue or repository requires them.
 7. Keep the owner informed without narrating the mechanics. Post the diagnosis and plan through `agent.reportProgress`, then use that same tool for decisions, blockers, unexpected findings, changes of direction, and the ten-minute heartbeat. Never rely on ordinary assistant commentary for user-visible progress. Test starts, test passes, edits, commits, and pushes belong in technical logs and the final structured result.
 8. Before completion:
