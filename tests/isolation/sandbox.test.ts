@@ -26,6 +26,14 @@ test("SPEC documents default denial of host path-based sockets for egress runs",
   const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
   expect(specification).toContain("Host path-based Unix sockets are denied by default");
   expect(specification).toContain("The only retained sockets are the data-plane, control-plane and MCP endpoints explicitly forwarded for that run");
+  expect(specification).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
+  expect(specification).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+});
+
+test("architecture documents the socket-denial residual risk", async () => {
+  const architecture = await readFile(path.join(import.meta.dir, "../../docs/architecture.md"), "utf8");
+  expect(architecture).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
+  expect(architecture).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
 });
 
 describeSandbox("confined command exposes only its fresh scratch directory", () => {
