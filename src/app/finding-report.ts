@@ -92,3 +92,12 @@ export function buildFindingReport(db: Database, options: FindingReportOptions =
   });
   return report;
 }
+
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** An ISO 8601 date or timestamp as the UTC ISO timestamp the store compares with, or null when it is neither. */
+export function parseSince(value: string): string | null {
+  if (!ISO_8601.test(value)) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : new Date(time).toISOString();
+}

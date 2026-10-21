@@ -8,6 +8,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { buildFindingReport, parseSince } from "../app/finding-report";
 import type { ConveyorService } from "../app/service";
 import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor } from "../commands/bus";
 import { MAX_SOCKET_PATH } from "../isolation/run-network";
@@ -188,6 +189,17 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
       if (route === "GET /v1/status") return json(status(service, info));
       if (route === "GET /v1/board") return json(board(service));
       if (route === "GET /v1/github-calls") return json(await service.githubCallReport());
+      if (route === "GET /v1/reports/findings") {
+        const repository = url.searchParams.get("repository");
+        if (repository !== null && !service.config.repositories[repository]) throw new ControlError(`no configured repository ${repository}`, 400);
+        const sinceText = url.searchParams.get("since");
+        const since = sinceText === null ? null : parseSince(sinceText);
+        if (sinceText !== null && since === null) throw new ControlError(`since must be an ISO 8601 date or timestamp, not ${sinceText}`, 400);
+        return json(buildFindingReport(service.store.sqlite(), {
+          ...(repository !== null ? { repositoryId: repository } : {}),
+          ...(since !== null ? { since } : {}),
+        }));
+      }
       if (route === "GET /v1/questions") {
         return json(service.store.listOpenQuestions()
           .filter((question) => service.store.getIssue(question.issueId)?.projectedState !== "offboarded")

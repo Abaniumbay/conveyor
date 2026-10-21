@@ -235,6 +235,15 @@ Reads the database directly, so it works whether or not the service is running. 
 | `--since <duration>` | only events from this long ago, e.g. 30m, 1h, 7d |
 | `--lines <n>` | print at most the last n matching events (default 200; 0 for all) |
 
+### `conveyor report findings`
+
+Show how many review findings exist by type and how often each type appears in a review round.
+
+| Option | Description |
+| --- | --- |
+| `--repository <id>` | only this configured repository |
+| `--since <date>` | only findings and review rounds from this ISO 8601 date or timestamp on (inclusive) |
+
 ### `conveyor upgrade`
 
 Download, verify and switch to another release, draining running work first.

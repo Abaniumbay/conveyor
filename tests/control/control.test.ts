@@ -196,6 +196,69 @@ describe("control socket", () => {
   });
 });
 
+describe("finding report", () => {
+  async function seeded() {
+    const world = await running();
+    const db = world.store.sqlite();
+    const run = (id: string, issueId: string, startedAt: string) => db.query("INSERT INTO runs(id, issue_id, stage_id, attempt, kind, status, config_hash, started_at, finished_at) VALUES (?, ?, 'review', 1, 'reviewer', 'succeeded', 'h', ?, ?)").run(id, issueId, startedAt, startedAt);
+    const finding = (id: string, issueId: string, runId: string, type: string, at: string) => db.query("INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, body, created_at, type) VALUES (?, ?, ?, NULL, 'reviewer', 'agent', 'sha', 'open', 'b', ?, ?)").run(id, issueId, runId, at, type);
+    run("r1", "issue-1", "2026-09-01T10:00:00.000Z");
+    run("r2", "issue-1", "2026-10-02T10:00:00.000Z");
+    finding("f1", "issue-1", "r1", "bug", "2026-09-01T10:00:00.000Z");
+    finding("f2", "issue-1", "r2", "bug", "2026-10-02T10:00:00.000Z");
+    finding("f3", "issue-2", "r2", "docs", "2026-10-02T10:00:00.000Z");
+    return world;
+  }
+
+  test("prints the shared counts and review-round shares as text", async () => {
+    const { cli } = await seeded();
+    const result = await cli("report", "findings");
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.out).toContain("Findings: 3");
+    expect(result.out).toContain("Review rounds: 2");
+    expect(result.out).toMatch(/bug\s+2\s+2\s+100\.0%/);
+    expect(result.out).toMatch(/docs\s+1\s+1\s+50\.0%/);
+  });
+
+  test("--json emits the shared report", async () => {
+    const { cli, store } = await seeded();
+    const { buildFindingReport } = await import("../../src/app/finding-report");
+    const result = await cli("report", "findings", "--json");
+    expect(result.code).toBe(EXIT.ok);
+    expect(JSON.parse(result.out)).toEqual(JSON.parse(JSON.stringify(buildFindingReport(store.sqlite()))));
+    expect(JSON.parse(result.out)).toMatchObject({ total: 3, reviewRounds: 2, byType: { bug: 2, docs: 1 } });
+  });
+
+  test("--repository limits the result to that repository and rejects an unknown one", async () => {
+    const { cli } = await seeded();
+    expect(JSON.parse((await cli("report", "findings", "--repository", "app", "--json")).out)).toMatchObject({ total: 3, byRepository: { app: 3 } });
+    const unknown = await cli("report", "findings", "--repository", "nope");
+    expect(unknown.code).toBe(EXIT.usage);
+    expect(unknown.err).toContain("nope");
+  });
+
+  test("--since includes only the selected window, inclusively", async () => {
+    const { cli } = await seeded();
+    const report = JSON.parse((await cli("report", "findings", "--since", "2026-10-02", "--json")).out) as { total: number; reviewRounds: number };
+    expect(report).toMatchObject({ total: 2, reviewRounds: 1 });
+    const exact = JSON.parse((await cli("report", "findings", "--since", "2026-10-02T10:00:00Z", "--json")).out) as { total: number };
+    expect(exact.total).toBe(2);
+    const later = JSON.parse((await cli("report", "findings", "--since", "2026-10-02T10:00:01Z", "--json")).out) as { total: number };
+    expect(later.total).toBe(0);
+  });
+
+  test("an invalid --since is a CLI input error, and the service rejects one too", async () => {
+    const { cli, service } = await seeded();
+    for (const value of ["yesterday", "2026-13-45", "2026-10"]) {
+      const result = await cli("report", "findings", "--since", value);
+      expect(result.code).toBe(EXIT.usage);
+      expect(result.err).toContain("ISO 8601");
+    }
+    const handler = createControlHandler(service, { supervised: false } as never);
+    expect((await handler(new Request("http://x/v1/reports/findings?since=yesterday"))).status).toBe(400);
+  });
+});
+
 describe("restart route", () => {
   test("a supervised service refuses to restart over running work unless forced", async () => {
     let restarts = 0;
