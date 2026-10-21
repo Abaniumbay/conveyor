@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -20,6 +20,12 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(0, 5)).toEqual(["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]);
   expect(launch.argv.join(" ")).toContain("--tmpfs /tmp");
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
+});
+
+test("SPEC documents default denial of host path-based sockets for egress runs", async () => {
+  const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
+  expect(specification).toContain("Host path-based Unix sockets are denied by default");
+  expect(specification).toContain("The only retained sockets are the data-plane, control-plane and MCP endpoints explicitly forwarded for that run");
 });
 
 describeSandbox("confined command exposes only its fresh scratch directory", () => {
