@@ -20,8 +20,10 @@ describeSandbox("codexHarness", () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-harness-"));
     directories.push(directory);
     const executable = path.join(directory, "fake-codex");
-    const capture = path.join(directory, "capture.json");
+    const artifactsDirectory = path.join(directory, "a");
+    const capture = path.join(artifactsDirectory, "capture.json");
     await mkdir(path.join(directory, "workspace"));
+    await mkdir(artifactsDirectory);
     await writeFile(executable, `#!/usr/bin/env bun
       const args = process.argv.slice(2);
       await Bun.write(process.env.CAPTURE!, JSON.stringify(args));
@@ -35,7 +37,7 @@ describeSandbox("codexHarness", () => {
     expect(codexHarness.id).toBe("codex");
     expect(codexHarness.capabilities).toEqual({ sessionResume: true });
     const input = {
-      command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory: path.join(directory, "a"),
+      command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory,
       prompt: "go", sandbox: "read-only" as const, automaticApprovals: false,
       mcp: { command: "bun", args: [] }, env: { CAPTURE: capture },
     };
