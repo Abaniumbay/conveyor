@@ -20,6 +20,7 @@ import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-r
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
+import type { SourceIssue } from "../../src/source/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
@@ -51,8 +52,6 @@ export interface DeliveryWorld {
   labelWrites: string[][];
   /** The stages the item was executed at, one entry per execute call. */
   executed: string[];
-  /** Runs the item's current stage with the supplied cancellation signal. */
-  runCurrentStage(signal: AbortSignal): Promise<void>;
   /** Runs the item until it is done (or the step limit); returns the stages it advanced through. */
   drive(limit?: number): Promise<void>;
   close(): Promise<void>;
@@ -142,6 +141,8 @@ export async function deliveryWorld(options: {
   pauseBeforeCiStart?: boolean;
   deployScript?: string;
   interruptGrace?: string;
+  /** Use the public service scheduling and pause lifecycle instead of the delivery driver. */
+  publicLifecycle?: boolean;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -216,9 +217,26 @@ export async function deliveryWorld(options: {
   const agentRuns: string[] = [];
   let implementationRuns = 0;
   const labelWrites: string[][] = [];
+  let sourceIssue: SourceIssue | null = null;
   const github = {
-    replaceConveyorLabels: async (_address: string, _number: number, labels: string[]) => { labelWrites.push([...labels]); },
+    replaceConveyorLabels: async (_address: string, number: number, labels: string[]) => {
+      if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
+      labelWrites.push([...labels]);
+      sourceIssue = { ...sourceIssue, labels: [...labels], updatedAt: new Date().toISOString() };
+    },
     addComment: async () => 1,
+    listIssues: async () => sourceIssue ? [sourceIssue] : [],
+    getIssue: async (_address: string, number: number) => {
+      if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
+      return sourceIssue;
+    },
+    getIssueProvenance: async () => ({
+      enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" },
+    }),
+    collaboratorPermission: async () => "write" as const,
+    listSubIssues: async () => [],
+    listDependencies: async () => [],
+    upsertStatusComment: async () => 1,
     // The organization defines issue types and the Effort field; mirror the metadata
     // written by the simulated refinement tool as GitHub's current field snapshot.
     listIssueTypes: async () => ["Task", "Bug", "Feature"],
@@ -326,16 +344,22 @@ export async function deliveryWorld(options: {
     harnesses: { codex: harness, "claude-code": harness },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
-  Object.assign(service as object, {
-    reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {},
-    ciProvider: () => provider,
-  });
+  if (!options.publicLifecycle) {
+    Object.assign(service as object, {
+      reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {},
+      ciProvider: () => provider,
+    });
+  }
 
   store.upsertIssue({
     id: "issue", repositoryId: "conveyor", sourceNumber: 1, sourceUrl: "https://github.com/owner/conveyor/issues/1",
     title: "Add the feature", body: "A feature request.", sourceState: "open", labels: ["conveyor", "conveyor:refinement"],
     sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
+  sourceIssue = {
+    id: "issue", number: 1, url: "https://github.com/owner/conveyor/issues/1", title: "Add the feature", body: "A feature request.",
+    state: "open", labels: ["conveyor", "conveyor:refinement"], updatedAt: "2026-01-01T00:00:00Z",
+  };
   store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
   store.setQueueRank("issue", store.nextQueueRank());
   store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
@@ -345,11 +369,6 @@ export async function deliveryWorld(options: {
     root, config, store, service, host, ci, agentRuns, labelWrites, executed,
     get scriptRuns() {
       try { return readFileSync(scriptLog, "utf8").split("\n").filter(Boolean); } catch { return []; }
-    },
-    async runCurrentStage(signal) {
-      const state = store.getStageState("issue")!;
-      executed.push(state.stageId);
-      await (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
     },
     async drive(limit = 40) {
       const controller = new AbortController();

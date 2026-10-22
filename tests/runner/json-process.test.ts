@@ -335,6 +335,7 @@ describe("runJsonProcess", () => {
   test("falls back to the direct child when its process group is gone", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-runner-group-fallback-"));
     temporaryDirectories.push(directory);
+    const pidFile = path.join(directory, "child-pid");
     const controller = new AbortController();
     const originalKill = process.kill;
     let groupSignals = 0;
@@ -350,16 +351,21 @@ describe("runJsonProcess", () => {
     });
     try {
       const execution = runProcess({
-        command: ["sh", "-c", "sleep 2"],
+        command: ["sh", "-c", `echo $$ > ${pidFile}; exec sleep 2`],
         cwd: directory,
         input: {},
         signal: controller.signal,
         interruptGraceMs: 50,
       });
+      await waitForFile(pidFile);
+      const pid = Number((await readFile(pidFile, "utf8")).trim());
+      const interruptedAt = performance.now();
       controller.abort();
 
       await expect(execution).rejects.toThrow(/interrupted/i);
+      expect(performance.now() - interruptedAt).toBeLessThan(500);
       expect(groupSignals).toBeGreaterThan(0);
+      await waitForProcessExit(pid);
     } finally {
       Object.defineProperty(process, "kill", { configurable: true, value: originalKill });
     }

@@ -15,9 +15,18 @@ async function waitForFile(filename: string): Promise<void> {
   throw new Error(`Timed out waiting for ${filename}`);
 }
 
+async function waitForInterruption(w: DeliveryWorld): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (w.store.getStageState("issue")?.status === "interrupted") return;
+    await Bun.sleep(10);
+  }
+  throw new Error("Timed out waiting for the deploy stage to be interrupted");
+}
+
 test("records an interrupted deploy before a SIGTERM-responsive descendant can hold stdout open", async () => {
   world = await deliveryWorld({
     interruptGrace: "50ms",
+    publicLifecycle: true,
     deployScript: [
       'import { writeFile } from "node:fs/promises";',
       'const child = Bun.spawn(["sh", "-c", "sleep 2"]);',
@@ -29,13 +38,12 @@ test("records an interrupted deploy before a SIGTERM-responsive descendant can h
   w.store.setIssueProjection("issue", { stage: "deploy", state: "active", warning: null });
   w.store.setStageState({ issueId: "issue", stageId: "deploy", status: "ready", feedbackCycle: 0, configHash: w.config.hash });
 
-  const controller = new AbortController();
-  const execution = w.runCurrentStage(controller.signal);
+  await w.service.postIssueMessage("issue", "Start deploy", "operator");
   await waitForFile(path.join(w.root, "repos", "conveyor", "script-ready"));
 
   const startedAt = Date.now();
-  controller.abort();
-  await execution;
+  await w.service.pauseIssue("issue", "operator");
+  await waitForInterruption(w);
 
   expect(Date.now() - startedAt).toBeLessThan(500);
   expect(w.store.getStageState("issue")).toMatchObject({ stageId: "deploy", status: "interrupted" });
