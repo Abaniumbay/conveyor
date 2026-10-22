@@ -83,6 +83,13 @@ function startApp() {
     moveBacklogIssue: () => {}, startSteering: () => "run-1", postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
     reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; },
   });
+  const reportFindings = {
+    total: 5, reviewRounds: 9,
+    byType: [{ type: "criterion-not-met", findings: 3, rounds: 2, share: 2 / 9 }, { type: "test-not-discriminating", findings: 2, rounds: 2, share: 2 / 9 }, { type: "general", findings: 0, rounds: 0, share: 0 }],
+    byRepository: [{ key: "a-repository-with-a-very-long-identifier-name", count: 5 }],
+    byAuthor: [{ key: "codex-reviewer[bot]-with-a-long-author-name", count: 5 }],
+    byWeek: [{ key: "2026-W43", count: 5 }],
+  };
   const handler = createWebHandler({
     auth,
     username: "operator",
@@ -94,7 +101,7 @@ function startApp() {
       events: [{ id: "e1", occurredAt: "2026-10-20T11:00:00Z", type: "done", repository: "sample", repositoryColor: 1, issueNumber: 19, issueTitle: "Shipped thing", issueUrl: "/issues/sample/19", fromStage: "review", toStage: null, reason: null }],
     }),
     getSteeringView: () => ({ enabled: true, agent: "omid", selected: { id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z", finishedAt: "2026-10-20T10:01:00Z", events: [{ sequence: 1, type: "report", text: "Board checked.", createdAt: "2026-10-20T10:01:00Z" }] }, recent: [{ id: "run-1", status: "succeeded", startedAt: "2026-10-20T10:00:00Z" }] }),
-    getReport: ({ period, repository }) => ({ period, since: null, repository, repositories: ["sample"], totals: reportTotals, byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-20T12:00:00Z" }),
+    getReport: ({ period, repository }) => ({ period, since: null, repository, repositories: ["sample"], totals: reportTotals, byRepository: [], byMonth: [], byStage: [], items: [], findings: reportFindings, importedWithoutHistory: 0, generatedAt: "2026-10-20T12:00:00Z" }),
     listAccounts: () => [{ id: "operator", username: "operator", role: "superuser", avatar: "🐼" }],
     getPushPreferences: () => ({ questions: true, stopped: false, done: false }),
     isReady: () => true,
@@ -400,6 +407,29 @@ describe("dashboard application", () => {
       await page.locator(".tabs a", { hasText: "Operator" }).click();
       await page.locator(".agent-event", { hasText: "Board checked." }).waitFor();
       expect(new URL(page.url()).pathname).toBe("/operator");
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("shows the finding report readably at 360 px without sideways page scrolling", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true });
+      await signIn(page, app.url);
+      await page.goto(`${app.url}/reports`);
+      const section = page.locator('section[aria-labelledby="report-findings"]');
+      await section.waitFor();
+      await section.scrollIntoViewIfNeeded();
+      expect(await section.getByText("criterion-not-met").count()).toBe(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+      const box = await section.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+      const overflowing = await page.evaluate(() => [...document.querySelectorAll('section[aria-labelledby="report-findings"] *')]
+        .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1 && !element.closest(".report-table-wrap")).length);
+      expect(overflowing).toBe(0);
     } finally {
       app.stop();
     }

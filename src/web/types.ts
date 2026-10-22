@@ -624,6 +624,15 @@ export interface ReportItemRow {
   stops: number;
 }
 
+/** A repository id, an author as stored, or a UTC ISO week (`YYYY-Www`), with its finding count. */
+export interface ReportFindingCountRow { key: string; count: number }
+
+/** `rounds` are the review rounds that raised this type; `share` is `rounds` over all rounds in scope (null when none). */
+export interface ReportFindingTypeRow { type: string; findings: number; rounds: number; share: number | null }
+
+/** Durable review findings in scope of the report's repository and period. */
+export interface ReportFindings { total: number; reviewRounds: number; byType: readonly ReportFindingTypeRow[]; byRepository: readonly ReportFindingCountRow[]; byAuthor: readonly ReportFindingCountRow[]; byWeek: readonly ReportFindingCountRow[] }
+
 export interface ReportViewModel {
   period: ReportPeriod;
   /** Start of the period (ISO), null for all time. */
@@ -637,6 +646,7 @@ export interface ReportViewModel {
   byStage: readonly ReportStageRow[];
   /** The items of the drilled-into repository with activity in the period (empty for every repository). */
   items: readonly ReportItemRow[];
+  findings: ReportFindings;
   /** Done items imported without a recorded delivery; left out of every figure. */
   importedWithoutHistory: number;
   generatedAt: string;

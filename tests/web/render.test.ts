@@ -3,7 +3,7 @@ import { renderDashboard } from "../support/render-dashboard";
 import { viewTitle } from "../../src/web/render";
 import { BUILD } from "../../src/version";
 import { dashboardCss, graphCss, quotaHeaderCss, themeInitScript } from "../../src/web/styles";
-import type { DashboardView, DashboardViewModel, IssueCardViewModel } from "../../src/web/types";
+import type { DashboardView, DashboardViewModel, IssueCardViewModel, ReportViewModel } from "../../src/web/types";
 
 const parent: IssueCardViewModel = {
   id: "parent",
@@ -889,6 +889,53 @@ describe("renderDashboard", () => {
     }
   });
 
+  const noFindings = { total: 0, reviewRounds: 0, byType: [], byRepository: [], byAuthor: [], byWeek: [] };
+  const findingsReport = (overrides: Partial<ReportViewModel> = {}): ReportViewModel => ({
+    period: "30d", since: "2026-09-03T00:00:00.000Z", repository: null, repositories: ["alpha", "beta"],
+    totals: {
+      delivered: 0, inProgress: 0, runs: 0, failedRuns: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, agentMs: 0,
+      avgTokensPerItem: null, avgRunsPerItem: null, avgLeadMs: null, avgAgentMs: null, avgChecksWaitMs: null, avgWaitingForYouMs: null, avgQueuedMs: null,
+      avgReturnsPerItem: null, avgStopsPerItem: null, firstPassRate: null,
+    },
+    byRepository: [], byMonth: [], byStage: [], items: [], importedWithoutHistory: 0, generatedAt: "2026-10-03T00:00:00.000Z",
+    findings: {
+      total: 4, reviewRounds: 8,
+      byType: [
+        { type: "bug", findings: 3, rounds: 2, share: 0.25 },
+        { type: "docs", findings: 1, rounds: 1, share: 0.125 },
+        { type: "style", findings: 0, rounds: 0, share: 0 },
+      ],
+      byRepository: [{ key: "alpha", count: 3 }, { key: "beta", count: 1 }],
+      byAuthor: [{ key: "reviewer", count: 3 }, { key: "<b>mallory</b>", count: 1 }],
+      byWeek: [{ key: "2026-W43", count: 3 }, { key: "2026-W42", count: 1 }],
+    },
+    ...overrides,
+  });
+
+  test("renders the finding section: count and share of rounds per type, and counts by repository, author and UTC ISO week", () => {
+    const html = renderDashboard({ ...dashboard, view: "reports", report: findingsReport() });
+    expect(html).toContain("Review findings");
+    expect(html).toContain('<tr><th scope="row">bug</th><td>3</td><td>2</td><td>25%</td></tr>');
+    expect(html).toContain('<tr><th scope="row">docs</th><td>1</td><td>1</td><td>13%</td></tr>');
+    expect(html).toContain('<tr><th scope="row">style</th><td>0</td><td>0</td><td>0%</td></tr>');
+    expect(html).toContain("4 findings across 8 review rounds");
+    expect(html).toContain('<tr><th scope="row">alpha</th><td>3</td></tr>');
+    expect(html).toContain("By author");
+    expect(html).toContain('<tr><th scope="row">reviewer</th><td>3</td></tr>');
+    expect(html).toContain("&lt;b>mallory&lt;/b>");
+    expect(html).toContain("By UTC ISO week");
+    expect(html).toContain('<tr><th scope="row">2026-W43</th><td>3</td></tr>');
+  });
+
+  test("the finding section of a repository-selected report leaves out the repository table and says so when empty", () => {
+    const scoped = renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ repository: "alpha" }) });
+    expect(scoped).toContain("By author");
+    expect(scoped).not.toContain('id="report-finding-repositories"');
+    const empty = renderDashboard({ ...dashboard, view: "reports", report: findingsReport({ repository: "alpha", findings: noFindings }) });
+    expect(empty).toContain("No review findings for alpha in this period.");
+    expect(empty).not.toContain("By UTC ISO week");
+  });
+
   test("renders the Reports view: tab, filters, figures, drill-through links, escaped items and only non-zero bars", () => {
     const totals = {
       delivered: 2, inProgress: 1, runs: 5, failedRuns: 1, inputTokens: 4_900_000, outputTokens: 100_000, cachedTokens: 2_450_000, agentMs: 9 * 3_600_000,
@@ -908,6 +955,7 @@ describe("renderDashboard", () => {
           { id: "deploy", name: "Deploy", runs: 1, failedRuns: 0, tokens: 0, agentMs: 600_000, avgRunMs: 600_000 },
         ],
         items: [{ repository: "sample", number: 9, title: "<script>x</script>", state: "needs-input", finishedAt: null, leadMs: null, agentMs: 600_000, checksWaitMs: 0, waitingForYouMs: 0, runs: 1, tokens: 1_200, returns: 0, stops: 1 }],
+        findings: noFindings,
         importedWithoutHistory: 4,
         generatedAt: "2026-10-03T00:00:00.000Z",
       },

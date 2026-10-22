@@ -1092,6 +1092,7 @@ async function main(): Promise<void> {
       "Reports",
       "16.2K",
       "Runs",
+      "Review findings",
     ]);
     await capture(page, baseUrl, "item", "/issues/demo/1", [
       "Ship a reliable dashboard overview",
