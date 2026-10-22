@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, sandboxArguments, type ClaudeCodeRunInput } from "../../src/runner/claude-code";
+import { claudeArguments, claudeSchema, clearClaudeCodeHome, runClaudeCode, type ClaudeCodeRunInput } from "../../src/runner/claude-code";
 import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
@@ -60,43 +60,6 @@ describe("claude code runner", () => {
     expect(value("--resume")).toBe("s1");
   });
 
-  test("mounts everything read-only except its config, home and a private /tmp", () => {
-    const args = sandboxArguments({ workspace: "/w", configDir: "/c", home: "/h", serviceHome: undefined }).join(" ");
-    expect(args).toStartWith("--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp");
-    expect(args).toContain("--bind /c /c");
-    expect(args).toContain("--bind /h /h");
-    expect(args).toContain("--chdir /w --die-with-parent --");
-    expect(args).not.toContain("--bind /w");
-  });
-
-  test("uses resolved paths for every mount behind a symbolic link", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-paths-"));
-    directories.push(root);
-    const target = path.join(root, "target");
-    const link = path.join(root, "link");
-    for (const name of ["workspace", "config", "home", "service", "cache"]) {
-      await mkdir(path.join(target, name), { recursive: true });
-    }
-    await writeFile(path.join(target, "config.json"), "{}");
-    await symlink(target, link);
-
-    const args = sandboxArguments({
-      workspace: path.join(link, "workspace"),
-      configDir: path.join(link, "config"),
-      home: path.join(link, "home"),
-      serviceHome: path.join(link, "service"),
-      writable: [path.join(link, "cache"), path.join(link, "missing")],
-    });
-
-    expect(args.join(" ")).not.toContain(link);
-    expect(args).toContain(path.join(target, "workspace"));
-    expect(args).toContain(path.join(target, "config"));
-    expect(args).toContain(path.join(target, "config.json"));
-    expect(args).toContain(path.join(target, "home"));
-    expect(args).toContain(path.join(target, "cache"));
-    expect(args.join(" ")).not.toContain("missing");
-  });
-
   test("passes the result schema without the $schema reference Claude Code rejects", async () => {
     const raw = await readFile(path.join(import.meta.dir, "../../src/runner/schemas/producer-result.json"), "utf8");
     expect(raw).toContain("$schema");
@@ -129,19 +92,6 @@ describe("claude code runner", () => {
     } });
     const readOnly = claudeArguments({ ...base, network: true }, "{}");
     expect(readOnly[readOnly.indexOf("--tools") + 1]).toBe("Read,Grep,Glob,Bash,WebFetch,WebSearch");
-  });
-
-  test("hides the session bus and existing root-equivalent sockets, and binds writable directories that exist", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "conveyor-claude-sbx-"));
-    directories.push(root);
-    const bus = path.join(root, "bus");
-    await writeFile(bus, "");
-    const cache = path.join(root, "cache");
-    await Bun.write(path.join(cache, "x"), "");
-    const args = sandboxArguments({ workspace: "/w", configDir: "/c", home: "/h", serviceHome: undefined, sessionBus: bus, writable: [cache, path.join(root, "missing")] }).join(" ");
-    expect(args).toContain(`--ro-bind /dev/null ${bus}`);
-    expect(args).toContain(`--bind ${cache} ${cache}`);
-    expect(args).not.toContain("missing");
   });
 
   test("clears the private home after a successful run without removing recorded artifacts", async () => {

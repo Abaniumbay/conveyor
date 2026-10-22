@@ -8,6 +8,7 @@ import { resolveFilesystemPath } from "../../src/core/paths";
 import { runCodex } from "../../src/runner/codex";
 import { runCodexCheck } from "../../src/runner/codex-check";
 import { runCodexSteering } from "../../src/runner/codex-steering";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
 const saved = { ...process.env };
@@ -78,7 +79,11 @@ const common = {
   mcp: { command: "bun", args: ["mcp.ts"] },
 };
 
-describe("agent environment", () => {
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED agent environment Codex tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
+
+describeSandbox("agent environment", () => {
   test("runCodex spawns with a sanitized environment", async () => {
     const files = await fixture();
     await runCodex({

@@ -50,7 +50,7 @@ async function run(egress: boolean, localServiceEnvironment?: Record<string, str
   const model = net.createServer((socket) => socket.on("error", () => {}));
   await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
   servers.push(model);
-  const capture = path.join(directory, "capture.json");
+  const capture = path.join(artifacts, "capture.json");
   await runCodex({
     command: executable,
     workspace,
@@ -86,7 +86,7 @@ describeSandbox("runCodex with agent egress", () => {
     expect(set).toMatch(/HTTPS_PROXY="http:\/\/127\.0\.0\.1:\d+"/);
     expect(set).not.toContain("conveyor:");
     expect(set).toContain('NO_PROXY=""');
-    const exclude = args.find((arg) => arg.startsWith("shell_environment_policy.exclude="))!;
+    const exclude = args.find((arg) => arg.startsWith("shell_environment_policy.exclude=") && arg.includes("HTTPS_PROXY"))!;
     for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "npm_config_https_proxy", "NO_PROXY"]) {
       expect(exclude).toContain(`"${name}"`);
     }
@@ -95,10 +95,10 @@ describeSandbox("runCodex with agent egress", () => {
     expect(await readdir(path.join(artifacts, "net"))).toEqual([]);
   });
 
-  test("without an egress policy codex runs as before (no sandbox flags)", async () => {
+  test("without an egress policy codex still excludes the service credential from commands", async () => {
     const { capture } = await run(false);
     expect(capture.status).toBe("none");
-    expect(capture.args.some((arg: string) => arg.startsWith("shell_environment_policy"))).toBe(false);
+    expect(capture.args).toContain('shell_environment_policy.exclude=["CODEX_HOME"]');
   });
 
   test("passes declared local-service connection variables to the sandboxed command", async () => {

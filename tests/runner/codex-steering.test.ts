@@ -18,12 +18,13 @@ afterEach(async () => {
 describe("runCodexSteering", () => {
   const confinedTest = bwrapUnavailableReason() ? test.skip : test;
 
-  test("streams Codex events and retains the final agent report", async () => {
+  confinedTest("streams Codex events and retains the final agent report", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-steering-"));
     temporaryDirectories.push(directory);
     const workspace = path.join(directory, "workspace");
     const executable = path.join(directory, "fake-codex");
-    const capture = path.join(directory, "capture.json");
+    const artifactsDirectory = path.join(directory, "artifacts", "run-1");
+    const capture = path.join(artifactsDirectory, "capture.json");
     await mkdir(workspace);
     await writeFile(executable, `#!/usr/bin/env bun
       const args = process.argv.slice(2);
@@ -41,7 +42,7 @@ describe("runCodexSteering", () => {
     const result = await runCodexSteering({
       command: executable,
       workspace,
-      artifactsDirectory: path.join(directory, "artifacts", "run-1"),
+      artifactsDirectory,
       prompt: "Make the requested UI change",
       model: "gpt-test",
       effort: "medium",

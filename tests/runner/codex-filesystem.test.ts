@@ -1,0 +1,160 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+import { runCodex } from "../../src/runner/codex";
+import { bwrapUnavailableReason } from "../support/bwrap";
+import { shortTemporaryDirectory } from "../support/short-temporary-directory";
+
+const directories: string[] = [];
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED Codex filesystem tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
+
+const FAKE_CODEX = `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+const checks = JSON.parse(process.env.CHECKS);
+const readable = async (file) => await Bun.file(file).exists();
+const result = {};
+for (const [name, file] of Object.entries(checks.files)) result[name] = await readable(file);
+result.workspaceContents = await Bun.file(checks.workspaceMarker).text();
+try {
+  await Bun.write(checks.workspace + "/write-marker", "workspace write");
+  result.workspaceWritable = true;
+} catch {
+  result.workspaceWritable = false;
+}
+result.home = await readable(process.env.HOME + "/.gitconfig");
+const scratchMarker = process.env.TMPDIR + "/scratch-marker";
+await Bun.write(scratchMarker, "private scratch");
+result.scratch = await Bun.file(scratchMarker).text() === "private scratch";
+const git = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: checks.workspace });
+result.git = git.exitCode === 0;
+const head = new TextDecoder().decode(git.stdout).trim();
+const gitWrite = Bun.spawnSync(["git", "update-ref", "refs/heads/agent-filesystem-test", head], { cwd: checks.workspace });
+result.gitMetadataWritable = gitWrite.exitCode === 0;
+await Bun.write(process.env.CAPTURE, JSON.stringify(result));
+await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
+`;
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+function git(args: string[], cwd?: string): void {
+  const child = Bun.spawnSync(["git", ...args], { ...(cwd ? { cwd } : {}), stdout: "ignore", stderr: "pipe" });
+  if (child.exitCode !== 0) throw new Error(new TextDecoder().decode(child.stderr));
+}
+
+async function fixture() {
+  const root = await shortTemporaryDirectory("conveyor-cfs-", {
+    socketPath: "artifacts/run/net/control.sock",
+    visibleInSandbox: true,
+  });
+  directories.push(root);
+  const source = path.join(root, "source");
+  const workspace = path.join(root, "workspace");
+  const otherWorktree = path.join(root, "other-worktree");
+  const otherRepository = path.join(root, "other-repository");
+  const artifacts = path.join(root, "artifacts", "run");
+  const runtime = path.join(root, "runtime");
+  const executable = path.join(runtime, "codex");
+  const conveyorHome = path.join(root, "conveyor-home");
+  const configuration = path.join(root, "configuration");
+  const data = path.join(root, "data");
+  const credentials = path.join(root, "credentials");
+  await Promise.all([mkdir(source), mkdir(otherRepository), mkdir(artifacts, { recursive: true }), mkdir(runtime), mkdir(conveyorHome), mkdir(configuration), mkdir(data), mkdir(credentials)]);
+  await writeFile(path.join(source, "own-marker"), "own worktree");
+  git(["init", "--quiet"], source);
+  git(["add", "."], source);
+  git(["-c", "user.name=Conveyor", "-c", "user.email=conveyor@example.com", "commit", "--quiet", "-m", "initial"], source);
+  git(["worktree", "add", "--quiet", "--detach", workspace, "HEAD"], source);
+  git(["worktree", "add", "--quiet", "--detach", otherWorktree, "HEAD"], source);
+  await Promise.all([
+    writeFile(path.join(otherWorktree, "other-worktree-marker"), "hidden"),
+    writeFile(path.join(otherRepository, "other-repository-marker"), "hidden"),
+    writeFile(path.join(conveyorHome, "home-marker"), "hidden"),
+    writeFile(path.join(configuration, "config-marker"), "hidden"),
+    writeFile(path.join(data, "data-marker"), "hidden"),
+    writeFile(path.join(credentials, "auth.json"), "hidden"),
+    writeFile(path.join(runtime, "runtime-sibling-marker"), "hidden"),
+    writeFile(executable, FAKE_CODEX),
+  ]);
+  await chmod(executable, 0o755);
+  const capture = path.join(artifacts, "capture.json");
+  return {
+    workspace,
+    artifacts,
+    executable,
+    capture,
+    checks: {
+      workspace,
+      workspaceMarker: path.join(workspace, "own-marker"),
+      files: {
+        otherWorktree: path.join(otherWorktree, "other-worktree-marker"),
+        otherRepository: path.join(otherRepository, "other-repository-marker"),
+        conveyorHome: path.join(conveyorHome, "home-marker"),
+        configuration: path.join(configuration, "config-marker"),
+        data: path.join(data, "data-marker"),
+        credentials: path.join(credentials, "auth.json"),
+        runtimeSibling: path.join(runtime, "runtime-sibling-marker"),
+      },
+    },
+  };
+}
+
+describeSandbox("Codex filesystem confinement", () => {
+  test.each([
+    ["read-only without egress", "read-only", false],
+    ["workspace-write without egress", "workspace-write", false],
+    ["read-only with egress", "read-only", true],
+    ["workspace-write with egress", "workspace-write", true],
+  ] as const)("allows only this run's paths in %s", async (_name, sandbox, egress) => {
+    const files = await fixture();
+    await runCodex({
+      command: files.executable,
+      workspace: files.workspace,
+      artifactsDirectory: files.artifacts,
+      prompt: "verify filesystem",
+      sandbox,
+      automaticApprovals: false,
+      mcp: { command: "bun", args: ["x"] },
+      env: {
+        CAPTURE: files.capture,
+        CHECKS: JSON.stringify(files.checks),
+        CODEX_HOME: path.join(path.dirname(files.workspace), "credentials"),
+      },
+      ...(egress ? { egress: { httpsHosts: [], controlPlaneHosts: [] } } : {}),
+    });
+    const result = JSON.parse(await readFile(files.capture, "utf8"));
+    expect(result.workspaceContents).toBe("own worktree");
+    expect(result.workspaceWritable).toBe(sandbox === "workspace-write");
+    expect(result.git).toBe(true);
+    expect(result.gitMetadataWritable).toBe(sandbox === "workspace-write");
+    expect(result.home).toBe(true);
+    expect(result.scratch).toBe(true);
+    expect(result.otherWorktree).toBe(false);
+    expect(result.otherRepository).toBe(false);
+    expect(result.conveyorHome).toBe(false);
+    expect(result.configuration).toBe(false);
+    expect(result.data).toBe(false);
+    expect(result.credentials).toBe(false);
+    expect(result.runtimeSibling).toBe(false);
+  });
+
+  test("fails before an agent command starts when it cannot build confinement", async () => {
+    const files = await fixture();
+    const started = path.join(files.artifacts, "started");
+    await expect(runCodex({
+      command: path.join(path.dirname(files.executable), "missing-codex"),
+      workspace: files.workspace,
+      artifactsDirectory: files.artifacts,
+      prompt: "verify filesystem",
+      sandbox: "read-only",
+      automaticApprovals: false,
+      mcp: { command: "bun", args: ["x"] },
+      env: { STARTED: started },
+    })).rejects.toThrow("cannot confine a command that is not installed");
+    expect(await Bun.file(started).exists()).toBe(false);
+  });
+});

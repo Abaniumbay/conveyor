@@ -5,8 +5,12 @@ import path from "node:path";
 
 import { resolveFilesystemPath } from "../../src/core/paths";
 import { CodexRunnerError, runCodex } from "../../src/runner/codex";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const temporaryDirectories: string[] = [];
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED Codex runner tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
 
 async function fixture(source: string) {
   const directory = await mkdtemp(path.join(tmpdir(), "conveyor-codex-"));
@@ -14,7 +18,7 @@ async function fixture(source: string) {
   const workspace = path.join(directory, "workspace");
   const artifacts = path.join(directory, "artifacts");
   const executable = path.join(directory, "fake-codex");
-  const capture = path.join(directory, "capture.json");
+  const capture = path.join(artifacts, "capture.json");
   await mkdir(workspace);
   await mkdir(artifacts);
   await writeFile(executable, `#!/usr/bin/env bun\n${source}`);
@@ -30,7 +34,7 @@ afterEach(async () => {
   );
 });
 
-describe("runCodex", () => {
+describeSandbox("runCodex", () => {
   test("builds a fail-closed non-interactive run and parses JSONL usage", async () => {
     const files = await fixture(`
       const args = process.argv.slice(2);
