@@ -97,7 +97,7 @@ export class CommandBus {
   }
 
   /**
-   * Runs one command. Every event its handler causes carries the returned correlation id; the
+   * Runs one command. Events for the item its input names carry the returned correlation id; the
    * handler's own error is rethrown unchanged after `command.rejected` is recorded.
    */
   async dispatch<N extends CommandName>(name: N, input: CommandInput<N>, actor: CommandActor): Promise<CommandOutcome<N>> {
@@ -115,10 +115,13 @@ export class CommandBus {
       if (definition.role === "superuser" && actor.role !== "superuser") return reject(new CommandForbiddenError(`${name} requires a superuser`));
       const handler = this.#handlers.get(name);
       if (!handler) return reject(new CommandUnavailableError(`${name} is unavailable`));
+      const issueId = "issueId" in parsed.data && typeof parsed.data.issueId === "string" ? parsed.data.issueId : undefined;
       let result: CommandResults[N];
       try {
         // The handler registered under `name` returns that command's result.
-        result = await handler(parsed.data, actor) as CommandResults[N];
+        result = await withEventContext({ actor: { kind: actor.kind, id: actor.id }, correlationId, ...(issueId === undefined ? {} : { issueId }) }, () =>
+          handler(parsed.data, actor),
+        ) as CommandResults[N];
       } catch (error) {
         return reject(error instanceof Error ? error : new Error(String(error)));
       }

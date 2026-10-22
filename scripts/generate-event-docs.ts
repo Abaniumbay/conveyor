@@ -18,7 +18,7 @@ Each event has:
 - \`occurredAt\`: when it was recorded (ISO 8601).
 - \`repositoryId\` and \`issueId\`: the configured repository and item it concerns, when it concerns one.
 - \`actor\`: who caused it: \`user\` (a dashboard account), \`cli\`, \`agent\` (an agent run), \`webhook\` (a GitHub delivery) or \`system\` (Conveyor itself).
-- \`correlationId\`: shared by every event one command caused.
+- \`correlationId\`: shared by events for the item a command names; commands without an item share it with every event they cause.
 - \`payload\`: the fields listed below. Payloads carry identifiers and states, never secrets and never user-written text; read the text from the dashboard or the source.
 
 \`conveyor events\` prints the log, and event sinks deliver it elsewhere ([configuration.md](configuration.md#events)). The log keeps events for \`settings.events.retention\` (30 days by default).

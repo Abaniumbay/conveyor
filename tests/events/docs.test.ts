@@ -21,4 +21,9 @@ describe("docs/events.md", () => {
     expect(text).toContain("### Demo");
     expect(text).toContain('| `demo.changed` | Something changed. | `id`: string<br>`state`: `"a"` \\| `"b"`<br>`at`: string \\| null |');
   });
+
+  test("describes command correlation as scoped to its item", () => {
+    const text = renderEventDocs();
+    expect(text).toContain("events for its item share its correlation id");
+  });
 });
