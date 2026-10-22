@@ -104,12 +104,10 @@ async function fixture() {
 }
 
 describeSandbox("Codex filesystem confinement", () => {
-  test.each([
-    ["read-only without egress", "read-only", false],
-    ["workspace-write without egress", "workspace-write", false],
-    ["read-only with egress", "read-only", true],
-    ["workspace-write with egress", "workspace-write", true],
-  ] as const)("allows only this run's paths in %s", async (_name, sandbox, egress) => {
+  async function expectConfinedRun(
+    sandbox: "read-only" | "workspace-write",
+    egress: boolean,
+  ): Promise<void> {
     const files = await fixture();
     await runCodex({
       command: files.executable,
@@ -140,6 +138,22 @@ describeSandbox("Codex filesystem confinement", () => {
     expect(result.data).toBe(false);
     expect(result.credentials).toBe(false);
     expect(result.runtimeSibling).toBe(false);
+  }
+
+  test("allows only this run's paths read-only without egress", async () => {
+    await expectConfinedRun("read-only", false);
+  });
+
+  test("allows only this run's paths workspace-write without egress", async () => {
+    await expectConfinedRun("workspace-write", false);
+  });
+
+  test("allows only this run's paths read-only with egress", async () => {
+    await expectConfinedRun("read-only", true);
+  });
+
+  test("allows only this run's paths workspace-write with egress", async () => {
+    await expectConfinedRun("workspace-write", true);
   });
 
   test("fails before an agent command starts when it cannot build confinement", async () => {
