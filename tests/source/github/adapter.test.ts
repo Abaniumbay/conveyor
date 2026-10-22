@@ -13,6 +13,7 @@ import {
   type GitHubTransport,
   type GitHubTransportRequest,
 } from "../../../src/source/github/adapter";
+import { GitHubReadCache } from "../../../src/source/github/read-cache";
 
 class FakeTransport implements GitHubTransport {
   readonly requests: GitHubTransportRequest[] = [];
@@ -573,6 +574,52 @@ describe("GitHubAdapter", () => {
       body: { body: updatedBody },
     });
     expect(updated.body).toBe(updatedBody);
+  });
+
+  test("accepts the current managed revision from a cached listing after its own body edit", async () => {
+    const body = "Human text";
+    const firstBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [ ] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const secondBody = `${body}\n\n<!-- conveyor:acceptance-criteria:start -->\n- [x] Works <!-- conveyor:criterion:AC-1 -->\n<!-- conveyor:acceptance-criteria:end -->\n`;
+    const issue = {
+      id: 101,
+      number: 3,
+      html_url: "https://github.com/owner/repo/issues/3",
+      title: "Feature",
+      body,
+      state: "open" as const,
+      labels: [{ name: "conveyor" }],
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const transport = new FakeTransport(
+      [issue],
+      issue,
+      { ...issue, body: firstBody, updated_at: "2026-01-02T00:00:00Z" },
+      { ...issue, body: secondBody, updated_at: "2026-01-03T00:00:00Z" },
+    );
+    const adapter = new GitHubAdapter(new GitHubReadCache(transport), "conveyor");
+
+    await adapter.listIssues("owner/repo");
+    await adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [ ] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(body),
+      baseBody: body,
+    });
+
+    const [cached] = await adapter.listIssues("owner/repo");
+    expect(cached?.body).toBe(firstBody);
+
+    await expect(adapter.updateManagedSection({
+      address: "owner/repo",
+      issueNumber: 3,
+      section: "acceptance-criteria",
+      markdown: "- [x] Works <!-- conveyor:criterion:AC-1 -->",
+      expectedRevision: adapter.managedRevision(cached?.body ?? ""),
+      baseBody: cached?.body ?? "",
+    })).resolves.toMatchObject({ body: secondBody });
+    expect(transport.requests).toHaveLength(4);
   });
 
   test("refuses to write a managed section after later live text changes", async () => {

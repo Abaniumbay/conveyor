@@ -30,6 +30,8 @@ function storage(): GitHubMirrorStorage & { rows: Map<string, GitHubMirrorEntry>
 }
 
 const ISSUE = "repos/owner/app/issues/7";
+const LISTING = "repos/owner/app/issues?state=all&per_page=100";
+const SINCE_LISTING = "repos/owner/app/issues?state=all&per_page=100&since=2026-10-18T09%3A00%3A00Z";
 const issue = (fields: Record<string, unknown> = {}) => ({ number: 7, title: "Seven", labels: [{ name: "conveyor" }], updated_at: "2026-10-18T10:00:00Z", ...fields });
 const get = (path: string, extra: Partial<GitHubTransportRequest> = {}): GitHubTransportRequest => ({ method: "GET", path, ...extra });
 const repository = { full_name: "Owner/App" };
@@ -127,6 +129,39 @@ describe("check runs", () => {
 });
 
 describe("deliveries", () => {
+  test("an issue delivery updates every held listing entry", async () => {
+    const { github, instance } = cache({
+      [`GET ${LISTING}`]: [issue()],
+      [`GET ${SINCE_LISTING}`]: [issue()],
+    });
+    await instance.request(get(LISTING));
+    await instance.request(get(SINCE_LISTING));
+
+    instance.applyDelivery("issues", { repository, action: "edited", issue: issue({ title: "Delivered", updated_at: "2026-10-18T10:05:00Z" }) });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([issue({ title: "Delivered", updated_at: "2026-10-18T10:05:00Z" })]);
+    await expect(instance.request<unknown>(get(SINCE_LISTING))).resolves.toEqual([issue({ title: "Delivered", updated_at: "2026-10-18T10:05:00Z" })]);
+    expect(github.requests).toEqual([`GET ${LISTING}`, `GET ${SINCE_LISTING}`]);
+  });
+
+  test("an issue delivery with the same timestamp replaces held listing entries", async () => {
+    const { instance } = cache({ [`GET ${LISTING}`]: [issue()] });
+    await instance.request(get(LISTING));
+
+    instance.applyDelivery("issues", { repository, action: "edited", issue: issue({ title: "Same time" }) });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([issue({ title: "Same time" })]);
+  });
+
+  test("an older issue delivery leaves held listing entries unchanged", async () => {
+    const { instance } = cache({ [`GET ${LISTING}`]: [issue({ title: "Newer", updated_at: "2026-10-18T10:05:00Z" })] });
+    await instance.request(get(LISTING));
+
+    instance.applyDelivery("issues", { repository, action: "edited", issue: issue({ title: "Older", updated_at: "2026-10-18T09:00:00Z" }) });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([issue({ title: "Newer", updated_at: "2026-10-18T10:05:00Z" })]);
+  });
+
   test("an issue delivery replaces the copy of the issue", async () => {
     const { github, instance } = cache({ [`GET ${ISSUE}`]: issue() });
     await instance.request(get(ISSUE));
@@ -177,6 +212,42 @@ describe("deliveries", () => {
 });
 
 describe("Conveyor's own writes", () => {
+  test("an issue title edit updates every held listing", async () => {
+    const updated = issue({ title: "Renamed" });
+    const { instance } = cache({ [`GET ${LISTING}`]: [issue()], [`GET ${SINCE_LISTING}`]: [issue()], [`PATCH ${ISSUE}`]: updated });
+    await instance.request(get(LISTING));
+    await instance.request(get(SINCE_LISTING));
+
+    await instance.request({ method: "PATCH", path: ISSUE, body: { title: "Renamed" } });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([updated]);
+    await expect(instance.request<unknown>(get(SINCE_LISTING))).resolves.toEqual([updated]);
+  });
+
+  test("an issue body edit updates every held listing", async () => {
+    const updated = issue({ body: "Updated body" });
+    const { instance } = cache({ [`GET ${LISTING}`]: [issue()], [`GET ${SINCE_LISTING}`]: [issue()], [`PATCH ${ISSUE}`]: updated });
+    await instance.request(get(LISTING));
+    await instance.request(get(SINCE_LISTING));
+
+    await instance.request({ method: "PATCH", path: ISSUE, body: { body: "Updated body" } });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([updated]);
+    await expect(instance.request<unknown>(get(SINCE_LISTING))).resolves.toEqual([updated]);
+  });
+
+  test("an issue edit updates labels in every held listing", async () => {
+    const updated = issue({ labels: [{ name: "conveyor" }, { name: "conveyor:review" }] });
+    const { instance } = cache({ [`GET ${LISTING}`]: [issue()], [`GET ${SINCE_LISTING}`]: [issue()], [`PATCH ${ISSUE}`]: updated });
+    await instance.request(get(LISTING));
+    await instance.request(get(SINCE_LISTING));
+
+    await instance.request({ method: "PATCH", path: ISSUE, body: { labels: ["conveyor", "conveyor:review"] } });
+
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual([updated]);
+    await expect(instance.request<unknown>(get(SINCE_LISTING))).resolves.toEqual([updated]);
+  });
+
   test("an issue edit stores the issue GitHub returns", async () => {
     const { github, instance } = cache({ [`PATCH ${ISSUE}`]: issue({ title: "Renamed" }) });
     await instance.request({ method: "PATCH", path: ISSUE, body: { title: "Renamed" } });
@@ -190,6 +261,37 @@ describe("Conveyor's own writes", () => {
     await instance.request({ method: "PUT", path: `${ISSUE}/labels`, body: { labels: ["conveyor", "conveyor:review"] } });
     expect(await instance.request<unknown>(get(ISSUE))).toMatchObject({ labels: [{ name: "conveyor" }, { name: "conveyor:review" }] });
     expect(github.requests).toEqual([`GET ${ISSUE}`, `PUT ${ISSUE}/labels`]);
+  });
+
+  test("a label write updates every held listing without changing other fields", async () => {
+    const initial = issue({ title: "Preserved title", body: "Preserved body", state: "closed" });
+    const labels = [{ name: "conveyor" }, { name: "conveyor:review" }];
+    const { instance } = cache({ [`GET ${LISTING}`]: [initial], [`GET ${SINCE_LISTING}`]: [initial], [`PUT ${ISSUE}/labels`]: labels });
+    await instance.request(get(LISTING));
+    await instance.request(get(SINCE_LISTING));
+
+    await instance.request({ method: "PUT", path: `${ISSUE}/labels`, body: { labels: ["conveyor", "conveyor:review"] } });
+
+    const expected = [{ ...initial, labels }];
+    await expect(instance.request<unknown>(get(LISTING))).resolves.toEqual(expected);
+    await expect(instance.request<unknown>(get(SINCE_LISTING))).resolves.toEqual(expected);
+  });
+
+  test("a listing read already in flight keeps labels written while it was pending", async () => {
+    const labels = [{ name: "conveyor" }, { name: "conveyor:review" }];
+    let completeRead: ((value: unknown) => void) | undefined;
+    const staleRead = new Promise<unknown>((resolve) => { completeRead = resolve; });
+    const { github, instance } = cache({ [`GET ${LISTING}`]: [issue()], [`PUT ${ISSUE}/labels`]: labels });
+    await instance.request(get(LISTING));
+    setSystemTime(new Date(T0.getTime() + 60 * MINUTE));
+    github.responses[`GET ${LISTING}`] = staleRead;
+
+    const listing = instance.request<unknown>(get(LISTING));
+    await Promise.resolve();
+    await instance.request({ method: "PUT", path: `${ISSUE}/labels`, body: { labels: ["conveyor", "conveyor:review"] } });
+    completeRead!([issue()]);
+
+    await expect(listing).resolves.toEqual([issue({ labels })]);
   });
 
   test("a pull request edit stores the pull request GitHub returns", async () => {

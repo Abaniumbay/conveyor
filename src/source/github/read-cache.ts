@@ -1,9 +1,10 @@
 // Conveyor's copy of GitHub. Every read is answered from it while its entry is within the lifetime
 // for its kind of data; only a missing or expired entry goes to GitHub. Webhook deliveries and
-// Conveyor's own writes keep it current: an object they carry replaces the stored one (when it is
-// not older), and anything else they change is dropped, to be read again when next needed. GitHub
-// stays the source of truth; the copy only saves requests. It lives in the database, so a restart
-// reads nothing it already holds.
+// Conveyor's own writes keep it current: full issue objects replace the held issue and listing
+// entries, while label writes patch only listing labels. Deliveries do the same when they are not
+// older; anything else they change is dropped, to be read again when next needed. GitHub stays the
+// source of truth; the copy only saves requests. It lives in the database, so a restart reads
+// nothing it already holds.
 
 import type { GitHubTransport, GitHubTransportRequest } from "./adapter";
 
@@ -135,8 +136,7 @@ export class GitHubReadCache implements GitHubTransport {
     const held = this.#storage.get(key);
     if (held && held.version === GITHUB_MIRROR_VERSION && Date.now() - held.at < lifetimeOf(held, this.#lifetimes)) return structuredClone(held.value) as T;
     const value = await this.inner.request<T>(request);
-    this.#store(key, value);
-    return value;
+    return this.#storeRead(key, value, held) as T;
   }
 
   /** Applies what a verified webhook delivery says about the repository's data. */
@@ -152,8 +152,13 @@ export class GitHubReadCache implements GitHubTransport {
         if (eventType === "issue_comment") this.#drop(`${repository}/issues/${issue.number}/comments`);
         // A comment on a pull request carries its issue view, not an issue to keep.
         if (issue.pull_request !== undefined) return;
-        if (payload.action === "transferred" || payload.action === "deleted") this.#drop(`${repository}/issues/${issue.number}`);
-        else this.#putNewer(`${repository}/issues/${issue.number}`, issue);
+        if (payload.action === "transferred" || payload.action === "deleted") {
+          this.#drop(`${repository}/issues/${issue.number}`);
+          this.#dropList(`${repository}/issues`);
+        } else {
+          this.#putNewer(`${repository}/issues/${issue.number}`, issue);
+          this.#putNewerInIssueListings(repository, issue);
+        }
         // Its timeline and history changed with it.
         this.#drop(`${repository}/issues/${issue.number}/events`);
         this.#drop(`${repository}/issues/${issue.number}/timeline`);
@@ -216,6 +221,55 @@ export class GitHubReadCache implements GitHubTransport {
     this.#put(key, value);
   }
 
+  /** Replaces an issue in every held repository listing, but never with an older delivery. */
+  #putNewerInIssueListings(repository: string, issue: Json): void {
+    this.#replaceInIssueListings(repository, issue, (held) => {
+      const heldAt = Date.parse(String(held.updated_at));
+      const deliveredAt = Date.parse(String(issue.updated_at));
+      return Number.isNaN(heldAt) || Number.isNaN(deliveredAt) || deliveredAt >= heldAt;
+    });
+  }
+
+  /** Replaces an issue in every held repository listing after Conveyor receives its full write response. */
+  #putInIssueListings(repository: string, issue: Json): void {
+    this.#replaceInIssueListings(repository, issue, () => true);
+  }
+
+  /** Applies GitHub's returned labels to held issue listings without disturbing the rest of each issue. */
+  #putLabelsInIssueListings(repository: string, issueNumber: string, labels: unknown[]): void {
+    const listing = `${repository}/issues`;
+    for (const key of this.#storage.keys(listing)) {
+      if (resource(key) !== listing) continue;
+      const held = this.#storage.get(key);
+      if (!held || !Array.isArray(held.value)) continue;
+      let changed = false;
+      const value = held.value.map((entry) => {
+        if (!isObject(entry) || String(entry.number) !== issueNumber) return entry;
+        changed = true;
+        return { ...entry, labels };
+      });
+      if (changed) this.#storage.set(key, { ...held, value });
+    }
+  }
+
+  /** Replaces matching full issue entries in every cached listing of the repository. */
+  #replaceInIssueListings(repository: string, issue: Json, replace: (held: Json) => boolean): void {
+    if (typeof issue.number !== "number") return;
+    const listing = `${repository}/issues`;
+    for (const key of this.#storage.keys(listing)) {
+      if (resource(key) !== listing) continue;
+      const held = this.#storage.get(key);
+      if (!held || !Array.isArray(held.value)) continue;
+      let changed = false;
+      const value = held.value.map((entry) => {
+        if (!isObject(entry) || entry.number !== issue.number || !replace(entry)) return entry;
+        changed = true;
+        return issue;
+      });
+      if (changed) this.#storage.set(key, { ...held, value });
+    }
+  }
+
   #put(key: string, value: unknown): void {
     // The same object read with a query (for example ?per_page) is another entry; drop those.
     for (const other of this.#storage.keys(key)) if (other !== key && resource(other) === key) this.#storage.delete(other);
@@ -225,6 +279,29 @@ export class GitHubReadCache implements GitHubTransport {
   #store(key: string, value: unknown): void {
     if (value === undefined) this.#storage.delete(key);
     else this.#storage.set(key, { kind: kindOf(key), version: GITHUB_MIRROR_VERSION, value, at: Date.now() });
+  }
+
+  /** Stores a completed read without replaying labels that a concurrent write has already patched. */
+  #storeRead(key: string, value: unknown, beforeRead: GitHubMirrorEntry | null): unknown {
+    const current = this.#storage.get(key);
+    if (
+      beforeRead === null || current === beforeRead || resource(key).match(/\/issues$/) === null
+      || !Array.isArray(value) || !Array.isArray(beforeRead.value) || !Array.isArray(current?.value)
+    ) {
+      this.#store(key, value);
+      return value;
+    }
+    const beforeByNumber = new Map(beforeRead.value.filter(isObject).map((issue) => [issue.number, issue]));
+    const currentByNumber = new Map(current.value.filter(isObject).map((issue) => [issue.number, issue]));
+    const protectedLabels = value.map((issue) => {
+      if (!isObject(issue)) return issue;
+      const before = beforeByNumber.get(issue.number);
+      const patched = currentByNumber.get(issue.number);
+      if (!before || !patched || JSON.stringify(before.labels) === JSON.stringify(patched.labels)) return issue;
+      return { ...issue, labels: patched.labels };
+    });
+    this.#store(key, protectedLabels);
+    return protectedLabels;
   }
 
   /** Drops the entries of a resource and everything below it. */
@@ -280,12 +357,14 @@ export class GitHubReadCache implements GitHubTransport {
     let match: RegExpExecArray | null;
     if (/^\/issues\/\d+$/.test(rest) && request.method === "PATCH") {
       this.#put(repository + rest, result);
+      if (isObject(result)) this.#putInIssueListings(repository, result);
     } else if ((match = /^\/issues\/(\d+)\/labels/.exec(rest))) {
       // The labels the issue now has, kept on the held issue; the rest of it is unchanged.
       const issueKey = `${repository}/issues/${match[1]}`;
       const held = this.#storage.get(issueKey);
       if (held && isObject(held.value) && Array.isArray(result)) this.#storage.set(issueKey, { ...held, value: { ...held.value, labels: result } });
       else this.#drop(issueKey);
+      if (Array.isArray(result)) this.#putLabelsInIssueListings(repository, match[1]!, result);
       this.#drop(`${issueKey}/labels`);
       this.#drop(`${issueKey}/events`);
       this.#drop(`${issueKey}/timeline`);
@@ -328,4 +407,3 @@ function readKey(request: GitHubTransportRequest): string | null {
   }
   return null;
 }
-
