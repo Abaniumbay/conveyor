@@ -51,6 +51,8 @@ export interface DeliveryWorld {
   labelWrites: string[][];
   /** The stages the item was executed at, one entry per execute call. */
   executed: string[];
+  /** Runs the item's current stage with the supplied cancellation signal. */
+  runCurrentStage(signal: AbortSignal): Promise<void>;
   /** Runs the item until it is done (or the step limit); returns the stages it advanced through. */
   drive(limit?: number): Promise<void>;
   close(): Promise<void>;
@@ -138,6 +140,8 @@ export async function deliveryWorld(options: {
   requireDescription?: boolean;
   pauseBeforeChangeEnsure?: boolean;
   pauseBeforeCiStart?: boolean;
+  deployScript?: string;
+  interruptGrace?: string;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -158,7 +162,7 @@ export async function deliveryWorld(options: {
   // Operator scripts are real `bun run` scripts; they record each run.
   const scriptLog = path.join(root, "scripts.log");
   const script = (name: string) => `import { appendFileSync } from "node:fs";\nawait Bun.stdin.text();\nappendFileSync(${JSON.stringify(scriptLog)}, "${name}\\n");\nconsole.log(JSON.stringify({ outcome: "success", summary: "${name} done" }));\n`;
-  await writeFile(path.join(root, "deploy.ts"), script("deploy"));
+  await writeFile(path.join(root, "deploy.ts"), options.deployScript ?? script("deploy"));
   await writeFile(path.join(root, "verify.ts"), script("verify"));
 
   const example = parse(await readFile(path.join(EXAMPLES, "local/repositories.example.yaml"), "utf8")) as { repositories: Record<string, any> };
@@ -175,6 +179,7 @@ export async function deliveryWorld(options: {
       settings: {
         database: path.join(root, "data/conveyor.sqlite"), logs: path.join(root, "data/logs"),
         workspaces: path.join(root, "data/worktrees"), artifacts: path.join(root, "data/artifacts"),
+        ...(options.interruptGrace === undefined ? {} : { interruptGrace: options.interruptGrace }),
       },
       repositories: { conveyor: repository },
     }),
@@ -340,6 +345,11 @@ export async function deliveryWorld(options: {
     root, config, store, service, host, ci, agentRuns, labelWrites, executed,
     get scriptRuns() {
       try { return readFileSync(scriptLog, "utf8").split("\n").filter(Boolean); } catch { return []; }
+    },
+    async runCurrentStage(signal) {
+      const state = store.getStageState("issue")!;
+      executed.push(state.stageId);
+      await (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, signal);
     },
     async drive(limit = 40) {
       const controller = new AbortController();
