@@ -413,9 +413,15 @@ describe("change checks", () => {
     expect(registry.require("change.mergeable").defaultWait).toEqual({ timeoutMs: 30 * 60_000, pollMs: 60_000 });
   });
 
-  test("merged passes only for a merged change", async () => {
+  test("merged passes for a merged change, waits on an open change event, and explains terminal failures", async () => {
     expect((await run("change.merged", { context: ctx({ change: change({ state: "merged" }) }) })).status).toBe("pass");
-    expect((await run("change.merged", { context: ctx() })).status).toBe("fail");
+    expect(await run("change.merged", { context: ctx({ change: change({ state: "open" }) }) })).toEqual({
+      status: "pending",
+      message: "Waiting for change request #5 to be merged",
+      waitFor: { topics: ["change:o/r:5"], kind: "change" },
+    });
+    const closed = await run("change.merged", { context: ctx({ change: change({ state: "closed" }) }) }) as Fail;
+    expect(closed.message).toContain("is closed, not merged");
     expect(await run("change.merged", { context: ctx({ change: null }) })).toEqual({ status: "fail", message: "No change request exists yet" });
   });
 

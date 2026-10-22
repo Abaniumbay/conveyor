@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { pushAndEnsureChange } from "../codehost/actions";
 import type { ChangeDelivery, CodeHost } from "../codehost/types";
+import { changeTopic } from "../events/topics";
 import { parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
@@ -184,14 +185,20 @@ const mergeable: TaskDefinition<unknown, unknown, Deps> = {
 const merged: TaskDefinition<unknown, unknown, Deps> = {
   name: "change.merged",
   kind: "check",
-  description: "Passes when the change request is merged.",
-  reads: ["change"],
+  description: "Passes when the change request is merged. An open request remains pending and wakes when its change delivery arrives.",
+  reads: ["repository", "change"],
   writes: [],
   invalidates: [],
   run({ context }) {
     const change = context.change;
     if (!change) return fail(NO_CHANGE);
-    return change.state === "merged" ? pass() : fail(`Change request #${change.ref.number} is ${change.state}, not merged`);
+    if (change.state === "merged") return pass();
+    if (change.state === "open") {
+      return pending(`Waiting for change request #${change.ref.number} to be merged`, {
+        waitFor: { topics: [changeTopic(context.repository!.address, change.ref.number!)], kind: "change" },
+      });
+    }
+    return fail(`Change request #${change.ref.number} is ${change.state}, not merged`);
   },
 };
 
