@@ -17,6 +17,8 @@ const checks = JSON.parse(process.env.CHECKS);
 const readable = async (file) => await Bun.file(file).exists();
 const result = {};
 for (const [name, file] of Object.entries(checks.files)) result[name] = await readable(file);
+result.harnessAuthentication = await readable(process.env.CODEX_HOME + "/auth.json");
+result.agentEnvironmentExcludesCodexHome = args.includes('shell_environment_policy.exclude=["CODEX_HOME"]');
 result.workspaceContents = await Bun.file(checks.workspaceMarker).text();
 try {
   await Bun.write(checks.workspace + "/write-marker", "workspace write");
@@ -28,10 +30,13 @@ result.home = await readable(process.env.HOME + "/.gitconfig");
 const scratchMarker = process.env.TMPDIR + "/scratch-marker";
 await Bun.write(scratchMarker, "private scratch");
 result.scratch = await Bun.file(scratchMarker).text() === "private scratch";
-const git = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: checks.workspace });
-result.git = git.exitCode === 0;
-const head = new TextDecoder().decode(git.stdout).trim();
-const gitWrite = Bun.spawnSync(["git", "update-ref", "refs/heads/agent-filesystem-test", head], { cwd: checks.workspace });
+const git = Bun.spawnSync(["git", "cat-file", "-p", "HEAD"], { cwd: checks.workspace });
+result.gitObjectReadable = git.exitCode === 0;
+const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: checks.workspace });
+const headSha = new TextDecoder().decode(head.stdout).trim();
+const packedRef = Bun.spawnSync(["git", "rev-parse", "refs/heads/packed-ref"], { cwd: checks.workspace });
+result.gitPackedRefReadable = packedRef.exitCode === 0;
+const gitWrite = Bun.spawnSync(["git", "update-ref", "refs/heads/agent-filesystem-test", headSha], { cwd: checks.workspace });
 result.gitMetadataWritable = gitWrite.exitCode === 0;
 await Bun.write(process.env.CAPTURE, JSON.stringify(result));
 await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({ version: 1, outcome: "success", status: "done", summary: "ok", reason: null, metrics: {}, artifacts: [] }));
@@ -68,6 +73,8 @@ async function fixture() {
   git(["init", "--quiet"], source);
   git(["add", "."], source);
   git(["-c", "user.name=Conveyor", "-c", "user.email=conveyor@example.com", "commit", "--quiet", "-m", "initial"], source);
+  git(["branch", "packed-ref"], source);
+  git(["pack-refs", "--all"], source);
   git(["worktree", "add", "--quiet", "--detach", workspace, "HEAD"], source);
   git(["worktree", "add", "--quiet", "--detach", otherWorktree, "HEAD"], source);
   await Promise.all([
@@ -105,7 +112,7 @@ async function fixture() {
 
 describeSandbox("Codex filesystem confinement", () => {
   async function expectConfinedRun(
-    sandbox: "read-only" | "workspace-write",
+    sandbox: "read-only" | "workspace-write" | "danger-full-access",
     egress: boolean,
   ): Promise<void> {
     const files = await fixture();
@@ -126,9 +133,12 @@ describeSandbox("Codex filesystem confinement", () => {
     });
     const result = JSON.parse(await readFile(files.capture, "utf8"));
     expect(result.workspaceContents).toBe("own worktree");
-    expect(result.workspaceWritable).toBe(sandbox === "workspace-write");
-    expect(result.git).toBe(true);
-    expect(result.gitMetadataWritable).toBe(sandbox === "workspace-write");
+    expect(result.workspaceWritable).toBe(sandbox !== "read-only");
+    expect(result.gitObjectReadable).toBe(true);
+    expect(result.gitPackedRefReadable).toBe(true);
+    expect(result.gitMetadataWritable).toBe(sandbox !== "read-only");
+    expect(result.harnessAuthentication).toBe(true);
+    expect(result.agentEnvironmentExcludesCodexHome).toBe(true);
     expect(result.home).toBe(true);
     expect(result.scratch).toBe(true);
     expect(result.otherWorktree).toBe(false);
@@ -154,6 +164,10 @@ describeSandbox("Codex filesystem confinement", () => {
 
   test("Codex filesystem confinement allows only this run's paths workspace-write with egress", async () => {
     await expectConfinedRun("workspace-write", true);
+  });
+
+  test("Codex filesystem confinement preserves full-access writes with egress", async () => {
+    await expectConfinedRun("danger-full-access", true);
   });
 
   test("Codex filesystem confinement fails before an agent command starts when it cannot build confinement", async () => {
