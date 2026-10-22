@@ -77,6 +77,8 @@ export interface CriterionTestEvidence {
 export interface StoredIssue extends IssueProjection {
   metadata: IssueMetadata;
   queueRank: number | null;
+  /** Set when Conveyor's pause removed the item's last control label. */
+  pausedByConveyor: boolean;
   projectedStage: string | null;
   projectedState: string | null;
   warning: string | null;
@@ -889,6 +891,12 @@ export class ConveyorStore {
       // A read that finds the same values only moves its sync time; that is not a change.
       if (next.type !== current.type || json(next.fields) !== json(current.fields)) this.#events.append("item.metadataChanged", {}, { issueId });
     })();
+  }
+
+  setPausedByConveyor(issueId: string, paused: boolean): void {
+    this.#database
+      .query("UPDATE issues SET paused_by_conveyor = ? WHERE id = ? AND paused_by_conveyor != ?")
+      .run(paused ? 1 : 0, issueId, paused ? 1 : 0);
   }
 
   setQueueRank(issueId: string, rank: number): void {
@@ -1896,6 +1904,7 @@ export class ConveyorStore {
       acceptedTextAt: row.accepted_text_at === null ? null : String(row.accepted_text_at),
       parentId: row.parent_id === null ? null : String(row.parent_id),
       queueRank: row.queue_rank === null ? null : Number(row.queue_rank),
+      pausedByConveyor: Number(row.paused_by_conveyor) === 1,
       projectedStage:
         row.projected_stage === null ? null : String(row.projected_stage),
       projectedState:

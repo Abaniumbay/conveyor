@@ -6166,7 +6166,15 @@ export class ConveyorService {
     const { issue, repository, live } = await this.liveEnrolledIssue(issueId);
     if (!live.labels.includes(this.config.labels.enrollment)) throw new Error("the item is already paused");
     const labels = this.conveyorLabels(live.labels).filter((label) => label !== this.config.labels.enrollment);
-    await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
+    // Recorded before the write: the webhook of the removal can reconcile before this call returns.
+    const keepsMarker = labels.length === 0;
+    if (keepsMarker) this.store.setPausedByConveyor(issueId, true);
+    try {
+      await this.replaceLabelsRecorded(issue, repository, "issue.labels.pause", labels);
+    } catch (error) {
+      if (keepsMarker) this.store.setPausedByConveyor(issueId, false);
+      throw error;
+    }
     await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
     this.interruptIneligibleRuns();
     this.store.appendConversationMessage({
@@ -6204,7 +6212,7 @@ export class ConveyorService {
     this.assertRepositoryActive(issue.repositoryId);
     const live = await this.github.getIssue(repository.address, issue.sourceNumber);
     if (live.state !== "open") throw new Error("the item is closed");
-    if (this.conveyorLabels(live.labels).length === 0) throw new Error("the item is offboarded (it has no Conveyor labels)");
+    if (this.conveyorLabels(live.labels).length === 0 && !issue.pausedByConveyor) throw new Error("the item is offboarded (it has no Conveyor labels)");
     return { issue, repository, live };
   }
 

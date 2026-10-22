@@ -251,6 +251,7 @@ export async function reconcileRepository(
       sourceLabels: sourceIssue.labels,
       labels: input.labels,
       stages: input.stages,
+      pausedByConveyor: prior?.pausedByConveyor ?? false,
       expectedPostMergeClosure:
         (input.expectedPostMergeClosure?.(issueId) ?? false) ||
         // A roll-up reaches done before Conveyor closes it with GitHub's completed reason.
@@ -267,10 +268,13 @@ export async function reconcileRepository(
     const projectedState = !visible
       ? "offboarded"
       : !snapshot.enrollmentTrusted ? "waiting"
+      : projected.mode === "paused" && prior?.pausedByConveyor ? "paused"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
       : projected.stage;
+    // The pause marker only covers an empty label set; any control label ends it.
+    if (prior?.pausedByConveyor && projected.mode !== "paused") input.store.setPausedByConveyor(issueId, false);
     const priorState = prior?.projectedState ?? null;
     const resumed = projectedState === "active" && priorState !== null && STOPPED_STATES.has(priorState);
     if (resumed) {
