@@ -92,3 +92,15 @@ export function buildFindingReport(db: Database, options: FindingReportOptions =
   });
   return report;
 }
+
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** An ISO 8601 date or timestamp as the UTC ISO timestamp the store compares with, or null when it is neither. */
+export function parseSince(value: string): string | null {
+  if (!ISO_8601.test(value)) return null;
+  const [year, month, day] = value.slice(0, 10).split("-").map(Number) as [number, number, number];
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : new Date(time).toISOString();
+}
