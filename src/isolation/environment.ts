@@ -1,4 +1,5 @@
-import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, copyFile, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -148,14 +149,49 @@ export async function prepareCodexEnvironment(options: {
  * records (so later runs can resume them) and a refreshed authentication record.
  */
 export async function syncCodexHome(options: { privateHome: string; serviceHome: string }): Promise<void> {
+  // The private home is writable by the agent, so nothing in it is trusted: only regular files are
+  // read (never followed through a symlink) and only a well-formed authentication record is promoted.
   const sessions = path.join(options.privateHome, "sessions");
   for (const relative of await listFiles(sessions)) {
-    await copyIfPresent(path.join(sessions, relative), path.join(options.serviceHome, "sessions", relative));
+    const content = await readRegularFile(path.join(sessions, relative));
+    if (!content) continue;
+    const target = path.join(options.serviceHome, "sessions", relative);
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(target, content, { mode: 0o600 });
   }
-  const auth = path.join(options.privateHome, "auth.json");
+  const updated = await readRegularFile(path.join(options.privateHome, "auth.json"));
+  if (!updated || !isAuthenticationRecord(updated)) return;
   const service = path.join(options.serviceHome, "auth.json");
-  const [updated, current] = await Promise.all([readFile(auth).catch(() => undefined), readFile(service).catch(() => undefined)]);
-  if (updated && (!current || !updated.equals(current))) await copyIfPresent(auth, service);
+  const current = await readRegularFile(service);
+  if (!current || !updated.equals(current)) {
+    await mkdir(options.serviceHome, { recursive: true, mode: 0o700 });
+    await writeFile(service, updated, { mode: 0o600 });
+  }
+}
+
+/** Reads a regular file without following a final symlink; anything else yields undefined. */
+async function readRegularFile(file: string): Promise<Buffer | undefined> {
+  let handle;
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) return undefined;
+    return await handle.readFile();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP" || code === "ENOTDIR") return undefined;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function isAuthenticationRecord(content: Buffer): boolean {
+  try {
+    const value = JSON.parse(content.toString("utf8")) as unknown;
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 async function copyIfPresent(source: string, target: string): Promise<void> {
