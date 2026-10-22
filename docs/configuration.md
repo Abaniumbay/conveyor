@@ -183,9 +183,8 @@ The default Operator runs in `access: confined`. Owner-started and scheduled
 Operator runs receive a fresh, empty scratch directory instead of a Conveyor
 workspace, home, configuration, or database. The mount namespace additionally
 exposes only the resolved Codex and scoped MCP runtime directories, run-scoped
-MCP context, resolver and CA files; Codex authentication remains with the
-harness, so no `CODEX_HOME` or authentication record is readable by agent
-commands. `HOME` remains the scratch directory. The scratch directory remains
+MCP context, resolver and CA files, and the single Codex `auth.json` the harness
+needs. `HOME` remains the scratch directory. The scratch directory remains
 writable for temporary files during that run. If this filesystem boundary cannot
 be established, Conveyor stops the run before it starts the agent.
 

@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -123,8 +123,67 @@ export async function prepareCodexEnvironment(options: {
   workspace: string;
   overrides?: Record<string, string> | undefined;
   parent?: Environment;
+  /** A persisted session the run resumes; its record is copied into the private Codex home. */
+  resumeSessionId?: string | undefined;
 }): Promise<Record<string, string>> {
-  return prepareAgentEnvironment({ ...options, controlPlane: CODEX_CONTROL_PLANE });
+  const { resumeSessionId, ...rest } = options;
+  const env = await prepareAgentEnvironment({ ...rest, controlPlane: CODEX_CONTROL_PLANE });
+  // The service's Codex home holds every run's credentials and sessions. The harness gets a
+  // private one inside this run's home instead; commands never receive its location (the shell
+  // policy excludes CODEX_HOME) and it is deleted with the home when the run ends.
+  const serviceHome = env.CODEX_HOME!;
+  const privateHome = path.join(env.HOME!, ".codex");
+  await mkdir(privateHome, { recursive: true, mode: 0o700 });
+  await copyIfPresent(path.join(serviceHome, "auth.json"), path.join(privateHome, "auth.json"));
+  if (resumeSessionId) {
+    for (const relative of await sessionRecords(serviceHome, resumeSessionId)) {
+      await copyIfPresent(path.join(serviceHome, relative), path.join(privateHome, relative));
+    }
+  }
+  return { ...env, CODEX_HOME: privateHome };
+}
+
+/**
+ * Returns what a run produced in its private Codex home to the service's: persisted session
+ * records (so later runs can resume them) and a refreshed authentication record.
+ */
+export async function syncCodexHome(options: { privateHome: string; serviceHome: string }): Promise<void> {
+  const sessions = path.join(options.privateHome, "sessions");
+  for (const relative of await listFiles(sessions)) {
+    await copyIfPresent(path.join(sessions, relative), path.join(options.serviceHome, "sessions", relative));
+  }
+  const auth = path.join(options.privateHome, "auth.json");
+  const service = path.join(options.serviceHome, "auth.json");
+  const [updated, current] = await Promise.all([readFile(auth).catch(() => undefined), readFile(service).catch(() => undefined)]);
+  if (updated && (!current || !updated.equals(current))) await copyIfPresent(auth, service);
+}
+
+async function copyIfPresent(source: string, target: string): Promise<void> {
+  try {
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await copyFile(source, target);
+    await chmod(target, 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function listFiles(root: string, prefix = ""): Promise<string[]> {
+  const entries = await readdir(path.join(root, prefix), { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+  for (const entry of entries) {
+    const relative = path.join(prefix, entry.name);
+    if (entry.isDirectory()) files.push(...await listFiles(root, relative));
+    else if (entry.isFile()) files.push(relative);
+  }
+  return files;
+}
+
+async function sessionRecords(codexHome: string, sessionId: string): Promise<string[]> {
+  const sessions = path.join(codexHome, "sessions");
+  return (await listFiles(sessions))
+    .filter((file) => path.basename(file).includes(sessionId))
+    .map((file) => path.join("sessions", file));
 }
 
 /** The same for any harness, keeping the variables its own control plane needs (`controlPlane`). */
@@ -147,4 +206,12 @@ export async function prepareAgentEnvironment(options: {
     gitUser: await readGitUser(workspace, parent),
   });
   return sanitizedAgentEnvironment({ ...base, HOME: parent.HOME }, { home, controlPlane: options.controlPlane });
+}
+
+/** The service's own Codex home: an explicit override, the inherited variable, or `~/.codex`. */
+export function serviceCodexHome(overrides?: Record<string, string>, parent: Environment = process.env): string {
+  const configured = overrides?.CODEX_HOME ?? parent.CODEX_HOME;
+  if (configured) return configured;
+  if (!parent.HOME) throw new Error("cannot locate ~/.codex: neither CODEX_HOME nor HOME is set");
+  return path.join(parent.HOME, ".codex");
 }

@@ -175,8 +175,8 @@ export async function runCodexSteering(
         artifacts: artifactsDirectory,
         home: resolvedEnvironment.HOME!,
         scratch: scratch.path,
-        writableGit: runInput.sandbox === "workspace-write",
-        writable: runInput.sandbox === "workspace-write" ? [agentWorkspace, ...runInput.writableRoots] : [],
+        writableGit: runInput.sandbox !== "read-only",
+        writable: runInput.sandbox !== "read-only" ? [agentWorkspace, ...runInput.writableRoots] : [],
         runtime: input.mcp ? [input.mcp.command] : [],
       },
       buildArguments: (extra) => argumentsFor({ ...run, workspace: agentWorkspace }, extra),
@@ -185,7 +185,7 @@ export async function runCodexSteering(
     child = Bun.spawn(launch.argv, { cwd: agentWorkspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
     throw withCleanupError(error, cleanupError);
   }
   child.stdin.write(input.prompt);
@@ -241,7 +241,7 @@ export async function runCodexSteering(
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([stdout, stderrPromise]);
   const detail = [stderr.trim(), ...errors].filter(Boolean).join("\n");

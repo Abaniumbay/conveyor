@@ -131,7 +131,10 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   addPath(scratch, true, true);
   // A linked worktree's .git file points at private metadata and a shared object store outside
   // the worktree. Git needs those reads even for reviewers, but nothing above those exact paths.
-  for (const gitPath of linkedGitReadPaths(workspace)) addPath(gitPath, options.writableGit || writable.has(gitPath), true);
+  const git = linkedGitPaths(workspace);
+  for (const gitPath of git.directories) addPath(gitPath, options.writableGit || writable.has(gitPath), true);
+  // Packed refs, configuration and exclude rules resolve names like `main` and `origin/main`; they stay read-only.
+  for (const gitFile of git.files) addPath(gitFile, false);
   for (const writablePath of writable) addPath(writablePath, true, true);
   for (const readable of options.readable ?? []) addPath(readable, false);
   for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) addPath(file, false);
@@ -169,21 +172,26 @@ function scriptInterpreter(executable: string, env: Record<string, string>): str
   }
 }
 
-function linkedGitReadPaths(workspace: string): string[] {
+function linkedGitPaths(workspace: string): { directories: string[]; files: string[] } {
   const dotGit = path.join(workspace, ".git");
+  const none = { directories: [], files: [] };
   try {
-    if (!statSync(dotGit).isFile()) return [];
+    if (!statSync(dotGit).isFile()) return none;
     const match = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(dotGit, "utf8"));
-    if (!match?.[1]) return [];
+    if (!match?.[1]) return none;
     const gitDir = resolveFilesystemPath(path.resolve(workspace, match[1]));
     const common = path.join(gitDir, "commondir");
     const commonDir = existsSync(common)
       ? resolveFilesystemPath(path.resolve(gitDir, readFileSync(common, "utf8").trim()))
       : gitDir;
-    return [gitDir, ...["objects", "refs", "logs"].map((name) => path.join(commonDir, name)).filter(existsSync)];
+    const inCommon = (names: string[]) => names.map((name) => path.join(commonDir, name)).filter(existsSync);
+    return {
+      directories: [gitDir, ...inCommon(["objects", "refs", "logs"])],
+      files: inCommon(["packed-refs", "config", "info/exclude"]),
+    };
   } catch {
     // A non-Git workspace has no administrative paths to expose.
-    return [];
+    return none;
   }
 }
 
@@ -262,6 +270,11 @@ export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedC
   for (const file of options.readablePaths ?? []) {
     if (path.isAbsolute(file)) addFile(file);
   }
+  const codexHome = options.env.CODEX_HOME;
+  if (!codexHome) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  const credential = path.join(resolveFilesystemPath(codexHome), "auth.json");
+  if (!existsSync(credential)) throw new Error("Operator filesystem confinement requires CODEX_HOME/auth.json");
+  addFile(credential);
   if (existsSync("/etc/ssl/certs")) {
     addDirectory("/etc");
     mounts.push("--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs");
@@ -269,10 +282,7 @@ export function confinedCommandPlan(options: ConfinedCommandOptions): SandboxedC
   for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) {
     if (existsSync(file)) addFile(file);
   }
-  // This legacy verifier has no need for the service's Codex credential. Keeping its path out
-  // of the command environment also prevents a future mount from accidentally making it usable.
-  const { CODEX_HOME: _codexHome, ...withoutCodexHome } = options.env;
-  const env: Record<string, string> = { ...withoutCodexHome, HOME: scratch, TMPDIR: scratch };
+  const env: Record<string, string> = { ...options.env, HOME: scratch, TMPDIR: scratch };
   return {
     argv: ["--unshare-pid", "--die-with-parent", "--new-session", ...mounts, "--chdir", scratch, "--", executable, ...options.argv.slice(1)],
     env: resolvePathEnvironment(env),

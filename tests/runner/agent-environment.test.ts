@@ -67,7 +67,7 @@ async function expectCredentialFree(files: Awaited<ReturnType<typeof fixture>>):
     expect(env[name]).toBeUndefined();
   }
   expect(env.HOME).toBe(path.join(files.artifacts, "home"));
-  expect(env.CODEX_HOME).toBe(resolveFilesystemPath(path.join(saved.HOME!, ".codex")));
+  expect(env.CODEX_HOME).toBe(path.join(files.artifacts, "home", ".codex"));
   expect(env.ENV_CAPTURE).toBe(files.capture);
   expect(existsSync(env.HOME!)).toBe(false);
 }
