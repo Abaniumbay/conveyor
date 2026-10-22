@@ -22,18 +22,19 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
 });
 
-test("SPEC documents default denial of host path-based sockets for egress runs", async () => {
+test("SPEC documents the confined filesystem view for every Codex run", async () => {
   const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
-  expect(specification).toContain("Host path-based Unix sockets are denied by default");
-  expect(specification).toContain("The only retained sockets are the data-plane, control-plane, MCP, and repository-declared local-service endpoints explicitly forwarded for that run");
-  expect(specification).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
-  expect(specification).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+  expect(specification).toContain("Every Codex agent process");
+  expect(specification).toContain("an empty-root Bubblewrap namespace");
+  expect(specification).toContain("does not widen the filesystem view");
+  expect(specification).toContain("neither `CODEX_HOME` nor an authentication record is mounted or readable by agent commands");
 });
 
-test("architecture documents the socket-denial residual risk", async () => {
+test("architecture documents the shared confined mount plan", async () => {
   const architecture = await readFile(path.join(import.meta.dir, "../../docs/architecture.md"), "utf8");
-  expect(architecture).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
-  expect(architecture).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+  expect(architecture).toContain("Its Bubblewrap namespace has an empty root");
+  expect(architecture).toContain("Neither `CODEX_HOME` nor a Codex authentication record is readable by commands the agent runs");
+  expect(architecture).toContain("Every repository receives filesystem confinement");
 });
 
 describeSandbox("confined command exposes only its fresh scratch directory", () => {
@@ -67,7 +68,7 @@ describeSandbox("confined command exposes only its fresh scratch directory", () 
       await writeFile(agent, `#!/bin/sh
       test -z "$(ls -A \"$TMPDIR\")" || exit 11
       if cat "$HOST_DATABASE" >/dev/null 2>&1; then exit 12; fi
-      test "$(cat "$CODEX_HOME/auth.json")" = credential || exit 13
+      test ! -r "$CODEX_HOME/auth.json" || exit 13
       test "$(cat "$(dirname "$0")/runtime-dependency")" = codex-runtime || exit 14
       test -r /etc/resolv.conf || exit 15
       test -d /etc/ssl/certs || exit 16
@@ -116,9 +117,8 @@ test("confined command fails closed before bubblewrap can launch", async () => {
     expect(plan.argv.filter((argument) => argument === "--bind")).toEqual(["--bind"]);
     expect(plan.argv.slice(plan.argv.indexOf("--bind"), plan.argv.indexOf("--bind") + 3)).toEqual(["--bind", scratch, scratch]);
     expect(plan.env.HOME).toBe(scratch);
-    expect(plan.env.CODEX_HOME).toBe(codexHome);
+    expect(plan.env.CODEX_HOME).toBeUndefined();
     expect(() => confinedCommand({ argv: [command], env: { PATH: "", CODEX_HOME: codexHome }, scratch })).toThrow("requires bubblewrap");
-    expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin" }, scratch })).toThrow("requires CODEX_HOME/auth.json");
     expect(() => confinedCommand({ argv: [command], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch: path.join(root, "missing") })).toThrow("scratch directory does not exist");
     expect(() => confinedCommand({ argv: ["missing-codex"], env: { PATH: "/usr/bin", CODEX_HOME: codexHome }, scratch })).toThrow("not installed");
   } finally {

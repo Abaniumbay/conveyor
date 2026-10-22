@@ -239,6 +239,17 @@ export async function runCodexCheck(
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
+      filesystem: {
+        command: input.command,
+        env: resolvedEnvironment,
+        workspace,
+        artifacts: artifactsDirectory,
+        home: resolvedEnvironment.HOME!,
+        scratch: scratch.path,
+        writableGit: runInput.sandbox === "workspace-write",
+        writable: runInput.sandbox === "workspace-write" ? [workspace, ...runInput.writableRoots] : [],
+        runtime: [input.mcp.command],
+      },
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;

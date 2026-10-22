@@ -194,7 +194,9 @@ async function consumeJsonLines(
 // Web search runs on the model side, so a read-only agent can have it too. Network for commands and
 // extra writable roots are workspace-write settings; read-only has neither.
 function accessArguments(input: CodexRunInput): string[] {
-  const args: string[] = [];
+  // The harness may use the service credential to authenticate its own control-plane traffic,
+  // but agent commands never inherit it as a usable shell variable.
+  const args: string[] = ["-c", 'shell_environment_policy.exclude=["CODEX_HOME"]'];
   if (input.network) args.push("-c", `web_search=${tomlString("live")}`);
   if (input.sandbox !== "workspace-write") return args;
   args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
@@ -304,6 +306,17 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
+      filesystem: {
+        command: input.command,
+        env: resolvedEnvironment,
+        workspace,
+        artifacts: artifactsDirectory,
+        home: resolvedEnvironment.HOME!,
+        scratch: scratch.path,
+        writableGit: runInput.sandbox === "workspace-write",
+        writable: runInput.sandbox === "workspace-write" ? [workspace, ...runInput.writableRoots] : [],
+        runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+      },
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;

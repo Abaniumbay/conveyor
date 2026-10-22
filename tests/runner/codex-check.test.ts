@@ -20,7 +20,7 @@ async function fixture(source: string) {
   const workspace = path.join(directory, "workspace");
   const artifacts = path.join(directory, "artifacts");
   const executable = path.join(directory, "fake-codex");
-  const capture = path.join(directory, "capture.json");
+  const capture = path.join(artifacts, "capture.json");
   await mkdir(workspace);
   await mkdir(artifacts);
   await writeFile(executable, `#!/usr/bin/env bun\n${source}`);
@@ -42,7 +42,7 @@ afterEach(async () => {
   );
 });
 
-describe("runCodexCheck", () => {
+describeSandbox("runCodexCheck", () => {
   test("uses an output schema accepted by the Codex structured-output API", async () => {
     const files = await fixture(`
       const args = process.argv.slice(2);
@@ -320,7 +320,7 @@ describeSandbox("runCodexCheck with agent egress", () => {
     const workspace = path.join(directory, "workspace");
     const artifacts = path.join(directory, "artifacts");
     const executable = path.join(directory, "fake-codex");
-    const capture = path.join(directory, "capture.json");
+    const capture = path.join(artifacts, "capture.json");
     await mkdir(workspace);
     await mkdir(artifacts);
     await writeFile(executable, `#!/usr/bin/env bun

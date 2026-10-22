@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { codexHarness } from "../../src/harness/codex";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
-describe("codexHarness", () => {
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED Codex harness tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
+
+describeSandbox("codexHarness", () => {
   test("advertises session resume and drives `codex exec resume` with a persisted session", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-harness-"));
     directories.push(directory);
