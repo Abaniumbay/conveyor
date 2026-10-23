@@ -118,7 +118,12 @@ function item(service: ConveyorService, issueId: string) {
   const actions: string[] = [];
   if (question) actions.push(`answer the question: conveyor questions answer ${question.id} <answer>`);
   if (service.canResumeRollupParent(issueId)) actions.push(`resume waiting for children: conveyor item resume-waiting ${itemReference(service, issueId)}`);
-  else if (service.canRetryIssue(issueId)) actions.push(`retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`);
+  else if (service.canRetryIssue(issueId)) {
+    const retryTarget = service.retryTargetStage(issueId) ?? issue.projectedStage;
+    actions.push(retryTarget === issue.projectedStage
+      ? `retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`
+      : `retry to ${retryTarget}: conveyor item retry ${itemReference(service, issueId)}`);
+  }
   if (enrolled && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(service, issueId)}`);
   if (!enrolled && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(service, issueId)}`);
   return {

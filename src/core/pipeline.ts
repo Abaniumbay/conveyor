@@ -1,4 +1,5 @@
 import type { RunEnvelope } from "../runner/result";
+import type { Feedback } from "../tasks/context";
 
 export interface CheckResult {
   decision: "pass" | "fail";
@@ -86,6 +87,10 @@ export type StageExecutionResult =
       requiredFixes: string[];
       feedbackCycles: number;
       result: RunEnvelope | null;
+      /** A configured cross-stage retry route retained after an intervention stop. */
+      retryTargetStage?: string;
+      /** The failure report to give the retry destination's first run. */
+      retryFeedback?: Feedback;
     }
   | {
       kind: "correction";

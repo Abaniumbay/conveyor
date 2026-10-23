@@ -108,7 +108,7 @@ function buildRegistry(world: World): TaskRegistry {
         },
       }),
       d({
-        name: "test.act", kind: "act", reads: ["item"], writes: ["agent"], invalidates: ["ci"],
+        name: "test.act", kind: "act", reads: ["item", "run"], writes: ["agent"], invalidates: ["ci"],
         run: ({ instance, context }) => {
           world.calls.push(instance.id);
           world.resumedFlags.push(instance.resumed);
@@ -154,6 +154,12 @@ function buildRegistry(world: World): TaskRegistry {
       }),
     ]),
   );
+  reg.register(defineGroup("ci", [
+    d({
+      name: "ci.passed", kind: "check", reads: ["ci"],
+      run: ({ instance }) => { world.calls.push(instance.id); return (world.checkResult[instance.id] ?? (() => pass()))(); },
+    }),
+  ]));
   reg.register({
     ...changeGroup,
     definitions: changeGroup.definitions.filter((definition) => definition.name === "change.merged"),
@@ -262,6 +268,25 @@ describe("happy path", () => {
     h.activate();
     const outcome = await h.run(simple(h), "review");
     expect(outcome).toMatchObject({ kind: "advance", stageId: "review", nextStageId: null });
+  });
+
+  test("delivers persisted stage-entry feedback to the first action after an executor restart", async () => {
+    const h = await harness();
+    h.activate();
+    const feedback = {
+      from: { stage: "ci-gate", taskInstanceId: "ci.passed" },
+      message: "The same required CI failure repeated.",
+      details: { evidence: ["required-ci-run"] },
+    };
+    h.journal.saveCursor({
+      issueId: "issue-1", stage: "implementation", stageEpoch: h.journal.stageEpoch("issue-1"),
+      attempt: 1, returns: 0, list: "actions", taskInstanceId: null, state: "planned", feedback,
+      pendingSince: null, wakeAt: null, deadlineAt: null,
+    }, h.journal.stageEpoch("issue-1"));
+
+    await h.run(simple(h), "implementation", h.executorFor());
+
+    expect(h.world.seenFeedback[0]).toMatchObject({ feedback });
   });
 
   test("waits for a fresh human approval after automatic gate checks pass", async () => {
@@ -672,6 +697,45 @@ describe("routing", () => {
     h2.world.checkResult.gate = () => fail("nope", { route: { stop: "needs-intervention" } });
     const plan2 = simple(h2, [ct(h2.registry, "gate", "test.check", { onFail: { return: "refinement" } })]);
     expect(await h2.run(plan2, "implementation")).toMatchObject({ kind: "stopped", state: "needs-intervention" });
+  });
+
+  test("a repeated CI gate intervention preserves its configured retry destination and feedback", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.checkResult["ci-gate"] = () => fail("required CI is still failing", {
+      route: { stop: "needs-intervention" },
+      details: { requiredFixes: ["Fix the failing check."], evidence: ["run-2"] },
+    });
+    const plan = pipeline(
+      stage("implementation", [ct(h.registry, "implement", "test.act")], [ct(h.registry, "implementation-gate", "test.check")]),
+      stage("ci-gate", [], [ct(h.registry, "ci-gate", "ci.passed", { onFail: { return: "implementation" } })]),
+    );
+
+    expect(await h.run(plan, "ci-gate")).toEqual({
+      kind: "stopped", stageId: "ci-gate", state: "needs-intervention", reason: "required CI is still failing",
+      requiredFixes: ["Fix the failing check."], feedbackCycles: 0, result: null,
+      retryTargetStage: "implementation",
+      retryFeedback: {
+        from: { stage: "ci-gate", taskInstanceId: "ci-gate" },
+        message: "required CI is still failing",
+        details: { requiredFixes: ["Fix the failing check."], evidence: ["run-2"] },
+      },
+    });
+  });
+
+  test("a CI intervention configured to return to its own stage remains a same-stage retry", async () => {
+    const h = await harness();
+    h.activate();
+    h.world.checkResult["ci-gate"] = () => fail("required CI is still failing", { route: { stop: "needs-intervention" } });
+    const plan = pipeline(
+      stage("implementation", [], [ct(h.registry, "ci-gate", "ci.passed", { onFail: { return: "implementation" } })]),
+    );
+
+    const outcome = await h.run(plan, "implementation");
+
+    expect(outcome).toMatchObject({ kind: "stopped", stageId: "implementation", state: "needs-intervention" });
+    expect(outcome).not.toHaveProperty("retryTargetStage");
+    expect(outcome).not.toHaveProperty("retryFeedback");
   });
 
   test("maxReturns guards cross-stage loops and the count carries into the target stage", async () => {

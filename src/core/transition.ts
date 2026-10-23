@@ -167,6 +167,12 @@ export async function applyStageTransition(
         ...(input.result.kind === "stopped"
           ? { sourceSnapshot: { title: input.issue.title, body: input.issue.body } }
           : {}),
+        ...(input.result.kind === "stopped" && input.result.retryTargetStage !== undefined
+          ? {
+              retryTargetStage: input.result.retryTargetStage,
+              ...(input.result.retryFeedback === undefined ? {} : { retryFeedback: input.result.retryFeedback }),
+            }
+          : {}),
       };
   const labels = [...new Set(target.labels)].sort((left, right) =>
     left.localeCompare(right),

@@ -229,6 +229,12 @@ export interface StageTransitionDetail {
   resultStatus: string | null;
   actor?: { name: string; title: string | null } | null;
   sourceSnapshot?: { title: string; body: string } | null;
+  retryTargetStage?: string | null;
+  retryFeedback?: {
+    from: { stage: string; taskInstanceId: string };
+    message: string;
+    details?: unknown;
+  } | null;
 }
 
 export interface StoredStageTransition extends StageTransitionDetail {
@@ -1870,6 +1876,22 @@ export class ConveyorStore {
           typeof detail.sourceSnapshot.title === "string" &&
           typeof detail.sourceSnapshot.body === "string"
             ? { title: detail.sourceSnapshot.title, body: detail.sourceSnapshot.body }
+            : null,
+        retryTargetStage: typeof detail.retryTargetStage === "string" ? detail.retryTargetStage : null,
+        retryFeedback:
+          detail.retryFeedback && typeof detail.retryFeedback === "object" &&
+          typeof detail.retryFeedback.message === "string" &&
+          typeof detail.retryFeedback.from === "object" && detail.retryFeedback.from !== null &&
+          typeof detail.retryFeedback.from.stage === "string" &&
+          typeof detail.retryFeedback.from.taskInstanceId === "string"
+            ? {
+                from: {
+                  stage: detail.retryFeedback.from.stage,
+                  taskInstanceId: detail.retryFeedback.from.taskInstanceId,
+                },
+                message: detail.retryFeedback.message,
+                ...("details" in detail.retryFeedback ? { details: detail.retryFeedback.details } : {}),
+              }
             : null,
         createdAt: String(row.created_at),
         completedAt: row.completed_at === null ? null : String(row.completed_at),

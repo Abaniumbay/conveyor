@@ -10,6 +10,8 @@ import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
+import { createWebAuth, hashPassword } from "../../src/web/auth";
+import { createWebHandler } from "../../src/web/server";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 import { fakeCommandBus } from "../support/web-commands";
 
@@ -29,8 +31,11 @@ async function running(options: {
   childCreationStage?: "implementation" | "refinement" | "work-breakdown";
   childCreationTask?: "item.createChild" | "breakdown.createChildren";
   includeChildImplementationStage?: boolean;
+  ciRetryRoute?: boolean;
 } = {}) {
-  const { rollup = false, childCreationStage = "implementation", childCreationTask, includeChildImplementationStage = false } = options;
+  const { rollup = false, childCreationStage = "implementation", childCreationTask, includeChildImplementationStage = false, ciRetryRoute = false } = options;
+  const stoppedStage = ciRetryRoute ? "ci-gate" : childCreationStage;
+  const stoppedState = ciRetryRoute ? "needs-intervention" : "blocked";
   const home = await shortTemporaryDirectory("conveyor-control-", { socketPath: "run/control.sock" });
   directories.push(home);
   log.configure({ sinks: [] });
@@ -53,8 +58,13 @@ async function running(options: {
     runners: {},
     plans: [],
     pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [
-      { id: childCreationStage, run: { type: "agent", agent: childCreationTask ? "worker" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
-      ...(includeChildImplementationStage && childCreationStage !== "implementation"
+      ...(ciRetryRoute ? [
+        { id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+        { id: "ci-gate", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ] : [
+        { id: childCreationStage, run: { type: "agent", agent: childCreationTask ? "worker" : "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] },
+      ]),
+      ...(!ciRetryRoute && includeChildImplementationStage && childCreationStage !== "implementation"
         ? [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }]
         : []),
     ] } },
@@ -65,13 +75,28 @@ async function running(options: {
   store.upsertRepository({ id: "app", configName: "app", source: "github", address: "owner/app", folder: childCreationTask ? repository : home, configHash: config.hash });
   const issues: FakeIssue[] = [1, 2].map((number) => ({
     id: `issue-${number}`, number, url: `https://github.com/owner/app/issues/${number}`, title: `Item ${number}`, body: "",
-    state: "open", stateReason: null, labels: ["conveyor", `conveyor:${childCreationStage}`, "conveyor:blocked"], updatedAt: "2026-10-01T00:00:00Z",
+    state: "open", stateReason: null, labels: ["conveyor", `conveyor:${stoppedStage}`, `conveyor:${stoppedState}`], updatedAt: "2026-10-01T00:00:00Z",
   }));
   for (const issue of issues) {
     store.upsertIssue({ id: issue.id, repositoryId: "app", sourceNumber: issue.number, sourceUrl: issue.url, title: issue.title, body: "", sourceState: "open", sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
     store.setQueueRank(issue.id, issue.number);
-    store.setIssueProjection(issue.id, { stage: childCreationStage, state: "blocked", warning: "The agent needs the API key rotated" });
-    store.setStageState({ issueId: issue.id, stageId: childCreationStage, status: "blocked", feedbackCycle: 0, configHash: config.hash });
+    store.setIssueProjection(issue.id, { stage: stoppedStage, state: stoppedState, warning: "The agent needs the API key rotated" });
+    store.setStageState({ issueId: issue.id, stageId: stoppedStage, status: stoppedState, feedbackCycle: 0, configHash: config.hash });
+  }
+  if (ciRetryRoute) {
+    const id = "repeated-ci-failure";
+    store.beginStageTransition({
+      id, issueId: "issue-1", fromStage: "ci-gate", toStage: "ci-gate", kind: "stopped", sourceMutationId: null,
+      detail: {
+        reason: "The same required CI failure repeated.", requiredFixes: ["Repair the required check."], resultStatus: "needs-intervention",
+        retryTargetStage: "implementation",
+        retryFeedback: {
+          from: { stage: "ci-gate", taskInstanceId: "ci.passed" }, message: "The same required CI failure repeated.",
+          details: { evidence: ["required-ci-run"] },
+        },
+      },
+    });
+    store.completeStageTransition(id);
   }
   if (rollup) {
     const child: FakeIssue = {
@@ -315,6 +340,37 @@ describe("operating through the CLI", () => {
     expect(shown.out).toContain("retry the implementation stage: conveyor item retry app:1");
     expect(shown.out).toContain("pause it: conveyor item pause app:1");
     expect((await cli("item", "show", "app:99")).code).toBe(EXIT.failure);
+  });
+
+  test("item retry follows a repeated CI gate's configured return stage through the control socket", async () => {
+    const { cli, issues, service, store } = await running({ ciRetryRoute: true });
+    const shown = await cli("item", "show", "app:1");
+    expect(shown.out).toContain("retry to implementation: conveyor item retry app:1");
+    expect(service.issueDetails("control-token", "issue-1")).toMatchObject({ retryTargetStage: "implementation" });
+
+    const retried = await cli("item", "retry", "app:1");
+    expect(retried.code).toBe(EXIT.ok);
+    expect(issues[0]!.labels).toEqual(["conveyor", "conveyor:implementation"]);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+  });
+
+  test("the authenticated dashboard retry endpoint follows a repeated CI gate's configured return stage", async () => {
+    const { issues, service, store } = await running({ ciRetryRoute: true });
+    const auth = createWebAuth({
+      passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+    });
+    const session = auth.createSession({ id: "operator", username: "operator", role: "superuser", avatar: "🛠️", sessionVersion: 1 })!;
+    const handler = createWebHandler(service.webDependencies(auth, "operator"));
+    const response = await handler(new Request("http://localhost/api/issues/issue-1/retry", {
+      method: "POST",
+      headers: { cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: session.csrfToken }),
+    }));
+
+    expect(response.status).toBe(202);
+    expect(issues[0]!.labels).toEqual(["conveyor", "conveyor:implementation"]);
+    expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
   });
 
   test("item show reports a pre-stage dependency wait and clears it without changing the projection", async () => {

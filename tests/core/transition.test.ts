@@ -526,6 +526,12 @@ describe("applyStageTransition", () => {
         requiredFixes: [],
         feedbackCycles: 0,
         result: null,
+        retryTargetStage: "refinement",
+        retryFeedback: {
+          from: { stage: "implementation", taskInstanceId: "ci-gate" },
+          message: "Required CI is failing",
+          details: { evidence: ["https://example.test/log"] },
+        },
       },
     });
     await applyStageTransition({
@@ -545,6 +551,14 @@ describe("applyStageTransition", () => {
     expect(calls[0]).toContain("conveyor:blocked");
     expect(calls[1]).toContain("conveyor:implementation");
     expect(calls[1]).not.toContain("conveyor:blocked");
+    expect(store.listStageTransitions("issue").find((transition) => transition.id === "run-blocked")).toMatchObject({
+      retryTargetStage: "refinement",
+      retryFeedback: {
+        from: { stage: "implementation", taskInstanceId: "ci-gate" },
+        message: "Required CI is failing",
+        details: { evidence: ["https://example.test/log"] },
+      },
+    });
 
     // A legacy producer can stop with a status that has no state label (e.g. changes-requested at
     // implementation): it stops as blocked, keeping the original status in the reason, instead of throwing.

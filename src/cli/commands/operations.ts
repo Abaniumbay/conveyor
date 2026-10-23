@@ -241,7 +241,7 @@ export const itemLogs: Command = {
 export const itemRetry: Command = {
   name: "item retry",
   usage: "<item>",
-  summary: "retry a blocked, errored or needs-intervention item at its current stage",
+  summary: "retry a stopped item at its stage, or a configured CI return stage",
   options: { note: { type: "string", value: "<text>", description: "a note added to the item's conversation" } },
   async run(context) {
     const result = await control<{ item: string; status: string; stageId: string }>(context, "POST", itemPath(context, "/retry"), { note: stringOption(context, "note") ?? "" });

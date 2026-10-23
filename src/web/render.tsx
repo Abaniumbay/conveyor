@@ -267,6 +267,7 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           {issue.noSplit && <span>· No split</span>}
         </div>
         {canManage && issue.retryable && <form class="retry-form" data-retry-form data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>
+          {issue.retryTargetStage && <p>Retry will return this item to {issue.retryTargetStage}.</p>}
           <label for={`${id}-retry-note`}>Optional note for the next attempt</label>
           <textarea id={`${id}-retry-note`} name="note" rows={2} maxLength={4000} placeholder="Add feedback for the next attempt…" />
           <button type="submit" class="action-button action-button--secondary" data-retry-submit>Retry</button>

@@ -33,6 +33,7 @@ import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
+import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
 import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
@@ -4670,6 +4671,7 @@ export class ConveyorService {
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
         ].includes(projectedState),
         retryable,
+        retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
         ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5472,6 +5474,7 @@ export class ConveyorService {
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
+      retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
       ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5876,6 +5879,29 @@ export class ConveyorService {
     );
   }
 
+  /** The configured destination for a stopped CI gate's deliberate retry, when it is still valid. */
+  retryTargetStage(issueId: string): string | null {
+    const issue = this.store.getIssue(issueId);
+    const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+    const pipeline = repository ? this.config.pipelines[repository.pipeline] : undefined;
+    if (!issue || !pipeline) return null;
+    const route = this.retryRoute(issue, pipeline.stages.map((stage) => stage.id));
+    return route?.stageId === issue.projectedStage ? null : route?.stageId ?? null;
+  }
+
+  private retryRoute(issue: StoredIssue, stageIds: readonly string[]): { stageId: string; feedback: Feedback | null } | null {
+    if (issue.projectedStage === null) return null;
+    const transition = this.store.listStageTransitions(issue.id).at(-1);
+    const retryTargetStage = transition?.retryTargetStage;
+    const retryFeedback = transition?.retryFeedback;
+    if (transition?.kind !== "stopped" || transition.status !== "completed" ||
+      transition.toStage !== issue.projectedStage || retryTargetStage === undefined || retryTargetStage === null ||
+      retryFeedback === undefined || retryFeedback === null || !stageIds.includes(retryTargetStage)) {
+      return { stageId: issue.projectedStage, feedback: null };
+    }
+    return { stageId: retryTargetStage, feedback: retryFeedback };
+  }
+
   /** Whether the stored state permits resuming a stopped parent before the command verifies the source snapshot. */
   canResumeRollupParent(issueId: string): boolean {
     const issue = this.store.getIssue(issueId);
@@ -6021,19 +6047,27 @@ export class ConveyorService {
         throw new Error("issue state changed or is inconsistent; refresh before retrying");
       }
 
-      const stageId = evaluated.stage;
-      const mutation = this.store.beginSourceMutation({
-        idempotencyKey: `web-retry:${randomUUID()}`,
-        source: repository.source,
-        operation: "issue.labels.retry",
-        request: { issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state, stageId },
-      });
+      const route = this.retryRoute(issue, pipeline.stages.map((stage) => stage.id));
+      if (!route) throw new Error("issue state changed or is inconsistent; refresh before retrying");
+      const stageId = route.stageId;
+      const sourceStageLabel = this.config.labels.stageTemplate.replace("{stage}", evaluated.stage);
+      const destinationStageLabel = this.config.labels.stageTemplate.replace("{stage}", stageId);
       const conveyorLabels = live.labels.filter((label) =>
         (label === this.config.settings.labelPrefix ||
           label.startsWith(`${this.config.settings.labelPrefix}:`) ||
           label === this.config.labels.metadata.noSplit) &&
         label !== this.config.labels.states[evaluated.state!],
-      );
+      ).map((label) => label === sourceStageLabel ? destinationStageLabel : label);
+      if (!conveyorLabels.includes(destinationStageLabel)) conveyorLabels.push(destinationStageLabel);
+      const mutation = this.store.beginSourceMutation({
+        idempotencyKey: `web-retry:${randomUUID()}`,
+        source: repository.source,
+        operation: "issue.labels.retry",
+        request: {
+          issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state,
+          stoppedStageId: evaluated.stage, retryStageId: stageId, labels: conveyorLabels,
+        },
+      });
       try {
         await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
           repository.address,
@@ -6070,6 +6104,29 @@ export class ConveyorService {
       }
       await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
       const refreshed = this.store.getIssue(issueId);
+      if (!refreshed || refreshed.projectedStage !== stageId || refreshed.projectedState !== "active") {
+        throw new Error("retry target did not reconcile; refresh before retrying");
+      }
+      if (route.feedback !== null) {
+        const journal = this.store.executions();
+        const epoch = journal.stageEpoch(issueId);
+        // The reconciliation event admits the next run only after eventsSettled below. Persist
+        // the handoff first so a restart cannot lose the CI report between stages.
+        journal.saveCursor({
+          issueId,
+          stage: stageId,
+          stageEpoch: epoch,
+          attempt: 1,
+          returns: 0,
+          list: "actions",
+          taskInstanceId: null,
+          state: "planned",
+          feedback: route.feedback,
+          pendingSince: null,
+          wakeAt: null,
+          deadlineAt: null,
+        }, epoch);
+      }
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "retry" }, { issueId });
       await this.eventsSettled();
