@@ -155,7 +155,7 @@ export const EVENT_CATALOGUE = {
   }).strict()),
 
   // Commands
-  "command.accepted": define("Commands", "A command from the dashboard or the CLI succeeded; its events share its correlation id.", z.object({ command: z.string() }).strict()),
+  "command.accepted": define("Commands", "A command from the dashboard or the CLI succeeded; events for its item share its correlation id.", z.object({ command: z.string() }).strict()),
   "command.rejected": define("Commands", "A command was refused or failed; `reason` says why.", z.object({ command: z.string(), reason: z.string() }).strict()),
 } as const satisfies Record<string, Definition<z.ZodType>>;
 

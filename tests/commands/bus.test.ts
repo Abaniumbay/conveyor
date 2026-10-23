@@ -27,7 +27,25 @@ describe("CommandBus", () => {
     expect(outcome).toEqual({ correlationId: expect.any(String), result: undefined });
   });
 
-  test("records command.accepted, and the handler's events share the command's correlation id", async () => {
+  test("scopes an item's command correlation and actor to events for that item", async () => {
+    const { commands, events } = bus();
+    commands.handle("backlog.reorder", () => {
+      events.append("item.offboarded", { status: "test" }, { issueId: "i-1" });
+      events.append("item.offboarded", { status: "test" }, { issueId: "i-2" });
+    });
+    const { correlationId } = await commands.dispatch("backlog.reorder", { issueId: "i-1", direction: "up" }, superuser);
+    const [forCommand, forAnotherItem, accepted] = events.read();
+    expect(forCommand?.issueId).toBe("i-1");
+    expect(forCommand?.correlationId).toBe(correlationId);
+    expect(forCommand?.actor).toEqual({ kind: "user", id: "admin-1" });
+    expect(forAnotherItem?.issueId).toBe("i-2");
+    expect(forAnotherItem?.correlationId).toBeNull();
+    expect(forAnotherItem?.actor).toEqual({ kind: "system", id: null });
+    expect(accepted?.type).toBe("command.accepted");
+    expect(accepted?.correlationId).toBe(correlationId);
+  });
+
+  test("keeps an unscoped command's correlation on every handler event", async () => {
     const { commands, events } = bus();
     commands.handle("admission.resume", () => {
       events.append("item.offboarded", { status: "test" }, { issueId: "i-1" });

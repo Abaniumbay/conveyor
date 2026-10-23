@@ -6,7 +6,7 @@ import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { log } from "../log/logger";
 import type { EventBus } from "./bus";
 import { EVENT_CATALOGUE, type EventPayload, type EventType, type StoredEvent } from "./catalogue";
-import { currentEventContext } from "./context";
+import { eventContextForIssue } from "./context";
 
 export interface EventScope {
   repositoryId?: string | null;
@@ -78,8 +78,8 @@ export class EventLog {
   /** Appends one event; inside a transaction it is kept or rolled back with the change it records. */
   append<T extends EventType>(type: T, payload: EventPayload<T>, scope: EventScope = {}): void {
     const parsed = EVENT_CATALOGUE[type].payload.parse(payload);
-    const { actor, correlationId } = currentEventContext();
     const issueId = scope.issueId ?? null;
+    const { actor, correlationId } = eventContextForIssue(issueId);
     this.database
       .query(
         `INSERT INTO events(type, occurred_at, repository_id, issue_id, actor_kind, actor_id, correlation_id, payload_json)
