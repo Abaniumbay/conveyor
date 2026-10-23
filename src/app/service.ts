@@ -1256,7 +1256,7 @@ export class ConveyorService {
     }
   }
 
-  /** Records a person-merged current change and continues at the stage after Conveyor's merge task. */
+  /** Records a person-merged current change and continues after the last configured merge boundary. */
   private async continueExternalMerge(
     repositoryId: string,
     issue: StoredIssue,
@@ -1266,7 +1266,10 @@ export class ConveyorService {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const stages = this.config.pipelines[repository.pipeline]!.stages;
-    const mergeIndex = stages.findIndex((stage) => isNativeStage(stage) && stage.actions.some((action) => action.task === "change.merge"));
+    const mergeIndex = stages.findLastIndex((stage) => isNativeStage(stage) && (
+      stage.actions.some((action) => action.task === "change.merge") ||
+      stage.exitGate.some((gate) => gate.task === "change.merged")
+    ));
     const currentStage = issue.projectedStage;
     const currentIndex = currentStage ? stages.findIndex((stage) => stage.id === currentStage) : -1;
     try {
