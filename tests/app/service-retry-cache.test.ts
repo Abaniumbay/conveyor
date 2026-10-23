@@ -53,7 +53,7 @@ function config(root: string, ciRetryRoute = false, implementationAgent = false)
       },
     },
     repositories: {
-      repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default" },
+      repo: { source: "github", address: "owner/my-app", folder: root, pipeline: "default", extraTrustedLogins: ["operator"] },
     },
     agents: implementationAgent
       ? { worker: { runner: "codex", instructions: path.join(root, "worker.md"), name: "Worker", title: "Builder" } }
@@ -100,6 +100,12 @@ class RetryTransport implements GitHubTransport {
     }
     if (request.method === "GET" && request.path === "repos/owner/my-app/issues/3/sub_issues?per_page=100") return [] as T;
     if (request.method === "GET" && request.path === "repos/owner/my-app/issues/3/dependencies/blocked_by?per_page=100") return [] as T;
+    if (request.method === "GET" && request.path === "repos/owner/my-app/issues/3/events?per_page=100") {
+      return [{ id: 1, created_at: "2026-10-22T17:00:00Z", event: "labeled", actor: { login: "operator" }, label: { name: "conveyor" } }] as T;
+    }
+    if (request.method === "POST" && request.path === "graphql") {
+      return { data: { repository: { issue: { userContentEdits: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } } as T;
+    }
     if (request.method === "GET" && request.path === "repos/owner/my-app/issues/3/comments?per_page=100") return [] as T;
     if (request.method === "POST" && request.path === "repos/owner/my-app/issues/3/comments") {
       return { id: 1, html_url: "https://example.com/issues/3#comment-1" } as T;
@@ -214,6 +220,91 @@ describe("ConveyorService retry with a held GitHub listing", () => {
       await restartedService.retryIssue(issueId, "", "operator");
 
       expect(restartedStore.getIssue(issueId)).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+      const deadline = Date.now() + 1_000;
+      while (calls.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.prompt).toContain(feedback.message);
+      expect(calls[0]!.prompt).toContain("required-ci-run");
+    } finally {
+      await restartedService.close();
+    }
+  });
+
+  test("recovers retry feedback when the source label write survives a crash before local completion", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-ci-retry-crash-"));
+    directories.push(root);
+    await git(root, "init", "-b", "main");
+    await git(root, "config", "user.email", "tests@example.test");
+    await git(root, "config", "user.name", "Tests");
+    await writeFile(path.join(root, "README.md"), "fixture\n");
+    await writeFile(path.join(root, "worker.md"), "Act on the item feedback.");
+    await git(root, "add", "README.md", "worker.md");
+    await git(root, "commit", "-m", "fixture");
+    const current = config(root, true, true);
+    const store = await ConveyorStore.open(current.settings.database);
+    const issueId = "github:owner/my-app#3";
+    const feedback = {
+      from: { stage: "ci-gate", taskInstanceId: "required-ci" },
+      message: "The same required CI failure repeated.",
+      details: { evidence: ["required-ci-run"] },
+    };
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: current.hash });
+    store.upsertIssue({
+      id: issueId, repositoryId: "repo", sourceNumber: 3, sourceUrl: "https://example.com/issues/3", title: "Retry after a crash",
+      body: "The source body.", sourceState: "open", sourceStateReason: null,
+      labels: ["conveyor", "conveyor:ci-gate", "conveyor:needs-intervention", "area:backend"],
+      sourceUpdatedAt: "2026-10-22T18:00:00Z", acceptedTextAt: "2026-10-22T18:00:00Z",
+    });
+    store.setQueueRank(issueId, 10);
+    store.setIssueProjection(issueId, { stage: "ci-gate", state: "needs-intervention", warning: feedback.message });
+    store.setStageState({ issueId, stageId: "ci-gate", status: "needs-intervention", feedbackCycle: 0, configHash: current.hash });
+    store.activateEnrollment(issueId);
+    store.beginStageTransition({
+      id: "ci-repeat", issueId, fromStage: "ci-gate", toStage: "ci-gate", kind: "stopped", sourceMutationId: null,
+      detail: { reason: feedback.message, requiredFixes: ["Repair the required check."], resultStatus: "needs-intervention", retryTargetStage: "implementation", retryFeedback: feedback },
+    });
+    store.completeStageTransition("ci-repeat");
+
+    const transport = new RetryTransport(
+      ["conveyor", "conveyor:ci-gate", "conveyor:needs-intervention", "area:backend"],
+      ["conveyor", "conveyor:implementation", "area:backend"],
+    );
+    const adapter = new GitHubAdapter(new GitHubReadCache(transport), current.settings.labelPrefix);
+    store.beginSourceMutation({
+      idempotencyKey: `web-retry:${issueId}:crash`,
+      source: "github",
+      operation: "issue.labels.retry",
+      request: {
+        issueId, issueNumber: 3, stoppedState: "needs-intervention", stoppedStageId: "ci-gate",
+        retryStageId: "implementation", retryFeedback: feedback,
+        labels: ["conveyor", "conveyor:implementation"],
+      },
+    });
+    await adapter.replaceConveyorLabels("owner/my-app", 3, ["conveyor", "conveyor:implementation"], ["conveyor:no-split"]);
+
+    const calls: HarnessRunInput[] = [];
+    const harness: Harness = {
+      id: "fake",
+      get capabilities() { return { sessionResume: true }; },
+      async run(input): Promise<RunEnvelope> {
+        calls.push(input);
+        return {
+          stageResult: { outcome: "success", status: "done", summary: "Done", reason: null, metrics: {} },
+          sessionId: "session", usage: { ...EMPTY_USAGE }, cost: { ...UNAVAILABLE_COST }, durationMs: 1, exitCode: 0, artifacts: [], stderr: "",
+        };
+      },
+    };
+    const crashedService = new ConveyorService(current, store, adapter, { harnesses: { codex: harness } });
+    await crashedService.close();
+    const restartedStore = await ConveyorStore.open(current.settings.database);
+    const restartedService = new ConveyorService(current, restartedStore, adapter, { harnesses: { codex: harness } });
+    try {
+      restartedService.drain("Wait until reconciliation restores the retry feedback.");
+      await restartedService.reconcileAll();
+      expect(restartedStore.getIssue(issueId)).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+      expect(restartedStore.executions().getCursor(issueId)?.feedback).toEqual(feedback);
+
+      expect(restartedService.resumeAdmission()).toBe(true);
       const deadline = Date.now() + 1_000;
       while (calls.length === 0 && Date.now() < deadline) await Bun.sleep(10);
       expect(calls).toHaveLength(1);
