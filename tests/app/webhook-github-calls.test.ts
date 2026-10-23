@@ -23,7 +23,7 @@ const LABELS = {
 };
 
 /** One repository with one enrolled issue, and a GitHub fake that records what Conveyor reads and writes. */
-async function service(options: { second?: boolean; nativePipeline?: boolean } = {}) {
+async function service(options: { second?: boolean; pipeline?: "merge-action" | "multiple-boundaries" | "wait-only" } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-calls-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -37,12 +37,25 @@ async function service(options: { second?: boolean; nativePipeline?: boolean } =
     pipelines: { default: {
       successStatuses: ["done"],
       failureStatuses: ["blocked"],
-      stages: options.nativePipeline
+      stages: options.pipeline === "merge-action"
         ? [
           { id: "review", actions: [], exitGate: [], concurrency: 1 },
           { id: "merge", actions: [{ id: "mergeChange", task: "change.merge" }], exitGate: [], concurrency: 1 },
           { id: "deploy", actions: [], exitGate: [], concurrency: 1 },
         ]
+        : options.pipeline === "wait-only"
+          ? [
+            { id: "review", actions: [], exitGate: [], concurrency: 1 },
+            { id: "awaiting-merge", actions: [], exitGate: [{ task: "change.merged" }], concurrency: 1 },
+            { id: "deploy", actions: [], exitGate: [], concurrency: 1 },
+          ]
+          : options.pipeline === "multiple-boundaries"
+            ? [
+              { id: "review", actions: [], exitGate: [], concurrency: 1 },
+              { id: "merge", actions: [{ id: "mergeChange", task: "change.merge" }], exitGate: [], concurrency: 1 },
+              { id: "awaiting-merge", actions: [], exitGate: [{ task: "change.merged" }], concurrency: 1 },
+              { id: "deploy", actions: [], exitGate: [], concurrency: 1 },
+            ]
         : [{ id: "work", run: { type: "agent", agent: "a" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }],
     } },
     repositories: {
@@ -136,7 +149,7 @@ async function service(options: { second?: boolean; nativePipeline?: boolean } =
 
 describe("GitHub calls made for webhook deliveries", () => {
   test("a person-merged current change continues a closed review item at its post-merge stage", async () => {
-    const { conveyor, store, calls, deliver, issue } = await service({ nativePipeline: true });
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "merge-action" });
     issue.labels = ["conveyor", "conveyor:review"];
     await conveyor.reconcileAll();
     store.activateEnrollment(issue.id);
@@ -164,6 +177,118 @@ describe("GitHub calls made for webhook deliveries", () => {
     expect(calls.changeReads).toEqual(["github:owner/repo#pr-23"]);
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:deploy"] }]);
     expect(store.getCurrentPullRequest(issue.id)).toMatchObject({ state: "merged", mergedAt: "2026-10-07T21:00:00Z" });
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("a person-merged change webhook continues a closed item blocked at a wait-only merged gate", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "wait-only" });
+    issue.labels = ["conveyor", "conveyor:awaiting-merge", "conveyor:blocked"];
+    await conveyor.reconcileAll();
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "awaiting-merge", projectedState: "blocked" });
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({
+      issueId: issue.id,
+      id: "github:owner/repo#pr-23",
+      number: 23,
+      url: "https://example.com/changes/23",
+      state: "open",
+    });
+    issue.state = "closed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("pull_request", {
+      action: "closed",
+      pull_request: { number: 23, merged: true, head: { sha: "head" } },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:deploy"] }]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("a merged change webhook does not move an item beyond its last merge boundary backward", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "wait-only" });
+    issue.labels = ["conveyor", "conveyor:deploy"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({
+      issueId: issue.id,
+      id: "github:owner/repo#pr-23",
+      number: 23,
+      url: "https://example.com/changes/23",
+      state: "open",
+    });
+    issue.state = "closed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("pull_request", {
+      action: "closed",
+      pull_request: { number: 23, merged: true, head: { sha: "head" } },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("a person-merged change webhook skips every merge boundary after a blocked pre-merge item", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "multiple-boundaries" });
+    issue.labels = ["conveyor", "conveyor:review", "conveyor:blocked"];
+    await conveyor.reconcileAll();
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "review", projectedState: "blocked" });
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({
+      issueId: issue.id,
+      id: "github:owner/repo#pr-23",
+      number: 23,
+      url: "https://example.com/changes/23",
+      state: "open",
+    });
+    issue.state = "closed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+
+    await deliver("pull_request", {
+      action: "closed",
+      pull_request: { number: 23, merged: true, head: { sha: "head" } },
+    });
+    await conveyor.webhooksSettled();
+
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:deploy"] }]);
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
+    store.close();
+  });
+
+  test("hourly recovery continues a closed item blocked at a wait-only merged gate", async () => {
+    const { conveyor, store, calls, issue } = await service({ pipeline: "wait-only" });
+    issue.labels = ["conveyor", "conveyor:awaiting-merge", "conveyor:blocked"];
+    await conveyor.reconcileAll();
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "awaiting-merge", projectedState: "blocked" });
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({
+      issueId: issue.id,
+      id: "github:owner/repo#pr-23",
+      number: 23,
+      url: "https://example.com/changes/23",
+      state: "open",
+    });
+    issue.state = "closed";
+    issue.updatedAt = "2026-10-07T21:00:00Z";
+    calls.fetched.length = 0;
+
+    const now = Date.now;
+    Date.now = () => now() + (61 * 60 * 1000);
+    try {
+      await conveyor.tick();
+    } finally {
+      Date.now = now;
+    }
+
+    expect(calls.fetched).toEqual([1]);
+    expect(calls.changeReads).toEqual(["github:owner/repo#pr-23"]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:deploy"] }]);
     expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "deploy", projectedState: "active", warning: null });
     store.close();
   });
