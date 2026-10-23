@@ -5862,9 +5862,9 @@ export class ConveyorService {
       !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
   }
 
-  /** Whether Conveyor's recorded pause can safely restore enrollment for an open item. */
+  /** Whether an open paused item can safely restore its enrollment label. */
   private resumablePausedIssue(issue: StoredIssue, running: boolean): boolean {
-    return issue.sourceState === "open" && issue.projectedState === "paused" && issue.pausedByConveyor &&
+    return issue.sourceState === "open" && issue.projectedState === "paused" &&
       !issue.labels.includes(this.config.labels.enrollment) && !running;
   }
 
