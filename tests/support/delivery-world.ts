@@ -20,6 +20,7 @@ import { CriterionApprovals, criterionTextHash } from "../../src/engine/review-r
 import type { Harness, HarnessRunInput } from "../../src/harness/types";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
+import type { SourceIssue } from "../../src/source/types";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import { renderBreakdownPlan } from "../../src/tasks/breakdown";
 import { dispatchTool } from "../../src/tasks/dispatch";
@@ -138,6 +139,10 @@ export async function deliveryWorld(options: {
   requireDescription?: boolean;
   pauseBeforeChangeEnsure?: boolean;
   pauseBeforeCiStart?: boolean;
+  deployScript?: string;
+  interruptGrace?: string;
+  /** Use the public service scheduling and pause lifecycle instead of the delivery driver. */
+  publicLifecycle?: boolean;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -158,7 +163,7 @@ export async function deliveryWorld(options: {
   // Operator scripts are real `bun run` scripts; they record each run.
   const scriptLog = path.join(root, "scripts.log");
   const script = (name: string) => `import { appendFileSync } from "node:fs";\nawait Bun.stdin.text();\nappendFileSync(${JSON.stringify(scriptLog)}, "${name}\\n");\nconsole.log(JSON.stringify({ outcome: "success", summary: "${name} done" }));\n`;
-  await writeFile(path.join(root, "deploy.ts"), script("deploy"));
+  await writeFile(path.join(root, "deploy.ts"), options.deployScript ?? script("deploy"));
   await writeFile(path.join(root, "verify.ts"), script("verify"));
 
   const example = parse(await readFile(path.join(EXAMPLES, "local/repositories.example.yaml"), "utf8")) as { repositories: Record<string, any> };
@@ -175,6 +180,7 @@ export async function deliveryWorld(options: {
       settings: {
         database: path.join(root, "data/conveyor.sqlite"), logs: path.join(root, "data/logs"),
         workspaces: path.join(root, "data/worktrees"), artifacts: path.join(root, "data/artifacts"),
+        ...(options.interruptGrace === undefined ? {} : { interruptGrace: options.interruptGrace }),
       },
       repositories: { conveyor: repository },
     }),
@@ -211,9 +217,26 @@ export async function deliveryWorld(options: {
   const agentRuns: string[] = [];
   let implementationRuns = 0;
   const labelWrites: string[][] = [];
+  let sourceIssue: SourceIssue | null = null;
   const github = {
-    replaceConveyorLabels: async (_address: string, _number: number, labels: string[]) => { labelWrites.push([...labels]); },
+    replaceConveyorLabels: async (_address: string, number: number, labels: string[]) => {
+      if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
+      labelWrites.push([...labels]);
+      sourceIssue = { ...sourceIssue, labels: [...labels], updatedAt: new Date().toISOString() };
+    },
     addComment: async () => 1,
+    listIssues: async () => sourceIssue ? [sourceIssue] : [],
+    getIssue: async (_address: string, number: number) => {
+      if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
+      return sourceIssue;
+    },
+    getIssueProvenance: async () => ({
+      enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" },
+    }),
+    collaboratorPermission: async () => "write" as const,
+    listSubIssues: async () => [],
+    listDependencies: async () => [],
+    upsertStatusComment: async () => 1,
     // The organization defines issue types and the Effort field; mirror the metadata
     // written by the simulated refinement tool as GitHub's current field snapshot.
     listIssueTypes: async () => ["Task", "Bug", "Feature"],
@@ -321,16 +344,22 @@ export async function deliveryWorld(options: {
     harnesses: { codex: harness, "claude-code": harness },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
-  Object.assign(service as object, {
-    reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {},
-    ciProvider: () => provider,
-  });
+  if (!options.publicLifecycle) {
+    Object.assign(service as object, {
+      reconcileRepository: async () => {}, updateStatusComment: async () => {}, schedule: () => {},
+      ciProvider: () => provider,
+    });
+  }
 
   store.upsertIssue({
     id: "issue", repositoryId: "conveyor", sourceNumber: 1, sourceUrl: "https://github.com/owner/conveyor/issues/1",
     title: "Add the feature", body: "A feature request.", sourceState: "open", labels: ["conveyor", "conveyor:refinement"],
     sourceUpdatedAt: "2026-01-01T00:00:00Z",
   });
+  sourceIssue = {
+    id: "issue", number: 1, url: "https://github.com/owner/conveyor/issues/1", title: "Add the feature", body: "A feature request.",
+    state: "open", labels: ["conveyor", "conveyor:refinement"], updatedAt: "2026-01-01T00:00:00Z",
+  };
   store.setIssueProjection("issue", { stage: "refinement", state: "active", warning: null });
   store.setQueueRank("issue", store.nextQueueRank());
   store.setStageState({ issueId: "issue", stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
