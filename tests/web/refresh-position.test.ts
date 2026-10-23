@@ -43,6 +43,7 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
     working: false,
     needsAttention: false,
     retryable: false,
+    resumable: false,
     resumableRollup: false,
     stoppedRollup: false,
   };
@@ -230,7 +231,7 @@ function startDashboard(state: {
     answerQuestion: () => delayed(() => state.answerQuestion?.()), approveManualGate: () => delayed(() => state.approveManualGate?.()),
     setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => delayed(() => state.setBoardApprovalRequirement?.(required)),
     reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
-    postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
+    postIssueMessage: () => ({}), retryIssue: () => ({}), resumeIssue: () => ({}), resumeRollupParent: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
     auth,
@@ -297,6 +298,31 @@ afterEach(async () => {
 });
 
 describe("dashboard live refresh position", () => {
+  test("keeps a paused refinement item's Resume action within a 360 px dashboard", async () => {
+    const paused = {
+      ...issue("paused-refinement", 58, "A paused refinement item with a deliberately long title that must remain inside the phone viewport"),
+      state: "paused" as const,
+      resumable: true,
+    };
+    const server = startDashboard({ dashboard: () => dashboard("paused-resume", [paused]), revision: () => "paused-resume" });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+
+      const resume = page.locator("[data-resume-card]");
+      await resume.waitFor();
+      expect(await resume.isVisible()).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+      await resume.click();
+      await page.waitForFunction(() => document.querySelector("[data-resume-card]")?.textContent === "Item resumed");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("restores a hidden dropped stream and receives a later update without reloading", async () => {
     let revision = "reconnect-1";
     let title = "Before reconnect";

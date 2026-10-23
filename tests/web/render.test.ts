@@ -43,6 +43,7 @@ const parent: IssueCardViewModel = {
   working: true,
   needsAttention: true,
   retryable: false,
+  resumable: false,
   resumableRollup: false,
   stoppedRollup: false,
 };
@@ -79,6 +80,7 @@ const backlogIssue: IssueCardViewModel = {
   working: false,
   needsAttention: false,
   retryable: false,
+  resumable: false,
   resumableRollup: false,
   stoppedRollup: false,
 };
@@ -846,6 +848,41 @@ describe("renderDashboard", () => {
     expect(html).toContain('Children can keep running while this parent waits.');
     expect(html).not.toContain('data-retry-card');
     expect(html).not.toContain('data-retry-form');
+  });
+
+  test("offers Resume only to a superuser for a paused item without an enrollment stage", () => {
+    const paused = {
+      ...backlogIssue,
+      id: "paused-refinement",
+      state: "paused",
+      stage: null,
+      labels: [],
+      resumable: true,
+    };
+    const superuserHtml = renderDashboard({
+      ...dashboard,
+      selectedIssue: paused,
+      stages: [{ ...dashboard.stages[0]!, issues: [paused] }],
+    });
+    const userHtml = renderDashboard({
+      ...dashboard,
+      account: { id: "member", username: "member", role: "user", avatar: "🦊" },
+      selectedIssue: paused,
+      stages: [{ ...dashboard.stages[0]!, issues: [paused] }],
+    });
+    const enrolledHtml = renderDashboard({
+      ...dashboard,
+      selectedIssue: { ...paused, resumable: false, labels: ["conveyor"] },
+      stages: [{ ...dashboard.stages[0]!, issues: [{ ...paused, resumable: false, labels: ["conveyor"] }] }],
+    });
+
+    expect(superuserHtml.match(/>Resume</g)).toHaveLength(2);
+    expect(superuserHtml).toContain('data-resume-card');
+    expect(superuserHtml).toContain('data-resume-form');
+    expect(userHtml).not.toContain('data-resume-card');
+    expect(userHtml).not.toContain('data-resume-form');
+    expect(enrolledHtml).not.toContain('data-resume-card');
+    expect(enrolledHtml).not.toContain('data-resume-form');
   });
 
   test("shows todo progress on the card and the escaped checklist in its details; nothing without a list", () => {

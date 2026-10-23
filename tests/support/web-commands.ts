@@ -36,6 +36,7 @@ export function fakeCommandBus(service: Record<string, unknown>): { commands: Co
   register("steering.start", "startSteering", (fn, input) => fn(input.prompt));
   register("item.postMessage", "postIssueMessage", (fn, input, actor) => fn(input.issueId, input.message, actor.name));
   register("item.retry", "retryIssue", (fn, input, actor) => fn(input.issueId, input.note, actor.name));
+  register("item.resume", "resumeIssue", (fn, input, actor) => fn(input.issueId, actor.name));
   register("item.resumeRollup", "resumeRollupParent", (fn, input) => fn(input.issueId));
   register("finding.reclassify", "reclassifyFinding", (fn, input, actor) => fn(input.issueId, input.findingId, input.type, actor.name));
   register("finding.dismiss", "dismissFinding", (fn, input, actor) => fn(input.issueId, input.findingId, input.reason, actor.name));

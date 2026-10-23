@@ -272,6 +272,10 @@ function DetailsDialog({ issue, id, selected = false, canManage = false }: { iss
           <button type="submit" class="action-button action-button--secondary" data-retry-submit>Retry</button>
           <span role="status" aria-live="polite" data-retry-status />
         </form>}
+        {canManage && issue.resumable && <form class="retry-form" data-resume-form data-resume-url={`/api/issues/${encodeURIComponent(issue.id)}/resume`}>
+          <button type="submit" class="action-button action-button--secondary" data-resume-submit>Resume</button>
+          <span role="status" aria-live="polite" data-resume-status />
+        </form>}
         {canManage && issue.resumableRollup && <form class="retry-form" data-resume-rollup-form data-resume-rollup-url={`/api/issues/${encodeURIComponent(issue.id)}/resume-waiting`}>
           <button type="submit" class="action-button action-button--secondary" data-resume-rollup-submit>Resume waiting for children</button>
           <span role="status" aria-live="polite" data-resume-rollup-status />
@@ -548,6 +552,7 @@ function IssueCard({ issue, actors = [], canManage = false, stageLabel = null, t
         {issue.noSplit && <> · <span>No split</span></>}
       </p>
       {canManage && issue.retryable && <button type="button" class="issue-retry action-button action-button--secondary" data-retry-card data-retry-url={`/api/issues/${encodeURIComponent(issue.id)}/retry`}>Retry</button>}
+      {canManage && issue.resumable && <button type="button" class="issue-retry action-button action-button--secondary" data-resume-card data-resume-url={`/api/issues/${encodeURIComponent(issue.id)}/resume`}>Resume</button>}
       {canManage && issue.resumableRollup && <button type="button" class="issue-retry action-button action-button--secondary" data-resume-rollup-card data-resume-rollup-url={`/api/issues/${encodeURIComponent(issue.id)}/resume-waiting`}>Resume waiting for children</button>}
       {issue.waiting && <WaitingLine issue={issue} className="issue-waiting" />}
       <RelationshipSummary issue={issue} />

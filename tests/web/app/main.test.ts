@@ -22,7 +22,7 @@ function issue(number: number, title: string, overrides: Partial<IssueCardViewMo
     url: `https://github.com/sample/repo/issues/${number}`, state: "active", labels: [], issueType: null, issueFields: [],
     acceptanceCriteria: [], todos: null, indicators: [], activity: null, reason: null, cost: null, duration: null,
     stateChangedAt: null, waiting: null, blocked: false, inconsistent: false, closable: false, noSplit: false, tone: "active",
-    parent: null, children: [], dependencies: [], working: false, needsAttention: false, retryable: false,
+    parent: null, children: [], dependencies: [], working: false, needsAttention: false, retryable: false, resumable: false,
     resumableRollup: false, stoppedRollup: false, stage: "implementation",
     ...overrides,
   };
