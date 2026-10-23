@@ -209,6 +209,7 @@ export async function reconcileRepository(
   const existingByNumber = new Map(
     storedIssues.map((issue) => [issue.sourceNumber, issue]),
   );
+  const fullListing = input.issues === undefined && input.since === undefined;
   const seen = new Set<string>();
   let enrolled = 0;
   let offboarded = 0;
@@ -222,6 +223,7 @@ export async function reconcileRepository(
       existing.get(sourceIssue.id) ?? existingByNumber.get(sourceIssue.number);
     const issueId = prior?.id ?? sourceIssue.id;
     seen.add(issueId);
+    if (fullListing && prior && sourceIssue.updatedAt < prior.sourceUpdatedAt) continue;
     const relevant = isConveyorIssue(
       sourceIssue.labels,
       input.labels.enrollment,
