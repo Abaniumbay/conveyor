@@ -456,6 +456,62 @@ describe("operating through the CLI", () => {
     expect(store.listConversationMessages("issue-2").map((message) => message.message).join("\n")).toMatch(/Paused by .*\(CLI\)[\s\S]*Resumed by/);
   });
 
+  describe("pausing a stage-less refinement item", () => {
+    async function stageless() {
+      const world = await running({ childCreationStage: "refinement" });
+      const issue = world.issues[0]!;
+      issue.labels = ["conveyor"];
+      world.store.upsertIssue({ id: issue.id, repositoryId: "app", sourceNumber: 1, sourceUrl: issue.url, title: issue.title, body: "", sourceState: "open", sourceStateReason: null, labels: issue.labels, sourceUpdatedAt: issue.updatedAt });
+      await world.service.syncRepository("app");
+      const board = async (service = world.service) => {
+        const response = await createControlHandler(service, { supervised: false } as never)(new Request("http://x/v1/board"));
+        return (await response.json()) as Array<{ item: string; stage: string | null; state: string }>;
+      };
+      return { ...world, issue, board };
+    }
+
+    test("stays listed as paused on the board, and resumes into refinement", async () => {
+      const { cli, issue, board, store } = await stageless();
+      expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ stage: "refinement", state: "active" });
+      expect((await cli("item", "pause", "app:1")).code).toBe(0);
+      expect(issue.labels).toEqual([]);
+      expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ state: "paused" });
+      expect((await cli("item", "resume", "app:1")).code).toBe(0);
+      expect(issue.labels).toContain("conveyor");
+      expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ stage: "refinement", state: expect.not.stringMatching(/paused|offboarded/) });
+      expect(store.getIssue("issue-1")!.pausedByConveyor).toBe(false);
+    });
+
+    test("keeps an unanswered question open and the item paused, across pause, restart and resume", async () => {
+      const { cli, issue, board, store, home, config } = await stageless();
+      const question = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Which region?", reason: "two are configured", options: ["eu", "us"] });
+      expect((await cli("item", "pause", "app:1")).code).toBe(0);
+      expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ state: "paused" });
+      expect(store.getQuestion(question.id)?.status).toBe("open");
+
+      const reopened = await ConveyorStore.open(path.join(home, "state/conveyor.sqlite"));
+      const github = { async getIssue() { return issue; }, async listIssues() { return [issue]; }, async listSubIssues() { return []; }, async listDependencies() { return []; }, async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; }, async collaboratorPermission() { return "write" as const; } };
+      const restarted = new ConveyorService(config, reopened, github as never);
+      restarted.drain("tests");
+      cleanups.push(async () => { await restarted.close(); });
+      await restarted.syncRepository("app");
+      expect((await board(restarted)).find((entry) => entry.item === "app:1")).toMatchObject({ state: "paused" });
+      expect(reopened.getQuestion(question.id)?.status).toBe("open");
+
+      expect((await cli("item", "resume", "app:1")).code).toBe(0);
+      expect(issue.labels).toContain("conveyor");
+      expect(store.getQuestion(question.id)?.status).toBe("open");
+    });
+
+    test("is offboarded when a person removes every label without pausing", async () => {
+      const { service, issue, board, store } = await stageless();
+      issue.labels = [];
+      await service.syncRepository("app");
+      expect(store.getIssue("issue-1")!.projectedState).toBe("offboarded");
+      expect((await board()).find((entry) => entry.item === "app:1")).toBeUndefined();
+    });
+  });
+
   test("questions are listed and answered through the same operation as the dashboard", async () => {
     const { cli, store } = await running();
     const question = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Which region?", reason: "two are configured", options: ["eu", "us"] });

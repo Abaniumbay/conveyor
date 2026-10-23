@@ -1044,4 +1044,12 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE findings ADD COLUMN criterion_ids_json TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 42,
+    sql: `
+      -- Conveyor's own pause can remove an item's last control label; this marker keeps that item
+      -- paused instead of letting reconciliation read the empty label set as offboarding.
+      ALTER TABLE issues ADD COLUMN paused_by_conveyor INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];

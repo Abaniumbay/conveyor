@@ -32,6 +32,8 @@ export interface IssueStateInput {
   labels: LabelConfiguration;
   stages: readonly string[];
   expectedPostMergeClosure: boolean;
+  /** Conveyor's pause removed the item's last control label, so an empty label set is not offboarding. */
+  pausedByConveyor?: boolean;
 }
 
 function templatePattern(template: string, token: string): RegExp {
@@ -47,6 +49,10 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
         label.startsWith(`${input.labels.enrollment}:`)) &&
       label !== input.labels.metadata.noSplit,
   );
+
+  if (relevantLabels.length === 0 && input.pausedByConveyor) {
+    return { mode: "paused", visible: true, eligible: false, stage: null, state: null, warnings: [] };
+  }
 
   if (relevantLabels.length === 0) {
     return {
