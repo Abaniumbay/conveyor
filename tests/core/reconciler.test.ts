@@ -591,7 +591,6 @@ describe("reconcileRepository", () => {
       ...issue(1, ["conveyor", "conveyor:refinement"]),
       title: "Older title",
       body: "Older body",
-      state: "closed" as const,
       updatedAt: "2026-01-02T00:00:00Z",
     }];
     const staleResult = await reconcileRepository({ ...common, source });
