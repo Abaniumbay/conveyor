@@ -4642,6 +4642,7 @@ export class ConveyorService {
         : null;
       const viewIssue = { ...issue, projectedState };
       const retryable = this.retryableStoppedIssue(viewIssue, children.length, activeIssueIds.has(issue.id));
+      const resumable = this.resumablePausedIssue(viewIssue, activeIssueIds.has(issue.id));
       const resumableRollup = this.resumableRollupIssue(viewIssue, children.length, activeIssueIds.has(issue.id), openQuestion !== undefined);
       return {
         id: issue.id,
@@ -4696,6 +4697,7 @@ export class ConveyorService {
         ].includes(projectedState),
         retryable,
         retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
+        resumable,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
         ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5423,6 +5425,7 @@ export class ConveyorService {
       : null;
     const viewIssue = { ...issue, projectedState };
     const retryable = this.retryableStoppedIssue(viewIssue, children.length, activeIssueIds.has(issue.id));
+    const resumable = this.resumablePausedIssue(viewIssue, activeIssueIds.has(issue.id));
     const resumableRollup = this.resumableRollupIssue(viewIssue, children.length, activeIssueIds.has(issue.id), openQuestion !== undefined);
     const indicators = this.store.listIndicators(issue.id)
       .filter((indicator) => indicator.id !== CI_INDICATOR_ID || this.config.repositories[issue.repositoryId]?.ci?.mode !== "disabled")
@@ -5499,6 +5502,7 @@ export class ConveyorService {
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
       retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
+      resumable,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
       ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5883,6 +5887,12 @@ export class ConveyorService {
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
       !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
+  }
+
+  /** Whether Conveyor's recorded pause can safely restore enrollment for an open item. */
+  private resumablePausedIssue(issue: StoredIssue, running: boolean): boolean {
+    return issue.sourceState === "open" && issue.projectedState === "paused" && issue.pausedByConveyor &&
+      !issue.labels.includes(this.config.labels.enrollment) && !running;
   }
 
   private resumableRollupIssue(issue: StoredIssue, children: number, running: boolean, hasOpenQuestion: boolean): boolean {

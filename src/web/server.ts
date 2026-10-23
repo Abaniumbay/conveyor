@@ -1100,6 +1100,29 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
     }
 
     const issueResumeRollup = /^\/api\/issues\/([^/]{1,1000})\/resume-waiting$/.exec(path);
+    const issueResume = /^\/api\/issues\/([^/]{1,1000})\/resume$/.exec(path);
+    if (issueResume) {
+      if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "POST" });
+      const currentSession = session(request);
+      if (!currentSession) return json({ error: "unauthorized" }, 401);
+      if (currentSession.account.role !== "superuser") return json({ error: "forbidden" }, 403);
+      let issueId: string;
+      try { issueId = decodeURIComponent(issueResume[1]!); } catch { return text("Invalid issue id", 400); }
+      if (!issueId || issueId.length > 500) return text("Invalid issue id", 400);
+      const form = await readForm(request, maxBodyBytes);
+      if (form instanceof Response) return form;
+      if (!validateCsrf(request, form, dependencies.auth)) return json({ error: "forbidden" }, 403);
+      try {
+        const { result, correlationId } = await dependencies.dispatch("item.resume", { issueId }, actorOf(currentSession));
+        return json({ accepted: true, result: result ?? null, correlationId }, 202);
+      } catch (error) {
+        const handled = commandError(error);
+        if (handled) return handled;
+        const message = error instanceof Error ? error.message : "Unable to resume item";
+        return text(message, message === "issue not found" ? 404 : 409);
+      }
+    }
+
     if (issueResumeRollup) {
       if (request.method !== "POST") return response(null, 405, "text/plain; charset=utf-8", { allow: "POST" });
       const currentSession = session(request);
