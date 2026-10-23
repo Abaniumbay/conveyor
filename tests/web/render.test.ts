@@ -816,7 +816,7 @@ describe("renderDashboard", () => {
   });
 
   test("shows retry controls on stopped retryable cards and their details only", () => {
-    const stopped = { ...backlogIssue, id: "stopped", state: "blocked", retryable: true };
+    const stopped = { ...backlogIssue, id: "stopped", state: "blocked", retryable: true, retryTargetStage: "implementation" };
     const html = renderDashboard({
       ...dashboard,
       selectedIssue: stopped,
@@ -828,6 +828,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('data-retry-form');
     expect(html).toContain('class="issue-retry action-button action-button--secondary" data-retry-card');
     expect(html).toContain('class="action-button action-button--secondary" data-retry-submit="true">Retry</button>');
+    expect(html).toContain("Retry will return this item to implementation.");
     expect(html).toContain('maxlength="4000"');
     expect(html).toContain('role="status" aria-live="polite" data-retry-status');
   });

@@ -33,6 +33,7 @@ import type { ChangeDelivery, CodeHost } from "../codehost/types";
 import { changeAction, pushAndEnsureChange, recoverClosedChange } from "../codehost/actions";
 import { renderStatusComment } from "../source/github/status-comment";
 import { canonicalToolName } from "../tasks/aliases";
+import type { Feedback } from "../tasks/context";
 import { conveyorToolGuidance } from "../mcp/guidance";
 import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
@@ -301,6 +302,23 @@ function object(value: unknown): Record<string, unknown> {
 /** Like `object`, but an absent or malformed value reads as an empty object. */
 function fields(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Reads a durable cross-stage retry handoff only when it still matches the reconciled destination. */
+function retryFeedbackFromRequest(request: Record<string, unknown>, issueId: string, stageId: string): Feedback | null {
+  if (request.issueId !== issueId || request.retryStageId !== stageId) return null;
+  const feedback = fields(request.retryFeedback);
+  const from = fields(feedback.from);
+  if (typeof from.stage !== "string" || typeof from.taskInstanceId !== "string" || typeof feedback.message !== "string") {
+    return null;
+  }
+  if (feedback.repairedByActions !== undefined && feedback.repairedByActions !== true) return null;
+  return {
+    from: { stage: from.stage, taskInstanceId: from.taskInstanceId },
+    message: feedback.message,
+    ...(Object.hasOwn(feedback, "details") ? { details: feedback.details } : {}),
+    ...(feedback.repairedByActions === true ? { repairedByActions: true } : {}),
+  };
 }
 
 function string(value: unknown, name: string): string {
@@ -834,6 +852,7 @@ export class ConveyorService {
         ...(listing.since !== undefined ? { since: listing.since } : {}),
       });
       listing.finish();
+      this.restoreRetryFeedback(id);
       const since = listing.since;
       const scope = since === undefined
         ? null
@@ -2507,6 +2526,7 @@ export class ConveyorService {
       ...(options.includeIssueNumbers !== undefined ? { includeIssueNumbers: options.includeIssueNumbers } : {}),
     });
     listing.finish();
+    this.restoreRetryFeedback(repositoryId);
     if (this.store.repositoryPause(repositoryId)) return;
     const scope = options.includeIssueNumbers ? new Set(options.includeIssueNumbers) : null;
     await this.reconcileRelationships(repositoryId, repository.address, scope);
@@ -2541,6 +2561,7 @@ export class ConveyorService {
         ? { delivered: new Map(numbers.map((number) => [number, { enrollment: "unchanged", title: "unchanged", body: "unchanged" } as const])) }
         : {}),
     });
+    this.restoreRetryFeedback(repositoryId);
     if (this.store.repositoryPause(repositoryId)) return;
     const scope = new Set(numbers);
     await this.reconcileRelationships(repositoryId, repository.address, scope);
@@ -3610,6 +3631,7 @@ export class ConveyorService {
       issues: [change.issue],
       delivered: new Map([[number, change.actors]]),
     });
+    this.restoreRetryFeedback(repositoryId);
     const applied = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     if (change.issue.state === "closed" && applied) await this.recoverClosedItem(repositoryId, applied, change.issue);
     if (this.store.repositoryPause(repositoryId)) return true;
@@ -4670,6 +4692,7 @@ export class ConveyorService {
           "blocked", "error", "needs-input", "needs-intervention", "rejected",
         ].includes(projectedState),
         retryable,
+        retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
         ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5472,6 +5495,7 @@ export class ConveyorService {
       needsAttention: questionIssueIds.has(issue.id) || manualWaiting !== null ||
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
+      retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
       ...(issue.projectedState === "offboarded" ? { historyOnly: true } : {}),
@@ -5876,6 +5900,62 @@ export class ConveyorService {
     );
   }
 
+  /** The configured destination for a stopped CI gate's deliberate retry, when it is still valid. */
+  retryTargetStage(issueId: string): string | null {
+    const issue = this.store.getIssue(issueId);
+    const repository = issue ? this.config.repositories[issue.repositoryId] : undefined;
+    const pipeline = repository ? this.config.pipelines[repository.pipeline] : undefined;
+    if (!issue || !pipeline) return null;
+    const route = this.retryRoute(issue, pipeline.stages.map((stage) => stage.id));
+    return route?.stageId === issue.projectedStage ? null : route?.stageId ?? null;
+  }
+
+  private retryRoute(issue: StoredIssue, stageIds: readonly string[]): { stageId: string; feedback: Feedback | null } | null {
+    if (issue.projectedStage === null) return null;
+    const transition = this.store.listStageTransitions(issue.id).at(-1);
+    const retryTargetStage = transition?.retryTargetStage;
+    const retryFeedback = transition?.retryFeedback;
+    if (transition?.kind !== "stopped" || transition.status !== "completed" ||
+      transition.toStage !== issue.projectedStage || retryTargetStage === undefined || retryTargetStage === null ||
+      retryFeedback === undefined || retryFeedback === null || !stageIds.includes(retryTargetStage)) {
+      return { stageId: issue.projectedStage, feedback: null };
+    }
+    return { stageId: retryTargetStage, feedback: retryFeedback };
+  }
+
+  /** Restores a retry handoff that survived its source-label mutation but not local reconciliation. */
+  private restoreRetryFeedback(repositoryId: string): void {
+    const journal = this.store.executions();
+    for (const issue of this.store.listIssues(repositoryId)) {
+      if (issue.projectedState !== "active" || issue.projectedStage === null) {
+        continue;
+      }
+      const mutation = this.store.getLatestSourceMutationByKeyPrefix(`web-retry:${issue.id}:`);
+      if (mutation?.operation !== "issue.labels.retry" || mutation.status === "succeeded") continue;
+      const feedback = retryFeedbackFromRequest(fields(mutation.request), issue.id, issue.projectedStage);
+      if (feedback === null) continue;
+
+      if (journal.getCursor(issue.id) === null) {
+        const epoch = journal.stageEpoch(issue.id);
+        journal.saveCursor({
+          issueId: issue.id,
+          stage: issue.projectedStage,
+          stageEpoch: epoch,
+          attempt: 1,
+          returns: 0,
+          list: "actions",
+          taskInstanceId: null,
+          state: "planned",
+          feedback,
+          pendingSince: null,
+          wakeAt: null,
+          deadlineAt: null,
+        }, epoch);
+      }
+      this.store.completeSourceMutation(mutation.id, { labels: fields(mutation.request).labels });
+    }
+  }
+
   /** Whether the stored state permits resuming a stopped parent before the command verifies the source snapshot. */
   canResumeRollupParent(issueId: string): boolean {
     const issue = this.store.getIssue(issueId);
@@ -6021,19 +6101,27 @@ export class ConveyorService {
         throw new Error("issue state changed or is inconsistent; refresh before retrying");
       }
 
-      const stageId = evaluated.stage;
-      const mutation = this.store.beginSourceMutation({
-        idempotencyKey: `web-retry:${randomUUID()}`,
-        source: repository.source,
-        operation: "issue.labels.retry",
-        request: { issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state, stageId },
-      });
+      const route = this.retryRoute(issue, pipeline.stages.map((stage) => stage.id));
+      if (!route) throw new Error("issue state changed or is inconsistent; refresh before retrying");
+      const stageId = route.stageId;
+      const sourceStageLabel = this.config.labels.stageTemplate.replace("{stage}", evaluated.stage);
+      const destinationStageLabel = this.config.labels.stageTemplate.replace("{stage}", stageId);
       const conveyorLabels = live.labels.filter((label) =>
         (label === this.config.settings.labelPrefix ||
           label.startsWith(`${this.config.settings.labelPrefix}:`) ||
           label === this.config.labels.metadata.noSplit) &&
         label !== this.config.labels.states[evaluated.state!],
-      );
+      ).map((label) => label === sourceStageLabel ? destinationStageLabel : label);
+      if (!conveyorLabels.includes(destinationStageLabel)) conveyorLabels.push(destinationStageLabel);
+      const mutation = this.store.beginSourceMutation({
+        idempotencyKey: `web-retry:${issueId}:${randomUUID()}`,
+        source: repository.source,
+        operation: "issue.labels.retry",
+        request: {
+          issueId, issueNumber: issue.sourceNumber, stoppedState: evaluated.state,
+          stoppedStageId: evaluated.stage, retryStageId: stageId, retryFeedback: route.feedback, labels: conveyorLabels,
+        },
+      });
       try {
         await this.executionGitHub(issue.repositoryId).replaceConveyorLabels(
           repository.address,
@@ -6041,7 +6129,6 @@ export class ConveyorService {
           conveyorLabels,
           [this.config.labels.metadata.noSplit],
         );
-        this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
       } catch (error) {
         if (error instanceof RepositoryPausedError) throw error;
         this.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
@@ -6070,6 +6157,10 @@ export class ConveyorService {
       }
       await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
       const refreshed = this.store.getIssue(issueId);
+      if (!refreshed || refreshed.projectedStage !== stageId || refreshed.projectedState !== "active") {
+        throw new Error("retry target did not reconcile; refresh before retrying");
+      }
+      if (route.feedback === null) this.store.completeSourceMutation(mutation.id, { labels: conveyorLabels });
       if (refreshed?.queueRank === null) this.store.setQueueRank(issueId, this.store.nextQueueRank());
       this.store.events().append("item.requeued", { reason: "retry" }, { issueId });
       await this.eventsSettled();

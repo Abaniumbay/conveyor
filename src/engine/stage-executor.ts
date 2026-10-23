@@ -354,12 +354,28 @@ export class StageExecutor {
     };
     const { requiredFixes, evidence } = detailLists(failure.details);
     const result = run.context.legacy ?? null;
+    const retryTargetStage = task.task === "ci.passed" &&
+      failure.route !== undefined && "stop" in failure.route &&
+      task.onFail !== null && "return" in task.onFail && task.onFail.return !== stage.id
+      ? task.onFail.return
+      : null;
+    const retry = retryTargetStage === null ? null : {
+      targetStage: retryTargetStage,
+      feedback: {
+        from: { stage: stage.id, taskInstanceId: task.id },
+        message: failure.message,
+        ...(failure.details === undefined ? {} : { details: failure.details }),
+      } satisfies Feedback,
+    };
     const stop = (state: string, reason: string, note: string) => {
       // A human unblock after a stop starts with a fresh loop budget.
       engineState(run.context).returns = 0;
       this.#persist(run, task.id);
       return finish(
-        { kind: "stopped", stageId: stage.id, state, reason, requiredFixes, feedbackCycles: cursor.attempt - 1, result },
+        {
+          kind: "stopped", stageId: stage.id, state, reason, requiredFixes, feedbackCycles: cursor.attempt - 1, result,
+          ...(retry === null ? {} : { retryTargetStage: retry.targetStage, retryFeedback: retry.feedback }),
+        },
         note,
       );
     };

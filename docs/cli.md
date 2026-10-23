@@ -179,7 +179,7 @@ Print an item's run history (agent events, tool calls, checks), optionally follo
 
 ### `conveyor item retry <item>`
 
-Retry a blocked, errored or needs-intervention item at its current stage.
+Retry a stopped item at its stage, or a configured CI return stage.
 
 | Option | Description |
 | --- | --- |

@@ -124,6 +124,8 @@ export interface IssueCardViewModel {
   /** True for stopped states and any item surfaced in Needs you. */
   needsAttention: boolean;
   retryable: boolean;
+  /** Destination stage for a configured cross-stage retry. */
+  retryTargetStage?: string | null;
   /** A stopped parent can clear its stop and keep waiting for independently running children. */
   resumableRollup: boolean;
   /** A stopped roll-up parent explains that its children continue independently. */
