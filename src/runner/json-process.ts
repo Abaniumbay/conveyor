@@ -81,13 +81,8 @@ export async function runProcess(input: JsonProcessInput): Promise<ProcessOutput
     detached: true,
   });
 
-  try {
-    child.stdin.write(JSON.stringify(resolveProcessInput(input.input)));
-    child.stdin.end();
-  } catch (error) {
-    // A short-lived child can close its input before cancellation observes its exit.
-    if (!isErrno(error, "EPIPE")) throw error;
-  }
+  child.stdin.write(JSON.stringify(resolveProcessInput(input.input)));
+  child.stdin.end();
 
   const stdoutPromise = new Response(child.stdout).text();
   const stderrPromise = new Response(child.stderr).text();
