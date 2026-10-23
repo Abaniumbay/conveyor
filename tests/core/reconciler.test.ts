@@ -566,6 +566,57 @@ describe("reconcileRepository", () => {
     store.close();
   });
 
+  test("ignores stale listed snapshots but accepts equal-timestamp label changes once", async () => {
+    const store = await openStore();
+    const common = {
+      store,
+      configHash: "hash-1",
+      repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+      stages: ["refinement", "implementation"],
+      labels,
+    };
+    const current = {
+      ...issue(1, ["conveyor", "conveyor:implementation", "conveyor:blocked"]),
+      title: "Current title",
+      body: "Current body",
+      updatedAt: "2026-01-03T00:00:00Z",
+    };
+    let listed = [current];
+    const source = { async listIssues() { return listed; } };
+    await reconcileRepository({ ...common, source });
+    const storedCurrent = store.getIssue("github:owner/repo#1");
+    if (!storedCurrent) throw new Error("expected the current issue to be stored");
+
+    listed = [{
+      ...issue(1, ["conveyor", "conveyor:refinement"]),
+      title: "Older title",
+      body: "Older body",
+      updatedAt: "2026-01-02T00:00:00Z",
+    }];
+    const staleResult = await reconcileRepository({ ...common, source });
+
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({
+      title: "Current title",
+      body: "Current body",
+      sourceState: "open",
+      sourceUpdatedAt: "2026-01-03T00:00:00Z",
+      projectedStage: "implementation",
+      projectedState: "blocked",
+    });
+    expect(store.getIssue("github:owner/repo#1")?.labels).toEqual(storedCurrent.labels);
+    expect(staleResult).toMatchObject({ seen: 1, missing: 0 });
+    const resumed = () => store.listStageTransitions("github:owner/repo#1").filter((transition) => transition.kind === "resumed");
+    expect(resumed()).toHaveLength(0);
+
+    listed = [{ ...current, labels: ["conveyor", "conveyor:implementation"] }];
+    await reconcileRepository({ ...common, source });
+    await reconcileRepository({ ...common, source });
+
+    expect(store.getIssue("github:owner/repo#1")?.labels).toEqual(["conveyor", "conveyor:implementation"]);
+    expect(resumed()).toHaveLength(1);
+    store.close();
+  });
+
   test("stops scheduling closed and missing source issues with visible reasons", async () => {
     const store = await openStore();
     const common = {
