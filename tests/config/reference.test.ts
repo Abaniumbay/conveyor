@@ -29,6 +29,18 @@ describe("reference configuration", () => {
     for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
   });
 
+  test("the packaged merge action precedes its merged gate, which inherits the task wait default", async () => {
+    const config = await loadReference();
+    const merge = config.plans[0]!.stages.find((stage) => stage.id === "merge")!;
+
+    expect(merge.actions.map((task) => task.task)).toEqual(["change.merge"]);
+    expect(merge.exitGate).toHaveLength(1);
+    expect(merge.exitGate[0]).toMatchObject({
+      task: "change.merged",
+      wait: config.settings.taskDefaults.wait,
+    });
+  });
+
   test("has no AI verifier, no checks and no legacy stages", async () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});

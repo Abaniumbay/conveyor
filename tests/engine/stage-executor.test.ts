@@ -5,11 +5,14 @@ import path from "node:path";
 
 import type { RunEnvelope } from "../../src/runner/result";
 import { ConveyorStore } from "../../src/db/store";
+import { WaitDispatcher } from "../../src/app/wait-dispatcher";
 import { ExecutionStore } from "../../src/engine/journal";
 import { BOARD_APPROVAL_TASK_ID, ENTRY_APPROVAL_TASK_ID, StageExecutor, type StageOutcome } from "../../src/engine/stage-executor";
 import { RepositoryPausedError } from "../../src/core/repository-pause";
+import type { StoredEvent } from "../../src/events/catalogue";
 import type { WaitKind } from "../../src/events/topics";
-import type { CiContext, TaskContext } from "../../src/tasks/context";
+import type { ChangeContext, CiContext, TaskContext } from "../../src/tasks/context";
+import { changeGroup } from "../../src/tasks/change";
 import {
   defineGroup,
   fail,
@@ -75,9 +78,10 @@ interface World {
   remote: string[]; // external side effects, keyed by idempotency key
   calls: string[]; // every act/check invocation
   resumedFlags: boolean[];
-  loads: { item: number; ci: number };
+  loads: { item: number; ci: number; change: number };
   ciSha: string;
   changeSha: string;
+  changeState: "open" | "merged";
   actResult: (id: string) => TaskResult;
   checkResult: Record<string, () => TaskResult>;
   seenFeedback: unknown[];
@@ -134,7 +138,15 @@ function buildRegistry(world: World): TaskRegistry {
       }),
       d({
         name: "test.changeLoad", kind: "load", writes: ["change"],
-        run: () => pass({ headSha: world.changeSha }),
+        run: () => {
+          world.loads.change++;
+          const change: ChangeContext = {
+            ref: { provider: "github", id: "github:5", number: 5 }, url: "https://example.test/pull/5", state: world.changeState,
+            draft: false, headSha: world.changeSha, baseBranch: "main", mergeable: "yes", mergeCommitSha: null,
+            criteria: [], projectedCriterionIds: [], projectionError: null, findings: [],
+          };
+          return pass(change);
+        },
       }),
       d({
         name: "test.reviewPassed", kind: "check", reads: ["change"], checkpoint: { name: "reviewPassed", scope: "gate" },
@@ -142,6 +154,10 @@ function buildRegistry(world: World): TaskRegistry {
       }),
     ]),
   );
+  reg.register({
+    ...changeGroup,
+    definitions: changeGroup.definitions.filter((definition) => definition.name === "change.merged"),
+  });
   return reg;
 }
 
@@ -179,7 +195,7 @@ async function harness(options: { maxReturns?: number; fallbackMs?: (kind: WaitK
   const clock = () => new Date(now);
   const journal = new ExecutionStore(store.sqlite(), { now: clock });
   const world: World = {
-    remote: [], calls: [], resumedFlags: [], loads: { item: 0, ci: 0 }, ciSha: "sha-1", changeSha: "def456",
+    remote: [], calls: [], resumedFlags: [], loads: { item: 0, ci: 0, change: 0 }, ciSha: "sha-1", changeSha: "def456", changeState: "open",
     actResult: () => pass({ agentId: "a", status: "done", summary: "s", reason: null, sessionId: null, runId: "r" }),
     checkResult: {}, seenFeedback: [],
   };
@@ -811,6 +827,55 @@ describe("pending exit gate", () => {
     h.advance(60_000);
     await h.run(plan, "implementation");
     expect(h.journal.subscriptions("issue-1")).toEqual([]);
+  });
+
+  test("an unlimited change.merged gate remains pending after more polls than its retry budget", async () => {
+    const h = await harness();
+    h.activate();
+    const plan = simple(h, [ct(h.registry, "merged", "change.merged", { wait: { timeoutMs: null, pollMs: 1_000 } })], { retries: 2 });
+
+    for (let evaluation = 0; evaluation < 3; evaluation++) {
+      expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", reason: "pending" });
+      if (evaluation < 2) h.advance(1_000);
+    }
+
+    expect(h.world.loads.change).toBe(3);
+    expect(h.journal.getCursor("issue-1")).toMatchObject({
+      list: "exit-gate", taskInstanceId: "merged", state: "pending", deadlineAt: null,
+    });
+  });
+
+  test("a merged change delivery wakes an open change.merged gate before its poll", async () => {
+    const h = await harness({ fallbackMs: (kind) => kind === "change" ? 10 * 60_000 : null });
+    h.activate();
+    const plan = simple(h, [ct(h.registry, "merged", "change.merged", { wait: { timeoutMs: null, pollMs: 10 * 60_000 } })]);
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "parked", reason: "pending" });
+    const scheduledWakeAt = h.journal.getCursor("issue-1")?.wakeAt;
+    expect(scheduledWakeAt).toBe(new Date(h.now().getTime() + 10 * 60_000).toISOString());
+    expect(h.journal.subscriptions("issue-1")).toEqual([{
+      topic: "change:owner/sample:5", executionId: expect.any(String), stageEpoch: 1, kind: "change",
+    }]);
+
+    const woken: string[] = [];
+    const dispatcher = new WaitDispatcher({
+      journal: h.journal,
+      addressOf: () => "owner/sample",
+      numberOf: () => 1,
+      wake: (issueId) => { if (h.journal.wakeNow(issueId)) woken.push(issueId); },
+    });
+    const delivery: StoredEvent = {
+      seq: 1, type: "github.changeUpdated", occurredAt: h.now().toISOString(), repositoryId: "repo-1", issueId: null,
+      actor: { kind: "webhook", id: "delivery-1" }, correlationId: null,
+      payload: { repository: "owner/sample", number: 5, action: "closed", headSha: "def456", merged: true },
+    };
+    dispatcher.handle(delivery);
+    dispatcher.flush();
+
+    expect(woken).toEqual(["issue-1"]);
+    expect(h.journal.getCursor("issue-1")?.wakeAt).toBe(h.now().toISOString());
+    expect(Date.parse(h.journal.getCursor("issue-1")?.wakeAt ?? "")).toBeLessThan(Date.parse(scheduledWakeAt ?? ""));
+    h.world.changeState = "merged";
+    expect(await h.run(plan, "implementation")).toMatchObject({ kind: "advance", stageId: "implementation" });
   });
 
   describe("wake-up time", () => {
