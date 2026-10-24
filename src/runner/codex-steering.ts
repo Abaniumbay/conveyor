@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareCodexEnvironment } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
-import { confinedCommand } from "../isolation/sandbox";
 import { codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import { CodexRunnerError, cleanupCodexRun, type CodexMcpConfiguration, withCleanupError } from "./codex";
 import { EMPTY_USAGE } from "./result";
@@ -169,19 +168,21 @@ export async function runCodexSteering(
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
+      filesystem: {
+        command: input.command,
+        env: resolvedEnvironment,
+        workspace: agentWorkspace,
+        artifacts: artifactsDirectory,
+        home: resolvedEnvironment.HOME!,
+        scratch: scratch.path,
+        writableGit: runInput.sandbox === "workspace-write",
+        writable: runInput.sandbox === "workspace-write" ? [agentWorkspace, ...runInput.writableRoots] : [],
+        runtime: input.mcp ? [input.mcp.command] : [],
+      },
       buildArguments: (extra) => argumentsFor({ ...run, workspace: agentWorkspace }, extra),
     });
     network = launch.network;
-    const confinedLaunch = confined
-      ? confinedCommand({
-          argv: launch.argv,
-          env: launch.env,
-          scratch: scratch.path,
-          readablePaths: input.mcp ? input.mcp.args.filter((value) => value.startsWith("/")) : [],
-          runtimePaths: input.mcp ? [input.mcp.command] : [],
-        })
-      : launch;
-    child = Bun.spawn(confinedLaunch.argv, { cwd: agentWorkspace, env: confinedLaunch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn(launch.argv, { cwd: agentWorkspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     void child.exited.finally(() => network?.close());
   } catch (error) {
     const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });

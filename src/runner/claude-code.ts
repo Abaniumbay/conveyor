@@ -1,13 +1,10 @@
 // Claude Code as an agent runner: `claude -p --output-format stream-json` with the scoped Conveyor
 // MCP server, structured output validated against the producer result schema, and session resume.
 //
-// The process runs inside bubblewrap with the whole filesystem mounted read-only, a private /tmp,
-// writable binds for just its own config directory and the run's sanitized home, empty mounts over
-// the service's secrets, and /dev/null over the Docker and session-bus sockets. A workspace-write
-// agent also gets writable binds for its worktree, the worktree's git metadata and its configured
-// roots (package caches). Claude's own permission layer is a second lock: a read-only agent gets
-// read tools, Bash and its MCP tools; a workspace-write agent also gets Edit and Write in
-// acceptEdits mode, which accepts edits inside the worktree and refuses the rest.
+// The process runs inside the shared empty-root filesystem mount plan. A workspace-write agent
+// gets writable mounts for its worktree, Git metadata and configured roots; Claude's permission
+// layer is a second lock: a read-only agent gets read tools, Bash and its MCP tools, while a
+// workspace-write agent also gets Edit and Write in acceptEdits mode.
 
 import { existsSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
@@ -15,6 +12,7 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
+import { agentFilesystemPlan } from "../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
@@ -75,11 +73,6 @@ const READ_ONLY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 /** File tools for a workspace-write agent. Never pre-allowed: acceptEdits scopes them to the worktree. */
 const EDIT_TOOLS = ["Edit", "Write"];
 const WEB_TOOLS = ["WebFetch", "WebSearch"];
-/** Sockets that would hand a command more than the sandbox grants (Docker is root-equivalent). */
-const HIDDEN_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock", "/run/containerd/containerd.sock", "/run/dbus/system_bus_socket"];
-/** Paths a run must never see, hidden behind empty mounts (relative to the service user's home). */
-const HIDDEN = [".config/conveyor-v2", ".config/gh", ".ssh", ".codex", ".gnupg", ".aws"];
-
 async function consumeJsonLines(stream: ReadableStream<Uint8Array>, onEvent: (event: ClaudeEvent) => void) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -144,45 +137,6 @@ export function claudeArguments(input: ClaudeCodeRunInput, schema: string): stri
   // Claude Code has no "ultra"; the strongest it offers is "max".
   if (input.effort) args.push("--effort", input.effort === "ultra" ? "max" : input.effort);
   if (input.resumeSessionId) args.push("--resume", input.resumeSessionId);
-  return args;
-}
-
-/** bubblewrap: everything read-only, private /tmp, writable config dir and home, secrets hidden. */
-export function sandboxArguments(options: {
-  workspace: string; configDir: string; home: string; serviceHome: string | undefined;
-  /** Extra writable directories (a workspace-write agent's worktree, git metadata and roots). */
-  writable?: readonly string[];
-  /** The session bus of the service user, hidden too; resolved from the uid when absent. */
-  sessionBus?: string;
-}): string[] {
-  const workspace = resolveFilesystemPath(options.workspace);
-  const configDir = resolveFilesystemPath(options.configDir);
-  const home = resolveFilesystemPath(options.home);
-  const serviceHome = options.serviceHome ? resolveFilesystemPath(options.serviceHome) : undefined;
-  const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", resolveFilesystemPath("/tmp")];
-  if (serviceHome) {
-    for (const relative of HIDDEN) {
-      const hidden = path.join(serviceHome, relative);
-      if (existsSync(hidden)) args.push("--tmpfs", resolveFilesystemPath(hidden));
-    }
-  }
-  const bus = options.sessionBus ?? (typeof process.getuid === "function" ? `/run/user/${process.getuid()}/bus` : null);
-  // Resolved first: /var/run is a symlink to /run, and bwrap binds a real path once.
-  const sockets = new Set([...HIDDEN_SOCKETS, ...(bus ? [bus] : [])].filter((socket) => existsSync(socket)).map(resolveFilesystemPath));
-  for (const socket of sockets) args.push("--ro-bind", "/dev/null", socket);
-  for (const directory of options.writable ?? []) {
-    if (existsSync(directory)) {
-      const resolved = resolveFilesystemPath(directory);
-      args.push("--bind", resolved, resolved);
-    }
-  }
-  args.push("--bind", configDir, configDir);
-  const legacyConfig = `${configDir}.json`;
-  if (existsSync(legacyConfig)) {
-    const resolved = resolveFilesystemPath(legacyConfig);
-    args.push("--bind", resolved, resolved);
-  }
-  args.push("--bind", home, home, "--chdir", workspace, "--die-with-parent", "--");
   return args;
 }
 
@@ -280,15 +234,22 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
+    const filesystem = agentFilesystemPlan({
+      command: input.command,
+      env: resolvedEnvironment,
+      workspace,
+      artifacts: artifactsDirectory,
+      home: resolvedEnvironment.HOME!,
+      scratch: scratch.path,
+      writableGit: input.sandbox === "workspace-write",
+      writable: [
+        resolvedEnvironment.CLAUDE_CONFIG_DIR!,
+        ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
+      ],
+      runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+    });
     const argv = [
-      "bwrap", ...sandboxArguments({
-        workspace, configDir: resolvedEnvironment.CLAUDE_CONFIG_DIR!, home: resolvedEnvironment.HOME!, serviceHome,
-        // Claude itself needs private temporary storage even when its workspace is read-only.
-        writable: [
-          ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
-          scratch.path,
-        ],
-      }),
+      "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
       input.command, ...claudeArguments(input, schema),
     ];
     const child = Bun.spawn(argv, { cwd: workspace, env: resolvedEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
