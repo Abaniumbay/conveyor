@@ -1,0 +1,3 @@
+[test]
+# Raises Bun's 5-second per-test default to a hang guard (see the preload).
+preload = ["./tests/support/test-timeout.ts"]
