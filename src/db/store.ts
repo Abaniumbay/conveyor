@@ -2161,24 +2161,32 @@ export class ConveyorStore {
         this.#events.append("run.finished", { runId: run.id, status: "interrupted" }, { issueId: run.issue_id });
       }
 
-      const interruptedStages = this.#database
-        .query("SELECT issue_id, stage_id, feedback_cycle FROM stage_states WHERE status IN ('running', 'error', 'interrupted')")
-        .all() as Array<{ issue_id: string; stage_id: string; feedback_cycle: number }>;
+      const interruptedStages = (this.#database
+        .query(
+          `SELECT s.issue_id, s.stage_id, s.feedback_cycle, i.projected_stage
+           FROM stage_states s LEFT JOIN issues i ON i.id = s.issue_id
+           WHERE s.status IN ('running', 'error', 'interrupted')`,
+        )
+        .all() as Array<{ issue_id: string; stage_id: string; feedback_cycle: number; projected_stage: string | null }>)
+        // An executor aborted by a move to another stage may have recorded its old stage after
+        // the move. The item's projected stage is where it resumes, as in releaseFencedStageExecution.
+        .map((stage) => ({ ...stage, resume_stage: stage.projected_stage ?? stage.stage_id }));
       // 'error' stages were waiting on an in-memory retry timer and 'interrupted' stages were
       // deliberately stopped during shutdown; neither has a live process after restart.
-      this.#database
-        .query(
-          `UPDATE stage_states SET status = 'ready', config_hash = ?, updated_at = ?
-           WHERE status IN ('running', 'error', 'interrupted')`,
-        )
-        .run(configHash, timestamp);
       for (const stage of interruptedStages) {
-        this.#events.append("stage.stateChanged", { stageId: stage.stage_id, status: "ready", feedbackCycle: stage.feedback_cycle }, { issueId: stage.issue_id });
+        this.#database
+          .query(
+            `UPDATE stage_states SET stage_id = ?, status = 'ready', config_hash = ?, updated_at = ?
+             WHERE issue_id = ?`,
+          )
+          .run(stage.resume_stage, configHash, timestamp, stage.issue_id);
+        if (stage.resume_stage !== stage.stage_id) this.#executions.onStageChange(stage.issue_id);
+        this.#events.append("stage.stateChanged", { stageId: stage.resume_stage, status: "ready", feedbackCycle: stage.feedback_cycle }, { issueId: stage.issue_id });
       }
       return {
         runs: interruptedRuns.length,
         stages: interruptedStages.length,
-        recoveredStages: interruptedStages.map((stage) => ({ issueId: stage.issue_id, stageId: stage.stage_id })),
+        recoveredStages: interruptedStages.map((stage) => ({ issueId: stage.issue_id, stageId: stage.resume_stage })),
       };
     })();
   }
