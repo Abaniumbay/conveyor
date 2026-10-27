@@ -285,6 +285,76 @@ repositories:
     await expect(interrupted.execute(store.getIssue("issue-abort")!)).rejects.toMatchObject({ name: "AbortError" });
     expect(store.getStageState("issue-abort")?.status).toBe("interrupted");
 
+    // A merge webhook can advance the item while its own stage still runs; the run is then
+    // aborted and must leave the next stage ready instead of recording itself as interrupted.
+    store.upsertIssue({
+      id: "issue-moved",
+      repositoryId: "repo",
+      sourceNumber: 10,
+      sourceUrl: "https://example.test/10",
+      title: "Moved feature",
+      body: "Requirements",
+      sourceState: "open",
+      labels: ["conveyor", "conveyor:refinement"],
+      sourceUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    store.setIssueProjection("issue-moved", { stage: "refinement", state: "active", warning: null });
+    store.setStageState({
+      issueId: "issue-moved",
+      stageId: "refinement",
+      status: "ready",
+      feedbackCycle: 0,
+      configHash: config.hash,
+    });
+    const movedController = new AbortController();
+    const moved = new IssueExecutor({
+      config,
+      store,
+      sourceName: "github",
+      source: {
+        async replaceConveyorLabels() { throw new Error("must not transition after abort"); },
+      },
+      workspaceManager: {
+        async create() {
+          return { path: path.join(root, "worktree-moved"), branch: "conveyor/10-r1-moved-feature", baseRevision: "abc" };
+        },
+      },
+      runtime() {
+        return {
+          async runCheck() {
+            return { decision: "pass", status: "done", reason: null, evidence: [], requiredFixes: [], criteria: [] };
+          },
+          async runProducer() {
+            store.setIssueProjection("issue-moved", { stage: "implementation", state: "active", warning: null });
+            store.setStageState({
+              issueId: "issue-moved",
+              stageId: "implementation",
+              status: "ready",
+              feedbackCycle: 0,
+              configHash: config.hash,
+            });
+            movedController.abort();
+            return {
+              stageResult: { outcome: "success", status: "done", summary: "late", reason: null, metrics: {} },
+              sessionId: null,
+              usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
+              cost: { amount: 0, currency: "USD", source: "unavailable" },
+              durationMs: 1,
+              exitCode: 0,
+              artifacts: [],
+              stderr: "",
+            };
+          },
+          async runAction() {},
+        };
+      },
+      sourceGuidance: "Never close issues.",
+      signal: movedController.signal,
+    });
+
+    await expect(moved.execute(store.getIssue("issue-moved")!)).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.getStageState("issue-moved")).toMatchObject({ stageId: "implementation", status: "ready" });
+
     store.upsertIssue({
       id: "issue-paused-transition",
       repositoryId: "repo",
