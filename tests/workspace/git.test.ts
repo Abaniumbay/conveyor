@@ -100,6 +100,42 @@ test("cliGit identifies an observed remote head that has not been fetched as una
   expect(await cliGit.missingPatchCommits(work, observedHead, "HEAD")).toBeNull();
 });
 
+test("cliGit counts a published commit rewritten by a conflict-resolving rebase as retained, and still reports a dropped one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  const work = path.join(root, "work");
+  await sh(root, "init", "-b", "main", work);
+  const lines = Array.from({ length: 20 }, (_, index) => String(index + 1));
+  await writeFile(path.join(work, "f"), `${lines.join("\n")}\n`);
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "base");
+  await sh(work, "checkout", "-b", "feat");
+  await writeFile(path.join(work, "f"), `${lines.map((line) => line === "10" ? "ten" : line).join("\n")}\n`);
+  await sh(work, "commit", "-am", "feature change");
+  await writeFile(path.join(work, "g"), "extra\n");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "second");
+  const published = await sh(work, "rev-parse", "HEAD");
+  const featureChange = await sh(work, "rev-parse", "HEAD~1");
+  await sh(work, "checkout", "main");
+  await writeFile(path.join(work, "f"), `${lines.map((line) => line === "10" ? "TEN-main" : line).join("\n")}\n`);
+  await sh(work, "commit", "-am", "main change on the same line");
+
+  // Replay the branch on main, resolving the conflict by keeping the feature's line.
+  await sh(work, "checkout", "-b", "rebased", "main");
+  await writeFile(path.join(work, "f"), `${lines.map((line) => line === "10" ? "ten (on main)" : line).join("\n")}\n`);
+  await sh(work, "commit", "-am", "feature change");
+  await writeFile(path.join(work, "g"), "extra\n");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "second");
+
+  expect(await cliGit.missingPatchCommits(work, published, "rebased")).toEqual([featureChange]);
+  expect(await cliGit.missingPatchCommits(work, published, "rebased", "main")).toEqual([]);
+
+  // The same rebase without the feature change drops it, even though main touched the same line.
+  await sh(work, "checkout", "-b", "dropped", "main");
+  await writeFile(path.join(work, "g"), "extra\n");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "second");
+  expect(await cliGit.missingPatchCommits(work, published, "dropped", "main")).toEqual([featureChange]);
+});
+
 test("cliGit lease push rejects an unseen remote head without overwriting it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
   directories.push(root);
