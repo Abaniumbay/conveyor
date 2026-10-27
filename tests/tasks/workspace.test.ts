@@ -41,8 +41,8 @@ function gitFake(state: {
       return !(state.missingOnRemote ?? []).includes(branch);
     },
     remoteBranchHead: async (p, branch) => { calls.push(["remoteBranchHead", p, branch]); return state.remoteBranchHead === undefined ? "a".repeat(40) : state.remoteBranchHead; },
-    missingPatchCommits: async (p, source, candidate) => {
-      calls.push(["missingPatchCommits", p, source, candidate]);
+    missingPatchCommits: async (p, source, candidate, base) => {
+      calls.push(["missingPatchCommits", p, source, candidate, base]);
       return state.missingPatches === undefined ? [] : state.missingPatches;
     },
     push: async (p, branch, options) => {
@@ -309,7 +309,7 @@ describe("workspace tools", () => {
     expect(w.git.calls).toEqual([
       ["push", p, "conveyor/7-r1-x", { forceWithLease: false }],
       ["remoteBranchHead", p, "conveyor/7-r1-x"],
-      ["missingPatchCommits", p, headSha, "HEAD"],
+      ["missingPatchCommits", p, headSha, "HEAD", "refs/remotes/origin/main"],
       ["push", p, "conveyor/7-r1-x", { forceWithLease: true, expectedRemoteHead: headSha }],
     ]);
   });
@@ -332,7 +332,7 @@ describe("workspace tools", () => {
     const unavailablePath = await unavailable.record();
     await expect(tool("workspace.push", unavailable, { forceWithLease: true, headSha }))
       .rejects.toThrow(`The observed remote head ${headSha} is unavailable locally; use workspace.fetch, rebase onto origin/main, and retry.`);
-    expect(unavailable.git.calls).toEqual([["remoteBranchHead", unavailablePath, "conveyor/7-r1-x"], ["missingPatchCommits", unavailablePath, headSha, "HEAD"]]);
+    expect(unavailable.git.calls).toEqual([["remoteBranchHead", unavailablePath, "conveyor/7-r1-x"], ["missingPatchCommits", unavailablePath, headSha, "HEAD", "refs/remotes/origin/main"]]);
 
     const omitted = await world({ missingPatches: ["c".repeat(40)] });
     await omitted.record();

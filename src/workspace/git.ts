@@ -15,8 +15,12 @@ export interface GitOps {
   fetch(path: string, remote: string, branch: string): Promise<boolean>;
   /** The current head of the branch on origin, or null when origin does not have it. */
   remoteBranchHead(path: string, branch: string): Promise<string | null>;
-  /** Commits in source whose patches are absent from candidate's history, or null when source is unavailable locally. */
-  missingPatchCommits(path: string, source: string, candidate: string): Promise<string[] | null>;
+  /**
+   * Commits in source whose changes are absent from candidate's history, or null when source is
+   * unavailable locally. With a base ref, a source commit that a commit of `base..candidate`
+   * rewrites (a rebase that resolved a conflict) counts as present.
+   */
+  missingPatchCommits(path: string, source: string, candidate: string, base?: string): Promise<string[] | null>;
   push(path: string, branch: string, options: PushOptions): Promise<void>;
 }
 
@@ -119,7 +123,7 @@ export const cliGit: GitOps = {
     throw new Error(`git fetch failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
   },
   remoteBranchHead,
-  async missingPatchCommits(path, source, candidate) {
+  async missingPatchCommits(path, source, candidate, base) {
     const object = await run(path, ["rev-parse", "--verify", "--quiet", `${source}^{commit}`]);
     if (object.exitCode === 1) return null;
     if (object.exitCode !== 0) {
@@ -129,11 +133,14 @@ export const cliGit: GitOps = {
     if (result.exitCode !== 0) {
       throw new Error(`git cherry failed: ${result.stderr || `exit ${result.exitCode}`}`);
     }
-    return result.stdout.split("\n")
+    const missing = result.stdout.split("\n")
       .flatMap((line) => {
         const match = line.match(/^\+\s+([0-9a-f]{40})\b/i);
         return match ? [match[1]!] : [];
       });
+    if (missing.length === 0 || base === undefined) return missing;
+    const rewritten = await rewrittenCommits(path, source, candidate, base);
+    return missing.filter((sha) => !rewritten.some((abbreviated) => sha.startsWith(abbreviated)));
   },
   async push(path, branch, options) {
     const args = ["push", "--set-upstream"];
@@ -149,6 +156,24 @@ export const cliGit: GitOps = {
     throw new Error(`git push failed: ${result.stderr || `exit ${result.exitCode}`}`);
   },
 };
+
+/**
+ * Abbreviated source commits that `git range-diff` pairs with a commit of `base..candidate`.
+ * Patch IDs miss a commit a rebase rewrote to resolve a conflict; range-diff pairs it. Comparing
+ * only the commits on top of base keeps a base commit from standing in for a dropped change.
+ * Anything git cannot answer pairs nothing, so the caller keeps its strict result.
+ */
+async function rewrittenCommits(path: string, source: string, candidate: string, base: string): Promise<string[]> {
+  const mergeBase = await run(path, ["merge-base", source, base]);
+  if (mergeBase.exitCode !== 0) return [];
+  const oldBase = mergeBase.stdout.trim();
+  const result = await run(path, ["range-diff", "--no-color", `${oldBase}..${source}`, `${base}..${candidate}`]);
+  if (result.exitCode !== 0) return [];
+  return result.stdout.split("\n").flatMap((line) => {
+    const match = line.match(/^\s*\d+:\s+([0-9a-f]{4,40}) [=!] +\d+:/i);
+    return match ? [match[1]!] : [];
+  });
+}
 
 export interface WorktreeInspection {
   /** Null when HEAD is detached or git could not tell. */
