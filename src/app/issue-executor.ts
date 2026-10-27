@@ -296,13 +296,18 @@ export class IssueExecutor {
         });
         return { kind: "parked", stageId, reason: "pending", wakeAt: null };
       }
-      store.setStageState({
-        issueId: issue.id,
-        stageId,
-        status: signal?.aborted ? "interrupted" : "error",
-        feedbackCycle: state.feedbackCycle,
-        configHash: config.hash,
-      });
+      // A move to another stage (for example a merge webhook advancing the item) aborts this run.
+      // The new stage owns the state then: overwriting it with this stage's failure would leave
+      // the new stage waiting forever, because nothing schedules a stage the item is no longer in.
+      if (store.getStageState(issue.id)?.stageId === stageId) {
+        store.setStageState({
+          issueId: issue.id,
+          stageId,
+          status: signal?.aborted ? "interrupted" : "error",
+          feedbackCycle: state.feedbackCycle,
+          configHash: config.hash,
+        });
+      }
       throw error;
     }
   }

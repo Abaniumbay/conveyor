@@ -1330,6 +1330,13 @@ describe("ConveyorStore", () => {
     store.setStageState({ issueId: "issue-1", stageId: "implementation", status: "interrupted", feedbackCycle: 1, configHash: "config-hash" });
     expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1, recoveredStages: [{ issueId: "issue-1", stageId: "implementation" }] });
     expect(store.getStageState("issue-1")).toMatchObject({ stageId: "implementation", status: "ready" });
+    // A stage interrupted after the item moved on resumes at the item's current stage.
+    store.setIssueProjection("issue-1", { stage: "verify", state: "active", warning: null });
+    store.setStageState({ issueId: "issue-1", stageId: "merge", status: "interrupted", feedbackCycle: 0, configHash: "config-hash" });
+    const epoch = store.executions().stageEpoch("issue-1");
+    expect(store.recoverInterruptedExecutions("config-hash")).toEqual({ runs: 0, stages: 1, recoveredStages: [{ issueId: "issue-1", stageId: "verify" }] });
+    expect(store.getStageState("issue-1")).toMatchObject({ stageId: "verify", status: "ready" });
+    expect(store.executions().stageEpoch("issue-1")).toBeGreaterThan(epoch);
     store.close();
   });
 
