@@ -25,6 +25,60 @@ afterEach(async () => {
   ));
 });
 
+function dashboardResumeConfig(root: string): ConveyorConfig {
+  return {
+    ...configSchema.parse({
+      settings: {
+        database: path.join(root, "conveyor.sqlite"),
+        logs: path.join(root, "logs"),
+        workspaces: path.join(root, "workspaces"),
+        artifacts: path.join(root, "artifacts"),
+      },
+      web: {},
+      sources: {
+        github: { type: "github" },
+      },
+      labels: {
+        enrollment: "conveyor",
+        stageTemplate: "conveyor:{stage}",
+        states: {
+          blocked: "conveyor:blocked",
+        },
+        metadata: {
+          closable: "conveyor:closable",
+          orderTemplate: "conveyor:order:{number}",
+        },
+      },
+      pipelines: {
+        default: {
+          successStatuses: ["done"],
+          failureStatuses: ["blocked"],
+          stages: [
+            {
+              id: "refinement",
+              name: "Refinement",
+              run: { agent: "implementer" },
+              concurrency: 1,
+            },
+          ],
+        },
+      },
+      repositories: {
+        repo: {
+          source: "github",
+          address: "owner/my-app",
+          folder: root,
+          pipeline: "default",
+        },
+      },
+      agents: {},
+    }),
+    hash: "config-hash",
+    root,
+    plans: [],
+  } satisfies ConveyorConfig;
+}
+
 describe("ConveyorService dashboard", () => {
   test("exposes an ordinary drain and a typed upgrade target, then clears them when admission resumes", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-drain-"));
@@ -685,6 +739,143 @@ describe("ConveyorService dashboard", () => {
     expect(service.issueDetails("csrf", "done")).toMatchObject({ stageBadge: { name: "Done", icon: null, offboarded: false } });
     expect(service.issueDetails("csrf", "offboarded")).toMatchObject({ historyOnly: true, stageBadge: { name: "Review", icon: null, offboarded: true } });
     store.close();
+  });
+
+  test("marks Conveyor-paused refinement items without a stage label as resumable", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-resume-paused-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = dashboardResumeConfig(root);
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    store.upsertIssue({
+      id: "paused-refinement", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.com/issues/1",
+      title: "Paused refinement", body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-21T00:00:00Z",
+    });
+    store.setPausedByConveyor("paused-refinement", true);
+    store.setIssueProjection("paused-refinement", { stage: null, state: "paused", warning: null });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const detail = service.issueDetails("csrf", "paused-refinement");
+    const dashboard = service.dashboard("csrf");
+    const card = [...dashboard.backlog, ...dashboard.attention.issues].find((issue) => issue.id === "paused-refinement");
+    expect(detail).toMatchObject({ stage: null, state: "paused", resumable: true });
+    expect(card).toMatchObject({ stage: null, state: "paused", resumable: true });
+    store.upsertIssue({
+      id: "enrolled-paused", repositoryId: "repo", sourceNumber: 2, sourceUrl: "https://example.com/issues/2",
+      title: "Enrolled paused", body: "", sourceState: "open", labels: ["conveyor"], sourceUpdatedAt: "2026-10-21T00:00:00Z",
+    });
+    store.setPausedByConveyor("enrolled-paused", true);
+    store.setIssueProjection("enrolled-paused", { stage: null, state: "paused", warning: null });
+    expect(service.issueDetails("csrf", "enrolled-paused")).toMatchObject({ resumable: false });
+    store.close();
+  });
+
+  test("marks paused refinement items with retained stage labels as resumable", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-resume-staged-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = dashboardResumeConfig(root);
+    const sourceIssue = {
+      id: "github:owner/my-app#1",
+      number: 1,
+      url: "https://example.com/issues/1",
+      title: "Paused refinement",
+      body: "",
+      state: "open" as const,
+      stateReason: null,
+      labels: ["conveyor", "conveyor:refinement", "conveyor:blocked"],
+      updatedAt: "2026-10-21T00:00:00Z",
+    };
+    const source = {
+      async getIssue() { return sourceIssue; },
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { sourceIssue.labels = [...labels]; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+    };
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    store.upsertIssue({
+      id: "paused-refinement",
+      repositoryId: "repo",
+      sourceNumber: 1,
+      sourceUrl: sourceIssue.url,
+      title: sourceIssue.title,
+      body: sourceIssue.body,
+      sourceState: "open",
+      labels: sourceIssue.labels,
+      sourceUpdatedAt: sourceIssue.updatedAt,
+    });
+    store.setIssueProjection("paused-refinement", { stage: "refinement", state: "blocked", warning: null });
+
+    const service = new ConveyorService(config, store, source as never);
+    service.drain("tests");
+    await service.pauseIssue("paused-refinement", "operator");
+
+    expect(sourceIssue.labels).toEqual(["conveyor:refinement", "conveyor:blocked"]);
+    expect(store.getIssue("paused-refinement")).toMatchObject({
+      pausedByConveyor: false,
+      projectedStage: "refinement",
+      projectedState: "paused",
+    });
+    expect(service.issueDetails("csrf", "paused-refinement")).toMatchObject({
+      stage: "refinement",
+      state: "paused",
+      resumable: true,
+    });
+    await service.close();
+  });
+
+  test("resumes a paused refinement item through the dashboard endpoint", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-resume-endpoint-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = dashboardResumeConfig(root);
+    const sourceIssue = {
+      id: "github:owner/my-app#1", number: 1, url: "https://example.com/issues/1", title: "Paused refinement", body: "",
+      state: "open" as const, stateReason: null, labels: [] as string[], updatedAt: "2026-10-21T00:00:00Z",
+    };
+    const source = {
+      async getIssue() { return sourceIssue; },
+      async replaceConveyorLabels(_address: string, _number: number, labels: readonly string[]) { sourceIssue.labels = [...labels]; },
+      async listSubIssues() { return []; },
+      async listDependencies() { return []; },
+      async getIssueProvenance() {
+        return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
+      },
+      async collaboratorPermission() { return "write" as const; },
+    };
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    store.upsertIssue({
+      id: "paused-refinement", repositoryId: "repo", sourceNumber: 1, sourceUrl: sourceIssue.url,
+      title: sourceIssue.title, body: "", sourceState: "open", labels: [], sourceUpdatedAt: sourceIssue.updatedAt,
+    });
+    store.setPausedByConveyor("paused-refinement", true);
+    store.setIssueProjection("paused-refinement", { stage: null, state: "paused", warning: null });
+
+    const service = new ConveyorService(config, store, source as never);
+    service.drain("tests");
+    const auth = createWebAuth({
+      username: "operator",
+      passwordHash: hashPassword("correct horse", { salt: "0123456789abcdef" }),
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      secureCookies: false,
+    });
+    const session = auth.createSession();
+    if (!session) throw new Error("expected configured web authentication");
+    const handler = createWebHandler(service.webDependencies(auth, "operator"));
+
+    const response = await handler(new Request("https://example.com/api/issues/paused-refinement/resume", {
+      method: "POST",
+      headers: { cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: session.csrfToken }),
+    }));
+
+    expect(response.status).toBe(202);
+    expect(sourceIssue.labels).toContain("conveyor");
+    expect(store.getIssue("paused-refinement")).toMatchObject({ pausedByConveyor: false });
+    await service.close();
   });
 
   test("a parent's children carry their station and signal, and each child its parent's progress", async () => {

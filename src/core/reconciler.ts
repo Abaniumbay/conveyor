@@ -270,7 +270,9 @@ export async function reconcileRepository(
     const projectedState = !visible
       ? "offboarded"
       : !snapshot.enrollmentTrusted ? "waiting"
-      : projected.mode === "paused" && prior?.pausedByConveyor ? "paused"
+      // A parked question survives a plain external removal of enrollment, but Conveyor's
+      // own pause leaves either its empty-label marker or the item's stage-state label behind.
+      : projected.mode === "paused" && (prior?.pausedByConveyor || projected.state !== null) ? "paused"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage

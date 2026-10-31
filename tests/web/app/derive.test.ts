@@ -9,7 +9,7 @@ function item(number: number, overrides: Partial<DashboardItem> = {}): Dashboard
     url: null, state: "active", labels: [], issueType: null, issueFields: [], acceptanceCriteria: [], todos: null, indicators: [],
     activity: null, reason: null, cost: null, duration: null, stateChangedAt: null, waiting: null, blocked: false, inconsistent: false,
     closable: false, noSplit: false, tone: "active", parent: null, children: [], dependencies: [], working: false,
-    needsAttention: false, retryable: false, resumableRollup: false, stoppedRollup: false,
+    needsAttention: false, retryable: false, resumable: false, resumableRollup: false, stoppedRollup: false,
     placement: "backlog", column: null, order: 0, needsYou: false, conversation: null,
     ...overrides,
   };
