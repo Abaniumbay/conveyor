@@ -679,6 +679,17 @@ An agent run does not see the service account's home: `HOME` is a directory of i
 
 A Codex or Claude Code run sees only its worktree, the narrow linked-Git metadata and shared-object paths that worktree needs, its private `HOME` and scratch directory, artifacts, configured writable roots, resolved runtime files, and resolver/CA files. It cannot read the configured Conveyor home, configuration, database, other repositories, sibling worktrees, other runs' artifacts, or the service account's credential roots. The same filesystem view applies with and without `agentEgress`; egress changes network access only. Bubblewrap must establish every mount before an agent command starts, otherwise the run fails closed.
 
+A repository can make extra SDK and toolchain directories readable with `agentToolchainPaths`:
+
+```yaml
+repositories:
+  my-app:
+    agentToolchainPaths:
+      paths: [/opt/flutter, /opt/android-sdk]
+```
+
+Each entry must be an absolute path (no other keys are accepted). Conveyor resolves symbolic links first, and mounts the real directory **read-only** in both Codex and Claude Code runs; the agent can read it but never write it, even when it runs `workspace-write`. `writableRoots` keeps its separate meaning as write-cache directories, and a path listed in both is refused. A path that equals, lies inside, or is an ancestor of the Conveyor home, configuration location, database, logs, worktrees, artifacts, any repository checkout, the runner config directories or the service account's credential roots is rejected when the configuration loads and again before each run, because mounting it would expose them. A directory that is missing or cannot be mounted fails the run before any agent command starts. The setting works with and without `agentEgress`.
+
 A `workspace-write` Codex run can write its own `HOME`, and gets a temporary directory of its own as `TMPDIR`, which Conveyor deletes when the run ends. It is created under the service's temporary directory, so set `TMPDIR` in the service's environment to keep agent scratch on a disk of your choice; on many systems the default `/tmp` is held in memory. A Claude Code agent also receives a private scratch directory that disappears with the run.
 
 `codexConfig` passes extra Codex settings as `-c key=value`, for example `model_auto_compact_token_limit` to compact a long session's context before it grows expensive. Keys Conveyor derives from the agent's other fields (`sandbox_mode`, `sandbox_workspace_write.*`, `mcp_servers.*`, `model_reasoning_effort`, `web_search`, `approvals_reviewer`) are refused. `mcpServers` gives the agent MCP servers beside Conveyor's own, such as a code index that answers symbol and reference queries instead of whole-file reads. `{workspace}` in a server's `args` becomes the run's worktree, `~/` in `env` values is expanded, and the servers are optional: one that fails to start does not fail the run. A server runs outside the agent's sandbox, so `enabledTools` should limit it to what the agent's access allows; for a read-only agent, lookups only. `gitExclude` lists files the server writes inside the worktree; Conveyor adds them to the repository's local git exclude before the agent runs, so they are never committed and never make a deploy see uncommitted changes. `codexConfig` is Codex-only; `mcpServers` works on Codex and Claude Code (whose allowed tools become `mcp__<server>__<tool>`).

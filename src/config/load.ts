@@ -14,6 +14,7 @@ import { builtinResolver } from "./builtin";
 import { composeConfig, originOf, type ConfigOrigin } from "./compose";
 import { ConfigError, safeYamlDiagnostic } from "./errors";
 import { materialiseImport, parseImportSpec, type ImportSpec, type ResolvedImport } from "./import";
+import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { normalizeRoleDocuments } from "./roles";
 import { configSchema, isNativeStage, type ConveyorConfigData } from "./schema";
 
@@ -267,6 +268,20 @@ function formatErrors(heading: string, errors: readonly LocatedError[], locate: 
 
 function zodErrors(issues: readonly ZodIssue[]): LocatedError[] {
   return issues.map((issue) => ({ path: issue.path.map(String), message: `: ${issue.message}` }));
+}
+
+/** Refuses toolchain paths that would expose the service's own state, before any agent starts. */
+function toolchainPathErrors(config: ConveyorConfigData, root: string, home: string | undefined): LocatedError[] {
+  const protectedLocations = protectedServiceLocations({ settings: config.settings, repositories: config.repositories, runners: config.runners, root, home });
+  const errors: LocatedError[] = [];
+  for (const [id, repository] of Object.entries(config.repositories)) {
+    try {
+      resolveToolchainPaths(repository.agentToolchainPaths?.paths ?? [], protectedLocations);
+    } catch (error) {
+      errors.push({ path: ["repositories", id, "agentToolchainPaths"], message: ` ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+  return errors;
 }
 
 function crossReferenceErrors(config: ConveyorConfigData): LocatedError[] {
@@ -718,6 +733,11 @@ export async function loadConfig(
   const referenceErrors = crossReferenceErrors(data);
   if (referenceErrors.length > 0) {
     throw new ConfigError(formatErrors("configuration references are invalid:", referenceErrors, locate));
+  }
+
+  const toolchainErrors = toolchainPathErrors(data, root, options.home);
+  if (toolchainErrors.length > 0) {
+    throw new ConfigError(formatErrors("configuration references are invalid:", toolchainErrors, locate));
   }
 
   let plans: CompiledPipeline[] = [];

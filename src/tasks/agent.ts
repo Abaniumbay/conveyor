@@ -18,6 +18,7 @@ import type { StoredQuestion } from "../db/store";
 import { ReviewFindings } from "../engine/review-findings";
 import type { Harness } from "../harness/types";
 import { agentEgressFor } from "../isolation/agent-egress";
+import { protectedServiceLocations, resolveToolchainPaths } from "../isolation/toolchain-paths";
 import { assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { resolveFilesystemPath } from "../core/paths";
 import type { RunEnvelope } from "../runner/result";
@@ -235,6 +236,7 @@ async function runAgent(
               temporaryDirectory: workspaceScratchPath(workspace.path),
               ...withoutCodexConfig(await codexExtensions(agent, workspace.path)),
             }),
+        ...toolchainFor(deps),
         mcp: lease.configuration,
         interruptGraceMs: deps.config.settings.interruptGraceMs,
         ...(deps.signal ? { signal: deps.signal } : {}),
@@ -435,6 +437,16 @@ async function codexExtensions(
 function withoutCodexConfig<T extends { config?: unknown }>(extensions: T): Omit<T, "config"> {
   const { config: _config, ...rest } = extensions;
   return rest;
+}
+
+/**
+ * The repository's declared toolchain directories with symbolic links resolved, refused when one
+ * would expose the service's own state. Re-checked per run: a link can change after configuration loads.
+ */
+function toolchainFor(deps: TaskDeps): { toolchainPaths?: string[] } {
+  const declared = deps.config.repositories?.[deps.repository.id]?.agentToolchainPaths?.paths ?? [];
+  if (declared.length === 0) return {};
+  return { toolchainPaths: resolveToolchainPaths(declared, protectedServiceLocations({ ...deps.config, root: deps.config.root })) };
 }
 
 function egressFor(deps: TaskDeps, runner: { controlPlaneHosts?: string[] | undefined }) {

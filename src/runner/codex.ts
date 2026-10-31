@@ -49,6 +49,8 @@ export interface CodexRunInput {
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
   writableRoots?: string[];
+  /** Read-only SDK and toolchain directories (confined runs only). */
+  toolchainPaths?: string[];
   /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
   temporaryDirectory?: string;
   /** Extra Codex settings, each passed as `-c key=value`. */
@@ -322,6 +324,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
         writableGit: runInput.sandbox !== "read-only",
         writable: runInput.sandbox !== "read-only" ? [workspace, ...runInput.writableRoots] : [],
         runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+        ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
       },
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
