@@ -250,6 +250,22 @@ export const itemRetry: Command = {
   },
 };
 
+export const itemDismissFinding: Command = {
+  name: "item dismiss-finding",
+  usage: "<item> <finding>",
+  summary: "dismiss an open review finding with a reason",
+  options: { reason: { type: "string", value: "<text>", description: "why the finding is dismissed (required, at most 2,000 characters)" } },
+  async run(context) {
+    const reason = stringOption(context, "reason")?.trim();
+    if (!reason) throw new CliError("--reason is required", EXIT.usage);
+    if (reason.length > 2_000) throw new CliError("--reason must be at most 2,000 characters", EXIT.usage);
+    const finding = positional(context, 1, "finding");
+    const result = await control<{ item: string; finding: string; state: string }>(context, "POST", `${itemPath(context, "/findings/")}${encodeURIComponent(finding)}/dismiss`, { reason });
+    if (context.json) return printJson(context, result);
+    context.out(`${result.item}: finding ${result.finding} dismissed.`);
+  },
+};
+
 export const itemResumeWaiting: Command = {
   name: "item resume-waiting",
   usage: "<item>",

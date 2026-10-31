@@ -247,6 +247,8 @@ export interface FindingViewModel {
   location: string | null;
   url: string;
   summary: string;
+  /** Who dismissed the finding and why; absent unless it is dismissed. */
+  dismissal?: { actor: string; reason: string };
 }
 
 export interface IssueJourneyViewModel {
