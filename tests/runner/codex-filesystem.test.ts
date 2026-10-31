@@ -25,6 +25,7 @@ const command = Bun.spawnSync([process.env.SHELL, "-c", "cat " + authentication]
 result.commandAuthentication = command.exitCode === 0 || new TextDecoder().decode(command.stdout).length > 0;
 const commandEnvironment = Bun.spawnSync(["bash", "-c", "pwd"], { cwd: checks.workspace });
 result.commandWorkingDirectory = new TextDecoder().decode(commandEnvironment.stdout).trim();
+result.commandShellError = new TextDecoder().decode(commandEnvironment.stderr).trim();
 result.agentEnvironmentExcludesCodexHome = args.includes('shell_environment_policy.exclude=["CODEX_HOME"]');
 result.workspaceContents = await Bun.file(checks.workspaceMarker).text();
 try {
@@ -153,7 +154,7 @@ describeSandbox("Codex filesystem confinement", () => {
     expect(result.harnessAuthenticationContents).toBe("fixture-codex-credential");
     // Full-access Codex has no filesystem confinement to re-enter, so only confined runs mask the record.
     if (sandbox !== "danger-full-access") expect(result.commandAuthentication).toBe(false);
-    expect(result.commandWorkingDirectory).toBe(files.workspace);
+    expect({ directory: result.commandWorkingDirectory, error: result.commandShellError }).toEqual({ directory: files.workspace, error: "" });
     expect(result.agentEnvironmentExcludesCodexHome).toBe(true);
     expect(result.home).toBe(true);
     expect(result.scratch).toBe(true);
