@@ -25,6 +25,8 @@ export interface SandboxOptions {
   mcp?: { port: number; socket: string };
   /** Repository-declared services exposed only through their configured loopback ports. */
   localServices?: readonly { port: number; socket: string }[];
+  /** Narrow filesystem prepared for the agent command. */
+  filesystem?: AgentFilesystemPlan;
 }
 
 export interface SandboxedCommand {
@@ -32,6 +34,26 @@ export interface SandboxedCommand {
   env: Record<string, string>;
   /** Proxy environment for commands the wrapped process runs (data-plane proxy). */
   dataEnv: Record<string, string>;
+}
+
+/** The files an agent process may see inside its otherwise empty mount namespace. */
+export interface AgentFilesystemOptions {
+  command: string;
+  env: Record<string, string>;
+  workspace: string;
+  artifacts: string;
+  home: string;
+  scratch: string;
+  /** Whether Git's worktree metadata and shared object paths need local write access. */
+  writableGit?: boolean;
+  writable?: readonly string[];
+  readable?: readonly string[];
+  runtime?: readonly string[];
+}
+
+/** A prepared, narrow bubblewrap filesystem used by every agent harness. */
+export interface AgentFilesystemPlan {
+  mounts: string[];
 }
 
 export interface ConfinedCommandOptions {
@@ -45,6 +67,132 @@ export interface ConfinedCommandOptions {
   readablePaths?: readonly string[];
   /** Executable installation directories the command needs to invoke its scoped MCP bridge. */
   runtimePaths?: readonly string[];
+}
+
+/**
+ * Builds the empty-root filesystem shared by Codex and Claude Code.  In particular this never
+ * starts from a read-only host root: doing so makes hiding a few known secret directories a
+ * blacklist with inevitable holes.
+ */
+export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFilesystemPlan {
+  const workspace = requireDirectory(options.workspace, "workspace");
+  const artifacts = requireDirectory(options.artifacts, "artifacts directory");
+  const home = requireDirectory(options.home, "private home");
+  const scratch = requireDirectory(options.scratch, "scratch directory");
+  const executable = resolveCommand(options.command, options.env);
+  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command}`);
+
+  const mounts = [
+    "--tmpfs", "/",
+    "--dir", "/usr",
+    "--ro-bind", "/usr", "/usr",
+    "--symlink", "usr/bin", "/bin",
+    "--symlink", "usr/lib", "/lib",
+    "--symlink", "usr/lib64", "/lib64",
+    "--dev", "/dev",
+    "--proc", "/proc",
+  ];
+  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
+  const addDirectory = (directory: string) => {
+    const target = path.resolve(directory);
+    if (directories.has(target) || target.startsWith("/usr/")) return;
+    const parent = path.dirname(target);
+    if (parent !== target) addDirectory(parent);
+    mounts.push("--dir", target);
+    directories.add(target);
+  };
+  const addPath = (sourcePath: string, writable: boolean, directoryOnly = false) => {
+    const target = path.resolve(sourcePath);
+    const source = resolveFilesystemPath(sourcePath);
+    if (!existsSync(source) || target.startsWith("/usr/")) return;
+    const stat = statSync(source);
+    if (directoryOnly && !stat.isDirectory()) return;
+    addDirectory(stat.isDirectory() ? target : path.dirname(target));
+    mounts.push(writable ? "--bind" : "--ro-bind", source, target);
+  };
+  const writable = new Set((options.writable ?? []).filter(existsSync).map(resolveFilesystemPath));
+  const runtimes = new Set<string>([executable, process.execPath, ...(options.runtime ?? [])]);
+  for (const runtime of runtimes) {
+    if (!path.isAbsolute(runtime) || !existsSync(runtime)) continue;
+    const resolved = resolveFilesystemPath(runtime);
+    if (resolved === "/") throw new Error("agent filesystem confinement cannot mount the host root as runtime");
+    // An executable is a runtime file, not authority to read its installation directory.  In
+    // particular, mounting its parent could reveal a service checkout or a sibling run.
+    addPath(resolved, false);
+  }
+  const interpreter = scriptInterpreter(executable, options.env);
+  if (interpreter) addPath(interpreter, false);
+  // Mount runtimes before run material. A runtime package can be adjacent to an artifact or
+  // scratch directory in tests and installations; the run's explicit writable mounts must win.
+  // Its parent directories are otherwise only empty mount targets, so siblings stay invisible.
+  addPath(workspace, writable.has(workspace), true);
+  addPath(artifacts, true, true);
+  addPath(home, true, true);
+  addPath(scratch, true, true);
+  // A linked worktree's .git file points at private metadata and a shared object store outside
+  // the worktree. Git needs those reads even for reviewers, but nothing above those exact paths.
+  const git = linkedGitPaths(workspace);
+  for (const gitPath of git.directories) addPath(gitPath, options.writableGit || writable.has(gitPath), true);
+  // Packed refs, configuration and exclude rules resolve names like `main` and `origin/main`; they stay read-only.
+  for (const gitFile of git.files) addPath(gitFile, false);
+  for (const writablePath of writable) addPath(writablePath, true, true);
+  for (const readable of options.readable ?? []) addPath(readable, false);
+  for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) addPath(file, false);
+  if (existsSync("/etc/ssl/certs")) addPath("/etc/ssl/certs", false, true);
+  return { mounts };
+}
+
+/** Starts an agent with its constrained filesystem, failing before the agent command can run. */
+export function agentFilesystemCommand(options: AgentFilesystemOptions, argv: readonly string[]): SandboxedCommand {
+  const plan = agentFilesystemPlan(options);
+  const bubblewrap = findOnPath("bwrap", options.env.PATH);
+  if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap");
+  return { argv: [bubblewrap, "--unshare-pid", "--die-with-parent", ...plan.mounts, "--", ...argv], env: resolvePathEnvironment(options.env), dataEnv: {} };
+}
+
+function requireDirectory(value: string, description: string): string {
+  const resolved = resolveFilesystemPath(value);
+  if (!existsSync(resolved) || !statSync(resolved).isDirectory()) throw new Error(`agent filesystem confinement requires ${description}`);
+  return resolved;
+}
+
+function resolveCommand(command: string, env: Record<string, string>): string | undefined {
+  const executable = path.isAbsolute(command) ? resolveFilesystemPath(command) : findOnPath(command, env.PATH);
+  return executable && existsSync(executable) ? executable : undefined;
+}
+
+function scriptInterpreter(executable: string, env: Record<string, string>): string | undefined {
+  try {
+    const line = readFileSync(executable, "utf8").split("\n", 1)[0] ?? "";
+    const words = line.startsWith("#!") ? line.slice(2).trim().split(/\s+/) : [];
+    const command = path.basename(words[0] ?? "") === "env" ? words[1] : words[0];
+    return command ? resolveCommand(command, env) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function linkedGitPaths(workspace: string): { directories: string[]; files: string[] } {
+  const dotGit = path.join(workspace, ".git");
+  const none = { directories: [], files: [] };
+  try {
+    if (!statSync(dotGit).isFile()) return none;
+    const match = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(dotGit, "utf8"));
+    if (!match?.[1]) return none;
+    const gitDir = resolveFilesystemPath(path.resolve(workspace, match[1]));
+    const common = path.join(gitDir, "commondir");
+    const commonDir = existsSync(common)
+      ? resolveFilesystemPath(path.resolve(gitDir, readFileSync(common, "utf8").trim()))
+      : gitDir;
+    const inCommon = (names: string[]) => names.map((name) => path.join(commonDir, name)).filter(existsSync);
+    return {
+      directories: [gitDir, ...inCommon(["objects", "refs", "logs"])],
+      files: inCommon(["packed-refs", "config", "info/exclude"]),
+    };
+  } catch {
+    // A non-Git workspace has no administrative paths to expose.
+    return none;
+  }
 }
 
 /** Runs locally with a private /tmp while preserving ordinary host networking. */
@@ -271,9 +419,24 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   if (options.localServices) forwards.push(...options.localServices);
   const spec = JSON.stringify({ forwards, command: options.argv });
   const allowedSockets = forwards.map((forward) => forward.socket);
+  const filesystem = options.filesystem;
+  if (filesystem) {
+    const bubblewrap = findOnPath("bwrap", options.env.PATH);
+    if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap");
+    return {
+      argv: [bubblewrap, "--unshare-net", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--", process.execPath, "-e", BRIDGE_PROGRAM, spec],
+      env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
+      dataEnv,
+    };
+  }
   return {
     argv: ["bwrap", "--unshare-net", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", ...isolationMounts(options.env.TMPDIR, allowedSockets), "--", ...selfCommand(INTERNAL.bridge, spec)],
     env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
     dataEnv,
   };
 }
+
+// The egress bridge must run inside the network namespace, but mounting Conveyor's source tree to
+// start it would reveal the service checkout to the agent.  Keep this tiny dependency-free bridge
+// inline instead.
+const BRIDGE_PROGRAM = `const net=require("node:net");const spec=JSON.parse(process.argv[1]);const forward=(e)=>new Promise((ok,no)=>{const s=net.createServer(c=>{const u=net.connect(e.socket);c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());c.pipe(u);u.pipe(c);c.on("close",()=>u.destroy())});s.once("error",no);s.listen(e.port,"127.0.0.1",ok)});Promise.all(spec.forwards.map(forward)).then(()=>{const c=Bun.spawn(spec.command,{stdin:"inherit",stdout:"inherit",stderr:"inherit",env:process.env});for(const s of ["SIGTERM","SIGINT","SIGHUP"])process.on(s,()=>c.kill(s));return c.exited.then(x=>process.exit(c.signalCode?128+({SIGTERM:15,SIGINT:2,SIGHUP:1,SIGKILL:9}[c.signalCode]??1):x))}).catch(e=>{console.error("sandbox bridge failed: "+e.message);process.exit(125)})`;

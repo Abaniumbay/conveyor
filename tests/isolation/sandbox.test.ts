@@ -22,18 +22,19 @@ test("private-tmp command mounts an isolated /tmp", () => {
   expect(launch.argv.slice(-3)).toEqual(["--", "codex", "exec"]);
 });
 
-test("SPEC documents default denial of host path-based sockets for egress runs", async () => {
+test("SPEC documents the confined filesystem view for every Codex run", async () => {
   const specification = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
-  expect(specification).toContain("Host path-based Unix sockets are denied by default");
-  expect(specification).toContain("The only retained sockets are the data-plane, control-plane, MCP, and repository-declared local-service endpoints explicitly forwarded for that run");
-  expect(specification).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
-  expect(specification).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+  expect(specification).toContain("Every Codex agent process");
+  expect(specification).toContain("an empty-root Bubblewrap namespace");
+  expect(specification).toContain("does not widen the filesystem view");
+  expect(specification).toContain("The service's `CODEX_HOME` is never mounted");
 });
 
-test("architecture documents the socket-denial residual risk", async () => {
+test("architecture documents the shared confined mount plan", async () => {
   const architecture = await readFile(path.join(import.meta.dir, "../../docs/architecture.md"), "utf8");
-  expect(architecture).toContain("The masks cover filesystem sockets active in the host network namespace when the wrapper is built");
-  expect(architecture).toContain("Sockets created later, or bound in other network namespaces, remain reachable until filesystem confinement (#399) lands");
+  expect(architecture).toContain("Its Bubblewrap namespace has an empty root");
+  expect(architecture).toContain("The service's `CODEX_HOME` is never mounted");
+  expect(architecture).toContain("Every repository receives filesystem confinement");
 });
 
 describeSandbox("confined command exposes only its fresh scratch directory", () => {

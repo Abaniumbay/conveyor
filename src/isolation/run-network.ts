@@ -6,7 +6,7 @@ import type net from "node:net";
 import { startTcpRelay } from "./tcp-relay";
 
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
-import { privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type SandboxedCommand } from "./sandbox";
+import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
 
 /** A sandbox loopback port and the host source it reaches: a Unix socket or a loopback TCP listener. */
 export type LocalServiceForward = { port: number; socket: string } | { port: number; tcp: { host: string; port: number } };
@@ -29,7 +29,7 @@ export interface AgentNetworkPolicy {
 
 export interface RunNetwork {
   /** Wraps the harness command; `build` receives the data-plane proxy environment for its commands. */
-  wrap(env: Record<string, string>, build: (dataEnv: Record<string, string>) => string[]): SandboxedCommand;
+  wrap(env: Record<string, string>, build: (dataEnv: Record<string, string>) => string[], filesystem?: AgentFilesystemOptions): SandboxedCommand;
   close(): Promise<void>;
 }
 
@@ -72,7 +72,7 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
   }
   let closed: Promise<void> | undefined;
   return {
-    wrap(env, build) {
+    wrap(env, build, filesystem) {
       const commandEnvironment = { ...env, ...policy.localServiceEnvironment };
       const forwards = localServices.length > 0 ? { localServices } : {};
       const probe = sandboxCommand({ argv: [], env: commandEnvironment, dataProxySocket: dataSocket, ...(policy.mcp ? { mcp: policy.mcp } : {}), ...forwards });
@@ -84,6 +84,7 @@ export async function startRunNetwork(options: { directory: string; policy: Agen
         controlToken: token,
         ...(policy.mcp ? { mcp: policy.mcp } : {}),
         ...forwards,
+        ...(filesystem ? { filesystem: agentFilesystemPlan(filesystem) } : {}),
       });
     },
     close() {
@@ -98,7 +99,7 @@ export function shellPolicyArguments(dataEnv: Record<string, string>): string[] 
   const set = Object.entries(dataEnv).map(([name, value]) => `${name}=${JSON.stringify(value)}`);
   return [
     "-c",
-    `shell_environment_policy.exclude=[${PROXY_VARIABLES.map((name) => JSON.stringify(name)).join(",")}]`,
+    `shell_environment_policy.exclude=[${[...PROXY_VARIABLES, "CODEX_HOME"].map((name) => JSON.stringify(name)).join(",")}]`,
     "-c",
     `shell_environment_policy.set={${set.join(",")}}`,
     "-c",
@@ -112,8 +113,8 @@ export type EgressInput = Omit<AgentNetworkPolicy, "controlPlaneHosts"> & { cont
 export const CODEX_CONTROL_PLANE_HOSTS: readonly string[] = ["chatgpt.com", "api.openai.com", "auth.openai.com"];
 
 /**
- * The argv/env to spawn Codex with. Without `egress` it is the plain command; with it, the command
- * is wrapped in the network sandbox and `network` must be closed when the run ends.
+ * The argv/env to spawn Codex with its confined filesystem. Egress additionally wraps the command
+ * in the network sandbox, and its `network` must be closed when the run ends.
  */
 export async function codexLaunch(options: {
   command: string;
@@ -122,15 +123,25 @@ export async function codexLaunch(options: {
   egress: EgressInput | undefined;
   /** Full-access Codex must still receive a private /tmp when it has no egress sandbox. */
   privateTmp?: boolean;
+  /** Required narrow filesystem for every normal Codex launch. */
+  filesystem: AgentFilesystemOptions;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
   if (!options.egress) {
     const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
-    const launch = options.privateTmp ? privateTmpCommand(plain) : { ...plain, dataEnv: {} };
+    const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(options.filesystem, plain.argv);
     return { argv: launch.argv, env: launch.env, network: null };
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
-  const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))]);
+  const bridgeSockets = [
+    ...(policy.mcp ? [policy.mcp.socket] : []),
+    ...(policy.localServices ?? []).flatMap((service) => "socket" in service ? [service.socket] : []),
+  ];
+  const filesystem = {
+    ...options.filesystem,
+    ...(bridgeSockets.length > 0 ? { readable: [...(options.filesystem.readable ?? []), ...bridgeSockets] } : {}),
+  };
+  const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
   return { argv: sandboxed.argv, env: sandboxed.env, network };
 }

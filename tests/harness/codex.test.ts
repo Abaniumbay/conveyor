@@ -4,19 +4,26 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { codexHarness } from "../../src/harness/codex";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
-describe("codexHarness", () => {
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED Codex harness tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
+
+describeSandbox("codexHarness", () => {
   test("advertises session resume and drives `codex exec resume` with a persisted session", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "conveyor-harness-"));
     directories.push(directory);
     const executable = path.join(directory, "fake-codex");
-    const capture = path.join(directory, "capture.json");
+    const artifactsDirectory = path.join(directory, "a");
+    const capture = path.join(artifactsDirectory, "capture.json");
     await mkdir(path.join(directory, "workspace"));
+    await mkdir(artifactsDirectory);
     await writeFile(executable, `#!/usr/bin/env bun
       const args = process.argv.slice(2);
       await Bun.write(process.env.CAPTURE!, JSON.stringify(args));
@@ -30,7 +37,7 @@ describe("codexHarness", () => {
     expect(codexHarness.id).toBe("codex");
     expect(codexHarness.capabilities).toEqual({ sessionResume: true });
     const input = {
-      command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory: path.join(directory, "a"),
+      command: executable, workspace: path.join(directory, "workspace"), artifactsDirectory,
       prompt: "go", sandbox: "read-only" as const, automaticApprovals: false,
       mcp: { command: "bun", args: [] }, env: { CAPTURE: capture },
     };

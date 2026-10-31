@@ -8,6 +8,7 @@ import { resolveFilesystemPath } from "../../src/core/paths";
 import { runCodex } from "../../src/runner/codex";
 import { runCodexCheck } from "../../src/runner/codex-check";
 import { runCodexSteering } from "../../src/runner/codex-steering";
+import { bwrapUnavailableReason } from "../support/bwrap";
 
 const directories: string[] = [];
 const saved = { ...process.env };
@@ -35,7 +36,7 @@ async function fixture() {
   const workspace = path.join(directory, "workspace");
   const artifacts = path.join(directory, "artifacts", "run-1");
   const executable = path.join(directory, "fake-codex");
-  const capture = path.join(directory, "env.json");
+  const capture = path.join(artifacts, "env.json");
   await mkdir(workspace);
   await mkdir(artifacts, { recursive: true });
   await writeFile(executable, `#!/usr/bin/env bun
@@ -66,7 +67,7 @@ async function expectCredentialFree(files: Awaited<ReturnType<typeof fixture>>):
     expect(env[name]).toBeUndefined();
   }
   expect(env.HOME).toBe(path.join(files.artifacts, "home"));
-  expect(env.CODEX_HOME).toBe(resolveFilesystemPath(path.join(saved.HOME!, ".codex")));
+  expect(env.CODEX_HOME).toBe(path.join(files.artifacts, "home", ".codex"));
   expect(env.ENV_CAPTURE).toBe(files.capture);
   expect(existsSync(env.HOME!)).toBe(false);
 }
@@ -78,7 +79,11 @@ const common = {
   mcp: { command: "bun", args: ["mcp.ts"] },
 };
 
-describe("agent environment", () => {
+const unavailable = bwrapUnavailableReason();
+if (unavailable) console.warn(`SKIPPED agent environment Codex tests: \`bwrap\` is unavailable (${unavailable})`);
+const describeSandbox = unavailable ? describe.skip : describe;
+
+describeSandbox("agent environment", () => {
   test("runCodex spawns with a sanitized environment", async () => {
     const files = await fixture();
     await runCodex({
@@ -213,7 +218,7 @@ describe("agent environment", () => {
     for (const kind of ["run", "check", "steer"] as const) {
       const files = await fixture();
       const controller = new AbortController();
-      const lockReady = path.join(files.directory, "home-locked");
+      const lockReady = path.join(files.workspace, "home-locked");
       const input = {
         ...common,
         command: files.executable,
@@ -253,7 +258,7 @@ describe("agent environment", () => {
         artifactsDirectory: path.join(link, "artifacts", "run-1"),
         temporaryDirectory: path.join(link, "scratch"),
         writableRoots: [allowedRoot, path.join(link, "missing")],
-        env: { ENV_CAPTURE: path.join(link, "env.json"), KIND: kind },
+        env: { ENV_CAPTURE: path.join(link, "artifacts", "run-1", "env.json"), KIND: kind },
       };
       if (kind === "run") await runCodex({ ...common, command: files.executable, ...linked });
       else if (kind === "check") await runCodexCheck({ ...common, command: files.executable, ...linked });

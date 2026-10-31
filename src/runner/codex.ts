@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { cleanupSanitizedHome, prepareCodexEnvironment } from "../isolation/environment";
+import { cleanupSanitizedHome, prepareCodexEnvironment, serviceCodexHome, syncCodexHome } from "../isolation/environment";
 import { acquireScratch, assertNoHostTmpWritableRoots, type ScratchDirectory } from "../isolation/scratch";
 import { CODEX_CONTROL_PLANE_HOSTS, codexLaunch, type EgressInput, type RunNetwork } from "../isolation/run-network";
 import { log } from "../log/logger";
@@ -97,11 +97,17 @@ export async function cleanupCodexRun(options: {
   artifactsDirectory: string;
   network: RunNetwork | null;
   scratch: Pick<ScratchDirectory, "cleanup">;
+  /** The caller's environment overrides, which can relocate the service's Codex home. */
+  env?: Record<string, string> | undefined;
 }): Promise<string | undefined> {
   const failures: string[] = [];
   for (const [name, cleanup] of [
     ["network", () => options.network?.close()],
     ["scratch", () => options.scratch.cleanup()],
+    ["codex home", () => syncCodexHome({
+      privateHome: path.join(path.resolve(options.artifactsDirectory), "home", ".codex"),
+      serviceHome: serviceCodexHome(options.env),
+    })],
     ["private home", () => cleanupSanitizedHome(options.artifactsDirectory)],
   ] as const) {
     try {
@@ -194,7 +200,9 @@ async function consumeJsonLines(
 // Web search runs on the model side, so a read-only agent can have it too. Network for commands and
 // extra writable roots are workspace-write settings; read-only has neither.
 function accessArguments(input: CodexRunInput): string[] {
-  const args: string[] = [];
+  // The harness may use the service credential to authenticate its own control-plane traffic,
+  // but agent commands never inherit it as a usable shell variable.
+  const args: string[] = ["-c", 'shell_environment_policy.exclude=["CODEX_HOME"]'];
   if (input.network) args.push("-c", `web_search=${tomlString("live")}`);
   if (input.sandbox !== "workspace-write") return args;
   args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true");
@@ -291,7 +299,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   let child: ReturnType<typeof spawnPiped>;
   const scratch = await acquireScratch(input.temporaryDirectory);
   try {
-    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env });
+    const environment = await prepareCodexEnvironment({ artifactsDirectory, workspace, overrides: input.env, resumeSessionId: input.resumeSessionId });
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     // Tools keep their state under HOME, so a run that may write must be able to write its own.
@@ -304,6 +312,17 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
+      filesystem: {
+        command: input.command,
+        env: resolvedEnvironment,
+        workspace,
+        artifacts: artifactsDirectory,
+        home: resolvedEnvironment.HOME!,
+        scratch: scratch.path,
+        writableGit: runInput.sandbox !== "read-only",
+        writable: runInput.sandbox !== "read-only" ? [workspace, ...runInput.writableRoots] : [],
+        runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+      },
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
@@ -311,7 +330,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
     throw withCleanupError(error, cleanupError);
   }
   child.stdin.write(input.prompt);
@@ -365,7 +384,7 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([
     stdoutPromise,
