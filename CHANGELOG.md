@@ -10,6 +10,54 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.15.0] - 2026-10-31
+
+This release adds typed review findings with a CLI report and a dashboard Reports section, lets repositories expose local test services such as PostgreSQL to sandboxed agents, and can verify linked acceptance-criterion tests against CI JUnit reports. It also fixes items that stalled after a merge or a conflict-resolving rebase, and lets superusers resume Conveyor-paused items from the dashboard.
+
+### Added
+
+- Conveyor can now verify linked acceptance-criterion tests against JUnit reports from the pull request's CI run. Configure the CI artifact and report path to require exact passing test cases before review.
+
+- Repositories can now expose configured local Unix test services, such as PostgreSQL, only to their own egress-sandboxed agent commands through fixed loopback endpoints and secret-backed connection variables.
+
+- Repositories can now declare a loopback TCP test service (`tcp: "127.0.0.1:<port>"`) alongside Unix sockets in `agentEgress.localServices`; only the declared fixed sandbox endpoint reaches it.
+
+- The egress check now probes each configured local service from inside the sandbox and proves the Docker socket is inaccessible; the operations guide explains per-repository test-database provisioning.
+
+- Review findings now retain a fixed type and optional acceptance-criterion links, making the same classified finding data available to review consumers and audit events.
+
+- `conveyor report findings` prints the finding counts by type and the share of review rounds each type appears in, as text or with `--json`, optionally limited with `--repository` and `--since`.
+
+- The issue inspector now shows each review finding's type, and a signed-in superuser can reclassify agent and trusted imported findings from the dashboard with an audited `finding.changed` event.
+
+- The Reports view now has a Review findings section with finding counts by type, each type's share of review rounds, and counts by repository, author and UTC ISO week, following the repository and period selectors.
+
+- Superusers can resume Conveyor-paused items from dashboard cards and item inspectors.
+
+### Changed
+
+- The merge gate now waits for an open pull request to merge, waking early from its change delivery and otherwise following its configured poll and timeout.
+
+### Fixed
+
+- The bubblewrap isolation tests no longer skip in CI: an unavailable `bwrap` now fails the test run there, and AGENTS.md lists the suites that need it.
+
+- Retrying an item stopped by a repeated required-CI failure now follows that CI gate's configured return stage and gives the next run the retained failure report.
+
+- When a person merges an item's pull request, Conveyor now continues past wait-only merge gates after webhook delivery or periodic recovery.
+
+- Cached GitHub issue listings now immediately reflect Conveyor's issue and label edits, as well as newer issue deliveries, so polling cannot replay stale issue data.
+
+- Full issue polls now ignore stale snapshots that would otherwise overwrite newer issue state, while still recognizing the issue as present.
+
+- Cancelling or timing out a script stage now terminates its complete process tree, including background children that inherited its output streams.
+
+- Events started while an item command runs now retain that command's actor and correlation only for the selected item, preventing unrelated work from being attributed to the command.
+
+- An item whose pull request Conveyor merged no longer gets stuck before verify when GitHub's merge notification arrives while the merge stage is still finishing. Previously the item sat in its next stage with no run, no blocker and no retry action. Items already stuck this way resume at their current stage after the upgrade restarts Conveyor.
+
+- An agent can now push a branch it rebased while resolving a conflict. Conveyor previously stopped the item, reporting that the push "would omit published remote commit", even though the rewritten commit still carried that change. A push that really drops a published change is still refused.
+
 ## [0.14.0] - 2026-10-21
 
 A stage can now wait for a superuser's approval before it starts, for example before merge. Linked criterion tests are checked before waiting for CI, framework-qualified test names are accepted, a blocked parent can be retried to finish creating its children, and CI jobs GitHub refuses to start no longer send work back. Needs you shows a short reason instead of whole CI logs, and agent sandboxes can no longer reach host sockets such as Docker's.
