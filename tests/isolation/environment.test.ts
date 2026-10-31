@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { cleanupSanitizedHome, prepareSanitizedHome, sanitizedAgentEnvironment } from "../../src/isolation/environment";
+import { cleanupSanitizedHome, prepareSanitizedHome, sanitizedAgentEnvironment, syncCodexHome } from "../../src/isolation/environment";
 
 const directories: string[] = [];
 async function temporary(): Promise<string> {
@@ -162,5 +162,46 @@ describe("prepareSanitizedHome", () => {
       await chmod(run, 0o700);
     }
     expect(await readFile(path.join(run, "result.json"), "utf8")).toBe("result");
+  });
+});
+
+describe("syncCodexHome", () => {
+  async function homes() {
+    const root = await temporary();
+    const privateHome = path.join(root, "private");
+    const serviceHome = path.join(root, "service");
+    await mkdir(path.join(privateHome, "sessions", "2026"), { recursive: true });
+    await mkdir(serviceHome, { recursive: true });
+    return { root, privateHome, serviceHome };
+  }
+
+  test("does not promote an auth.json symlink to a host file", async () => {
+    const { root, privateHome, serviceHome } = await homes();
+    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
+    await writeFile(path.join(root, "ssh-key"), '{"secret":"key"}');
+    await symlink(path.join(root, "ssh-key"), path.join(privateHome, "auth.json"));
+    await syncCodexHome({ privateHome, serviceHome });
+    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
+  });
+
+  test("does not promote a malformed auth.json", async () => {
+    const { privateHome, serviceHome } = await homes();
+    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"service"}');
+    await writeFile(path.join(privateHome, "auth.json"), "junk");
+    await syncCodexHome({ privateHome, serviceHome });
+    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"service"}');
+  });
+
+  test("promotes a refreshed auth record and regular session files but not symlinked sessions", async () => {
+    const { root, privateHome, serviceHome } = await homes();
+    await writeFile(path.join(serviceHome, "auth.json"), '{"tokens":"old"}');
+    await writeFile(path.join(privateHome, "auth.json"), '{"tokens":"new"}');
+    await writeFile(path.join(privateHome, "sessions", "2026", "rollout-abc.jsonl"), "{}\n");
+    await writeFile(path.join(root, "outside"), "private");
+    await symlink(path.join(root, "outside"), path.join(privateHome, "sessions", "2026", "rollout-link.jsonl"));
+    await syncCodexHome({ privateHome, serviceHome });
+    expect(await readFile(path.join(serviceHome, "auth.json"), "utf8")).toBe('{"tokens":"new"}');
+    expect(await readFile(path.join(serviceHome, "sessions", "2026", "rollout-abc.jsonl"), "utf8")).toBe("{}\n");
+    expect(existsSync(path.join(serviceHome, "sessions", "2026", "rollout-link.jsonl"))).toBe(false);
   });
 });

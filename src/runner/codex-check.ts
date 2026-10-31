@@ -239,6 +239,17 @@ export async function runCodexCheck(
       artifactsDirectory,
       egress: runInput.egress,
       privateTmp: runInput.sandbox === "danger-full-access",
+      filesystem: {
+        command: input.command,
+        env: resolvedEnvironment,
+        workspace,
+        artifacts: artifactsDirectory,
+        home: resolvedEnvironment.HOME!,
+        scratch: scratch.path,
+        writableGit: runInput.sandbox !== "read-only",
+        writable: runInput.sandbox !== "read-only" ? [workspace, ...runInput.writableRoots] : [],
+        runtime: [input.mcp.command],
+      },
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
@@ -246,7 +257,7 @@ export async function runCodexCheck(
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
-    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    const cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
     throw withCleanupError(new CodexRunnerError(
       `Could not start Codex: ${error instanceof Error ? error.message : String(error)}`,
       "process",
@@ -307,7 +318,7 @@ export async function runCodexCheck(
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     input.signal?.removeEventListener("abort", onAbort);
-    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch });
+    cleanupError = await cleanupCodexRun({ artifactsDirectory, network, scratch, env: input.env });
   }
   const [{ raw, invalidLine }, stderr] = await Promise.all([
     stdoutPromise,
