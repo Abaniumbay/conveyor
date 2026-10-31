@@ -1233,6 +1233,53 @@ describe("renderDashboard", () => {
     expect(invalid).not.toContain('/questions/question%2F1/answer');
   });
 
+  test("renders every described choice beside its radio and a custom-answer field", () => {
+    const html = renderDashboard({
+      ...dashboard,
+      questions: [{
+        ...dashboard.questions[0]!,
+        allowFreeText: true,
+        options: [
+          { id: "keep_today", label: "Keep today's behavior", description: "Continue using the current rule." },
+          { id: "adopt_issue", label: "Use issue behavior", description: "Apply the behavior requested by this issue." },
+        ],
+      }],
+    });
+
+    expect(html).toContain('type="radio" name="answer" value="keep_today"');
+    expect(html).toContain("Keep today's behavior");
+    expect(html).toContain("Continue using the current rule.");
+    expect(html).toContain('type="radio" name="answer" value="adopt_issue"');
+    expect(html).toContain("Use issue behavior");
+    expect(html).toContain("Apply the behavior requested by this issue.");
+    expect(html).toContain('class="free-text">Or write your own answer');
+    expect(html).toContain('name="freeText"');
+  });
+
+  test("renders descriptions for option-only questions and supports legacy and free-text-only questions", () => {
+    const described = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [{ id: "keep_today", label: "Keep today's behavior", description: "Continue using the current rule." }] }],
+    });
+    expect(described).toContain('type="radio" name="answer" value="keep_today"');
+    expect(described).toContain("Keep today's behavior");
+    expect(described).toContain("Continue using the current rule.");
+
+    const legacy = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [{ id: "legacy", label: "Legacy choice" }] }],
+    });
+    expect(legacy).toContain('type="radio" name="answer" value="legacy"');
+    expect(legacy).toContain("Legacy choice");
+
+    const freeTextOnly = renderDashboard({
+      ...dashboard,
+      questions: [{ ...dashboard.questions[0]!, options: [], allowFreeText: true }],
+    });
+    expect(freeTextOnly).toContain('class="free-text">Or write your own answer');
+    expect(freeTextOnly).toContain('name="freeText"');
+  });
+
   test("gives running and needs-attention cards distinct accessible glows", () => {
     const runningParent = { ...parent, blocked: false, needsAttention: false, tone: "active" as const };
     const boardHtml = renderDashboard({

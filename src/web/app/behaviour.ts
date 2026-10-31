@@ -479,9 +479,25 @@ async function post(url: string, fields: URLSearchParams): Promise<{ ok: true; b
   return { ok: true, body };
 }
 
+function questionAnswer(form: HTMLFormElement): string | null {
+  const custom = form.querySelector<HTMLInputElement>("[data-answer-free-text]");
+  const choice = form.querySelector<HTMLInputElement>("[data-answer-choice]:checked");
+  const customAnswer = custom?.value;
+  if (form.dataset.answerSource === "free-text" && customAnswer?.trim()) return customAnswer;
+  if (form.dataset.answerSource === "choice" && choice) return choice.value;
+  if (customAnswer?.trim()) return customAnswer;
+  return choice?.value ?? null;
+}
+
 function formFields(form: HTMLFormElement, csrfToken: string): URLSearchParams {
   const fields = new URLSearchParams();
   for (const [name, value] of new FormData(form)) if (typeof value === "string") fields.append(name, value);
+  if (form.matches("[data-answer-form]")) {
+    const answer = questionAnswer(form);
+    fields.delete("answer");
+    fields.delete("freeText");
+    if (answer !== null) fields.set("answer", answer);
+  }
   fields.set("csrf", csrfToken);
   return fields;
 }
@@ -572,20 +588,33 @@ async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boo
     const button = form.querySelector("button[type='submit']");
     const status = form.querySelector("[data-answer-status]");
     if (!(button instanceof HTMLButtonElement) || button.disabled) return true;
+    if (questionAnswer(form) === null) {
+      if (status instanceof HTMLElement) {
+        status.textContent = "An answer is required.";
+        status.dataset.error = "true";
+      }
+      return true;
+    }
     const label = button.textContent;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
     button.textContent = "Answering…";
-    if (status) status.textContent = "";
+    if (status instanceof HTMLElement) {
+      status.textContent = "";
+      delete status.dataset.error;
+    }
     try {
       await post(form.action, formFields(form, csrfToken));
       button.textContent = "Answered";
-      if (status) status.textContent = "Answer recorded. The agent continues.";
+      if (status instanceof HTMLElement) status.textContent = "Answer recorded. The agent continues.";
     } catch (error) {
       button.disabled = false;
       button.removeAttribute("aria-busy");
       button.textContent = label;
-      if (status) status.textContent = error instanceof Error ? error.message : "Your answer could not be recorded. Try again.";
+      if (status instanceof HTMLElement) {
+        status.textContent = error instanceof Error ? error.message : "Your answer could not be recorded. Try again.";
+        status.dataset.error = "true";
+      }
     }
     return true;
   }
@@ -939,10 +968,25 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     return { ...filtersFromUrl(), ...(search instanceof HTMLInputElement ? { q: search.value } : {}) };
   };
   root.addEventListener("input", (event) => {
-    if (event.target instanceof HTMLInputElement && event.target.matches("[data-filter-search]")) writeBoardFilters(root, currentFilters(), redraw);
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    if (input.matches("[data-answer-free-text]")) {
+      const form = input.closest<HTMLFormElement>("[data-answer-form]");
+      if (form) {
+        const choice = form.querySelector<HTMLInputElement>("[data-answer-choice]:checked");
+        if (input.value.trim()) form.dataset.answerSource = "free-text";
+        else if (choice) form.dataset.answerSource = "choice";
+        else delete form.dataset.answerSource;
+      }
+    }
+    if (input.matches("[data-filter-search]")) writeBoardFilters(root, currentFilters(), redraw);
   });
   root.addEventListener("change", (event) => {
     const input = event.target;
+    if (input instanceof HTMLInputElement && input.matches("[data-answer-choice]") && input.checked) {
+      const form = input.closest<HTMLFormElement>("[data-answer-form]");
+      if (form) form.dataset.answerSource = "choice";
+    }
     if (!(input instanceof HTMLInputElement) || !input.closest("[data-board-filters]")) return;
     const next = currentFilters();
     if (input.matches("[data-filter-repository]")) {

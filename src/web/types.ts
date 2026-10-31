@@ -470,7 +470,7 @@ export interface QuestionViewModel {
   issueTitle: string;
   prompt: string;
   reason: string;
-  options: readonly { id: string; label: string }[];
+  options: readonly { id: string; label: string; description?: string }[];
   allowFreeText: boolean;
   answerError?: string | null;
 }

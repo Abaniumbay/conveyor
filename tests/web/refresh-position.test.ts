@@ -197,7 +197,7 @@ function startDashboard(state: {
   revision: () => string;
   /** How long a command takes to be accepted. */
   commandDelayMs?: () => number;
-  answerQuestion?: () => Promise<void>;
+  answerQuestion?: (questionId: string, answer: string) => Promise<void>;
   approveManualGate?: () => Promise<void>;
   setBoardApprovalRequirement?: (required: boolean) => void;
   systemStatus?: () => SystemStatusViewModel;
@@ -228,7 +228,7 @@ function startDashboard(state: {
     return work();
   };
   const { commands } = fakeCommandBus({
-    answerQuestion: () => delayed(() => state.answerQuestion?.()), approveManualGate: () => delayed(() => state.approveManualGate?.()),
+    answerQuestion: (questionId: string, answer: string) => delayed(() => state.answerQuestion?.(questionId, answer)), approveManualGate: () => delayed(() => state.approveManualGate?.()),
     setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => delayed(() => state.setBoardApprovalRequirement?.(required)),
     reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
     postIssueMessage: () => ({}), retryIssue: () => ({}), resumeIssue: () => ({}), resumeRollupParent: () => ({}), dismissFinding: () => {},
@@ -1538,6 +1538,85 @@ describe("dashboard live refresh position", () => {
       await page.waitForFunction(() => !document.querySelector(".needs-you-item--question"));
       // Patched in place: the page was not reloaded.
       expect(await page.evaluate(() => (document.querySelector("main.dashboard") as unknown as { untouched?: boolean }).untouched === true)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+  test("question forms require an answer and submit the most recently chosen value", async () => {
+    const answers: string[] = [];
+    const question = {
+      id: "q-1", issueId: "card-1", repository: "sample", repositoryColor: 1, issueNumber: 3, issueTitle: "Card",
+      prompt: "Which behavior?", reason: "It decides the schema.",
+      options: [
+        { id: "keep_today", label: "Keep today's behavior", description: "Keep the current behavior." },
+        { id: "adopt_issue", label: "Use issue behavior", description: "Use the issue behavior." },
+      ], allowFreeText: true,
+    };
+    const server = startDashboard({
+      dashboard: () => ({ ...dashboard("question-form", [issue("card-1", 3, "Card")]), questions: [question] }),
+      revision: () => "question-form",
+      answerQuestion: async (_questionId, answer) => { answers.push(answer); },
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
+      await signIn(page, server.port);
+      const form = page.locator("[data-answer-form]");
+      const submit = form.locator(".answer-button");
+
+      await submit.click();
+      await page.waitForFunction(() => document.querySelector("[data-answer-status]")?.textContent === "An answer is required.");
+      expect(await form.locator("[data-answer-status]").getAttribute("data-error")).toBe("true");
+      expect(answers).toEqual([]);
+
+      await form.locator('[data-answer-choice][value="keep_today"]').check();
+      await submit.click();
+      await page.waitForFunction(() => document.querySelector("[data-answer-form] .answer-button")?.textContent === "Answered");
+      expect(answers).toEqual(["keep_today"]);
+
+      await page.reload();
+      await form.locator("[data-answer-free-text]").fill(" A custom answer ");
+      await submit.click();
+      await page.waitForFunction(() => document.querySelector("[data-answer-form] .answer-button")?.textContent === "Answered");
+      expect(answers).toEqual(["keep_today", " A custom answer "]);
+
+      await page.reload();
+      await form.locator('[data-answer-choice][value="keep_today"]').check();
+      await form.locator("[data-answer-free-text]").fill("A later custom answer");
+      await submit.click();
+      await page.waitForFunction(() => document.querySelector("[data-answer-form] .answer-button")?.textContent === "Answered");
+      expect(answers).toEqual(["keep_today", " A custom answer ", "A later custom answer"]);
+
+      await page.reload();
+      await form.locator("[data-answer-free-text]").fill("An earlier custom answer");
+      await form.locator('[data-answer-choice][value="adopt_issue"]').check();
+      await submit.click();
+      await page.waitForFunction(() => document.querySelector("[data-answer-form] .answer-button")?.textContent === "Answered");
+      expect(answers).toEqual(["keep_today", " A custom answer ", "A later custom answer", "adopt_issue"]);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+  test("question forms fit a phone viewport in light and dark themes", async () => {
+    const question = {
+      id: "q-1", issueId: "card-1", repository: "sample", repositoryColor: 1, issueNumber: 3, issueTitle: "Card",
+      prompt: "Which behavior?", reason: "It decides the schema.",
+      options: [{ id: "keep_today", label: "Keep today's behavior", description: "Averylongdescriptionwithoutspacesmuststillwrapatthephoneviewportwidth." }],
+      allowFreeText: true,
+    };
+    const server = startDashboard({
+      dashboard: () => ({ ...dashboard("question-layout", [issue("card-1", 3, "Card")]), questions: [question] }),
+      revision: () => "question-layout",
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      for (const colorScheme of ["light", "dark"] as const) {
+        const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme });
+        await signIn(page, server.port);
+        await page.locator(".needs-you-item--question").waitFor();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await page.close();
+      }
     } finally {
       server.stop(true);
     }
