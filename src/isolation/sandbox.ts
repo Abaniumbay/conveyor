@@ -96,8 +96,10 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
     "--symlink", "usr/lib64", "/lib64",
     "--dev", "/dev",
     "--proc", "/proc",
+    // An empty /tmp is bubblewrap's work area, which the nested command shells need to start.
+    "--dir", "/tmp",
   ];
-  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
+  const directories = new Set(["/", "/usr", "/dev", "/proc", "/tmp"]);
   const addDirectory = (directory: string) => {
     const target = path.resolve(directory);
     if (directories.has(target) || target.startsWith("/usr/")) return;

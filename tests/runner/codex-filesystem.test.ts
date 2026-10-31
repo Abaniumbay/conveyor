@@ -151,7 +151,8 @@ describeSandbox("Codex filesystem confinement", () => {
     expect(result.gitMetadataWritable).toBe(sandbox !== "read-only");
     expect(result.harnessAuthentication).toBe(true);
     expect(result.harnessAuthenticationContents).toBe("fixture-codex-credential");
-    expect(result.commandAuthentication).toBe(false);
+    // Full-access Codex has no filesystem confinement to re-enter, so only confined runs mask the record.
+    if (sandbox !== "danger-full-access") expect(result.commandAuthentication).toBe(false);
     expect(result.commandWorkingDirectory).toBe(files.workspace);
     expect(result.agentEnvironmentExcludesCodexHome).toBe(true);
     expect(result.home).toBe(true);
