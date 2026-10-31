@@ -69,18 +69,36 @@ const reportTotals = {
   avgQueuedMs: 0, avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
 };
 
-function startApp() {
+function startApp(options: { role?: "user" | "superuser" } = {}) {
+  const role = options.role ?? "superuser";
   const state = { title: "Before" };
   const reclassified: unknown[][] = [];
+  const dismissed: unknown[][] = [];
+  const findings: Array<{ id: string; type: string; state: string; author: string; location: string | null; url: string; summary: string; dismissal?: { actor: string; reason: string } }> = ["open", "resolved", "dismissed", "withdrawn"].map((findingState) => ({
+    id: `finding-${findingState}`, type: "general", state: findingState, author: "reviewer", location: null, url: "https://example.com/reviews/1", summary: `A ${findingState} finding`,
+    ...(findingState === "dismissed" ? { dismissal: { actor: "human:amir", reason: "Known risk" } } : {}),
+  }));
+  const passwordHash = hashPassword(password, { salt: "0123456789abcdef" });
+  const account = { id: "operator", username: "operator", role, avatar: "🐼", sessionVersion: 1 };
   const feed = new DashboardFeed({ build: () => normalizeDashboard(board(state.title)), settleMs: 5, maxWaitMs: 20 });
   const auth = createWebAuth({
-    passwordHash: hashPassword(password, { salt: "0123456789abcdef" }),
+    passwordHash: role === "superuser" ? passwordHash : undefined,
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
+    ...(role === "superuser" ? {} : {
+      accountById: (id: string) => id === account.id ? account : null,
+      accountByUsername: (username: string) => username === account.username ? { ...account, passwordHash } : null,
+    }),
   });
   const { commands } = fakeCommandBus({
     answerQuestion: () => {}, approveManualGate: () => {}, setBoardApprovalRequirement: () => {}, reorderBacklog: () => {},
-    moveBacklogIssue: () => {}, startSteering: () => "run-1", postIssueMessage: () => ({}), retryIssue: () => ({}), dismissFinding: () => {},
+    moveBacklogIssue: () => {}, startSteering: () => "run-1", postIssueMessage: () => ({}), retryIssue: () => ({}),
+    dismissFinding: (...args: unknown[]) => {
+      dismissed.push(args);
+      const finding = findings.find((candidate) => candidate.id === args[1])!;
+      finding.state = "dismissed";
+      finding.dismissal = { actor: `human:${String(args[3])}`, reason: String(args[2]) };
+    },
     reclassifyFinding: (...args: unknown[]) => { reclassified.push(args); return { changed: true }; },
   });
   const reportFindings = {
@@ -118,7 +136,7 @@ function startApp() {
       ? { issueId, now: { stage: "implementation", state: "active", reason: null, since: null }, transitions: [], skippedReviews: [], findings: [{
         id: "finding-1", type: "test-not-discriminating", state: "open", author: "a-reviewer-with-a-rather-long-login", location: "src/web/app/a/very/long/path/to/a/file-with-a-long-name.tsx:120",
         url: "https://example.com/reviews/1", summary: "A_very_long_unbroken_review_summary_that_must_wrap_instead_of_widening_the_page_".repeat(3),
-      }] }
+      }, ...findings] }
       : null,
     getIssueRoute: (reference) => "repository" in reference && reference.repository === "sample" && reference.number === 7 ? { id: "github:sample/repo#7", repository: "sample", number: 7 } : null,
     getIssueDetails: (issueId) => issueId === "github:sample/repo#7" ? { ...issue(7, "Finished long ago", { state: "done", tone: "success" }), csrfToken: "" } : null,
@@ -129,6 +147,7 @@ function startApp() {
   return {
     url: `http://127.0.0.1:${server.port}`,
     reclassified,
+    dismissed,
     rename(title: string) {
       state.title = title;
       feed.invalidate();
@@ -251,6 +270,61 @@ describe("dashboard application", () => {
       await button.click();
       await page.waitForFunction(() => document.querySelector("[data-finding-id='finding-1'] [data-finding-type]")?.textContent === "Security");
       expect(app.reclassified).toEqual([["github:sample/repo#20", "finding-1", "security", "operator"]]);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("a superuser dismisses only open findings, with a bounded required reason, and sees the result live", async () => {
+    const app = startApp();
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.goto(`${app.url}/issues/sample/20/journey`);
+      const open = page.locator("dialog[open] [data-finding-id='finding-open']");
+      await open.waitFor();
+      expect(await open.getByRole("button", { name: "Dismiss", exact: true }).count()).toBe(1);
+      for (const state of ["resolved", "dismissed", "withdrawn"]) {
+        expect(await page.locator(`dialog[open] [data-finding-id='finding-${state}'] [data-finding-dismiss]`).count()).toBe(0);
+      }
+      const reason = open.locator("textarea[name='reason']");
+      const button = open.getByRole("button", { name: "Dismiss", exact: true });
+      expect(await reason.getAttribute("maxlength")).toBe("2000");
+      expect(await button.isDisabled()).toBe(true);
+      await reason.fill("   ");
+      expect(await button.isDisabled()).toBe(true);
+      await reason.evaluate((element) => { (element as HTMLTextAreaElement).value = "x".repeat(2001); element.dispatchEvent(new Event("input", { bubbles: true })); });
+      await open.locator("[data-finding-dismiss]").evaluate((form) => (form as HTMLFormElement).requestSubmit());
+      await page.waitForTimeout(200);
+      expect(app.dismissed).toEqual([]);
+      const requests: Array<{ url: string; csrf: string | undefined; body: string | null }> = [];
+      page.on("request", (request) => { if (request.method() === "POST") requests.push({ url: request.url(), csrf: request.headers()["x-csrf-token"], body: request.postData() }); });
+      await reason.fill("Accepted as a known risk");
+      await button.click();
+      await page.locator("dialog[open] [data-finding-id='finding-open'] [data-finding-dismissal]").waitFor();
+      expect(await page.locator("dialog[open] [data-finding-id='finding-open'] [data-finding-dismissal]").textContent()).toContain("Accepted as a known risk");
+      expect(app.dismissed).toEqual([["github:sample/repo#20", "finding-open", "Accepted as a known risk", "operator"]]);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toBe(`${app.url}/api/issues/github%3Asample%2Frepo%2320/findings/finding-open/dismiss`);
+      expect(JSON.parse(requests[0]!.body!)).toEqual({ reason: "Accepted as a known risk" });
+      expect(requests[0]!.csrf).toBeTruthy();
+      expect(await open.locator("[data-finding-dismiss]").count()).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("a non-superuser sees no Dismiss action on an open finding", async () => {
+    const app = startApp({ role: "user" });
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      await signIn(page, app.url);
+      await page.goto(`${app.url}/issues/sample/20/journey`);
+      await page.locator("dialog[open] [data-finding-id='finding-open']").waitFor();
+      expect(await page.getByRole("button", { name: "Dismiss", exact: true }).count()).toBe(0);
+      expect(await page.locator("[data-finding-dismiss]").count()).toBe(0);
     } finally {
       app.stop();
     }

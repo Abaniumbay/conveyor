@@ -5615,6 +5615,7 @@ export class ConveyorService {
         location: finding.path === null ? null : finding.line === null ? finding.path : `${finding.path}:${finding.line}`,
         url: finding.url,
         summary: finding.body.length > 240 ? `${finding.body.slice(0, 240)}…` : finding.body,
+        ...(finding.dismissal ? { dismissal: { actor: finding.dismissal.actor, reason: finding.dismissal.reason } } : {}),
       })),
       skippedReviews: new ReviewFindings(this.store.sqlite()).skippedNative(issueId).map((review) => ({
         author: review.author,

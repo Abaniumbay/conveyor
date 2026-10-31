@@ -9,6 +9,7 @@ import { runCli } from "../../src/cli/main";
 import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
+import { ReviewFindings } from "../../src/engine/review-findings";
 import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
 import { createWebHandler } from "../../src/web/server";
@@ -371,6 +372,57 @@ describe("operating through the CLI", () => {
     expect(response.status).toBe(202);
     expect(issues[0]!.labels).toEqual(["conveyor", "conveyor:implementation"]);
     expect(store.getIssue("issue-1")).toMatchObject({ projectedStage: "implementation", projectedState: "active" });
+  });
+
+  test("item dismiss-finding dismisses an open finding through the control socket", async () => {
+    const { cli, store } = await running();
+    const findings = new ReviewFindings(store.sqlite());
+    const finding = findings.create({ issueId: "issue-1", runId: null, author: "reviewer", headSha: "h1", body: "Fix this" });
+
+    const dismissed = await cli("item", "dismiss-finding", "app:1", finding.id, "--reason", "  Accepted as a known risk  ");
+
+    expect(dismissed.code).toBe(EXIT.ok);
+    expect(dismissed.out).toBe(`app:1: finding ${finding.id} dismissed.`);
+    expect(findings.get("issue-1", finding.id)).toMatchObject({ state: "dismissed", dismissal: { reason: "Accepted as a known risk" } });
+    expect(store.events().read({ type: "command.accepted" }).map((event) => event.payload)).toContainEqual({ command: "finding.dismiss" });
+  });
+
+  test("item dismiss-finding without a reason, or with one over 2,000 characters, is a usage error that sends nothing", async () => {
+    const { cli, store } = await running();
+    const findings = new ReviewFindings(store.sqlite());
+    const finding = findings.create({ issueId: "issue-1", runId: null, author: "reviewer", headSha: "h1", body: "Fix this" });
+    const after = store.events().latestSeq();
+
+    for (const reason of [[], ["--reason", "   "], ["--reason", "x".repeat(2_001)]]) {
+      expect((await cli("item", "dismiss-finding", "app:1", finding.id, ...reason)).code).toBe(EXIT.usage);
+    }
+
+    expect(findings.get("issue-1", finding.id)!.state).toBe("open");
+    expect(store.events().read({ afterSeq: after, type: "command.accepted" })).toEqual([]);
+  });
+
+  test("the dashboard dismiss route answers a non-superuser session with 403 and leaves the finding open", async () => {
+    const { service, store } = await running();
+    const findings = new ReviewFindings(store.sqlite());
+    const finding = findings.create({ issueId: "issue-1", runId: null, author: "reviewer", headSha: "h1", body: "Fix this" });
+    const reader = { id: "reader", username: "reader", role: "user" as const, avatar: "🦊", sessionVersion: 1, passwordHash: "unused" };
+    const auth = createWebAuth({
+      passwordHash: undefined,
+      sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
+      accountById: () => reader,
+      accountByUsername: () => reader,
+    });
+    const session = auth.createSession({ id: "reader", username: "reader", role: "user", avatar: "🦊", sessionVersion: 1 })!;
+    const handler = createWebHandler(service.webDependencies(auth, "reader"));
+
+    const response = await handler(new Request(`http://localhost/api/issues/issue-1/findings/${finding.id}/dismiss`, {
+      method: "POST",
+      headers: { cookie: session.cookie, "content-type": "application/json", "x-csrf-token": session.csrfToken },
+      body: JSON.stringify({ reason: "Accepted as a known risk" }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(findings.get("issue-1", finding.id)!.state).toBe("open");
   });
 
   test("item show reports a pre-stage dependency wait and clears it without changing the projection", async () => {

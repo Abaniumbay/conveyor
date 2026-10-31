@@ -189,6 +189,14 @@ Retry a stopped item at its stage, or a configured CI return stage.
 
 Clear a stopped roll-up parent so it can resume waiting for its children.
 
+### `conveyor item dismiss-finding <item> <finding>`
+
+Dismiss an open review finding with a reason.
+
+| Option | Description |
+| --- | --- |
+| `--reason <text>` | why the finding is dismissed (required, at most 2,000 characters) |
+
 ### `conveyor item pause <item>`
 
 Pause an item (removes its enrollment label; its stage and worktree are kept).

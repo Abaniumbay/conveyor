@@ -254,6 +254,15 @@ export function createControlHandler(service: ConveyorService, info: ControlInfo
           return json({ item: itemReference(service, issueId), ...result });
         }
       }
+      const dismissal = /^POST \/v1\/items\/([^/]+)\/findings\/([^/]+)\/dismiss$/.exec(route);
+      if (dismissal) {
+        const issueId = resolveItem(service, decodeURIComponent(dismissal[1]!));
+        const findingId = decodeURIComponent(dismissal[2]!);
+        const reason = (await body(request)).reason;
+        if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > 2_000) throw new ControlError("a reason of 1 to 2,000 characters is required", 400);
+        await service.commands.dispatch("finding.dismiss", { issueId, findingId, reason: reason.trim() }, cliActor(request));
+        return json({ item: itemReference(service, issueId), finding: findingId, state: "dismissed" });
+      }
       if (route === "POST /v1/drain") {
         const reason = (await body(request)).reason;
         const { result } = await service.commands.dispatch("admission.drain", { reason: typeof reason === "string" ? reason.slice(0, 500) : "" }, cliActor(request));
