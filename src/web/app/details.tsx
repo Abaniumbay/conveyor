@@ -113,7 +113,9 @@ function safeExternalUrl(value: string): string | null {
 }
 
 /** One stored finding with its type; a superuser also gets the control that changes the type. */
-function FindingRow({ issueId, finding, csrfToken, canReclassify }: { issueId: string; finding: FindingViewModel; csrfToken: string; canReclassify: boolean }) {
+function FindingRow({ issueId, finding, csrfToken, canReclassify, onDismissed }: { issueId: string; finding: FindingViewModel; csrfToken: string; canReclassify: boolean; onDismissed: () => void }) {
+  const [reason, setReason] = useState("");
+  const [dismissStatus, setDismissStatus] = useState<"idle" | "saving" | "failed">("idle");
   const [type, setType] = useState(finding.type);
   const [choice, setChoice] = useState(finding.type);
   const [status, setStatus] = useState<"idle" | "saving" | "failed">("idle");
@@ -135,12 +137,39 @@ function FindingRow({ issueId, finding, csrfToken, canReclassify }: { issueId: s
       setStatus("failed");
     }
   };
+  const dismiss = async (event: Event) => {
+    event.preventDefault();
+    const trimmed = reason.trim();
+    if (trimmed.length === 0 || reason.length > 2000) return;
+    setDismissStatus("saving");
+    try {
+      const response = await fetch(`/api/issues/${encodeURIComponent(issueId)}/findings/${encodeURIComponent(finding.id)}/dismiss`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": csrfToken },
+        body: JSON.stringify({ reason: trimmed }),
+      });
+      if (!response.ok) throw new Error(`request failed with ${response.status}`);
+      setDismissStatus("idle");
+      setReason("");
+      onDismissed();
+    } catch {
+      setDismissStatus("failed");
+    }
+  };
   return (
     <li class="finding" data-finding-id={finding.id}>
       <header><strong class="finding-type" data-finding-type>{humanize(type)}</strong><span class="journey-kind">{humanize(finding.state)}</span></header>
       <p class="journey-meta">{finding.author}{finding.location && ` · ${finding.location}`}</p>
       {finding.summary && <p class="journey-reason">{finding.summary}</p>}
       {url && <a href={url} target="_blank" rel="noopener noreferrer">Open on the code host ↗</a>}
+      {finding.state === "dismissed" && finding.dismissal && <p class="journey-reason" data-finding-dismissal>Dismissed by {finding.dismissal.actor}: {finding.dismissal.reason}</p>}
+      {canReclassify && finding.state === "open" && (
+        <form class="finding-dismiss-form" data-finding-dismiss onSubmit={(event) => void dismiss(event)}>
+          <label>Dismiss reason <textarea name="reason" value={reason} maxLength={2000} required onInput={(event) => setReason(event.currentTarget.value)} /></label>
+          <button type="submit" class="action-button action-button--secondary" disabled={dismissStatus === "saving" || reason.trim().length === 0}>Dismiss</button>
+          {dismissStatus === "failed" && <small class="journey-lifecycle" role="alert">The finding could not be dismissed.</small>}
+        </form>
+      )}
       {canReclassify && (
         <form class="finding-type-form" onSubmit={(event) => void save(event)}>
           <label>Type <select name="type" value={choice} onChange={(event) => setChoice(event.currentTarget.value)}>
@@ -155,7 +184,8 @@ function FindingRow({ issueId, finding, csrfToken, canReclassify }: { issueId: s
 }
 
 export function JourneyPanel({ issueId, active, revision, csrfToken, canReclassify }: { issueId: string; active: boolean; revision: unknown; csrfToken: string; canReclassify: boolean }) {
-  const { status, data } = useJson<IssueJourneyViewModel>(`/api/issues/${encodeURIComponent(issueId)}/journey`, active, revision);
+  const [reloads, setReloads] = useState(0);
+  const { status, data } = useJson<IssueJourneyViewModel>(`/api/issues/${encodeURIComponent(issueId)}/journey`, active, [revision, reloads]);
   const findings = data?.findings ?? [];
   const transitions = data?.transitions ?? [];
   const skipped = data?.skippedReviews ?? [];
@@ -172,7 +202,7 @@ export function JourneyPanel({ issueId, active, revision, csrfToken, canReclassi
     {findings.length > 0 && (
       <section class="findings" data-findings>
         <h3>Review findings</h3>
-        <ul class="finding-list">{findings.map((finding) => <FindingRow key={finding.id} issueId={issueId} finding={finding} csrfToken={csrfToken} canReclassify={canReclassify} />)}</ul>
+        <ul class="finding-list">{findings.map((finding) => <FindingRow key={finding.id} issueId={issueId} finding={finding} csrfToken={csrfToken} canReclassify={canReclassify} onDismissed={() => setReloads((count) => count + 1)} />)}</ul>
       </section>
     )}
     <ol class="journey-list" data-journey-list>
