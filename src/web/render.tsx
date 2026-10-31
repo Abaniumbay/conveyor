@@ -1166,7 +1166,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
             </form> : <a class="needs-you-action action-button action-button--secondary" href={issueHref(issue.repository, issue.number)}>Open</a>}
           </li>
         ))}
-        {model.questions.map((question, questionIndex) => (
+        {model.questions.map((question) => (
           <li class={`needs-you-item needs-you-item--question repo-color-${question.repositoryColor}`} key={question.id}>
             <span class="needs-you-question" aria-hidden="true">?</span>
             <div>
@@ -1175,18 +1175,18 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
             </div>
             {canManage && question.answerError ? <p role="alert">{question.answerError}</p> : canManage && <form method="post" action={`/questions/${encodeURIComponent(question.id)}/answer`} data-answer-form>
               <input type="hidden" name="csrf" value={model.csrfToken} />
-              {question.allowFreeText ? (
-                <Fragment>
-                  <label class="free-text">Your answer<input name="answer" list={`question-options-${questionIndex}`} required /></label>
-                  <datalist id={`question-options-${questionIndex}`}>
-                    {question.options.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}
-                  </datalist>
-                </Fragment>
-              ) : question.options.map((option, optionIndex) => (
-                <label class="option" key={option.id}>
-                  <input type="radio" name="answer" value={option.id} required={optionIndex === 0} /> {option.label}
-                </label>
-              ))}
+              <div class="question-answer-fields">
+                {question.options.length > 0 && <fieldset class="question-options">
+                  <legend>Choose an answer</legend>
+                  {question.options.map((option, optionIndex) => (
+                    <label class="option" key={option.id}>
+                      <input type="radio" name="answer" value={option.id} data-answer-choice required={!question.allowFreeText && optionIndex === 0} />
+                      <span class="option-copy"><span>{option.label}</span>{option.description !== undefined && <span class="option-description">{option.description}</span>}</span>
+                    </label>
+                  ))}
+                </fieldset>}
+                {question.allowFreeText && <label class="free-text">Or write your own answer<input name="freeText" data-answer-free-text /></label>}
+              </div>
               <button class="answer-button action-button action-button--secondary" type="submit">Answer</button>
               <p class="answer-status" role="status" data-answer-status />
             </form>}

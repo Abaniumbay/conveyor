@@ -729,6 +729,23 @@ describe("createWebHandler", () => {
     expect(await scripted.json()).toEqual({ error: "Choose one of the available answers." });
   });
 
+  test("passes selected option ids and custom text to question answers", async () => {
+    const { handler, auth, calls } = setup();
+    const { cookie } = await login(handler);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const post = (answer: string) => handler(new Request("http://localhost/questions/q-1/answer", {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ answer, csrf }),
+    }));
+
+    expect((await post("keep_today")).status).toBe(303);
+    expect((await post(" A custom answer ")).status).toBe(303);
+    expect(calls.answers).toEqual([
+      ["q-1", "keep_today", "operator"],
+      ["q-1", " A custom answer ", "operator"],
+    ]);
+  });
+
   test("answers a canonical question choice for the page script with JSON instead of a redirect", async () => {
     const { handler, auth, calls } = setup();
     const { cookie } = await login(handler);

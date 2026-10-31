@@ -673,14 +673,14 @@ describe("agent.run through the service", () => {
 
   test("projects value-backed choices to the dashboard and stores their canonical web answer", async () => {
     const w = await setup({
-      questionOptions: [{ value: "current-main", label: "Current main commit" }],
+      questionOptions: [{ value: "current-main", label: "Current main commit", description: "Keep the branch as it is." }],
       allowFreeText: false,
     });
     await w.execute();
     const question = w.store.listOpenQuestions()[0]!;
     expect(w.service.dashboard("csrf").questions).toMatchObject([{
       id: question.id,
-      options: [{ id: "current-main", label: "Current main commit" }],
+      options: [{ id: "current-main", label: "Current main commit", description: "Keep the branch as it is." }],
     }]);
     await w.service.answerQuestion(question.id, "Current main commit");
     expect(w.store.getQuestion(question.id)?.answer).toEqual({ answer: "current-main" });

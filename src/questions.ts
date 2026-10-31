@@ -1,6 +1,7 @@
 export interface QuestionOption {
   id: string;
   label: string;
+  description?: string;
 }
 
 /**
@@ -10,7 +11,7 @@ export interface QuestionOption {
 export function questionOptions(options: readonly unknown[]): QuestionOption[] {
   const seen = new Set<string>();
   return options.flatMap((option) => {
-    const given = option && typeof option === "object" ? option as { id?: unknown; value?: unknown; label?: unknown } : null;
+    const given = option && typeof option === "object" ? option as { id?: unknown; value?: unknown; label?: unknown; description?: unknown } : null;
     const value = typeof option === "string"
       ? { id: option, label: option }
       : given && typeof given.label === "string" && (typeof given.id === "string" || given.id == null)
@@ -27,7 +28,7 @@ export function questionOptions(options: readonly unknown[]): QuestionOption[] {
     const label = value?.label.trim();
     if (!id || !label || seen.has(id)) return [];
     seen.add(id);
-    return [{ id, label }];
+    return [{ id, label, ...(typeof given?.description === "string" ? { description: given.description } : {}) }];
   });
 }
 

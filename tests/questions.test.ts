@@ -26,8 +26,8 @@ describe("structured questions", () => {
       allowFreeText: false,
     };
     expect(questionOptions(question.options)).toEqual([
-      { id: "Discuss first", label: "Discuss first" },
-      { id: "Defer pull requests", label: "Defer pull requests" },
+      { id: "Discuss first", label: "Discuss first", description: "Open an issue before starting a pull request." },
+      { id: "Defer pull requests", label: "Defer pull requests", description: "Outside pull requests are not accepted yet." },
     ]);
     expect(questionConfigurationError(question.options, false)).toBeNull();
     expect(validatedQuestionAnswer(question, "Defer pull requests")).toBe("Defer pull requests");
