@@ -49,6 +49,11 @@ export interface AgentFilesystemOptions {
   writable?: readonly string[];
   readable?: readonly string[];
   runtime?: readonly string[];
+  /**
+   * Repository-declared SDK and toolchain directories, mounted read-only. Unlike `readable`, one that
+   * is missing or overlaps run material fails the plan, so no agent command starts without it.
+   */
+  toolchain?: readonly string[];
 }
 
 /** A prepared, narrow bubblewrap filesystem used by every agent harness. */
@@ -137,6 +142,20 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   for (const gitFile of git.files) addPath(gitFile, false);
   for (const writablePath of writable) addPath(writablePath, true, true);
   for (const readable of options.readable ?? []) addPath(readable, false);
+  const runMaterial = [workspace, artifacts, home, scratch, ...git.directories, ...writable];
+  for (const declared of options.toolchain ?? []) {
+    const source = resolveFilesystemPath(declared);
+    if (!path.isAbsolute(declared) || !existsSync(source) || !statSync(source).isDirectory()) {
+      throw new Error(`agent toolchain path cannot be mounted: ${declared}`);
+    }
+    if (source === "/" || source === "/usr" || source.startsWith("/usr/")) {
+      throw new Error(`agent toolchain path cannot be mounted: ${declared}`);
+    }
+    const overlap = runMaterial.find((run) => run === source || run.startsWith(`${source}/`) || source.startsWith(`${run}/`));
+    if (overlap) throw new Error(`agent toolchain path ${declared} overlaps run path ${overlap}`);
+    // Read-only, and added after the run's mounts only because it is proven not to overlap them.
+    addPath(source, false, true);
+  }
   for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) addPath(file, false);
   if (existsSync("/etc/ssl/certs")) addPath("/etc/ssl/certs", false, true);
   return { mounts };

@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { agentGrantableTools } from "../mcp/tools";
+import { agentToolchainPathsSchema } from "../isolation/toolchain-paths";
 import { agentEgressSchema, validateHttpsHosts } from "../isolation/egress-policy";
 import { AGENT_DENIED_TOOLS, canonicalToolName } from "../tasks/aliases";
 
@@ -652,6 +653,7 @@ const repositorySchema = z
       .strict()
       .optional(),
     agentEgress: agentEgressSchema.optional(),
+    agentToolchainPaths: agentToolchainPathsSchema.optional(),
     concurrency: z.number().int().positive().default(1),
     inFlight: z
       .object({

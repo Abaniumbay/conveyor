@@ -28,6 +28,8 @@ export interface HarnessRunInput {
   network?: boolean;
   /** Directories outside the workspace that the agent's commands may write (workspace-write only). */
   writableRoots?: string[];
+  /** Resolved, validated SDK and toolchain directories the agent may read but never write. */
+  toolchainPaths?: string[];
   /** Persistent item scratch, or omitted for disposable runner-owned scratch. */
   temporaryDirectory?: string;
   /** Extra Codex settings (Codex only). */

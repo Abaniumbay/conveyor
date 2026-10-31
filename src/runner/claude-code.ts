@@ -247,6 +247,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
         ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
       ],
       runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+      ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
     });
     const argv = [
       "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
