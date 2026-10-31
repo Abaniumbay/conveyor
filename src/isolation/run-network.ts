@@ -6,7 +6,7 @@ import type net from "node:net";
 import { startTcpRelay } from "./tcp-relay";
 
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
-import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
+import { agentFilesystemCommand, agentFilesystemPlan, commandShellLaunch, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
 
 /** A sandbox loopback port and the host source it reaches: a Unix socket or a loopback TCP listener. */
 export type LocalServiceForward = { port: number; socket: string } | { port: number; tcp: { host: string; port: number } };
@@ -127,9 +127,22 @@ export async function codexLaunch(options: {
   filesystem: AgentFilesystemOptions;
   buildArguments: (extra: string[]) => string[];
 }): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork | null }> {
+  // The harness keeps its private authentication record; the commands it runs get it masked.
+  const shells = options.privateTmp || !options.environment.CODEX_HOME ? undefined : commandShellLaunch({
+    directory: path.join(options.artifactsDirectory, "shell"),
+    env: options.environment,
+    masked: [path.join(options.environment.CODEX_HOME, "auth.json")],
+  });
+  const environment = shells?.env ?? options.environment;
+  const confined: AgentFilesystemOptions = shells ? {
+    ...options.filesystem,
+    env: environment,
+    readable: [...(options.filesystem.readable ?? []), ...shells.readable],
+    runtime: [...(options.filesystem.runtime ?? []), ...shells.runtime],
+  } : options.filesystem;
   if (!options.egress) {
-    const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
-    const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(options.filesystem, plain.argv);
+    const plain = { argv: [options.command, ...options.buildArguments([])], env: environment };
+    const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(confined, plain.argv);
     return { argv: launch.argv, env: launch.env, network: null };
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
@@ -139,9 +152,9 @@ export async function codexLaunch(options: {
     ...(policy.localServices ?? []).flatMap((service) => "socket" in service ? [service.socket] : []),
   ];
   const filesystem = {
-    ...options.filesystem,
-    ...(bridgeSockets.length > 0 ? { readable: [...(options.filesystem.readable ?? []), ...bridgeSockets] } : {}),
+    ...confined,
+    ...(bridgeSockets.length > 0 ? { readable: [...(confined.readable ?? []), ...bridgeSockets] } : {}),
   };
-  const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
+  const sandboxed = network.wrap(environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
   return { argv: sandboxed.argv, env: sandboxed.env, network };
 }

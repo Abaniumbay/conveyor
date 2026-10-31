@@ -23,6 +23,11 @@ try {
 } catch {
   result.workspaceWritable = false;
 }
+const authentication = process.env.CLAUDE_CONFIG_DIR + "/.credentials.json";
+result.harnessAuthentication = await Bun.file(authentication).text();
+// Agent commands run through the shell found by the harness.
+const command = Bun.spawnSync([process.env.SHELL, "-c", "cat " + authentication]);
+result.commandAuthentication = command.exitCode === 0 || new TextDecoder().decode(command.stdout).length > 0;
 result.home = await readable(process.env.HOME + "/.gitconfig");
 const scratchMarker = process.env.TMPDIR + "/scratch-marker";
 await Bun.write(scratchMarker, "private scratch");
@@ -58,8 +63,10 @@ async function fixture() {
   const data = path.join(root, "data");
   const credentials = path.join(root, "credentials");
   const claudeConfig = path.join(root, "claude-config");
+  const otherRun = path.join(root, "artifacts", "other-run");
   await Promise.all([source, otherRepository, runtime, conveyorHome, configuration, data, credentials, claudeConfig].map((directory) => mkdir(directory)));
   await mkdir(artifacts, { recursive: true });
+  await mkdir(path.join(otherRun, "home"), { recursive: true });
   await writeFile(path.join(source, "own-marker"), "own worktree");
   git(["init", "--quiet"], source);
   git(["add", "."], source);
@@ -75,6 +82,9 @@ async function fixture() {
     writeFile(path.join(credentials, "credential-marker"), "hidden"),
     writeFile(path.join(runtime, "runtime-sibling-marker"), "hidden"),
     writeFile(executable, FAKE_CLAUDE),
+    writeFile(path.join(claudeConfig, ".credentials.json"), "fixture-claude-credential"),
+    writeFile(path.join(otherRun, "artifact-marker"), "hidden"),
+    writeFile(path.join(otherRun, "home", "home-marker"), "hidden"),
   ]);
   await chmod(executable, 0o755);
   return {
@@ -93,6 +103,8 @@ async function fixture() {
         configuration: path.join(configuration, "config-marker"),
         data: path.join(data, "data-marker"),
         credentials: path.join(credentials, "credential-marker"),
+        otherRunArtifacts: path.join(otherRun, "artifact-marker"),
+        otherRunHome: path.join(otherRun, "home", "home-marker"),
         runtimeSibling: path.join(runtime, "runtime-sibling-marker"),
       },
     },
@@ -122,6 +134,10 @@ describeSandbox("Claude Code filesystem confinement", () => {
     expect(result.workspaceContents).toBe("own worktree");
     expect(result.workspaceWritable).toBe(sandbox === "workspace-write");
     expect(result.gitObjectReadable).toBe(true);
+    expect(result.harnessAuthentication).toBe("fixture-claude-credential");
+    expect(result.commandAuthentication).toBe(false);
+    expect(result.otherRunArtifacts).toBe(false);
+    expect(result.otherRunHome).toBe(false);
     expect(result.home).toBe(true);
     expect(result.scratch).toBe(true);
     expect(result.otherWorktree).toBe(false);

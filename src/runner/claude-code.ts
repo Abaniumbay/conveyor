@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
-import { agentFilesystemPlan } from "../isolation/sandbox";
+import { agentFilesystemPlan, commandShellLaunch } from "../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
@@ -234,9 +234,15 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
+    // The harness authenticates from its config directory; the commands it runs must not read it.
+    const shells = commandShellLaunch({
+      directory: path.join(artifactsDirectory, "shell"),
+      env: resolvedEnvironment,
+      masked: [".credentials.json", ".claude.json"].map((name) => path.join(resolvedEnvironment.CLAUDE_CONFIG_DIR!, name)),
+    });
     const filesystem = agentFilesystemPlan({
       command: input.command,
-      env: resolvedEnvironment,
+      env: shells.env,
       workspace,
       artifacts: artifactsDirectory,
       home: resolvedEnvironment.HOME!,
@@ -246,14 +252,15 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
         resolvedEnvironment.CLAUDE_CONFIG_DIR!,
         ...(input.sandbox === "workspace-write" ? [workspace, ...writableRoots] : []),
       ],
-      runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
+      readable: shells.readable,
+      runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command), ...shells.runtime],
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
     });
     const argv = [
       "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
       input.command, ...claudeArguments(input, schema),
     ];
-    const child = Bun.spawn(argv, { cwd: workspace, env: resolvedEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(argv, { cwd: workspace, env: shells.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     child.stdin.write(input.prompt);
     child.stdin.end();
 
