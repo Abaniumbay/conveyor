@@ -74,13 +74,23 @@ function sandboxFlag(args: string[]): string | undefined {
 }
 
 describeWrapped("Codex sandbox selection", () => {
-  for (const mode of ["workspace-write", "read-only", "danger-full-access"] as const) {
-    test(`fresh ${mode} run with agentEgress disables Codex's own sandbox`, async () => {
-      const args = await launch("run", mode, true);
-      expect(sandboxFlag(args)).toBe("danger-full-access");
-      expect(args).not.toContain("--approve-for-me");
-    });
-  }
+  test("fresh workspace-write run with agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "workspace-write", true);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
+  });
+
+  test("fresh read-only run with agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "read-only", true);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
+  });
+
+  test("fresh danger-full-access run with agentEgress disables Codex's own sandbox", async () => {
+    const args = await launch("run", "danger-full-access", true);
+    expect(sandboxFlag(args)).toBe("danger-full-access");
+    expect(args).not.toContain("--approve-for-me");
+  });
 
   test("resumed run with agentEgress disables Codex's own sandbox", async () => {
     const args = await launch("run", "workspace-write", true, true);
