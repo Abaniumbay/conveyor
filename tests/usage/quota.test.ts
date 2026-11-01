@@ -222,6 +222,48 @@ describe("Claude Code quota telemetry", () => {
   });
 });
 
+describe("Claude Code quota epoch-seconds resetsAt", () => {
+  const realEvent = {
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed", resetsAt: 1793568600, rateLimitType: "five_hour",
+      unifiedWindows: {
+        five_hour: { utilization: 0.18, resetsAt: 1793568600 },
+        seven_day: { utilization: 0.06, resetsAt: 1793656800 },
+      },
+    },
+  };
+
+  test("reads the five-hour window from numeric epoch seconds", () => {
+    const quota = readClaudeQuota([{ createdAt: "2026-11-01T18:00:00.000Z", payload: realEvent }]);
+    expect(quota.fiveHour?.resetsAt).toBe(new Date(1793568600 * 1000).toISOString());
+    expect(quota.fiveHour?.remaining).toBeCloseTo(82);
+  });
+
+  test("reads the weekly window from numeric epoch seconds", () => {
+    const quota = readClaudeQuota([{ createdAt: "2026-11-01T18:00:00.000Z", payload: realEvent }]);
+    expect(quota.weekly?.resetsAt).toBe(new Date(1793656800 * 1000).toISOString());
+    expect(quota.weekly?.remaining).toBeCloseTo(94);
+  });
+
+  test("still accepts an ISO-string resetsAt unchanged", () => {
+    const quota = readClaudeQuota([{ createdAt: "2026-11-01T18:00:00.000Z", payload: { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+      five_hour: { utilization: 0.5, resetsAt: "2026-11-01T20:00:00.000Z" },
+    } } } }]);
+    expect(quota.fiveHour?.resetsAt).toBe("2026-11-01T20:00:00.000Z");
+  });
+
+  test("ignores windows whose numeric resetsAt is not finite or not a valid date", () => {
+    const window = (resetsAt: number) => ({ utilization: 0.5, resetsAt });
+    const quota = readClaudeQuota([{ createdAt: "2026-11-01T18:00:00.000Z", payload: { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+      five_hour: window(Number.NaN), seven_day: window(Number.POSITIVE_INFINITY),
+    } } } }, { createdAt: "2026-11-01T18:01:00.000Z", payload: { type: "rate_limit_event", rate_limit_info: { unifiedWindows: {
+      five_hour: window(1e300), seven_day: window(-5),
+    } } } }]);
+    expect(quota).toEqual({});
+  });
+});
+
 describe("quota countdown", () => {
   test("formats days, hours and minutes, clamps at reset, and identifies stale windows", () => {
     const now = Date.parse("2026-10-03T14:04:00.000Z");

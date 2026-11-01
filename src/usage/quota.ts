@@ -153,7 +153,10 @@ export function readClaudeQuota(events: readonly { payload: unknown; createdAt: 
       const value = record(windows[key]);
       if (!value || typeof value.utilization !== "number" || !Number.isFinite(value.utilization) ||
           value.utilization < 0 || value.utilization > 1) continue;
-      const resetsAt = validDate(value.resetsAt);
+      // The Claude CLI reports numeric reset times as epoch seconds.
+      const resetsAt = typeof value.resetsAt === "number"
+        ? (value.resetsAt > 0 ? validDate(value.resetsAt * 1000) : null)
+        : validDate(value.resetsAt);
       if (!resetsAt) continue;
       const time = Date.parse(reportedAt);
       if ((latestTimes[name] ?? -Infinity) > time) continue;
