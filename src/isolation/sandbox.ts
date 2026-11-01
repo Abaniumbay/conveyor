@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -137,9 +137,29 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   // A linked worktree's .git file points at private metadata and a shared object store outside
   // the worktree. Git needs those reads even for reviewers, but nothing above those exact paths.
   const git = linkedGitPaths(workspace);
+  // Git replaces packed-refs by renaming packed-refs.lock over it, which a file bind mount cannot
+  // survive and a read-only parent forbids. A writable agent therefore gets the common directory
+  // itself, with everything but the ref stores (objects, refs, logs, packed-refs) hidden or read-only.
+  // Only entries that exist can be masked, so a directory missing its hooks, info or config, or holding
+  // a symlink, keeps today's read-only common directory rather than a writable one.
+  const sharedGit = options.writableGit && git.commonDir && maskableCommonDirectory(git.commonDir) ? git.commonDir : undefined;
+  if (sharedGit) {
+    addPath(sharedGit, true, true);
+    for (const entry of readdirSync(sharedGit, { withFileTypes: true })) {
+      const target = path.join(sharedGit, entry.name);
+      if (["objects", "refs", "logs", "packed-refs"].includes(entry.name)) continue;
+      if (entry.name === "config") mounts.push("--ro-bind", target, target);
+      else if (entry.name === "info") mounts.push("--ro-bind", target, target);
+      else if (entry.isDirectory()) {
+        // A scratch directory hides the contents (other runs' metadata, hooks); writes to it are lost.
+        mounts.push("--tmpfs", target);
+        if (entry.name !== "worktrees") mounts.push("--remount-ro", target);
+      } else if (entry.isFile()) mounts.push("--ro-bind", "/dev/null", target);
+    }
+  }
   for (const gitPath of git.directories) addPath(gitPath, options.writableGit || writable.has(gitPath), true);
   // Packed refs, configuration and exclude rules resolve names like `main` and `origin/main`; they stay read-only.
-  for (const gitFile of git.files) addPath(gitFile, false);
+  for (const gitFile of git.files) if (!sharedGit || !gitFile.startsWith(`${sharedGit}/`)) addPath(gitFile, false);
   for (const writablePath of writable) addPath(writablePath, true, true);
   for (const readable of options.readable ?? []) addPath(readable, false);
   const runMaterial = [workspace, artifacts, home, scratch, ...git.directories, ...writable];
@@ -212,7 +232,18 @@ function scriptInterpreter(executable: string, env: Record<string, string>): str
   }
 }
 
-function linkedGitPaths(workspace: string): { directories: string[]; files: string[] } {
+function maskableCommonDirectory(commonDir: string): boolean {
+  try {
+    const entries = readdirSync(commonDir, { withFileTypes: true });
+    const names = new Set(entries.map((entry) => entry.name));
+    if (!["hooks", "info", "config"].every((name) => names.has(name))) return false;
+    return entries.every((entry) => entry.isDirectory() || entry.isFile());
+  } catch {
+    return false;
+  }
+}
+
+function linkedGitPaths(workspace: string): { directories: string[]; files: string[]; commonDir?: string } {
   const dotGit = path.join(workspace, ".git");
   const none = { directories: [], files: [] };
   try {
@@ -228,6 +259,7 @@ function linkedGitPaths(workspace: string): { directories: string[]; files: stri
     return {
       directories: [gitDir, ...inCommon(["objects", "refs", "logs"])],
       files: inCommon(["packed-refs", "config", "info/exclude"]),
+      commonDir,
     };
   } catch {
     // A non-Git workspace has no administrative paths to expose.
