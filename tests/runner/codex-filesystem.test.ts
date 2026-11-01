@@ -68,7 +68,8 @@ async function fixture() {
   const configuration = path.join(root, "configuration");
   const data = path.join(root, "data");
   const credentials = path.join(root, "credentials");
-  await Promise.all([mkdir(source), mkdir(otherRepository), mkdir(artifacts, { recursive: true }), mkdir(runtime), mkdir(conveyorHome), mkdir(configuration), mkdir(data), mkdir(credentials)]);
+  const otherRun = path.join(root, "artifacts", "other-run");
+  await Promise.all([mkdir(source), mkdir(otherRepository), mkdir(artifacts, { recursive: true }), mkdir(runtime), mkdir(conveyorHome), mkdir(configuration), mkdir(data), mkdir(credentials), mkdir(path.join(otherRun, "home"), { recursive: true })]);
   await writeFile(path.join(source, "own-marker"), "own worktree");
   git(["init", "--quiet"], source);
   git(["add", "."], source);
@@ -84,6 +85,8 @@ async function fixture() {
     writeFile(path.join(configuration, "config-marker"), "hidden"),
     writeFile(path.join(data, "data-marker"), "hidden"),
     writeFile(path.join(credentials, "auth.json"), "hidden"),
+    writeFile(path.join(otherRun, "artifact-marker"), "hidden"),
+    writeFile(path.join(otherRun, "home", "home-marker"), "hidden"),
     writeFile(path.join(runtime, "runtime-sibling-marker"), "hidden"),
     writeFile(executable, FAKE_CODEX),
   ]);
@@ -104,6 +107,8 @@ async function fixture() {
         configuration: path.join(configuration, "config-marker"),
         data: path.join(data, "data-marker"),
         credentials: path.join(credentials, "auth.json"),
+        otherRunArtifacts: path.join(otherRun, "artifact-marker"),
+        otherRunHome: path.join(otherRun, "home", "home-marker"),
         runtimeSibling: path.join(runtime, "runtime-sibling-marker"),
       },
     },
@@ -148,6 +153,8 @@ describeSandbox("Codex filesystem confinement", () => {
     expect(result.data).toBe(false);
     expect(result.credentials).toBe(false);
     expect(result.runtimeSibling).toBe(false);
+    expect(result.otherRunArtifacts).toBe(false);
+    expect(result.otherRunHome).toBe(false);
   }
 
   test("Codex filesystem confinement allows only this run's paths read-only without egress", async () => {
