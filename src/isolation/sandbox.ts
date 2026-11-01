@@ -140,7 +140,9 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   // Git replaces packed-refs by renaming packed-refs.lock over it, which a file bind mount cannot
   // survive and a read-only parent forbids. A writable agent therefore gets the common directory
   // itself, with everything but the ref stores (objects, refs, logs, packed-refs) hidden or read-only.
-  const sharedGit = options.writableGit && git.commonDir ? git.commonDir : undefined;
+  // Only entries that exist can be masked, so a directory missing its hooks, info or config, or holding
+  // a symlink, keeps today's read-only common directory rather than a writable one.
+  const sharedGit = options.writableGit && git.commonDir && maskableCommonDirectory(git.commonDir) ? git.commonDir : undefined;
   if (sharedGit) {
     addPath(sharedGit, true, true);
     for (const entry of readdirSync(sharedGit, { withFileTypes: true })) {
@@ -227,6 +229,17 @@ function scriptInterpreter(executable: string, env: Record<string, string>): str
     return command ? resolveCommand(command, env) : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function maskableCommonDirectory(commonDir: string): boolean {
+  try {
+    const entries = readdirSync(commonDir, { withFileTypes: true });
+    const names = new Set(entries.map((entry) => entry.name));
+    if (!["hooks", "info", "config"].every((name) => names.has(name))) return false;
+    return entries.every((entry) => entry.isDirectory() || entry.isFile());
+  } catch {
+    return false;
   }
 }
 

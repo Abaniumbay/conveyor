@@ -677,4 +677,27 @@ describeSandbox("confined agent git worktree rewrites packed-refs", () => {
     expect(await readFile(path.join(common, "config"), "utf8")).toBe(before);
     expect(existsSync(path.join(common, "hooks", "pre-commit"))).toBe(false);
   });
+
+  test("keeps the common directory read-only when hooks is missing", async () => {
+    const files = await repository();
+    const common = path.join(files.source, ".git");
+    await rm(path.join(common, "hooks"), { recursive: true, force: true });
+    const result = await confined(files, `mkdir '${common}/hooks'; echo mk=$?; echo x > '${common}/hooks/post-checkout'; echo hook=$?`);
+    expect(result.out).not.toContain("mk=0");
+    expect(result.out).not.toContain("hook=0");
+    expect(existsSync(path.join(common, "hooks"))).toBe(false);
+  });
+
+  test("keeps the common directory read-only when hooks is a symlink", async () => {
+    const files = await repository();
+    const common = path.join(files.source, ".git");
+    const elsewhere = path.join(files.source, "elsewhere-hooks");
+    await rm(path.join(common, "hooks"), { recursive: true, force: true });
+    await mkdir(elsewhere, { recursive: true });
+    await symlink(elsewhere, path.join(common, "hooks"));
+    const result = await confined(files, `echo x > '${common}/hooks/post-checkout'; echo hook=$?; rm '${common}/hooks'; echo rm=$?`);
+    expect(result.out).not.toContain("hook=0");
+    expect(result.out).not.toContain("rm=0");
+    expect(existsSync(path.join(elsewhere, "post-checkout"))).toBe(false);
+  });
 });
