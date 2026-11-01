@@ -171,6 +171,14 @@ a service mutation directly.
 4. Run `bun run docs:tasks` and commit `docs/tasks.md`. `tests/tasks/docs.test.ts` fails otherwise.
 5. If agents should use it, update the default instructions in `examples/config/instructions/`.
 
+### Agent harness (Codex, Claude Code, or a new one)
+
+1. Meet every requirement in [docs/agent-harness-requirements.md](docs/agent-harness-requirements.md).
+   It applies to every harness; a change to one harness must not break a requirement for it.
+2. Never nest a namespace inside the run sandbox (H2.4); the CI runners and the production host
+   refuse it.
+3. Update the gap table at the end of that page when your change closes or opens a gap.
+
 ### Configuration field
 
 1. Add it to the zod schema in `src/config/schema.ts` (schemas are `.strict()`; unknown keys are
