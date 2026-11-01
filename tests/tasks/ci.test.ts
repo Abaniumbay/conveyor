@@ -356,7 +356,7 @@ describe("ci.passed", () => {
   });
 
   test("uses a check name instead of an unavailable log when a never-started check has no annotation", async () => {
-    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null }, log: "(log unavailable: HTTP 404)" })] });
+    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null }, log: "(log unavailable: GitHub API GET repos/o/r/actions/jobs/1/logs failed: gh: Not Found (HTTP 404))" })] });
 
     await expect(run("ci.passed", { context: gateCtx(snapshot) })).rejects.toThrow('CI check "Tests" never started.');
   });
@@ -460,7 +460,7 @@ describe("ci.passed", () => {
 
   test("never stops an item for the same log-less failed run observed twice at one head", async () => {
     const w = await world();
-    const snapshot = ci({ runs: [crun("Tests", "failed", { log: "(log unavailable: HTTP 404)" })] });
+    const snapshot = ci({ runs: [crun("Tests", "failed", { log: "(log unavailable: GitHub API GET repos/o/r/actions/jobs/1/logs failed: gh: Not Found (HTTP 404))" })] });
     const attempt = (id: string) => run("ci.passed", {
       context: gateCtx(snapshot, {
         run: {
