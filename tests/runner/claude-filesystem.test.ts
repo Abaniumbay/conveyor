@@ -23,11 +23,6 @@ try {
 } catch {
   result.workspaceWritable = false;
 }
-const authentication = process.env.CLAUDE_CONFIG_DIR + "/.credentials.json";
-result.harnessAuthentication = await Bun.file(authentication).text();
-// Agent commands run through the shell found by the harness.
-const command = Bun.spawnSync([process.env.SHELL, "-c", "cat " + authentication]);
-result.commandAuthentication = command.exitCode === 0 || new TextDecoder().decode(command.stdout).length > 0;
 result.home = await readable(process.env.HOME + "/.gitconfig");
 const scratchMarker = process.env.TMPDIR + "/scratch-marker";
 await Bun.write(scratchMarker, "private scratch");
@@ -82,7 +77,6 @@ async function fixture() {
     writeFile(path.join(credentials, "credential-marker"), "hidden"),
     writeFile(path.join(runtime, "runtime-sibling-marker"), "hidden"),
     writeFile(executable, FAKE_CLAUDE),
-    writeFile(path.join(claudeConfig, ".credentials.json"), "fixture-claude-credential"),
     writeFile(path.join(otherRun, "artifact-marker"), "hidden"),
     writeFile(path.join(otherRun, "home", "home-marker"), "hidden"),
   ]);
@@ -134,8 +128,6 @@ describeSandbox("Claude Code filesystem confinement", () => {
     expect(result.workspaceContents).toBe("own worktree");
     expect(result.workspaceWritable).toBe(sandbox === "workspace-write");
     expect(result.gitObjectReadable).toBe(true);
-    expect(result.harnessAuthentication).toBe("fixture-claude-credential");
-    expect(result.commandAuthentication).toBe(false);
     expect(result.otherRunArtifacts).toBe(false);
     expect(result.otherRunHome).toBe(false);
     expect(result.home).toBe(true);

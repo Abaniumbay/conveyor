@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
@@ -96,10 +96,8 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
     "--symlink", "usr/lib64", "/lib64",
     "--dev", "/dev",
     "--proc", "/proc",
-    // An empty /tmp is bubblewrap's work area, which the nested command shells need to start.
-    "--dir", "/tmp",
   ];
-  const directories = new Set(["/", "/usr", "/dev", "/proc", "/tmp"]);
+  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
   const addDirectory = (directory: string) => {
     const target = path.resolve(directory);
     if (directories.has(target) || target.startsWith("/usr/")) return;
@@ -161,68 +159,6 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) addPath(file, false);
   if (existsSync("/etc/ssl/certs")) addPath("/etc/ssl/certs", false, true);
   return { mounts };
-}
-
-export interface CommandShellOptions {
-  /** A run-owned directory that receives the wrapper scripts. */
-  directory: string;
-  /** The harness environment; its PATH locates bubblewrap and is the one the shells are put in front of. */
-  env: Record<string, string>;
-  /** Harness credential files which the harness reads but the commands it runs must not. */
-  masked: readonly string[];
-}
-
-export interface CommandShellLaunch {
-  /** The harness environment with the wrapper shells first on PATH and as SHELL. */
-  env: Record<string, string>;
-  /** Mount these read-only so a command cannot rewrite the wrappers. */
-  readable: string[];
-  /** Mount these as runtime files; bubblewrap itself when it lives outside /usr. */
-  runtime: string[];
-}
-
-const COMMAND_SHELLS = ["bash", "sh", "zsh"] as const;
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-/**
- * The harness shares its mount namespace with the commands it runs, so a credential it needs is
- * also readable by them. Agent harnesses run commands through a shell found on PATH (or SHELL), so
- * this puts wrapper shells first: each re-enters a nested bubblewrap which replaces the existing
- * credential files by an empty one and then runs the real shell. The harness itself keeps them.
- * A command which names an absolute shell path bypasses the wrapper; this narrows the exposure
- * rather than replacing a harness-enforced command sandbox.
- */
-export function commandShellLaunch(options: CommandShellOptions): CommandShellLaunch {
-  const bubblewrap = findOnPath("bwrap", options.env.PATH);
-  if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap");
-  const directory = path.resolve(options.directory);
-  mkdirSync(directory, { recursive: true });
-  const masked = options.masked.map((file) => shellQuote(path.resolve(file))).join(" ");
-  const script = (real: string) => [
-    "#!/bin/sh",
-    `set -- -- ${shellQuote(real)} "$@"`,
-    `for credential in ${masked}; do`,
-    '  if [ -f "$credential" ]; then set -- --ro-bind /dev/null "$credential" "$@"; fi',
-    "done",
-    `exec ${shellQuote(bubblewrap)} --die-with-parent --dev-bind / / --chdir "$PWD" "$@"`,
-    "",
-  ].join("\n");
-  for (const name of COMMAND_SHELLS) {
-    const real = [`/usr/bin/${name}`, "/usr/bin/bash", "/usr/bin/sh"].find((candidate) => existsSync(candidate));
-    if (!real) throw new Error(`no shell is installed for the ${name} command wrapper`);
-    const file = path.join(directory, name);
-    writeFileSync(file, script(real), { mode: 0o755 });
-    chmodSync(file, 0o755);
-  }
-  const resolved = resolveFilesystemPath(directory);
-  return {
-    env: { ...options.env, PATH: [resolved, options.env.PATH].filter(Boolean).join(path.delimiter), SHELL: path.join(resolved, "bash") },
-    readable: [resolved],
-    runtime: bubblewrap.startsWith("/usr/") ? [] : [bubblewrap],
-  };
 }
 
 /** Starts an agent with its constrained filesystem, failing before the agent command can run. */
