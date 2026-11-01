@@ -30,7 +30,7 @@ export function parseGitHubActionsTriggers(value: unknown, path = "ci provider t
 function skipped(run: CiRun): boolean { return run.state === "skipped"; }
 
 function neverStarted(job: GitHubActionsJob): boolean {
-  return job.runner_name === null
+  return !job.runner_name
     && Array.isArray(job.steps)
     && !job.steps.some((step) => step.status === "completed" || step.status === "in_progress");
 }

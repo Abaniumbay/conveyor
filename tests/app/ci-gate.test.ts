@@ -221,6 +221,7 @@ describe("ciFailureFingerprint", () => {
     const withError = ciFailureFingerprint([failure("Unit", "Error: database unavailable")]);
     expect(ciFailureFingerprint([failure("Unit", "Error: permission denied")])).not.toBe(withError);
     expect(ciFailureFingerprint([failure("Unit", null)])).toBeNull();
+    expect(ciFailureFingerprint([failure("Unit", "")])).toBeNull();
   });
 
   test("recognizes Bun failure names independently of volatile output", () => {
