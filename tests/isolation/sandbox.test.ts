@@ -582,3 +582,99 @@ describeSandbox("sandboxCommand (bwrap --unshare-net)", () => {
     }
   });
 });
+
+describeSandbox("confined agent git worktree rewrites packed-refs", () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  const gitIn = (cwd: string, ...args: string[]) => {
+    const child = Bun.spawnSync(["git", "-c", "user.name=C", "-c", "user.email=c@example.com", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (child.exitCode !== 0) throw new Error(child.stderr.toString());
+    return child.stdout.toString().trim();
+  };
+
+  async function repository() {
+    const root = await shortTemporaryDirectory("conveyor-pr-", { visibleInSandbox: true });
+    roots.push(root);
+    const source = path.join(root, "source");
+    const workspace = path.join(root, "workspace");
+    const artifacts = path.join(root, "artifacts");
+    const home = path.join(artifacts, "home");
+    const scratch = path.join(artifacts, "scratch");
+    for (const directory of [source, home, scratch]) await mkdir(directory, { recursive: true });
+    gitIn(source, "init", "--quiet", "-b", "main");
+    await writeFile(path.join(source, "file"), "base\n");
+    gitIn(source, "add", ".");
+    gitIn(source, "commit", "--quiet", "-m", "base");
+    gitIn(source, "branch", "packed");
+    gitIn(source, "worktree", "add", "--quiet", "-b", "feature", workspace, "main");
+    gitIn(source, "pack-refs", "--all");
+    return { source, workspace, artifacts, home, scratch };
+  }
+
+  async function confined(files: Awaited<ReturnType<typeof repository>>, script: string) {
+    const { agentFilesystemCommand } = await import("../../src/isolation/sandbox");
+    const env = { PATH: process.env.PATH ?? "", HOME: files.home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    const launch = agentFilesystemCommand({
+      command: "/bin/sh", env, workspace: files.workspace, artifacts: files.artifacts, home: files.home, scratch: files.scratch,
+      writable: [files.workspace, files.home, files.scratch], writableGit: true, runtime: ["/usr/bin/git"],
+    }, ["/bin/sh", "-c", script]);
+    const child = Bun.spawnSync(launch.argv, { cwd: files.workspace, env: launch.env, stdout: "pipe", stderr: "pipe" });
+    return { code: child.exitCode, out: child.stdout.toString(), err: child.stderr.toString() };
+  }
+  const ident = "git -c user.name=C -c user.email=c@example.com";
+
+  test("deletes a packed branch", async () => {
+    const files = await repository();
+    const result = await confined(files, "git branch -D packed");
+    expect(result.err).not.toContain("packed-refs.lock");
+    expect(result.code).toBe(0);
+    expect(gitIn(files.source, "branch", "--list", "packed")).toBe("");
+  });
+
+  test("quits a conflicted cherry-pick without sequencer state", async () => {
+    const files = await repository();
+    gitIn(files.source, "checkout", "--quiet", "packed");
+    await writeFile(path.join(files.source, "file"), "other\n");
+    gitIn(files.source, "commit", "--quiet", "-am", "other");
+    gitIn(files.source, "checkout", "--quiet", "main");
+    await writeFile(path.join(files.workspace, "file"), "mine\n");
+    gitIn(files.workspace, "commit", "--quiet", "-am", "mine");
+    const result = await confined(files, `${ident} cherry-pick packed >/dev/null 2>&1; ${ident} cherry-pick --quit`);
+    expect(result.err).not.toContain("packed-refs.lock");
+    expect(result.code).toBe(0);
+    const gitDir = gitIn(files.workspace, "rev-parse", "--absolute-git-dir");
+    expect(existsSync(path.join(gitDir, "sequencer"))).toBe(false);
+    expect(existsSync(path.join(gitDir, "CHERRY_PICK_HEAD"))).toBe(false);
+  });
+
+  test("rebases updating a packed ref", async () => {
+    const files = await repository();
+    await writeFile(path.join(files.workspace, "extra"), "x\n");
+    gitIn(files.workspace, "add", ".");
+    gitIn(files.workspace, "commit", "--quiet", "-m", "feature");
+    gitIn(files.workspace, "pack-refs", "--all");
+    gitIn(files.source, "checkout", "--quiet", "packed");
+    await writeFile(path.join(files.source, "side"), "y\n");
+    gitIn(files.source, "add", ".");
+    gitIn(files.source, "commit", "--quiet", "-m", "side");
+    const result = await confined(files, `${ident} rebase packed`);
+    expect(result.err).not.toContain("packed-refs.lock");
+    expect(result.code).toBe(0);
+    expect(gitIn(files.workspace, "log", "--format=%s", "packed..feature")).toBe("feature");
+  });
+
+  test("keeps config and hooks read-only", async () => {
+    const files = await repository();
+    const common = path.join(files.source, ".git");
+    await mkdir(path.join(common, "hooks"), { recursive: true });
+    const before = await readFile(path.join(common, "config"), "utf8");
+    const result = await confined(files, `echo x >> '${common}/config'; echo cfg=$?; echo x > '${common}/hooks/pre-commit'; echo hook=$?`);
+    expect(result.out).not.toContain("cfg=0");
+    expect(result.out).not.toContain("hook=0");
+    expect(await readFile(path.join(common, "config"), "utf8")).toBe(before);
+    expect(existsSync(path.join(common, "hooks", "pre-commit"))).toBe(false);
+  });
+});
