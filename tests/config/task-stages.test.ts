@@ -464,3 +464,19 @@ describe("repository agentEgress", () => {
     await expect(load(NATIVE_PIPELINE + repository("    agentEgress: { hosts: [] }\n"))).rejects.toThrow();
   });
 });
+
+describe("claude-code runner controlPlaneHosts", () => {
+  const runners = (hosts: string) => `
+runners:
+  claude: { type: claude-code, command: claude, controlPlaneHosts: ${hosts} }
+`;
+
+  test("accepts valid exact hosts", async () => {
+    const { config } = await load(runners("[api.anthropic.com, model.example.test]") + NATIVE_PIPELINE + repository());
+    expect(config.runners.claude).toMatchObject({ type: "claude-code", controlPlaneHosts: ["api.anthropic.com", "model.example.test"] });
+  });
+
+  test.each(["*.anthropic.com", "10.0.0.5", "api.github.com"])("rejects %p", async (host) => {
+    await expect(load(runners(`["${host}"]`) + NATIVE_PIPELINE + repository())).rejects.toThrow("controlPlaneHosts");
+  });
+});

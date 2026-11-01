@@ -336,6 +336,32 @@ describe("agent.run", () => {
     expect(await Bun.file(path.join(git, "info", "exclude")).text()).toContain(".serena/");
   });
 
+  test("a Claude Code agent in a repository with agentEgress receives the policy on fresh and resumed runs; without it none", async () => {
+    const w = await world();
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown>; repositories?: Record<string, unknown>; web: unknown; settings: { artifacts: string } };
+    config.runners.claude = { type: "claude-code", command: "claude", controlPlaneHosts: ["model.example.test"] };
+    config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude", workspaceAccess: "read-only" };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = harnesses.codex;
+    config.web = { listen: "127.0.0.1:4310" };
+    await w.run(false, { agent: "jamshid" });
+    expect(w.calls[0]!.egress).toBeUndefined();
+
+    config.repositories = { repo: { agentEgress: { httpsHosts: ["registry.example.test"], allowLoopbackMcp: true, localServices: [] } } };
+    w.setBehaviour(asks("Which database?"));
+    await w.run(false, { agent: "jamshid" });
+    answer(w, "PostgreSQL");
+    w.setBehaviour(() => ({}));
+    await w.run(true, { agent: "jamshid" });
+    const [fresh, resumed] = [w.calls[1]!, w.calls[2]!];
+    expect(resumed.resumeSessionId).toBe("sess-1");
+    for (const call of [fresh, resumed]) {
+      expect(call.egress).toMatchObject({
+        httpsHosts: ["registry.example.test"], controlPlaneHosts: ["model.example.test"], mcp: { port: 4310 },
+      });
+    }
+  });
+
   test("a Claude Code agent gets the same handover as a Codex agent", async () => {
     const w = await world();
     const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };

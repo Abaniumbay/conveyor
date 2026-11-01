@@ -1,12 +1,17 @@
 #!/usr/bin/env bun
 // Operator verification for agent egress enforcement (needs the real network; not part of `bun test`).
-// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir>
+// Usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--runner <claude-code-runner-id>]
 //
 // Clones the repository locally, runs its dependency restore inside the network sandbox with an empty
 // task-scoped cache and only the repository's `agentEgress.httpsHosts` reachable, then proves that
 // api.github.com, direct IP connections and the Docker socket are refused, and that every configured
 // local service answers at its sandbox endpoint. Prints every refused host so the allowlist
 // can be completed.
+//
+// With `--runner <id>` naming a Claude Code runner, it also launches probes the way the Claude Code
+// runner does: the process itself may reach only the runner's `controlPlaneHosts` (through the
+// token-protected control-plane proxy), its commands (`CLAUDE_CODE_SHELL_PREFIX`) only `httpsHosts`,
+// and neither may reach api.github.com or a direct IP.
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,7 +19,9 @@ import path from "node:path";
 import { loadConfig } from "../src/config/load";
 import { parseLoopbackTcp } from "../src/isolation/egress-policy";
 import { startEgressProxy } from "../src/isolation/egress-proxy";
+import { agentEgressFor } from "../src/isolation/agent-egress";
 import { sanitizedAgentEnvironment } from "../src/isolation/environment";
+import { CLAUDE_CONTROL_PLANE_HOSTS, claudeLaunch } from "../src/isolation/run-network";
 import { startTcpRelay } from "../src/isolation/tcp-relay";
 import { sandboxCommand } from "../src/isolation/sandbox";
 
@@ -67,6 +74,36 @@ export function localServiceChecks(services: readonly { name: string; endpoint: 
       expectFailure: false,
     };
   });
+}
+
+const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const CURL = "curl -sS --max-time 15 -o /dev/null";
+
+/**
+ * Probes for a Claude Code run, executed by `sh -c` as the Claude Code process would be: plain `curl`
+ * is the process (control-plane proxy), `$CLAUDE_CODE_SHELL_PREFIX curl` is one of its `Bash` commands.
+ */
+export function claudeCodeChecks(options: { httpsHosts: readonly string[]; controlPlaneHosts: readonly string[] }): SandboxCheck[] {
+  const [control] = options.controlPlaneHosts;
+  const allowed = options.httpsHosts.find((host) => !options.controlPlaneHosts.includes(host));
+  const command = (name: string, script: string, expectFailure: boolean): SandboxCheck => ({ name, argv: ["sh", "-c", script], expectFailure });
+  const prefixed = (curl: string): string => `$CLAUDE_CODE_SHELL_PREFIX ${curl}`;
+  const checks: SandboxCheck[] = [];
+  if (control) {
+    checks.push(command(`claude-code process reaches its control-plane host ${control}`, `${CURL} ${quote(`https://${control}`)}`, false));
+    checks.push(command(`claude-code command is refused the control-plane host ${control}`, prefixed(`${CURL} ${quote(`https://${control}`)}`), true));
+  }
+  if (allowed) {
+    checks.push(command(`claude-code command reaches allowed host ${allowed}`, prefixed(`${CURL} ${quote(`https://${allowed}`)}`), false));
+    checks.push(command(`claude-code process is refused non-control host ${allowed}`, `${CURL} ${quote(`https://${allowed}`)}`, true));
+  }
+  checks.push(
+    command("claude-code command: api.github.com is refused", prefixed(`${CURL} https://api.github.com`), true),
+    command("claude-code command: direct IP connection is refused", prefixed(`${CURL} --noproxy '*' https://1.1.1.1`), true),
+    command("claude-code process: api.github.com is refused", `${CURL} https://api.github.com`, true),
+    command("claude-code command does not receive the control-plane credential", prefixed(`sh -c 'case "$HTTPS_PROXY" in *conveyor:*) exit 1;; esac'`), false),
+  );
+  return checks;
 }
 
 /** Probes that must fail: the host Docker socket may never be reachable from the sandbox. */
@@ -139,15 +176,44 @@ async function runInSandbox(options: SandboxedCheckOptions, forwards: { port: nu
   return { passed: checkPassed(options.check, exitCode), exitCode, output: err || out };
 }
 
+/** Runs one Claude Code probe in the network sandbox exactly as the runner launches Claude Code. */
+async function runClaudeCodeCheck(options: {
+  check: SandboxCheck; scratch: string; workspace: string; base: Record<string, string>;
+  egress: NonNullable<ReturnType<typeof agentEgressFor>>;
+}): Promise<SandboxedCheckResult> {
+  const directory = await mkdtemp(path.join(options.scratch, "claude-"));
+  const [artifacts, home, temporary] = ["artifacts", "home", "tmp"].map((name) => path.join(directory, name)) as [string, string, string];
+  await Promise.all([artifacts, home, temporary].map((target) => mkdir(target, { recursive: true })));
+  const environment = { ...options.base, HOME: home, TMPDIR: temporary };
+  const launch = await claudeLaunch({
+    command: options.check.argv[0]!,
+    environment,
+    artifactsDirectory: artifacts,
+    egress: options.egress,
+    filesystem: { command: options.check.argv[0]!, env: environment, workspace: options.workspace, artifacts, home, scratch: temporary },
+    buildArguments: () => options.check.argv.slice(1),
+  });
+  try {
+    const child = Bun.spawn(launch.argv, { cwd: options.workspace, env: launch.env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { passed: checkPassed(options.check, exitCode), exitCode, output: err || out };
+  } finally {
+    await launch.network.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = Bun.argv.slice(2);
   const repositoryId = args[0];
   const configDirectory = args[args.indexOf("--config") + 1];
   if (!repositoryId || args.indexOf("--config") < 0 || !configDirectory) {
-    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir>");
+    console.error("usage: bun scripts/check-agent-egress.ts <repository-id> --config <dir> [--runner <claude-code-runner-id>]");
     return 2;
   }
+  const runnerId = args.includes("--runner") ? args[args.indexOf("--runner") + 1] : undefined;
   const config = await loadConfig(configDirectory, null);
+  const runner = runnerId ? config.runners[runnerId] : undefined;
+  if (runnerId && runner?.type !== "claude-code") throw new Error(`--runner ${runnerId} must name a configured claude-code runner`);
   const repository = config.repositories[repositoryId];
   if (!repository) throw new Error(`unknown repository: ${repositoryId}`);
   if (!repository.agentEgress) {
@@ -185,6 +251,17 @@ async function main(): Promise<number> {
     for (const step of steps) await run(`restore: ${step.name}`, step.argv, step.env);
     await run("api.github.com is refused", ["curl", "-sS", "--max-time", "15", "https://api.github.com"], {}, true);
     await run("direct IP connection is refused", ["curl", "-sS", "--noproxy", "*", "--max-time", "10", "https://1.1.1.1"], {}, true);
+    if (runner?.type === "claude-code") {
+      const egress = agentEgressFor(config, repositoryId, runner)!;
+      const controlPlaneHosts = egress.controlPlaneHosts ?? CLAUDE_CONTROL_PLANE_HOSTS;
+      console.log(`claude-code runner ${runnerId}: control-plane hosts ${controlPlaneHosts.join(", ")}`);
+      for (const check of claudeCodeChecks({ httpsHosts: repository.agentEgress.httpsHosts, controlPlaneHosts })) {
+        const result = await runClaudeCodeCheck({ check, scratch, workspace: work, base, egress });
+        if (!result.passed) failures += 1;
+        console.log(`${result.passed ? "PASS" : "FAIL"} ${check.name}${result.passed ? "" : ` (exit ${result.exitCode})`}`);
+        if (!result.passed) console.log(result.output.split("\n").slice(-15).join("\n"));
+      }
+    }
     for (const check of [...localServiceChecks(localServices), ...dockerSocketChecks()]) {
       await run(check.name, check.argv, {}, check.expectFailure);
     }

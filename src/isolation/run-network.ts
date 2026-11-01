@@ -112,6 +112,15 @@ export type EgressInput = Omit<AgentNetworkPolicy, "controlPlaneHosts"> & { cont
 /** Hosts Codex itself needs for its model backend and authentication. */
 export const CODEX_CONTROL_PLANE_HOSTS: readonly string[] = ["chatgpt.com", "api.openai.com", "auth.openai.com"];
 
+/** The filesystem plus the host sockets the in-namespace bridge forwards to. */
+function withBridgeSockets(filesystem: AgentFilesystemOptions, policy: AgentNetworkPolicy): AgentFilesystemOptions {
+  const bridgeSockets = [
+    ...(policy.mcp ? [policy.mcp.socket] : []),
+    ...(policy.localServices ?? []).flatMap((service) => "socket" in service ? [service.socket] : []),
+  ];
+  return bridgeSockets.length > 0 ? { ...filesystem, readable: [...(filesystem.readable ?? []), ...bridgeSockets] } : filesystem;
+}
+
 /**
  * The argv/env to spawn Codex with its confined filesystem. Egress additionally wraps the command
  * in the network sandbox, and its `network` must be closed when the run ends.
@@ -134,14 +143,7 @@ export async function codexLaunch(options: {
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
-  const bridgeSockets = [
-    ...(policy.mcp ? [policy.mcp.socket] : []),
-    ...(policy.localServices ?? []).flatMap((service) => "socket" in service ? [service.socket] : []),
-  ];
-  const filesystem = {
-    ...options.filesystem,
-    ...(bridgeSockets.length > 0 ? { readable: [...(options.filesystem.readable ?? []), ...bridgeSockets] } : {}),
-  };
+  const filesystem = withBridgeSockets(options.filesystem, policy);
   const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
   try {
     verifyAgentWrapper(sandboxed);
@@ -150,4 +152,54 @@ export async function codexLaunch(options: {
     throw error;
   }
   return { argv: sandboxed.argv, env: sandboxed.env, network };
+}
+
+/** Hosts Claude Code itself needs for its model API and authentication. */
+export const CLAUDE_CONTROL_PLANE_HOSTS: readonly string[] = ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "claude.ai"];
+
+/** Variables the harness holds for itself that commands it runs must not inherit. */
+const CLAUDE_COMMAND_UNSET = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+
+/**
+ * `CLAUDE_CODE_SHELL_PREFIX` for Claude Code: its `Bash` commands run under the data-plane proxy
+ * environment, while the process itself keeps the control-plane proxy (and its token) for the model API.
+ */
+export function claudeShellPrefix(dataEnv: Record<string, string>): string {
+  const unset = CLAUDE_COMMAND_UNSET.flatMap((name) => ["-u", name]);
+  const set = Object.entries(dataEnv).map(([name, value]) => `${name}=${value}`);
+  return ["/usr/bin/env", ...unset, ...set].join(" ");
+}
+
+/**
+ * The argv/env to spawn Claude Code inside the run's network namespace. The process reaches its
+ * model API through the token-protected control-plane proxy; its commands get only the data-plane proxy.
+ * The caller closes `network` when the run ends.
+ */
+export async function claudeLaunch(options: {
+  command: string;
+  environment: Record<string, string>;
+  artifactsDirectory: string;
+  egress: EgressInput;
+  filesystem: AgentFilesystemOptions;
+  buildArguments: () => string[];
+}): Promise<{ argv: string[]; env: Record<string, string>; network: RunNetwork }> {
+  const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CLAUDE_CONTROL_PLANE_HOSTS };
+  const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
+  try {
+    const filesystem = withBridgeSockets(options.filesystem, policy);
+    const build = () => [options.command, ...options.buildArguments()];
+    let dataEnv: Record<string, string> = {};
+    // The wrapper is pure; the first pass only learns the command proxy environment the second needs.
+    network.wrap(options.environment, (env) => { dataEnv = env; return build(); }, filesystem);
+    const sandboxed = network.wrap(
+      { ...options.environment, CLAUDE_CODE_SHELL_PREFIX: claudeShellPrefix(dataEnv), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      build,
+      filesystem,
+    );
+    verifyAgentWrapper(sandboxed);
+    return { argv: sandboxed.argv, env: sandboxed.env, network };
+  } catch (error) {
+    await network.close();
+    throw error;
+  }
 }
