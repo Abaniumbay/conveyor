@@ -538,6 +538,42 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 
+  test("renders Claude quota stored with epoch-seconds resetsAt as remaining capacity, not Stale", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-claude-quota-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      runners: { claude: { type: "claude-code" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { default: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: [{ id: "implementation", run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] }] } },
+      repositories: { repo: { source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },
+      agents: { implementer: { runner: "claude" } },
+    } as unknown as ConveyorConfig;
+    store.createRun({
+      id: "claude-quota-run", issueId: null, stageId: "implementation", attempt: 1,
+      kind: "producer", status: "running", configHash: config.hash, startedAt: new Date().toISOString(),
+    });
+    store.appendRunEvent("claude-quota-run", "execution", { agentId: "implementer" });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    store.appendRunEvent("claude-quota-run", "harness", { type: "rate_limit_event", rate_limit_info: {
+      status: "allowed", resetsAt: nowSeconds + 3600, rateLimitType: "five_hour",
+      unifiedWindows: {
+        five_hour: { utilization: 0.18, resetsAt: nowSeconds + 3600 },
+        seven_day: { utilization: 0.06, resetsAt: nowSeconds + 86400 },
+      },
+    } });
+
+    const service = new ConveyorService(config, store, {} as never);
+    const html = renderDashboard(service.dashboard("csrf"));
+    expect(html).toContain("82% left");
+    expect(html).toContain("94% left");
+    expect(html).not.toContain("Stale");
+    store.close();
+  });
+
   test("building a dashboard shares one item list and caches per-item lookups", async () => {
     const listings = async (count: number) => {
       const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-cost-"));
