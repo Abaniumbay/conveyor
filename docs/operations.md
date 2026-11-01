@@ -128,12 +128,15 @@ For configured Codex runs, repositories with `agentEgress` report network and PI
 and the filesystem mounts required by Conveyor's bubblewrap egress wrapper. Without `agentEgress`, the
 check instead reports the user namespace required by Codex's own sandbox. A denied capability names
 the requirement and suggests a host permission fix.
-Effective Codex confinement: with `agentEgress`, Conveyor's wrapper is the only filesystem and network
-layer and Codex starts with its own sandbox disabled (fresh, resumed and legacy verifier runs alike);
-without `agentEgress`, Codex's own sandbox enforces the configured access mode. For repositories that configure `refinement`, it
+For repositories that configure `refinement`, it
 also reads (never writes) whether the GitHub credentials can read the organization's issue types and
 issue fields and write them on the repository. Each failure comes with the fix. Agent sign-ins are
 separate from the dashboard administrator.
+
+Effective Codex confinement: with `agentEgress`, Conveyor's wrapper is the only filesystem and network
+layer and Codex starts with its own sandbox disabled (fresh, resumed and legacy verifier runs alike).
+Without `agentEgress`, `read-only` and `workspace-write` runs use Codex's own sandbox inside the
+filesystem wrapper; `danger-full-access` runs have Codex's sandbox off and only a private `/tmp`.
 
 ### Test databases for agents
 

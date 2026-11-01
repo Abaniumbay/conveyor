@@ -35,7 +35,9 @@ test("SPEC and operations guide name the Codex confinement layer for each launch
 
   expect(spec).toContain("Codex confinement layer by launch mode");
   expect(spec).toContain("solely by Conveyor's wrapper");
-  expect(spec).toContain("never disabled without the wrapper");
+  expect(spec).not.toContain("never disabled without the wrapper");
+  expect(spec).toContain("for `danger-full-access` Codex's sandbox is off and nothing confines the filesystem or network beyond a private `/tmp`");
+  expect(operations).toContain("`danger-full-access` runs have Codex's sandbox off and only a private `/tmp`");
   expect(operations).toContain("Effective Codex confinement");
   expect(operations).toContain("Conveyor's wrapper is the only filesystem and network");
 });
