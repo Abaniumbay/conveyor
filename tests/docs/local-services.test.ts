@@ -28,3 +28,14 @@ test("configuration guide shows a loopback TCP local service using the environme
   expect(configuration).toContain("REDIS_URL: !secret redis_test_url");
   expect(configuration).toContain("`tcp` is a numeric loopback host listener");
 });
+
+test("SPEC and operations guide name the Codex confinement layer for each launch mode", async () => {
+  const spec = await readFile(path.join(import.meta.dir, "../../SPEC.md"), "utf8");
+  const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
+
+  expect(spec).toContain("Codex confinement layer by launch mode");
+  expect(spec).toContain("solely by Conveyor's wrapper");
+  expect(spec).toContain("never disabled without the wrapper");
+  expect(operations).toContain("Effective Codex confinement");
+  expect(operations).toContain("Conveyor's wrapper is the only filesystem and network");
+});
