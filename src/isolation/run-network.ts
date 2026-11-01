@@ -6,7 +6,7 @@ import type net from "node:net";
 import { startTcpRelay } from "./tcp-relay";
 
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
-import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
+import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, verifyAgentWrapper, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
 
 /** A sandbox loopback port and the host source it reaches: a Unix socket or a loopback TCP listener. */
 export type LocalServiceForward = { port: number; socket: string } | { port: number; tcp: { host: string; port: number } };
@@ -143,5 +143,11 @@ export async function codexLaunch(options: {
     ...(bridgeSockets.length > 0 ? { readable: [...(options.filesystem.readable ?? []), ...bridgeSockets] } : {}),
   };
   const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
+  try {
+    verifyAgentWrapper(sandboxed);
+  } catch (error) {
+    await network.close();
+    throw error;
+  }
   return { argv: sandboxed.argv, env: sandboxed.env, network };
 }

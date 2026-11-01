@@ -158,6 +158,9 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   }
   for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"]) addPath(file, false);
   if (existsSync("/etc/ssl/certs")) addPath("/etc/ssl/certs", false, true);
+  // The root is a tmpfs created above: without this, a command could write anywhere in it. Binds
+  // mounted over it keep their own access, so only the authorized write set stays writable.
+  mounts.push("--remount-ro", "/");
   return { mounts };
 }
 
@@ -165,8 +168,26 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
 export function agentFilesystemCommand(options: AgentFilesystemOptions, argv: readonly string[]): SandboxedCommand {
   const plan = agentFilesystemPlan(options);
   const bubblewrap = findOnPath("bwrap", options.env.PATH);
-  if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap");
+  if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap on PATH; install it (for example: sudo apt install bubblewrap) and run `conveyor doctor`");
   return { argv: [bubblewrap, "--unshare-pid", "--die-with-parent", ...plan.mounts, "--", ...argv], env: resolvePathEnvironment(options.env), dataEnv: {} };
+}
+
+/**
+ * Proves the namespace in a wrapped launch can be created before the agent command is started, by
+ * running the same bubblewrap arguments around a no-op. Fails closed with an actionable message.
+ */
+export function verifyAgentWrapper(launch: Pick<SandboxedCommand, "argv" | "env">): void {
+  const separator = launch.argv.indexOf("--");
+  if (separator < 0) throw new Error("agent filesystem wrapper has no command separator");
+  let probe: ReturnType<typeof Bun.spawnSync>;
+  try {
+    probe = Bun.spawnSync([...launch.argv.slice(0, separator + 1), "/usr/bin/true"], { env: launch.env, stdout: "ignore", stderr: "pipe" });
+  } catch (error) {
+    throw new Error(`Cannot establish the agent filesystem wrapper: bubblewrap could not be started (${error instanceof Error ? error.message : String(error)}). Install bubblewrap and run \`conveyor doctor\`.`, { cause: error });
+  }
+  if (probe.exitCode !== 0) {
+    throw new Error(`Cannot establish the agent filesystem wrapper; no agent command was started. bubblewrap failed: ${probe.stderr?.toString().trim() || `exit ${probe.exitCode}`}. Allow unprivileged user, network and mount namespaces for bwrap and run \`conveyor doctor\`.`);
+  }
 }
 
 function requireDirectory(value: string, description: string): string {
@@ -441,7 +462,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
   const filesystem = options.filesystem;
   if (filesystem) {
     const bubblewrap = findOnPath("bwrap", options.env.PATH);
-    if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap");
+    if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap on PATH; install it (for example: sudo apt install bubblewrap) and run `conveyor doctor`");
     return {
       argv: [bubblewrap, "--unshare-net", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--", process.execPath, "-e", BRIDGE_PROGRAM, spec],
       env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
