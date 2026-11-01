@@ -152,8 +152,11 @@ export function ciFailureFingerprint(failed: readonly FailedRun[]): string | nul
   return new Bun.CryptoHasher("sha256").update(facts.sort().join("\n\n")).digest("hex");
 }
 
+/** Marks a log that could not be fetched; its text describes the fetch, not the failure. */
+const LOG_UNAVAILABLE_PREFIX = "(log unavailable:";
+
 function ciFailureDiagnostics(log: string | null): string[] {
-  if (!log) return [];
+  if (!log || log.trimStart().startsWith(LOG_UNAVAILABLE_PREFIX)) return [];
   const lines = log.split("\n").map(normalizeCiDiagnostic).filter(Boolean);
   const tests = lines
     .map((line) => {
@@ -219,7 +222,7 @@ export function ciAnnouncement(changeUrl: string, short: string, runs: Array<{ n
 export async function readRunLog(provider: CiProvider, change: CiChange, run: CiRun, lines: number): Promise<string | null> {
   if (!run.hasLog) return null;
   try { return await provider.log(change, run.id, lines); }
-  catch (error) { return `(log unavailable: ${error instanceof Error ? error.message : String(error)})`; }
+  catch (error) { return `${LOG_UNAVAILABLE_PREFIX} ${error instanceof Error ? error.message : String(error)})`; }
 }
 
 export interface CiGateInput {

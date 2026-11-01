@@ -121,6 +121,52 @@ describe("GitHub Actions CiProvider contract", () => {
     expect(transport.requests.map((request) => request.path)).toContain("repos/owner/repo/check-runs/12/annotations?per_page=100");
   });
 
+  test("identifies a refused job with an empty runner name and runner id 0 as never started", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(12, "Tests", "completed", "failure")];
+    transport.jobs[12] = { status: "completed", conclusion: "failure", runner_id: 0, runner_name: "", steps: [] };
+    transport.annotations[12] = [{ message: "The job was not started because recent account payments have failed or your spending limit needs to be increased." }];
+
+    const [result] = await provider(transport).list(change, "commit-1");
+
+    expect(result).toMatchObject({
+      state: "failed",
+      neverStarted: { annotation: "The job was not started because recent account payments have failed or your spending limit needs to be increased." },
+    });
+  });
+
+  test("identifies a failed job with an absent runner name and no steps as never started", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(12, "Tests", "completed", "failure")];
+    transport.jobs[12] = { steps: [] };
+
+    const [result] = await provider(transport).list(change, "commit-1");
+
+    expect(result?.neverStarted).toBeDefined();
+  });
+
+  test("does not classify a failed job with a runner name and no started steps as never started", async () => {
+    const transport = new FakeTransport();
+    transport.runs = [check(12, "Tests", "completed", "failure")];
+    transport.jobs[12] = { runner_name: "GitHub Actions 3", steps: [] };
+
+    const [result] = await provider(transport).list(change, "commit-1");
+
+    expect(result?.neverStarted).toBeUndefined();
+  });
+
+  test("does not classify an empty-runner-name job with a completed or in-progress step as never started", async () => {
+    for (const status of ["completed", "in_progress"]) {
+      const transport = new FakeTransport();
+      transport.runs = [check(12, "Tests", "completed", "failure")];
+      transport.jobs[12] = { runner_name: "", steps: [{ status }] };
+
+      const [result] = await provider(transport).list(change, "commit-1");
+
+      expect(result?.neverStarted).toBeUndefined();
+    }
+  });
+
   test("does not classify a failed job with an executed step as never started", async () => {
     const transport = new FakeTransport();
     transport.runs = [check(12, "Tests", "completed", "failure")];

@@ -197,6 +197,10 @@ describe("boundLog", () => {
 describe("ciFailureFingerprint", () => {
   const failure = (name: string, log: string | null) => ({ name, state: "failed" as const, url: null, log });
 
+  test("returns null for an unavailable-log note even when its text contains an error word", () => {
+    expect(ciFailureFingerprint([failure("Tests", "(log unavailable: GitHub API GET repos/o/r/actions/jobs/1/logs failed: gh: Not Found (HTTP 404))")])).toBeNull();
+  });
+
   test("normalizes volatile values and check order while retaining failing-test identity", () => {
     const first = ciFailureFingerprint([
       failure("Unit", "2026-10-18T10:00:00.123Z not ok 4 - rejects expired tokens (12ms)\nabc1234\nError: job id=123e4567-e89b-12d3-a456-426614174000"),
@@ -221,6 +225,7 @@ describe("ciFailureFingerprint", () => {
     const withError = ciFailureFingerprint([failure("Unit", "Error: database unavailable")]);
     expect(ciFailureFingerprint([failure("Unit", "Error: permission denied")])).not.toBe(withError);
     expect(ciFailureFingerprint([failure("Unit", null)])).toBeNull();
+    expect(ciFailureFingerprint([failure("Unit", "")])).toBeNull();
   });
 
   test("recognizes Bun failure names independently of volatile output", () => {

@@ -356,7 +356,7 @@ describe("ci.passed", () => {
   });
 
   test("uses a check name instead of an unavailable log when a never-started check has no annotation", async () => {
-    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null }, log: "(log unavailable: HTTP 404)" })] });
+    const snapshot = ci({ runs: [crun("Tests", "failed", { neverStarted: { annotation: null }, log: "(log unavailable: GitHub API GET repos/o/r/actions/jobs/1/logs failed: gh: Not Found (HTTP 404))" })] });
 
     await expect(run("ci.passed", { context: gateCtx(snapshot) })).rejects.toThrow('CI check "Tests" never started.');
   });
@@ -456,6 +456,24 @@ describe("ci.passed", () => {
     expect((await attempt("five", ci({ runs: [crun("Tests", "passed")] })) as Pass).status).toBe("pass");
     expect((await attempt("six", failure("not ok 1 - renders the second card")) as Fail).route).toEqual({ retry: true });
     expect((await attempt("seven", failure("not ok 1 - renders the second card", "Lint")) as Fail).route).toEqual({ retry: true });
+  });
+
+  test("never stops an item for the same log-less failed run observed twice at one head", async () => {
+    const w = await world();
+    const snapshot = ci({ runs: [crun("Tests", "failed", { log: "(log unavailable: GitHub API GET repos/o/r/actions/jobs/1/logs failed: gh: Not Found (HTTP 404))" })] });
+    const attempt = (id: string) => run("ci.passed", {
+      context: gateCtx(snapshot, {
+        run: {
+          stage: "implementation", stageEpoch: w.store.executions().stageEpoch("i1"), attempt: 1, maxAttempts: 3,
+          taskInstanceId: "ciPassed", enteredAt: new Date(T0).toISOString(), feedback: null,
+        },
+      }),
+      issueId: "i1", journal: w.store.executions(),
+      instance: { id: "ciPassed", stage: "implementation", idempotencyKey: id, resumed: false },
+    });
+
+    expect((await attempt("first") as Fail).route).toEqual({ retry: true });
+    expect((await attempt("second") as Fail).route).toEqual({ retry: true });
   });
 
   test("a cancelled rerunnable run not yet rerun fails with a retry that names it; once rerun it counts as failed", async () => {
