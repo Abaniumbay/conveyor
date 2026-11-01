@@ -12,7 +12,8 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
-import { agentFilesystemPlan } from "../isolation/sandbox";
+import { claudeLaunch, type RunNetwork } from "../isolation/run-network";
+import { agentFilesystemPlan, type AgentFilesystemOptions } from "../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
@@ -191,9 +192,6 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   if (input.sandbox === "danger-full-access") {
     throw new ClaudeCodeRunnerError("Claude Code agents run read-only or workspace-write, never with full access", "process", null, "");
   }
-  if (input.egress) {
-    throw new ClaudeCodeRunnerError("Claude Code agents do not support network egress isolation yet", "process", null, "");
-  }
   await mkdir(input.artifactsDirectory, { recursive: true });
   const artifactsDirectory = resolveFilesystemPath(input.artifactsDirectory);
   const workspace = resolveFilesystemPath(input.workspace);
@@ -203,6 +201,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
   const startedAt = performance.now();
   let privateHome: string | undefined;
   let privateHomeClearAttempted = false;
+  let network: RunNetwork | null = null;
   const clearPrivateHome = async (): Promise<string | undefined> => {
     if (!privateHome || privateHomeClearAttempted) return undefined;
     privateHomeClearAttempted = true;
@@ -234,7 +233,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     environment.TMPDIR = scratch.path;
     const resolvedEnvironment = resolvePathEnvironment(environment);
     const schema = claudeSchema(OUTPUT_SCHEMAS.producer);
-    const filesystem = agentFilesystemPlan({
+    const filesystemOptions: AgentFilesystemOptions = {
       command: input.command,
       env: resolvedEnvironment,
       workspace,
@@ -248,12 +247,30 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       ],
       runtime: [input.mcp.command, ...Object.values(input.mcpServers ?? {}).map((server) => server.command)],
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
-    });
-    const argv = [
+    };
+    const filesystem = agentFilesystemPlan(filesystemOptions);
+    let argv = [
       "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
       input.command, ...claudeArguments(input, schema),
     ];
-    const child = Bun.spawn(argv, { cwd: workspace, env: resolvedEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    let spawnEnvironment = resolvedEnvironment;
+    if (input.egress) {
+      // Fails closed: without the namespace and its proxies Claude Code is never started.
+      const launch = await claudeLaunch({
+        command: input.command,
+        environment: resolvedEnvironment,
+        artifactsDirectory,
+        egress: input.egress,
+        filesystem: filesystemOptions,
+        buildArguments: () => claudeArguments(input, schema),
+      });
+      network = launch.network;
+      argv = launch.argv;
+      spawnEnvironment = launch.env;
+    }
+    const child = Bun.spawn(argv, { cwd: workspace, env: spawnEnvironment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // Release the per-run network whenever the process ends, even if later setup throws.
+    void child.exited.finally(() => network?.close());
     child.stdin.write(input.prompt);
     child.stdin.end();
 
@@ -282,6 +299,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
     try {
       exitCode = await child.exited;
     } finally {
+      await network?.close();
       await scratch.cleanup();
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -329,6 +347,7 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       ...(cleanupError ? { cleanupError } : {}),
     };
   } catch (error) {
+    await network?.close();
     await scratch.cleanup();
     const cleanupError = await clearPrivateHome();
     throw withCleanupError(error, cleanupError);

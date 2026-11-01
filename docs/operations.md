@@ -153,6 +153,11 @@ Verify with `bun scripts/check-agent-egress.ts <repository-id> --config <dir>`: 
 configured service to accept a connection from inside the sandbox and the Docker socket to be
 refused.
 
+For a Claude Code runner add `--runner <runner-id>`: it launches probes the way the runner does and
+reports that the process reaches its control-plane host (`controlPlaneHosts` on the runner, default
+Anthropic's hosts) and no other, that its commands reach only `httpsHosts`, and that `api.github.com`
+and direct IP connections are refused.
+
 ## 5. First run
 
 ```sh

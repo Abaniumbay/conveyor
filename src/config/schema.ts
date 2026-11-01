@@ -223,6 +223,15 @@ const sourceSchema = z.discriminatedUnion("type", [githubSourceSchema]);
 const githubCodeHostSchema = z.object({ type: z.literal("github") }).strict();
 const codeHostSchema = z.discriminatedUnion("type", [githubCodeHostSchema]);
 
+const controlPlaneHostsSchema = z
+  .array(z.string())
+  .optional()
+  .superRefine((hosts, context) => {
+    for (const issue of validateHttpsHosts(hosts ?? [])) {
+      context.addIssue({ code: "custom", message: issue.message.replace("agentEgress.httpsHosts", "controlPlaneHosts") });
+    }
+  });
+
 const codexRunnerSchema = z
   .object({
     type: z.literal("codex"),
@@ -230,14 +239,7 @@ const codexRunnerSchema = z
     sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("workspace-write"),
     automaticApprovals: z.boolean().default(true),
     /** Hosts the Codex process itself may reach when egress is enforced (default: ChatGPT and OpenAI). */
-    controlPlaneHosts: z
-      .array(z.string())
-      .optional()
-      .superRefine((hosts, context) => {
-        for (const issue of validateHttpsHosts(hosts ?? [])) {
-          context.addIssue({ code: "custom", message: issue.message.replace("agentEgress.httpsHosts", "controlPlaneHosts") });
-        }
-      }),
+    controlPlaneHosts: controlPlaneHostsSchema,
   })
   .strict();
 
@@ -247,6 +249,8 @@ const claudeCodeRunnerSchema = z
     command: z.string().min(1).default("claude"),
     /** Claude Code's config directory (login and sessions); defaults to ~/.claude, the service user's login. */
     configDir: absolutePathSchema.optional(),
+    /** Hosts the Claude Code process itself may reach when egress is enforced (default: Anthropic). */
+    controlPlaneHosts: controlPlaneHostsSchema,
   })
   .strict();
 

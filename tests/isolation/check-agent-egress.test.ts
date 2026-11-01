@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { rm } from "node:fs/promises";
 
-import { dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
+import { claudeCodeChecks, dockerSocketChecks, localServiceChecks, restoreSteps, runSandboxedCheck } from "../../scripts/check-agent-egress";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
@@ -28,6 +28,26 @@ describe("restoreSteps", () => {
 describe("local service and Docker checks", () => {
   test("no local services adds no service checks", () => {
     expect(localServiceChecks([])).toEqual([]);
+  });
+});
+
+describe("claudeCodeChecks", () => {
+  const checks = claudeCodeChecks({ httpsHosts: ["registry.npmjs.org"], controlPlaneHosts: ["api.anthropic.com"] });
+  const find = (text: string) => checks.find((check) => check.name.includes(text))!;
+
+  test("the process reaches only its control-plane host and its commands only the allowed hosts", () => {
+    expect(find("process reaches its control-plane host api.anthropic.com")).toMatchObject({ expectFailure: false });
+    expect(find("process reaches its control-plane host").argv[2]).not.toContain("CLAUDE_CODE_SHELL_PREFIX");
+    expect(find("process is refused non-control host registry.npmjs.org")).toMatchObject({ expectFailure: true });
+    expect(find("command reaches allowed host registry.npmjs.org").argv[2]).toStartWith("$CLAUDE_CODE_SHELL_PREFIX curl");
+    expect(find("command is refused the control-plane host")).toMatchObject({ expectFailure: true });
+  });
+
+  test("checks the GitHub API and direct IP denials for commands and the credential separation", () => {
+    expect(find("command: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("command: direct IP connection is refused").argv[2]).toContain("--noproxy '*' https://1.1.1.1");
+    expect(find("process: api.github.com is refused").expectFailure).toBe(true);
+    expect(find("does not receive the control-plane credential").expectFailure).toBe(false);
   });
 });
 
