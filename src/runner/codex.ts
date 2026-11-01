@@ -242,12 +242,18 @@ function mcpArguments(input: CodexRunInput): string[] {
   return args;
 }
 
+// With agentEgress, Conveyor's wrapper is the only confinement layer (filesystem and network), and
+// Codex must not try a nested namespace. Without it, Codex's own sandbox keeps the configured mode.
+function codexSandboxMode(input: Pick<CodexRunInput, "sandbox" | "egress">): CodexRunInput["sandbox"] {
+  return input.egress ? "danger-full-access" : input.sandbox;
+}
+
 // `codex exec resume` rejects -C, --color, --sandbox and --approve-for-me, so a resumed run
 // takes the working directory from the spawn cwd and the sandbox and approvals from -c overrides.
 function resumeArguments(input: CodexRunInput, sessionId: string, outputFile: string, schemaFile: string, extra: string[]): string[] {
   const args = ["exec", "resume", "--json", "--output-schema", schemaFile, "-o", outputFile];
-  args.push("-c", `sandbox_mode=${tomlString(input.sandbox)}`);
-  if (input.automaticApprovals && input.sandbox === "workspace-write") {
+  args.push("-c", `sandbox_mode=${tomlString(codexSandboxMode(input))}`);
+  if (input.automaticApprovals && input.sandbox === "workspace-write" && !input.egress) {
     args.push("-c", `approvals_reviewer=${tomlString("auto_review")}`);
   }
   if (input.model) args.push("--model", input.model);
@@ -262,10 +268,10 @@ function buildArguments(input: CodexRunInput, outputFile: string, schemaFile: st
   const args = ["exec", "--json", "--color", "never"];
   if (!input.persistSession) args.push("--ephemeral");
   args.push("-C", input.workspace, "--output-schema", schemaFile, "-o", outputFile);
-  if (input.automaticApprovals && input.sandbox === "workspace-write") {
+  if (input.automaticApprovals && input.sandbox === "workspace-write" && !input.egress) {
     args.push("--approve-for-me");
   } else {
-    args.push("--sandbox", input.sandbox);
+    args.push("--sandbox", codexSandboxMode(input));
   }
   if (input.model) args.push("--model", input.model);
   if (input.effort) {
