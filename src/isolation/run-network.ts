@@ -6,7 +6,7 @@ import type net from "node:net";
 import { startTcpRelay } from "./tcp-relay";
 
 import { startEgressProxy, type EgressProxy } from "./egress-proxy";
-import { agentFilesystemCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, verifyAgentWrapper, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
+import { agentFilesystemCommand, agentLaunchCommand, agentFilesystemPlan, privateTmpCommand, PROXY_VARIABLES, sandboxCommand, verifyAgentWrapper, type AgentFilesystemOptions, type SandboxedCommand } from "./sandbox";
 
 /** A sandbox loopback port and the host source it reaches: a Unix socket or a loopback TCP listener. */
 export type LocalServiceForward = { port: number; socket: string } | { port: number; tcp: { host: string; port: number } };
@@ -139,14 +139,22 @@ export async function codexLaunch(options: {
   if (!options.egress) {
     const plain = { argv: [options.command, ...options.buildArguments([])], env: options.environment };
     const launch = options.privateTmp ? privateTmpCommand(plain) : agentFilesystemCommand(options.filesystem, plain.argv);
+    if (!options.privateTmp) verifyAgentWrapper(launch, agentLaunchCommand(options.filesystem));
     return { argv: launch.argv, env: launch.env, network: null };
   }
   const policy: AgentNetworkPolicy = { ...options.egress, controlPlaneHosts: options.egress.controlPlaneHosts ?? CODEX_CONTROL_PLANE_HOSTS };
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
   const filesystem = withBridgeSockets(options.filesystem, policy);
-  const sandboxed = network.wrap(options.environment, (dataEnv) => [options.command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
+  let command: string;
   try {
-    verifyAgentWrapper(sandboxed);
+    command = agentLaunchCommand(options.filesystem);
+  } catch (error) {
+    await network.close();
+    throw error;
+  }
+  const sandboxed = network.wrap(options.environment, (dataEnv) => [command, ...options.buildArguments(shellPolicyArguments(dataEnv))], filesystem);
+  try {
+    verifyAgentWrapper(sandboxed, command);
   } catch (error) {
     await network.close();
     throw error;
@@ -187,7 +195,8 @@ export async function claudeLaunch(options: {
   const network = await startRunNetwork({ directory: path.join(options.artifactsDirectory, "net"), policy });
   try {
     const filesystem = withBridgeSockets(options.filesystem, policy);
-    const build = () => [options.command, ...options.buildArguments()];
+    const command = agentLaunchCommand(options.filesystem);
+    const build = () => [command, ...options.buildArguments()];
     let dataEnv: Record<string, string> = {};
     // The wrapper is pure; the first pass only learns the command proxy environment the second needs.
     network.wrap(options.environment, (env) => { dataEnv = env; return build(); }, filesystem);
@@ -196,7 +205,7 @@ export async function claudeLaunch(options: {
       build,
       filesystem,
     );
-    verifyAgentWrapper(sandboxed);
+    verifyAgentWrapper(sandboxed, command);
     return { argv: sandboxed.argv, env: sandboxed.env, network };
   } catch (error) {
     await network.close();

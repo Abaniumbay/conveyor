@@ -624,6 +624,22 @@ describe("conveyor doctor", () => {
     });
   });
 
+  test("names a Codex command that cannot be resolved for confined launch and says how to fix it", async () => {
+    const home = await initialisedHome();
+    const root = await temporary();
+    const dangling = path.join(root, "codex");
+    await symlink(path.join(root, "removed-release", "codex"), dangling);
+    const checks = await doctorChecks(home, path.join(home, "config/conveyor.yaml"), async () => false, undefined, undefined, {
+      ...runtime(true),
+      findTool: (command) => command === "codex" ? dangling : command === "gh" ? null : "/usr/bin/true",
+    });
+
+    const failure = checks.find((check) => check.name.startsWith("harness") && check.status === "fail");
+    expect(failure?.detail).toContain("codex");
+    expect(failure?.detail).toContain(dangling);
+    expect(failure?.fix).toContain("reinstall codex");
+  });
+
   test("reports artifact and temporary filesystem pressure in its text-ready checks and JSON report", async () => {
     const home = await initialisedHome();
     const artifacts = path.join(home, "artifacts");
