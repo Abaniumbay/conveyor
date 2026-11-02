@@ -476,17 +476,26 @@ describe("ci.passed", () => {
     expect((await attempt("second") as Fail).route).toEqual({ retry: true });
   });
 
-  test("a cancelled rerunnable run not yet rerun fails with a retry that names it; once rerun it counts as failed", async () => {
+  test("a cancelled rerunnable run not yet rerun is rerun once and keeps the gate pending; once rerun and cancelled again it stops blocked without promising a rerun", async () => {
+    const w = await world();
     const cancelled = crun("Tests", "cancelled", { rerunnable: true });
-    const first = await run("ci.passed", { context: gateCtx(ci({ runs: [cancelled] })) }) as Fail;
-    expect(first.route).toEqual({ retry: true });
-    expect(first.message).toContain("Tests");
-    expect(first.message).toContain("cancelled");
-    expect(first.message).toContain("rerun");
-    const second = await run("ci.passed", { context: gateCtx(ci({ runs: [cancelled], reruns: ["Tests"] })) }) as Fail;
-    expect(second.route).toEqual({ retry: true });
-    expect(second.message).toContain("CI failed");
-    expect(second.message).toContain("Tests (cancelled)");
+    const first = await run("ci.passed", { context: gateCtx(ci({ runs: [cancelled] })), deps: w.deps }) as Pending;
+    expect(first.status).toBe("pending");
+    expect(first.message).toContain("Tests (rerun requested)");
+    expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toEqual(["rerun id-Tests"]);
+    const second = await run("ci.passed", { context: gateCtx(ci({ runs: [cancelled], reruns: ["Tests"] })), deps: w.deps }) as Fail;
+    expect(second.route).toEqual({ stop: "blocked" });
+    expect(second.message).toContain("CI run Tests was cancelled at head1");
+    expect(second.message).toContain("one rerun for this head was already used");
+    expect(second.message).toMatch(/Rerun the check .* or push a new head/);
+    expect(second.message).not.toContain("will be rerun");
+    expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toHaveLength(1);
+  });
+
+  test("a real failure of another run on the head still retries and consumes a feedback cycle", async () => {
+    const result = await run("ci.passed", { context: gateCtx(ci({ runs: [crun("Tests", "cancelled", { rerunnable: true }), crun("Lint", "failed")] })) }) as Fail;
+    expect(result.route).toEqual({ retry: true });
+    expect(result.message).toContain("Lint (failed)");
   });
 
   test("logLines keeps only the last lines of a failed run's log", async () => {
@@ -515,9 +524,12 @@ describe("ci.passed", () => {
     expect(evidence).not.toContain("line 97");
   });
 
-  test("a non-rerunnable cancelled run is a failure straight away", async () => {
+  test("a cancelled run the provider cannot rerun stops blocked and says no rerun was possible", async () => {
     const result = await run("ci.passed", { context: gateCtx(ci({ runs: [crun("Tests", "cancelled")] })) }) as Fail;
-    expect(result.message).toContain("Tests (cancelled)");
+    expect(result.route).toEqual({ stop: "blocked" });
+    expect(result.message).toContain("CI run Tests was cancelled at head1");
+    expect(result.message).toContain("could not rerun");
+    expect(result.message).not.toContain("will be rerun");
   });
 
   test("passes when every run passed or was skipped after the settle window", async () => {
@@ -769,12 +781,12 @@ describe("a rerun run the provider still reports as cancelled", () => {
     w.provider.runs = [ciRun("Tests", "cancelled", { id: "id-new", canRerun: true })];
     const again = await load();
     expect(again.runs[0]!.state).toBe("cancelled");
-    expect((await run("ci.passed", { context: gateCtx(again) }) as Fail).message).toContain("Tests (cancelled)");
+    expect((await run("ci.passed", { context: gateCtx(again) }) as Fail).message).toContain("CI run Tests was cancelled");
   });
 });
 
 describe("a cancelled run through the stage executor", () => {
-  test("the gate fails with a retry, ci.start reruns the run once, and the rerun passes", async () => {
+  test("the gate reruns the cancelled run once without a retry, and the rerun passes", async () => {
     const w = await world();
     w.provider.runs = [ciRun("Tests", "running", { canRerun: true })];
     w.provider.onRerun = (target) => { target.state = "running"; };
@@ -799,12 +811,11 @@ describe("a cancelled run through the stage executor", () => {
     expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toEqual([]);
     expect(w.notes).toHaveLength(1);
 
-    // The run is cancelled while the stage is parked: the gate fails with a retry, and the retried
-    // actions run ci.start, which reruns it.
+    // The run is cancelled while the stage is parked: the gate reruns it itself, without a retry.
     w.provider.runs[0]!.state = "cancelled";
     w.clock.now += 60_000;
     expect(await execute()).toMatchObject({ kind: "parked", reason: "pending" });
-    expect(messages.some((m) => m.includes("retrying") && m.includes("Tests") && m.includes("cancelled"))).toBe(true);
+    expect(messages.some((m) => m.includes("retrying"))).toBe(false);
     expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toEqual(["rerun id-Tests"]);
     expect(w.notes).toHaveLength(1);
 
@@ -814,6 +825,64 @@ describe("a cancelled run through the stage executor", () => {
     expect(await execute()).toMatchObject({ kind: "advance", stageId: "implementation" });
     expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toHaveLength(1);
     expect(journal.getContext("i1")!.context.checkpoints.ciPassed).toMatchObject({ sha: "head1", taskInstanceId: "ci.passed" });
+  });
+
+  async function exhausted(w: Awaited<ReturnType<typeof world>>) {
+    const pipeline = compilePipeline({ config: baseConfig("required"), repositoryId: "sample", registry });
+    const messages: string[] = [];
+    const executor = new StageExecutor({
+      registry, journal: w.store.executions(), clock: () => new Date(w.clock.now),
+      notify: (message) => { messages.push(message); }, setStatus: () => {}, settings: { maxReturns: 5 },
+    });
+    const baseContext: TaskContext = {
+      schemaVersion: 1, configHash: "h",
+      run: { stage: "", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "", enteredAt: new Date(T0).toISOString(), feedback: null },
+      repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode: "required", systemLabels: [] },
+      item: { id: "i1", number: 7, title: "T", url: "u", labels: [], state: "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
+      checkpoints: { ciPassed: null, reviewPassed: null },
+    };
+    // Retries are 2: two real CI failures use every feedback cycle, then the third attempt's run is cancelled.
+    const starts = { count: 0 };
+    const start = w.provider.start.bind(w.provider);
+    w.provider.start = async (...args: Parameters<FakeCi["start"]>) => {
+      starts.count += 1;
+      if (starts.count <= 2) {
+        const name = starts.count === 1 ? "alpha" : "beta";
+        w.provider.runs = [ciRun("Tests", "failed", { id: `id-${name}` })];
+        w.provider.logs[`id-${name}`] = `not ok 1 - ${name} broke`;
+      } else {
+        w.provider.runs = [ciRun("Tests", "cancelled", { id: "id-cancelled", canRerun: true })];
+      }
+      return start(...args);
+    };
+    w.provider.onRerun = (target) => { target.state = "running"; };
+    return { messages, execute: () => executor.execute({ issueId: "i1", pipeline, stageId: "implementation", baseContext, deps: w.deps }) };
+  }
+
+  test("a feedback-exhausted item with a cancelled required run reruns it and is not stopped", async () => {
+    const w = await world();
+    const { execute, messages } = await exhausted(w);
+    expect(await execute()).toMatchObject({ kind: "parked", reason: "pending" });
+    expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toEqual(["rerun id-cancelled"]);
+    expect(messages.filter((m) => m.includes("retrying"))).toHaveLength(2);
+    expect(messages.some((m) => m.includes("stopping"))).toBe(false);
+  });
+
+  test("a feedback-exhausted item whose rerun was cancelled too stops with the truthful reason", async () => {
+    const w = await world();
+    const { execute } = await exhausted(w);
+    expect(await execute()).toMatchObject({ kind: "parked", reason: "pending" });
+    // The rerun produced a new run id, which was cancelled as well.
+    w.provider.runs = [ciRun("Tests", "cancelled", { id: "id-rerun", canRerun: true })];
+    w.clock.now += 60_000;
+    const outcome = await execute();
+    expect(outcome).toMatchObject({ kind: "stopped", state: "blocked" });
+    const reason = (outcome as Extract<typeof outcome, { kind: "stopped" }>).reason;
+    expect(reason).toContain("CI run Tests was cancelled");
+    expect(reason).toContain("one rerun for this head was already used");
+    expect(reason).toMatch(/Rerun the check .* or push a new head/);
+    expect(reason).not.toContain("will be rerun");
+    expect(w.provider.calls.filter((call) => call.startsWith("rerun"))).toHaveLength(1);
   });
 
   test("stops at needs-intervention after the second matching required-CI failure", async () => {

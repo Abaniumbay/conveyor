@@ -225,6 +225,15 @@ describe("runTask", () => {
   test("only checks may observe external state", () => {
     expect(() => defineGroup("g", [check({ kind: "act", observesExternal: true })])).toThrow("only a check may observe external state");
   });
+  test("a rerun-requesting check gets dependencies without gaining context writes", async () => {
+    let seen: TaskArgs | undefined;
+    const def = check({ requestsRerun: true, run: (a) => ((seen = a), pass()) });
+    await runTask(def, args(context(), { deps: { db: 1 } }));
+    expect(seen?.deps).toEqual({ db: 1 });
+  });
+  test("only checks may request a rerun", () => {
+    expect(() => defineGroup("g", [check({ kind: "act", requestsRerun: true })])).toThrow("only a check may request a rerun");
+  });
   test("acts keep deps and instance", async () => {
     let seen: TaskArgs | undefined;
     const def = check({ kind: "act", name: "g.do", run: (a) => ((seen = a), pass()) });

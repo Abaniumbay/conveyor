@@ -7,7 +7,7 @@ A stage is a chain of tasks. Every stage has two lists: `actions` (do the stage'
 ## Kinds
 
 - **load**: the sole writer of one provider snapshot (`item`, `workspace`, `change`, `ci`). Safe to re-run. Loads are implicit and never appear in stage lists.
-- **check**: deterministic validation over the context it declares in `reads`. It writes no context snapshots. Normally it performs no I/O; a check declaring `refreshesProjection: true` may idempotently refresh derived display evidence after verification. Only checks appear in an `exit-gate`; an `actions` list may also run a check before a later action.
+- **check**: deterministic validation over the context it declares in `reads`. It writes no context snapshots. Normally it performs no I/O; a check declaring `refreshesProjection: true` may idempotently refresh derived display evidence after verification, and one declaring `requestsRerun: true` may ask an external system once, idempotently, to redo work it lost. Only checks appear in an `exit-gate`; an `actions` list may also run a check before a later action.
 - **act**: reconciles external state toward a desired result: observe first, then do only the missing work. It declares the snapshots it `invalidates` and is safe to resume after a crash. Acts appear in `actions`.
 - **tool**: callable only through an agent's MCP grant. Never listed in a stage.
 
@@ -130,7 +130,7 @@ Gate open: advance. Gate `fail`: run the stage's actions again with `run.feedbac
 | `ci.defined` | check | change, ci | - | Passes when CI is defined for the change head. Fails as blocked when no workflow applies or the provider cannot tell, so required CI never passes by having nothing to run. |
 | `ci.getLogs` | tool | - | - | Read the failing (or named) CI job logs for the change head, bounded to 20-1000 lines (default 200). |
 | `ci.load` | load | change | writes ci | Loads the CI runs of the change's current head from the provider (ignoring `ci.ignoreChecks`), whether CI is defined for it, and the durable gate facts; null until a change request exists. |
-| `ci.passed` | check | change, ci, repository, run | - | Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention. |
+| `ci.passed` | check | change, ci, repository, run | - | Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; reruns a cancelled run once per head without failing the gate; stops blocked when that rerun was used or impossible; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention. |
 | `ci.settled` | act | change | - | Waits for the current change head's CI checks to register and settle before a later action runs. A settled failure still passes so the reviewer can judge it. |
 | `ci.start` | act | repository, change, ci | invalidates ci | Starts label-triggered CI runs for the change head, reruns a cancelled run once per head, announces CI once per head and, in advisory mode, starts the durable watch. |
 
