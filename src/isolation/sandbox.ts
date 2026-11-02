@@ -125,6 +125,9 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
     // particular, mounting its parent could reveal a service checkout or a sibling run.
     addPath(resolved, false);
   }
+  // The one exception is the executable itself when it sits in a standalone release layout.
+  const release = standaloneRelease(executable);
+  if (release) addPath(release, false, true);
   const interpreter = scriptInterpreter(executable, options.env);
   if (interpreter) addPath(interpreter, false);
   // A source install starts the run-scoped MCP server as `bun <checkout>/src/cli.ts __mcp`. Bun is
@@ -186,6 +189,30 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   // mounted over it keep their own access, so only the authorized write set stays writable.
   mounts.push("--remount-ro", "/");
   return { mounts };
+}
+
+/**
+ * The installation root of a standalone agent release, when the resolved executable is
+ * `<root>/bin/<name>` and `<root>/codex-package.json` is a regular file. The Codex installer keeps one
+ * release per directory (`~/.codex/packages/standalone/releases/<version>/`) and Codex finds its
+ * `bin/codex-code-mode-host` helper and `codex-resources/` relative to its own resolved path, so those
+ * siblings must exist. The layout is recognised by its manifest, not by a harness-declared root: that
+ * needs no per-harness configuration, and a plain single-file executable (no manifest) keeps mounting
+ * only itself. Only this root is mounted, read-only: never `~/.codex`, which holds credentials, nor
+ * other releases. Claude Code's native install (`~/.local/share/claude/versions/<version>`) is a single
+ * file that needs nothing beside it, so it stays on the single-file path.
+ */
+function standaloneRelease(executable: string): string | undefined {
+  const resolved = resolveFilesystemPath(executable);
+  const binDirectory = path.dirname(resolved);
+  if (path.basename(binDirectory) !== "bin") return undefined;
+  const root = path.dirname(binDirectory);
+  if (root === "/" || root === "/usr" || root.startsWith("/usr/")) return undefined;
+  try {
+    return statSync(path.join(root, "codex-package.json")).isFile() ? root : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

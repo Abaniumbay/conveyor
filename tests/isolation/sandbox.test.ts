@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -7,7 +7,7 @@ import path from "node:path";
 import { startEgressProxy, type EgressProxy } from "../../src/isolation/egress-proxy";
 import { prepareCodexEnvironment } from "../../src/isolation/environment";
 import { serveMcpSocket } from "../../src/isolation/mcp-socket";
-import { confinedCommand, confinedCommandPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
+import { agentFilesystemCommand, agentFilesystemPlan, confinedCommand, confinedCommandPlan, privateTmpCommand, sandboxCommand } from "../../src/isolation/sandbox";
 import { bwrapUnavailableReason } from "../support/bwrap";
 import { shortTemporaryDirectory } from "../support/short-temporary-directory";
 
@@ -699,5 +699,143 @@ describeSandbox("confined agent git worktree rewrites packed-refs", () => {
     expect(result.out).not.toContain("hook=0");
     expect(result.out).not.toContain("rm=0");
     expect(existsSync(path.join(elsewhere, "post-checkout"))).toBe(false);
+  });
+});
+
+describeSandbox("confined agent in a standalone release layout", () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function layout(options: { manifest: boolean; name?: string }) {
+    const root = await shortTemporaryDirectory("conveyor-standalone-", { visibleInSandbox: true });
+    roots.push(root);
+    const codex = path.join(root, ".codex");
+    const releases = path.join(codex, "packages", "standalone", "releases");
+    const release = path.join(releases, "1.0.0");
+    const other = path.join(releases, "0.9.0");
+    for (const directory of [path.join(release, "bin"), path.join(release, "codex-resources"), path.join(other, "bin"), path.join(root, "bin"), path.join(root, "run", "home"), path.join(root, "run", "scratch"), path.join(root, "workspace")]) {
+      await mkdir(directory, { recursive: true });
+    }
+    const executable = path.join(release, "bin", options.name ?? "codex");
+    await writeFile(executable, '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/codex-code-mode-host" "$@"\n');
+    await writeFile(path.join(release, "bin", "codex-code-mode-host"), "#!/bin/sh\necho host-ran\n");
+    await chmod(executable, 0o755);
+    await chmod(path.join(release, "bin", "codex-code-mode-host"), 0o755);
+    await writeFile(path.join(release, "codex-resources", "resource"), "resource");
+    await writeFile(path.join(other, "bin", "codex"), "other release");
+    await writeFile(path.join(codex, "auth.json"), "credentials");
+    if (options.manifest) await writeFile(path.join(release, "codex-package.json"), "{}");
+    await symlink(executable, path.join(root, "bin", "codex"));
+    const env = { PATH: `${path.join(root, "bin")}:/usr/bin:/bin`, HOME: path.join(root, "run", "home") };
+    const filesystem = { command: "codex", env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: env.HOME, scratch: path.join(root, "run", "scratch") };
+    return { root, release, other, codex, filesystem };
+  }
+
+  const run = (filesystem: Parameters<typeof agentFilesystemCommand>[0], argv: string[]) => {
+    const launch = agentFilesystemCommand(filesystem, argv);
+    const child = Bun.spawnSync(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
+    return { code: child.exitCode, out: child.stdout.toString(), err: child.stderr.toString() };
+  };
+
+  test("plan mounts the release root read-only, with its helper and resources", async () => {
+    const { release, filesystem } = await layout({ manifest: true });
+    const { mounts } = agentFilesystemPlan(filesystem);
+    const resolvedRelease = (await import("node:fs")).realpathSync(release);
+    expect(mounts.join("\0")).toContain(["--ro-bind", resolvedRelease, resolvedRelease].join("\0"));
+    const probe = run(filesystem, ["codex"]);
+    expect(probe.err).toBe("");
+    const resources = run(filesystem, ["/usr/bin/test", "-f", path.join(resolvedRelease, "codex-resources", "resource")]);
+    expect(resources.code).toBe(0);
+  });
+
+  test("runs the helper behind a PATH symlink, hides credentials and other releases, and is read-only", async () => {
+    const { release, other, codex, filesystem } = await layout({ manifest: true });
+    const real = (await import("node:fs")).realpathSync(release);
+    const launched = run(filesystem, ["codex"]);
+    expect(launched.out.trim()).toBe("host-ran");
+    expect(run(filesystem, ["/usr/bin/test", "-e", path.join(codex, "auth.json")]).code).not.toBe(0);
+    expect(run(filesystem, ["/usr/bin/test", "-e", path.join((await import("node:fs")).realpathSync(other), "bin", "codex")]).code).not.toBe(0);
+    expect(run(filesystem, ["/bin/sh", "-c", `echo x > ${path.join(real, "codex-resources", "resource")}`]).code).not.toBe(0);
+  });
+
+  test("a plain single-file executable mounts only itself", async () => {
+    const { release, filesystem } = await layout({ manifest: false });
+    const real = (await import("node:fs")).realpathSync(release);
+    expect(run(filesystem, ["codex"]).code).not.toBe(0);
+    expect(run(filesystem, ["/usr/bin/test", "-x", path.join(real, "bin", "codex")]).code).toBe(0);
+    expect(run(filesystem, ["/usr/bin/test", "-e", path.join(real, "bin", "codex-code-mode-host")]).code).not.toBe(0);
+    expect(agentFilesystemPlan(filesystem).mounts.join("\0")).not.toContain(["--ro-bind", real, real].join("\0"));
+  });
+
+  test("a single-file Claude executable under versions/ mounts only itself", async () => {
+    const { root, filesystem } = await layout({ manifest: false });
+    const versions = path.join(root, "claude", "versions");
+    await mkdir(versions, { recursive: true });
+    await writeFile(path.join(versions, "2.0.0"), "#!/bin/sh\necho claude\n");
+    await writeFile(path.join(versions, "2.0.1"), "sibling");
+    await chmod(path.join(versions, "2.0.0"), 0o755);
+    const real = (await import("node:fs")).realpathSync(versions);
+    const claude = { ...filesystem, command: path.join(real, "2.0.0") };
+    expect(run(claude, [claude.command]).out.trim()).toBe("claude");
+    expect(run(claude, ["/usr/bin/test", "-e", path.join(real, "2.0.1")]).code).not.toBe(0);
+    expect(agentFilesystemPlan(claude).mounts.join("\0")).not.toContain(["--ro-bind", real, real].join("\0"));
+  });
+});
+
+describe("agent filesystem plan for installation layouts", () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function install(manifest: boolean) {
+    const root = await shortTemporaryDirectory("conveyor-plan-", { visibleInSandbox: true });
+    roots.push(root);
+    const release = path.join(root, "releases", "1.0.0");
+    await mkdir(path.join(release, "bin"), { recursive: true });
+    for (const directory of ["workspace", "run/home", "run/scratch"]) await mkdir(path.join(root, directory), { recursive: true });
+    await writeFile(path.join(release, "bin", "codex"), "#!/bin/sh\n");
+    await chmod(path.join(release, "bin", "codex"), 0o755);
+    if (manifest) await writeFile(path.join(release, "codex-package.json"), "{}");
+    const env = { PATH: "/usr/bin:/bin" };
+    return { release, executable: path.join(release, "bin", "codex"), options: { command: path.join(release, "bin", "codex"), env, workspace: path.join(root, "workspace"), artifacts: path.join(root, "run"), home: path.join(root, "run", "home"), scratch: path.join(root, "run", "scratch") } };
+  }
+
+  const binds = (mounts: string[]) => mounts.flatMap((mount, index) => mount === "--ro-bind" ? [mounts[index + 1]!] : []);
+
+  test("mounts the release root read-only when codex-package.json is a regular file", async () => {
+    const { release, options } = await install(true);
+    const real = realpathSync(release);
+    const { mounts } = agentFilesystemPlan(options);
+    expect(binds(mounts)).toContain(real);
+    expect(binds(mounts)).not.toContain(path.dirname(real));
+  });
+
+  test("mounts only the resolved file when there is no codex-package.json", async () => {
+    const { release, executable, options } = await install(false);
+    const { mounts } = agentFilesystemPlan(options);
+    expect(binds(mounts)).toContain(realpathSync(executable));
+    expect(binds(mounts)).not.toContain(realpathSync(release));
+  });
+
+  test("a directory named codex-package.json does not make a release root", async () => {
+    const { release, executable, options } = await install(false);
+    await mkdir(path.join(release, "codex-package.json"));
+    expect(binds(agentFilesystemPlan(options).mounts)).toEqual(expect.arrayContaining([realpathSync(executable)]));
+    expect(binds(agentFilesystemPlan(options).mounts)).not.toContain(realpathSync(release));
+  });
+
+  test("a single-file Claude executable under versions/ mounts only itself", async () => {
+    const { release, options } = await install(false);
+    const versions = path.join(path.dirname(release), "claude-versions");
+    await mkdir(versions);
+    await writeFile(path.join(versions, "2.0.0"), "#!/bin/sh\n");
+    await chmod(path.join(versions, "2.0.0"), 0o755);
+    const real = realpathSync(versions);
+    const { mounts } = agentFilesystemPlan({ ...options, command: path.join(real, "2.0.0") });
+    expect(binds(mounts)).toContain(path.join(real, "2.0.0"));
+    expect(binds(mounts)).not.toContain(real);
   });
 });

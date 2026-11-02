@@ -177,6 +177,46 @@ describeSandbox("Codex filesystem confinement", () => {
     await expectConfinedRun("danger-full-access", true);
   });
 
+  test.each([false, true])("Codex filesystem confinement mounts the standalone release root read-only (egress %p)", async (egress) => {
+    const files = await fixture();
+    const root = path.dirname(files.workspace);
+    const release = path.join(root, ".codex", "packages", "standalone", "releases", "1.0.0");
+    const otherRelease = path.join(root, ".codex", "packages", "standalone", "releases", "0.9.0");
+    await Promise.all([mkdir(path.join(release, "bin"), { recursive: true }), mkdir(path.join(release, "codex-resources"), { recursive: true }), mkdir(otherRelease, { recursive: true })]);
+    const executable = path.join(release, "bin", "codex");
+    await Promise.all([
+      writeFile(executable, FAKE_CODEX),
+      writeFile(path.join(release, "codex-package.json"), "{}"),
+      writeFile(path.join(release, "bin", "codex-code-mode-host"), "helper"),
+      writeFile(path.join(release, "codex-resources", "resource"), "resource"),
+      writeFile(path.join(otherRelease, "marker"), "hidden"),
+      writeFile(path.join(root, ".codex", "auth.json"), "hidden"),
+    ]);
+    await chmod(executable, 0o755);
+    const checks = { ...files.checks, files: {
+      helper: path.join(release, "bin", "codex-code-mode-host"),
+      resources: path.join(release, "codex-resources", "resource"),
+      otherRelease: path.join(otherRelease, "marker"),
+      releaseCredentials: path.join(root, ".codex", "auth.json"),
+    } };
+    await runCodex({
+      command: executable,
+      workspace: files.workspace,
+      artifactsDirectory: files.artifacts,
+      prompt: "verify release",
+      sandbox: "read-only",
+      automaticApprovals: false,
+      mcp: { command: "bun", args: ["x"] },
+      env: { CAPTURE: files.capture, CHECKS: JSON.stringify(checks), CODEX_HOME: path.join(root, "credentials") },
+      ...(egress ? { egress: { httpsHosts: [], controlPlaneHosts: [] } } : {}),
+    });
+    const result = JSON.parse(await readFile(files.capture, "utf8"));
+    expect(result.helper).toBe(true);
+    expect(result.resources).toBe(true);
+    expect(result.otherRelease).toBe(false);
+    expect(result.releaseCredentials).toBe(false);
+  });
+
   test("Codex filesystem confinement fails before an agent command starts when it cannot build confinement", async () => {
     const files = await fixture();
     const started = path.join(files.artifacts, "started");
