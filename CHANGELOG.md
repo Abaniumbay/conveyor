@@ -10,6 +10,32 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.16.0] - 2026-11-02
+
+This release confines what agents can see and write. Codex and Claude Code agent commands now run in an empty-root filesystem view limited to their worktree, their private run paths and declared toolchain paths, with egress-wrapped Codex runs also limited in what they can write. Confined agents can still rewrite Git's packed refs, so ordinary branch commands work in their worktrees.
+
+It also lets superusers dismiss a review finding, shows the descriptions of question choices on the dashboard, and reruns a cancelled CI run once without using a feedback cycle.
+
+### Added
+
+- Superusers can dismiss an open review finding with a reason from the item page, and with `conveyor item dismiss-finding <item> <finding> --reason <text>`.
+
+### Changed
+
+- Egress-wrapped Codex runs now confine filesystem writes: in `workspace-write` only the worktree, its Git administration path, existing configured `writableRoots` and run-private state are writable, and `read-only` grants no writable mount. The namespace root is remounted read-only, which also applies to non-egress Codex and Claude Code runs. A run fails with an actionable infrastructure error before any Codex command starts if the filesystem wrapper cannot be established.
+
+- Codex and Claude Code agent commands now receive an empty-root filesystem view limited to their run worktree, private run paths, declared writable roots, required Git metadata, and runtime files. This applies with and without configured agent egress, and runs fail before starting an agent when confinement cannot be established.
+
+- Claude Code agent runs are covered by real Bubblewrap filesystem confinement tests in read-only and workspace-write modes, for fresh and resumed sessions, and SPEC §19 documents the Claude credential handling.
+
+- Tests now prove that other runs' artifacts and private homes stay hidden from Codex and Claude Code agent commands; hiding the harness's own credentials is tracked in #511.
+
+### Fixed
+
+- Dashboard questions now show every choice and its description, with a separate custom-answer field when free text is allowed.
+
+- A cancelled required CI run is rerun once per head by the gate without using a feedback cycle or restarting the agent. When the rerun was already used or impossible, the item stops with a reason that says so and names what to do instead of promising a rerun.
+
 ## [0.15.0] - 2026-10-31
 
 This release adds typed review findings with a CLI report and a dashboard Reports section, lets repositories expose local test services such as PostgreSQL to sandboxed agents, and can verify linked acceptance-criterion tests against CI JUnit reports. It also fixes items that stalled after a merge or a conflict-resolving rebase, and lets superusers resume Conveyor-paused items from the dashboard.
