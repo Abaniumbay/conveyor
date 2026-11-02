@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
-import { INTERNAL, selfCommand } from "../self";
+import { INTERNAL, selfCommand, sourceCheckoutRuntime } from "../self";
 
 export const PROXY_VARIABLES = [
   "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -127,6 +127,10 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   }
   const interpreter = scriptInterpreter(executable, options.env);
   if (interpreter) addPath(interpreter, false);
+  // A source install starts the run-scoped MCP server as `bun <checkout>/src/cli.ts __mcp`. Bun is
+  // mounted above; the checkout's src/ and node_modules are mounted read-only here, and the rest of the
+  // checkout (.git, service home, configuration) stays invisible. Compiled builds add nothing.
+  for (const sourcePath of sourceCheckoutRuntime()) addPath(sourcePath, false);
   // Mount runtimes before run material. A runtime package can be adjacent to an artifact or
   // scratch directory in tests and installations; the run's explicit writable mounts must win.
   // Its parent directories are otherwise only empty mount targets, so siblings stay invisible.
