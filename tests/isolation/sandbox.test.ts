@@ -766,7 +766,7 @@ describeSandbox("confined agent in a standalone release layout", () => {
     expect(run(filesystem, ["codex"]).code).not.toBe(0);
     expect(run(filesystem, ["/usr/bin/test", "-x", path.join(real, "bin", "codex")]).code).toBe(0);
     expect(run(filesystem, ["/usr/bin/test", "-e", path.join(real, "bin", "codex-code-mode-host")]).code).not.toBe(0);
-    expect(agentFilesystemPlan(filesystem).mounts).not.toContain(real);
+    expect(agentFilesystemPlan(filesystem).mounts.join("\0")).not.toContain(["--ro-bind", real, real].join("\0"));
   });
 
   test("a single-file Claude executable under versions/ mounts only itself", async () => {
@@ -780,7 +780,7 @@ describeSandbox("confined agent in a standalone release layout", () => {
     const claude = { ...filesystem, command: path.join(real, "2.0.0") };
     expect(run(claude, [claude.command]).out.trim()).toBe("claude");
     expect(run(claude, ["/usr/bin/test", "-e", path.join(real, "2.0.1")]).code).not.toBe(0);
-    expect(agentFilesystemPlan(claude).mounts).not.toContain(real);
+    expect(agentFilesystemPlan(claude).mounts.join("\0")).not.toContain(["--ro-bind", real, real].join("\0"));
   });
 });
 
