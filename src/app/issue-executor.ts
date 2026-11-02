@@ -54,6 +54,8 @@ export interface IssueExecutorDependencies {
   waitFallback?: (repositoryId: string, kind: WaitKind) => number | null;
   /** Admits an item before it enters the repository's configured code-pipeline interval. */
   admitInFlight?: (issue: StoredIssue, targetStageId: string) => string | null;
+  /** The scheduler admitted this run without a repository permit because only checks remain. */
+  gateOnly?: boolean;
   signal?: AbortSignal;
 }
 
@@ -205,6 +207,7 @@ export class IssueExecutor {
           ...(repository.refinement ? { refinement: repository.refinement } : {}),
         }),
         deps,
+        ...(this.dependencies.gateOnly ? { gateOnly: true } : {}),
         ...(signal ? { signal } : {}),
       });
       signal?.throwIfAborted();

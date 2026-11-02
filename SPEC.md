@@ -850,6 +850,8 @@ A runnable stage phase must acquire its applicable permits:
 2. The repository's `concurrency`.
 3. Global `settings.runners` when starting an agent, script, or (legacy) verifier OS process.
 
+The repository permit limits only executions that start an agent or script process. A stage execution whose agent and script steps are all recorded done for the current stage epoch, so only `check` tasks remain, is exempt from the repository permit and is admitted even when the repository is full, but it counts toward the global runner limit (`settings.runners`) and its stage limit. If such an execution would start an agent or script again (for example a CI failure that retries the producer), it parks ready and is re-admitted only with a repository permit. A remaining `script.run` step always needs the permit.
+
 The global permit counts live OS-level runner processes; an in-process source action does not consume it. Stage and repository permits count issues currently executing in that scope, including source actions; a producer and verifier for the same issue never overlap. Questions, pauses, automatic backoff, blocked states, and completed attempts hold no permits. Harness-native subagents remain inside the lead runner's single permit.
 
 ### Repository in-progress limit

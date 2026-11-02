@@ -589,6 +589,10 @@ repositories:
 
 The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
 
+### Repository concurrency
+
+A repository's `concurrency` limits only the executions that start an agent or script process. A stage execution whose agent and script steps are all recorded done for the current stage epoch, so that only `check` tasks remain (for example an item waiting for its `ci.passed` gate), takes no repository permit: it is re-checked even while other items hold every repository slot. It still counts toward `settings.runners`. As soon as such an execution would start an agent or script again (for example a failing CI gate that retries the producer), it waits for a repository permit like any other run.
+
 ### Repository in-progress limit
 
 `inFlight` limits how many items of one repository are in progress in the code pipeline, because parallel branches in a repository cause merge conflicts:

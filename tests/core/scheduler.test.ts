@@ -160,3 +160,52 @@ describe("capacityBlockers", () => {
     ]);
   });
 });
+
+describe("gate-only executions", () => {
+  const limits = { global: 2, stages: { implementation: 5 }, repositories: { repo: 1 } };
+  const holder = { id: "agent", repositoryId: "repo", stageId: "implementation", queueRank: 1, siblingOrder: null, eligible: true, dependenciesSatisfied: true };
+  const gate = { id: "gate", repositoryId: "repo", stageId: "implementation", queueRank: 2, siblingOrder: null, eligible: true, dependenciesSatisfied: true, gateOnly: true };
+
+  test("is admitted without a repository permit, while another item's agent holds it", () => {
+    const selected = selectRunnableIssues([gate], limits, { global: 1, stages: { implementation: 1 }, repositories: { repo: 1 } });
+    expect(selected.map((candidate) => candidate.id)).toEqual(["gate"]);
+  });
+
+  test("still counts toward the global runner limit", () => {
+    expect(selectRunnableIssues([gate], limits, { global: 2, stages: { implementation: 2 }, repositories: { repo: 1 } })).toEqual([]);
+    const selected = selectRunnableIssues([gate, { ...gate, id: "gate-2", queueRank: 3 }], { ...limits, global: 1 }, { global: 0, stages: {}, repositories: {} });
+    expect(selected.map((candidate) => candidate.id)).toEqual(["gate"]);
+  });
+
+  test("does not take the repository permit from a later agent run", () => {
+    const selected = selectRunnableIssues(
+      [gate, { ...holder, id: "later", queueRank: 3 }],
+      limits,
+      { global: 0, stages: {}, repositories: {} },
+    );
+    expect(selected.map((candidate) => candidate.id)).toEqual(["gate", "later"]);
+  });
+
+  test("an item that would start an agent waits for the repository permit", () => {
+    const selected = selectRunnableIssues([{ ...gate, gateOnly: false }], limits, { global: 1, stages: { implementation: 1 }, repositories: { repo: 1 } });
+    expect(selected).toEqual([]);
+  });
+
+  test("a running gate-only execution does not occupy the repository permit", () => {
+    const blocks = capacityBlockers(
+      { repositoryId: "repo", stageId: "implementation", lightweight: false },
+      limits,
+      [{ id: "gate", repositoryId: "repo", stageId: "implementation", lightweight: false, gateOnly: true }],
+    );
+    expect(blocks).toEqual([]);
+  });
+
+  test("a gate-only candidate reports no repository block but still reports the runner block", () => {
+    const blocks = capacityBlockers(
+      { repositoryId: "repo", stageId: "implementation", lightweight: false, gateOnly: true },
+      { ...limits, global: 1 },
+      [{ id: "agent", repositoryId: "repo", stageId: "implementation", lightweight: false }],
+    );
+    expect(blocks.map((block) => block.scope)).toEqual(["global"]);
+  });
+});
