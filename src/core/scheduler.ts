@@ -13,6 +13,11 @@ export interface SchedulerCandidate {
    * it is bounded by its stage limit only.
    */
   lightweight?: boolean;
+  /**
+   * Only `check` tasks remain, so the execution starts no agent or script process. It takes a
+   * runner but no repository permit.
+   */
+  gateOnly?: boolean;
 }
 
 export interface ConcurrencyLimits {
@@ -33,6 +38,8 @@ export interface SchedulerOccupant {
   repositoryId: string;
   stageId: string;
   lightweight: boolean;
+  /** Holds a runner but no repository permit. */
+  gateOnly?: boolean;
 }
 
 export interface CapacityBlocker {
@@ -48,7 +55,7 @@ export interface CapacityBlocker {
  * or repository slot.
  */
 export function capacityBlockers(
-  candidate: Pick<SchedulerCandidate, "repositoryId" | "stageId" | "lightweight">,
+  candidate: Pick<SchedulerCandidate, "repositoryId" | "stageId" | "lightweight" | "gateOnly">,
   limits: ConcurrencyLimits,
   occupants: readonly SchedulerOccupant[],
 ): CapacityBlocker[] {
@@ -64,7 +71,9 @@ export function capacityBlockers(
   if (runnerOccupants.length >= limits.global) {
     blocks.unshift({ scope: "global", used: runnerOccupants.length, limit: limits.global, occupants: runnerOccupants.map((occupant) => occupant.id) });
   }
-  const repositoryOccupants = runnerOccupants.filter((occupant) => occupant.repositoryId === candidate.repositoryId);
+  if (candidate.gateOnly) return blocks;
+  const repositoryOccupants = runnerOccupants
+    .filter((occupant) => !occupant.gateOnly && occupant.repositoryId === candidate.repositoryId);
   const repositoryLimit = limits.repositories[candidate.repositoryId] ?? 0;
   if (repositoryOccupants.length >= repositoryLimit) {
     blocks.push({ scope: "repository", used: repositoryOccupants.length, limit: repositoryLimit, occupants: repositoryOccupants.map((occupant) => occupant.id) });
@@ -115,7 +124,7 @@ export function selectRunnableIssues(
     if (
       globalUsage >= limits.global ||
       usedByStage >= stageLimit ||
-      usedByRepository >= repositoryLimit
+      (!candidate.gateOnly && usedByRepository >= repositoryLimit)
     ) {
       continue;
     }
@@ -123,7 +132,7 @@ export function selectRunnableIssues(
     selected.push(candidate);
     globalUsage += 1;
     stageUsage[candidate.stageId] = usedByStage + 1;
-    repositoryUsage[candidate.repositoryId] = usedByRepository + 1;
+    if (!candidate.gateOnly) repositoryUsage[candidate.repositoryId] = usedByRepository + 1;
   }
 
   return selected;

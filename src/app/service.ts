@@ -60,6 +60,7 @@ import { ItemTodos, summarizeTodos, type TodoItem } from "../engine/todos";
 import { buildReport } from "./reports";
 import { buildRepositorySummaries, type RepositorySummaries } from "./repository-summary";
 import { isLightweightRepositoryStage } from "./stage-capacity";
+import { remainingWorkStartsProcess } from "../engine/remaining-work";
 import { CI_INDICATOR_ID, indicatorView, observeCi, observeCiError, startCiForHead, type StoredIndicator } from "./indicators";
 import { createCiGateMemory, evaluateCiGate, parseCiGateOptions, type SourceActionOutcome } from "./ci-gate";
 import {
@@ -112,6 +113,8 @@ interface ActiveRun {
   controller: AbortController;
   /** Runs no runner process; excluded from global and repository permits. */
   lightweight: boolean;
+  /** Holds a runner but no repository permit: only checks remain. */
+  gateOnly: boolean;
   interrupted: boolean;
 }
 
@@ -1422,6 +1425,7 @@ export class ConveyorService {
       stageUsage[active.stageId] = (stageUsage[active.stageId] ?? 0) + 1;
       if (active.lightweight) continue;
       processUsage += 1;
+      if (active.gateOnly) continue;
       repositoryUsage[active.repositoryId] = (repositoryUsage[active.repositoryId] ?? 0) + 1;
     }
     const selected = selectRunnableIssues(
@@ -1459,12 +1463,13 @@ export class ConveyorService {
         stageId: candidate.stageId,
         controller: new AbortController(),
         lightweight: candidate.lightweight === true,
+        gateOnly: candidate.gateOnly === true,
         interrupted: false,
       });
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal)).finally(() => {
+      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true)).finally(() => {
         this.#active.delete(issue.id);
         this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
         if (this.#drain && !active.interrupted) {
@@ -1499,6 +1504,7 @@ export class ConveyorService {
     return issues.flatMap((issue) => {
       const state = stageState(issue.id);
       if (!state?.stageId || issue.queueRank === null) return [];
+      const lightweight = this.isLightweightStage(issue.repositoryId, state.stageId);
       const dependenciesSatisfied = dependencies(issue.id).every((id) => {
         const blocker = getIssue(id);
         return Boolean(blocker && (blocker.sourceState === "closed" || blocker.projectedState === "done"));
@@ -1523,7 +1529,8 @@ export class ConveyorService {
           children(issue.id).length > 0 &&
           !this.hasResumableQuestionExecution(issue.id) &&
           !this.childCreationRetryQueued(issue, state.stageId),
-        lightweight: this.isLightweightStage(issue.repositoryId, state.stageId),
+        lightweight,
+        gateOnly: !lightweight && this.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
       }];
     });
   }
@@ -1563,10 +1570,11 @@ export class ConveyorService {
         repositoryId: run.repository,
         stageId: run.stageId,
         lightweight: this.isLightweightStage(run.repository, run.stageId),
+        gateOnly: this.isGateOnlyExecution(run.issueId, run.repository, run.stageId),
       });
     }
     for (const [id, active] of this.#active) {
-      occupants.set(id, { id, repositoryId: active.repositoryId, stageId: active.stageId, lightweight: active.lightweight });
+      occupants.set(id, { id, repositoryId: active.repositoryId, stageId: active.stageId, lightweight: active.lightweight, gateOnly: active.gateOnly });
     }
     return [...occupants.values()];
   }
@@ -2182,7 +2190,7 @@ export class ConveyorService {
     else log.debug("Stage parked", { ...fields, reason: outcome.reason, wakeAt: outcome.wakeAt });
   }
 
-  private async execute(issue: StoredIssue, signal: AbortSignal): Promise<void> {
+  private async execute(issue: StoredIssue, signal: AbortSignal, gateOnly = false): Promise<void> {
     const repository = this.config.repositories[issue.repositoryId];
     if (!repository) return;
     const executor = new IssueExecutor({
@@ -2209,6 +2217,7 @@ export class ConveyorService {
       boardApproval: this.boardApprovalStatus,
       waitFallback: (repositoryId, kind) => this.waitFallbackMs(repositoryId, kind),
       admitInFlight: (currentIssue, targetStageId) => this.inFlightAdmission(currentIssue, targetStageId),
+      gateOnly,
       signal,
       runtime: (context, refreshDeliveryState) => new ConfiguredStageRuntime(
         this.config,
@@ -2456,7 +2465,19 @@ export class ConveyorService {
     return this.#codeHosts.get(name) ?? null;
   }
 
-  /** A stage that only runs an in-process source action: no producer or verifier process. */
+  /** Whether the stage's remaining work, from its durable cursor, starts no agent or script process. */
+  private isGateOnlyExecution(issueId: string, repositoryId: string, stageId: string): boolean {
+    // Older in-process fixtures carry no compiled plans; treat them as permit-consuming.
+    const stage = (this.config.plans ?? [])
+      .find((plan) => plan.repositoryId === repositoryId)
+      ?.stages.find((candidate) => candidate.id === stageId);
+    if (!stage || stage.legacy) return false;
+    const journal = this.store.executions();
+    const cursor = journal.getCursor(issueId);
+    if (!cursor || cursor.stage !== stageId || cursor.stageEpoch !== journal.stageEpoch(issueId)) return false;
+    return !remainingWorkStartsProcess(stage, cursor);
+  }
+
   private isLightweightStage(repositoryId: string, stageId: string): boolean {
     return isLightweightRepositoryStage(this.config, repositoryId, stageId);
   }

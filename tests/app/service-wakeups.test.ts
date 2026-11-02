@@ -19,12 +19,13 @@ afterEach(async () => {
 
 const MESSAGE = "Waiting for CI at abc1234: Tests.";
 
-async function setup(followUps = false, withInFlight = false) {
+async function setup(followUps = false, withInFlight = false, nativeGate: "ci" | "script" | null = null) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-wakeups-"));
   directories.push(root);
   const repositoryPath = path.join(root, "repo");
   await mkdir(repositoryPath);
   await writeFile(path.join(root, "instructions.md"), "Work.");
+  await writeFile(path.join(root, "verify.ts"), "");
   await writeFile(path.join(root, "config.yml"), `
 settings:
   database: ${root}/db.sqlite
@@ -49,7 +50,12 @@ pipelines:
 ${withInFlight ? `      - { id: refinement, concurrency: 1, actions: [], exit-gate: [{ task: item.criteriaDefined }] }
 ` : ""}
       - id: implementation
-${followUps ? `        concurrency: 1
+${nativeGate ? `        concurrency: 5
+        actions:
+          - { id: implement, task: agent.run, with: { agent: worker } }${nativeGate === "script" ? `
+          - { id: runScript, task: script.run, with: { script: ./verify.ts, recovery: replay-safe } }` : ""}
+        exit-gate:
+          - ${nativeGate === "ci" ? "{ id: ciGate, task: ci.passed }" : "{ id: scriptGate, task: script.succeeded, with: { run: runScript } }"}` : followUps ? `        concurrency: 1
         actions: []
         exit-gate:
           - { id: acknowledge, task: item.followUps, manual: true }` : `        run: { agent: worker }
@@ -241,6 +247,16 @@ function addRunningHolder(store: ConveyorStore, config: ConveyorConfig, sourceNu
 }
 
 const schedule = (service: ConveyorService) => (service as unknown as { schedule(): void }).schedule();
+
+/** Parks the item's cursor in its exit gate: the agent action is recorded done for the current epoch. */
+function parkInExitGate(store: ConveyorStore, at: { list: "actions" | "exit-gate"; taskInstanceId: string | null } = { list: "exit-gate", taskInstanceId: null }) {
+  const journal = store.executions();
+  const epoch = journal.stageEpoch("issue");
+  journal.saveCursor({
+    issueId: "issue", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: at.list,
+    taskInstanceId: at.taskInstanceId, state: "planned", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
+  }, epoch);
+}
 
 describe("persisted wake-ups", () => {
   test("prioritizes every unmet dependency over capacity before its stage has run, then clears the live status", async () => {
@@ -657,6 +673,54 @@ describe("persisted wake-ups", () => {
     expect(first.store.getStageState("issue")?.status).toBe("waiting-in-flight");
     const card = first.service.dashboard("csrf", { view: "board", column: null, page: 1, doneLimit: 20, runId: null, issueId: "issue" }).selectedIssue;
     expect(card?.waiting?.reason ?? "").not.toContain("in-progress slot");
+    await first.service.close();
+  });
+});
+
+describe("gate-only executions", () => {
+  async function gateOnlySetup(gate: "ci" | "script", cursor: "exit-gate" | "none" | "script-pending") {
+    const { config, first } = await setup(false, false, gate);
+    config.settings.runners = 2;
+    config.repositories.repo!.concurrency = 1;
+    addRunningHolder(first.store, config);
+    first.store.setStageState({ issueId: "holder", stageId: "implementation", status: "running", feedbackCycle: 0, configHash: config.hash });
+    if (cursor === "exit-gate") parkInExitGate(first.store);
+    if (cursor === "script-pending") parkInExitGate(first.store, { list: "actions", taskInstanceId: "runScript" });
+    return { config, first };
+  }
+  test("a passing-gate item with every action recorded done is admitted while the repository permit is held", async () => {
+    const { first } = await gateOnlySetup("ci", "exit-gate");
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    await first.service.close();
+  });
+
+  test("an item with its agent and script steps recorded done and only a script.succeeded check left is admitted", async () => {
+    const { first } = await gateOnlySetup("script", "exit-gate");
+    schedule(first.service);
+    expect(first.executed).toEqual(["issue"]);
+    await first.service.close();
+  });
+
+  test("a gate-only execution is not admitted when the global runner limit is reached", async () => {
+    const { config, first } = await gateOnlySetup("ci", "exit-gate");
+    config.settings.runners = 1;
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    await first.service.close();
+  });
+
+  test("an item whose agent action is not recorded done waits for the repository permit", async () => {
+    const { first } = await gateOnlySetup("ci", "none");
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
+    await first.service.close();
+  });
+
+  test("an item with a script step not yet recorded done waits for the repository permit", async () => {
+    const { first } = await gateOnlySetup("script", "script-pending");
+    schedule(first.service);
+    expect(first.executed).toEqual([]);
     await first.service.close();
   });
 });

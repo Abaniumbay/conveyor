@@ -154,6 +154,12 @@ function buildRegistry(world: World): TaskRegistry {
       }),
     ]),
   );
+  reg.register(defineGroup("agent", [
+    d({
+      name: "agent.run", kind: "act", reads: ["item", "run"], writes: ["agent"], invalidates: ["ci"],
+      run: ({ instance }) => { world.calls.push(instance.id); return world.actResult(instance.id); },
+    }),
+  ]));
   reg.register(defineGroup("ci", [
     d({
       name: "ci.passed", kind: "check", reads: ["ci"],
@@ -660,6 +666,49 @@ describe("routing", () => {
     expect(retryRun.feedback).toEqual({ from: { stage: "implementation", taskInstanceId: "gate" }, message: "tests red", details: { n: 2 } });
     expect(h.notes).toHaveLength(1);
     expect(h.notes[0]).toContain("tests red");
+  });
+
+  test("a gate-only execution parks, ready, when a failing gate retries into the agent, and the next execution runs it", async () => {
+    const h = await harness();
+    h.activate();
+    let gateRuns = 0;
+    h.world.checkResult.gate = () => (++gateRuns === 1 ? fail("tests red") : pass());
+    const epoch = h.journal.stageEpoch("issue-1");
+    h.journal.saveCursor({
+      issueId: "issue-1", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+      taskInstanceId: null, state: "planned", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
+    }, epoch);
+    const plan = pipeline(
+      stage("implementation", [ct(h.registry, "act", "agent.run")], [ct(h.registry, "gate", "test.check")]),
+      stage("review", [ct(h.registry, "act2", "test.act")], [ct(h.registry, "gate2", "test.check")]),
+    );
+    const gateOnly = await h.executorFor().execute({
+      issueId: "issue-1", pipeline: plan, stageId: "implementation", baseContext: baseContext(), deps: {}, gateOnly: true,
+    });
+    expect(gateOnly).toEqual({ kind: "parked", stageId: "implementation", reason: "pending", wakeAt: null });
+    expect(h.world.calls.filter((c) => c === "act")).toHaveLength(0);
+    expect(h.journal.getCursor("issue-1")).toMatchObject({ list: "actions", taskInstanceId: null, attempt: 2, wakeAt: null });
+
+    const next = await h.run(plan, "implementation");
+    expect(next).toMatchObject({ kind: "advance", feedbackCycles: 1 });
+    expect(h.world.calls.filter((c) => c === "act")).toHaveLength(1);
+  });
+
+  test("a gate-only execution whose gate passes advances without starting the agent", async () => {
+    const h = await harness();
+    h.activate();
+    const epoch = h.journal.stageEpoch("issue-1");
+    h.journal.saveCursor({
+      issueId: "issue-1", stage: "implementation", stageEpoch: epoch, attempt: 1, returns: 0, list: "exit-gate",
+      taskInstanceId: null, state: "planned", feedback: null, pendingSince: null, wakeAt: null, deadlineAt: null,
+    }, epoch);
+    const outcome = await h.executorFor().execute({
+      issueId: "issue-1",
+      pipeline: pipeline(stage("implementation", [ct(h.registry, "act", "agent.run")], [ct(h.registry, "gate", "test.check")])),
+      stageId: "implementation", baseContext: baseContext(), deps: {}, gateOnly: true,
+    });
+    expect(outcome).toMatchObject({ kind: "advance", stageId: "implementation" });
+    expect(h.world.calls.filter((c) => c === "act")).toHaveLength(0);
   });
 
   test("feedback from a check the actions repair is marked, so the agent can skip its round", async () => {

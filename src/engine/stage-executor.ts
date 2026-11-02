@@ -20,6 +20,9 @@ import {
   snapshotReads, validAfter,
 } from "./stage-context";
 import { resolveRoute } from "./stage-routing";
+import { ENTRY_APPROVAL_TASK_ID, remainingWorkStartsProcess } from "./remaining-work";
+
+export { ENTRY_APPROVAL_TASK_ID };
 import type { WaitKind } from "../events/topics";
 
 export type StageOutcome =
@@ -74,8 +77,6 @@ export type ManualGateWaitingNotifier = (input: {
 }) => void | Promise<void>;
 
 export const BOARD_APPROVAL_TASK_ID = "board-approval";
-/** Synthetic cursor task for a stage-level approval that happens before actions. */
-export const ENTRY_APPROVAL_TASK_ID = "entry-approval";
 
 export type BoardApprovalResolver = (input: {
   issueId: string;
@@ -91,6 +92,11 @@ export interface ExecuteInput {
   baseContext: TaskContext;
   deps: unknown;
   signal?: AbortSignal;
+  /**
+   * The scheduler admitted this execution without a repository permit because only checks were
+   * left. It parks, ready, as soon as the remaining work would start an agent or script process.
+   */
+  gateOnly?: boolean;
 }
 
 type List = "actions" | "exit-gate";
@@ -157,6 +163,9 @@ export class StageExecutor {
     };
 
     for (;;) {
+      if (input.gateOnly && remainingWorkStartsProcess(stage, run.cursor)) {
+        return { kind: "parked", stageId: stage.id, reason: "pending", wakeAt: null };
+      }
       const outcome = run.cursor.list === "actions" ? await this.#actions(run) : await this.#gate(run);
       if (outcome) return outcome;
     }
