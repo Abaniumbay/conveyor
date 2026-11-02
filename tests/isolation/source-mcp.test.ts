@@ -27,7 +27,11 @@ async function run() {
   const home = path.join(artifacts, "home");
   const scratch = path.join(artifacts, "scratch");
   const otherRun = path.join(root, "other-run");
-  for (const directory of [workspace, home, scratch, otherRun]) await mkdir(directory, { recursive: true });
+  const serviceHome = path.join(root, "service-home");
+  const config = path.join(root, "config");
+  const secrets = path.join(root, "secrets");
+  for (const directory of [workspace, home, scratch, otherRun, serviceHome, config, secrets]) await mkdir(directory, { recursive: true });
+  await writeFile(path.join(secrets, "token"), "secret");
   const context = path.join(scratch, "context.json");
   await writeFile(context, JSON.stringify({
     version: 1, runId: "r1", stageId: "implementation",
@@ -43,7 +47,7 @@ async function run() {
   const options: AgentFilesystemOptions = {
     command: "/bin/sh", env, workspace, artifacts, home, scratch, writable: [workspace, home, scratch], readable: [context],
   };
-  return { options, context, otherRun, env, root };
+  return { options, context, otherRun, serviceHome, config, secrets, env, root };
 }
 
 const INITIALIZE = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } };
@@ -90,7 +94,7 @@ describeSandbox("source-mode MCP server in the confined filesystem", () => {
 
   async function probe(script: string) {
     const files = await run();
-    const launch = agentFilesystemCommand(files.options, ["/bin/sh", "-c", script.replaceAll("$OTHER", files.otherRun)]);
+    const launch = agentFilesystemCommand(files.options, ["/bin/sh", "-c", script.replaceAll("$OTHER", files.otherRun).replaceAll("$SERVICE", files.serviceHome).replaceAll("$CONFIG", files.config).replaceAll("$SECRETS", files.secrets)]);
     const child = Bun.spawnSync(launch.argv, { env: launch.env, stdout: "pipe", stderr: "pipe" });
     return { code: child.exitCode, out: child.stdout.toString() };
   }
@@ -101,13 +105,13 @@ describeSandbox("source-mode MCP server in the confined filesystem", () => {
   });
 
   test("the service home, configuration, secrets and other runs are not visible", async () => {
-    const result = await probe(`for p in ${homedir()}/.local/share/conveyor-v2 ${homedir()}/.config ${homedir()}/.ssh ${homedir()}/.codex $OTHER; do test -e "$p" && echo "visible $p"; done; echo done`);
+    const result = await probe(`for p in $SERVICE $CONFIG $SECRETS $SECRETS/token ${homedir()}/.local/share/conveyor-v2 ${homedir()}/.config $OTHER; do test -e "$p" && echo "visible $p"; done; echo done`);
     expect(result.out.trim()).toBe("done");
   });
 
   test("what is mounted from the checkout is read-only", async () => {
-    const result = await probe(`touch ${checkout}/src/new-file 2>/dev/null && echo src-written; touch ${checkout}/node_modules/new-file 2>/dev/null && echo deps-written; rm ${checkout}/package.json 2>/dev/null && echo pkg-removed; echo done`);
-    expect(result.out.trim()).toBe("done");
+    const result = await probe(`test -f ${checkout}/src/cli.ts && test -d ${checkout}/node_modules && test -f ${checkout}/package.json && echo present; touch ${checkout}/src/new-file 2>/dev/null && echo src-written; touch ${checkout}/node_modules/new-file 2>/dev/null && echo deps-written; rm ${checkout}/package.json 2>/dev/null && echo pkg-removed; echo done`);
+    expect(result.out.trim()).toBe("present\ndone");
   });
 });
 
