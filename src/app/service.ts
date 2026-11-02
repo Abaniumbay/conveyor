@@ -2465,10 +2465,10 @@ export class ConveyorService {
     return this.#codeHosts.get(name) ?? null;
   }
 
-  /** A stage that only runs an in-process source action: no producer or verifier process. */
   /** Whether the stage's remaining work, from its durable cursor, starts no agent or script process. */
   private isGateOnlyExecution(issueId: string, repositoryId: string, stageId: string): boolean {
-    const stage = this.config.plans
+    // Older in-process fixtures carry no compiled plans; treat them as permit-consuming.
+    const stage = (this.config.plans ?? [])
       .find((plan) => plan.repositoryId === repositoryId)
       ?.stages.find((candidate) => candidate.id === stageId);
     if (!stage || stage.legacy) return false;
