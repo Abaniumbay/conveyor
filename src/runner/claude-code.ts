@@ -13,7 +13,7 @@ import path from "node:path";
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { prepareAgentEnvironment } from "../isolation/environment";
 import { claudeLaunch, type RunNetwork } from "../isolation/run-network";
-import { agentFilesystemPlan, type AgentFilesystemOptions } from "../isolation/sandbox";
+import { agentFilesystemPlan, agentLaunchCommand, verifyAgentWrapper, type AgentFilesystemOptions } from "../isolation/sandbox";
 import { acquireScratch, assertNoHostTmpWritableRoots } from "../isolation/scratch";
 import { log } from "../log/logger";
 import { EMPTY_USAGE, UNAVAILABLE_COST, producerResultSchema, type Artifact, type RunEnvelope } from "./result";
@@ -249,11 +249,13 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
       ...(input.toolchainPaths?.length ? { toolchain: input.toolchainPaths } : {}),
     };
     const filesystem = agentFilesystemPlan(filesystemOptions);
+    const command = agentLaunchCommand(filesystemOptions);
     let argv = [
       "bwrap", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--chdir", workspace, "--",
-      input.command, ...claudeArguments(input, schema),
+      command, ...claudeArguments(input, schema),
     ];
     let spawnEnvironment = resolvedEnvironment;
+    if (!input.egress) verifyAgentWrapper({ argv, env: spawnEnvironment }, command);
     if (input.egress) {
       // Fails closed: without the namespace and its proxies Claude Code is never started.
       const launch = await claudeLaunch({

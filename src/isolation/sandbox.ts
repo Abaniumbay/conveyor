@@ -184,19 +184,36 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
   return { mounts };
 }
 
+/**
+ * The path to launch an agent by inside its confined filesystem. The plan mounts only the fully
+ * resolved file, at its real path, so neither the `PATH` entry nor the intermediate symlinks of an
+ * installer layout (`~/.local/bin/claude` -> `.../versions/<version>`) exist in the namespace. The
+ * resolved path is launched instead of mounting the file under the symlink's name: the kernel reports
+ * a running program's resolved path (`/proc/self/exe`) either way, so an agent that looks for files
+ * relative to its own path sees the same real path as outside, and no directory holding the symlink
+ * or the installation has to be exposed.
+ */
+export function agentLaunchCommand(options: Pick<AgentFilesystemOptions, "command" | "env">): string {
+  const executable = resolveCommand(options.command, options.env);
+  if (!executable) throw new Error(`cannot confine a command that is not installed: ${options.command}. Install it, or set the runner's command to an installed executable or an absolute path.`);
+  return executable;
+}
+
 /** Starts an agent with its constrained filesystem, failing before the agent command can run. */
 export function agentFilesystemCommand(options: AgentFilesystemOptions, argv: readonly string[]): SandboxedCommand {
   const plan = agentFilesystemPlan(options);
   const bubblewrap = findOnPath("bwrap", options.env.PATH);
   if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap on PATH; install it (for example: sudo apt install bubblewrap) and run `conveyor doctor`");
-  return { argv: [bubblewrap, "--unshare-pid", "--die-with-parent", ...plan.mounts, "--", ...argv], env: resolvePathEnvironment(options.env), dataEnv: {} };
+  const [command, ...rest] = argv;
+  const launched = command === options.command ? agentLaunchCommand(options) : command;
+  return { argv: [bubblewrap, "--unshare-pid", "--die-with-parent", ...plan.mounts, "--", ...(launched === undefined ? [] : [launched]), ...rest], env: resolvePathEnvironment(options.env), dataEnv: {} };
 }
 
 /**
  * Proves the namespace in a wrapped launch can be created before the agent command is started, by
  * running the same bubblewrap arguments around a no-op. Fails closed with an actionable message.
  */
-export function verifyAgentWrapper(launch: Pick<SandboxedCommand, "argv" | "env">): void {
+export function verifyAgentWrapper(launch: Pick<SandboxedCommand, "argv" | "env">, command?: string): void {
   const separator = launch.argv.indexOf("--");
   if (separator < 0) throw new Error("agent filesystem wrapper has no command separator");
   let probe: ReturnType<typeof Bun.spawnSync>;
@@ -207,6 +224,11 @@ export function verifyAgentWrapper(launch: Pick<SandboxedCommand, "argv" | "env"
   }
   if (probe.exitCode !== 0) {
     throw new Error(`Cannot establish the agent filesystem wrapper; no agent command was started. bubblewrap failed: ${probe.stderr?.toString().trim() || `exit ${probe.exitCode}`}. Allow unprivileged user, network and mount namespaces for bwrap and run \`conveyor doctor\`.`);
+  }
+  if (command === undefined) return;
+  const present = Bun.spawnSync([...launch.argv.slice(0, separator + 1), "/usr/bin/test", "-x", command], { env: launch.env, stdout: "ignore", stderr: "ignore" });
+  if (present.exitCode !== 0) {
+    throw new Error(`Agent command ${command} cannot be found inside the confined filesystem; no agent command was started. Set the runner's command to an installed executable (or its absolute path) that the service account can run, and run \`conveyor doctor\`.`);
   }
 }
 
