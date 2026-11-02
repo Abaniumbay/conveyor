@@ -112,6 +112,32 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
   },
 };
 
+/**
+ * Reruns each cancelled rerunnable run once per head and name.
+ * Marked before the rerun so a crash in between loses one rerun rather than repeating it.
+ * A repository pause is different: its fence runs before the provider write,
+ * so release these provisional marks and preserve the rerun intent for resume.
+ */
+async function rerunCancelled(deps: Deps, target: CiChange, head: string, candidates: CiContext["runs"], at: Date): Promise<void> {
+  const marks = deps.store.executions();
+  const provider = providerOf(deps);
+  const { rerun } = classifyRuns(candidates, () => true);
+  for (const run of rerun) {
+    if (marks.markCi(deps.issueId, head, "rerun", run.name, at.toISOString()).fresh) {
+      marks.markCi(deps.issueId, head, "rerun-id", run.id, at.toISOString());
+      try {
+        await provider.rerun(target, run.id);
+      } catch (error) {
+        if (error instanceof RepositoryPausedError) {
+          marks.unmarkCi(deps.issueId, head, "rerun", run.name);
+          marks.unmarkCi(deps.issueId, head, "rerun-id", run.id);
+        }
+        throw error;
+      }
+    }
+  }
+}
+
 const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
   name: "ci.start",
   kind: "act",
@@ -133,24 +159,7 @@ const start: TaskDefinition<z.output<typeof startConfig>, unknown, Deps> = {
     const waiting = await provider.start(target, head, config.retriggerMinutes * 60_000, at.getTime());
     for (const name of waiting) marks.markCi(deps.issueId, head, "started", name, at.toISOString());
 
-    // Marked before the rerun so a crash in between loses one rerun rather than repeating it.
-    // A repository pause is different: its fence runs before the provider write,
-    // so release these provisional marks and preserve the rerun intent for resume.
-    const { rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable);
-    for (const run of rerun) {
-      if (marks.markCi(deps.issueId, head, "rerun", run.name, at.toISOString()).fresh) {
-        marks.markCi(deps.issueId, head, "rerun-id", run.id, at.toISOString());
-        try {
-          await provider.rerun(target, run.id);
-        } catch (error) {
-          if (error instanceof RepositoryPausedError) {
-            marks.unmarkCi(deps.issueId, head, "rerun", run.name);
-            marks.unmarkCi(deps.issueId, head, "rerun-id", run.id);
-          }
-          throw error;
-        }
-      }
-    }
+    await rerunCancelled(deps, target, head, snapshot.runs.filter((run) => run.rerunnable), at);
 
     const announced = snapshot.defined || snapshot.runs.length > 0 || waiting.length > 0;
     if (announced && marks.markCi(deps.issueId, head, "announced", "", at.toISOString()).fresh) {
@@ -191,14 +200,15 @@ const defined: TaskDefinition<unknown, unknown, Deps> = {
 const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
   name: "ci.passed",
   kind: "check",
-  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention.",
+  description: "Passes when every CI run of the change head passed. Pending during the settle window (default 30 s) and while runs are queued or running, until the head's CI finishes or the change gets a new head; reruns a cancelled run once per head without failing the gate; stops blocked when that rerun was used or impossible; fails with focused logs when a run failed. A second consecutive matching diagnosed failure stops for intervention.",
   reads: ["change", "ci", "repository", "run"],
   writes: [],
   invalidates: [],
+  requestsRerun: true,
   config: passedConfig,
   checkpoint: { name: "ciPassed", scope: "task" },
   defaultWait: { timeoutMs: 3 * 3_600_000, pollMs: 60_000 },
-  run({ context, config, instance, issueId, journal }) {
+  async run({ context, config, instance, issueId, journal, deps }) {
     const change = context.change;
     const snapshot = context.ci;
     if (!change || !snapshot) return fail(NO_CHANGE);
@@ -207,7 +217,9 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     const { running, failed, rerun } = classifyRuns(snapshot.runs, (run) => run.rerunnable && !reran.has(run.name));
 
     const ordinaryFailures = failed.filter((run) => run.neverStarted === undefined);
-    if (ordinaryFailures.length > 0) {
+    // A cancelled run is not a failure of the work: with nothing else wrong it never routes back to the agent.
+    const cancelledOnly = ordinaryFailures.length > 0 && ordinaryFailures.every((run) => run.state === "cancelled");
+    if (ordinaryFailures.length > 0 && !cancelledOnly) {
       const bounded = boundedFailureRuns(ordinaryFailures, config.logLines);
       const report = describeCiFailure(change.url, sha, bounded);
       const fingerprint = ciFailureFingerprint(bounded);
@@ -231,14 +243,15 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
       }
       return fail(report.reason, { route: { retry: true }, details: { requiredFixes: report.requiredFixes, evidence: report.sections } });
     }
+    if (cancelledOnly) return blocked(cancelledReason(ordinaryFailures, reran, sha));
     if (failed.length > 0) throw new InfrastructureError(describeNeverStartedCi(failed));
+    // A cancelled run is not a failure of the work: its one rerun per head is requested here, so it
+    // costs no feedback cycle and does not restart the agent, and the gate keeps waiting for it.
     if (rerun.length > 0) {
-      const names = rerun.map((run) => run.name).join(", ");
-      return fail(`CI run ${names} was cancelled at ${sha}; it will be rerun once.`, {
-        route: { retry: true }, details: { requiredFixes: [], evidence: [] },
-      });
+      await rerunCancelled(deps, { ...ciChange(change), repository: deps.repository.address }, snapshot.headSha, rerun, now(deps));
     }
-    const waitingOn = [...snapshot.awaitingStart.map((name) => `${name} to start`), ...running.map((run) => run.name)];
+    // A cancelled run whose one rerun was just requested: the gate waits for it.
+    const waitingOn = [...snapshot.awaitingStart.map((name) => `${name} to start`), ...rerun.map((run) => `${run.name} (rerun requested)`), ...running.map((run) => run.name)];
     const elapsedMs = Date.parse(snapshot.observedAt) - Date.parse(snapshot.firstSeenAt);
     if (waitingOn.length > 0 || elapsedMs < config.settleSeconds * 1_000) {
       return pending(`Waiting for CI at ${sha}: ${waitingOn.join(", ") || "checks to register"}.`, ciWait(context.repository!.address, change, snapshot.headSha, waitingOn.length, config.settleSeconds * 1_000 - elapsedMs));
@@ -260,6 +273,14 @@ const passed: TaskDefinition<z.output<typeof passedConfig>, unknown, Deps> = {
     return pass();
   },
 };
+
+/** Why an item stops on cancelled runs that will not be rerun: the rerun for this head is used up or the provider cannot rerun. */
+function cancelledReason(runs: CiContext["runs"], reran: ReadonlySet<string>, sha: string): string {
+  const lines = runs.map((run) => reran.has(run.name)
+    ? `CI run ${run.name} was cancelled at ${sha}, and the one rerun for this head was already used.`
+    : `CI run ${run.name} was cancelled at ${sha}, and the provider could not rerun it.`);
+  return [...lines, "Rerun the check from the pull request's checks page, or push a new head, then retry the item."].join(" ");
+}
 
 function boundedFailureRuns(failed: CiContext["runs"], lines: number) {
   return failed.map((run) => {

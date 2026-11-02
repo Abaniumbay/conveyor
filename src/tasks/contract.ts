@@ -107,6 +107,8 @@ export interface TaskDefinition<C = unknown, I = unknown, D = unknown> {
   refreshesProjection?: true;
   /** Checks only: permits reading an authoritative external source without making writes. */
   observesExternal?: true;
+  /** Checks only: permits asking an external system once, idempotently, to redo work it lost (a cancelled CI run), without writing context. */
+  requestsRerun?: true;
   /** Tools only: whether the tool changes external state. */
   mutating?: boolean;
   /** Tools only: false when the tool is state-idempotent (upsert/delete), so the dispatcher runs every call instead of replaying a journaled response. */
@@ -146,6 +148,9 @@ export function defineGroup(group: string, definitions: TaskDefinition<any, any,
     }
     if (def.observesExternal && def.kind !== "check") {
       throw new Error(`${where}: only a check may observe external state`);
+    }
+    if (def.requestsRerun && def.kind !== "check") {
+      throw new Error(`${where}: only a check may request a rerun`);
     }
     if (def.kind === "act") {
       const bad = def.writes.filter((key) => !isCapturedKey(key));
@@ -261,9 +266,9 @@ export async function runTask<C, I, D>(
     ...(input === undefined ? {} : { input }),
     context,
     config,
-    // Pure checks have no task dependencies. The two explicit exceptions make no task-context
-    // writes: one refreshes a derived projection and the other observes an external authority.
-    deps: (isCheck && !definition.refreshesProjection && !definition.observesExternal ? undefined : args.deps) as D,
+    // Pure checks have no task dependencies. The explicit exceptions make no task-context
+    // writes: one refreshes a derived projection, one observes an external authority and one asks for a rerun.
+    deps: (isCheck && !definition.refreshesProjection && !definition.observesExternal && !definition.requestsRerun ? undefined : args.deps) as D,
     instance: args.instance,
   });
   return validateResult(definition.name, result);
