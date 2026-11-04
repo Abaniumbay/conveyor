@@ -2731,10 +2731,14 @@ describe("ConveyorService dashboard", () => {
       runnerCount: 2,
       runnerCapacity: 3,
       runs: [
-        { id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer" },
-        { issueNumber: 29, stageId: "implementation", kind: "orchestration" },
+        { id: "active-run", issueNumber: 27, stageId: "implementation", kind: "producer", repositoryColor: 2 },
+        { issueNumber: 29, stageId: "implementation", kind: "orchestration", repositoryColor: 2 },
       ],
     });
+    const boardCards = [...dashboard.stages.flatMap((stage) => stage.issues), ...dashboard.backlog];
+    const boardCard = boardCards.find((card) => card.repository === "repo");
+    expect(boardCard).toBeDefined();
+    for (const run of dashboard.activeWork.runs) expect(run.repositoryColor).toBe(boardCard!.repositoryColor);
     expect(dashboard.selectedIssue).toMatchObject({
       id: "github:owner/repo#27",
       repository: "repo",

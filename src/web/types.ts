@@ -140,6 +140,7 @@ export interface ActiveRunViewModel {
   id: string;
   issueId: string;
   repository: string;
+  repositoryColor: number;
   issueNumber: number;
   issueTitle: string;
   stageId: string;

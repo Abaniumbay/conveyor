@@ -147,6 +147,7 @@ const dashboard: DashboardViewModel = {
       id: "run-active",
       issueId: "parent",
       repository: "sample",
+      repositoryColor: 1,
       issueNumber: 41,
       issueTitle: "Build <safe> & sound",
       stageId: "build",
@@ -1371,7 +1372,31 @@ describe("renderDashboard", () => {
   test("keeps active-run links in the mobile System popover", () => {
     const html = renderDashboard({ ...dashboard, selectedIssue: parent });
 
-    expect(html).toContain('<section class="mobile-active-work"><h3>Active work</h3><ul><li><a href="/issues/sample/41"><strong>#41 Build &lt;safe> &amp; sound</strong>');
+    expect(html).toContain('<section class="mobile-active-work"><h3>Active work</h3><ul><li><a href="/issues/sample/41"><span class="active-work-repository repo-color-1"><i class="repository-dot" aria-hidden="true"></i><span class="active-work-repository-id">sample</span></span><strong>#41 Build &lt;safe> &amp; sound</strong>');
+  });
+
+  test("shows each active run's repository as a colour dot and written id in the popover and the mobile section", () => {
+    const run = dashboard.activeWork.runs[0]!;
+    const html = renderDashboard({
+      ...dashboard,
+      activeWork: {
+        runnerCount: 2,
+        runnerCapacity: 4,
+        runs: [
+          { ...run, id: "r1", repository: "alpha", repositoryColor: 3 },
+          { ...run, id: "r2", repository: "a-very-long-repository-identifier", repositoryColor: 5 },
+        ],
+      },
+    });
+    const chip = (id: string, color: number) =>
+      `<span class="active-work-repository repo-color-${color}"><i class="repository-dot" aria-hidden="true"></i><span class="active-work-repository-id">${id}</span></span>`;
+    const popover = html.slice(html.indexOf('class="runner-status"'), html.indexOf("</details>", html.indexOf('class="runner-status"')));
+    const mobile = html.slice(html.indexOf('class="mobile-active-work"'));
+    for (const section of [popover, mobile]) {
+      expect(section).toContain(chip("alpha", 3));
+      expect(section).toContain(chip("a-very-long-repository-identifier", 5));
+    }
+    expect(html).not.toContain('class="active-work-repository repo-color-1"');
   });
 
   test("shows each open parent as a foldable row of its children, and a finished family as its parent alone", () => {

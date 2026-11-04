@@ -39,6 +39,10 @@ Agents granted the todo tools (normally the implementer) keep a working todo lis
 
 ![The Board after a long stage scroll, retaining its navigation and stage headings](screenshots/board-scrolled.png)
 
+The runners control in the header opens **Active work**. Each running item shows its repository as a chip, the repository's colour dot beside the written repository id, so items with the same number in different repositories are told apart. The same list appears in the System popover on a phone.
+
+![The Active work list, each running item with its repository chip](screenshots/board-active-work.png)
+
 The compact filter bar narrows the cards already on the board by repository, text, and state without hiding the separate **Needs you** panel. Repository choices are filters only, and active choices stay in the URL for a reload or shared link. Use **Show all**, repository cards in the Repositories view, or repository badges on Board cards to open a repository detail page. On a phone, search and the Filters control occupy the collapsed bar; selected choices and Clear filters remain directly below it.
 
 ![The Board filtered to a repository and text search](screenshots/board-filtered.png)
