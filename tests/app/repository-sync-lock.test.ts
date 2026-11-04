@@ -28,8 +28,8 @@ async function setup() {
   temporaryDirectories.push(root);
   const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
   const repositories = {
-    repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
-    other: { source: "github", address: "owner/other", folder: root, pipeline: "default" },
+    repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", concurrency: 1 },
+    other: { source: "github", address: "owner/other", folder: root, pipeline: "default", concurrency: 1 },
   };
   const config = {
     hash: "config-hash", root,
@@ -39,7 +39,7 @@ async function setup() {
       states: { done: "conveyor:done", blocked: "conveyor:blocked" },
       metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
     },
-    pipelines: { default: { stages: [{ id: "implementation" }, { id: "review" }] } },
+    pipelines: { default: { stages: [{ id: "implementation", concurrency: 1 }, { id: "review", concurrency: 1 }] } },
     repositories,
   } as unknown as ConveyorConfig;
   for (const [id, repository] of Object.entries(repositories)) {
