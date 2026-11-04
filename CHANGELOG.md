@@ -10,6 +10,22 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.16.1] - 2026-11-04
+
+This patch release fixes problems found after v0.16.0. Issues enrolled at the same time as their dependencies no longer lose their title and body, and syncs of one repository no longer overlap. Confined agents get a private, writable `/tmp` again, so tools such as `dotnet test` and installers work in agent runs. Stored webhook payloads are now pruned after seven days by default.
+
+### Added
+
+- Stored webhook payloads are now deleted after `settings.retention.webhookDeliveries` (default `7d`, minimum 24 hours). Before, every delivery was kept forever and could take a large share of the database. The daily retention pass and `conveyor cleanup` delete older deliveries in small batches; `conveyor cleanup --dry-run` reports how many it would delete.
+
+### Fixed
+
+- An issue enrolled while another issue's dependencies were being read no longer loses its title and body. Before, the relationship pass could store it as an empty placeholder; Conveyor then ignored the real text as an edit with no verifiable editor, and refinement saw an empty issue. To recover an issue that already shows an empty title and body, edit its title and body once on GitHub from a trusted account.
+
+- Syncs of one repository no longer overlap. Webhook deliveries, periodic and startup reads, and the refresh after an item's step now run one at a time per repository, so one sync can no longer overwrite what another has just stored. Different repositories still sync in parallel.
+
+- Confined Codex and Claude Code agents get a private, writable `/tmp` again. Since v0.16.0 they had none, so tools that use `/tmp` directly (such as `dotnet test`, `msbuild` and installer scripts) failed inside agent runs. Each run's `/tmp` is its own scratch directory: the host `/tmp` and other runs stay invisible, and it is removed with the run. Read-only agents get one too, without write access to their worktree.
+
 ## [0.16.0] - 2026-11-02
 
 This release confines what agents can see and write. Codex and Claude Code agent commands now run in an empty-root filesystem view limited to their worktree, their private run paths, declared toolchain paths and their own installation, and egress-wrapped Codex runs are also limited in what they can write. Agents installed behind symlinks, the standalone Codex installer and source checkouts of Conveyor all work under confinement, and confined agents can still rewrite Git's packed refs.
