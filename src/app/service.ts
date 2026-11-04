@@ -1116,7 +1116,7 @@ export class ConveyorService {
       webhookDeliveriesMs: this.config.settings.retention.webhookDeliveriesMs ?? null,
       dryRun: options.dryRun === true,
     });
-    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0 || report.eventLog.events > 0)) {
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0 || report.eventLog.events > 0 || report.webhookDeliveries.deliveries > 0)) {
       log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes, eventLog: report.eventLog.events, webhookDeliveries: report.webhookDeliveries.deliveries });
     }
     if (!report.dryRun && report.homes.failures.length > 0) {
