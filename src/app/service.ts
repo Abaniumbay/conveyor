@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { freemem, homedir, tmpdir, totalmem, uptime } from "node:os";
@@ -480,6 +481,10 @@ export class ConveyorService {
   readonly #issueListings = new Map<string, { since: string }>();
   /** Webhook reconciles per repository: the one running or queued last, and one not yet started that later deliveries join. */
   readonly #webhookReconciles = new Map<string, Promise<void>>();
+  /** The tail of each repository's sync lock; a sync waits for it before reading the source. */
+  readonly #repositoryLocks = new Map<string, Promise<void>>();
+  /** The repositories whose lock the running async context already holds. */
+  readonly #heldRepositoryLocks = new AsyncLocalStorage<ReadonlySet<string>>();
   readonly #queuedWebhookReconciles = new Map<string, { issueNumbers: Set<number> | null; done: Promise<void> }>();
   /** Webhook deliveries accepted but not yet processed. */
   readonly #webhookWork = new Set<Promise<void>>();
@@ -820,10 +825,35 @@ export class ConveyorService {
   }
 
   /**
+   * Runs one sync of a repository alone: syncs of the same repository run one at a time, different
+   * repositories in parallel. A sync started from inside a locked sync of that repository joins it.
+   */
+  private async withRepositoryLock<T>(repositoryId: string, sync: () => Promise<T>): Promise<T> {
+    const held = this.#heldRepositoryLocks.getStore();
+    if (held?.has(repositoryId)) return sync();
+    const previous = this.#repositoryLocks.get(repositoryId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    const next = previous.then(() => tail);
+    this.#repositoryLocks.set(repositoryId, next);
+    await previous;
+    try {
+      return await this.#heldRepositoryLocks.run(new Set([...(held ?? []), repositoryId]), sync);
+    } finally {
+      release();
+      if (this.#repositoryLocks.get(repositoryId) === next) this.#repositoryLocks.delete(repositoryId);
+    }
+  }
+
+  /**
    * Reads one repository. A full pass lists every issue; a `changed` pass lists only the issues
    * changed since Conveyor last saw the repository and reads relationships for those alone.
    */
-  private async reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<number> {
+  private reconcileOne(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean } = {}): Promise<number> {
+    return this.withRepositoryLock(id, () => this.reconcileOneLocked(id, kind, options));
+  }
+
+  private async reconcileOneLocked(id: string, kind: "full" | "changed", options: { verifyTrust?: boolean }): Promise<number> {
     const repository = this.config.repositories[id];
     if (!repository) return 0;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -1321,7 +1351,11 @@ export class ConveyorService {
   }
 
   /** Reconciles one supplied source snapshot without issuing another source read. */
-  private async reconcileClosedItem(repositoryId: string, issue: SourceIssue): Promise<void> {
+  private reconcileClosedItem(repositoryId: string, issue: SourceIssue): Promise<void> {
+    return this.withRepositoryLock(repositoryId, () => this.reconcileClosedItemLocked(repositoryId, issue));
+  }
+
+  private async reconcileClosedItemLocked(repositoryId: string, issue: SourceIssue): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
@@ -1469,7 +1503,8 @@ export class ConveyorService {
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true)).finally(() => {
+      // A stage run outlives the sync that scheduled it, so it must not inherit that sync's held lock.
+      void this.#heldRepositoryLocks.exit(() => withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
         this.#active.delete(issue.id);
         this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
         if (this.#drain && !active.interrupted) {
@@ -1581,7 +1616,7 @@ export class ConveyorService {
 
   private refreshStatusComments(issueIds: readonly string[]): void {
     for (const issueId of new Set(issueIds)) {
-      void this.updateStatusComment(issueId)
+      void this.#heldRepositoryLocks.exit(() => this.updateStatusComment(issueId))
         .catch((error) => log.warn("Status comment refresh failed", this.itemFields(issueId), error))
         .catch(() => {});
     }
@@ -2520,7 +2555,11 @@ export class ConveyorService {
    * Reads the source into the projection. `only` reads just those issues (one request each) and
    * touches nothing else, for work on one item; otherwise a listing, partial for a webhook pass.
    */
-  private async reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] } = {}): Promise<void> {
+  private reconcileRepository(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] } = {}): Promise<void> {
+    return this.withRepositoryLock(repositoryId, () => this.reconcileRepositoryLocked(repositoryId, options));
+  }
+
+  private async reconcileRepositoryLocked(repositoryId: string, options: { partial?: boolean; includeIssueNumbers?: readonly number[]; only?: readonly number[] }): Promise<void> {
     const repository = this.config.repositories[repositoryId];
     if (!repository) return;
     if (options.only) {
@@ -3633,7 +3672,16 @@ export class ConveyorService {
     const stored = deliveryId ? this.store.sourceEvent("github", deliveryId) : null;
     if (!repository || !stored) return false;
     const change = deliveredIssueChange(repository.address, stored.eventType, stored.payload, this.config.labels.enrollment);
+    // A delivery that cannot be applied answers at once, so the caller can queue it with its burst.
     if (!change) return false;
+    return this.withRepositoryLock(repositoryId, () => this.applyIssueDeliveryLocked(repositoryId, repository, change));
+  }
+
+  private async applyIssueDeliveryLocked(
+    repositoryId: string,
+    repository: NonNullable<ConveyorConfig["repositories"][string]>,
+    change: NonNullable<ReturnType<typeof deliveredIssueChange>>,
+  ): Promise<boolean> {
     const number = change.issue.number;
     const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
     const followUpBodies = this.followUpBodies(repositoryId);
