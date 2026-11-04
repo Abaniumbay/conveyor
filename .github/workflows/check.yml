@@ -33,14 +33,7 @@ jobs:
           git config --global user.email "ci@conveyor.invalid"
           git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
-      - name: Install and verify Bubblewrap sandbox coverage
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          bwrap --unshare-net --dev-bind / / true
+      - uses: ./.github/actions/setup-bubblewrap
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
       - name: Check release-note fragments
@@ -112,6 +105,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup-bubblewrap
       # Builds the release archive, then installs it with install.sh and exercises it outside the
       # checkout, without Bun on PATH: init, config, dashboard assets, sign-in, bridge, agent + MCP,
       # status and logs; then upgrades to a second build and rolls back, restarting like systemd.

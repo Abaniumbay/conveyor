@@ -31,6 +31,7 @@ jobs:
           git config --global user.email "ci@conveyor.invalid"
           git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup-bubblewrap
       # `bun run check` includes the dashboard's browser tests, as in check.yml.
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
@@ -60,6 +61,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup-bubblewrap
       - run: bun run scripts/build.ts --target ${{ matrix.target }} --out dist
       # A second build to upgrade to and roll back from, run like systemd would.
       - run: bun run scripts/build.ts --target ${{ matrix.target }} --out dist-next --version 99.0.0-next
