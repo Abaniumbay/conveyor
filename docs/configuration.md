@@ -133,6 +133,7 @@ settings:
   retention:
     runHistory: 90d         # run events (agent transcripts, tool calls); default unlimited
     artifacts: 30d          # per-run artifact directories; default unlimited
+    webhookDeliveries: 7d   # stored webhook payloads; default 7d, minimum 24h
 ```
 
 The retention settings apply to run events and non-home per-run artifacts of finished runs whose
@@ -147,6 +148,11 @@ the home itself, are removed as links and their targets are never inspected or c
 does not change permissions or remove homes. If a selected home still cannot be reclaimed, Conveyor
 warns once with its run ID and failure reason; the receipt survives service restarts, while a newly
 failing home still produces its own warning.
+
+`webhookDeliveries` bounds how long the payload of each received webhook delivery is kept (default
+`7d`). It cannot be shorter than 24 hours, the window in which Conveyor checks for missed deliveries;
+a shorter value is a configuration error. Older deliveries are deleted in bounded batches by the
+daily pass and by `conveyor cleanup`, which reports how many it deleted (or, with `--dry-run`, would delete).
 
 ## Periodic Operator checks
 
