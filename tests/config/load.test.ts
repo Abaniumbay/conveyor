@@ -220,6 +220,19 @@ repositories:
     }).labels.metadata.noSplit).toBe("workflow:keep-whole");
   });
 
+  test("defaults webhook delivery retention to 7d and rejects less than the 24h redelivery window", () => {
+    const parse = (retention: object) => configSchema.safeParse({
+      settings: { database: "/d", logs: "/l", workspaces: "/w", artifacts: "/a", retention },
+      labels: { enrollment: "delivery", stageTemplate: "delivery:{stage}", states: { done: "delivery:done" }, metadata: { closable: "delivery:closable", orderTemplate: "delivery:order:{number}" } },
+    });
+    const retentionMs = (result: ReturnType<typeof parse>) => (result.success ? result.data.settings.retention.webhookDeliveriesMs : null);
+    expect(retentionMs(parse({}))).toBe(7 * 86_400_000);
+    expect(retentionMs(parse({ webhookDeliveries: "24h" }))).toBe(86_400_000);
+    const short = parse({ webhookDeliveries: "23h" });
+    expect(short.success).toBe(false);
+    expect(JSON.stringify(short.error?.issues)).toContain("at least 24h");
+  });
+
   test("rejects the removed allowedHumanLogins provider setting", async () => {
     const directory = await temporaryDirectory();
     await writeFile(
