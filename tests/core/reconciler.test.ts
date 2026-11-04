@@ -961,3 +961,42 @@ describe("reconcileRepository", () => {
     store.close();
   });
 });
+
+describe("reconcileRepository against rows stored while it waits", () => {
+  const repository = { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" };
+
+  test("an issue first stored as a placeholder adopts its title and body from the source when it is enrolled", async () => {
+    const store = await openStore();
+    const enrolled = issue(3, ["conveyor", "conveyor:refinement"]);
+    store.upsertRepository({ ...repository, configHash: "hash-1" });
+    store.insertPlaceholderIssue({ id: enrolled.id, repositoryId: "repo", sourceNumber: 3, sourceUrl: enrolled.url, title: "ignored", body: "ignored", sourceState: "open", labels: [], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    expect(store.getIssue(enrolled.id)).toMatchObject({ title: "", body: "", projectedState: "offboarded" });
+
+    await reconcileRepository({ store, configHash: "hash-1", repository, stages: ["refinement", "implementation"], labels, source: { async listIssues() { return [enrolled]; } } });
+
+    expect(store.getIssue(enrolled.id)).toMatchObject({ title: "Issue 3", body: "Body", acceptedTextAt: enrolled.updatedAt });
+    store.close();
+  });
+
+  test("a row stored while the trust lookup waits is not overwritten from the earlier read", async () => {
+    const store = await openStore();
+    const source = issue(1, ["conveyor", "conveyor:refinement"]);
+    let stored = false;
+    await reconcileRepository({
+      store, configHash: "hash-1", repository, stages: ["refinement", "implementation"], labels,
+      source: {
+        async listIssues() { return [{ ...source, title: "Edited by a stranger" }]; },
+        async getIssueProvenance() {
+          if (!stored) {
+            stored = true;
+            store.upsertIssue({ id: source.id, repositoryId: "repo", sourceNumber: 1, sourceUrl: source.url, title: "Accepted title", body: "Body", sourceState: "open", labels: source.labels, sourceUpdatedAt: source.updatedAt, acceptedTextAt: source.updatedAt });
+          }
+          return { enrollment: { login: "trusted" }, title: { login: "stranger" }, body: { login: "trusted" } };
+        },
+      },
+    });
+
+    expect(store.getIssue(source.id)).toMatchObject({ title: "Accepted title", acceptedTextAt: source.updatedAt });
+    store.close();
+  });
+});

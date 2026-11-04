@@ -171,6 +171,28 @@ describe("roll-up parent completion", () => {
     store.close();
   });
 
+  test("recording the close keeps the text stored while the close request was in flight", async () => {
+    const { fixture, service, store } = await serviceFor([
+      sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),
+      sourceIssue(2, "open", ["conveyor", "conveyor:implementation", "conveyor:done"]),
+    ], new Map([[1, [2]]]));
+    const close = fixture.source.closeIssue;
+    fixture.source.closeIssue = async (address: string, number: number) => {
+      const closed = await close(address, number);
+      const stored = store.getIssue("github:owner/my-app#1")!;
+      store.upsertIssue({ ...stored, title: "Stored meanwhile", body: "Body meanwhile", acceptedTextAt: "2026-10-17T00:00:30Z" });
+      return closed;
+    };
+
+    await service.reconcileAll();
+
+    expect(fixture.closeCalls).toEqual([1]);
+    expect(store.getIssue("github:owner/my-app#1")).toMatchObject({
+      title: "Stored meanwhile", body: "Body meanwhile", acceptedTextAt: "2026-10-17T00:00:30Z", sourceState: "closed", projectedState: "done",
+    });
+    store.close();
+  });
+
   test("leaves unfinished, paused, offboarded, and already closed parents untouched", async () => {
     const { fixture, service, store } = await serviceFor([
       sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),

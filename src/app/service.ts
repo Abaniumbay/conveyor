@@ -2646,7 +2646,9 @@ export class ConveyorService {
   }
 
   /** Reflect the successful, source-authoritative close without waiting for another poll. */
-  private recordClosedRollupParent(parent: StoredIssue, sourceIssue: SourceIssue): void {
+  private recordClosedRollupParent(readParent: StoredIssue, sourceIssue: SourceIssue): void {
+    // The caller read `readParent` before awaiting the source; keep whatever text and stage are stored now.
+    const parent = this.store.getIssue(readParent.id) ?? readParent;
     this.store.upsertIssue({
       id: parent.id,
       repositoryId: parent.repositoryId,
@@ -2888,7 +2890,9 @@ export class ConveyorService {
           blockerIds.push(storedDependency.id);
           continue;
         }
-        this.store.upsertIssue({
+        // The map predates the awaits above; the blocker may have been stored and enrolled
+        // since. Insert only when the store still has no row for it.
+        const stored = this.store.insertPlaceholderIssue({
           id: dependency.id,
           repositoryId,
           sourceNumber: dependency.number,
@@ -2904,14 +2908,8 @@ export class ConveyorService {
           acceptedTextAt: null,
           ...(dependency.type !== undefined ? { issueType: dependency.type } : {}),
         });
-        this.store.setIssueProjection(dependency.id, {
-          stage: null,
-          state: "offboarded",
-          warning: null,
-        });
-        blockerIds.push(dependency.id);
-        const inserted = this.store.getIssue(dependency.id);
-        if (inserted) issueByNumber.set(dependency.number, inserted);
+        blockerIds.push(stored.id);
+        issueByNumber.set(dependency.number, stored);
       }
       this.store.replaceRelationships(
         issue.id,

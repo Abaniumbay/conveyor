@@ -104,6 +104,10 @@ function textWarning(field: "title" | "body", actor: SourceEventActor | null, un
   return `Ignored untrusted ${field} edit${actorName(actor)}; keeping the accepted ${field}.`;
 }
 
+function rowFingerprint(row: ReturnType<ConveyorStore["getIssue"]> | undefined): string {
+  return row ? JSON.stringify([row.id, row.title, row.body, row.acceptedTextAt ?? null, row.sourceUpdatedAt, row.sourceState, row.labels, row.warning]) : "";
+}
+
 async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: SourceIssue, prior: ReturnType<ConveyorStore["getIssue"]> | undefined, enrolled: boolean): Promise<{
   title: string;
   body: string;
@@ -231,7 +235,16 @@ export async function reconcileRepository(
     if (!relevant && !prior) continue;
 
     const hasEnrollment = sourceIssue.labels.includes(input.labels.enrollment);
-    const snapshot = await acceptedSnapshot(input, sourceIssue, prior, hasEnrollment);
+    // The snapshot awaits the source; a row stored meanwhile (a delivery, another pass) must not
+    // be overwritten from the earlier read, so decide again against the current row.
+    let current = prior;
+    let snapshot = await acceptedSnapshot(input, sourceIssue, current, hasEnrollment);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const fresh = input.store.getIssue(issueId) ?? input.store.getIssueByNumber(input.repository.id, sourceIssue.number) ?? undefined;
+      if (rowFingerprint(fresh) === rowFingerprint(current)) break;
+      current = fresh;
+      snapshot = await acceptedSnapshot(input, sourceIssue, current, hasEnrollment);
+    }
 
     input.store.upsertIssue({
       id: issueId,
@@ -253,13 +266,13 @@ export async function reconcileRepository(
       sourceLabels: sourceIssue.labels,
       labels: input.labels,
       stages: input.stages,
-      pausedByConveyor: prior?.pausedByConveyor ?? false,
+      pausedByConveyor: current?.pausedByConveyor ?? false,
       expectedPostMergeClosure:
         (input.expectedPostMergeClosure?.(issueId) ?? false) ||
         // A roll-up reaches done before Conveyor closes it with GitHub's completed reason.
         // That final source delivery confirms the result; it must not turn the completed parent
         // into an uncorrelated manual closure.
-        (prior?.projectedState === "done" && sourceIssue.state === "closed" && sourceIssue.stateReason === "completed"),
+        (current?.projectedState === "done" && sourceIssue.state === "closed" && sourceIssue.stateReason === "completed"),
     });
     // A question is durable local state. Source updates which race with relationship
     // roll-up must not turn its parked owner back into an active item.
@@ -272,14 +285,14 @@ export async function reconcileRepository(
       : !snapshot.enrollmentTrusted ? "waiting"
       // A parked question survives a plain external removal of enrollment, but Conveyor's
       // own pause leaves either its empty-label marker or the item's stage-state label behind.
-      : projected.mode === "paused" && (prior?.pausedByConveyor || projected.state !== null) ? "paused"
+      : projected.mode === "paused" && (current?.pausedByConveyor || projected.state !== null) ? "paused"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
-      ? questionRun?.stageId ?? prior?.projectedStage ?? projected.stage
+      ? questionRun?.stageId ?? current?.projectedStage ?? projected.stage
       : projected.stage;
     // The pause marker only covers an empty label set; any control label ends it.
-    if (prior?.pausedByConveyor && projected.mode !== "paused") input.store.setPausedByConveyor(issueId, false);
-    const priorState = prior?.projectedState ?? null;
+    if (current?.pausedByConveyor && projected.mode !== "paused") input.store.setPausedByConveyor(issueId, false);
+    const priorState = current?.projectedState ?? null;
     const resumed = projectedState === "active" && priorState !== null && STOPPED_STATES.has(priorState);
     if (resumed) {
       input.store.recordJourneyEvent({
@@ -299,7 +312,7 @@ export async function reconcileRepository(
 
     // A process can stop after the source labels advance but before its local transition commits.
     // Reconciliation observes that durable source checkpoint and completes the idempotent closeout.
-    if (eligible && movedForward(input.stages, prior?.projectedStage ?? null, projected.stage, projected.state)) {
+    if (eligible && movedForward(input.stages, current?.projectedStage ?? null, projected.stage, projected.state)) {
       new ItemTodos(input.store.sqlite()).closeOut(issueId);
     }
 
@@ -334,7 +347,7 @@ export async function reconcileRepository(
 
     // Dependencies are stored before their own repository snapshot is read. A visible item
     // without a rank has therefore never completed onboarding, even when it already has a row.
-    if (eligible && (prior === undefined || prior.queueRank === null)) {
+    if (eligible && (current === undefined || current.queueRank === null)) {
       input.store.setQueueRank(issueId, input.store.nextQueueRank());
       input.store.recordJourneyEvent({
         issueId,
@@ -343,7 +356,7 @@ export async function reconcileRepository(
         reason: `Enrolled: the ${input.labels.enrollment} label was added${projected.stage ? ` at ${projected.stage}` : ""}.`,
       });
       enrolled += 1;
-    } else if (prior && !projected.visible && prior.projectedState !== "offboarded") {
+    } else if (current && !projected.visible && current.projectedState !== "offboarded") {
       offboarded += 1;
     }
   }

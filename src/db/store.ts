@@ -998,6 +998,28 @@ export class ConveyorStore {
     return this.mapIssue(row);
   }
 
+  getIssueByNumber(repositoryId: string, sourceNumber: number): StoredIssue | null {
+    const row = this.#database
+      .query("SELECT * FROM issues WHERE repository_id = ? AND source_number = ?")
+      .get(repositoryId, sourceNumber) as Record<string, SQLQueryBindings> | null;
+    return row ? this.mapIssue(row) : null;
+  }
+
+  /**
+   * Store a dependency that no pass has stored yet: no text, no accepted timestamp, offboarded.
+   * The check and the insert share one transaction, so a row stored by anyone else first
+   * (by id or by number) is returned untouched.
+   */
+  insertPlaceholderIssue(issue: IssueProjection): StoredIssue {
+    return this.#database.transaction(() => {
+      const existing = this.getIssue(issue.id) ?? this.getIssueByNumber(issue.repositoryId, issue.sourceNumber);
+      if (existing) return existing;
+      this.#upsertIssue({ ...issue, title: "", body: "", acceptedTextAt: null });
+      this.setIssueProjection(issue.id, { stage: null, state: "offboarded", warning: null });
+      return this.getIssue(issue.id)!;
+    })();
+  }
+
   listIssues(repositoryId?: string): StoredIssue[] {
     const rows = (repositoryId
       ? this.#database
