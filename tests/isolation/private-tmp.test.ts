@@ -128,3 +128,13 @@ describeSandbox("private /tmp in a real bubblewrap run", () => {
   });
 });
 
+
+describe("documentation", () => {
+  test("configuration docs and SPEC state confined agents have a private, writable /tmp", async () => {
+    const root = path.resolve(import.meta.dir, "../..");
+    const docs = await Bun.file(path.join(root, "docs/configuration.md")).text();
+    const spec = await Bun.file(path.join(root, "SPEC.md")).text();
+    expect(docs).toContain("private, writable `/tmp`");
+    expect(spec).toContain("private, writable `/tmp`");
+  });
+});
