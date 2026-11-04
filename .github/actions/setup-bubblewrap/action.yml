@@ -1,0 +1,13 @@
+name: Set up Bubblewrap
+description: Installs Bubblewrap, relaxes the AppArmor user-namespace restriction and probes that bwrap can confine a process. Every agent run needs it.
+runs:
+  using: composite
+  steps:
+    - name: Install and verify Bubblewrap sandbox coverage
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install --yes bubblewrap
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        bwrap --unshare-net --dev-bind / / true
