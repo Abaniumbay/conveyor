@@ -5132,7 +5132,7 @@ export class ConveyorService {
       activeWork: {
         runnerCount: activeRuns.length,
         runnerCapacity: this.config.settings.runners,
-        runs: activeRuns,
+        runs: activeRuns.map((run) => ({ ...run, repositoryColor: repositoryColors.get(run.repository) ?? 1 })),
       },
       stages: stages.map((stage) => ({
         ...column(

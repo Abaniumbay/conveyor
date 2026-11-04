@@ -296,6 +296,25 @@ function usage(amount: number) {
   };
 }
 
+// Startup recovery interrupts running runs, so the active run is added once the server is up.
+async function seedActiveRun(home: string): Promise<void> {
+  const store = await ConveyorStore.open(path.join(home, "state", "conveyor.sqlite"));
+  try {
+    store.createRun({
+      id: "demo-active-run",
+      issueId: "demo#7",
+      stageId: "implementation",
+      attempt: 1,
+      kind: "producer",
+      status: "running",
+      configHash: "demo-config",
+      startedAt: DEMO_TIME,
+    });
+  } finally {
+    store.close();
+  }
+}
+
 async function seedDemo(home: string): Promise<void> {
   const store = await ConveyorStore.open(
     path.join(home, "state", "conveyor.sqlite"),
@@ -1013,6 +1032,7 @@ async function main(): Promise<void> {
     const baseUrl = `http://${listen}`;
     await waitForServer(`${baseUrl}/health/live`);
     await waitForStartupReconciliation(demoHome);
+    await seedActiveRun(demoHome);
     await verifyGithubStub(demoHome);
 
     // Multi-threaded and GPU rasterization anti-alias edges slightly differently between runs;
@@ -1057,6 +1077,12 @@ async function main(): Promise<void> {
       PHONE_OVERFLOW_REPOSITORY,
     ]);
     await verifyStickyThemeBackgrounds(page);
+    await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
+    await stabilize(page);
+    await page.locator(".runner-status > summary").click();
+    await expectText(page, "Active work");
+    await page.locator(".runner-status .active-work-repository", { hasText: "demo" }).first().waitFor({ state: "visible", timeout: 10_000 });
+    await page.screenshot({ path: path.join(OUTPUT_DIRECTORY, "board-active-work.png") });
     await page.goto(`${baseUrl}/board`, { waitUntil: "networkidle" });
     await stabilize(page);
     await scrollBoardAndExpectSticky(page);

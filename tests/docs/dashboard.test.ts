@@ -29,6 +29,17 @@ describe("dashboard documentation", () => {
     expect(screenshot.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   });
 
+  test("ships the Active work screenshot showing the repository chip", async () => {
+    const [dashboard, screenshot] = await Promise.all([
+      readFile(path.join(root, "docs/dashboard.md"), "utf8"),
+      readFile(path.join(root, "docs/screenshots/board-active-work.png")),
+    ]);
+
+    expect(dashboard).toContain("screenshots/board-active-work.png");
+    expect(dashboard).toContain("repository chip");
+    expect(screenshot.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  });
+
   test("documents the item detail stage badge and source link", async () => {
     const [dashboard, specification] = await Promise.all([
       readFile(path.join(root, "docs/dashboard.md"), "utf8"),

@@ -69,7 +69,7 @@ const reportTotals = {
   avgQueuedMs: 0, avgReturnsPerItem: 0, avgStopsPerItem: 0, firstPassRate: 1,
 };
 
-function startApp(options: { role?: "user" | "superuser" } = {}) {
+function startApp(options: { role?: "user" | "superuser"; runs?: DashboardViewModel["activeWork"]["runs"] } = {}) {
   const role = options.role ?? "superuser";
   const state = { title: "Before" };
   const reclassified: unknown[][] = [];
@@ -80,7 +80,7 @@ function startApp(options: { role?: "user" | "superuser" } = {}) {
   }));
   const passwordHash = hashPassword(password, { salt: "0123456789abcdef" });
   const account = { id: "operator", username: "operator", role, avatar: "🐼", sessionVersion: 1 };
-  const feed = new DashboardFeed({ build: () => normalizeDashboard(board(state.title)), settleMs: 5, maxWaitMs: 20 });
+  const feed = new DashboardFeed({ build: () => normalizeDashboard(options.runs ? { ...board(state.title), activeWork: { runnerCount: options.runs.length, runnerCapacity: 4, runs: options.runs } } : board(state.title)), settleMs: 5, maxWaitMs: 20 });
   const auth = createWebAuth({
     passwordHash: role === "superuser" ? passwordHash : undefined,
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
@@ -504,6 +504,37 @@ describe("dashboard application", () => {
       const overflowing = await page.evaluate(() => [...document.querySelectorAll('section[aria-labelledby="report-findings"] *')]
         .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1 && !element.closest(".report-table-wrap")).length);
       expect(overflowing).toBe(0);
+    } finally {
+      app.stop();
+    }
+  }, 30_000);
+
+  test("keeps the Active work list with a long repository id and title inside a 360 px screen in both themes", async () => {
+    const longRepository = "RepositoryIdentifierThatIsFarTooLongToFitOnAPhoneWithoutWrapping";
+    const longTitle = "AVeryLongTitleWithoutAnySpacesThatMustWrapInsteadOfCreatingASidewaysScrollbarOnPhones";
+    const run = (id: string, repository: string, repositoryColor: number) => ({
+      id, issueId: `github:${repository}#7`, repository, repositoryColor, issueNumber: 7, issueTitle: longTitle,
+      stageId: "implementation", kind: "producer", startedAt: "2026-10-20T12:00:00Z",
+    });
+    const app = startApp({ runs: [run("a", longRepository, 3), run("b", "other", 5)] });
+    try {
+      browser = await chromium.launch();
+      for (const colorScheme of ["light", "dark"] as const) {
+        const page = await browser.newPage({ viewport: { width: 360, height: 740 }, isMobile: true, colorScheme });
+        await signIn(page, app.url);
+        await page.goto(app.url);
+        await page.locator(".server-status > summary").click();
+        await page.locator(".mobile-active-work").waitFor();
+        const dots = await page.locator(".mobile-active-work .repository-dot").evaluateAll((nodes) =>
+          nodes.map((node) => getComputedStyle(node).backgroundColor));
+        expect(new Set(dots).size).toBe(2);
+        const overflow = await page.evaluate(() => ({
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          list: Math.max(...[...document.querySelectorAll<HTMLElement>(".mobile-active-work, .mobile-active-work *")].map((element) => element.scrollWidth - element.clientWidth)),
+        }));
+        expect({ colorScheme, ...overflow }).toEqual({ colorScheme, page: 0, list: 0 });
+        await page.close();
+      }
     } finally {
       app.stop();
     }
