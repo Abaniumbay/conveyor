@@ -23,13 +23,15 @@ function sourceIssue(address: string, number: number, title: string, state: "ope
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
 
-async function setup() {
+// Without a concurrency limit the scheduler admits no stage run, so deliveries do not start real runs.
+async function setup(options: { admitRuns?: boolean } = {}) {
+  const limit = options.admitRuns ? 1 : 0;
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-sync-lock-"));
   temporaryDirectories.push(root);
   const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
   const repositories = {
-    repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", concurrency: 1 },
-    other: { source: "github", address: "owner/other", folder: root, pipeline: "default", concurrency: 1 },
+    repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default", concurrency: limit },
+    other: { source: "github", address: "owner/other", folder: root, pipeline: "default", concurrency: limit },
   };
   const config = {
     hash: "config-hash", root,
@@ -39,7 +41,7 @@ async function setup() {
       states: { done: "conveyor:done", blocked: "conveyor:blocked" },
       metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
     },
-    pipelines: { default: { stages: [{ id: "implementation", concurrency: 1 }, { id: "review", concurrency: 1 }] } },
+    pipelines: { default: { stages: [{ id: "implementation", concurrency: limit }, { id: "review", concurrency: limit }] } },
     repositories,
   } as unknown as ConveyorConfig;
   for (const [id, repository] of Object.entries(repositories)) {
@@ -234,15 +236,20 @@ describe("repository sync lock", () => {
   });
 
   test("a stage run scheduled from inside a locked delivery does not skip the lock for its own syncs", async () => {
-    const { store, reads, service, internals, deliver, started, release } = await setup();
+    const { store, reads, service, internals, deliver, started, release } = await setup({ admitRuns: true });
     // The stage run waits until the delivery that scheduled it has finished, then refreshes its issue.
     let startRun: () => void = () => {};
     const runMayStart = new Promise<void>((resolve) => { startRun = resolve; });
     let runRefresh: Promise<void> | null = null;
-    (service as unknown as { execute(): Promise<void> }).execute = async () => {
-      await runMayStart;
-      runRefresh = internals.reconcileRepository("repo", { only: [3] });
-      await runRefresh;
+    const park = (issueId: string) => store.setStageState({ issueId, stageId: "implementation", status: "passed", feedbackCycle: 0, configHash: "config-hash" });
+    (service as unknown as { execute(issue: { id: string }): Promise<void> }).execute = async (issue) => {
+      // Only the first run refreshes; any issue a run reads is parked so the scheduler does not start it again.
+      if (!runRefresh && issue.id === "repo:9") {
+        await runMayStart;
+        runRefresh = internals.reconcileRepository("repo", { only: [3] });
+        await runRefresh;
+      }
+      park(issue.id);
     };
     // The issue is ready in its first stage, so the delivery that updates it admits a stage run.
     store.upsertIssue({ id: "repo:9", repositoryId: "repo", sourceNumber: 9, sourceUrl: "https://example.test/9", title: "Stored title", body: "Body", sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
@@ -263,6 +270,7 @@ describe("repository sync lock", () => {
     release();
     await pass;
     await runRefresh;
+    await settle();
     expect(reads).toEqual(["list:owner/repo", "get:owner/repo#3"]);
     store.close();
   });
