@@ -96,8 +96,12 @@ export function agentFilesystemPlan(options: AgentFilesystemOptions): AgentFiles
     "--symlink", "usr/lib64", "/lib64",
     "--dev", "/dev",
     "--proc", "/proc",
+    // Many tools hard-code /tmp and ignore TMPDIR. A private tmpfs, mounted before the run's paths so a
+    // run directory that lives under /tmp still layers on top of it, never exposes the host /tmp and
+    // disappears with the namespace. The read-only root remount below leaves it writable.
+    "--tmpfs", "/tmp",
   ];
-  const directories = new Set(["/", "/usr", "/dev", "/proc"]);
+  const directories = new Set(["/", "/usr", "/dev", "/proc", "/tmp"]);
   const addDirectory = (directory: string) => {
     const target = path.resolve(directory);
     if (directories.has(target) || target.startsWith("/usr/")) return;
