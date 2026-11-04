@@ -899,6 +899,10 @@ async function verifyPhoneLayouts(page: Page, baseUrl: string): Promise<void> {
       await expectDocumentToFitPhoneViewport(page, name, width);
       await expectNonScrollerContentToFitPhoneViewport(page, name, width);
       if (name === "board") {
+        for (const section of ["needs-you", "filters"]) {
+          const toggle = page.locator(`[data-fold-toggle="${section}"]`);
+          if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+        }
         await page.getByRole("button", { name: /^Filters/ }).click();
         await expectReachableElement(
           page.locator('.tabs a[href="/repositories"]'),

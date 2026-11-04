@@ -1362,7 +1362,7 @@ describe("renderDashboard", () => {
     const emptyBoard = renderDashboard({ ...dashboard, questions: [], needsYou: [] });
 
     expect(emptyBoard).toContain('class="dashboard-sticky"');
-    expect(emptyBoard).toContain('id="needs-you-heading">Needs you <span>(0)</span>');
+    expect(emptyBoard).toContain('aria-expanded="false" aria-controls="needs-you-body"><span>Needs you <span data-needs-you-count="true">(0)</span>');
     expect(emptyBoard).toContain('No items need your attention right now.');
     expect(emptyBoard).toContain('aria-label="Connection state: Connecting"');
     expect(dashboardCss).toContain('.dashboard-sticky{position:sticky;top:0;z-index:20;background:var(--concrete)');
@@ -1560,7 +1560,7 @@ describe("renderDashboard", () => {
     expect(html).toContain('.blocked-summary{margin:.75rem 0 0;');
     expect(html).toContain('color:var(--stop)');
     expect(html).toContain("Label problems");
-    expect(html).toContain("Needs you <span>(2)</span>");
+    expect(html).toContain('Needs you <span data-needs-you-count="true">(2)</span>');
     expect(html).toContain("#41 Build &lt;safe> &amp; sound");
     expect(html).toContain('<a class="needs-you-action action-button action-button--secondary" href="/issues/sample/41">Open</a>');
     expect(html).toContain("/questions/question%2F1/answer");

@@ -284,6 +284,18 @@ async function openView(page: Awaited<ReturnType<Browser["newPage"]>>, port: num
   await page.locator("main.dashboard").waitFor();
 }
 
+const sampleQuestion = (id: string) => ({
+  id, issueId: "card-1", repository: "sample", repositoryColor: 1, issueNumber: 3, issueTitle: "Card",
+  prompt: `Which database (${id})?`, reason: "It decides the schema.", options: [{ id: "postgres", label: "PostgreSQL" }], allowFreeText: false,
+});
+
+/** Opens a Board section that starts folded (Needs you and the filters do on a phone). */
+async function openFold(page: Awaited<ReturnType<Browser["newPage"]>>, name: "needs-you" | "filters") {
+  const toggle = page.locator(`[data-fold-toggle="${name}"]`);
+  if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+  await page.waitForFunction((section) => document.querySelector(`[data-fold-toggle="${section}"]`)?.getAttribute("aria-expanded") === "true", name);
+}
+
 async function signIn(page: Awaited<ReturnType<Browser["newPage"]>>, port: number | undefined) {
   await page.goto(`http://127.0.0.1:${port}/login`);
   await page.locator('input[name="username"]').fill("operator");
@@ -1287,6 +1299,7 @@ describe("dashboard live refresh position", () => {
 
       const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
       await signIn(phone, server.port);
+      await openFold(phone, "filters");
       const collapsed = await phone.evaluate(() => {
         const form = document.querySelector('[data-filter-form]')!;
         const visible = [...form.children].filter((child) => getComputedStyle(child).display !== "none");
@@ -1529,6 +1542,7 @@ describe("dashboard live refresh position", () => {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
+      await openFold(page, "needs-you");
       await page.evaluate(() => { (document.querySelector("main.dashboard") as unknown as { untouched: boolean }).untouched = true; });
       await page.locator('input[name="answer"][value="postgres"]').check();
       await page.locator(".answer-button").click();
@@ -1561,6 +1575,7 @@ describe("dashboard live refresh position", () => {
       browser = await chromium.launch({ headless: true });
       const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true });
       await signIn(page, server.port);
+      await openFold(page, "needs-you");
       const form = page.locator("[data-answer-form]");
       const submit = form.locator(".answer-button");
 
@@ -1613,6 +1628,8 @@ describe("dashboard live refresh position", () => {
       for (const colorScheme of ["light", "dark"] as const) {
         const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme });
         await signIn(page, server.port);
+        await openFold(page, "needs-you");
+        await openFold(page, "filters");
         await page.locator(".needs-you-item--question").waitFor();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await page.close();
@@ -1877,4 +1894,89 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+  const sectionState = (page: Awaited<ReturnType<Browser["newPage"]>>, name: string) => page.evaluate((section) => ({
+    expanded: document.querySelector(`[data-fold-toggle="${section}"]`)?.getAttribute("aria-expanded"),
+    controls: document.getElementById(document.querySelector(`[data-fold-toggle="${section}"]`)?.getAttribute("aria-controls") ?? "")?.classList.contains("fold-body"),
+    label: document.querySelector(`[data-fold-toggle="${section}"]`)?.textContent?.replace(/\s+/g, " ").trim(),
+  }), name);
+
+  test("the Board stacks Needs you, the line and the filters above the columns, and Needs you folds itself when empty", async () => {
+    let revision = "empty";
+    let questions: ReturnType<typeof sampleQuestion>[] = [];
+    const server = startDashboard({
+      dashboard: () => ({ ...dashboard(revision, [issue("card-1", 3, "Card")]), questions }),
+      revision: () => revision,
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      const tops = await page.evaluate(() => ["[data-needs-you]", ".line", "[data-board-filters]", ".board"].map((selector) => document.querySelector(selector)!.getBoundingClientRect().top));
+      expect(tops).toEqual([...tops].sort((a, b) => a - b));
+      expect(new Set(tops).size).toBe(4);
+      expect(await sectionState(page, "needs-you")).toEqual({ expanded: "false", controls: true, label: "Needs you (0)" });
+
+      // Something starts needing the viewer: the section unfolds.
+      questions = [sampleQuestion("q-1")];
+      revision = "one";
+      await page.waitForFunction(() => document.querySelector('[data-fold-toggle="needs-you"]')?.getAttribute("aria-expanded") === "true");
+      expect((await sectionState(page, "needs-you")).label).toBe("Needs you (1)");
+
+      // The viewer folds it; another item updates the count and leaves it folded, across a redraw.
+      await page.locator('[data-fold-toggle="needs-you"]').click();
+      expect((await sectionState(page, "needs-you")).expanded).toBe("false");
+      questions = [sampleQuestion("q-1"), sampleQuestion("q-2")];
+      revision = "two";
+      await page.waitForFunction(() => document.querySelector('[data-fold-toggle="needs-you"]')?.textContent?.includes("(2)"));
+      expect((await sectionState(page, "needs-you")).expanded).toBe("false");
+      // The choice is kept across a reload.
+      await page.reload();
+      await page.locator("main.dashboard").waitFor();
+      expect(await sectionState(page, "needs-you")).toMatchObject({ expanded: "false", label: "Needs you (2)" });
+      await page.locator('[data-fold-toggle="needs-you"]').click();
+      await page.reload();
+      await page.locator("main.dashboard").waitFor();
+      expect((await sectionState(page, "needs-you")).expanded).toBe("true");
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("the filters fold, say what is active while folded, keep filtering, and start folded on a phone", async () => {
+    const server = startDashboard({
+      dashboard: () => dashboard("filters", [issue("card-1", 3, "Card"), issue("card-2", 4, "Other")]),
+      revision: () => "filters",
+    });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      expect(await sectionState(page, "filters")).toEqual({ expanded: "true", controls: true, label: "Search and filters" });
+      await page.locator("[data-filter-search]").fill("Other");
+      await page.waitForFunction(() => location.search.includes("q=Other"));
+      await page.locator('[data-fold-toggle="filters"]').click();
+      expect(await sectionState(page, "filters")).toEqual({ expanded: "false", controls: true, label: "Search and filters · 1 active · “Other”" });
+      expect(await page.locator('article.issue[data-issue-id="card-1"]').isHidden()).toBe(true);
+      expect(await page.locator('article.issue[data-issue-id="card-2"]').isVisible()).toBe(true);
+      await page.reload();
+      await page.locator("main.dashboard").waitFor();
+      expect((await sectionState(page, "filters")).expanded).toBe("false");
+      await page.locator('[data-fold-toggle="filters"]').click();
+      expect((await sectionState(page, "filters")).expanded).toBe("true");
+
+      for (const colorScheme of ["light", "dark"] as const) {
+        const phone = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, colorScheme, reducedMotion: "reduce" });
+        await signIn(phone, server.port);
+        expect((await sectionState(phone, "filters")).expanded).toBe("false");
+        expect((await sectionState(phone, "needs-you")).expanded).toBe("false");
+        expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await phone.locator('[data-fold-toggle="filters"]').click();
+        await phone.locator('[data-fold-toggle="needs-you"]').click();
+        expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await phone.close();
+      }
+    } finally {
+      server.stop(true);
+    }
+  }, 40_000);
 });
