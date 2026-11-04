@@ -26,6 +26,9 @@ const durationSchema = z
     }
   });
 
+/** Deliveries newer than this may still be redelivered, so their record must outlive it. */
+export const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
+
 const absolutePathSchema = z
   .string()
   .min(1)
@@ -102,10 +105,14 @@ const settingsSchema = z
       .object({
         runHistory: waitTimeoutSchema.prefault("unlimited"),
         artifacts: waitTimeoutSchema.prefault("unlimited"),
+        /** How long stored webhook deliveries are kept; never shorter than the redelivery window. */
+        webhookDeliveries: durationSchema
+          .refine((ms) => ms >= REDELIVERY_WINDOW_MS, { message: "must be at least 24h, the redelivery window" })
+          .prefault("7d"),
       })
       .strict()
       .prefault({})
-      .transform(({ runHistory, artifacts }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts })),
+      .transform(({ runHistory, artifacts, webhookDeliveries }) => ({ runHistoryMs: runHistory, artifactsMs: artifacts, webhookDeliveriesMs: webhookDeliveries })),
     /** The event log: how long it keeps events, and where else it delivers them. */
     events: z
       .object({

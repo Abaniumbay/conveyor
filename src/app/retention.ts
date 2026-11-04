@@ -23,6 +23,8 @@ export interface RetentionReport {
   homes: { directories: number; bytes: number; failures: string[] };
   /** Recorded events older than `settings.events.retention`. */
   eventLog: { events: number };
+  /** Stored webhook deliveries older than `settings.retention.webhookDeliveries`. */
+  webhookDeliveries: { deliveries: number };
 }
 
 async function size(target: string): Promise<number> {
@@ -64,6 +66,8 @@ export async function applyRetention(input: {
   policy: RetentionPolicy;
   /** How long the event log keeps events; null keeps them all. */
   eventsMs?: number | null;
+  /** How long stored webhook deliveries are kept; null keeps them all. */
+  webhookDeliveriesMs?: number | null;
   now?: Date;
   dryRun?: boolean;
 }): Promise<RetentionReport> {
@@ -75,6 +79,7 @@ export async function applyRetention(input: {
     artifacts: { directories: 0, bytes: 0 },
     homes: { directories: 0, bytes: 0, failures: [] },
     eventLog: { events: 0 },
+    webhookDeliveries: { deliveries: 0 },
   };
   const selectedHomeBytes = new Map<string, number>();
   const reportHomeFailure = (runId: string, error: unknown) => {
@@ -156,6 +161,10 @@ export async function applyRetention(input: {
   if (input.eventsMs !== undefined && input.eventsMs !== null) {
     const before = new Date(now.getTime() - input.eventsMs).toISOString();
     report.eventLog.events = dryRun ? input.store.events().countBefore(before) : input.store.events().prune(before);
+  }
+  if (input.webhookDeliveriesMs !== undefined && input.webhookDeliveriesMs !== null) {
+    const before = new Date(now.getTime() - input.webhookDeliveriesMs).toISOString();
+    report.webhookDeliveries.deliveries = dryRun ? input.store.countSourceEventsBefore(before) : input.store.pruneSourceEvents(before);
   }
   return report;
 }

@@ -12,7 +12,7 @@ import { log, type LogFields } from "../log/logger";
 import { applyRetention, type RetentionPolicy, type RetentionReport } from "./retention";
 import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
-import { isNativeStage } from "../config/schema";
+import { isNativeStage, REDELIVERY_WINDOW_MS } from "../config/schema";
 import { reconcileRepository } from "../core/reconciler";
 import { evaluateIssueState } from "../core/issue-state";
 import { inFlightAdmission, inFlightHolders, inFlightInterval, inFlightWaitReason, type InFlightInterval } from "../core/in-flight";
@@ -243,7 +243,6 @@ const SCHEDULING_EVENTS: readonly EventType[] = [
   "task.woken", "worker.released", "item.requeued", "gate.requirementChanged", "gate.boardApprovalChanged", "command.accepted",
 ];
 /** How far back missed webhook deliveries are redelivered, and at most how many per pass. */
-const REDELIVERY_WINDOW_MS = 24 * 60 * 60_000;
 const REDELIVERY_LIMIT = 50;
 /** How often each repository's webhook is asked how its deliveries go. */
 /** How often Conveyor looks at whether deliveries arrive. */
@@ -1144,10 +1143,11 @@ export class ConveyorService {
       artifacts: this.config.settings.artifacts,
       policy: options.policy ?? this.config.settings.retention,
       eventsMs: this.config.settings.events?.retentionMs ?? null,
+      webhookDeliveriesMs: this.config.settings.retention.webhookDeliveriesMs ?? null,
       dryRun: options.dryRun === true,
     });
-    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0 || report.eventLog.events > 0)) {
-      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes, eventLog: report.eventLog.events });
+    if (!report.dryRun && (report.runHistory.events > 0 || report.artifacts.directories > 0 || report.homes.directories > 0 || report.eventLog.events > 0 || report.webhookDeliveries.deliveries > 0)) {
+      log.info("Pruned finished work past retention", { runs: report.runHistory.runs, events: report.runHistory.events, artifactDirectories: report.artifacts.directories, artifactBytes: report.artifacts.bytes, homes: report.homes.directories, homeBytes: report.homes.bytes, eventLog: report.eventLog.events, webhookDeliveries: report.webhookDeliveries.deliveries });
     }
     if (!report.dryRun && report.homes.failures.length > 0) {
       log.warn("Could not reclaim some terminal run homes", { homeFailures: report.homes.failures.length, failures: report.homes.failures });

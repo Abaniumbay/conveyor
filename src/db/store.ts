@@ -323,6 +323,8 @@ function parseMetadata(value: string | null): IssueMetadata {
 const EXECUTOR_STATUSES = new Set(["ready", "running", "error", "interrupted", "waiting-in-flight"]);
 
 const CONVERSATION_MESSAGE_LIMIT = 4_000;
+/** Webhook deliveries deleted per statement. */
+const SOURCE_EVENT_PRUNE_BATCH = 1_000;
 
 /** Keeps the start of a system message (the summary and first failures) and says how much was cut. */
 function trimToLimit(message: string): string {
@@ -2024,6 +2026,23 @@ export class ConveyorStore {
         return rows.map((row) => row.key);
       },
     };
+  }
+
+  /** How many stored webhook deliveries were received before `before`. */
+  countSourceEventsBefore(before: string): number {
+    return (this.#database.query("SELECT COUNT(*) AS count FROM source_events WHERE received_at < ?").get(before) as { count: number }).count;
+  }
+
+  /** Deletes stored webhook deliveries received before `before`, one bounded batch per statement so the write lock is held briefly; returns how many. */
+  pruneSourceEvents(before: string, batchSize = SOURCE_EVENT_PRUNE_BATCH): number {
+    let deleted = 0;
+    for (;;) {
+      const { changes } = this.#database
+        .query("DELETE FROM source_events WHERE id IN (SELECT id FROM source_events WHERE received_at < ? LIMIT ?)")
+        .run(before, batchSize);
+      deleted += changes;
+      if (changes < batchSize) return deleted;
+    }
   }
 
   /** Whether a webhook delivery with this id was stored. */

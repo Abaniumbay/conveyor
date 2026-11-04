@@ -1,3 +1,4 @@
+import { applyRetention } from "../../src/app/retention";
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -32,6 +33,7 @@ async function service(options: { webhooks?: boolean; deliveries?: () => Deliver
     hash: "h", root,
     settings: {
       artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "worktrees"), runners: 1, labelPrefix: "conveyor",
+      retention: { runHistoryMs: null, artifactsMs: null, webhookDeliveriesMs: 7 * 86_400_000 },
       events: { retentionMs: null, sinks: [], fallbackMs: FALLBACK },
     },
     web: options.webhooks === false ? {} : { publicUrl: "https://conveyor.example.com" },
@@ -221,6 +223,30 @@ describe("missed deliveries", () => {
     store.recordSourceEvent({ source: "github", deliveryId: "g-1", eventType: "issues", payload: {} });
     await conveyor.redeliverMissed("app");
     expect(calls.redelivered).toEqual([]);
+    store.close();
+  });
+
+  test("a delivery within the redelivery window is still recorded after a cleanup", async () => {
+    const { conveyor, store, calls } = await service({ deliveries: () => [{ id: "11", guid: "g-1", deliveredAt: recent(5), statusCode: 504, redelivery: false }] });
+    store.recordSourceEvent({ source: "github", deliveryId: "g-1", eventType: "issues", payload: {} });
+    store.recordSourceEvent({ source: "github", deliveryId: "g-0", eventType: "issues", payload: {} });
+    store.sqlite().query("UPDATE source_events SET received_at = ? WHERE delivery_id = 'g-0'").run(new Date(Date.now() - 30 * 86_400_000).toISOString());
+    await applyRetention({ store, artifacts: "/nonexistent", policy: { runHistoryMs: null, artifactsMs: null }, webhookDeliveriesMs: 7 * 86_400_000 });
+    expect(store.hasSourceEvent("github", "g-0")).toBe(false);
+    await conveyor.redeliverMissed("app");
+    expect(calls.redelivered).toEqual([]);
+    store.close();
+  });
+
+  test("the service's retention pass deletes deliveries past the configured retention", async () => {
+    const { conveyor, store } = await service();
+    store.recordSourceEvent({ source: "github", deliveryId: "fresh", eventType: "issues", payload: {} });
+    store.recordSourceEvent({ source: "github", deliveryId: "stale", eventType: "issues", payload: {} });
+    store.sqlite().query("UPDATE source_events SET received_at = ? WHERE delivery_id = 'stale'").run(new Date(Date.now() - 30 * 86_400_000).toISOString());
+    const report = await conveyor.applyRetention();
+    expect(report.webhookDeliveries).toEqual({ deliveries: 1 });
+    expect(store.hasSourceEvent("github", "stale")).toBe(false);
+    expect(store.hasSourceEvent("github", "fresh")).toBe(true);
     store.close();
   });
 
