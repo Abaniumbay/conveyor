@@ -1943,9 +1943,11 @@ describe("dashboard live refresh position", () => {
   }, 30_000);
 
   test("the filters fold, say what is active while folded, keep filtering, and start folded on a phone", async () => {
+    let revision = "filters";
+    let otherTitle = "Other";
     const server = startDashboard({
-      dashboard: () => dashboard("filters", [issue("card-1", 3, "Card"), issue("card-2", 4, "Other")]),
-      revision: () => "filters",
+      dashboard: () => dashboard(revision, [issue("card-1", 3, "Card"), issue("card-2", 4, otherTitle)]),
+      revision: () => revision,
     });
     try {
       browser = await chromium.launch({ headless: true });
@@ -1961,7 +1963,17 @@ describe("dashboard live refresh position", () => {
       await page.reload();
       await page.locator("main.dashboard").waitFor();
       expect((await sectionState(page, "filters")).expanded).toBe("false");
+      // A live redraw keeps the folded choice (the server markup is always open).
+      otherTitle = "Other redrawn";
+      revision = "filters-2";
+      await page.waitForFunction(() => document.querySelector('article.issue[data-issue-id="card-2"]')?.textContent?.includes("Other redrawn"));
+      expect((await sectionState(page, "filters")).expanded).toBe("false");
       await page.locator('[data-fold-toggle="filters"]').click();
+      expect((await sectionState(page, "filters")).expanded).toBe("true");
+      // ...and the unfolded choice.
+      otherTitle = "Other redrawn again";
+      revision = "filters-3";
+      await page.waitForFunction(() => document.querySelector('article.issue[data-issue-id="card-2"]')?.textContent?.includes("redrawn again"));
       expect((await sectionState(page, "filters")).expanded).toBe("true");
 
       for (const colorScheme of ["light", "dark"] as const) {
