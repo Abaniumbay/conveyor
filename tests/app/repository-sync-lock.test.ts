@@ -220,6 +220,7 @@ describe("repository sync lock", () => {
     // continueExternalMerge → reconcileClosedItem: a second sync started inside the locked delivery.
     await internals.reconcileClosedItem("repo", sourceIssue("owner/repo", 8, "Stored title"));
     const stored = store.getIssueByNumber("repo", 8)!;
+    store.activateEnrollment(stored.id);
     store.upsertPullRequest({ issueId: stored.id, id: "github:pull/9", number: 9, url: "https://example.test/pull/9", state: "open" });
     deliver("d8", 8, "Stored title", "closed");
 
@@ -243,6 +244,12 @@ describe("repository sync lock", () => {
       runRefresh = internals.reconcileRepository("repo", { only: [3] });
       await runRefresh;
     };
+    // The issue is ready in its first stage, so the delivery that updates it admits a stage run.
+    store.upsertIssue({ id: "repo:9", repositoryId: "repo", sourceNumber: 9, sourceUrl: "https://example.test/9", title: "Stored title", body: "Body", sourceState: "open", labels: ["conveyor", "conveyor:implementation"], sourceUpdatedAt: "2026-01-01T00:00:00Z" });
+    store.setIssueProjection("repo:9", { stage: "implementation", state: "active", warning: null });
+    store.setStageState({ issueId: "repo:9", stageId: "implementation", status: "ready", feedbackCycle: 0, configHash: "config-hash" });
+    store.activateEnrollment("repo:9");
+    store.setQueueRank("repo:9", 1);
     deliver("d9", 9, "Scheduled title");
     expect(await internals.applyIssueDelivery("repo", "d9")).toBe(true);
 
