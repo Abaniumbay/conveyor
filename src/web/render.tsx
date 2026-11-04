@@ -752,6 +752,13 @@ function BacklogCell({ issues, model, canManage, thread }: { issues: readonly Is
 }
 
 /** Compact browser-first filters. The form remains a useful GET fallback when JavaScript is absent. */
+/** What a folded filters header says: how many filters are active and the search text. */
+function filtersSummary(filters: DashboardViewModel["boardFilters"]): string {
+  const q = filters?.q.trim() ?? "";
+  const active = (filters?.repositories.length ?? 0) + (filters?.state ? 1 : 0) + (q ? 1 : 0);
+  return `${active > 0 ? ` · ${active} active` : ""}${q ? ` · “${q}”` : ""}`;
+}
+
 function BoardFilters({ model }: { model: DashboardViewModel }) {
   const active = [
     ...model.backlog,
@@ -769,7 +776,14 @@ function BoardFilters({ model }: { model: DashboardViewModel }) {
   const state = model.boardFilters?.state ?? null;
   const repositories = model.repositories.filter((repository) => byRepository.has(repository.id) || repository.health === "degraded");
   return (
-    <section class="board-filters" data-board-filters aria-label="Board filters">
+    <section class="board-filters" data-board-filters aria-labelledby="board-filters-heading">
+      <h2 id="board-filters-heading" class="board-filters-heading">
+        <button type="button" class="line-toggle" data-fold-toggle="filters" aria-expanded="true" aria-controls="board-filters-body">
+          <span>Search and filters<span data-filters-summary>{filtersSummary(model.boardFilters)}</span></span>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+      </h2>
+      <div class="fold-body" id="board-filters-body"><div class="fold-inner">
       <form method="get" action="/board" data-filter-form>
         <label class="board-filter-search">Search board
           <input type="search" name="q" value={q} placeholder="Search items" data-filter-search />
@@ -798,6 +812,7 @@ function BoardFilters({ model }: { model: DashboardViewModel }) {
         <button type="button" class="board-filter-clear action-button action-button--secondary" data-filter-clear hidden>Clear filters</button>
         <p class="board-filter-summary" data-filter-summary aria-live="polite">Showing {active.length} of {active.length} active board items</p>
       </form>
+      </div></div>
     </section>
   );
 }
@@ -1137,9 +1152,15 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
   const canManage = canManageDashboard(model);
   const { stopped, followUps, total } = needsYouItems(model);
   return (
-    <section class="needs-you" aria-labelledby="needs-you-heading">
-      <header><h2 id="needs-you-heading">Needs you <span>({total})</span></h2></header>
-      {total === 0 ? <p class="needs-you-empty">No items need your attention right now.</p> : <ol>
+    <section class="needs-you" aria-labelledby="needs-you-heading" data-needs-you data-count={total}>
+      <header><h2 id="needs-you-heading">
+        <button type="button" class="line-toggle" data-fold-toggle="needs-you" aria-expanded={total > 0 ? "true" : "false"} aria-controls="needs-you-body">
+          <span>Needs you <span data-needs-you-count>({total})</span></span>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+      </h2></header>
+      <div class="fold-body" id="needs-you-body"><div class="fold-inner">
+      {total === 0 ? <p class="needs-you-empty">No items need your attention right now.</p> : <ol class="needs-you-list">
         {stopped.map((issue) => (
           <li class={`needs-you-item repo-color-${issue.repositoryColor}`} key={issue.id}>
             <span class="andon andon--stop" aria-hidden="true" />
@@ -1193,6 +1214,7 @@ function NeedsYou({ model }: { model: DashboardViewModel }) {
           </li>
         ))}
       </ol>}
+      </div></div>
     </section>
   );
 }
@@ -1771,7 +1793,7 @@ export function DashboardBody({ model }: { model: DashboardViewModel }) {
       </div>
       {model.systemWarnings.length > 0 && <section class="system-warnings" role="alert"><h2>System attention</h2><ul>{model.systemWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></section>}
       <div class="content-anchor" id="content" tabIndex={-1} />
-      {model.view === "board" && <><RepositoryWarnings model={model} /><Line model={model} /><BoardFilters model={model} /><NeedsYou model={model} /></>}
+      {model.view === "board" && <><RepositoryWarnings model={model} /><NeedsYou model={model} /><Line model={model} /><BoardFilters model={model} /></>}
       {content}
       {model.selectedIssue && (
         <DetailsDialog

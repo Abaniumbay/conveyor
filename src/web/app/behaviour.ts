@@ -95,6 +95,43 @@ function applyLineFold(root: ParentNode): void {
   if (stations) stations.inert = !open;
 }
 
+/** The sections that fold like the line; each remembers the reader's choice in the browser. */
+const FOLD_SECTIONS = {
+  "needs-you": { dataset: "needsYou", storage: "conveyor-needs-you", selector: "[data-needs-you]" },
+  filters: { dataset: "filters", storage: "conveyor-filters", selector: "[data-board-filters]" },
+} as const;
+type FoldSection = keyof typeof FOLD_SECTIONS;
+
+const needsYouCount = (root: ParentNode) => Number(root.querySelector("[data-needs-you]")?.getAttribute("data-count") ?? 0);
+let lastNeedsYouCount: number | null = null;
+
+function foldSectionOpen(root: ParentNode, name: FoldSection): boolean {
+  const choice = document.documentElement.dataset[FOLD_SECTIONS[name].dataset];
+  if (choice === "open" || choice === "closed") return choice === "open";
+  return !narrow() && (name !== "needs-you" || needsYouCount(root) > 0);
+}
+
+function applyFoldSections(root: ParentNode): void {
+  const count = needsYouCount(root);
+  if (root.querySelector("[data-needs-you]")) {
+    // A change between empty and non-empty starts over: it unfolds when something needs the reader
+    // and folds when nothing does, until the reader folds or opens it again.
+    if (lastNeedsYouCount !== null && (lastNeedsYouCount === 0) !== (count === 0)) {
+      const entry = FOLD_SECTIONS["needs-you"];
+      if (count > 0) document.documentElement.dataset[entry.dataset] = "open";
+      else delete document.documentElement.dataset[entry.dataset];
+      try { localStorage.removeItem(entry.storage); } catch { /* Kept for the page. */ }
+    }
+    lastNeedsYouCount = count;
+  }
+  for (const name of Object.keys(FOLD_SECTIONS) as FoldSection[]) {
+    const open = foldSectionOpen(root, name);
+    root.querySelector(`[data-fold-toggle="${name}"]`)?.setAttribute("aria-expanded", open ? "true" : "false");
+    const body = root.querySelector(`${FOLD_SECTIONS[name].selector} .fold-body`);
+    if (body instanceof HTMLElement) body.inert = !open;
+  }
+}
+
 const FILTER_STATES = new Set(["needs-you", "running", "waiting"]);
 
 interface BoardFilters { repositories: string[]; q: string; state: string | null }
@@ -185,6 +222,8 @@ function applyBoardFilters(root: ParentNode): void {
     if (counter) counter.textContent = String(selectedCount);
     more.setAttribute("aria-label", `Filters (${selectedCount})`);
   }
+  const headline = filter.querySelector("[data-filters-summary]");
+  if (headline) headline.textContent = `${selectedCount > 0 ? ` · ${selectedCount} active` : ""}${words.length > 0 ? ` · “${values.q.trim()}”` : ""}`;
   const labels = [
     ...values.repositories.map((repository) => [...filter.querySelectorAll<HTMLInputElement>("[data-filter-repository]")].find((input) => input.value === repository)?.closest("label")?.textContent?.trim() ?? repository),
     ...(words.length > 0 ? [`“${values.q.trim()}”`] : []),
@@ -427,6 +466,7 @@ export function afterRender(root: ParentNode, agentId: string | null = null): vo
   syncThemeControls(root);
   applyRowFolds(root);
   applyLineFold(root);
+  applyFoldSections(root);
   applyBoardFilters(root);
   applyTrace(root);
   syncStickyHeight(root);
@@ -800,6 +840,16 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
       applyLineFold(root);
       return;
     }
+    const sectionToggle = element(target, "[data-fold-toggle]", HTMLButtonElement);
+    if (sectionToggle) {
+      const name = sectionToggle.getAttribute("data-fold-toggle") as FoldSection;
+      const entry = FOLD_SECTIONS[name];
+      const open = !foldSectionOpen(root, name);
+      document.documentElement.dataset[entry.dataset] = open ? "open" : "closed";
+      try { localStorage.setItem(entry.storage, open ? "open" : "closed"); } catch { /* Kept for the page. */ }
+      applyFoldSections(root);
+      return;
+    }
     const fold = element(target, "[data-row-fold]", HTMLButtonElement);
     if (fold) {
       const row = fold.getAttribute("data-row-fold");
@@ -1120,7 +1170,7 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
   });
 
   window.addEventListener("resize", () => syncStickyHeight(root));
-  window.matchMedia("(max-width: 760px)").addEventListener("change", () => applyLineFold(root));
+  window.matchMedia("(max-width: 760px)").addEventListener("change", () => { applyLineFold(root); applyFoldSections(root); });
   // Relative times and quota countdowns move on without new data.
   setInterval(() => {
     localizeTimes(root);
