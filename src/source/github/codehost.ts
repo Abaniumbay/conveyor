@@ -9,6 +9,7 @@ import type {
   MergeChangeResult,
   MergeRefusal,
   ReviewArtifact,
+  ReviewThreadState,
 } from "../../codehost/types";
 import { GitHubAdapter, GitHubTransportError } from "./adapter";
 import { GitHubRepositoryTrust } from "./trust";
@@ -51,6 +52,13 @@ function reference(address: string, id: string): number {
 
 const findingMarker = (findingId: string) => `<!-- conveyor:finding:${findingId} -->`;
 const OWN_MARKER = "<!-- conveyor:finding:";
+/** Ends every reply Conveyor posts on a thread, so a later reader can tell its answer from a new comment. */
+const REPLY_MARKER = "<!-- conveyor:reply -->";
+const withReplyMarker = (message: string) => `${message}\n\n${REPLY_MARKER}`;
+
+/** Whether GitHub reports the account as an app or bot rather than a person. */
+const isBot = (author: { login: string; __typename?: string } | null): boolean =>
+  author !== null && (author.__typename === "Bot" || author.login.endsWith("[bot]"));
 
 function mergeRefusal(detail: string): MergeRefusal | null {
   if (/head branch was modified|head.*(?:moved|changed|modified)/i.test(detail)) return "head-moved";
@@ -309,13 +317,15 @@ export class GitHubCodeHost implements CodeHost {
     if (!Number.isSafeInteger(commentId)) throw new Error(`unknown finding projection "${input.projection}"`);
     const number = reference(input.address, input.id);
     if (kind === "inline") {
-      await this.github.replyToReviewComment(input.address, number, commentId, input.message);
-      await bestEffort(() => this.github.reactToReviewComment(input.address, commentId, reaction(input.verdict)));
-      await bestEffort(async () => {
-        const thread = (await this.github.listReviewThreads(input.address, number))
-          .find((candidate) => candidate.comments.nodes[0]?.databaseId === commentId);
-        if (thread && !thread.isResolved) await this.github.resolveReviewThread(thread.id);
-      });
+      // Required, and safe to repeat: an unresolved thread would stay open on the host.
+      const thread = (await this.github.listReviewThreads(input.address, number))
+        .find((candidate) => candidate.comments.nodes[0]?.databaseId === commentId);
+      if (!thread) throw new Error(`review thread of comment ${commentId} was not found`);
+      if (!thread.comments.nodes.some((comment) => comment.body.includes(input.message))) {
+        await this.github.replyToReviewComment(input.address, number, commentId, withReplyMarker(input.message));
+        await bestEffort(() => this.github.reactToReviewComment(input.address, commentId, reaction(input.verdict)));
+      }
+      if (!thread.isResolved) await this.github.resolveReviewThread(thread.id);
     } else {
       await this.github.updateComment(input.address, commentId, findingComment(input.findingId, input.body, null, input.type, input.message));
       await bestEffort(() => this.github.reactToIssueComment(input.address, commentId, reaction(input.verdict)));
@@ -328,7 +338,7 @@ export class GitHubCodeHost implements CodeHost {
     const [kind, key] = input.providerKey.split(":");
     if (!key) throw new Error(`Cannot resolve native finding with provider key ${input.providerKey}`);
     if (kind === "thread") {
-      await this.github.replyToReviewThread(key, input.message);
+      await this.github.replyToReviewThread(key, withReplyMarker(input.message));
       await bestEffort(() => this.github.reactToReviewThread(key, reaction(input.verdict)));
       // Required: an unresolved thread would reopen the finding on the next import.
       await this.github.resolveReviewThread(key);
@@ -345,6 +355,35 @@ export class GitHubCodeHost implements CodeHost {
   async deleteBranch(input: { address: string; branch: string }): Promise<"deleted" | "absent" | "kept"> {
     if (await this.github.hasOpenPullRequestFor(input.address, input.branch)) return "kept";
     return (await this.github.deleteBranchRef(input.address, input.branch)) ? "deleted" : "absent";
+  }
+
+  async listReviewThreadStates(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewThreadState[]> {
+    const threads = await this.github.listReviewThreads(input.address, reference(input.address, input.id));
+    const extraTrustedLogins = input.extraTrustedLogins ?? [];
+    const trustByLogin = new Map<string, Promise<boolean>>();
+    const counts = (author: { login: string; __typename?: string } | null): Promise<boolean> | boolean => {
+      if (author === null) return false;
+      if (isBot(author)) return true;
+      const key = author.login.toLowerCase();
+      const existing = trustByLogin.get(key);
+      if (existing !== undefined) return existing;
+      const decision = this.trust.isTrusted({ address: input.address, login: author.login, extraTrustedLogins });
+      trustByLogin.set(key, decision);
+      return decision;
+    };
+    const states: ReviewThreadState[] = [];
+    for (const thread of threads) {
+      const first = thread.comments.nodes[0];
+      if (!first) continue;
+      const comments: ReviewThreadState["comments"] = [];
+      for (const comment of thread.comments.nodes) {
+        comments.push({ own: comment.body.includes(OWN_MARKER) || comment.body.includes(REPLY_MARKER), counted: await counts(comment.author) });
+      }
+      // Conveyor's own finding threads count, whoever's account posted them.
+      const counted = first.body.includes(OWN_MARKER) || comments[0]!.counted;
+      states.push({ providerKey: `thread:${thread.id}`, author: first.author?.login ?? null, url: first.url, counted, resolved: thread.isResolved, comments });
+    }
+    return states;
   }
 
   async listReviewArtifacts(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewArtifact[]> {
@@ -371,7 +410,7 @@ export class GitHubCodeHost implements CodeHost {
       }
       if (first.body.includes(OWN_MARKER)) continue;
       const author = first.author?.login ?? null;
-      const trusted = await isTrusted(author);
+      const trusted = isBot(first.author) || await isTrusted(author);
       artifacts.push({ providerKey: `thread:${thread.id}`, author, trusted, body: first.body, url: first.url, path: first.path, line: first.line, resolved: thread.isResolved });
       if (trusted) continue;
       for (const reply of thread.comments.nodes.slice(1)) {

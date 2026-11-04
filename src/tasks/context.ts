@@ -187,6 +187,11 @@ export interface ChangeContext {
     dismissal?: { actor: string; reason: string; at: string };
     withdrawal?: { actor: string; reason: "provider-artifact-deleted" | "provider-artifact-untrusted"; at: string };
   }>;
+  /** The code host's review threads as last imported; `importedHeadSha` is null before the first import. */
+  reviewThreads: {
+    importedHeadSha: string | null;
+    threads: Array<{ providerKey: string; author: string | null; url: string; counted: boolean; resolved: boolean; newComment: boolean }>;
+  };
 }
 
 /**

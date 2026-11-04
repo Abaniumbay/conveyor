@@ -143,7 +143,7 @@ function buildRegistry(world: World): TaskRegistry {
           const change: ChangeContext = {
             ref: { provider: "github", id: "github:5", number: 5 }, url: "https://example.test/pull/5", state: world.changeState,
             draft: false, headSha: world.changeSha, baseBranch: "main", mergeable: "yes", mergeCommitSha: null,
-            criteria: [], projectedCriterionIds: [], projectionError: null, findings: [],
+            criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], reviewThreads: { importedHeadSha: world.changeSha, threads: [] },
           };
           return pass(change);
         },

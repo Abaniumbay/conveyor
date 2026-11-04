@@ -213,6 +213,7 @@ repositories:
     async resolveNativeFinding() { throw new Error("not expected"); },
     async deleteBranch() { throw new Error("not expected"); },
     async listReviewArtifacts() { return []; },
+    async listReviewThreadStates() { return []; },
   };
   const transport = new NeverStartedCiTransport(annotation);
   const service = new ConveyorService(config, store, new GitHubAdapter(transport, "conveyor"), {

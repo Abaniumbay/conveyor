@@ -175,6 +175,7 @@ describe("CodeHost service integration", () => {
       async resolveNativeFinding() { throw new Error("not expected"); },
       async deleteBranch() { throw new Error("not expected"); },
       async listReviewArtifacts() { throw new Error("not expected"); },
+      async listReviewThreadStates() { throw new Error("not expected"); },
       async getChangeDelivery() { throw new Error("not expected"); },
     };
     config.repositories.repo!.codeHost = "custom";

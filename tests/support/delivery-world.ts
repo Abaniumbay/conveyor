@@ -122,6 +122,7 @@ function fakeHost(options: { afterChecklistUpdate?: () => void } = {}): FakeHost
     async resolveNativeFinding() {},
     async deleteBranch() { return "deleted" as const; },
     async listReviewArtifacts() { return []; },
+    async listReviewThreadStates() { return []; },
   };
   const change = (): ChangeRequest => ({
     id, number: 5, url: "https://github.com/owner/conveyor/pull/5", state: host.state, headSha: host.headSha,

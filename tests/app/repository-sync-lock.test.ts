@@ -124,7 +124,7 @@ repositories:
       };
     },
     createFinding: unexpected, resolveFindingProjection: unexpected, resolveNativeFinding: unexpected,
-    deleteBranch: unexpected, listReviewArtifacts: unexpected,
+    deleteBranch: unexpected, listReviewArtifacts: unexpected, listReviewThreadStates: unexpected,
   };
   const conveyor = new ConveyorService(config, store, github as never, {
     codeHosts: new CodeHostRegistry().register("github", codeHost),

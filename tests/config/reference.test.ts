@@ -33,12 +33,27 @@ describe("reference configuration", () => {
     const config = await loadReference();
     const merge = config.plans[0]!.stages.find((stage) => stage.id === "merge")!;
 
-    expect(merge.actions.map((task) => task.task)).toEqual(["change.merge"]);
+    expect(merge.actions.map((task) => task.task)).toEqual(["change.reviewThreadsResolved", "change.merge"]);
     expect(merge.exitGate).toHaveLength(1);
     expect(merge.exitGate[0]).toMatchObject({
       task: "change.merged",
       wait: config.settings.taskDefaults.wait,
     });
+  });
+
+  test("the packaged review exit gate requires every counted review thread to be resolved", async () => {
+    const config = await loadReference();
+    const review = config.plans[0]!.stages.find((stage) => stage.id === "review")!;
+    expect(review.exitGate.find((task) => task.task === "change.reviewThreadsResolved")).toMatchObject({
+      id: "reviewThreads", onFail: { return: "implementation" },
+    });
+  });
+
+  test("the packaged merge stage re-checks the review threads right before the merge, after the manual approval", async () => {
+    const config = await loadReference();
+    const merge = config.plans[0]!.stages.find((stage) => stage.id === "merge")!;
+    expect(merge.actions.map((task) => task.task).indexOf("change.reviewThreadsResolved")).toBe(merge.actions.map((task) => task.task).indexOf("change.merge") - 1);
+    expect(merge.actions[0]).toMatchObject({ onFail: { return: "implementation" } });
   });
 
   test("has no AI verifier, no checks and no legacy stages", async () => {

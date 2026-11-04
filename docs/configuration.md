@@ -542,6 +542,7 @@ pipelines:
           - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
         exit-gate:
           - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
+          - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
           - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
           - { id: ciHead, task: change.headUnchanged, when: ci.required, onFail: { return: implementation } }
           - { id: mergeable, task: change.mergeable, wait: { timeout: 30m, poll: 1m }, onFail: { return: implementation } }
@@ -549,6 +550,7 @@ pipelines:
         concurrency: 1
         approval: manual
         actions:
+          - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
           - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
         exit-gate:
           - { id: merged, task: change.merged, onFail: { return: implementation } }
@@ -594,6 +596,8 @@ repositories:
 `localServices` exposes a Unix or loopback TCP test service only to agent commands for the declaring repository, including legacy verifier commands. Each name is unique within the repository. Declare exactly one source: `socket` is an absolute host Unix-socket path, and `tcp` is a numeric loopback host listener (`127.x.x.x:<port>` or `[::1]:<port>`); hostnames, non-loopback addresses and wildcard binds such as `0.0.0.0` or `[::]` are rejected. `endpoint` is the fixed `127.0.0.1:<port>` address bridged into each run's sandbox; no other repository receives that bridge. Docker's host socket, including paths that resolve to it through an alias, is rejected before the agent starts. Values under `environment` are set only for those commands; use `!secret` for credentials so they are resolved from `secrets.yaml` and redacted from configuration displays and logs.
 
 The packaged implementation gate verifies linked criterion tests after the change is ensured and before it waits for CI. It uses the gate's default retry, so missing or stale evidence returns its precise reason to implementation without waiting for `ci.passed`. The same verification remains at review entry as a safety net in case the change moves after implementation exit. Implementers record each non-manual criterion's test evidence as soon as its proving test is committed, and reviewers approve each traced non-manual criterion as they review; manual criteria stay deferred.
+
+The packaged review exit gate and the merge stage both run `change.reviewThreadsResolved`. The check passes only when every counted review thread of the pull request is resolved on the code host: threads whose first comment is from the repository owner or an account that passes the repository's trust rule (write, maintain or admin permission, or `extraTrustedLogins`), from a bot, or Conveyor's own finding threads. Threads started by any other account are ignored, so a drive-by commenter cannot block a merge. The merge stage runs it again as its first action, after the manual approval and right before `change.merge`, so a thread reopened, or a counted comment added to a resolved thread, after the review gate returns the item to implementation. It reads the thread record `change.load` imports for the current head and never calls a model. Threads from owners, contributors and bots are imported as findings for the implementer, who answers each one and resolves it; Conveyor resolves the code host thread of every finding it resolves as a recorded source mutation that is retried until the host accepts it.
 
 ### Repository concurrency
 

@@ -11,7 +11,8 @@ import { parseManagedSections } from "../source/github/managed-sections";
 import type { ChangeContext } from "./context";
 import { defineGroup, fail, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import { checkCriterion, criterionTestsPassed, criterionTestsVerified, criteriaChecked, criteriaInSync, criteriaView, projectedChecklist, recordCriterionTests, syncChecklist, uncheckCriterion } from "./change-criteria";
-import { findingsResolved, findingsView, findingTools, importNativeReview } from "./change-findings";
+import { ReviewThreads } from "../engine/review-threads";
+import { findingsResolved, findingsView, reviewThreadsResolved, findingTools, importNativeReview } from "./change-findings";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -54,6 +55,7 @@ function toContext(delivery: ChangeDelivery, deps: Deps): ChangeContext {
     projectedCriterionIds: [...projectedChecklist(change.body ?? "").checked.keys()],
     projectionError: projectedChecklist(change.body ?? "").error,
     findings: findingsView(deps),
+    reviewThreads: new ReviewThreads(deps.store.sqlite()).get(deps.issueId),
   };
 }
 
@@ -241,4 +243,4 @@ const setMetadata: TaskDefinition<unknown, z.output<typeof metadataInput>, Deps>
   },
 };
 
-export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, criterionTestsPassed, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, ...findingTools]);
+export const changeGroup = defineGroup("change", [load, ensure, merge, headUnchanged, mergeable, merged, criteriaInSync, criteriaChecked, criterionTestsVerified, criterionTestsPassed, get, setMetadata, checkCriterion, uncheckCriterion, recordCriterionTests, findingsResolved, reviewThreadsResolved, ...findingTools]);

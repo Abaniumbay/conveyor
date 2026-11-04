@@ -123,6 +123,7 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
     async resolveNativeFinding() { throw new Error("not expected"); },
     async deleteBranch() { throw new Error("not expected"); },
     async listReviewArtifacts() { throw new Error("not expected"); },
+    async listReviewThreadStates() { throw new Error("not expected"); },
   };
   const conveyor = new ConveyorService(config, store, github as never, {
     codeHosts: new CodeHostRegistry().register("github", codeHost),

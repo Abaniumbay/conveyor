@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { parseManagedSections, upsertManagedSection } from "../../src/source/github/managed-sections";
 import { dispatchTool } from "../../src/tasks/dispatch";
-import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact } from "../../src/codehost/types";
+import type { ChangeDelivery, ChangeRequest, CodeHost, MergeChangeResult, ReviewArtifact, ReviewThreadState } from "../../src/codehost/types";
 import { ConveyorStore } from "../../src/db/store";
 import { ReviewFindings } from "../../src/engine/review-findings";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
@@ -33,7 +33,7 @@ const request = (over: Partial<ChangeRequest> = {}): ChangeRequest => ({
 function hostFake(state: {
   change?: ChangeRequest; push?: { pushed: true } | { pushed: false; status: "changes-requested"; reason: string };
   merge?: MergeChangeResult; mergeCommitSha?: string | null; body?: string;
-  artifacts?: ReviewArtifact[]; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean; descriptionFails?: boolean;
+  artifacts?: ReviewArtifact[]; threadStates?: ReviewThreadState[]; resolveFailures?: number; listFails?: boolean; projectFails?: boolean; nativeFails?: boolean; descriptionFails?: boolean;
   files?: Record<string, string>;
 } = {}) {
   let body = state.body ?? "";
@@ -65,10 +65,15 @@ function hostFake(state: {
     async resolveFindingProjection(input) {
       calls.push(["resolveFinding", input]);
       if (state.projectFails) throw new Error("GitHub is down");
+      if ((state.resolveFailures ?? 0) > 0) { state.resolveFailures! -= 1; throw new Error("GitHub incident"); }
     },
     async resolveNativeFinding(input) {
       calls.push(["resolveNative", input]);
       if (state.nativeFails) throw new Error("thread is locked");
+    },
+    async listReviewThreadStates(input) {
+      calls.push(["listThreadStates", input]);
+      return state.threadStates ?? [];
     },
     async listReviewArtifacts(input) {
       calls.push(["listArtifacts", input]);
@@ -122,7 +127,7 @@ const repository = (ciMode: "required" | "advisory" | "disabled" = "required"): 
 });
 const change = (over: Partial<ChangeContext> = {}): ChangeContext => ({
   ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], ...over,
+  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], reviewThreads: { importedHeadSha: "head1", threads: [] }, ...over,
 });
 const ctx = (over: Partial<TaskContext> = {}): Partial<TaskContext> => ({
   ...repository(), change: change(),
@@ -154,7 +159,7 @@ describe("change.load", () => {
     const result = await run("change.load", { context: {}, deps: w.deps }) as Pass;
     expect(result.output).toEqual({
       ref: { provider: "github", id: ID, number: 5 }, url: "https://x/pull/5", state: "open", draft: false,
-      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], projectedCriterionIds: [], projectionError: null, findings: [],
+      headSha: "h9", baseBranch: "main", mergeable: "unknown", mergeCommitSha: "mc", criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], reviewThreads: { importedHeadSha: "h9", threads: [] },
     });
   });
 
@@ -1241,5 +1246,133 @@ describe("findings", () => {
     expect(findings(w).events(f.id).at(-1)).toMatchObject({ kind: "dismissed", actor: "human:amir", reason: "Not applicable here" });
     await expect(dispatch(w, "change.dismissFinding", { findingId: f.id, reason: "again" }, human)).rejects.toThrow("not open");
     expect(registry.require("change.dismissFinding")).toMatchObject({ kind: "tool", mutating: true, journal: false });
+  });
+});
+
+describe("review thread gate", () => {
+  const thread = (over: Partial<ReviewThreadState> = {}): ReviewThreadState => ({
+    providerKey: "thread:T1", author: "alice", url: "https://x/t1", counted: true, resolved: false,
+    comments: [{ counted: true, own: false }], ...over,
+  });
+  const loaded = async (w: Awaited<ReturnType<typeof world>>) => (await run("change.load", { context: {}, deps: w.deps }) as Pass).output as ChangeContext;
+  const gate = async (w: Awaited<ReturnType<typeof world>>) => run("change.reviewThreadsResolved", { context: { change: await loaded(w) }, deps: w.deps });
+  const artifact = (over: Partial<ReviewArtifact> = {}): ReviewArtifact => ({
+    providerKey: "thread:T1", author: "chatgpt-codex-connector", trusted: true, body: "Handle null", url: "https://x/t1", path: "a.ts", line: 3, resolved: false, ...over,
+  });
+  const kaveh = { id: "kaveh", name: "Kaveh", title: "Senior Developer" };
+  const reviewer = { id: "reviewer", name: "Reviewer", title: "Reviewer" };
+  const dispatch = (w: Awaited<ReturnType<typeof world>>, name: string, input: unknown, who: typeof reviewer | null = reviewer) =>
+    dispatchTool(
+      { name, input, actor: who as never, grant: { runId: "run1", stageId: "review", issueScoped: true, actor: null, tasks: new Set([name]) } },
+      { registry, deps: () => w.deps, liveHeadSha: async () => "head1", store: w.store },
+    );
+  const findings = (w: Awaited<ReturnType<typeof world>>) => new ReviewFindings(w.store.sqlite());
+
+  test("fails on an open counted thread and names its author and link", async () => {
+    const w = await world({ threadStates: [thread()] });
+    const result = await gate(w) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("https://x/t1 by alice");
+  });
+
+  test("fails on an open thread started by a bot", async () => {
+    const w = await world({ threadStates: [thread({ author: "chatgpt-codex-connector" })] });
+    const result = await gate(w) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("by chatgpt-codex-connector");
+  });
+
+  test("ignores an open thread of an uncounted account", async () => {
+    const w = await world({ threadStates: [thread({ counted: false, author: "drive-by" })] });
+    expect((await gate(w)).status).toBe("pass");
+  });
+
+  test("passes when every counted thread, Conveyor's own included, is resolved", async () => {
+    const w = await world({ threadStates: [thread({ resolved: true }), thread({ providerKey: "thread:T2", resolved: true, comments: [{ counted: true, own: true }] })] });
+    expect((await gate(w)).status).toBe("pass");
+  });
+
+  test("is pending, without calling a model, until the threads are imported for the current head", async () => {
+    const w = await world();
+    const result = await run("change.reviewThreadsResolved", { context: { change: change({ reviewThreads: { importedHeadSha: null, threads: [] } }) }, deps: w.deps });
+    expect(result.status).toBe("pending");
+    const stale = await run("change.reviewThreadsResolved", { context: { change: change({ headSha: "head2", reviewThreads: { importedHeadSha: "head1", threads: [] } }) }, deps: w.deps });
+    expect(stale.status).toBe("pending");
+    expect(registry.require("change.reviewThreadsResolved").kind).toBe("check");
+  });
+
+  test("fails again when a counted thread is reopened after the check passed", async () => {
+    const host: Parameters<typeof world>[0] = { threadStates: [thread({ resolved: true })] };
+    const w = await world(host);
+    expect((await gate(w)).status).toBe("pass");
+    host.threadStates = [thread({ resolved: false })];
+    expect((await gate(w)).status).toBe("fail");
+  });
+
+  test("fails again when a counted comment arrives on a resolved thread, until Conveyor answers it", async () => {
+    const host: Parameters<typeof world>[0] = { threadStates: [thread({ resolved: true })] };
+    const w = await world(host);
+    expect((await gate(w)).status).toBe("pass");
+    host.threadStates = [thread({ resolved: true, comments: [{ counted: true, own: false }, { counted: true, own: false }] })];
+    const result = await gate(w) as Fail;
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("new comment on a resolved thread");
+    host.threadStates = [thread({ resolved: true, comments: [{ counted: true, own: false }, { counted: true, own: false }, { counted: true, own: true }] })];
+    expect((await gate(w)).status).toBe("pass");
+  });
+
+  test("a comment by an uncounted account on a resolved thread does not reopen it", async () => {
+    const host: Parameters<typeof world>[0] = { threadStates: [thread({ resolved: true })] };
+    const w = await world(host);
+    await gate(w);
+    host.threadStates = [thread({ resolved: true, comments: [{ counted: true, own: false }, { counted: false, own: false }] })];
+    expect((await gate(w)).status).toBe("pass");
+  });
+
+  test("a thread started by a bot is imported as a finding for the implementer", async () => {
+    const w = await world({ artifacts: [artifact()] });
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(findings(w).list("i1")).toMatchObject([{ author: "chatgpt-codex-connector", source: "human", state: "open", providerKey: "thread:T1" }]);
+  });
+
+  test("a thread started by an untrusted human is skipped and not imported", async () => {
+    const w = await world({ artifacts: [artifact({ author: "drive-by", trusted: false })] });
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(findings(w).list("i1")).toEqual([]);
+    expect(findings(w).skippedNative("i1")).toMatchObject([{ providerKey: "thread:T1", author: "drive-by", active: true }]);
+  });
+
+  test("a new counted comment on a resolved imported thread reopens its finding", async () => {
+    const host: Parameters<typeof world>[0] = { artifacts: [artifact({ resolved: true })], threadStates: [thread({ resolved: true })] };
+    const w = await world(host);
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(findings(w).list("i1")[0]!.state).toBe("resolved");
+    host.threadStates = [thread({ resolved: true, comments: [{ counted: true, own: false }, { counted: true, own: false }] })];
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(findings(w).list("i1")[0]!.state).toBe("open");
+  });
+
+  test("resolving a Conveyor finding records a source mutation keyed by the finding that resolves its thread", async () => {
+    const w = await world();
+    const { findingId } = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string };
+    await dispatch(w, "change.resolveFinding", { findingId, verdict: "fixed", comment: "Done" }, kaveh);
+    const mutation = w.store.getSourceMutationByKey(`finding-thread-resolve:${findingId}`);
+    expect(mutation).toMatchObject({ operation: "finding.resolveThread", status: "succeeded", request: { findingId, projection: "inline:11", changeId: ID } });
+    expect(w.host.calls.filter(([name]) => name === "resolveFinding")).toHaveLength(1);
+  });
+
+  test("a thread resolve that fails during an outage is retried on the next load until it succeeds", async () => {
+    const w = await world({ resolveFailures: 2 });
+    const { findingId } = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string };
+    await dispatch(w, "change.resolveFinding", { findingId, verdict: "fixed", comment: "Done" }, kaveh);
+    const key = `finding-thread-resolve:${findingId}`;
+    expect(w.store.getSourceMutationByKey(key)).toMatchObject({ status: "failed", error: "GitHub incident" });
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(w.store.getSourceMutationByKey(key)!.status).toBe("failed");
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(w.store.getSourceMutationByKey(key)!.status).toBe("succeeded");
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(w.host.calls.filter(([name]) => name === "resolveFinding")).toHaveLength(3);
+    expect(findings(w).get("i1", findingId)!.state).toBe("resolved");
   });
 });

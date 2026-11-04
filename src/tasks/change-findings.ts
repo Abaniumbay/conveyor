@@ -7,8 +7,9 @@ import { z } from "zod";
 
 import type { CodeHost } from "../codehost/types";
 import { DEFAULT_FINDING_TYPE, FINDING_TYPES, ReviewFindings, type Finding } from "../engine/review-findings";
+import { ReviewThreads, threadIsOpen } from "../engine/review-threads";
 import type { ChangeContext } from "./context";
-import { fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
+import { fail, InfrastructureError, pass, pending, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -60,17 +61,63 @@ export function findingsView(deps: Deps): ChangeContext["findings"] {
   }));
 }
 
-/** Reads the code host's native review and brings the imported findings in line with it (a Conveyor-owned write, safe to repeat). */
+/** The source mutation that resolves the code host thread of a Conveyor finding; one per finding, so a repeat is the same operation. */
+const resolveThreadKey = (findingId: string) => `finding-thread-resolve:${findingId}`;
+
+interface ResolveThreadRequest {
+  changeId: string; findingId: string; projection: string; body: string; type: Finding["type"]; actor: string;
+  verdict: "fixed" | "invalid"; message: string;
+}
+
+/**
+ * Resolves the code host thread of a resolved Conveyor finding as a recorded source mutation. A failure
+ * leaves the mutation failed, and `retryThreadResolutions` repeats it until the host accepts it.
+ */
+async function resolveThread(deps: Deps, request: ResolveThreadRequest): Promise<void> {
+  const mutation = deps.store.beginSourceMutation({
+    idempotencyKey: resolveThreadKey(request.findingId), source: deps.config.repositories[deps.repository.id]?.source ?? "github", operation: "finding.resolveThread", request,
+  });
+  if (mutation.status === "succeeded") return;
+  try {
+    await codeHostOf(deps).resolveFindingProjection({
+      address: deps.repository.address, id: request.changeId, findingId: request.findingId, projection: request.projection,
+      body: request.body, type: request.type, actor: request.actor, verdict: request.verdict, message: request.message,
+    });
+    deps.store.completeSourceMutation(mutation.id, { findingId: request.findingId });
+  } catch (error) {
+    deps.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+}
+
+/** Repeats the thread resolves that did not succeed (a code host outage); one that fails again stays recorded for the next load. */
+async function retryThreadResolutions(deps: Deps): Promise<void> {
+  for (const finding of findingsOf(deps).list(deps.issueId)) {
+    if (finding.source !== "agent" || finding.state !== "resolved") continue;
+    const mutation = deps.store.getSourceMutationByKey(resolveThreadKey(finding.id));
+    if (!mutation || mutation.status === "succeeded") continue;
+    try {
+      await resolveThread(deps, mutation.request as ResolveThreadRequest);
+    } catch {
+      // Recorded as failed by resolveThread; the next load retries.
+    }
+  }
+}
+
+/** Reads the code host's native review and brings the imported findings and the thread record in line with it (Conveyor-owned writes, safe to repeat). */
 export async function importNativeReview(deps: Deps, changeId: string, headSha: string): Promise<void> {
   const repository = deps.config.repositories[deps.repository.id];
   if (!repository) throw new InfrastructureError(`No configuration exists for repository ${deps.repository.id}`);
   try {
-    const artifacts = await codeHostOf(deps).listReviewArtifacts({
-      address: deps.repository.address,
-      id: changeId,
-      extraTrustedLogins: repository.extraTrustedLogins,
-    });
-    findingsOf(deps).importNative(deps.issueId, artifacts, headSha, (deps.clock?.() ?? new Date()).toISOString());
+    await retryThreadResolutions(deps);
+    const host = codeHostOf(deps);
+    const input = { address: deps.repository.address, id: changeId, extraTrustedLogins: repository.extraTrustedLogins };
+    const [artifacts, states] = await Promise.all([host.listReviewArtifacts(input), host.listReviewThreadStates(input)]);
+    const at = (deps.clock?.() ?? new Date()).toISOString();
+    const record = new ReviewThreads(deps.store.sqlite()).record(deps.issueId, headSha, states, at);
+    // A resolved thread with an unanswered counted comment is open again for the agent.
+    const reopened = new Set(record.threads.filter((thread) => thread.resolved && threadIsOpen(thread)).map((thread) => thread.providerKey));
+    findingsOf(deps).importNative(deps.issueId, artifacts.map((artifact) => reopened.has(artifact.providerKey) ? { ...artifact, resolved: false } : artifact), headSha, at);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new InfrastructureError(`Could not verify native review author trust: ${message}`, { cause: error });
@@ -147,12 +194,12 @@ const resolveFinding: TaskDefinition<unknown, z.output<typeof resolveInput>, Dep
     findings.resolve(deps.issueId, finding.id, actor);
     if (finding.projection && stored) {
       try {
-        await host!.resolveFindingProjection({
-          address: deps.repository.address, id: stored.id, findingId: finding.id, projection: String(finding.projection), body: finding.body, type: finding.type, actor,
+        await resolveThread(deps, {
+          changeId: stored.id, findingId: finding.id, projection: String(finding.projection), body: finding.body, type: finding.type, actor,
           verdict: input!.verdict, message,
         });
       } catch {
-        // Best effort: the record is the authority and stays resolved.
+        // The record is the authority and stays resolved; the failed mutation is retried on the next load.
       }
     }
     return pass({ findingId: finding.id, state: "resolved", verdict: input!.verdict });
@@ -229,6 +276,26 @@ export const findingsResolved: TaskDefinition<unknown, unknown, Deps> = {
     if (open.length === 0) return pass();
     const lines = open.map((finding) => `- ${finding.id}${finding.path ? ` (${finding.path}${finding.line ? `:${finding.line}` : ""})` : ""} by ${finding.author}${finding.url ? `: ${finding.url}` : ""}`);
     return fail(`${open.length} review finding${open.length === 1 ? " is" : "s are"} still open:\n${lines.join("\n")}`);
+  },
+};
+
+export const reviewThreadsResolved: TaskDefinition<unknown, unknown, Deps> = {
+  name: "change.reviewThreadsResolved",
+  kind: "check",
+  description: "Passes when every counted review thread of the change is resolved on the code host, from the thread record `change.load` imported for the current head (pending until it exists; no model is called). Counted threads are those whose first comment is from the repository owner or a contributor (permission threshold or `extraTrustedLogins`), from a bot, or Conveyor's own finding threads; threads by other accounts are ignored. A resolved thread with an unanswered counted comment is open again. The message lists each open thread with its author and link.",
+  reads: ["change"],
+  writes: [],
+  invalidates: [],
+  run({ context }) {
+    const change = context.change;
+    if (!change) return fail(NO_CHANGE);
+    if (change.reviewThreads.importedHeadSha !== change.headSha) {
+      return pending(`Review threads have not been imported for head ${change.headSha}`);
+    }
+    const open = change.reviewThreads.threads.filter(threadIsOpen);
+    if (open.length === 0) return pass();
+    const lines = open.map((thread) => `- ${thread.url} by ${thread.author ?? "an unknown account"}${thread.resolved ? " (new comment on a resolved thread)" : ""}`);
+    return fail(`${open.length} review thread${open.length === 1 ? " is" : "s are"} still open on the code host; answer and resolve ${open.length === 1 ? "it" : "each"}:\n${lines.join("\n")}`);
   },
 };
 
