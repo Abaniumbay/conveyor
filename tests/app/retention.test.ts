@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 const DAY = 86_400_000;
-const NOW = new Date("2026-10-06T12:00:00Z");
+const NOW = new Date();
 const daysAgo = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
 
 /** A store with runs of a closed, a done, an open and no item, old and new, each with events and an artifact directory. */
