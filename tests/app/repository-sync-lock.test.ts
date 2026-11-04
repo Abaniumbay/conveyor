@@ -17,13 +17,15 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
+const CRITERIA = "<!-- conveyor:acceptance-criteria:start -->\n- [ ] Works <!-- conveyor:criterion:works -->\n<!-- conveyor:acceptance-criteria:end -->\n";
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 /** Two repositories, a GitHub fake that records every read in order, and a listing the test can hold open. */
-async function setup() {
+async function setup(options: { runStages?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-sync-lock-"));
   directories.push(root);
   log.configure({ sinks: [] });
+  
   await writeFile(path.join(root, "instructions.md"), "Work.");
   for (const name of ["repo", "other"]) await mkdir(path.join(root, name));
   await writeFile(path.join(root, "config.yml"), `
@@ -48,7 +50,7 @@ pipelines:
     failureStatuses: [blocked]
     stages:
       - id: implementation
-        run: { agent: worker }
+        ${options.runStages ? "actions: []\n        exit-gate: [{ task: item.criteriaDefined }]" : "run: { agent: worker }"}
         concurrency: 1
 repositories:
   repo: { source: github, address: owner/repo, folder: ${root}/repo, pipeline: default }
@@ -67,6 +69,7 @@ repositories:
   const labelWrites: Array<{ issue: number; labels: string[] }> = [];
   let held: { started: () => void; gate: Promise<void> } | null = null;
   let failNextListing = false;
+  let heldLabelWrite: { started: () => void; gate: Promise<void> } | null = null;
   const github = {
     async listIssues(address: string) {
       reads.push(`list:${address}`);
@@ -92,8 +95,15 @@ repositories:
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
     },
     async collaboratorPermission() { return "write" as const; },
-    async replaceConveyorLabels(_address: string, number: number, labels: readonly string[]) {
+    async replaceConveyorLabels(address: string, number: number, labels: readonly string[]) {
+      if (heldLabelWrite) {
+        const { started, gate } = heldLabelWrite;
+        heldLabelWrite = null;
+        started();
+        await gate;
+      }
       labelWrites.push({ issue: number, labels: [...labels] });
+      if (address === "owner/repo") issue.labels = [...labels];
     },
     async listSubIssues() { return []; },
     async listDependencies() { return []; },
@@ -119,8 +129,8 @@ repositories:
   const conveyor = new ConveyorService(config, store, github as never, {
     codeHosts: new CodeHostRegistry().register("github", codeHost),
   });
-  // Deliveries and syncs run, but no stage run starts.
-  conveyor.drain("tests: nothing executes");
+  // Deliveries and syncs run; a stage run starts only when the test asks for it.
+  if (!options.runStages) conveyor.drain("tests: nothing executes");
 
   let delivery = 0;
   const deliver = (event: string, payload: Record<string, unknown>, address = "owner/repo") => {
@@ -129,7 +139,7 @@ repositories:
     return conveyor.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": `d${(delivery += 1)}`, "x-github-event": event }));
   };
   const issueBody = (state: "open" | "closed", title: string, number = 1, updatedAt = "2026-10-08T00:00:00Z") => ({
-    id: number, number, html_url: `https://github.com/owner/repo/issues/${number}`, title, body: "", state, state_reason: null,
+    id: number, number, html_url: `https://github.com/owner/repo/issues/${number}`, title, body: CRITERIA, state, state_reason: null,
     labels: ["conveyor", "conveyor:implementation"], updated_at: updatedAt,
   });
   /** A relationship delivery queues a webhook pass, which lists the repository's issues. */
@@ -145,9 +155,18 @@ repositories:
     held = { started, gate };
     return { started: waiting, release };
   };
+  /** Holds the next label write open (a stage run writes labels when its step ends); resolves `started` once it is waiting. */
+  const holdLabelWrite = () => {
+    let release = () => {};
+    let started = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    heldLabelWrite = { started, gate };
+    return { started: waiting, release };
+  };
   const listsOfRepo = () => reads.filter((read) => read === "list:owner/repo").length;
   return {
-    conveyor, store, reads, labelWrites, issue, deliver, issueBody, queuePass, holdListing, listsOfRepo,
+    conveyor, store, reads, labelWrites, issue, deliver, issueBody, queuePass, holdListing, holdLabelWrite, listsOfRepo,
     failNextListing: () => { failNextListing = true; },
   };
 }
@@ -292,6 +311,31 @@ describe("repository sync lock", () => {
     ]);
     expect(settled).toBe("settled");
     expect(store.getIssue(issue.id)?.sourceState).toBe("closed");
+    store.close();
+  });
+
+  test("a stage run scheduled from inside a locked delivery takes the lock for its own refresh", async () => {
+    const { conveyor, store, reads, labelWrites, deliver, issueBody, queuePass, holdListing, holdLabelWrite } = await setup({ runStages: true });
+    const stepEnds = holdLabelWrite();
+    // The delivery is applied under the lock and admits the item: its stage run starts from inside that sync.
+    await deliver("issues", { action: "edited", issue: issueBody("open", "Run me", 1), sender: { login: "maintainer" } });
+    await stepEnds.started;
+    await conveyor.webhooksSettled();
+
+    // While the run's step is ending, another sync of the repository holds the lock between its reads.
+    const pass = holdListing();
+    await queuePass();
+    await pass.started;
+    const refreshesBefore = reads.filter((read) => read === "get:owner/repo#1").length;
+    stepEnds.release();
+    await settle();
+    expect(reads.filter((read) => read === "get:owner/repo#1")).toHaveLength(refreshesBefore);
+
+    pass.release();
+    await conveyor.webhooksSettled();
+    await settle();
+    expect(reads.filter((read) => read === "get:owner/repo#1").length).toBeGreaterThan(refreshesBefore);
+    await conveyor.close();
     store.close();
   });
 });
