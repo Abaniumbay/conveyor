@@ -1375,4 +1375,15 @@ describe("review thread gate", () => {
     expect(w.host.calls.filter(([name]) => name === "resolveFinding")).toHaveLength(3);
     expect(findings(w).get("i1", findingId)!.state).toBe("resolved");
   });
+
+  test("dismissing a Conveyor finding resolves its thread through a recorded mutation that is retried after a failure", async () => {
+    const w = await world({ resolveFailures: 1 });
+    const { findingId } = await dispatch(w, "change.comment", { body: "Fix this", headSha: "head1", path: "a.ts", line: 3 }) as { findingId: string };
+    await dispatch(w, "change.dismissFinding", { findingId, reason: "Not applicable here" }, { id: "human:amir", name: "amir", title: "Operator" });
+    const key = `finding-thread-resolve:${findingId}`;
+    expect(w.store.getSourceMutationByKey(key)).toMatchObject({ status: "failed", request: { findingId, verdict: "invalid" } });
+    await run("change.load", { context: {}, deps: w.deps });
+    expect(w.store.getSourceMutationByKey(key)!.status).toBe("succeeded");
+    expect(findings(w).get("i1", findingId)!.state).toBe("dismissed");
+  });
 });

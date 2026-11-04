@@ -67,6 +67,8 @@ const resolveThreadKey = (findingId: string) => `finding-thread-resolve:${findin
 interface ResolveThreadRequest {
   changeId: string; findingId: string; projection: string; body: string; type: Finding["type"]; actor: string;
   verdict: "fixed" | "invalid"; message: string;
+  /** Set for an imported finding: its native thread is resolved instead of a Conveyor projection. */
+  providerKey?: string;
 }
 
 /**
@@ -79,10 +81,16 @@ async function resolveThread(deps: Deps, request: ResolveThreadRequest): Promise
   });
   if (mutation.status === "succeeded") return;
   try {
-    await codeHostOf(deps).resolveFindingProjection({
-      address: deps.repository.address, id: request.changeId, findingId: request.findingId, projection: request.projection,
-      body: request.body, type: request.type, actor: request.actor, verdict: request.verdict, message: request.message,
-    });
+    if (request.providerKey) {
+      await codeHostOf(deps).resolveNativeFinding({
+        address: deps.repository.address, id: request.changeId, providerKey: request.providerKey, verdict: request.verdict, message: request.message,
+      });
+    } else {
+      await codeHostOf(deps).resolveFindingProjection({
+        address: deps.repository.address, id: request.changeId, findingId: request.findingId, projection: request.projection,
+        body: request.body, type: request.type, actor: request.actor, verdict: request.verdict, message: request.message,
+      });
+    }
     deps.store.completeSourceMutation(mutation.id, { findingId: request.findingId });
   } catch (error) {
     deps.store.failSourceMutation(mutation.id, error instanceof Error ? error.message : String(error));
@@ -93,7 +101,7 @@ async function resolveThread(deps: Deps, request: ResolveThreadRequest): Promise
 /** Repeats the thread resolves that did not succeed (a code host outage); one that fails again stays recorded for the next load. */
 async function retryThreadResolutions(deps: Deps): Promise<void> {
   for (const finding of findingsOf(deps).list(deps.issueId)) {
-    if (finding.source !== "agent" || finding.state !== "resolved") continue;
+    if (finding.state !== "resolved" && finding.state !== "dismissed") continue;
     const mutation = deps.store.getSourceMutationByKey(resolveThreadKey(finding.id));
     if (!mutation || mutation.status === "succeeded") continue;
     try {
@@ -247,7 +255,7 @@ const dismissFinding: TaskDefinition<unknown, z.output<typeof dismissInput>, Dep
   mutating: true,
   journal: false,
   input: dismissInput,
-  run(args: TaskArgs<unknown, z.output<typeof dismissInput>, Deps>) {
+  async run(args: TaskArgs<unknown, z.output<typeof dismissInput>, Deps>) {
     const { deps, input } = args;
     const findings = findingsOf(deps);
     const finding = findings.get(deps.issueId, input!.findingId);
@@ -256,6 +264,20 @@ const dismissFinding: TaskDefinition<unknown, z.output<typeof dismissInput>, Dep
     const at = (deps.clock?.() ?? new Date()).toISOString();
     if (!findings.dismiss(deps.issueId, finding.id, { actor, reason: input!.reason, at })) {
       return fail(`Finding ${finding.id} is ${finding.state}, not open`);
+    }
+    // The dismissed finding's thread would stay counted and block the merge gate, so it is resolved too (recorded, retried on load).
+    const stored = deps.store.getCurrentPullRequest(deps.issueId);
+    const target = finding.source === "human" ? finding.providerKey : finding.projection;
+    if (stored && target) {
+      try {
+        await resolveThread(deps, {
+          changeId: stored.id, findingId: finding.id, projection: String(finding.projection ?? ""), body: finding.body, type: finding.type, actor,
+          verdict: "invalid", message: `👎 Dismissed by ${displayNameOf(actor, deps)}: ${input!.reason}`,
+          ...(finding.source === "human" ? { providerKey: String(finding.providerKey) } : {}),
+        });
+      } catch {
+        // The dismissal stands; the failed mutation is retried on the next load.
+      }
     }
     return pass({ findingId: finding.id, state: "dismissed" });
   },
