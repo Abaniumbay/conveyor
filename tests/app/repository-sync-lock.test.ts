@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
 import type { ConveyorConfig } from "../../src/config/load";
+import { CodeHostRegistry } from "../../src/codehost/registry";
 import { ConveyorStore } from "../../src/db/store";
 
 const temporaryDirectories: string[] = [];
@@ -76,7 +77,17 @@ async function setup() {
     async listSubIssues() { return []; },
     async listDependencies() { return []; },
   };
-  const service = new ConveyorService(config, store, source as never);
+  const codeHosts = new CodeHostRegistry();
+  const mergedHost = {
+    async getChangeDelivery(input: { id: string }) {
+      return {
+        change: { id: input.id, number: 9, url: "https://example.test/pull/9", state: "merged", mergedAt: "2026-01-04T00:00:00Z", headSha: "head", draft: false, mergeable: true },
+        checks: [],
+      };
+    },
+  };
+  codeHosts.register("github", mergedHost as never);
+  const service = new ConveyorService(config, store, source as never, { codeHosts });
   const internals = service as unknown as {
     reconcileRepository(repositoryId: string, options?: { partial?: boolean; only?: readonly number[] }): Promise<void>;
     reconcileOne(id: string, kind: "full" | "changed"): Promise<number>;
@@ -95,7 +106,7 @@ async function setup() {
     });
   };
   return {
-    store, reads, internals, deliver, started, release: () => release(), failNextListing: () => { failNextListing = true; },
+    store, reads, service, internals, deliver, started, release: () => release(), failNextListing: () => { failNextListing = true; },
   };
 }
 
@@ -205,9 +216,12 @@ describe("repository sync lock", () => {
   test("a sync started from inside a locked sync completes without deadlock", async () => {
     const { store, internals, deliver, release } = await setup();
     release();
-    // Applying a closed issue's delivery reconciles its closed item from inside the locked delivery.
-    deliver("d8", 8, "Stored title", "closed");
+    // The stored issue has a merged current change, so the closed delivery runs recoverClosedItem →
+    // continueExternalMerge → reconcileClosedItem: a second sync started inside the locked delivery.
     await internals.reconcileClosedItem("repo", sourceIssue("owner/repo", 8, "Stored title"));
+    const stored = store.getIssueByNumber("repo", 8)!;
+    store.upsertPullRequest({ issueId: stored.id, id: "github:pull/9", number: 9, url: "https://example.test/pull/9", state: "open" });
+    deliver("d8", 8, "Stored title", "closed");
 
     const applied = await Promise.race([
       internals.applyIssueDelivery("repo", "d8"),
@@ -215,6 +229,34 @@ describe("repository sync lock", () => {
     ]);
     expect(applied).toBe(true);
     expect(store.getIssueByNumber("repo", 8)?.sourceState).toBe("closed");
+    store.close();
+  });
+
+  test("a stage run scheduled from inside a locked delivery does not skip the lock for its own syncs", async () => {
+    const { store, reads, service, internals, deliver, started, release } = await setup();
+    // The stage run waits until the delivery that scheduled it has finished, then refreshes its issue.
+    let startRun: () => void = () => {};
+    const runMayStart = new Promise<void>((resolve) => { startRun = resolve; });
+    let runRefresh: Promise<void> | null = null;
+    (service as unknown as { execute(): Promise<void> }).execute = async () => {
+      await runMayStart;
+      runRefresh = internals.reconcileRepository("repo", { only: [3] });
+      await runRefresh;
+    };
+    deliver("d9", 9, "Scheduled title");
+    expect(await internals.applyIssueDelivery("repo", "d9")).toBe(true);
+
+    const pass = internals.reconcileRepository("repo");
+    await started;
+    startRun();
+    await settle();
+    expect(runRefresh).not.toBeNull();
+    expect(reads).toEqual(["list:owner/repo"]);
+
+    release();
+    await pass;
+    await runRefresh;
+    expect(reads).toEqual(["list:owner/repo", "get:owner/repo#3"]);
     store.close();
   });
 });

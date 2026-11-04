@@ -1503,7 +1503,8 @@ export class ConveyorService {
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
       log.info("Stage started", { ...this.itemFields(issue.id), stage: candidate.stageId });
-      void withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true)).finally(() => {
+      // A stage run outlives the sync that scheduled it, so it must not inherit that sync's held lock.
+      void this.#heldRepositoryLocks.exit(() => withGitHubCallSource(this.executionCallSource(issue.id), () => this.execute(issue, active.controller.signal, candidate.gateOnly === true))).finally(() => {
         this.#active.delete(issue.id);
         this.store.events().append("worker.released", { stageId: candidate.stageId }, { issueId: issue.id });
         if (this.#drain && !active.interrupted) {
@@ -1615,7 +1616,7 @@ export class ConveyorService {
 
   private refreshStatusComments(issueIds: readonly string[]): void {
     for (const issueId of new Set(issueIds)) {
-      void this.updateStatusComment(issueId)
+      void this.#heldRepositoryLocks.exit(() => this.updateStatusComment(issueId))
         .catch((error) => log.warn("Status comment refresh failed", this.itemFields(issueId), error))
         .catch(() => {});
     }
