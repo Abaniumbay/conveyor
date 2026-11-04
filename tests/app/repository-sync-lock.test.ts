@@ -1,0 +1,220 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { ConveyorService } from "../../src/app/service";
+import type { ConveyorConfig } from "../../src/config/load";
+import { ConveyorStore } from "../../src/db/store";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+function sourceIssue(address: string, number: number, title: string, state: "open" | "closed" = "open") {
+  return {
+    id: `github:${address}#${number}`, number, url: `https://example.test/${address}/${number}`, title, body: "Body",
+    state, stateReason: null, labels: ["conveyor", "conveyor:implementation"], updatedAt: "2026-01-02T00:00:00Z",
+  };
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+async function setup() {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-sync-lock-"));
+  temporaryDirectories.push(root);
+  const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+  const repositories = {
+    repo: { source: "github", address: "owner/repo", folder: root, pipeline: "default" },
+    other: { source: "github", address: "owner/other", folder: root, pipeline: "default" },
+  };
+  const config = {
+    hash: "config-hash", root,
+    settings: { workspaces: path.join(root, "workspaces"), runners: 1 },
+    labels: {
+      enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
+      states: { done: "conveyor:done", blocked: "conveyor:blocked" },
+      metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+    },
+    pipelines: { default: { stages: [{ id: "implementation" }, { id: "review" }] } },
+    repositories,
+  } as unknown as ConveyorConfig;
+  for (const [id, repository] of Object.entries(repositories)) {
+    store.upsertRepository({ id, configName: id, source: "github", address: repository.address, folder: root, configHash: config.hash });
+  }
+
+  // The first listing of `owner/repo` waits for `release`; every read is recorded in order.
+  const reads: string[] = [];
+  let release: () => void = () => {};
+  let firstListingStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => { firstListingStarted = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let gated = false;
+  let failNextListing = false;
+  const source = {
+    async listIssues(address: string) {
+      reads.push(`list:${address}`);
+      if (failNextListing) {
+        failNextListing = false;
+        throw new Error("listing failed");
+      }
+      if (address === "owner/repo" && !gated) {
+        gated = true;
+        firstListingStarted();
+        await gate;
+      }
+      return [];
+    },
+    async getIssue(address: string, number: number) {
+      reads.push(`get:${address}#${number}`);
+      return sourceIssue(address, number, "Read title");
+    },
+    async getIssueProvenance() { return { enrollment: "unchanged", title: "unchanged", body: "unchanged" }; },
+    async repositoryVisibility() { return "private"; },
+    async listSubIssues() { return []; },
+    async listDependencies() { return []; },
+  };
+  const service = new ConveyorService(config, store, source as never);
+  const internals = service as unknown as {
+    reconcileRepository(repositoryId: string, options?: { partial?: boolean; only?: readonly number[] }): Promise<void>;
+    reconcileOne(id: string, kind: "full" | "changed"): Promise<number>;
+    reconcileClosedItem(repositoryId: string, issue: ReturnType<typeof sourceIssue>): Promise<void>;
+    queueWebhookReconcile(repositoryId: string, issueNumbers: number[] | null): Promise<void>;
+    applyIssueDelivery(repositoryId: string, deliveryId: string | null): Promise<boolean>;
+  };
+  const deliver = (deliveryId: string, number: number, title: string, state: "open" | "closed" = "open") => {
+    store.recordSourceEvent({
+      source: "github", deliveryId, eventType: "issues", repositoryId: "repo",
+      payload: {
+        action: state === "closed" ? "closed" : "edited",
+        issue: { id: number, number, html_url: `https://example.test/${number}`, title, body: "Body", state, labels: ["conveyor", "conveyor:implementation"], updated_at: "2026-01-03T00:00:00Z" },
+        sender: { login: "someone" },
+      },
+    });
+  };
+  return {
+    store, reads, internals, deliver, started, release: () => release(), failNextListing: () => { failNextListing = true; },
+  };
+}
+
+describe("repository sync lock", () => {
+  test("a delivery for the repository is applied only after a queued webhook pass between its reads finished", async () => {
+    const { store, internals, deliver, started, release } = await setup();
+    deliver("d1", 7, "Delivered title");
+    const pass = internals.queueWebhookReconcile("repo", null);
+    await started;
+
+    const applied = internals.applyIssueDelivery("repo", "d1");
+    await settle();
+    expect(store.getIssueByNumber("repo", 7)).toBeNull();
+
+    release();
+    await pass;
+    expect(await applied).toBe(true);
+    expect(store.getIssueByNumber("repo", 7)?.title).toBe("Delivered title");
+    store.close();
+  });
+
+  test("reconcileOne started during a sync of the repository starts its reads after that sync finished", async () => {
+    const { store, reads, internals, started, release } = await setup();
+    const first = internals.reconcileRepository("repo");
+    await started;
+
+    const second = internals.reconcileOne("repo", "full");
+    await settle();
+    expect(reads).toEqual(["list:owner/repo"]);
+
+    release();
+    await Promise.all([first, second]);
+    expect(reads).toEqual(["list:owner/repo", "list:owner/repo"]);
+    store.close();
+  });
+
+  test("reconcileRepository with only started during a sync of the repository starts its reads after that sync finished", async () => {
+    const { store, reads, internals, started, release } = await setup();
+    const first = internals.reconcileRepository("repo");
+    await started;
+
+    const second = internals.reconcileRepository("repo", { only: [3] });
+    await settle();
+    expect(reads).toEqual(["list:owner/repo"]);
+
+    release();
+    await Promise.all([first, second]);
+    expect(reads).toEqual(["list:owner/repo", "get:owner/repo#3"]);
+    store.close();
+  });
+
+  test("reconcileClosedItem started during a sync of the repository applies its snapshot after that sync finished", async () => {
+    const { store, internals, started, release } = await setup();
+    const first = internals.reconcileRepository("repo");
+    await started;
+
+    const second = internals.reconcileClosedItem("repo", sourceIssue("owner/repo", 4, "Closed title", "closed"));
+    await settle();
+    expect(store.getIssueByNumber("repo", 4)).toBeNull();
+
+    release();
+    await Promise.all([first, second]);
+    expect(store.getIssueByNumber("repo", 4)?.title).toBe("Closed title");
+    store.close();
+  });
+
+  test("the reconcile of a change's issue started during a sync of the repository applies after that sync finished", async () => {
+    const { store, internals, deliver, started, release } = await setup();
+    deliver("d5", 5, "Change issue title");
+    const first = internals.reconcileOne("repo", "full");
+    await started;
+
+    const second = internals.applyIssueDelivery("repo", "d5");
+    await settle();
+    expect(store.getIssueByNumber("repo", 5)).toBeNull();
+
+    release();
+    await Promise.all([first, second]);
+    expect(store.getIssueByNumber("repo", 5)?.title).toBe("Change issue title");
+    store.close();
+  });
+
+  test("syncs of two different repositories run at the same time", async () => {
+    const { store, reads, internals, started, release } = await setup();
+    const first = internals.reconcileRepository("repo");
+    await started;
+
+    await internals.reconcileOne("other", "full");
+    expect(reads).toEqual(["list:owner/repo", "list:owner/other"]);
+
+    release();
+    await first;
+    store.close();
+  });
+
+  test("a sync that throws releases the lock and the next sync of that repository runs", async () => {
+    const { store, reads, internals, release, failNextListing } = await setup();
+    release();
+    failNextListing();
+    await expect(internals.reconcileRepository("repo")).rejects.toThrow("listing failed");
+
+    await internals.reconcileRepository("repo", { only: [2] });
+    expect(reads).toEqual(["list:owner/repo", "get:owner/repo#2"]);
+    store.close();
+  });
+
+  test("a sync started from inside a locked sync completes without deadlock", async () => {
+    const { store, internals, deliver, release } = await setup();
+    release();
+    // Applying a closed issue's delivery reconciles its closed item from inside the locked delivery.
+    deliver("d8", 8, "Stored title", "closed");
+    await internals.reconcileClosedItem("repo", sourceIssue("owner/repo", 8, "Stored title"));
+
+    const applied = await Promise.race([
+      internals.applyIssueDelivery("repo", "d8"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("deadlock"), 2000)),
+    ]);
+    expect(applied).toBe(true);
+    expect(store.getIssueByNumber("repo", 8)?.sourceState).toBe("closed");
+    store.close();
+  });
+});
