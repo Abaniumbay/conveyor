@@ -1590,7 +1590,18 @@ function RunnerStatus({ model }: { model: DashboardViewModel }) {
 
 function ActiveWorkList({ runs }: { runs: DashboardViewModel["activeWork"]["runs"] }) {
   return runs.length > 0
-    ? <ul>{runs.map((run) => <li key={run.id}><a href={issueHref(run.repository, run.issueNumber)}><span class={`active-work-repository repo-color-${run.repositoryColor}`}><i class="repository-dot" aria-hidden="true" /><span class="active-work-repository-id">{run.repository}</span></span><strong>#{run.issueNumber} {run.issueTitle}</strong><span>{run.stageId} · <LocalTime value={run.startedAt} /></span></a></li>)}</ul>
+    ? <ul>{runs.map((run) => (
+      <li key={run.id}>
+        <a href={issueHref(run.repository, run.issueNumber)}>
+          <span class={`active-work-repository repo-color-${run.repositoryColor}`}>
+            <i class="repository-dot" aria-hidden="true" />
+            <span class="active-work-repository-id">{run.repository}</span>
+          </span>
+          <strong>#{run.issueNumber} {run.issueTitle}</strong>
+          <span>{run.stageId} · <LocalTime value={run.startedAt} /></span>
+        </a>
+      </li>
+    ))}</ul>
     : <p>No issue is being worked on right now.</p>;
 }
 
