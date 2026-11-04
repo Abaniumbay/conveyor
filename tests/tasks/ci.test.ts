@@ -64,6 +64,7 @@ function host(state: { change: ChangeRequest }): CodeHost {
   return {
     async getChange() { return state.change; },
     async listReviewArtifacts() { return []; },
+    async listReviewThreadStates() { return []; },
     async getChangeDelivery(): Promise<ChangeDelivery> {
       const change = state.change;
       return {
@@ -107,7 +108,7 @@ async function world(options: { ignoreChecks?: string[]; withChange?: boolean } 
 
 const change = (over: Partial<ChangeContext> = {}): ChangeContext => ({
   ref: { provider: "github", id: ID, number: 5 }, url: PR_URL, state: "open", draft: false,
-  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], ...over,
+  headSha: "head1", baseBranch: "main", mergeable: "yes", mergeCommitSha: null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], reviewThreads: { importedHeadSha: "head1", threads: [] }, ...over,
 });
 const repository = (ciMode: "required" | "advisory" | "disabled" = "required"): Partial<TaskContext> => ({
   repository: { id: "repo", address: "o/r", folder: "/f", baseBranch: "main", ciMode, systemLabels: [] },

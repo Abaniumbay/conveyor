@@ -14,6 +14,20 @@ describe("docs/tasks.md", () => {
     }
   });
 
+  test("documents the review thread gate and tells the implementer to answer and resolve bot threads", async () => {
+    const [taskDocs, pipelineDocs, instructions] = await Promise.all([
+      readFile(path.join(import.meta.dir, "../../docs/tasks.md"), "utf8"),
+      readFile(path.join(import.meta.dir, "../../docs/configuration.md"), "utf8"),
+      readFile(path.join(import.meta.dir, "../../examples/config/instructions/kaveh.md"), "utf8"),
+    ]);
+    expect(taskDocs).toContain("`change.reviewThreadsResolved`");
+    expect(pipelineDocs).toContain("change.reviewThreadsResolved");
+    expect(pipelineDocs).toContain("right before `change.merge`");
+    expect(instructions).toContain("a bot");
+    expect(instructions).toContain("change.reviewThreadsResolved");
+    expect(instructions).toContain("answer each one with `change.resolveFinding`");
+  });
+
   test("documents lease pushes before a change request exists", async () => {
     const [taskDocs, instructions, specification] = await Promise.all([
       readFile(path.join(import.meta.dir, "../../docs/tasks.md"), "utf8"),

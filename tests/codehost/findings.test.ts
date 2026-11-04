@@ -63,22 +63,25 @@ describe("GitHub findings projection", () => {
     const threads = { data: { repository: { pullRequest: { reviewThreads: { nodes: [
       { id: "T9", isResolved: false, comments: { nodes: [{ id: "C9", databaseId: 11, author: { login: "conveyor" }, body: "x", url: "u", path: "a.ts", line: 1, createdAt: "t", pullRequestReview: null }] } },
     ] } } } } };
-    const inline = host([{}, {}, threads, { data: { resolveReviewThread: { thread: { isResolved: true } } } }]);
+    const inline = host([threads, {}, {}, { data: { resolveReviewThread: { thread: { isResolved: true } } } }]);
     await inline.host.resolveFindingProjection({
       address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh", verdict: "fixed", message: "👍 Fixed in abc1234 by Kaveh: done",
     });
-    expect(inline.transport.requests[0]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/5/comments/11/replies", body: { body: "👍 Fixed in abc1234 by Kaveh: done" } });
-    expect(inline.transport.requests[1]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/comments/11/reactions", body: { content: "+1" } });
+    expect(inline.transport.requests[1]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/5/comments/11/replies", body: { body: "👍 Fixed in abc1234 by Kaveh: done\n\n<!-- conveyor:reply -->" } });
+    expect(inline.transport.requests[2]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/comments/11/reactions", body: { content: "+1" } });
     expect(inline.transport.requests[3]).toMatchObject({ method: "POST", path: "graphql", body: { variables: { thread: "T9" } } });
     expect((inline.transport.requests[3]!.body as { query: string }).query).toContain("resolveReviewThread");
   });
 
-  test("a failing reaction or thread lookup does not fail an inline resolution", async () => {
-    const inline = host([{}, new Error("reactions are disabled"), new Error("GraphQL down")]);
-    await inline.host.resolveFindingProjection({
-      address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh", verdict: "fixed", message: "m",
-    });
-    expect(inline.transport.requests).toHaveLength(3);
+  test("a failing reaction does not fail an inline resolution, but a failing thread lookup does", async () => {
+    const threads = { data: { repository: { pullRequest: { reviewThreads: { nodes: [
+      { id: "T9", isResolved: false, comments: { nodes: [{ id: "C9", databaseId: 11, author: { login: "conveyor" }, body: "x", url: "u", path: "a.ts", line: 1, createdAt: "t", pullRequestReview: null }] } },
+    ] } } } } };
+    const input = { address: "o/r", id: ID, findingId: "F1", projection: "inline:11", body: "Fix it", actor: "kaveh", verdict: "fixed" as const, message: "m" };
+    const inline = host([threads, {}, new Error("reactions are disabled"), { data: { resolveReviewThread: { thread: { isResolved: true } } } }]);
+    await inline.host.resolveFindingProjection(input);
+    expect(inline.transport.requests).toHaveLength(4);
+    await expect(host([new Error("GraphQL down")]).host.resolveFindingProjection(input)).rejects.toThrow("GraphQL down");
   });
 
   test("edits a managed comment's heading to the resolution and reacts on it", async () => {
@@ -104,7 +107,7 @@ describe("GitHub findings projection", () => {
     await native.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "thread:PRRT_1", verdict: "invalid", message: "👎 Not changed by Kaveh: wrong" });
     const bodies = native.transport.requests.map((request) => request.body as { query: string; variables: Record<string, unknown> });
     expect(bodies[0]!.query).toContain("addPullRequestReviewThreadReply");
-    expect(bodies[0]!.variables).toEqual({ thread: "PRRT_1", body: "👎 Not changed by Kaveh: wrong" });
+    expect(bodies[0]!.variables).toEqual({ thread: "PRRT_1", body: "👎 Not changed by Kaveh: wrong\n\n<!-- conveyor:reply -->" });
     expect(bodies[2]!.variables).toEqual({ subject: "C1", content: "THUMBS_DOWN" });
     expect(bodies[3]!.query).toContain("resolveReviewThread");
   });
@@ -221,5 +224,65 @@ describe("GitHub native review import", () => {
   test("a GraphQL error is thrown as an infrastructure failure", async () => {
     const { host: h } = host([{ errors: [{ message: "boom" }] }]);
     await expect(h.listReviewArtifacts({ address: "o/r", id: ID })).rejects.toThrow("boom");
+  });
+});
+
+describe("GitHub review thread states", () => {
+  const login = (name: string, __typename = "User") => ({ login: name, __typename });
+  const trustOwner = async (input: { login: string | null }) => input.login === "owner" || input.login === "alice";
+  const states = async (threads: unknown[], isTrusted = trustOwner) => {
+    const { host: h } = host([graphql(...threads)], isTrusted);
+    return h.listReviewThreadStates({ address: "o/r", id: ID });
+  };
+
+  test("counts a thread started by the owner or a contributor and names its author and link", async () => {
+    const [state] = await states([thread({}, { author: login("alice") })]);
+    expect(state).toMatchObject({ providerKey: "thread:T1", author: "alice", url: "https://x/t1", counted: true, resolved: false });
+  });
+
+  test("counts a thread started by a bot, by __typename or by a [bot] login, even when the account has no permission", async () => {
+    const result = await states([
+      thread({ id: "T1" }, { author: login("chatgpt-codex-connector", "Bot") }),
+      thread({ id: "T2" }, { author: login("dependabot[bot]") }),
+    ], async () => false);
+    expect(result.map((state) => state.counted)).toEqual([true, true]);
+  });
+
+  test("ignores a thread started by an untrusted human, whether open or resolved", async () => {
+    const result = await states([thread({ id: "T1" }, { author: login("drive-by" ) }), thread({ id: "T2", isResolved: true }, { author: login("drive-by") })]);
+    expect(result.map((state) => state.counted)).toEqual([false, false]);
+  });
+
+  test("counts Conveyor's own finding threads whoever posted them and marks its replies", async () => {
+    const own = thread({}, { author: login("someone-else"), body: "<!-- conveyor:finding:F1 -->\n**Review finding**" });
+    own.comments.nodes.push({ ...own.comments.nodes[0]!, id: "C2", databaseId: 102, body: "👍 Fixed\n\n<!-- conveyor:reply -->" });
+    const [state] = await states([own]);
+    expect(state).toMatchObject({ counted: true, comments: [{ own: true, counted: false }, { own: true, counted: false }] });
+  });
+
+  test("imports a bot thread as a trusted artifact and keeps an untrusted human thread untrusted", async () => {
+    const { host: h } = host([
+      graphql(thread({ id: "T1" }, { author: login("chatgpt-codex-connector", "Bot") }), thread({ id: "T2" }, { author: login("drive-by") })),
+      [],
+    ], async () => false);
+    const artifacts = await h.listReviewArtifacts({ address: "o/r", id: ID });
+    expect(artifacts.map((artifact) => [artifact.providerKey, artifact.trusted])).toEqual([["thread:T1", true], ["thread:T2", false]]);
+  });
+});
+
+describe("GitHub finding thread resolution", () => {
+  const input = { address: "o/r", id: ID, findingId: "F1", projection: "inline:101", body: "Fix", actor: "kaveh", verdict: "fixed" as const, message: "👍 Fixed in abc by Kaveh: ok" };
+
+  test("fails when the thread cannot be resolved and, repeated, answers once and resolves", async () => {
+    const outage = new Error("GitHub is down");
+    const { transport, host: h } = host([graphql(thread()), {}, {}, outage]);
+    await expect(h.resolveFindingProjection(input)).rejects.toThrow("GitHub is down");
+    const answered = thread({}, {});
+    answered.comments.nodes.push({ ...answered.comments.nodes[0]!, id: "C2", databaseId: 102, body: `${input.message}\n\n<!-- conveyor:reply -->` });
+    const retry = host([graphql(answered), { data: { resolveReviewThread: { thread: { isResolved: true } } } }]);
+    await retry.host.resolveFindingProjection(input);
+    expect(retry.transport.requests.map((request) => request.path)).toEqual(["graphql", "graphql"]);
+    expect(String((retry.transport.requests[1]!.body as { query: string }).query)).toContain("resolveReviewThread");
+    expect(transport.requests[1]).toMatchObject({ method: "POST", path: "repos/o/r/pulls/5/comments/101/replies" });
   });
 });

@@ -75,6 +75,21 @@ export interface ReviewArtifact {
   resolved: boolean;
 }
 
+/** A review thread of the code host's native review, whether or not it becomes a finding. */
+export interface ReviewThreadState {
+  /** Stable key of the thread on the host (the one `ReviewArtifact` uses for the same thread). */
+  providerKey: string;
+  /** Author of the thread's first comment. */
+  author: string | null;
+  /** Link to the thread's first comment. */
+  url: string;
+  /** Whether the thread blocks a merge while open: started by the owner or a contributor, a bot, or Conveyor. */
+  counted: boolean;
+  resolved: boolean;
+  /** Every comment in order; `own` ones are Conveyor's answers, `counted` ones are by a counted account. */
+  comments: Array<{ counted: boolean; own: boolean }>;
+}
+
 export interface CodeHost {
   /** Finds the currently open change for a branch without creating another one. */
   findOpenChange?(input: { address: string; branch: string }): Promise<ChangeRequest | null>;
@@ -131,6 +146,7 @@ export interface CodeHost {
   /**
    * Marks a finding's projection resolved: `message` as a reply on an inline comment (whose thread is
    * then resolved) or as the heading of a managed comment, plus a thumbs up (fixed) or down (invalid).
+   * Throws unless the thread is resolved; repeating the call after a failure neither repeats the reply nor fails.
    */
   resolveFindingProjection(input: {
     address: string;
@@ -161,6 +177,8 @@ export interface CodeHost {
    */
   deleteBranch(input: { address: string; branch: string }): Promise<"deleted" | "absent" | "kept">;
   /** Native review artifacts of the change, each classified by current repository trust. */
+  /** Every review thread of the change with its resolved state, for the merge gate. Throws unless all were read. */
+  listReviewThreadStates(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewThreadState[]>;
   listReviewArtifacts(input: { address: string; id: string; extraTrustedLogins?: readonly string[] }): Promise<ReviewArtifact[]>;
 }
 

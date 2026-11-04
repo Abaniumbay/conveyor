@@ -43,6 +43,7 @@ async function setup(options: { ci?: "ok" | "throws" | "none"; changeHead?: stri
         if (options.artifactError) throw options.artifactError;
         return artifacts;
       },
+      listReviewThreadStates: async () => [],
       getChangeDelivery: async () => ({ change: { number: 5, url: "https://x/pull/5", headSha: options.changeHead, mergeable: true }, checks: [] }),
     },
     ci: options.ci === "none" ? undefined : {

@@ -1059,4 +1059,28 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX source_events_received_at_idx ON source_events(received_at);
     `,
   },
+  {
+    version: 44,
+    sql: `
+      -- The review threads read from the code host at the head they were imported for, with the
+      -- comment count last acknowledged on a resolved thread (a later counted comment reopens it).
+      CREATE TABLE review_thread_imports (
+        issue_id TEXT PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        head_sha TEXT NOT NULL,
+        imported_at TEXT NOT NULL
+      );
+      CREATE TABLE review_thread_evidence (
+        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        provider_key TEXT NOT NULL,
+        author TEXT,
+        url TEXT NOT NULL,
+        counted INTEGER NOT NULL,
+        resolved INTEGER NOT NULL,
+        comment_count INTEGER NOT NULL,
+        acknowledged_count INTEGER NOT NULL,
+        new_comment INTEGER NOT NULL,
+        PRIMARY KEY (issue_id, provider_key)
+      );
+    `,
+  },
 ];

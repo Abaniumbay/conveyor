@@ -312,7 +312,7 @@ export interface GitHubReviewThread {
   comments: { nodes: Array<{
     id: string;
     databaseId: number;
-    author: { login: string } | null;
+    author: { login: string; __typename?: string } | null;
     body: string;
     url: string;
     path: string | null;
@@ -342,7 +342,7 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
           id
           isResolved
           comments(first: 100) {
-            nodes { id databaseId author { login } body url path line createdAt pullRequestReview { databaseId } }
+            nodes { id databaseId author { login __typename } body url path line createdAt pullRequestReview { databaseId } }
           }
         }
       }

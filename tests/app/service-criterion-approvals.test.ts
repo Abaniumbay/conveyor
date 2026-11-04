@@ -89,7 +89,7 @@ repositories:
       run: { stage: "implementation", stageEpoch: 0, attempt: 1, maxAttempts: 1, taskInstanceId: "review", enteredAt: "2026-01-01T00:00:00Z", feedback: null },
       repository: { id: "repo", address: "owner/repo", folder: repositoryPath, baseBranch: "main", ciMode: "required", systemLabels: [] },
       item: { id: "issue", number: 1, title: "Feature", url: "https://example.test/1", labels: ["conveyor", "conveyor:implementation"], state: merged ? "closed" : "open", criteria: [], children: [], dependencies: [], systemLabels: [] },
-      change: { ref: { provider: "github", id: "pr-1", number: 1 }, url: "https://example.test/pr/1", state, draft: false, headSha, baseBranch: "main", mergeable: "yes", mergeCommitSha: state === "merged" ? "merge" : null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [] },
+      change: { ref: { provider: "github", id: "pr-1", number: 1 }, url: "https://example.test/pr/1", state, draft: false, headSha, baseBranch: "main", mergeable: "yes", mergeCommitSha: state === "merged" ? "merge" : null, criteria: [], projectedCriterionIds: [], projectionError: null, findings: [], reviewThreads: { importedHeadSha: headSha, threads: [] } },
       checkpoints: { ciPassed: null, reviewPassed: reviewPassed ? { sha: reviewPassed, at: "2026-01-01T00:00:00Z", taskInstanceId: "review" } : null },
     };
     store.executions().saveContext("issue", context, { stage: "implementation", taskInstanceId: "review", expectedEpoch: store.executions().stageEpoch("issue") });

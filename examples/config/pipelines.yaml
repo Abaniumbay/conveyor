@@ -83,6 +83,7 @@ delivery:
         - { id: review, task: agent.run, with: { agents: [shaghayegh, shirin] } }
       exit-gate:
         - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
+        - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
         - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
         - { id: ciHead, task: change.headUnchanged, when: ci.required, onFail: { return: implementation } }
         - id: mergeable
@@ -96,6 +97,8 @@ delivery:
       icon: "🔀"
       concurrency: 1
       actions:
+        # Re-checked after manual approval: a thread reopened or answered since the review gate fails here.
+        - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
         - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
       exit-gate:
         - { id: merged, task: change.merged, onFail: { return: implementation } }
