@@ -1052,4 +1052,11 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE issues ADD COLUMN paused_by_conveyor INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 43,
+    sql: `
+      -- Webhook delivery retention deletes by age.
+      CREATE INDEX source_events_received_at_idx ON source_events(received_at);
+    `,
+  },
 ];

@@ -35,7 +35,7 @@ export const cleanup: Command = {
       const config = await loadCommandConfig(context, null);
       const store = await ConveyorStore.open(config.settings.database, { migrateExisting: false });
       try {
-        report = await applyRetention({ store, artifacts: config.settings.artifacts, dryRun, policy: { ...config.settings.retention, ...overrides }, eventsMs: config.settings.events.retentionMs });
+        report = await applyRetention({ store, artifacts: config.settings.artifacts, dryRun, policy: { ...config.settings.retention, ...overrides }, eventsMs: config.settings.events.retentionMs, webhookDeliveriesMs: config.settings.retention.webhookDeliveriesMs });
       } finally {
         store.close();
       }
@@ -47,6 +47,7 @@ export const cleanup: Command = {
       `${verb} ${report.artifacts.directories} artifact director${report.artifacts.directories === 1 ? "y" : "ies"} (${formatBytes(report.artifacts.bytes)}).`,
       `${verb} ${report.homes.directories} run home${report.homes.directories === 1 ? "" : "s"} (${formatBytes(report.homes.bytes)}).`,
       `${verb} ${report.eventLog.events} recorded event${report.eventLog.events === 1 ? "" : "s"} past the event log's retention.`,
+      `${verb} ${report.webhookDeliveries.deliveries} stored webhook deliver${report.webhookDeliveries.deliveries === 1 ? "y" : "ies"} past the webhook retention.`,
       ...(report.homes.failures.length > 0 ? [`Could not delete ${report.homes.failures.length} run home${report.homes.failures.length === 1 ? "" : "s"}: ${report.homes.failures.join("; ")}`] : []),
     ].join("\n"));
   },

@@ -53,7 +53,7 @@ describe("retention", () => {
   test("prunes retired history by age while reclaiming every terminal run home", async () => {
     const { store, artifacts } = await world();
     const dry = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW, dryRun: true });
-    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 } });
+    expect(dry).toEqual({ dryRun: true, runHistory: { runs: 3, events: 6 }, artifacts: { directories: 3, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 }, webhookDeliveries: { deliveries: 0 } });
     expect(store.listRunEvents("closed-old")).toHaveLength(2);
 
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: 30 * DAY, artifactsMs: 30 * DAY }, now: NOW });
@@ -71,7 +71,7 @@ describe("retention", () => {
 
   test("an unlimited retention policy keeps history but reclaims terminal homes", async () => {
     const { store, artifacts } = await world();
-    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 } });
+    expect(await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, now: NOW })).toEqual({ dryRun: false, runHistory: { runs: 0, events: 0 }, artifacts: { directories: 0, bytes: 0 }, homes: { directories: 5, bytes: 5000, failures: [] }, eventLog: { events: 0 }, webhookDeliveries: { deliveries: 0 } });
     const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: DAY }, now: NOW });
     expect(report.artifacts.directories).toBe(4);
     expect(store.listRunEvents("closed-new")).toHaveLength(2);
@@ -90,7 +90,7 @@ describe("retention", () => {
     const out: string[] = [];
     const code = await runCli(["cleanup", "--home", home, "--dry-run"], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false });
     expect(code).toBe(0);
-    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).\nWould delete 5 run homes (4.9 KB).\nWould delete 0 recorded events past the event log's retention.");
+    expect(out.join("\n")).toBe("Would delete 6 run event(s) of 3 finished run(s).\nWould delete 0 artifact directories (0 B).\nWould delete 5 run homes (4.9 KB).\nWould delete 0 recorded events past the event log's retention.\nWould delete 0 stored webhook deliveries past the webhook retention.");
     const json: string[] = [];
     await runCli(["cleanup", "--home", home, "--artifacts", "30d", "--json"], { out: (text) => json.push(text), err: () => {}, environment: {}, interactive: false });
     expect(JSON.parse(json.join(""))).toMatchObject({ dryRun: false, runHistory: { events: 6 }, artifacts: { directories: 3 }, homes: { directories: 5, bytes: 5000, failures: [] } });
@@ -303,4 +303,72 @@ describe("conveyor diagnostics export", () => {
     expect(manifest.files.find((entry) => entry.file === "config.yaml")?.mayContain.join(" ")).toContain("repository details");
     expect(await readFile(path.join(extracted, bundle!, "config.yaml"), "utf8")).toContain("webhookSecret: <redacted>");
   }, 20_000);
+});
+
+describe("webhook delivery retention", () => {
+  const WEEK = 7 * DAY;
+  async function deliveries() {
+    const { root, database, store, artifacts } = await world();
+    for (const [id, days] of [["old-1", 30], ["old-2", 8], ["new-1", 6], ["new-2", 0.5]] as const) {
+      store.recordSourceEvent({ source: "github", deliveryId: id, eventType: "issues", payload: { id } });
+      store.sqlite().query("UPDATE source_events SET received_at = ? WHERE delivery_id = ?").run(daysAgo(days), id);
+    }
+    return { root, database, store, artifacts };
+  }
+
+  test("deletes deliveries past the retention, keeps newer ones and reports the count", async () => {
+    const { store, artifacts } = await deliveries();
+    const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, webhookDeliveriesMs: WEEK, now: NOW });
+    expect(report.webhookDeliveries).toEqual({ deliveries: 2 });
+    expect(store.hasSourceEvent("github", "old-1")).toBe(false);
+    expect(store.hasSourceEvent("github", "old-2")).toBe(false);
+    expect(store.hasSourceEvent("github", "new-1")).toBe(true);
+    expect(store.hasSourceEvent("github", "new-2")).toBe(true);
+  });
+
+  test("a dry run reports the count and deletes nothing", async () => {
+    const { store, artifacts } = await deliveries();
+    const report = await applyRetention({ store, artifacts, policy: { runHistoryMs: null, artifactsMs: null }, webhookDeliveriesMs: WEEK, now: NOW, dryRun: true });
+    expect(report.webhookDeliveries).toEqual({ deliveries: 2 });
+    expect(store.hasSourceEvent("github", "old-1")).toBe(true);
+    expect(store.hasSourceEvent("github", "old-2")).toBe(true);
+  });
+
+  test("deletes more rows than one batch over several statements", async () => {
+    const { store } = await deliveries();
+    for (let index = 0; index < 25; index += 1) {
+      store.recordSourceEvent({ source: "github", deliveryId: `bulk-${index}`, eventType: "issues", payload: {} });
+      store.sqlite().query("UPDATE source_events SET received_at = ? WHERE delivery_id = ?").run(daysAgo(40), `bulk-${index}`);
+    }
+    const statements: string[] = [];
+    const sqlite = store.sqlite();
+    const query = sqlite.query.bind(sqlite);
+    sqlite.query = ((sql: string) => { if (sql.startsWith("DELETE FROM source_events")) statements.push(sql); return query(sql); }) as typeof sqlite.query;
+    const deleted = store.pruneSourceEvents(daysAgo(7), 10);
+    expect(deleted).toBe(27);
+    expect(statements.length).toBeGreaterThanOrEqual(3);
+    expect(store.hasSourceEvent("github", "new-1")).toBe(true);
+  });
+
+  test("conveyor cleanup prunes with the 7d default and prints the counts", async () => {
+    const { root, store } = await deliveries();
+    store.close();
+    const home = path.join(root, "home");
+    await mkdir(path.join(home, "config"), { recursive: true });
+    await writeFile(path.join(home, "config/conveyor.yaml"), [
+      "settings:", `  database: ${path.join(root, "state/conveyor.sqlite")}`, `  artifacts: ${path.join(root, "artifacts")}`,
+      "providers: !include builtin:providers.yaml", "",
+    ].join("\n"));
+    const run = async (...args: string[]) => {
+      const out: string[] = [];
+      expect(await runCli(["cleanup", "--home", home, ...args], { out: (text) => out.push(text), err: () => {}, environment: {}, interactive: false })).toBe(0);
+      return out.join("\n");
+    };
+    expect(await run("--dry-run")).toContain("Would delete 2 stored webhook deliveries past the webhook retention.");
+    expect(await run()).toContain("Deleted 2 stored webhook deliveries past the webhook retention.");
+    const reopened = await ConveyorStore.open(path.join(root, "state/conveyor.sqlite"));
+    expect(reopened.hasSourceEvent("github", "old-1")).toBe(false);
+    expect(reopened.hasSourceEvent("github", "new-1")).toBe(true);
+    reopened.close();
+  });
 });
