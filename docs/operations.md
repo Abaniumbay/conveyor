@@ -287,7 +287,26 @@ The steps:
 7. Wait until the new release reports ready.
 
 It never changes your configuration or credentials. With the service stopped, `upgrade` backs up and
-switches directly. There is no automatic upgrade.
+switches directly.
+
+### Automatic upgrades (opt in)
+
+Nothing upgrades on its own until you turn it on:
+
+```sh
+sudo conveyor service auto-upgrade install [--every 15m] [--drain-timeout 2h]
+conveyor service auto-upgrade status
+sudo conveyor service auto-upgrade uninstall   # turn it off
+```
+
+`install` adds a systemd timer (`<unit>-auto-upgrade.timer`) that checks every `--every` (default
+15m, plus up to a minute of random delay). Each check runs
+`conveyor upgrade --latest --if-newer --no-wait` as the service's account: when a newer release
+exists it goes through the steps above, waiting up to `--drain-timeout` (default 2h) for running
+work, and otherwise does nothing. It follows every release, minor ones included, not only patches.
+If the new release cannot load your configuration, the switch stops and the current release keeps
+running. `conveyor status` and `conveyor doctor` show `Auto-upgrade: on (every 15m, last checked …)`
+or `off`. `uninstall` removes the timer and keeps the installed releases. It needs systemd.
 
 ```sh
 conveyor rollback                     # back to the release the last upgrade replaced
