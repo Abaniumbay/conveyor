@@ -10,6 +10,24 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.16.2] - 2026-11-05
+
+This patch tightens the merge gate and makes stuck or paused work easier to understand. Merges in the packaged pipelines now wait until every counted review thread is resolved, and threads from review bots become findings the implementer must answer. An item whose issue GitHub left open after the merge now asks for you instead of sitting in Cleanup, and a drained restart or stop can say why. The board stacks and folds Needs you and the filters, and Active work shows each item's repository.
+
+### Added
+
+- An item whose change merged but whose issue GitHub left open now needs you instead of sitting silently in Cleanup. Ten minutes after the recorded merge (`graceMinutes` on the new `item.issueClosed` check, default 10) the item stops as needs intervention with the merged change number and a plain instruction: close the issue as completed, or reopen the work. The status comment shows the reason as its Blocker, and the dashboard card and Needs you list show it too. Conveyor still never closes the issue itself; once you or GitHub close it, the item resumes and becomes done.
+
+- `conveyor service restart --drain` and `conveyor service stop --drain` take `--reason <text>` (at most 500 characters). The dashboard's drain notice and `conveyor status` show it instead of the generic "service stop or restart", so people watching the board know why work paused.
+
+### Changed
+
+- The packaged pipelines now wait for review threads before merging. A new `change.reviewThreadsResolved` check runs in the review exit gate and again right before `change.merge`. It passes only when every counted review thread on the pull request is resolved: threads started by the repository owner, a contributor (write, maintain or admin permission, or `extraTrustedLogins`), a bot, or Conveyor itself. Threads from any other account are ignored, so a drive-by comment cannot block a merge. A thread reopened, or a counted comment added after the check passed, sends the item back to implementation. Threads started by a bot (for example a code review app) are now imported as findings for the implementer, like those of the owner and contributors. Conveyor resolves the thread of every finding it resolves, and retries until GitHub accepts it. If you use your own pipeline configuration, add `{ id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }` to your review exit gate and merge stage to get the same behaviour.
+
+- Each entry in the Active work list (the runners popover and the phone System popover) now shows its repository as a chip: the repository colour dot and the written repository id, so running items with the same number in different repositories can be told apart.
+
+- The Board now stacks Needs you, the line, then search and filters above the stage columns. Needs you and search and filters fold like the line, with the count or active filters shown in the folded header. Needs you folds itself while nothing needs you and unfolds when something does, unless you folded it. Both start folded on a phone, and your choice is remembered in the browser.
+
 ## [0.16.1] - 2026-11-04
 
 This patch release fixes problems found after v0.16.0. Issues enrolled at the same time as their dependencies no longer lose their title and body, and syncs of one repository no longer overlap. Confined agents get a private, writable `/tmp` again, so tools such as `dotnet test` and installers work in agent runs. Stored webhook payloads are now pruned after seven days by default.
