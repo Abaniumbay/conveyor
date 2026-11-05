@@ -155,6 +155,34 @@ Stop, disable and remove the unit; the home and installed releases are kept (sud
 | --- | --- |
 | `--unit <name>` | the systemd unit name (default: conveyor) |
 
+### `conveyor service auto-upgrade install`
+
+Opt in to automatic upgrades: a systemd timer runs conveyor upgrade --latest --if-newer (sudo).
+
+Follows every release, minor ones included. The upgrade validates the configuration with the new release first; an unloadable configuration stops the switch. Remove it with conveyor service auto-upgrade uninstall.
+
+| Option | Description |
+| --- | --- |
+| `--unit <name>` | the systemd unit name (default: conveyor) |
+| `--every <duration>` | how often the timer checks for a newer release (default 15m) |
+| `--drain-timeout <duration>` | how long an upgrade waits for running work (default 2h) |
+
+### `conveyor service auto-upgrade uninstall`
+
+Stop and remove the auto-upgrade timer; installed releases are kept (sudo).
+
+| Option | Description |
+| --- | --- |
+| `--unit <name>` | the systemd unit name (default: conveyor) |
+
+### `conveyor service auto-upgrade status`
+
+Show whether auto-upgrade is installed, when it runs next and what the last run said.
+
+| Option | Description |
+| --- | --- |
+| `--unit <name>` | the systemd unit name (default: conveyor) |
+
 ### `conveyor status`
 
 Show versions, paths, dashboard URL, service health, capacity, stopped items and disk usage.

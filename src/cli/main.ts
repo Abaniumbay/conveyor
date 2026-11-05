@@ -13,7 +13,7 @@ import { board, itemHistory, itemLogs, itemPause, itemDismissFinding, itemResume
 import { reportFindings } from "./commands/report";
 import { rollback, upgrade } from "./commands/release";
 import { serve } from "./commands/serve";
-import { serviceInstall, serviceRestart, serviceStart, serviceStatus, serviceStop, serviceUninstall } from "./commands/service";
+import { serviceAutoUpgradeInstall, serviceAutoUpgradeStatus, serviceAutoUpgradeUninstall, serviceInstall, serviceRestart, serviceStart, serviceStatus, serviceStop, serviceUninstall } from "./commands/service";
 import { homePaths, resolveHome } from "./home";
 import { isInteractive } from "./secret-input";
 
@@ -57,6 +57,9 @@ export const COMMANDS: Command[] = [
   serviceRestart,
   serviceStatus,
   serviceUninstall,
+  serviceAutoUpgradeInstall,
+  serviceAutoUpgradeUninstall,
+  serviceAutoUpgradeStatus,
   status,
   board,
   itemShow,
@@ -83,7 +86,7 @@ export const COMMANDS: Command[] = [
 
 /** The command named by the first one or two arguments (the longest match wins). */
 function findCommand(argv: readonly string[], commands: readonly Command[]): { command: Command; rest: string[] } | null {
-  for (const length of [2, 1]) {
+  for (const length of [3, 2, 1]) {
     const name = argv.slice(0, length).join(" ");
     const command = commands.find((candidate) => candidate.name === name);
     if (command) return { command, rest: argv.slice(length) };

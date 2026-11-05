@@ -3,6 +3,7 @@
 // never depends on a shell's directory or environment. Installing and removing the unit, and
 // starting or stopping it, are administrative (root) steps; a drained restart is not.
 
+import { existsSync } from "node:fs";
 import { chmod, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -35,6 +36,13 @@ export const systemd = {
   unitDirectory: "/etc/systemd/system",
   isRoot: (): boolean => process.getuid?.() === 0,
   systemctl: (args: string[]) => run(["systemctl", ...args]),
+  /** Whether this machine runs systemd (the auto-upgrade timer needs it). */
+  available: (): boolean => process.platform === "linux" && existsSync("/run/systemd/system"),
+  /** The last line a unit logged, or null. */
+  async lastOutput(unit: string): Promise<string | null> {
+    const result = await run(["journalctl", "-u", unit, "-n", "1", "-o", "cat", "--no-pager"]);
+    return result.code === 0 && result.stdout ? result.stdout.split("\n").pop()! : null;
+  },
   /** The install prefix of the running conveyor. */
   prefix: () => detectPrefix(),
   async account(name: string): Promise<Account | null> {
@@ -356,6 +364,171 @@ export const serviceUninstall: Command = {
       `  configuration, credentials and state: ${installed.home}`,
       ...(prefix ? [`  installed releases: ${prefix}`] : []),
       "Delete them yourself only if you no longer need them (for example: rm -rf <path>).",
+    ].join("\n"));
+  },
+};
+
+// Opt-in auto-upgrade: a systemd timer that periodically runs a no-wait `upgrade --latest --if-newer`.
+
+const DEFAULT_EVERY = "15m";
+const DEFAULT_DRAIN_TIMEOUT = "2h";
+
+function autoUpgradeFiles(unit: string): { service: string; timer: string; serviceName: string; timerName: string } {
+  const serviceName = `${unit}-auto-upgrade.service`;
+  const timerName = `${unit}-auto-upgrade.timer`;
+  return { service: path.join(systemd.unitDirectory, serviceName), timer: path.join(systemd.unitDirectory, timerName), serviceName, timerName };
+}
+
+function requireSystemd(): void {
+  if (!systemd.available()) throw new CliError("auto-upgrade needs systemd, which this platform does not run: use conveyor upgrade yourself", EXIT.failure);
+}
+
+export function renderAutoUpgradeService(options: { account: Account; home: string; executable: string; drainTimeout: string }): string {
+  const { account, home } = options;
+  const argv = [options.executable, "upgrade", "--latest", "--if-newer", "--no-wait", "--drain-timeout", options.drainTimeout, "--home", home];
+  return `# Written by conveyor service auto-upgrade install. Reinstall rather than editing by hand.
+[Unit]
+Description=Conveyor auto-upgrade (${home})
+Documentation=https://github.com/Abaniumbay/conveyor#readme
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=${account.name}
+Group=${account.group}
+Environment=HOME=${account.home}
+Environment=CONVEYOR_HOME=${home}
+Environment=TMPDIR=${home}/tmp
+ExecStartPre=/bin/mkdir -p ${home}/tmp
+ExecStart=${argv.map(quote).join(" ")}
+`;
+}
+
+export function renderAutoUpgradeTimer(options: { home: string; every: string }): string {
+  return `# Written by conveyor service auto-upgrade install. Reinstall rather than editing by hand.
+[Unit]
+Description=Conveyor auto-upgrade timer (${options.home})
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${options.every}
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`;
+}
+
+export interface AutoUpgradeState { installed: boolean; every: string | null; next: string | null; last: string | null; output: string | null }
+
+function timestamp(value: string | undefined): string | null {
+  return value && value !== "n/a" && value !== "0" ? value : null;
+}
+
+/** The timer's state; it never throws, so status and doctor work on any platform. */
+export async function autoUpgradeState(unit = "conveyor"): Promise<AutoUpgradeState> {
+  const off: AutoUpgradeState = { installed: false, every: null, next: null, last: null, output: null };
+  if (!systemd.available()) return off;
+  const files = autoUpgradeFiles(unit);
+  const [timer, service] = await Promise.all([readFile(files.timer, "utf8").catch(() => null), readFile(files.service, "utf8").catch(() => null)]);
+  if (timer === null || service === null) return off;
+  const every = /^OnUnitActiveSec=(.+)$/m.exec(timer)?.[1]?.trim() ?? null;
+  const shown = await systemd.systemctl(["show", files.timerName, "--property=NextElapseUSecRealtime,LastTriggerUSec"]).catch(() => null);
+  const properties = Object.fromEntries((shown?.code === 0 ? shown.stdout : "").split("\n").filter(Boolean).map((line) => {
+    const at = line.indexOf("=");
+    return [line.slice(0, at), line.slice(at + 1)] as [string, string];
+  }));
+  return {
+    installed: true,
+    every,
+    next: timestamp(properties.NextElapseUSecRealtime),
+    last: timestamp(properties.LastTriggerUSec),
+    output: await systemd.lastOutput(files.serviceName).catch(() => null),
+  };
+}
+
+/** The `Auto-upgrade:` value shown by status and doctor. */
+export async function autoUpgradeSummary(unit = "conveyor"): Promise<string> {
+  const state = await autoUpgradeState(unit);
+  return state.installed ? `on (every ${state.every ?? "?"}, last checked ${state.last ?? "never"})` : "off";
+}
+
+export const serviceAutoUpgradeInstall: Command = {
+  name: "service auto-upgrade install",
+  summary: "opt in to automatic upgrades: a systemd timer runs conveyor upgrade --latest --if-newer (sudo)",
+  options: {
+    ...UNIT_OPTION,
+    every: { type: "string", value: "<duration>", description: `how often the timer checks for a newer release (default ${DEFAULT_EVERY})` },
+    "drain-timeout": { type: "string", value: "<duration>", description: `how long an upgrade waits for running work (default ${DEFAULT_DRAIN_TIMEOUT})` },
+  },
+  details: "Follows every release, minor ones included. The upgrade validates the configuration with the new release first; an unloadable configuration stops the switch. Remove it with conveyor service auto-upgrade uninstall.",
+  async run(context) {
+    requireRoot("service auto-upgrade install");
+    requireSystemd();
+    const unit = unitName(context);
+    const every = stringOption(context, "every") ?? DEFAULT_EVERY;
+    const drainTimeout = stringOption(context, "drain-timeout") ?? DEFAULT_DRAIN_TIMEOUT;
+    parseDuration(every, "--every");
+    parseDuration(drainTimeout, "--drain-timeout");
+    const installed = await installedUnit(unit);
+    if (!installed?.account) throw new CliError(`${unit} is not installed: run conveyor service install first`, EXIT.failure);
+    const account = await systemd.account(installed.account);
+    if (!account) throw new CliError(`no account named ${installed.account}`, EXIT.failure);
+    const prefix = await systemd.prefix();
+    if (!prefix) throw new CliError("run service auto-upgrade install with the installed conveyor (<prefix>/versions/<version>/conveyor), not from a checkout", EXIT.usage);
+    const executable = path.join(prefix, "current/conveyor");
+    const files = autoUpgradeFiles(unit);
+    await writeFile(files.service, renderAutoUpgradeService({ account, home: installed.home, executable, drainTimeout }), { mode: 0o644 });
+    await writeFile(files.timer, renderAutoUpgradeTimer({ home: installed.home, every }), { mode: 0o644 });
+    await chmod(files.service, 0o644);
+    await chmod(files.timer, 0o644);
+    await systemctl("daemon-reload");
+    await systemctl("enable", "--now", files.timerName);
+    if (context.json) return printJson(context, { unit, service: files.service, timer: files.timer, every, drainTimeout });
+    context.out([
+      `Installed and started ${files.timer}`,
+      `  checks every ${every}; waits up to ${drainTimeout} for running work`,
+      `Turn it off with: sudo conveyor service auto-upgrade uninstall${unit === "conveyor" ? "" : ` --unit ${unit}`}`,
+    ].join("\n"));
+  },
+};
+
+export const serviceAutoUpgradeUninstall: Command = {
+  name: "service auto-upgrade uninstall",
+  summary: "stop and remove the auto-upgrade timer; installed releases are kept (sudo)",
+  options: UNIT_OPTION,
+  async run(context) {
+    requireRoot("service auto-upgrade uninstall");
+    requireSystemd();
+    const unit = unitName(context);
+    const files = autoUpgradeFiles(unit);
+    const present = (await Promise.all([files.timer, files.service].map((file) => stat(file).then(() => true, () => false)))).some(Boolean);
+    if (!present) return context.out("Auto-upgrade is not installed; nothing to remove.");
+    await systemctl("disable", "--now", files.timerName);
+    await systemctl("stop", files.serviceName).catch(() => {});
+    await rm(files.timer, { force: true });
+    await rm(files.service, { force: true });
+    await systemctl("daemon-reload");
+    context.out(`Removed ${files.timer} and ${files.service}. Installed releases were not touched.`);
+  },
+};
+
+export const serviceAutoUpgradeStatus: Command = {
+  name: "service auto-upgrade status",
+  summary: "show whether auto-upgrade is installed, when it runs next and what the last run said",
+  options: UNIT_OPTION,
+  async run(context) {
+    requireSystemd();
+    const state = await autoUpgradeState(unitName(context));
+    if (context.json) return printJson(context, state);
+    if (!state.installed) return context.out("Auto-upgrade: not installed (conveyor service auto-upgrade install).");
+    context.out([
+      `Auto-upgrade: installed, every ${state.every ?? "?"}`,
+      `  next run: ${state.next ?? "unknown"}`,
+      `  last run: ${state.last ?? "never"}`,
+      `  last output: ${state.output ?? "none"}`,
     ].join("\n"));
   },
 };

@@ -13,6 +13,7 @@ import { EXIT } from "../args";
 import { agentLaunchCommand } from "../../isolation/sandbox";
 import { printJson, type Command } from "../command";
 import { control, serviceRunning } from "../control-client";
+import { autoUpgradeSummary } from "./service";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
 
 export interface DoctorCheck {
@@ -397,6 +398,7 @@ export const doctor: Command = {
     const { checks, filesystems } = await doctorReport(context.paths.home, context.paths.config, () => serviceRunning(context));
     const calls = await control<GitHubCallReport>(context, "GET", "/v1/github-calls").catch(() => null);
     if (calls) checks.push(githubCallCheck(calls));
+    checks.push({ name: "Auto-upgrade", status: "ok", detail: await autoUpgradeSummary() });
     const failed = checks.some((check) => check.status === "fail");
     if (context.json) printJson(context, { ok: !failed, checks, filesystems, warnings: filesystems.filter((filesystem) => filesystem.status === "warn") });
     else {

@@ -9,6 +9,7 @@ import { reasonSummary } from "../../web/format";
 import { CliError, EXIT } from "../args";
 import { positional, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
+import { autoUpgradeSummary } from "./service";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
 
 interface StatusPayload {
@@ -130,6 +131,7 @@ export const status: Command = {
         `Open questions: ${service.openQuestions}${service.openQuestions ? " (conveyor questions list)" : ""}`,
       );
     }
+    lines.push(`Auto-upgrade: ${await autoUpgradeSummary()}`);
     lines.push(`Disk: ${Object.entries(disk).map(([name, bytes]) => `${name} ${formatBytes(bytes)}`).join(", ") || "nothing yet"}`);
     lines.push(...filesystems.map((filesystem) =>
       `Filesystem ${filesystem.name}: ${filesystem.status === "warn" ? "WARNING " : ""}${filesystemPressureDetail(filesystem)}`,
