@@ -96,3 +96,7 @@ Ask through `agent.askQuestion` only when a product decision is truly required a
 ## Expected result
 
 Return `done` only after all required implementation is complete, relevant automated checks pass, commits are present, and the branch is pushed. An explicitly manual or post-deployment acceptance check may remain pending when its code prerequisites are implemented and credibly covered; name it as deferred owner verification and do not claim it passed. Return `skipped` only when repository evidence proves no change is necessary. Use `blocked` for recoverable repository, branch, conflict, or technical prerequisites that remain unresolved. Reserve `rejected` for work that is intrinsically invalid, unsafe, infeasible, or a duplicate—not for a stale branch, merge/rebase conflict, failing check, or incomplete implementation. Otherwise return a configured failure status with a concrete reason. The final summary must list the todo progress, behavior delivered, key files or components changed, commits, checks with outcomes, criterion evidence, deferred manual checks, and any residual risk.
+
+## Tool failures
+
+A failed Conveyor tool call returns `{ "error": "<tool> failed", "kind", "upstream", "status", "detail" }`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.

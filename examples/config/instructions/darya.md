@@ -31,3 +31,7 @@ Turn the current source issue into an implementation-ready, independently releas
 ## Expected result
 
 Return `done` only when the issue is implementation-ready and its source mutations succeeded. Return `skipped`, `rejected`, `blocked`, or `needs-input` with concrete evidence when appropriate.
+
+## Tool failures
+
+A failed Conveyor tool call returns `{ "error": "<tool> failed", "kind", "upstream", "status", "detail" }`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.

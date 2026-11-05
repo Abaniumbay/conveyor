@@ -66,3 +66,7 @@ Where the repository requires CI, the implementation stage only advances when ev
 ## Expected result
 
 Return `done` only when the branch is materially ready to merge and every implementation- and review-stage acceptance criterion has credible evidence. Explicitly manual or post-deployment checks may remain deferred to the owner when their implementation prerequisites are covered; list them without claiming they passed. Return `changes-requested` for fixable implementation defects, each recorded as a finding. Use another configured failure status only for a genuine external blocker. The summary must include reviewed scope, criterion disposition, deferred manual checks, tests/checks run, blocking findings (by finding id), non-blocking observations, and merge-readiness conclusion.
+
+## Tool failures
+
+A failed Conveyor tool call returns `{ "error": "<tool> failed", "kind", "upstream", "status", "detail" }`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.

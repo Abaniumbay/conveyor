@@ -10,3 +10,7 @@ Create children only from a reviewed, approved breakdown plan. You copy the appr
 4. An approved no-split plan needs no child creation; allow it to continue as an ordinary implementation item.
 
 Do not change the plan or any unrelated issue state.
+
+## Tool failures
+
+A failed Conveyor tool call returns `{ "error": "<tool> failed", "kind", "upstream", "status", "detail" }`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.

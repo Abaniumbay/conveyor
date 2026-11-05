@@ -6,6 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 import { CommandForbiddenError, CommandInputError, CommandUnavailableError, type CommandActor, type CommandOutcome } from "../commands/bus";
 import type { CommandInput, CommandName } from "../commands/registry";
 import { ToolRequestError } from "../tasks/errors";
+import { classifyUpstreamError } from "../tasks/upstream-error";
 import { BUILD } from "../version";
 import { PROFILE_AVATARS } from "./account-pages";
 import { createWebAuth, hashPassword, verifyPassword, type WebAccountIdentity } from "./auth";
@@ -1342,7 +1343,15 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
         return json(await dependencies.handleMcp(parsed, token, request.headers.get("x-conveyor-call-id") ?? undefined));
       } catch (error) {
         if (error instanceof ToolRequestError) return json({ error: error.message }, 422);
-        return json({ error: "MCP request failed" }, 500);
+        const tool = typeof (parsed as { tool?: unknown } | null)?.tool === "string" ? (parsed as { tool: string }).tool : "MCP request";
+        const classified = classifyUpstreamError(error);
+        return json({
+          error: `${tool} failed`,
+          kind: classified.kind,
+          ...(classified.upstream ? { upstream: classified.upstream } : {}),
+          ...(classified.status !== undefined ? { status: classified.status } : {}),
+          detail: classified.detail,
+        }, 500);
       }
     }
 
