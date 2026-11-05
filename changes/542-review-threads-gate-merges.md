@@ -1,0 +1,5 @@
+---
+section: Changed
+---
+
+The packaged pipelines now wait for review threads before merging. A new `change.reviewThreadsResolved` check runs in the review exit gate and again right before `change.merge`. It passes only when every counted review thread on the pull request is resolved: threads started by the repository owner, a contributor (write, maintain or admin permission, or `extraTrustedLogins`), a bot, or Conveyor itself. Threads from any other account are ignored, so a drive-by comment cannot block a merge. A thread reopened, or a counted comment added after the check passed, sends the item back to implementation. Threads started by a bot (for example a code review app) are now imported as findings for the implementer, like those of the owner and contributors. Conveyor resolves the thread of every finding it resolves, and retries until GitHub accepts it. If you use your own pipeline configuration, add `{ id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }` to your review exit gate and merge stage to get the same behaviour.
