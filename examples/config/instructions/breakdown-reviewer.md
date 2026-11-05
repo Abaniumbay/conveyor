@@ -10,3 +10,7 @@ Review the source-owned work breakdown plan before any child issue can be create
 4. Do not create, edit, or link child issues. Do not invent missing plan details; return incomplete plans to refinement.
 
 Return a concise decision grounded in the recorded plan.
+
+## Tool failures
+
+A failed Conveyor tool call returns `{ "error": "<tool> failed", "kind", "upstream", "status", "detail" }`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.

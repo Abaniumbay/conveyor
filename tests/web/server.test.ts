@@ -1294,7 +1294,20 @@ describe("createWebHandler", () => {
     expect(await stalePush.json()).toEqual({ error: "workspace.push: headSha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is not the current change head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; read change.get and retry" });
     const failure = await request("item.setTitle", { title: "Valid title" });
     expect(failure.status).toBe(500);
-    expect(await failure.json()).toEqual({ error: "MCP request failed" });
+    expect(await failure.json()).toEqual({ error: "item.setTitle failed", kind: "permanent", detail: "database password leaked" });
+  });
+
+  test("tells MCP clients a GitHub 502 is transient, with the tool, upstream and status", async () => {
+    const { handler } = setup({
+      handleMcp: async () => { throw new Error("gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)\nsecond line"); },
+    });
+    const response = await handler(new Request("http://localhost/internal/mcp", {
+      method: "POST",
+      headers: { authorization: "Bearer internal-secret", "content-type": "application/json" },
+      body: JSON.stringify({ tool: "change.get", input: {} }),
+    }));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "change.get failed", kind: "transient", upstream: "github", status: 502, detail: "gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)" });
   });
 
   test("enforces body limits and rejects malformed or unsupported forms", async () => {
