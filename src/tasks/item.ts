@@ -245,6 +245,7 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
         ...(address !== undefined ? { address } : {}),
       }];
     });
+    const pullRequest = store.getCurrentPullRequest(issue.id);
     const item: ItemContext = {
       id: issue.id,
       number: issue.sourceNumber,
@@ -264,6 +265,9 @@ const load: TaskDefinition<unknown, unknown, Deps> = {
       children,
       dependencies: [...dependencies].sort((a, b) => a.id.localeCompare(b.id)),
       systemLabels: issue.labels.filter((label) => systemLabels.includes(label)),
+      ...(pullRequest?.mergedAt != null
+        ? { merge: { changeNumber: pullRequest.number, mergedAt: pullRequest.mergedAt, observedAt: (deps.clock ?? (() => new Date()))().toISOString() } }
+        : {}),
       ...(issue.labels.includes(config.labels.metadata.noSplit) ? { noSplit: noSplitContext(config.labels.metadata.noSplit) } : {}),
       refinement: await loadRefinement(deps, issue),
     };
@@ -347,6 +351,38 @@ const dependenciesMet = check(
   },
   { defaultWait: { timeoutMs: null, pollMs: 5 * 60_000 } },
 );
+
+/** Part of the stop reason `item.issueClosed` records; the service recognises it to resume the item once the issue closes. */
+export const ISSUE_LEFT_OPEN_MARKER = "GitHub did not close issue";
+
+const issueClosedConfig = z.object({ graceMinutes: z.number().min(0).default(10) });
+
+const issueClosed: TaskDefinition<z.output<typeof issueClosedConfig>, unknown, Deps> = {
+  name: "item.issueClosed",
+  kind: "check",
+  description: "Passes when the item's issue is closed after its change merged, judged only from the recorded merge and the projected issue state (no model; Conveyor never closes the issue). An item whose change did not merge passes. While the issue is still open within the grace period after the recorded merge (`graceMinutes`, default 10, long enough for GitHub's own auto-close) it is pending and wakes when the issue changes. After it the item stops as needs-intervention, naming the merged change and telling the owner to close the issue as completed, or reopen the work.",
+  reads: ["item", "repository"],
+  writes: [],
+  invalidates: [],
+  config: issueClosedConfig,
+  defaultWait: { timeoutMs: null, pollMs: 60_000 },
+  run({ context, config }) {
+    const item = context.item!;
+    const merge = item.merge;
+    if (!merge || item.state === "closed") return pass();
+    const remainingMs = Date.parse(merge.mergedAt) + config.graceMinutes * 60_000 - Date.parse(merge.observedAt);
+    if (remainingMs > 0) {
+      return pending(`Waiting for GitHub to close issue #${item.number} after change #${merge.changeNumber} merged`, {
+        after: remainingMs,
+        waitFor: { topics: [issueTopic(context.repository!.address, item.number)], kind: "default" },
+      });
+    }
+    return fail(
+      `Change #${merge.changeNumber} merged, but ${ISSUE_LEFT_OPEN_MARKER} #${item.number}. Conveyor never closes the issue itself: close the issue as completed, or reopen the work.`,
+      { route: { stop: "needs-intervention" } },
+    );
+  },
+};
 
 /** The follow-up stage has no agent action; its manual gate reads the managed notes. */
 const followUps = check(
@@ -777,7 +813,7 @@ const createChild = tool("item.createChild",
   });
 
 export const itemGroup = defineGroup("item", [
-  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet, followUps,
+  load, criteriaDefined, labelsValid, childrenValid, refinementComplete, dependenciesMet, followUps, issueClosed,
   get, guidance, listOpen, comment, setCriteria, setTitle, setSystemLabels, setParent, setDependencies,
   setType, setFields, setRefinement, addFollowUp, createChild,
 ]);

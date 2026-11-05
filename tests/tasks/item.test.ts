@@ -1026,3 +1026,68 @@ describe("work breakdown tasks", () => {
     expect((await run("breakdown.complete", { context: ctx(loaded, { systemLabels: ["area:api", "area:ui"] }) })).status).toBe("pass");
   });
 });
+
+describe("item.issueClosed", () => {
+  const MERGED_AT = "2026-11-04T10:00:00.000Z";
+  const at = (minutes: number) => new Date(Date.parse(MERGED_AT) + minutes * 60_000).toISOString();
+  const merged = (minutesAfterMerge: number, over: Partial<ItemContext> = {}) =>
+    ctx({ number: 7, merge: { changeNumber: 5, mergedAt: MERGED_AT, observedAt: at(minutesAfterMerge) }, ...over });
+  const check = (context: Partial<TaskContext>) => run("item.issueClosed", { config: { graceMinutes: 10 }, context });
+
+  test("an open issue after the grace period stops for the owner naming the merged change and GitHub's miss", async () => {
+    const result = await check(merged(11)) as Extract<TaskResult, { status: "fail" }>;
+    expect(result.status).toBe("fail");
+    expect(result.route).toEqual({ stop: "needs-intervention" });
+    expect(result.message).toContain("Change #5 merged");
+    expect(result.message).toContain("GitHub did not close issue #7");
+  });
+
+  test("the reason tells the owner to close the issue as completed, or reopen the work", async () => {
+    const result = await check(merged(30)) as Extract<TaskResult, { status: "fail" }>;
+    expect(result.message).toContain("close the issue as completed, or reopen the work");
+  });
+
+  test("is pending for the rest of the grace period and does not fail", async () => {
+    const result = await check(merged(9)) as Extract<TaskResult, { status: "pending" }>;
+    expect(result.status).toBe("pending");
+    expect(result.after).toBe(60_000);
+    expect(result.waitFor?.topics).toEqual(["issue:o/r:7"]);
+  });
+
+  test("the grace period is configurable and the default is ten minutes", async () => {
+    expect((await runTask(registry.require("item.issueClosed"), { config: {}, context: merged(9), instance: { id: "g", stage: "cleanup", idempotencyKey: "k", resumed: false } } as never)).status).toBe("pending");
+    expect((await runTask(registry.require("item.issueClosed"), { config: {}, context: merged(10), instance: { id: "g", stage: "cleanup", idempotencyKey: "k", resumed: false } } as never)).status).toBe("fail");
+    expect((await run("item.issueClosed", { config: { graceMinutes: 30 }, context: merged(11) })).status).toBe("pending");
+  });
+
+  test("an issue closed after the merge passes whether or not the grace period passed, and after the owner was asked", async () => {
+    expect((await check(merged(1, { state: "closed" }))).status).toBe("pass");
+    expect((await check(merged(11, { state: "closed" }))).status).toBe("pass");
+    expect((await check(merged(20))).status).toBe("fail");
+    expect((await check(merged(20, { state: "closed" }))).status).toBe("pass");
+  });
+
+  test("an item whose change did not merge passes", async () => {
+    expect((await check(ctx({ number: 7 }))).status).toBe("pass");
+  });
+
+  test("makes no source call: it has no task dependencies at all", async () => {
+    const result = await run("item.issueClosed", { config: { graceMinutes: 10 }, context: merged(30), deps: new Proxy({}, { get: () => { throw new Error("dependency touched"); } }) });
+    expect(result.status).toBe("fail");
+  });
+});
+
+describe("item.load recorded merge", () => {
+  test("carries the merged change and the load time; absent while the change is not merged", async () => {
+    const w = await world();
+    w.add("i1", 1);
+    w.store.activateEnrollment("i1");
+    w.store.upsertPullRequest({ issueId: "i1", id: "pr5", number: 5, url: "https://x/pull/5", state: "open" });
+    const open = (await run("item.load", { context: {}, deps: w.deps() }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(open.merge).toBeUndefined();
+    w.store.upsertPullRequest({ issueId: "i1", id: "pr5", number: 5, url: "https://x/pull/5", state: "merged", mergedAt: "2026-11-04T10:00:00.000Z" });
+    const deps = { ...w.deps(), clock: () => new Date("2026-11-04T10:12:00.000Z") };
+    const merged = (await run("item.load", { context: {}, deps }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+    expect(merged.merge).toEqual({ changeNumber: 5, mergedAt: "2026-11-04T10:00:00.000Z", observedAt: "2026-11-04T10:12:00.000Z" });
+  });
+});

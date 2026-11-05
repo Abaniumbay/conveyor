@@ -142,6 +142,8 @@ export async function deliveryWorld(options: {
   pauseBeforeCiStart?: boolean;
   deployScript?: string;
   interruptGrace?: string;
+  /** GitHub closes the issue after the merge, as `Closes #n` does. False models a dropped auto-close. Default true. */
+  githubClosesIssue?: boolean;
   /** Use the public service scheduling and pause lifecycle instead of the delivery driver. */
   publicLifecycle?: boolean;
 } = {}): Promise<DeliveryWorld> {
@@ -389,6 +391,10 @@ export async function deliveryWorld(options: {
             store.setStageState({ issueId: "issue", stageId: state.stageId, status: "ready", feedbackCycle: 0, configHash: config.hash });
           }
           continue;
+        }
+        if (host.state === "merged" && options.githubClosesIssue !== false) {
+          const issue = store.getIssue("issue")!;
+          if (issue.sourceState !== "closed") store.upsertIssue({ ...issue, sourceState: "closed", sourceStateReason: "completed", sourceUpdatedAt: new Date().toISOString() });
         }
         // CI's settle window is wall-clock: age the first sighting instead of waiting for it.
         store.sqlite().query("UPDATE ci_marks SET created_at = ? WHERE kind = 'first-seen'").run("2000-01-01T00:00:00.000Z");
