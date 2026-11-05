@@ -4,6 +4,7 @@
 // `bun run` deploy/verify scripts. `drive` stands in for the reconciler between stages: it applies
 // the labels the engine wrote and makes the next stage ready.
 
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,6 +55,8 @@ export interface DeliveryWorld {
   executed: string[];
   /** Runs the item until it is done (or the step limit); returns the stages it advanced through. */
   drive(limit?: number): Promise<void>;
+  /** GitHub closes the source issue, as a person or a late auto-close would, and delivers the signed `issues.closed` webhook. */
+  closeIssueOnGitHub(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -225,7 +228,7 @@ export async function deliveryWorld(options: {
     replaceConveyorLabels: async (_address: string, number: number, labels: string[]) => {
       if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
       labelWrites.push([...labels]);
-      sourceIssue = { ...sourceIssue, labels: [...labels], updatedAt: new Date().toISOString() };
+      sourceIssue = { ...sourceIssue, labels: [...labels], updatedAt: new Date(Math.max(Date.now(), Date.parse(sourceIssue.updatedAt) + 1)).toISOString() };
     },
     addComment: async () => 1,
     listIssues: async () => sourceIssue ? [sourceIssue] : [],
@@ -402,6 +405,31 @@ export async function deliveryWorld(options: {
         await (service as unknown as { execute(i: StoredIssue, s: AbortSignal): Promise<void> }).execute(store.getIssue("issue")!, controller.signal);
       }
       throw new Error(`the item did not finish in ${limit} steps; at ${JSON.stringify(store.getStageState("issue"))}`);
+    },
+    async closeIssueOnGitHub() {
+      sourceIssue = { ...sourceIssue!, state: "closed", stateReason: "completed", updatedAt: new Date(Date.now() + 5).toISOString() };
+      const body = new TextEncoder().encode(JSON.stringify({
+        action: "closed", repository: { full_name: "owner/conveyor" }, sender: { login: "maintainer" },
+        issue: {
+          id: 1, number: 1, html_url: sourceIssue.url, title: sourceIssue.title, body: sourceIssue.body, state: "closed",
+          state_reason: "completed", labels: sourceIssue.labels, updated_at: sourceIssue.updatedAt,
+        },
+      }));
+      const secret = "delivery-world-secret";
+      const previous = process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
+      // The driver stubs the reconciler; the retry the webhook triggers needs the real one to read the source back.
+      const stub = Object.getOwnPropertyDescriptor(service, "reconcileRepository");
+      if (stub) delete (service as unknown as Record<string, unknown>).reconcileRepository;
+      process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = secret;
+      try {
+        const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+        await service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": "close-1", "x-github-event": "issues" }));
+        await service.webhooksSettled();
+      } finally {
+        if (stub) Object.defineProperty(service, "reconcileRepository", stub);
+        if (previous === undefined) delete process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET;
+        else process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = previous;
+      }
     },
     async close() { await service.close(); await rm(root, { recursive: true, force: true }); },
   };
