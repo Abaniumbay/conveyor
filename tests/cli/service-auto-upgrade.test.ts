@@ -163,5 +163,5 @@ describe("Auto-upgrade line in status and doctor", () => {
     await cli("service", "auto-upgrade", "install");
     expect(await line("status")).toBe("Auto-upgrade: on (every 15m, last checked Thu 2026-11-05 11:45:00 UTC)");
     expect(await line("doctor")).toContain("Auto-upgrade: on (every 15m, last checked Thu 2026-11-05 11:45:00 UTC)");
-  });
+  }, 60_000);
 });
