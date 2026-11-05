@@ -383,9 +383,9 @@ function requireSystemd(): void {
   if (!systemd.available()) throw new CliError("auto-upgrade needs systemd, which this platform does not run: use conveyor upgrade yourself", EXIT.failure);
 }
 
-export function renderAutoUpgradeService(options: { account: Account; home: string; executable: string; drainTimeout: string }): string {
+export function renderAutoUpgradeService(options: { account: Account; home: string; config?: string | null; executable: string; drainTimeout: string }): string {
   const { account, home } = options;
-  const argv = [options.executable, "upgrade", "--latest", "--if-newer", "--no-wait", "--drain-timeout", options.drainTimeout, "--home", home];
+  const argv = [options.executable, "upgrade", "--latest", "--if-newer", "--no-wait", "--drain-timeout", options.drainTimeout, "--home", home, ...(options.config ? ["--config", options.config] : [])];
   return `# Written by conveyor service auto-upgrade install. Reinstall rather than editing by hand.
 [Unit]
 Description=Conveyor auto-upgrade (${home})
@@ -480,7 +480,7 @@ export const serviceAutoUpgradeInstall: Command = {
     if (!prefix) throw new CliError("run service auto-upgrade install with the installed conveyor (<prefix>/versions/<version>/conveyor), not from a checkout", EXIT.usage);
     const executable = path.join(prefix, "current/conveyor");
     const files = autoUpgradeFiles(unit);
-    await writeFile(files.service, renderAutoUpgradeService({ account, home: installed.home, executable, drainTimeout }), { mode: 0o644 });
+    await writeFile(files.service, renderAutoUpgradeService({ account, home: installed.home, config: installed.config, executable, drainTimeout }), { mode: 0o644 });
     await writeFile(files.timer, renderAutoUpgradeTimer({ home: installed.home, every }), { mode: 0o644 });
     await chmod(files.service, 0o644);
     await chmod(files.timer, 0o644);

@@ -67,12 +67,13 @@ describe("conveyor service auto-upgrade install", () => {
     expect(service).toBe(renderAutoUpgradeService({
       account: { name: "conveyor", uid: process.getuid!(), gid: process.getuid!(), group: "conveyor", home: accountHome },
       home,
+      config: `${home}/config/conveyor.yaml`,
       executable: `${prefix}/current/conveyor`,
       drainTimeout: "2h",
     }));
     expect(service).toContain("Type=oneshot\nUser=conveyor\nGroup=conveyor\n");
     expect(service).toContain(`Environment=HOME=${accountHome}\nEnvironment=CONVEYOR_HOME=${home}\nEnvironment=TMPDIR=${home}/tmp\n`);
-    expect(service).toContain(`ExecStart=${prefix}/current/conveyor upgrade --latest --if-newer --no-wait --drain-timeout 2h --home ${home}\n`);
+    expect(service).toContain(`ExecStart=${prefix}/current/conveyor upgrade --latest --if-newer --no-wait --drain-timeout 2h --home ${home} --config ${home}/config/conveyor.yaml\n`);
     const timer = await readFile(path.join(units, "conveyor-auto-upgrade.timer"), "utf8");
     expect(timer).toBe(renderAutoUpgradeTimer({ home, every: "15m" }));
     expect(timer).toContain("OnBootSec=5min\nOnUnitActiveSec=15m\nRandomizedDelaySec=60\nPersistent=true\n");
