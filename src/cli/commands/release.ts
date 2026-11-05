@@ -13,7 +13,7 @@ import {
 import {
   backupState, planRollback, readReleaseState, restoreAndSwitch, RollbackRefused, updateRecord, writeReleaseState, type PendingSwitch, type SwitchRecord,
 } from "../../release/state";
-import { compareVersions } from "../../release/semver";
+import { compareVersions, parseVersion } from "../../release/semver";
 import { CliError, EXIT, parseDuration } from "../args";
 import { loadCommandConfig, printJson, stringOption, type Command, type CommandContext } from "../command";
 import { control, ServiceUnavailable } from "../control-client";
@@ -154,6 +154,8 @@ export const upgrade: Command = {
   summary: "download, verify and switch to another release, draining running work first",
   options: {
     version: { type: "string", value: "<vX.Y.Z>", description: "the release to install (default: the latest)" },
+    latest: { type: "boolean", description: "install the latest stable release (the default; needed with --if-newer)" },
+    "if-newer": { type: "boolean", description: "with --latest, do nothing unless the latest stable release is newer than the one running" },
     archive: { type: "string", value: "<file>", description: "install this release archive instead of downloading it (needs --checksums)" },
     checksums: { type: "string", value: "<file>", description: "the release's checksums.txt, for --archive" },
     ...SWITCH_OPTIONS,
@@ -173,7 +175,24 @@ export const upgrade: Command = {
     const drainTimeoutMs = timeout(context, "drain-timeout", "30m");
     const waitTimeoutMs = timeout(context, "wait-timeout", "5m");
 
-    const downloaded = archive ? null : await downloadRelease(releaseTag(stringOption(context, "version") ?? await latestTag()));
+    const ifNewer = Boolean(context.options["if-newer"]);
+    if (ifNewer && !context.options.latest) throw new CliError("--if-newer needs --latest", EXIT.usage);
+    if (context.options.latest && (archive || stringOption(context, "version"))) throw new CliError("--latest cannot be combined with --version or --archive", EXIT.usage);
+
+    const service = await serviceStatus(context);
+    const current = service?.version.version ?? (await currentVersion(prefix));
+    let tag = stringOption(context, "version");
+    if (!archive && !tag) {
+      tag = await latestTag();
+      if (ifNewer) {
+        const latest = releaseTag(tag).slice(1);
+        const stable = parseVersion(latest)?.[3] === null;
+        if (!stable) return context.out(`The latest release ${latest} is not a stable release; nothing to upgrade.`);
+        if (current && compareVersions(latest, current) <= 0) return context.out(`${current} is already the latest release; nothing to upgrade.`);
+      }
+    }
+
+    const downloaded = archive ? null : await downloadRelease(releaseTag(tag!));
     let staged;
     try {
       staged = await stageRelease(archive ? { archive, checksums: checksums! } : downloaded!, prefix);
@@ -190,8 +209,6 @@ export const upgrade: Command = {
     const [checkErrors, checkCode] = await Promise.all([new Response(check.stderr).text(), check.exited]);
     if (checkCode !== 0) throw new CliError(`the configuration does not validate with ${staged.version}; nothing was switched:\n${checkErrors.trim()}`, EXIT.config);
 
-    const service = await serviceStatus(context);
-    const current = service?.version.version ?? (await currentVersion(prefix));
     if (current && compareVersions(staged.version, current) <= 0) {
       if (staged.version === current) return context.out(`${staged.version} is already ${service ? "running" : "current"}.`);
       // An older release may not run on a database the current one migrated: going back is a rollback.
