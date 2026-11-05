@@ -120,6 +120,7 @@ The selected --unit (default: conveyor) records its home. --home takes precedenc
 | `--unit <name>` | the systemd unit name (default: conveyor) |
 | `--drain` | stop admitting work and wait for running work to finish first |
 | `--timeout <duration>` | how long --drain waits (default 30m); then it gives up and admits work again |
+| `--reason <text>` | with --drain: why, shown in the dashboard's drain notice and in conveyor status (default: service stop or restart; at most 500 characters) |
 | `--force` | with --drain: go ahead when the timeout passes (running work is interrupted and resumes after the next start) |
 
 ### `conveyor service restart`
@@ -133,6 +134,7 @@ The selected --unit (default: conveyor) records its home. --home takes precedenc
 | `--unit <name>` | the systemd unit name (default: conveyor) |
 | `--drain` | stop admitting work and wait for running work to finish first |
 | `--timeout <duration>` | how long --drain waits (default 30m); then it gives up and admits work again |
+| `--reason <text>` | with --drain: why, shown in the dashboard's drain notice and in conveyor status (default: service stop or restart; at most 500 characters) |
 | `--force` | with --drain: go ahead when the timeout passes (running work is interrupted and resumes after the next start) |
 
 ### `conveyor service status`

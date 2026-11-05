@@ -187,6 +187,7 @@ CLIs are not in `~/.local/bin`, `~/.bun/bin` or the system directories, pass `--
 | `sudo conveyor service start` | Starts the service and waits until it answers. |
 | `sudo conveyor service stop --drain` | Stops admitting work, waits for running work (`--timeout`, default 30m), then stops. Without `--drain`, running agent work is interrupted and resumes after the next start. |
 | `conveyor service restart --drain` | Drains, then the service exits and systemd starts it again. Needs no `sudo`. |
+| `conveyor service restart --drain --reason "apply config change"` | Same, and the text (at most 500 characters; also accepted by `service stop --drain`) is the reason the dashboard's drain notice and `conveyor status` show instead of "service stop or restart". |
 | `conveyor service status` | The unit's state and the running service. |
 | `sudo conveyor service uninstall` | Removes the unit. The home and installed releases are kept; delete them yourself only if you no longer need them. |
 

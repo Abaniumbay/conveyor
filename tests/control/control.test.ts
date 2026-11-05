@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { ConveyorService } from "../../src/app/service";
 import { EXIT } from "../../src/cli/args";
+import { systemd } from "../../src/cli/commands/service";
 import { runCli } from "../../src/cli/main";
 import type { ConveyorConfig } from "../../src/config/load";
 import { createControlHandler, serveControlSocket } from "../../src/control/server";
@@ -757,5 +758,19 @@ describe("operating through the CLI", () => {
     expect(restart.status).toBe(409);
     expect(await (await fetch("http://x/v1/drain", { unix: socket, method: "DELETE" })).json()).toEqual({ resumed: true });
     expect(service.draining()).toBeNull();
+  });
+
+  test("a drained service stop stores the CLI's --reason, which status shows", async () => {
+    const original = { ...systemd };
+    cleanups.push(() => { Object.assign(systemd, original); });
+    const { cli, home, service } = await running();
+    expect(service.resumeAdmission()).toBe(true);
+    systemd.unitDirectory = path.join(home, "no-units");
+    systemd.isRoot = () => true;
+    systemd.systemctl = async () => ({ code: 0, stdout: "", stderr: "" });
+
+    expect((await cli("service", "stop", "--drain", "--reason", "apply config change: runners 10")).code).toBe(EXIT.ok);
+    expect(service.draining()).toMatchObject({ reason: "apply config change: runners 10" });
+    expect((await cli("status")).out).toContain("(apply config change: runners 10)");
   });
 });
