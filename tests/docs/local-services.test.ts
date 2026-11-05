@@ -41,3 +41,14 @@ test("SPEC and operations guide name the Codex confinement layer for each launch
   expect(operations).toContain("Effective Codex confinement");
   expect(operations).toContain("Conveyor's wrapper is the only filesystem and network");
 });
+
+test("operations guide describes opt-in auto-upgrade and no longer says there is none", async () => {
+  const operations = await readFile(path.join(import.meta.dir, "../../docs/operations.md"), "utf8");
+
+  expect(operations.toLowerCase()).not.toContain("no automatic upgrade");
+  expect(operations).toContain("conveyor service auto-upgrade install");
+  expect(operations).toContain("conveyor upgrade --latest --if-newer --no-wait");
+  expect(operations).toContain("service auto-upgrade uninstall");
+  expect(operations).toContain("minor ones included");
+  expect(operations).toContain("cannot load your configuration, the switch stops");
+});
