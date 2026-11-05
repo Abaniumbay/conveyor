@@ -179,8 +179,8 @@ export const upgrade: Command = {
     if (ifNewer && !context.options.latest) throw new CliError("--if-newer needs --latest", EXIT.usage);
     if (context.options.latest && (archive || stringOption(context, "version"))) throw new CliError("--latest cannot be combined with --version or --archive", EXIT.usage);
 
-    const service = await serviceStatus(context);
-    const current = service?.version.version ?? (await currentVersion(prefix));
+    const early = await serviceStatus(context);
+    const earlyCurrent = early?.version.version ?? (await currentVersion(prefix));
     let tag = stringOption(context, "version");
     if (!archive && !tag) {
       tag = await latestTag();
@@ -188,7 +188,7 @@ export const upgrade: Command = {
         const latest = releaseTag(tag).slice(1);
         const stable = parseVersion(latest)?.[3] === null;
         if (!stable) return context.out(`The latest release ${latest} is not a stable release; nothing to upgrade.`);
-        if (current && compareVersions(latest, current) <= 0) return context.out(`${current} is already the latest release; nothing to upgrade.`);
+        if (earlyCurrent && compareVersions(latest, earlyCurrent) <= 0) return context.out(`${earlyCurrent} is already the latest release; nothing to upgrade.`);
       }
     }
 
@@ -209,6 +209,9 @@ export const upgrade: Command = {
     const [checkErrors, checkCode] = await Promise.all([new Response(check.stderr).text(), check.exited]);
     if (checkCode !== 0) throw new CliError(`the configuration does not validate with ${staged.version}; nothing was switched:\n${checkErrors.trim()}`, EXIT.config);
 
+    // The service may have started or stopped while staging: decide the switch path from its state now.
+    const service = await serviceStatus(context);
+    const current = service?.version.version ?? (await currentVersion(prefix));
     if (current && compareVersions(staged.version, current) <= 0) {
       if (staged.version === current) return context.out(`${staged.version} is already ${service ? "running" : "current"}.`);
       // An older release may not run on a database the current one migrated: going back is a rollback.
