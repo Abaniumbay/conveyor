@@ -263,6 +263,8 @@ Steps: verify the archive's checksum, install it beside the current release, val
 | Option | Description |
 | --- | --- |
 | `--version <vX.Y.Z>` | the release to install (default: the latest) |
+| `--latest` | install the latest stable release (the default; needed with --if-newer) |
+| `--if-newer` | with --latest, do nothing unless the latest stable release is newer than the one running |
 | `--archive <file>` | install this release archive instead of downloading it (needs --checksums) |
 | `--checksums <file>` | the release's checksums.txt, for --archive |
 | `--prefix <dir>` | the install prefix (default: the one this conveyor runs from) |

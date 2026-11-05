@@ -616,3 +616,79 @@ describe("conveyor upgrade and rollback with the service stopped", () => {
     reopened.close();
   });
 });
+
+describe("conveyor upgrade --latest --if-newer", () => {
+  async function run(home: string, ...argv: string[]) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli([...argv, "--home", home], { out: (text) => { out.push(text); }, err: (text) => { err.push(text); }, environment: {}, interactive: false });
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  }
+
+  /** A running service on 1.0.0 that records scheduled switches, and a GitHub stub serving `latest` as a release. */
+  async function world(latest: string) {
+    const root = await temporary();
+    const prefix = await prefixWith(root, "1.0.0");
+    const home = path.join(root, "home");
+    await mkdir(homePaths(home).run, { recursive: true });
+    const release = await fakeRelease(root, latest.replace(/^v/, ""));
+    const scheduled: unknown[] = [];
+    const server = await serveControlSocket(homePaths(home).controlSocket, async (request) => {
+      if (request.method === "POST") {
+        const body = (await request.json()) as { version: string };
+        scheduled.push(body);
+        return Response.json({ pending: { id: "p", kind: "upgrade", version: body.version, from: "1.0.0", prefix, restoreBackup: null, requestedAt: "t", drainDeadline: "later" } });
+      }
+      return Response.json({ version: { version: "1.0.0" }, ready: true, startedAt: "t" });
+    });
+    const requested: string[] = [];
+    const realFetch = globalThis.fetch;
+    const fetchStub = spyOn(globalThis, "fetch").mockImplementation((async (input: Request | string | URL, init?: RequestInit & { unix?: string }) => {
+      if (init?.unix) return realFetch(input, init);
+      const url = String(input);
+      requested.push(url);
+      if (url.endsWith("/releases/latest")) return Response.json({ tag_name: latest });
+      if (url.endsWith("checksums.txt")) return new Response(await readFile(release.checksums));
+      if (url.endsWith(".tar.gz")) return new Response(await readFile(release.archive));
+      return new Response("unexpected", { status: 404 });
+    }) as unknown as typeof fetch);
+    return { home, prefix, scheduled, requested, close: async () => { fetchStub.mockRestore(); await server.stop(); } };
+  }
+
+  test("a newer stable latest release schedules the drained switch", async () => {
+    const w = await world("v1.1.0");
+    try {
+      const result = await run(w.home, "upgrade", "--latest", "--if-newer", "--no-wait", "--prefix", w.prefix);
+      expect(result.code).toBe(0);
+      expect(w.scheduled).toMatchObject([{ kind: "upgrade", version: "1.1.0", prefix: w.prefix }]);
+      expect(result.out).toContain("Scheduled the upgrade from 1.0.0 to 1.1.0");
+    } finally {
+      await w.close();
+    }
+  });
+
+  test("a latest release that is not newer schedules nothing and downloads nothing", async () => {
+    const w = await world("v1.0.0");
+    try {
+      const result = await run(w.home, "upgrade", "--latest", "--if-newer", "--no-wait", "--prefix", w.prefix);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain("already the latest");
+      expect(w.scheduled).toEqual([]);
+      expect(w.requested.filter((url) => url.includes("/download/"))).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  test("a prerelease latest tag is not switched to, and --if-newer needs --latest", async () => {
+    const w = await world("v2.0.0-rc.1");
+    try {
+      const result = await run(w.home, "upgrade", "--latest", "--if-newer", "--no-wait", "--prefix", w.prefix);
+      expect(result.out).toContain("not a stable release");
+      expect(w.scheduled).toEqual([]);
+      expect((await run(w.home, "upgrade", "--if-newer", "--prefix", w.prefix)).code).toBe(EXIT.usage);
+    } finally {
+      await w.close();
+    }
+  });
+});
