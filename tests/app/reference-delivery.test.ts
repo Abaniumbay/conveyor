@@ -104,3 +104,54 @@ test("a repository pause after opening a change fences CI dispatch until resume"
   expect(w.ci.starts).toBeGreaterThan(0);
   expect(w.store.getStageState("issue")?.status).toBe("done");
 });
+
+test("an item whose issue closed after the merge finishes without ever stopping", async () => {
+  world = await deliveryWorld();
+  const w = world;
+  await w.drive();
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+  expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toEqual([]);
+  expect(w.labelWrites.flat().some((label) => label === "conveyor:needs-intervention")).toBe(false);
+});
+
+test("an issue GitHub left open waits through the grace period, then stops the item with an exact reason", async () => {
+  world = await deliveryWorld({ githubClosesIssue: false });
+  const w = world;
+  await expect(w.drive(25)).rejects.toThrow("did not finish");
+  // Within the grace period after the merge the cleanup gate is pending and the item needs nothing from the owner.
+  expect(w.store.getStageState("issue")).toMatchObject({ stageId: "cleanup" });
+  expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toEqual([]);
+  expect(w.labelWrites.flat()).not.toContain("conveyor:needs-intervention");
+
+  w.store.sqlite().query("UPDATE pull_requests SET merged_at = ?").run("2026-01-01T00:00:00.000Z");
+  await expect(w.drive(25)).rejects.toThrow("did not finish");
+  const stopped = w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped");
+  expect(stopped.find((transition) => transition.reason?.includes("GitHub did not close"))?.reason).toBe("Change #5 merged, but GitHub did not close issue #1. Conveyor never closes the issue itself: close the issue as completed, or reopen the work.");
+  expect(w.labelWrites.some((labels) => labels.includes("conveyor:needs-intervention"))).toBe(true);
+});
+
+test("an issue closed after the owner was asked resumes cleanup, finishes the item and clears the reason", async () => {
+  world = await deliveryWorld({ githubClosesIssue: false });
+  const w = world;
+  await expect(w.drive(25)).rejects.toThrow("did not finish");
+  w.store.sqlite().query("UPDATE pull_requests SET merged_at = ?").run("2026-01-01T00:00:00.000Z");
+  await expect(w.drive(1)).rejects.toThrow("did not finish");
+  const stoppedBefore = w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped").length;
+  expect(stoppedBefore).toBeGreaterThan(0);
+  // The reconciler projects the stop from the written needs-intervention label; the driver only does so for done/ready.
+  expect(w.labelWrites.some((labels) => labels.includes("conveyor:needs-intervention"))).toBe(true);
+  const stopped = w.store.getIssue("issue")!;
+  w.store.upsertIssue({ ...stopped, labels: ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"], sourceUpdatedAt: new Date().toISOString() });
+  w.store.setIssueProjection("issue", { stage: "cleanup", state: "needs-intervention", warning: null });
+  expect(w.service.dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(true);
+
+  await w.closeIssueOnGitHub();
+  await w.drive(25);
+
+  expect(w.store.getStageState("issue")?.status).toBe("done");
+  // The cleanup stage wrote the done label and no stop label with it.
+  expect(w.labelWrites.at(-1)).toContain("conveyor:done");
+  expect(w.labelWrites.at(-1)).not.toContain("conveyor:needs-intervention");
+  expect(w.service.dashboard("csrf").needsYou.some((card) => card.number === 1)).toBe(false);
+  expect(w.store.listStageTransitions("issue").filter((transition) => transition.kind === "stopped")).toHaveLength(stoppedBefore);
+});

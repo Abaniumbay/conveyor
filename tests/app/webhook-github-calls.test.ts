@@ -19,11 +19,11 @@ afterEach(async () => {
 
 const LABELS = {
   enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
-  states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+  states: { done: "conveyor:done", blocked: "conveyor:blocked", "needs-intervention": "conveyor:needs-intervention" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
 };
 
 /** One repository with one enrolled issue, and a GitHub fake that records what Conveyor reads and writes. */
-async function service(options: { second?: boolean; pipeline?: "merge-action" | "multiple-boundaries" | "wait-only" } = {}) {
+async function service(options: { second?: boolean; pipeline?: "merge-action" | "multiple-boundaries" | "wait-only" | "issue-closed" } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-webhook-calls-"));
   directories.push(root);
   log.configure({ sinks: [] });
@@ -43,6 +43,8 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
           { id: "merge", actions: [{ id: "mergeChange", task: "change.merge" }], exitGate: [], concurrency: 1 },
           { id: "deploy", actions: [], exitGate: [], concurrency: 1 },
         ]
+        : options.pipeline === "issue-closed"
+          ? [{ id: "cleanup", actions: [], exitGate: [{ id: "issueClosed", task: "item.issueClosed" }], concurrency: 1 }]
         : options.pipeline === "wait-only"
           ? [
             { id: "review", actions: [], exitGate: [], concurrency: 1 },
@@ -70,7 +72,7 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
   };
   const second = { ...issue, id: "github:owner/repo#2", number: 2, url: "https://github.com/owner/repo/issues/2", title: "Two" };
   const issues = options.second ? [issue, second] : [issue];
-  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], changeReads: [] as string[], labelWrites: [] as Array<{ issue: number; labels: string[] }>, subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }> };
+  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], changeReads: [] as string[], labelWrites: [] as Array<{ issue: number; labels: string[] }>, subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }>, statusMarkdown: [] as string[] };
   let listingGate: Promise<void> | null = null;
   let omitFromPartialListing = false;
   const rejectedFetches = new Set<number>();
@@ -94,7 +96,8 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
     },
     async listSubIssues(_address: string, issueNumber: number) { calls.subIssues += 1; calls.relationshipReads.push(issueNumber); return []; },
     async listDependencies() { calls.dependencies += 1; return []; },
-    async upsertStatusComment(_address: string, issueNumber: number, _markdown: string, known?: number) {
+    async upsertStatusComment(_address: string, issueNumber: number, markdown: string, known?: number) {
+      calls.statusMarkdown.push(markdown);
       calls.statusWrites.push({ issue: issueNumber, known });
       return 42;
     },
@@ -436,6 +439,70 @@ describe("GitHub calls made for webhook deliveries", () => {
     expect(calls.fetched).toEqual([]);
     expect(calls.labelWrites).toEqual([]);
     expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "work", projectedState: "done", warning: null });
+    store.close();
+  });
+
+  test("an item stopped because GitHub left its issue open resumes its stage when the issue is closed", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "issue-closed" });
+    issue.labels = ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({ issueId: issue.id, id: "github:owner/repo#pr-23", number: 23, url: "https://example.com/changes/23", state: "merged", mergedAt: "2026-10-07T20:00:00Z" });
+    store.beginStageTransition({ id: "stopped", issueId: issue.id, fromStage: "cleanup", toStage: "cleanup", kind: "stopped", sourceMutationId: null, detail: {
+      reason: "Change #23 merged, but GitHub did not close issue #1. Conveyor never closes the issue itself: close the issue as completed, or reopen the work.", requiredFixes: [], resultStatus: null,
+    } });
+    store.completeStageTransition("stopped");
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "cleanup", projectedState: "needs-intervention" });
+
+    issue.state = "closed";
+    issue.stateReason = "completed";
+    issue.updatedAt = "2026-10-07T22:00:00Z";
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+
+    // The stage is requeued by removing the stopped label (the fake GitHub keeps its labels); no close request exists on the adapter.
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:cleanup"] }]);
+    store.close();
+  });
+
+  test("the status comment of an item stopped for an open issue states the reason", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "issue-closed" });
+    issue.labels = ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({ issueId: issue.id, id: "github:owner/repo#pr-23", number: 23, url: "https://example.com/changes/23", state: "merged", mergedAt: "2026-10-07T20:00:00Z" });
+    store.beginStageTransition({ id: "stopped", issueId: issue.id, fromStage: "cleanup", toStage: "cleanup", kind: "stopped", sourceMutationId: null, detail: {
+      reason: "Change #23 merged, but GitHub did not close issue #1. Conveyor never closes the issue itself: close the issue as completed, or reopen the work.", requiredFixes: [], resultStatus: null,
+    } });
+    store.completeStageTransition("stopped");
+    await deliver("pull_request_review_comment", { action: "created", pull_request: { number: 23 }, comment: { id: 9, body: "hello" } });
+    await deliver("issue_comment", { action: "created", issue: { number: 1 }, comment: { id: 43, body: "Is this shipped?" } });
+    await conveyor.webhooksSettled();
+    expect(calls.statusMarkdown.at(-1)).toContain("Blocker: Change #23 merged, but GitHub did not close issue #1.");
+    expect(calls.statusMarkdown.at(-1)).toContain("close the issue as completed, or reopen the work");
+    store.close();
+  });
+
+  test("an item stopped for another reason is not resumed when its issue closes", async () => {
+    const { conveyor, store, calls, deliver, issue } = await service({ pipeline: "issue-closed" });
+    issue.labels = ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({ issueId: issue.id, id: "github:owner/repo#pr-23", number: 23, url: "https://example.com/changes/23", state: "merged", mergedAt: "2026-10-07T20:00:00Z" });
+    store.beginStageTransition({ id: "stopped", issueId: issue.id, fromStage: "cleanup", toStage: "cleanup", kind: "stopped", sourceMutationId: null, detail: { reason: "Workspace /w still exists", requiredFixes: [], resultStatus: null } });
+    store.completeStageTransition("stopped");
+    issue.state = "closed";
+    issue.stateReason = "completed";
+    issue.updatedAt = "2026-10-07T22:00:00Z";
+    await deliver("issues", { action: "closed", issue: {
+      id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,
+      state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
+    }, sender: { login: "maintainer" } });
+    await conveyor.webhooksSettled();
+    expect(calls.labelWrites.filter((write) => write.labels.includes("conveyor:cleanup") && !write.labels.includes("conveyor:needs-intervention"))).toEqual([]);
     store.close();
   });
 

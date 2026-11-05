@@ -133,3 +133,4 @@ delivery:
         - { id: removeWorkspace, task: workspace.cleanup }
       exit-gate:
         - { id: removed, task: workspace.removed, onFail: { stop: needs-intervention } }
+        - { id: issueClosed, task: item.issueClosed, onFail: { stop: needs-intervention } }

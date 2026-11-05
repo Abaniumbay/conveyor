@@ -55,6 +55,8 @@ export interface ItemContext {
   /** `address` is the blocker's repository; absent in snapshots stored before it was recorded. */
   dependencies: Array<{ id: string; number: number; satisfied: boolean; address?: string }>;
   systemLabels: string[];
+  /** The recorded merge of the item's current change; present only once it merged. `observedAt` is when this snapshot was loaded. */
+  merge?: { changeNumber: number; mergedAt: string; observedAt: string };
   /** Present only when the item carries the configured metadata label that prevents decomposition. */
   noSplit?: {
     label: string;

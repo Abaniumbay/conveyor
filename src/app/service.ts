@@ -51,7 +51,7 @@ import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
-import { criteriaOf } from "../tasks/item";
+import { criteriaOf, ISSUE_LEFT_OPEN_MARKER } from "../tasks/item";
 import { CriterionApprovals, isCriterionApprovedAt } from "../engine/review-records";
 import { compilePipeline } from "../tasks/plan";
 import { cliGit } from "../workspace/git";
@@ -1214,6 +1214,15 @@ export class ConveyorService {
     }
   }
 
+  /** Whether the item stopped because its change merged and GitHub left the issue open (the `item.issueClosed` gate). */
+  private stoppedForIssueLeftOpen(repositoryId: string, issue: StoredIssue): boolean {
+    if (issue.projectedState !== "needs-intervention" || !issue.projectedStage) return false;
+    const repository = this.config.repositories[repositoryId];
+    const stage = repository && this.config.pipelines[repository.pipeline]?.stages.find((candidate) => candidate.id === issue.projectedStage);
+    if (!stage || !isNativeStage(stage) || !stage.exitGate.some((gate) => gate.task === "item.issueClosed")) return false;
+    return latestStopReason(this.store, issue.id)?.includes(ISSUE_LEFT_OPEN_MARKER) ?? false;
+  }
+
   /** Resolve one closed source item without treating a failed read as evidence of closure or merge. */
   private async recoverClosedItem(
     repositoryId: string,
@@ -1231,6 +1240,15 @@ export class ConveyorService {
       return;
     }
     if (sourceIssue.state !== "closed") return;
+    if (this.stoppedForIssueLeftOpen(repositoryId, issue)) {
+      // The owner (or a late auto-close) closed the issue this item was waiting on: finish the stage.
+      try {
+        await this.retryIssue(issue.id, "", "Conveyor", true);
+      } catch (error) {
+        log.warn("Could not resume an item whose issue closed after the merge", this.itemFields(issue.id), error);
+      }
+      return;
+    }
 
     const current = this.store.getCurrentPullRequest(issue.id);
     if (current) {
@@ -4450,11 +4468,14 @@ export class ConveyorService {
     }
     const acceptanceCriteria = this.criterionApprovalStates(issue).map(({ text, approved }) => ({ text, passed: approved }));
     const status = this.currentIssueStatus(issue);
+    // A stopped item says why on its issue: the recorded stop reason, so the owner knows what to do.
+    const blocker = status || !STOPPED_ISSUE_STATES.has(issue.projectedState ?? "") ? null : latestStopReason(this.store, issue.id);
     const markdown = renderStatusComment({
       issue: { number: issue.sourceNumber, title: issue.title, state: issue.sourceState },
       stage: issue.projectedStage ?? "unassigned",
       state: issue.projectedState ?? "unknown",
       ...(status ? { status: this.statusCommentText(status) } : {}),
+      ...(blocker ? { blocker } : {}),
       ...(stageState
         ? { activity: `${stageState.stageId} · ${stageState.status}` }
         : {}),
