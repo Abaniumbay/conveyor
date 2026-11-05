@@ -140,15 +140,30 @@ const UNIT_HOME_DETAILS = "The selected --unit (default: conveyor) records its h
 const DRAIN_OPTIONS = {
   drain: { type: "boolean", description: "stop admitting work and wait for running work to finish first" },
   timeout: { type: "string", value: "<duration>", description: "how long --drain waits (default 30m); then it gives up and admits work again" },
+  reason: { type: "string", value: "<text>", description: "with --drain: why, shown in the dashboard's drain notice and in conveyor status (default: service stop or restart; at most 500 characters)" },
   force: { type: "boolean", description: "with --drain: go ahead when the timeout passes (running work is interrupted and resumes after the next start)" },
 } as const;
 
 interface ControlStatus { active: Array<{ item: string; stage: string }>; steering: number; startedAt: string; ready: boolean; version: { version: string } }
 
+const DRAIN_REASON_LIMIT = 500;
+const DEFAULT_DRAIN_REASON = "service stop or restart";
+
+/** The drain reason to send, (default when none is given); rejects a misplaced, blank or too long --reason before anything changes. */
+function drainReason(context: CommandContext): string {
+  const given = stringOption(context, "reason");
+  if (given === undefined) return DEFAULT_DRAIN_REASON;
+  if (!context.options.drain) throw new CliError("--reason labels a drain: add --drain", EXIT.usage);
+  const reason = given.trim();
+  if (!reason) throw new CliError("--reason must not be blank", EXIT.usage);
+  if (reason.length > DRAIN_REASON_LIMIT) throw new CliError(`--reason must be at most ${DRAIN_REASON_LIMIT} characters (got ${reason.length})`, EXIT.usage);
+  return reason;
+}
+
 /** Drains the running service; resolves once idle, or (after `timeout`) throws unless `force`. */
-async function drained(context: CommandContext): Promise<void> {
+async function drained(context: CommandContext, reason: string): Promise<void> {
   const timeoutMs = parseDuration(stringOption(context, "timeout") ?? "30m", "--timeout");
-  await control(context, "POST", "/v1/drain", { reason: "service stop or restart" });
+  await control(context, "POST", "/v1/drain", { reason });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const status = await control<ControlStatus>(context, "GET", "/v1/status");
@@ -247,12 +262,13 @@ export const serviceStop: Command = {
   options: { ...UNIT_OPTION, ...DRAIN_OPTIONS },
   async run(rawContext) {
     const unit = unitName(rawContext);
+    const reason = drainReason(rawContext);
     const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     if (!context.options.drain) {
       await systemctl("stop", `${unit}.service`);
       return context.out(`Stopped ${unit}.`);
     }
-    await drained(context);
+    await drained(context, reason);
     await systemctl("stop", `${unit}.service`).catch(async (error: unknown) => {
       // The service keeps running: let it admit work again rather than leave it drained.
       await control(context, "DELETE", "/v1/drain").catch(() => {});
@@ -269,6 +285,7 @@ export const serviceRestart: Command = {
   options: { ...UNIT_OPTION, ...DRAIN_OPTIONS },
   async run(rawContext) {
     const unit = unitName(rawContext);
+    const reason = drainReason(rawContext);
     const context = await withUnitHome(rawContext, unit, { matchExplicitHome: true });
     if (!context.options.drain) {
       await systemctl("restart", `${unit}.service`);
@@ -276,7 +293,7 @@ export const serviceRestart: Command = {
       return context.out(`Restarted ${unit} at ${context.paths.home}: ${status.version.version}.`);
     }
     const before = await control<ControlStatus>(context, "GET", "/v1/status");
-    await drained(context);
+    await drained(context, reason);
     // --force: drained() went ahead after its timeout, so the restart interrupts what still runs.
     await control(context, "POST", "/v1/restart", { force: context.options.force === true }).catch(async (error: unknown) => {
       await control(context, "DELETE", "/v1/drain").catch(() => {});

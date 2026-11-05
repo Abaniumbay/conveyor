@@ -63,14 +63,18 @@ async function cliWithEnvironment(environment: NodeJS.ProcessEnv, ...argv: strin
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
+const reasons: string[] = [];
+
 /** A stand-in for the running service's control socket; like the real one, it refuses an unforced restart while work runs. */
 function controlServer(home: string, state: { active: Array<{ item: string; stage: string }>; startedAt: string; refuseRestart?: boolean }) {
   const requests: string[] = [];
+  reasons.length = 0;
   const server = Bun.serve({
     unix: path.join(home, "run/control.sock"),
     async fetch(request) {
       const route = `${request.method} ${new URL(request.url).pathname}`;
       requests.push(route);
+      if (route === "POST /v1/drain") reasons.push(((await request.clone().json()) as { reason?: string }).reason ?? "");
       if (route === "GET /v1/status") return Response.json({ active: state.active, steering: 0, startedAt: state.startedAt, ready: true, version: { version: "1.0.0" } });
       if (route === "POST /v1/restart") {
         const force = ((await request.json()) as { force?: boolean }).force === true;
@@ -355,5 +359,49 @@ describe("service lifecycle", () => {
     expect(await stat(path.join(units, "conveyor.service")).catch(() => null)).toBeNull();
     expect((await stat(home)).isDirectory()).toBe(true);
     expect(removed.out).toContain(`configuration, credentials and state: ${home}`);
+  });
+});
+
+describe("service --reason", () => {
+  async function drainable() {
+    const { home } = await machine();
+    await cli("service", "install", "--account", "conveyor");
+    calls = [];
+    systemd.isRoot = () => false;
+    await mkdir(path.join(home, "run"), { recursive: true });
+    return controlServer(home, { active: [], startedAt: "before" });
+  }
+
+  test("restart and stop post the given reason; without it the default", async () => {
+    const requests = await drainable();
+    expect((await cli("service", "restart", "--drain", "--reason", "apply config change: runners 10")).code).toBe(0);
+    expect(reasons).toEqual(["apply config change: runners 10"]);
+    systemd.isRoot = () => true;
+    expect((await cli("service", "stop", "--drain", "--reason", "maintenance")).code).toBe(0);
+    expect(reasons.at(-1)).toBe("maintenance");
+    await cli("service", "stop", "--drain");
+    expect(reasons.at(-1)).toBe("service stop or restart");
+    expect(reasons).toEqual(["apply config change: runners 10", "maintenance", "service stop or restart"]);
+    expect(requests.length).toBeGreaterThan(0);
+  });
+
+  test("restart --drain without --reason posts the default reason", async () => {
+    await drainable();
+    expect((await cli("service", "restart", "--drain")).code).toBe(0);
+    expect(reasons).toEqual(["service stop or restart"]);
+  });
+
+  test("a blank, too long or drain-less reason is rejected before anything happens; 500 characters is fine", async () => {
+    const requests = await drainable();
+    for (const argv of [["restart", "--drain", "--reason", "   "], ["stop", "--drain", "--reason", ""], ["restart", "--drain", "--reason", "x".repeat(501)], ["stop", "--reason", "why"], ["restart", "--reason", "why"]]) {
+      const result = await cli("service", ...argv);
+      expect(result.code).not.toBe(0);
+      expect(result.err).toContain("--reason");
+    }
+    expect(requests).toEqual([]);
+    expect(calls).toEqual([]);
+    const accepted = await cli("service", "restart", "--drain", "--reason", "x".repeat(500));
+    expect(accepted.code).toBe(0);
+    expect(reasons).toEqual(["x".repeat(500)]);
   });
 });
