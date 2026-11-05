@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { classifyUpstreamError } from "../tasks/upstream-error";
+
 // The git operations workspace tasks need, behind an interface so tests use a fake.
 
 export interface GitOps {
@@ -100,8 +102,13 @@ export async function ensureGitExcludes(workspace: string, patterns: readonly st
   await appendFile(file, `${separator}${missing.join("\n")}\n`);
 }
 
+/** Waits between attempts of a push GitHub rejected temporarily; the push is tried once more after each. */
+const DEFAULT_PUSH_RETRY_DELAYS_MS: readonly number[] = [1000, 3000, 8000, 20000];
+
 /** `git` CLI implementation. Reads use local refs only; fetch and push are the sole network calls. */
-export const cliGit: GitOps = {
+export function createCliGit(options: { pushRetryDelaysMs?: readonly number[] } = {}): GitOps {
+  const pushRetryDelaysMs = options.pushRetryDelaysMs ?? DEFAULT_PUSH_RETRY_DELAYS_MS;
+  return {
   async status(path) {
     return { clean: (await mustRun(path, ["status", "--porcelain"])) === "" };
   },
@@ -146,16 +153,30 @@ export const cliGit: GitOps = {
     const args = ["push", "--set-upstream"];
     if (options.forceWithLease) args.push(`--force-with-lease=${branch}:${options.expectedRemoteHead}`);
     args.push("origin", branch);
-    const result = await run(path, args);
-    if (result.exitCode === 0) return;
-    if (options.forceWithLease && isPushRejection(result)) {
-      const currentHead = await remoteBranchHead(path, branch);
-      if (currentHead !== null) throw new GitPushRejectedError(currentHead);
-      throw new Error("The remote branch disappeared during the lease push; push without forceWithLease only after confirming it is safe to create the branch.");
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await run(path, args);
+      if (result.exitCode === 0) return;
+      const failure = new Error(`git push failed: ${result.stderr || `exit ${result.exitCode}`}`);
+      // A temporary GitHub rejection is waited out; anything else (stale lease, non-fast-forward,
+      // protected branch) is final and must reach the caller at once.
+      if (classifyUpstreamError(failure).kind === "transient") {
+        const delay = pushRetryDelaysMs[attempt];
+        if (delay === undefined) throw failure;
+        await Bun.sleep(delay);
+        continue;
+      }
+      if (options.forceWithLease && isPushRejection(result)) {
+        const currentHead = await remoteBranchHead(path, branch);
+        if (currentHead !== null) throw new GitPushRejectedError(currentHead);
+        throw new Error("The remote branch disappeared during the lease push; push without forceWithLease only after confirming it is safe to create the branch.");
+      }
+      throw failure;
     }
-    throw new Error(`git push failed: ${result.stderr || `exit ${result.exitCode}`}`);
   },
-};
+  };
+}
+
+export const cliGit: GitOps = createCliGit();
 
 /**
  * Abbreviated source commits that `git range-diff` pairs with a commit of `base..candidate`.

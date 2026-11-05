@@ -3,7 +3,8 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { GitPushRejectedError, cliGit, ensureGitExcludes } from "../../src/workspace/git";
+import { classifyUpstreamError } from "../../src/tasks/upstream-error";
+import { GitPushRejectedError, cliGit, createCliGit, ensureGitExcludes } from "../../src/workspace/git";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -236,4 +237,58 @@ test("cliGit fetch reports a branch the remote does not have, and fails for othe
   expect(await cliGit.fetch(work, "origin", "conveyor/7-never-pushed")).toBe(false);
   await sh(work, "remote", "set-url", "origin", path.join(root, "missing.git"));
   await expect(cliGit.fetch(work, "origin", "main")).rejects.toThrow(/git fetch failed/);
+});
+
+async function hookedRemote(hookBody: string) {
+  const root = await mkdtemp(path.join(tmpdir(), "conveyor-git-"));
+  directories.push(root);
+  const remote = path.join(root, "remote.git");
+  const work = path.join(root, "work");
+  await sh(root, "init", "--bare", "-b", "main", remote);
+  await sh(root, "clone", remote, work);
+  await writeFile(path.join(work, "a"), "1");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "one");
+  await sh(work, "checkout", "-b", "feat");
+  const counter = path.join(root, "count");
+  await writeFile(counter, "0");
+  const hook = path.join(remote, "hooks", "pre-receive");
+  await writeFile(hook, `#!/bin/sh\nn=$(cat "${counter}"); n=$((n+1)); echo $n > "${counter}"\ncat >/dev/null\n${hookBody}\n`);
+  await chmod(hook, 0o755);
+  return { root, remote, work, attempts: async () => Number((await readFile(counter, "utf8")).trim()) };
+}
+
+test("push retries 'fatal error in commit_refs_rules' and succeeds once GitHub recovers", async () => {
+  const { work, attempts } = await hookedRemote('if [ "$n" -le 2 ]; then echo "fatal error in commit_refs_rules" >&2; exit 1; fi');
+  await createCliGit({ pushRetryDelaysMs: [1, 1, 1] }).push(work, "feat", { forceWithLease: false });
+  expect(await attempts()).toBe(3);
+});
+
+test("push retries an 'Internal Server Error' rejection", async () => {
+  const { work, attempts } = await hookedRemote('if [ "$n" -le 1 ]; then echo "Internal Server Error" >&2; exit 1; fi');
+  await createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false });
+  expect(await attempts()).toBe(2);
+});
+
+test("push rejected as non-fast-forward fails at once without retry", async () => {
+  const { work, remote, root, attempts } = await hookedRemote("exit 0");
+  await createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false });
+  const other = path.join(root, "other");
+  await sh(root, "clone", "-b", "feat", remote, other);
+  await writeFile(path.join(other, "o"), "o");
+  await sh(other, "add", "."); await sh(other, "commit", "-m", "other");
+  await sh(other, "push", "origin", "feat");
+  await writeFile(path.join(work, "w"), "w");
+  await sh(work, "add", "."); await sh(work, "commit", "-m", "mine");
+  const before = await attempts();
+  await expect(createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false })).rejects.toThrow(/rejected|non-fast-forward/);
+  expect(await attempts()).toBe(before);
+});
+
+test("push rejected transiently on every attempt throws a transient error after the delays run out", async () => {
+  const { work, attempts } = await hookedRemote('echo "fatal error in commit_refs_rules" >&2; exit 1');
+  let error: unknown;
+  try { await createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false }); } catch (e) { error = e; }
+  expect(error).toBeInstanceOf(Error);
+  expect(classifyUpstreamError(error).kind).toBe("transient");
+  expect(await attempts()).toBe(3);
 });
