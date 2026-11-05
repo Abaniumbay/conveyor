@@ -72,6 +72,12 @@ export class HttpControlClient implements ControlClient {
           const parsed: unknown = JSON.parse(body);
           if (typeof parsed === "object" && parsed !== null && "error" in parsed && typeof parsed.error === "string") {
             serviceError = parsed.error;
+            const fields = parsed as { kind?: unknown; upstream?: unknown; status?: unknown; detail?: unknown };
+            if (fields.kind === "transient" || fields.kind === "permanent") {
+              // Forward the classification so the agent can tell an upstream outage from a bug.
+              const origin = [typeof fields.upstream === "string" ? fields.upstream : null, typeof fields.status === "number" ? String(fields.status) : null].filter(Boolean).join(" ");
+              serviceError = `${parsed.error} (kind: ${fields.kind}${origin ? `, upstream: ${origin}` : ""})${typeof fields.detail === "string" && fields.detail ? `: ${fields.detail}` : ""}`;
+            }
           }
         } catch { /* A non-JSON response retains the existing generic client error. */ }
         if (serviceError !== null) throw new Error(serviceError);

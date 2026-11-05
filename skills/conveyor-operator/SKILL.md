@@ -32,6 +32,10 @@ any action, and record why ambiguous questions or unresolved blockers remain for
 - The Operator has only an empty run scratch directory, which may hold temporary files for this run but not Conveyor configuration, homes, databases, or workspaces. Never try to escape that boundary.
 - If a reference has no board result, say that it is **not on this configured board**. Do not look elsewhere for it.
 
+## Tool failures
+
+A failed Conveyor tool call reports `kind` (`transient` or `permanent`), `upstream`, `status` and `detail`. When `kind` is `"transient"` the upstream service (GitHub) is having an outage: do not diagnose it, do not invent causes, and let Conveyor retry. If the same tool still fails, stop and report "GitHub unavailable", naming the tool. When `kind` is `"permanent"`, investigate as usual.
+
 ## Expected result
 
 Return a direct report stating what changed, why, files, services, or source objects affected, verification performed with outcomes, whether a restart or deployment occurred, and anything still pending. Never claim success without checking the resulting state.

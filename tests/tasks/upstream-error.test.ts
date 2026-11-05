@@ -48,5 +48,8 @@ describe("shipped agent instructions", () => {
       expect(text).toContain("do not diagnose");
       expect(text).toContain("GitHub unavailable");
     }
+    const skill = await readFile(path.join(import.meta.dir, "../../skills/conveyor-operator/SKILL.md"), "utf8");
+    expect(skill).toContain('`kind` is `"transient"`');
+    expect(skill).toContain("GitHub unavailable");
   });
 });

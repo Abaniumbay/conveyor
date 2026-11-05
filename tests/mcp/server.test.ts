@@ -237,6 +237,14 @@ describe("HTTP control client", () => {
     expect(attempts).toBe(1);
   });
 
+  test("forwards the transient classification of a failed tool call to the agent", async () => {
+    const client = new HttpControlClient("http://127.0.0.1:4311", "t", async () => new Response(
+      JSON.stringify({ error: "change.get failed", kind: "transient", upstream: "github", status: 502, detail: "HTTP 502: Bad Gateway" }),
+      { status: 500 },
+    ));
+    await expect(client.call("change.get", {})).rejects.toThrow("change.get failed (kind: transient, upstream: github 502): HTTP 502: Bad Gateway");
+  });
+
   test("returns a redacted workspace push rejection from the service", async () => {
     const head = "a".repeat(40);
     const client = new HttpControlClient("http://127.0.0.1:4311", "grant", async () =>
