@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -221,11 +221,11 @@ describeSandbox("runCodexCheck", () => {
   const HANG_GUARD_MS = 20_000;
   const ignoreSigterm = 'process.on("SIGTERM", () => {});\n';
   const hold = "await Bun.sleep(600_000);\n";
+  // The descendant ignores SIGTERM and keeps the pipes open; its argv carries the marker so the test can find it from the host.
   const descendant = `
-    const child = Bun.spawn(["bun", "-e", "process.on('SIGTERM', () => {}); await Bun.write(process.env.PIDFILE, String(process.pid)); await Bun.sleep(600_000);"], {
-      env: { ...process.env, PIDFILE: process.env.PIDFILE! }, stdout: "inherit", stderr: "inherit",
+    Bun.spawn(["bun", "-e", "process.on('SIGTERM', () => {}); await Bun.write(process.argv[1], 'up'); await Bun.sleep(600_000);", process.env.PIDFILE!], {
+      stdout: "inherit", stderr: "inherit",
     });
-    await Bun.write(process.env.PIDFILE + ".parent", String(child.pid));
     await Bun.sleep(600_000);
   `;
   const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
@@ -238,26 +238,24 @@ describeSandbox("runCodexCheck", () => {
     mcp: { command: "bun", args: [] },
     interruptGraceMs: 50,
   });
-  const alive = (pid: number): boolean => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  async function recordedPid(file: string): Promise<number> {
-    for (let attempts = 0; !existsSync(file) && attempts < 1_000; attempts += 1) await Bun.sleep(10);
-    for (let attempts = 0; attempts < 100; attempts += 1) {
-      const text = existsSync(file) ? (await readFile(file, "utf8")).trim() : "";
-      if (text) return Number(text);
-      await Bun.sleep(10);
-    }
-    throw new Error(`no pid recorded in ${file}`);
+  // The sandbox may use its own PID namespace, so a recorded PID is not host-visible; find the descendant by its argv marker.
+  function hostPids(marker: string): number[] {
+    return readdirSync("/proc").filter((name) => /^\d+$/.test(name)).flatMap((name) => {
+      try {
+        return readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").includes(marker) ? [Number(name)] : [];
+      } catch {
+        return [];
+      }
+    });
   }
-  async function expectGone(pid: number): Promise<void> {
-    for (let attempts = 0; alive(pid) && attempts < 500; attempts += 1) await Bun.sleep(10);
-    expect(alive(pid)).toBe(false);
+  async function waitForDescendant(marker: string): Promise<void> {
+    for (let attempts = 0; !existsSync(marker) && attempts < 1_000; attempts += 1) await Bun.sleep(10);
+    expect(existsSync(marker)).toBe(true);
+    expect(hostPids(marker).length).toBeGreaterThan(0);
+  }
+  async function expectGone(marker: string): Promise<void> {
+    for (let attempts = 0; hostPids(marker).length > 0 && attempts < 500; attempts += 1) await Bun.sleep(10);
+    expect(hostPids(marker)).toEqual([]);
   }
 
   test("times out a child that exits on SIGTERM", async () => {
@@ -278,25 +276,33 @@ describeSandbox("runCodexCheck", () => {
     await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
   }, HANG_GUARD_MS);
 
-  test("settles on timeout and ends a descendant that keeps the pipes open", async () => {
-    const files = await fixture(ignoreSigterm + descendant);
-    const pidFile = path.join(files.artifacts, "descendant.pid");
-    const run = runCodexCheck({ ...base(files), timeoutMs: 1_000, env: { PIDFILE: pidFile } });
-    const pid = await recordedPid(pidFile);
-    await expect(run).rejects.toMatchObject({ kind: "timeout" });
-    await expectGone(pid);
-  }, HANG_GUARD_MS);
+  for (const [label, prefix, grace] of [
+    ["a child that ignores SIGTERM", ignoreSigterm, 50],
+    // The child exits on SIGTERM, so only the post-exit tree kill can end the descendant before the long grace timer.
+    ["a child that exits on SIGTERM", "", 10_000],
+  ] as const) {
+    test(`settles on timeout and ends a descendant that keeps the pipes open (${label})`, async () => {
+      const files = await fixture(prefix + descendant);
+      const marker = path.join(files.artifacts, "descendant.up");
+      const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { PIDFILE: marker } });
+      const settled = run.then(() => undefined, (error: unknown) => error);
+      await waitForDescendant(marker);
+      expect(await settled).toMatchObject({ kind: "timeout" });
+      await expectGone(marker);
+    }, HANG_GUARD_MS);
 
-  test("settles on abort and ends a descendant that keeps the pipes open", async () => {
-    const files = await fixture(ignoreSigterm + descendant);
-    const pidFile = path.join(files.artifacts, "descendant.pid");
-    const controller = new AbortController();
-    const run = runCodexCheck({ ...base(files), signal: controller.signal, env: { PIDFILE: pidFile } });
-    const pid = await recordedPid(pidFile);
-    controller.abort();
-    await expect(run).rejects.toMatchObject({ kind: "interrupted" });
-    await expectGone(pid);
-  }, HANG_GUARD_MS);
+    test(`settles on abort and ends a descendant that keeps the pipes open (${label})`, async () => {
+      const files = await fixture(prefix + descendant);
+      const marker = path.join(files.artifacts, "descendant.up");
+      const controller = new AbortController();
+      const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { PIDFILE: marker } });
+      const settled = run.then(() => undefined, (error: unknown) => error);
+      await waitForDescendant(marker);
+      controller.abort();
+      expect(await settled).toMatchObject({ kind: "interrupted" });
+      await expectGone(marker);
+    }, HANG_GUARD_MS);
+  }
 
   test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`

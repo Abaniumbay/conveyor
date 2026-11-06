@@ -293,16 +293,8 @@ export async function runCodexCheck(
   const signalTree = (signal: NodeJS.Signals): void => {
     try {
       process.kill(-child.pid, signal);
-      return;
     } catch {
-      // The group is gone or unreachable; fall back to the direct child.
-    }
-    if (child.exitCode === null) {
-      try {
-        child.kill(signal);
-      } catch {
-        // Already exited.
-      }
+      // The group is already gone.
     }
   };
   const stop = (): void => {
