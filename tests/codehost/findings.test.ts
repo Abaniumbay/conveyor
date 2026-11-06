@@ -124,7 +124,7 @@ describe("GitHub findings projection", () => {
     const native = host([{ id: 77, html_url: "https://x/c77" }]);
     await native.host.resolveNativeFinding({ address: "o/r", id: ID, providerKey: "review:900", verdict: "fixed", message: "👍 Fixed in abc by Kaveh: ok" });
     expect(native.transport.requests[0]).toMatchObject({ method: "POST", path: "repos/o/r/issues/5/comments" });
-    expect((native.transport.requests[0]!.body as { body: string }).body).toBe("👍 Fixed in abc by Kaveh: ok\n\n(Re: review 900)");
+    expect((native.transport.requests[0]!.body as { body: string }).body).toMatch(/^👍 Fixed in abc by Kaveh: ok\n\n\(Re: review 900\)\n\n<!-- conveyor:comment:[-a-f0-9]+ -->$/);
   });
 });
 

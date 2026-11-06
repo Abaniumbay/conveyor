@@ -41,6 +41,9 @@ export class RetryingGitHubTransport implements GitHubTransport {
       } catch (error) {
         if (attempt >= this.#backoff.length || classifyUpstreamError(error).kind !== "transient") throw error;
         await this.#sleep(Math.max(this.#backoff[attempt]!, retryAfterMs(error) ?? 0));
+        // The failed create may have succeeded; return what it made rather than make it twice.
+        const made = await request.recover?.().catch(() => undefined);
+        if (made !== undefined) return made as T;
       }
     }
   }
