@@ -189,7 +189,8 @@ describe("GitHub outage on status and the dashboard", () => {
       // The item moves on; the next probe releases it from the outage record without emitting an event.
       const id = store.listIssues("repo")[0]!.id;
       store.setIssueProjection(id, { stage: "review", state: "active", warning: null });
-      await until(() => service.githubOutage() === null, "the outage to clear");
+      // Read the feed on every turn so it has rendered the state before the release.
+      await until(() => { has(); return service.githubOutage() === null; }, "the outage to clear");
       expect(has()).toBe(false);
     } finally {
       await close();
