@@ -34,7 +34,7 @@ checks: {}
 labels:
   enrollment: conveyor
   stageTemplate: "conveyor:{stage}"
-  states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error" }
+  states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", needs-intervention: "conveyor:needs-intervention" }
   metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" }
 pipelines:
   default:
@@ -54,7 +54,9 @@ repositories:
   const config = await loadConfig(path.join(root, "config.yml"));
   const store = await ConveyorStore.open(config.settings.database);
   const labels: string[][] = [];
-  const github = { async replaceConveyorLabels(_address: string, _number: number, next: readonly string[]) { labels.push([...next]); } };
+  const github = {
+    async replaceConveyorLabels(_address: string, _number: number, next: readonly string[]) { labels.push([...next]); },
+  };
   const service = new ConveyorService(config, store, github as never);
   const internals = service as unknown as Record<string, unknown>;
   internals.updateStatusComment = async () => {};
