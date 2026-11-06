@@ -59,9 +59,7 @@ describe("single entrypoint", () => {
     });
     const config = await loadConfig(paths.entrypoint, undefined, { home: paths.home });
     expect(config.mode).toBe("entrypoint");
-    expect(config.warnings).toEqual([
-      "repositories.meal-planner.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI",
-    ]);
+    expect(config.warnings).toEqual([]);
     expect(config.settings.database).toBe(path.join(paths.home, "state/conveyor.sqlite"));
     expect(config.settings.logs).toBe(path.join(paths.home, "logs"));
     expect(config.settings.workspaces).toBe(path.join(paths.home, "worktrees"));
@@ -345,5 +343,32 @@ ${DEFAULTS}repositories: !include_dir_named repositories/
     expect(config.web.listen).toBe("127.0.0.1:4300");
     expect(config.settings.database).toBe(path.join(paths.config, "data/conveyor.sqlite"));
     expect(config.warnings!.join("\n")).toContain("loading a configuration directory is deprecated");
+  });
+});
+
+describe("ci.junit warning", () => {
+  const warningFor = (id: string) => `repositories.${id}.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI`;
+  const withMode = (mode: string) => repository("../repos/meal-planner").replace("ci: { mode: disabled }", `ci: { mode: ${mode} }`);
+  const entry = (repositories: Record<string, string>) =>
+    `${DEFAULTS}repositories:\n${Object.entries(repositories).map(([id, body]) => `  ${id}:\n${body.trimEnd().replace(/^/gm, "    ")}\n`).join("")}`;
+  const warnings = async (repositories: Record<string, string>) => {
+    const paths = await home({ "conveyor.yaml": entry(repositories) });
+    return (await loadConfig(paths.entrypoint, null, { home: paths.home })).warnings?.filter((warning) => warning.includes("ci.junit is not configured")) ?? [];
+  };
+
+  test("a disabled-CI repository without ci.junit produces no warning", async () => {
+    expect(await warnings({ "meal-planner": withMode("disabled") })).toEqual([]);
+  });
+
+  test("a required-CI repository without ci.junit still warns", async () => {
+    expect(await warnings({ "meal-planner": withMode("required") })).toEqual([warningFor("meal-planner")]);
+  });
+
+  test("an advisory-CI repository without ci.junit still warns", async () => {
+    expect(await warnings({ "meal-planner": withMode("advisory") })).toEqual([warningFor("meal-planner")]);
+  });
+
+  test("with one disabled and one required repository, only the required one is named", async () => {
+    expect(await warnings({ "meal-planner": withMode("disabled"), "finance-bot": withMode("required") })).toEqual([warningFor("finance-bot")]);
   });
 });

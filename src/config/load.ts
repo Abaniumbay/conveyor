@@ -726,7 +726,7 @@ export async function loadConfig(
 
   const data = normalizeRunPaths(parsed.data);
   for (const [id, repository] of Object.entries(data.repositories)) {
-    if (repository.ci.junit === undefined) {
+    if (repository.ci.junit === undefined && repository.ci.mode !== "disabled") {
       warnings.push(`repositories.${id}.ci.junit is not configured: linked criterion tests are checked in source text but are not proven to have run or passed in CI`);
     }
   }
