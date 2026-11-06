@@ -50,7 +50,7 @@ import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
 import { classifyUpstreamError } from "../tasks/upstream-error";
 import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
-import { runTask } from "../tasks/contract";
+import { runTask, TransientScriptError } from "../tasks/contract";
 import type { TaskDeps } from "../tasks/deps";
 import { criteriaOf, ISSUE_LEFT_OPEN_MARKER } from "../tasks/item";
 import { CriterionApprovals, isCriterionApprovedAt } from "../engine/review-records";
@@ -453,6 +453,15 @@ function mcpServerCommand(contextFile: string): { command: string; args: string[
   return { command: command!, args };
 }
 
+/** True when the error, or anything in its cause chain, is a stage script's temporary failure. */
+function hasTransientScriptCause(error: unknown): boolean {
+  for (let depth = 0; depth < 4 && error instanceof Error; depth += 1) {
+    if (error instanceof TransientScriptError) return true;
+    error = error.cause;
+  }
+  return false;
+}
+
 export class ConveyorService {
   readonly store: ConveyorStore;
   readonly github: GitHubAdapter;
@@ -505,6 +514,8 @@ export class ConveyorService {
   /** The running GitHub outage: when the first waiting item failed and which items wait on it. */
   /** Failure records armed by the outage wait: their retry timer probes GitHub instead of resuming blindly. */
   #outageRecords = new WeakSet<object>();
+  /** Failure records of items waiting on a script's temporary failure: the retry runs the script again, with no probe. */
+  #scriptWaitRecords = new WeakSet<object>();
   #githubOutage: { since: string; waitingItems: Set<string> } | null = null;
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
@@ -2328,6 +2339,10 @@ export class ConveyorService {
     const previous = this.#infrastructureFailures.get(issue.id);
     const failures = previous?.stageId === stageId ? previous.count + 1 : 1;
     const upstream = classifyUpstreamError(error);
+    if (hasTransientScriptCause(error)) {
+      await this.waitOutGithubOutage(issue, stageId, failures, message, previous?.stageId === stageId ? previous.waiting?.since : undefined, "script");
+      return;
+    }
     if (upstream.kind === "transient" && upstream.upstream === "github" && !isUsageLimitError(error)) {
       await this.waitOutGithubOutage(issue, stageId, failures, message, previous?.stageId === stageId ? previous.waiting?.since : undefined);
       return;
@@ -2377,46 +2392,55 @@ export class ConveyorService {
     failures: number,
     message: string,
     firstFailureAt: string | undefined,
+    cause: "github" | "script" = "github",
   ): Promise<void> {
     const now = new Date();
     const since = firstFailureAt ?? now.toISOString();
     if (now.getTime() - Date.parse(since) > this.config.github.outageWaitLimit) {
-      log.error("GitHub outage wait limit passed", { ...this.itemFields(issue.id), stage: stageId, since });
+      log.error("Temporary-failure wait limit passed", { ...this.itemFields(issue.id), stage: stageId, since, cause });
       const stopped = await this.stopStage(
         issue, stageId, "needs-intervention",
-        `GitHub has been unavailable since ${since}; waited ${formatDuration(this.config.github.outageWaitLimit)} (github.outageWaitLimit) without recovery. Last error: ${message}`,
+        cause === "script"
+          ? `A stage script has reported a temporary failure since ${since}; waited ${formatDuration(this.config.github.outageWaitLimit)} (github.outageWaitLimit) without recovery. Last error: ${message}`
+          : `GitHub has been unavailable since ${since}; waited ${formatDuration(this.config.github.outageWaitLimit)} (github.outageWaitLimit) without recovery. Last error: ${message}`,
       );
       // The stop needs GitHub too: when it failed, keep the recovery work and try again later.
       if (stopped) return;
     }
     const retries = this.config.settings.retries;
     const retryInMs = Math.min(retries.maxBackoff, retries.minBackoff * 2 ** Math.min(failures - 1, 30));
-    const outage = this.#githubOutage ?? { since, waitingItems: new Set<string>() };
-    if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
-    outage.waitingItems.add(issue.id);
-    this.#githubOutage = outage;
+    if (cause === "github") {
+      const outage = this.#githubOutage ?? { since, waitingItems: new Set<string>() };
+      if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
+      outage.waitingItems.add(issue.id);
+      this.#githubOutage = outage;
+    } else {
+      this.releaseOutageItem(issue.id);
+    }
     const record = {
       stageId,
       count: failures,
       waiting: {
         kind: "waiting" as const,
-        reason: `GitHub unavailable since ${since}`,
+        reason: cause === "script" ? `A stage script reported a temporary failure since ${since}` : `GitHub unavailable since ${since}`,
         since,
         nextCheckAt: new Date(now.getTime() + retryInMs).toISOString(),
         deadline: new Date(Date.parse(since) + this.config.github.outageWaitLimit).toISOString(),
       },
     };
-    this.#outageRecords.add(record);
+    (cause === "script" ? this.#scriptWaitRecords : this.#outageRecords).add(record);
     this.#infrastructureFailures.set(issue.id, record);
     this.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "active",
-      warning: `GitHub unavailable since ${since}; waiting for it to recover: ${message}`,
+      warning: cause === "script"
+        ? `A stage script reported a temporary failure since ${since}; waiting to run it again: ${message}`
+        : `GitHub unavailable since ${since}; waiting for it to recover: ${message}`,
     });
     await this.updateStatusComment(issue.id).catch((statusError) => {
       log.error("Status comment update failed", this.itemFields(issue.id), statusError);
     });
-    log.warn("GitHub unavailable; waiting", { ...this.itemFields(issue.id), stage: stageId, since, retryInMs });
+    log.warn(cause === "script" ? "Stage script reported a temporary failure; waiting" : "GitHub unavailable; waiting", { ...this.itemFields(issue.id), stage: stageId, since, retryInMs });
     this.retryLater(issue.id, retryInMs);
   }
 
@@ -2473,6 +2497,10 @@ export class ConveyorService {
       const failure = this.#infrastructureFailures.get(issueId);
       if (failure && this.#outageRecords.has(failure)) {
         void this.resumeAfterOutageProbe(issueId, failure);
+        return;
+      }
+      if (failure && this.#scriptWaitRecords.has(failure)) {
+        this.resumeStage(issueId);
         return;
       }
       if (failure) this.#infrastructureFailures.set(issueId, {
