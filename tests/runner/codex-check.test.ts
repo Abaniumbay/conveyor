@@ -276,33 +276,32 @@ describeSandbox("runCodexCheck", () => {
     await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
   }, HANG_GUARD_MS);
 
-  for (const [label, prefix, grace] of [
-    ["a child that ignores SIGTERM", ignoreSigterm, 50],
-    // The child exits on SIGTERM, so only the post-exit tree kill can end the descendant before the long grace timer.
-    ["a child that exits on SIGTERM", "", 10_000],
-  ] as const) {
-    test(`settles on timeout and ends a descendant that keeps the pipes open (${label})`, async () => {
-      const files = await fixture(prefix + descendant);
-      const marker = path.join(files.artifacts, "descendant.up");
-      const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { PIDFILE: marker } });
-      const settled = run.then(() => undefined, (error: unknown) => error);
-      await waitForDescendant(marker);
-      expect(await settled).toMatchObject({ kind: "timeout" });
-      await expectGone(marker);
-    }, HANG_GUARD_MS);
+  // The child exits on SIGTERM, so only the post-exit tree kill can end the descendant before the long grace timer.
+  const descendantOnTimeout = async (prefix: string, grace: number) => {
+    const files = await fixture(prefix + descendant);
+    const marker = path.join(files.artifacts, "descendant.up");
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { PIDFILE: marker } });
+    const settled = run.then(() => undefined, (error: unknown) => error);
+    await waitForDescendant(marker);
+    expect(await settled).toMatchObject({ kind: "timeout" });
+    await expectGone(marker);
+  };
+  const descendantOnAbort = async (prefix: string, grace: number) => {
+    const files = await fixture(prefix + descendant);
+    const marker = path.join(files.artifacts, "descendant.up");
+    const controller = new AbortController();
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { PIDFILE: marker } });
+    const settled = run.then(() => undefined, (error: unknown) => error);
+    await waitForDescendant(marker);
+    controller.abort();
+    expect(await settled).toMatchObject({ kind: "interrupted" });
+    await expectGone(marker);
+  };
 
-    test(`settles on abort and ends a descendant that keeps the pipes open (${label})`, async () => {
-      const files = await fixture(prefix + descendant);
-      const marker = path.join(files.artifacts, "descendant.up");
-      const controller = new AbortController();
-      const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { PIDFILE: marker } });
-      const settled = run.then(() => undefined, (error: unknown) => error);
-      await waitForDescendant(marker);
-      controller.abort();
-      expect(await settled).toMatchObject({ kind: "interrupted" });
-      await expectGone(marker);
-    }, HANG_GUARD_MS);
-  }
+  test("settles on timeout and ends a descendant that keeps the pipes open (a child that ignores SIGTERM)", () => descendantOnTimeout(ignoreSigterm, 50), HANG_GUARD_MS);
+  test("settles on timeout and ends a descendant that keeps the pipes open (a child that exits on SIGTERM)", () => descendantOnTimeout("", 10_000), HANG_GUARD_MS);
+  test("settles on abort and ends a descendant that keeps the pipes open (a child that ignores SIGTERM)", () => descendantOnAbort(ignoreSigterm, 50), HANG_GUARD_MS);
+  test("settles on abort and ends a descendant that keeps the pipes open (a child that exits on SIGTERM)", () => descendantOnAbort("", 10_000), HANG_GUARD_MS);
 
   test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`
