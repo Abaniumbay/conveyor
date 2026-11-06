@@ -914,7 +914,7 @@ describe("GitHubAdapter issue types and fields", () => {
     expect(transport.requests.filter((r) => r.method !== "GET").map(({ method, path, body }) => ({ method, path, body }))).toEqual([
       { method: "PATCH", path: "repos/o/r/issues/3", body: { type: "Bug" } },
       { method: "POST", path: "repos/o/r/issues/3/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
-      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: "b", labels: ["conveyor"], parent_issue_id: 7, type: "Bug" } },
+      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: expect.stringMatching(/^b\n\n<!-- conveyor:child-of:3:key:[a-f0-9]+ -->$/), labels: ["conveyor"], parent_issue_id: 7, type: "Bug" } },
       { method: "POST", path: "repos/o/r/issues/9/issue-field-values", body: { issue_field_values: [{ field_id: 11, value: "Low" }] } },
     ]);
     expect(child.type).toBe("Bug");

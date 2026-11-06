@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
@@ -20,6 +20,11 @@ export interface GitHubTransportRequest {
   raw?: boolean;
   /** Return the response bytes instead of parsing JSON (e.g. artifact archives). */
   binary?: boolean;
+  /**
+   * For a create: looks for the resource a failed attempt may already have made. The retry wrapper
+   * calls it before every retry and returns what it finds instead of creating a duplicate.
+   */
+  recover?: () => Promise<unknown | undefined>;
 }
 
 export interface GitHubTransport {
@@ -614,10 +619,18 @@ export class GitHubAdapter {
     });
     // The field endpoint is a second write. Reuse a child from a previous
     // attempt so a retry after that write fails does not create a duplicate.
-    const marker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
-    const existing = marker
-      ? (await this.listSubIssues(input.address, input.parentNumber)).find((issue) => issue.body.includes(marker))
-      : undefined;
+    const createMarker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
+    const keyMarker = `<!-- conveyor:child-of:${input.parentNumber}:key:${createHash("sha256").update(input.title).digest("hex").slice(0, 16)} -->`;
+    const body = input.body.includes(keyMarker) ? input.body : `${input.body}\n\n${keyMarker}`;
+    const findExisting = async () => (await this.transport.request<GitHubIssue[]>({
+      method: "GET",
+      path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues?per_page=100`,
+      paginate: true,
+    })).find((issue) => issue.pull_request === undefined
+      // A supplied child-create marker is authoritative: same title with a different marker is a different child.
+      && (issue.body ?? "").includes(createMarker ?? keyMarker));
+    const found = await findExisting();
+    const existing = found ? sourceIssue(input.address, found) : undefined;
     if (existing) {
       if (input.fields && input.fields.length > 0) {
         await this.setIssueFieldValues(input.address, existing.number, input.fields);
@@ -629,11 +642,12 @@ export class GitHubAdapter {
       path: `repos/${input.address}/issues`,
       body: {
         title: input.title,
-        body: input.body,
+        body,
         labels: [...new Set(input.labels)],
         parent_issue_id: parent.id,
         ...(input.type ? { type: input.type } : {}),
       },
+      recover: findExisting,
     });
     if (input.fields && input.fields.length > 0) {
       await this.setIssueFieldValues(input.address, child.number, input.fields);
@@ -919,11 +933,7 @@ export class GitHubAdapter {
     issueNumber: number,
     markdown: string,
   ): Promise<number> {
-    const comment = await this.transport.request<GitHubComment>({
-      method: "POST",
-      path: `repos/${address}/issues/${issueNumber}/comments`,
-      body: { body: markdown },
-    });
+    const comment = await this.postComment(address, issueNumber, markdown);
     return comment.id;
   }
 
@@ -943,12 +953,24 @@ export class GitHubAdapter {
 
   /** Creates an issue/pull request comment and returns where it lives. */
   async createComment(address: string, issueNumber: number, markdown: string): Promise<{ id: number; url: string }> {
-    const comment = await this.transport.request<GitHubComment & { html_url: string }>({
-      method: "POST",
-      path: `repos/${address}/issues/${issueNumber}/comments`,
-      body: { body: markdown },
-    });
+    const comment = await this.postComment(address, issueNumber, markdown);
     return { id: comment.id, url: comment.html_url };
+  }
+
+  /** Posts a comment tagged with a hidden marker, so a retry after a lost response finds it instead of posting twice. */
+  private postComment(address: string, issueNumber: number, markdown: string): Promise<GitHubComment & { html_url: string }> {
+    const marker = `<!-- conveyor:comment:${randomUUID()} -->`;
+    const path = `repos/${address}/issues/${issueNumber}/comments`;
+    return this.transport.request<GitHubComment & { html_url: string }>({
+      method: "POST",
+      path,
+      body: { body: `${markdown}\n\n${marker}` },
+      recover: async () => (await this.transport.request<Array<GitHubComment & { html_url: string }>>({
+        method: "GET",
+        path: `${path}?per_page=100`,
+        paginate: true,
+      })).find((comment) => comment.body?.includes(marker)),
+    });
   }
 
   async updateComment(address: string, commentId: number, markdown: string): Promise<void> {
@@ -1188,13 +1210,16 @@ export class GitHubAdapter {
   }): Promise<PullRequestReference> {
     const [owner] = input.address.split("/");
     const head = `${owner}:${input.branch}`;
-    const existing = await this.transport.request<GitHubPullRequest[]>({
-      method: "GET",
-      path: `repos/${input.address}/pulls?state=all&head=${encodeURIComponent(head)}&base=${encodeURIComponent(input.baseBranch)}`,
-    });
+    const findExisting = async () => {
+      const existing = await this.transport.request<GitHubPullRequest[]>({
+        method: "GET",
+        path: `repos/${input.address}/pulls?state=all&head=${encodeURIComponent(head)}&base=${encodeURIComponent(input.baseBranch)}`,
+      });
+      return existing.find((candidate) => candidate.state === "open") ??
+        existing.find((candidate) => candidate.state === "closed" && candidate.merged_at != null);
+    };
     const pullRequest =
-      existing.find((candidate) => candidate.state === "open") ??
-      existing.find((candidate) => candidate.state === "closed" && candidate.merged_at != null) ??
+      (await findExisting()) ??
       (await this.transport.request<GitHubPullRequest>({
         method: "POST",
         path: `repos/${input.address}/pulls`,
@@ -1206,6 +1231,7 @@ export class GitHubAdapter {
             ? `Closes #${input.issueNumber}`
             : `Related to #${input.issueNumber}`,
         },
+        recover: findExisting,
       }));
     return {
       number: pullRequest.number,
