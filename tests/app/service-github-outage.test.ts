@@ -151,6 +151,25 @@ describe("GitHub outage wait", () => {
     }
   });
 
+  test("after recovery the outage record is clear, and a later non-GitHub failure is not probed as an outage", async () => {
+    const { service, store, fake } = await setup();
+    try {
+      await service.tick();
+      await until(() => fake.probes >= 1, "a probe");
+      expect(service.githubOutage()).not.toBeNull();
+      // GitHub answers, but the resumed stage then fails with an unrelated error.
+      fake.probeFailure = null;
+      fake.labelFailure = new Error("runner crashed");
+      await until(() => service.githubOutage() === null, "the outage record to clear");
+      const probesAtRecovery = fake.probes;
+      await until(() => store.listConversationMessages("issue").some((entry) => entry.message.includes("failed attempts")), "the item to stop");
+      expect(fake.probes).toBe(probesAtRecovery);
+      expect(service.githubOutage()).toBeNull();
+    } finally {
+      await service.close();
+    }
+  });
+
   test("a permanent GitHub failure still stops the item as before", async () => {
     const { service, store, fake } = await setup();
     fake.labelFailure = new Error("gh: HTTP 404 Not Found (repos/owner/repo)");

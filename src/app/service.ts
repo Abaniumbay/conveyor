@@ -503,6 +503,8 @@ export class ConveyorService {
     waiting?: IssueWaitingViewModel;
   }>();
   /** The running GitHub outage: when the first waiting item failed and which items wait on it. */
+  /** Failure records armed by the outage wait: their retry timer probes GitHub instead of resuming blindly. */
+  #outageRecords = new WeakSet<object>();
   #githubOutage: { since: string; waitingItems: Set<string> } | null = null;
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
@@ -2330,6 +2332,7 @@ export class ConveyorService {
       await this.waitOutGithubOutage(issue, stageId, failures, message, previous?.stageId === stageId ? previous.waiting?.since : undefined);
       return;
     }
+    this.releaseOutageItem(issue.id);
     const decision = infrastructureRetry({ failures, usageLimit: isUsageLimitError(error), retries: this.config.settings.retries });
     if ("retryInMs" in decision) {
       const now = new Date();
@@ -2392,17 +2395,19 @@ export class ConveyorService {
     if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
     outage.waitingItems.add(issue.id);
     this.#githubOutage = outage;
-    this.#infrastructureFailures.set(issue.id, {
+    const record = {
       stageId,
       count: failures,
       waiting: {
-        kind: "waiting",
+        kind: "waiting" as const,
         reason: `GitHub unavailable since ${since}`,
         since,
         nextCheckAt: new Date(now.getTime() + retryInMs).toISOString(),
         deadline: new Date(Date.parse(since) + this.config.github.outageWaitLimit).toISOString(),
       },
-    });
+    };
+    this.#outageRecords.add(record);
+    this.#infrastructureFailures.set(issue.id, record);
     this.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "active",
@@ -2466,7 +2471,7 @@ export class ConveyorService {
       this.#retryTimers.delete(timer);
       if (this.#shuttingDown) return;
       const failure = this.#infrastructureFailures.get(issueId);
-      if (this.#githubOutage?.waitingItems.has(issueId) && failure) {
+      if (failure && this.#outageRecords.has(failure)) {
         void this.resumeAfterOutageProbe(issueId, failure);
         return;
       }
@@ -2516,7 +2521,9 @@ export class ConveyorService {
     const healthy = await this.githubHealthy(issue.repositoryId);
     if (this.#shuttingDown || !current()) return;
     if (healthy) {
-      // The count and first failure time stay: a stage that fails again keeps its outage clock.
+      // The count and first failure time stay (a stage that fails again keeps its outage clock), but
+      // the item is running again, so it leaves the outage record.
+      this.releaseOutageItem(issueId);
       this.resumeStage(issueId);
       return;
     }
