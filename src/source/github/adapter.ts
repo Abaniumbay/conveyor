@@ -370,11 +370,12 @@ function labelName(label: GitHubLabel | string): string {
 interface CachingTransport extends GitHubTransport {
   applyDelivery(eventType: string, payload: unknown): void;
   forgetRepository(address: string): void;
+  forgetChange(address: string, number: number): void;
   useStorage(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void;
 }
 
 const caching = (transport: GitHubTransport): transport is CachingTransport =>
-  "applyDelivery" in transport && "forgetRepository" in transport;
+  "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport;
 
 export class GitHubAdapter {
   constructor(
@@ -395,6 +396,11 @@ export class GitHubAdapter {
   /** Drops a repository's cached reads, when there is a cache, so its next reads go to GitHub. */
   forgetRepository(address: string): void {
     if (caching(this.transport)) this.transport.forgetRepository(address);
+  }
+
+  /** Drops a pull request's cached reads, when there is a cache, so the next read goes to GitHub. */
+  forgetChange(address: string, number: number): void {
+    if (caching(this.transport)) this.transport.forgetChange(address, number);
   }
 
   async listConveyorIssues(address: string): Promise<SourceIssue[]> {

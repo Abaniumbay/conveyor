@@ -26,7 +26,7 @@ export interface DispatchEnv {
   registry: TaskRegistry;
   deps: () => TaskDeps;
   /** The head SHA of the item's live change request, or null when it has none. */
-  liveHeadSha: () => Promise<string | null>;
+  liveHeadSha: (options?: { refresh?: boolean }) => Promise<string | null>;
   store: Pick<ConveyorStore, "beginSourceMutation" | "completeSourceMutation" | "failSourceMutation">;
 }
 
@@ -63,7 +63,9 @@ export async function dispatchTool(
 
   const headSha = (input as { headSha?: unknown }).headSha;
   if (typeof headSha === "string") {
-    const live = await env.liveHeadSha();
+    let live = await env.liveHeadSha();
+    // A cached change can lag a push whose webhook never arrived: read it once more before refusing.
+    if (live !== null && live !== headSha) live = await env.liveHeadSha({ refresh: true });
     // Before a change exists, workspace.push validates its lease against origin itself. Every
     // other SHA-bearing tool remains fenced by the authoritative change head.
     if (live === null && name !== "workspace.push") throw new ToolRequestError(`${name}: the item has no change request to check headSha ${headSha} against`);

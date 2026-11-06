@@ -180,6 +180,7 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
   async ({ deps, input }, workspace) => {
     if (input!.forceWithLease !== true) {
       await deps.git.push(workspace.path, workspace.branch, { forceWithLease: false });
+      deps.forgetChange?.();
       return { accepted: true };
     }
     const expectedRemoteHead = input!.headSha!;
@@ -188,6 +189,9 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
       throw new ToolRequestError(`The remote branch ${workspace.branch} does not exist; push without forceWithLease to create it.`);
     }
     if (remoteHead !== expectedRemoteHead) {
+      // The remote moved past the change head we hold: read the change again, so a retry sees it.
+      deps.forgetChange?.();
+      await deps.delivery?.();
       throw new ToolRequestError(`The remote branch moved to ${remoteHead}; use workspace.fetch, rebase, and retry.`);
     }
     const missing = await deps.git.missingPatchCommits(
@@ -205,6 +209,7 @@ const push = unjournaled(tool("workspace.push", "Push the workspace branch to or
       if (error instanceof GitPushRejectedError) throw new ToolRequestError(error.message);
       throw error;
     }
+    deps.forgetChange?.();
     return { accepted: true };
   }, ["workspace"]));
 

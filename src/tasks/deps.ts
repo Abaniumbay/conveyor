@@ -62,6 +62,8 @@ export interface TaskDeps {
   harnesses?: Record<string, Harness>;
   /** The delivery state handed to a run's MCP context. */
   delivery?: () => Promise<RuntimeDeliveryState>;
+  /** Drops the cached reads of the item's change request, if it has one (after a push GitHub did not announce). */
+  forgetChange?: () => void;
   /** Set for agent tool calls: the run the call belongs to and who is calling. */
   run?: { id: string; actor: AgentActor | null };
   /**
