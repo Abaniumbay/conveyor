@@ -703,9 +703,19 @@ const labelsSchema = z
     },
   }));
 
+/** How Conveyor treats GitHub being unavailable. */
+const githubSchema = z
+  .object({
+    /** How long an item waits out a GitHub outage before it needs intervention. */
+    outageWaitLimit: durationSchema.prefault("2h"),
+  })
+  .strict()
+  .prefault({});
+
 export const configSchema = z
   .object({
     settings: settingsSchema,
+    github: githubSchema,
     web: webSchema,
     sources: z.record(identifierSchema, sourceSchema).default({}),
     ci: z.record(identifierSchema, ciProviderSchema).default({}),

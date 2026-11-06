@@ -365,6 +365,22 @@ before the service can start. `config compare` prints two configurations' compil
 side, marking entry and exit approvals and reporting an approval-setting change in its summary;
 it exits 1 when the plans differ, including when only that setting differs.
 
+## GitHub outages
+
+When a stage fails with a transient GitHub error (a 5xx, a GraphQL internal error, a push
+`fatal error`, a truncated response) after the tools' own retries, the item does not stop. It waits
+("GitHub unavailable since <time>") and Conveyor probes GitHub with `GET /rate_limit` on the
+`settings.retries` backoff. Once GitHub answers, the item resumes at the same stage without a manual
+retry. A permanent GitHub failure still stops the item as before.
+
+`github.outageWaitLimit` is a duration (default `2h`) counted from the item's first failure. Past it
+the item goes to `needs-intervention`, and its reason names GitHub and the first failure time.
+
+```yaml
+github:
+  outageWaitLimit: 2h
+```
+
 ## Follow-up acknowledgement
 
 Follow-ups are optional, human-owned reminders for work Conveyor cannot perform after delivery. To
@@ -406,6 +422,9 @@ settings:
     maxBackoff: 30m
   taskDefaults:
     wait: { timeout: 30m, poll: 1m }
+
+github:
+  outageWaitLimit: 2h   # how long an item waits out a GitHub outage before it needs intervention
 
 web:
   listen: 127.0.0.1:7788

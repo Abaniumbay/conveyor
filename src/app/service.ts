@@ -47,6 +47,7 @@ import { deliverPushEvents, type PushConfiguration } from "../web/push";
 import { ConfiguredStageRuntime, ensureRuntimeDirectories, type RuntimeIssueContext, type ScopedMcpFactory, type ScopedMcpLease, type SourceActionHandler } from "./runtime";
 import { IssueExecutor } from "./issue-executor";
 import { infrastructureRetry, isUsageLimitError } from "./retry-policy";
+import { classifyUpstreamError } from "../tasks/upstream-error";
 import { buildAgentProfiles } from "./agent-profiles";
 import { createTaskRegistry } from "../tasks/catalogue";
 import { runTask } from "../tasks/contract";
@@ -501,6 +502,8 @@ export class ConveyorService {
     count: number;
     waiting?: IssueWaitingViewModel;
   }>();
+  /** The running GitHub outage: when the first waiting item failed and which items wait on it. */
+  #githubOutage: { since: string; waitingItems: Set<string> } | null = null;
   readonly #repositoryErrors = new Map<string, string>();
   readonly #onboardingErrors = new Map<string, string>();
   /** Repositories not yet admitted to scheduling during the first startup pass. */
@@ -2309,6 +2312,7 @@ export class ConveyorService {
       return;
     }
     this.#infrastructureFailures.delete(issue.id);
+    this.releaseOutageItem(issue.id);
   }
 
   /**
@@ -2321,6 +2325,11 @@ export class ConveyorService {
     const stageId = this.store.getStageState(issue.id)?.stageId ?? issue.projectedStage ?? "";
     const previous = this.#infrastructureFailures.get(issue.id);
     const failures = previous?.stageId === stageId ? previous.count + 1 : 1;
+    const upstream = classifyUpstreamError(error);
+    if (upstream.kind === "transient" && upstream.upstream === "github" && !isUsageLimitError(error)) {
+      await this.waitOutGithubOutage(issue, stageId, failures, message, previous?.stageId === stageId ? previous.waiting?.since : undefined);
+      return;
+    }
     const decision = infrastructureRetry({ failures, usageLimit: isUsageLimitError(error), retries: this.config.settings.retries });
     if ("retryInMs" in decision) {
       const now = new Date();
@@ -2346,11 +2355,88 @@ export class ConveyorService {
       this.retryLater(issue.id, decision.retryInMs);
       return;
     }
+    log.error("Stage stopped as error after repeated failures", { ...this.itemFields(issue.id), stage: stageId, attempts: failures }, error);
+    await this.stopStage(issue, stageId, "error", `${displayName(stageId)} stopped after ${failures} failed attempts: ${message}`);
+  }
+
+  /** The running GitHub outage, for the status and dashboard views. */
+  githubOutage(): { since: string; waitingItems: string[] } | null {
+    return this.#githubOutage ? { since: this.#githubOutage.since, waitingItems: [...this.#githubOutage.waitingItems] } : null;
+  }
+
+  /**
+   * A stage failed with a transient GitHub error after the tools' own retries: the item waits at the
+   * same stage, probing GitHub with backoff, until GitHub answers or `github.outageWaitLimit` is spent.
+   */
+  private async waitOutGithubOutage(
+    issue: StoredIssue,
+    stageId: string,
+    failures: number,
+    message: string,
+    firstFailureAt: string | undefined,
+  ): Promise<void> {
+    const now = new Date();
+    const since = firstFailureAt ?? now.toISOString();
+    if (now.getTime() - Date.parse(since) > this.config.github.outageWaitLimit) {
+      this.#infrastructureFailures.delete(issue.id);
+      this.releaseOutageItem(issue.id);
+      log.error("GitHub outage wait limit passed", { ...this.itemFields(issue.id), stage: stageId, since });
+      await this.stopStage(
+        issue, stageId, "needs-intervention",
+        `GitHub has been unavailable since ${since}; waited ${formatDuration(this.config.github.outageWaitLimit)} (github.outageWaitLimit) without recovery. Last error: ${message}`,
+      );
+      return;
+    }
+    const retries = this.config.settings.retries;
+    const retryInMs = Math.min(retries.maxBackoff, retries.minBackoff * 2 ** Math.min(failures - 1, 30));
+    const outage = this.#githubOutage ?? { since, waitingItems: new Set<string>() };
+    if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
+    outage.waitingItems.add(issue.id);
+    this.#githubOutage = outage;
+    this.#infrastructureFailures.set(issue.id, {
+      stageId,
+      count: failures,
+      waiting: {
+        kind: "waiting",
+        reason: `GitHub unavailable since ${since}`,
+        since,
+        nextCheckAt: new Date(now.getTime() + retryInMs).toISOString(),
+        deadline: new Date(Date.parse(since) + this.config.github.outageWaitLimit).toISOString(),
+      },
+    });
+    this.store.setIssueProjection(issue.id, {
+      stage: issue.projectedStage,
+      state: "active",
+      warning: `GitHub unavailable since ${since}; waiting for it to recover: ${message}`,
+    });
+    await this.updateStatusComment(issue.id).catch((statusError) => {
+      log.error("Status comment update failed", this.itemFields(issue.id), statusError);
+    });
+    log.warn("GitHub unavailable; waiting", { ...this.itemFields(issue.id), stage: stageId, since, retryInMs });
+    this.retryLater(issue.id, retryInMs);
+  }
+
+  private releaseOutageItem(issueId: string): void {
+    if (!this.#githubOutage) return;
+    this.#githubOutage.waitingItems.delete(issueId);
+    if (this.#githubOutage.waitingItems.size === 0) this.#githubOutage = null;
+  }
+
+  /** Probes GitHub for an item waiting out an outage; true when it answers. */
+  private async githubHealthy(repositoryId: string): Promise<boolean> {
+    try {
+      await this.executionGitHub(repositoryId).rateLimit();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async stopStage(issue: StoredIssue, stageId: string, state: string, reason: string): Promise<void> {
     this.#infrastructureFailures.delete(issue.id);
+    this.releaseOutageItem(issue.id);
     const repository = this.config.repositories[issue.repositoryId]!;
     const pipeline = this.config.pipelines[repository.pipeline]!;
-    const reason = `${displayName(stageId)} stopped after ${failures} failed attempts: ${message}`;
-    log.error("Stage stopped as error after repeated failures", { ...this.itemFields(issue.id), stage: stageId, attempts: failures }, error);
     this.store.appendConversationMessage({
       issueId: issue.id, runId: null, stageId, actorType: "conveyor", actorId: "conveyor",
       actorName: "Conveyor", actorTitle: "Orchestrator", message: reason,
@@ -2365,7 +2451,7 @@ export class ConveyorService {
       issue,
       stages: pipeline.stages.map((stage) => stage.id),
       labels: this.config.labels,
-      result: { kind: "stopped", stageId, state: "error", reason, requiredFixes: [], feedbackCycles: 0, result: null },
+      result: { kind: "stopped", stageId, state, reason, requiredFixes: [], feedbackCycles: 0, result: null },
       actor: { name: "Conveyor", title: "Orchestrator" },
     }).catch((transitionError) => {
       log.error("Stopping the item as error failed", { ...this.itemFields(issue.id), stage: stageId }, transitionError);
@@ -2378,23 +2464,50 @@ export class ConveyorService {
       this.#retryTimers.delete(timer);
       if (this.#shuttingDown) return;
       const failure = this.#infrastructureFailures.get(issueId);
+      if (this.#githubOutage?.waitingItems.has(issueId) && failure) {
+        void this.resumeAfterOutageProbe(issueId, failure);
+        return;
+      }
       if (failure) this.#infrastructureFailures.set(issueId, {
         stageId: failure.stageId,
         count: failure.count,
       });
-      const current = this.store.getStageState(issueId);
-      if (current?.status === "error") {
-        this.store.setStageState({
-          issueId,
-          stageId: current.stageId,
-          status: "ready",
-          feedbackCycle: current.feedbackCycle,
-          configHash: this.config.hash,
-        });
-        this.schedule();
-      }
+      this.resumeStage(issueId);
     }, delayMs);
     this.#retryTimers.add(timer);
+  }
+
+  private resumeStage(issueId: string): void {
+    const current = this.store.getStageState(issueId);
+    if (current?.status === "error") {
+      this.store.setStageState({
+        issueId,
+        stageId: current.stageId,
+        status: "ready",
+        feedbackCycle: current.feedbackCycle,
+        configHash: this.config.hash,
+      });
+      this.schedule();
+    }
+  }
+
+  /** Resumes an item waiting out a GitHub outage once GitHub answers; otherwise keeps waiting or gives up at the limit. */
+  private async resumeAfterOutageProbe(issueId: string, failure: { stageId: string; count: number; waiting?: IssueWaitingViewModel }): Promise<void> {
+    const issue = this.store.getIssue(issueId);
+    if (!issue) {
+      this.#infrastructureFailures.delete(issueId);
+      this.releaseOutageItem(issueId);
+      return;
+    }
+    if (await this.githubHealthy(issue.repositoryId)) {
+      // The count and first failure time stay: a stage that fails again keeps its outage clock.
+      this.resumeStage(issueId);
+      return;
+    }
+    if (this.#shuttingDown) return;
+    await this.waitOutGithubOutage(
+      issue, failure.stageId, failure.count + 1, "GitHub still unavailable", failure.waiting?.since,
+    );
   }
 
   /** Reconciliation resets warnings; a parked item's pending message is re-applied from its journal. */
