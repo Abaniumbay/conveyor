@@ -10,6 +10,36 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.17.0] - 2026-11-06
+
+Conveyor now rides out GitHub trouble on its own. API calls and pushes retry temporary errors, items wait through a GitHub outage and then resume instead of stopping, retried creates never make duplicates, and status and the dashboard show a single GitHub-unavailable line. Agents learn whether a tool failure is temporary, and stage scripts can report one with exit code 75. Upgrades can switch only when a newer release exists, with timer commands for automatic upgrades.
+
+### Added
+
+- `conveyor upgrade --latest --if-newer` checks the latest stable release and schedules the drained switch only when it is newer than the running release; otherwise it exits 0 without downloading anything. Combine it with `--no-wait` to run it from a timer or a deploy stage.
+
+- `conveyor service auto-upgrade install|uninstall|status` opts in to automatic upgrades: a systemd timer periodically runs `conveyor upgrade --latest --if-newer --no-wait`, following every release including minor ones. An unloadable configuration stops the switch. `conveyor status` and `doctor` show an `Auto-upgrade:` line. Turn it off with `uninstall`.
+
+- Temporary GitHub API failures (5xx, GraphQL "something went wrong", truncated JSON, rate limits) are retried with backoff (5s, 15s, 45s, 2m), honouring `retry-after`; permanent errors are still thrown at once.
+
+- Workspace pushes that GitHub rejects temporarily (for example "fatal error in commit_refs_rules" or "Internal Server Error") are retried with backoff; permanent rejections such as non-fast-forward still fail at once.
+
+- An item whose stage fails with a transient GitHub error after the tools' retries now waits ("GitHub unavailable since <time>") and resumes at the same stage once GitHub answers, instead of stopping. After `github.outageWaitLimit` (default `2h`) it goes to `needs-intervention` with a reason naming GitHub and the first failure time.
+
+- While items wait out a GitHub outage, `conveyor status` and the dashboard show one line, "GitHub unavailable since <time>, N items waiting", instead of a blocker message on every waiting item. The line disappears when no item is waiting on GitHub.
+
+- A stage script that exits 75 (EX_TEMPFAIL) or returns `"transient": true` in its JSON result now makes the item wait and run the script again, within `github.outageWaitLimit`, instead of stopping.
+
+### Changed
+
+- A failing MCP tool call now returns `{ error: "<tool> failed", kind, upstream, status, detail }`, so agents can tell a transient GitHub outage (5xx, GraphQL internal error, push `fatal error`, truncated JSON, 429) from a permanent failure. Agent instructions say not to diagnose transient failures and to stop with "GitHub unavailable".
+
+### Fixed
+
+- Retried creates of child issues, pull requests and comments no longer duplicate: after a lost response the existing resource is found (by a hidden marker or head branch) and returned.
+
+- `conveyor config check` no longer warns that `ci.junit` is not configured for repositories with `ci.mode: disabled`; `required` and `advisory` repositories still get the warning.
+
 ## [0.16.2] - 2026-11-05
 
 This patch tightens the merge gate and makes stuck or paused work easier to understand. Merges in the packaged pipelines now wait until every counted review thread is resolved, and threads from review bots become findings the implementer must answer. An item whose issue GitHub left open after the merge now asks for you instead of sitting in Cleanup, and a drained restart or stop can say why. The board stacks and folds Needs you and the filters, and Active work shows each item's repository.
