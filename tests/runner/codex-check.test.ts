@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -216,29 +216,92 @@ describeSandbox("runCodexCheck", () => {
       automaticApprovals: false,
       mcp: { command: "bun", args: [] },
     })).rejects.toMatchObject({ kind: "process", exitCode: 2 });
-
-    const slow = await fixture(`
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    `);
-    const input = {
-      command: slow.executable,
-      workspace: slow.workspace,
-      artifactsDirectory: slow.artifacts,
-      prompt: "Check",
-      sandbox: "read-only" as const,
-      automaticApprovals: false,
-      mcp: { command: "bun", args: [] },
-      interruptGraceMs: 20,
-    };
-    await expect(runCodexCheck({ ...input, timeoutMs: 20 })).rejects.toMatchObject({
-      kind: "timeout",
-    });
-
-    const controller = new AbortController();
-    const interrupted = runCodexCheck({ ...input, signal: controller.signal });
-    setTimeout(() => controller.abort(), 20);
-    await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
   });
+
+  const HANG_GUARD_MS = 20_000;
+  const ignoreSigterm = 'process.on("SIGTERM", () => {});\n';
+  const hold = "await Bun.sleep(600_000);\n";
+  // The descendant ignores SIGTERM and keeps the pipes open; its argv carries the marker so the test can find it from the host.
+  const descendant = `
+    Bun.spawn(["bun", "-e", "process.on('SIGTERM', () => {}); await Bun.write(process.argv[1], 'up'); await Bun.sleep(600_000);", process.env.PIDFILE!], {
+      stdout: "inherit", stderr: "inherit",
+    });
+    await Bun.sleep(600_000);
+  `;
+  const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
+    command: files.executable,
+    workspace: files.workspace,
+    artifactsDirectory: files.artifacts,
+    prompt: "Check",
+    sandbox: "read-only" as const,
+    automaticApprovals: false,
+    mcp: { command: "bun", args: [] },
+    interruptGraceMs: 50,
+  });
+  // The sandbox may use its own PID namespace, so a recorded PID is not host-visible; find the descendant by its argv marker.
+  function hostPids(marker: string): number[] {
+    return readdirSync("/proc").filter((name) => /^\d+$/.test(name)).flatMap((name) => {
+      try {
+        return readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").includes(marker) ? [Number(name)] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+  async function waitForDescendant(marker: string): Promise<void> {
+    for (let attempts = 0; !existsSync(marker) && attempts < 1_000; attempts += 1) await Bun.sleep(10);
+    expect(existsSync(marker)).toBe(true);
+    expect(hostPids(marker).length).toBeGreaterThan(0);
+  }
+  async function expectGone(marker: string): Promise<void> {
+    for (let attempts = 0; hostPids(marker).length > 0 && attempts < 500; attempts += 1) await Bun.sleep(10);
+    expect(hostPids(marker)).toEqual([]);
+  }
+
+  test("times out a child that exits on SIGTERM", async () => {
+    const files = await fixture(hold);
+    await expect(runCodexCheck({ ...base(files), timeoutMs: 100 })).rejects.toMatchObject({ kind: "timeout" });
+  }, HANG_GUARD_MS);
+
+  test("escalates to SIGKILL on timeout when the child ignores SIGTERM", async () => {
+    const files = await fixture(ignoreSigterm + hold);
+    await expect(runCodexCheck({ ...base(files), timeoutMs: 100 })).rejects.toMatchObject({ kind: "timeout" });
+  }, HANG_GUARD_MS);
+
+  test("escalates to SIGKILL on abort when the child ignores SIGTERM", async () => {
+    const files = await fixture(ignoreSigterm + hold);
+    const controller = new AbortController();
+    const interrupted = runCodexCheck({ ...base(files), signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+    await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
+  }, HANG_GUARD_MS);
+
+  // The child exits on SIGTERM, so only the post-exit tree kill can end the descendant before the long grace timer.
+  const descendantOnTimeout = async (prefix: string, grace: number) => {
+    const files = await fixture(prefix + descendant);
+    const marker = path.join(files.artifacts, "descendant.up");
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, timeoutMs: 1_500, env: { PIDFILE: marker } });
+    const settled = run.then(() => undefined, (error: unknown) => error);
+    await waitForDescendant(marker);
+    expect(await settled).toMatchObject({ kind: "timeout" });
+    await expectGone(marker);
+  };
+  const descendantOnAbort = async (prefix: string, grace: number) => {
+    const files = await fixture(prefix + descendant);
+    const marker = path.join(files.artifacts, "descendant.up");
+    const controller = new AbortController();
+    const run = runCodexCheck({ ...base(files), interruptGraceMs: grace, signal: controller.signal, env: { PIDFILE: marker } });
+    const settled = run.then(() => undefined, (error: unknown) => error);
+    await waitForDescendant(marker);
+    controller.abort();
+    expect(await settled).toMatchObject({ kind: "interrupted" });
+    await expectGone(marker);
+  };
+
+  test("settles on timeout and ends a descendant that keeps the pipes open (a child that ignores SIGTERM)", () => descendantOnTimeout(ignoreSigterm, 50), HANG_GUARD_MS);
+  test("settles on timeout and ends a descendant that keeps the pipes open (a child that exits on SIGTERM)", () => descendantOnTimeout("", 10_000), HANG_GUARD_MS);
+  test("settles on abort and ends a descendant that keeps the pipes open (a child that ignores SIGTERM)", () => descendantOnAbort(ignoreSigterm, 50), HANG_GUARD_MS);
+  test("settles on abort and ends a descendant that keeps the pipes open (a child that exits on SIGTERM)", () => descendantOnAbort("", 10_000), HANG_GUARD_MS);
 
   test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`
