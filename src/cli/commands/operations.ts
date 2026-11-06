@@ -8,6 +8,7 @@ import { BUILD, versionLine } from "../../version";
 import { reasonSummary } from "../../web/format";
 import { CliError, EXIT } from "../args";
 import { positional, printJson, stringOption, type Command, type CommandContext } from "../command";
+import { githubOutageLine } from "../../app/github-outage";
 import { control, ServiceUnavailable } from "../control-client";
 import { autoUpgradeSummary } from "./service";
 import { filesystemPressure, filesystemPressureDetail, type FilesystemMeasure, type FilesystemPressure } from "../filesystem-pressure";
@@ -28,6 +29,7 @@ interface StatusPayload {
   ready: boolean;
   startup: { state: "starting" | "ready" | "degraded"; repository: string | null; phase: "waiting" | "onboarding" | "reconciling" | null };
   draining: { since: string; reason: string } | null;
+  githubOutage?: { since: string; waiting: number } | null;
   runners: { limit: number; busy: number };
   active: Array<{ item: string; stage: string }>;
   steering: number;
@@ -123,6 +125,7 @@ export const status: Command = {
         `Home: ${service.home}`,
         `Configuration: ${service.config} (${service.configHash.slice(0, 12)})`,
         `Logs: ${service.logs}`,
+        ...(service.githubOutage && service.githubOutage.waiting > 0 ? [githubOutageLine(service.githubOutage)] : []),
         `Runners: ${service.runners.busy} of ${service.runners.limit} busy${service.steering ? `, ${service.steering} steering run` : ""}`,
         ...service.active.map((entry) => `  running ${entry.item} ${entry.stage}`),
         `Stopped items: ${service.stopped.length}`,

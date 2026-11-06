@@ -127,7 +127,7 @@ describe("GitHub outage wait", () => {
       await until(() => fake.probes >= 3, "three outage probes");
       expect(fake.labelWrites).toEqual([]);
       expect(store.getIssue("issue")).toMatchObject({ projectedState: "active", projectedStage: "implementation" });
-      expect(store.getIssue("issue")?.warning).toContain("GitHub unavailable since");
+      expect(store.getIssue("issue")?.warning).toBeNull();
       expect(service.githubOutage()?.waitingItems).toEqual(["issue"]);
     } finally {
       await service.close();

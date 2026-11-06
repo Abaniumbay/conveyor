@@ -40,6 +40,7 @@ import { dispatchTool } from "../tasks/dispatch";
 import { runCodexSteering, type CodexSteeringInput } from "../runner/codex-steering";
 import { WorkspaceManager } from "../workspace/manager";
 import { formatDuration, formatUsage } from "../web/format";
+import { githubOutageLine } from "./github-outage";
 import type { DashboardPageSelection, DashboardViewModel, FilesystemStatusViewModel, GraphNodeViewModel, GraphRelationshipViewModel, IndicatorViewModel, IssueActivityViewModel, IssueCardViewModel, IssueConversationViewModel, IssueJourneyViewModel, IssueRelationViewModel, IssueRunEventsViewModel, IssueStageBadgeViewModel, IssueTodosViewModel, IssueTone, IssueWaitingViewModel, QuestionViewModel, RecentActivityEventViewModel, RecentActivityType, RecentActivityViewModel, StageActorViewModel, StageColumnViewModel, SteeringViewModel, SystemStatusViewModel } from "../web/types";
 import { readClaudeQuota, readCodexQuota } from "../usage/quota";
 import type { WebAuthApi, WebHandlerDependencies } from "../web/server";
@@ -2414,6 +2415,7 @@ export class ConveyorService {
       if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
       outage.waitingItems.add(issue.id);
       this.#githubOutage = outage;
+      this.#dashboardFeed.invalidate();
     } else {
       this.releaseOutageItem(issue.id);
     }
@@ -2422,7 +2424,7 @@ export class ConveyorService {
       count: failures,
       waiting: {
         kind: "waiting" as const,
-        reason: cause === "script" ? `A stage script reported a temporary failure since ${since}` : `GitHub unavailable since ${since}`,
+        reason: cause === "script" ? `A stage script reported a temporary failure since ${since}` : "Waiting for GitHub to recover",
         since,
         nextCheckAt: new Date(now.getTime() + retryInMs).toISOString(),
         deadline: new Date(Date.parse(since) + this.config.github.outageWaitLimit).toISOString(),
@@ -2433,9 +2435,10 @@ export class ConveyorService {
     this.store.setIssueProjection(issue.id, {
       stage: issue.projectedStage,
       state: "active",
+      // GitHub waits have no per-item blocker: status and the dashboard show one GitHub-unavailable line instead.
       warning: cause === "script"
         ? `A stage script reported a temporary failure since ${since}; waiting to run it again: ${message}`
-        : `GitHub unavailable since ${since}; waiting for it to recover: ${message}`,
+        : null,
     });
     await this.updateStatusComment(issue.id).catch((statusError) => {
       log.error("Status comment update failed", this.itemFields(issue.id), statusError);
@@ -2448,6 +2451,7 @@ export class ConveyorService {
     if (!this.#githubOutage) return;
     this.#githubOutage.waitingItems.delete(issueId);
     if (this.#githubOutage.waitingItems.size === 0) this.#githubOutage = null;
+    this.#dashboardFeed.invalidate();
   }
 
   /** Probes GitHub for an item waiting out an outage; true when it answers. */
@@ -5369,7 +5373,10 @@ export class ConveyorService {
           this.manualGateViews(issue).some((gate) => gate.waiting))
         .filter(awaitsOwner)
         .map((issue) => card(issue)),
-      systemWarnings: unassociatedWarnings,
+      systemWarnings: [
+        ...(this.#githubOutage ? [githubOutageLine({ since: this.#githubOutage.since, waiting: this.#githubOutage.waitingItems.size })] : []),
+        ...unassociatedWarnings,
+      ],
       repositories: repositorySummaries.repositories,
       restrictedRepositories: repositorySummaries.restrictedRepositories,
       steering,
