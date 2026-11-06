@@ -177,4 +177,22 @@ describe("GitHub outage on status and the dashboard", () => {
       await close();
     }
   });
+
+  test("the live dashboard feed drops the line when the last waiting item leaves without an event", async () => {
+    const { service, store, close } = await setup(1);
+    try {
+      await service.tick();
+      await until(() => service.githubOutage()?.waitingItems.length === 1, "one waiting item");
+      const deps = service.webDependencies({} as never, "user");
+      const has = () => deps.getDashboardSnapshot!().model.system.systemWarnings.some((w) => w.includes("GitHub unavailable since"));
+      expect(has()).toBe(true);
+      // The item moves on; the next probe releases it from the outage record without emitting an event.
+      const id = store.listIssues("repo")[0]!.id;
+      store.setIssueProjection(id, { stage: "review", state: "active", warning: null });
+      await until(() => service.githubOutage() === null, "the outage to clear");
+      expect(has()).toBe(false);
+    } finally {
+      await close();
+    }
+  });
 });

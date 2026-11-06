@@ -2415,6 +2415,7 @@ export class ConveyorService {
       if (Date.parse(since) < Date.parse(outage.since)) outage.since = since;
       outage.waitingItems.add(issue.id);
       this.#githubOutage = outage;
+      this.#dashboardFeed.invalidate();
     } else {
       this.releaseOutageItem(issue.id);
     }
@@ -2450,6 +2451,7 @@ export class ConveyorService {
     if (!this.#githubOutage) return;
     this.#githubOutage.waitingItems.delete(issueId);
     if (this.#githubOutage.waitingItems.size === 0) this.#githubOutage = null;
+    this.#dashboardFeed.invalidate();
   }
 
   /** Probes GitHub for an item waiting out an outage; true when it answers. */
