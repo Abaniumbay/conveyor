@@ -76,6 +76,18 @@ describe("idempotent creates", () => {
     expect(github.issues).toHaveLength(2);
   });
 
+  test("same title with different child-create markers creates two issues; same marker returns the first", async () => {
+    const github = new FakeGitHub();
+    const adapter = adapterOver(github);
+    const marked = (hex: string) => ({ ...child("Same title"), body: `body\n\n<!-- conveyor:child-create:${hex.repeat(64)} -->` });
+    const a = await adapter.createChildIssue(marked("a"));
+    const b = await adapter.createChildIssue(marked("b"));
+    const again = await adapter.createChildIssue(marked("a"));
+    expect(b.number).not.toBe(a.number);
+    expect(again.number).toBe(a.number);
+    expect(github.issues).toHaveLength(2);
+  });
+
   test("pull request created but answered 502 leaves a single pull request", async () => {
     const github = new FakeGitHub(true);
     const pr = await adapterOver(github).ensurePullRequest({ address: "o/r", issueNumber: 1, branch: "b", baseBranch: "main", title: "t", closingReference: true });
@@ -89,10 +101,9 @@ describe("idempotent creates", () => {
     const id = await adapter.addComment("o/r", 3, "hello");
     expect(github.comments).toHaveLength(1);
     expect(id).toBe(1);
-    github.comments = [];
-    (github as unknown as { failFirstCreate: boolean }).failFirstCreate = true;
-    const made = await adapter.createComment("o/r", 3, "hello");
-    expect(github.comments).toHaveLength(1);
+    const second = new FakeGitHub(true);
+    const made = await adapterOver(second).createComment("o/r", 3, "hello");
+    expect(second.comments).toHaveLength(1);
     expect(made.id).toBe(1);
   });
 

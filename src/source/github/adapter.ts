@@ -627,7 +627,8 @@ export class GitHubAdapter {
       path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues?per_page=100`,
       paginate: true,
     })).find((issue) => issue.pull_request === undefined
-      && ((issue.body ?? "").includes(keyMarker) || (createMarker !== undefined && (issue.body ?? "").includes(createMarker))));
+      // A supplied child-create marker is authoritative: same title with a different marker is a different child.
+      && (issue.body ?? "").includes(createMarker ?? keyMarker));
     const found = await findExisting();
     const existing = found ? sourceIssue(input.address, found) : undefined;
     if (existing) {
