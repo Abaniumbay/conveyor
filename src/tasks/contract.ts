@@ -45,6 +45,14 @@ export function fail(message: string, options: { details?: unknown; route?: Rout
 }
 
 /** Thrown by tasks for anything that is not a domain failure. */
+/** A stage script reported a temporary failure (exit 75 or `transient: true`): wait and run it again. */
+export class TransientScriptError extends Error {
+  constructor(message: string, options: { cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = "TransientScriptError";
+  }
+}
+
 export class InfrastructureError extends Error {
   readonly usageLimit?: boolean;
   constructor(message: string, options: { usageLimit?: boolean; cause?: unknown } = {}) {

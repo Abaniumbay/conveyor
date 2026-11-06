@@ -9,7 +9,7 @@ import { RunnerProcessError, runProcess } from "../runner/json-process";
 import { resolveFilesystemPath } from "../core/paths";
 import { scriptCommand } from "../self";
 import type { ScriptContext, ScriptRecoveryObservation, ScriptRecoveryRequest } from "./context";
-import { defineGroup, fail, InfrastructureError, pass, type TaskArgs, type TaskDefinition } from "./contract";
+import { defineGroup, fail, InfrastructureError, pass, TransientScriptError, type TaskArgs, type TaskDefinition } from "./contract";
 import type { TaskDeps } from "./deps";
 
 type Deps = TaskDeps;
@@ -17,6 +17,8 @@ type ScriptResult = ScriptContext["results"][string];
 type Recovery = ScriptResult["recovery"];
 
 const OUTPUT_TAIL_BYTES = 4096;
+/** EX_TEMPFAIL: a script exits with it to say "temporary failure, try again later". */
+const EX_TEMPFAIL = 75;
 
 const runConfig = z
   .object({
@@ -54,6 +56,20 @@ function tail(text: string): string {
   let out = text.trim().slice(-OUTPUT_TAIL_BYTES);
   while (Buffer.byteLength(out) > OUTPUT_TAIL_BYTES) out = out.slice(1);
   return out;
+}
+
+/** A result with `transient: true` is a temporary failure, whatever else it contains. */
+function throwIfTransient(script: string, stdout: string): void {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(stdout);
+  } catch {
+    return;
+  }
+  if (typeof decoded !== "object" || decoded === null || (decoded as { transient?: unknown }).transient !== true) return;
+  const { summary, reason } = decoded as { summary?: unknown; reason?: unknown };
+  const detail = [reason, summary].find((value): value is string => typeof value === "string" && value.trim() !== "");
+  throw new TransientScriptError(`script.run apply: ${script} reported a temporary failure (transient: true)${detail ? `: ${detail.trim()}` : ""}`);
 }
 
 function parseOutput<T>(task: string, phase: string, schema: z.ZodType<T>, stdout: string): T {
@@ -114,12 +130,16 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
           ...(deps.signal ? { signal: deps.signal } : {}),
         });
       } catch (error) {
+        if (error instanceof RunnerProcessError && error.exitCode === EX_TEMPFAIL) {
+          throw new TransientScriptError(`script.run ${phase}: ${config.script} exited ${EX_TEMPFAIL} (temporary failure)${error.stderr.trim() ? `: ${tail(error.stderr)}` : ""}`, { cause: error });
+        }
         if (error instanceof RunnerProcessError) throw new InfrastructureError(`script.run ${phase} failed: ${error.message}`, { cause: error });
         throw error;
       }
     };
     const apply = async () => {
       const { stdout } = await call("apply");
+      throwIfTransient(config.script, stdout);
       return pass(toResult(config.recovery, parseOutput("script.run", "apply", applyOutput, stdout), null, tail(stdout)));
     };
 

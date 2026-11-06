@@ -381,6 +381,18 @@ github:
   outageWaitLimit: 2h
 ```
 
+## Temporary script failures
+
+A `script.run` stage script that cannot proceed because something upstream is temporarily unavailable
+can say so instead of failing. Exiting with code `75` (`EX_TEMPFAIL`), or printing a JSON result
+with `"transient": true` (for example `{"outcome": "failure", "summary": "deploy not ready", "transient": true}`),
+makes the item wait like it does for a GitHub outage: it stays at the same stage and Conveyor runs the
+script again on the `settings.retries` backoff, with no manual retry. When the script later exits
+`0` with a passing result, the stage completes. The wait is bounded by `github.outageWaitLimit`,
+counted from the first temporary failure; past it the item goes to `needs-intervention`. Any other
+non-zero exit code, or a failing result without `transient`, is handled as before. Conveyor does not
+re-run installation workflows itself.
+
 ## Follow-up acknowledgement
 
 Follow-ups are optional, human-owned reminders for work Conveyor cannot perform after delivery. To
