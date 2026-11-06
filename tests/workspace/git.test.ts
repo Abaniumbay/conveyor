@@ -270,7 +270,7 @@ test("push retries an 'Internal Server Error' rejection", async () => {
 });
 
 test("push rejected as non-fast-forward fails at once without retry", async () => {
-  const { work, remote, root, attempts } = await hookedRemote("exit 0");
+  const { work, remote, root } = await hookedRemote("exit 0");
   await createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false });
   const other = path.join(root, "other");
   await sh(root, "clone", "-b", "feat", remote, other);
@@ -279,9 +279,11 @@ test("push rejected as non-fast-forward fails at once without retry", async () =
   await sh(other, "push", "origin", "feat");
   await writeFile(path.join(work, "w"), "w");
   await sh(work, "add", "."); await sh(work, "commit", "-m", "mine");
-  const before = await attempts();
-  await expect(createCliGit({ pushRetryDelaysMs: [1, 1] }).push(work, "feat", { forceWithLease: false })).rejects.toThrow(/rejected|non-fast-forward/);
-  expect(await attempts()).toBe(before);
+  // The git client rejects the push locally, so the remote hook cannot count attempts. A long
+  // backoff makes a wrongly retried push exceed the test's own timeout instead.
+  const started = Date.now();
+  await expect(createCliGit({ pushRetryDelaysMs: [60_000] }).push(work, "feat", { forceWithLease: false })).rejects.toThrow(/rejected|non-fast-forward/);
+  expect(Date.now() - started).toBeLessThan(5_000);
 });
 
 test("push rejected transiently on every attempt throws a transient error after the delays run out", async () => {
