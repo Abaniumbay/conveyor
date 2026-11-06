@@ -62,6 +62,11 @@ export function resolveItem(service: ConveyorService, reference: string): string
 
 const STOPPED = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
 
+function githubOutageStatus(service: ConveyorService): { since: string; waiting: number } | null {
+  const outage = service.githubOutage();
+  return outage ? { since: outage.since, waiting: outage.waitingItems.length } : null;
+}
+
 function status(service: ConveyorService, info: ControlInfo) {
   const work = service.activeWork();
   const issues = service.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
@@ -75,6 +80,7 @@ function status(service: ConveyorService, info: ControlInfo) {
     ready: service.isReady(),
     startup: service.startupStatus(),
     draining: service.draining(),
+    githubOutage: githubOutageStatus(service),
     runners: { limit: service.config.settings.runners, busy: work.items.length },
     active: work.items.map((item) => ({ item: itemReference(service, item.issueId), stage: item.stageId })),
     steering: work.steering,
