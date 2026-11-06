@@ -353,7 +353,7 @@ describe("ci.junit warning", () => {
     `${DEFAULTS}repositories:\n${Object.entries(repositories).map(([id, body]) => `  ${id}:\n${body.trimEnd().replace(/^/gm, "    ")}\n`).join("")}`;
   const warnings = async (repositories: Record<string, string>) => {
     const paths = await home({ "conveyor.yaml": entry(repositories) });
-    return (await loadConfig(paths.entrypoint, null, { home: paths.home })).warnings.filter((warning) => warning.includes("ci.junit is not configured"));
+    return (await loadConfig(paths.entrypoint, null, { home: paths.home })).warnings?.filter((warning) => warning.includes("ci.junit is not configured")) ?? [];
   };
 
   test("a disabled-CI repository without ci.junit produces no warning", async () => {
