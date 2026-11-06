@@ -253,7 +253,7 @@ export async function runCodexCheck(
       buildArguments: (extra) => buildArguments(run, outputFile, schemaFile, extra),
     });
     network = launch.network;
-    child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = Bun.spawn(launch.argv, { cwd: workspace, env: launch.env, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true });
     // Release the per-run network whenever the process ends, even if later setup throws.
     void child.exited.finally(() => network?.close());
   } catch (error) {
@@ -289,13 +289,25 @@ export async function runCodexCheck(
   let timedOut = false;
   let interrupted = input.signal?.aborted ?? false;
   let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+  // The child leads its own process group, so descendants that hold the output pipes are signalled too.
+  const signalTree = (signal: NodeJS.Signals): void => {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The group is gone or unreachable; fall back to the direct child.
+    }
+    if (child.exitCode === null) {
+      try {
+        child.kill(signal);
+      } catch {
+        // Already exited.
+      }
+    }
+  };
   const stop = (): void => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    forceKillTimer = setTimeout(
-      () => child.exitCode === null && child.kill("SIGKILL"),
-      input.interruptGraceMs ?? 10_000,
-    );
+    signalTree("SIGTERM");
+    forceKillTimer ??= setTimeout(() => signalTree("SIGKILL"), input.interruptGraceMs ?? 10_000);
   };
   const timeoutTimer = input.timeoutMs
     ? setTimeout(() => {
@@ -314,6 +326,8 @@ export async function runCodexCheck(
   let cleanupError: string | undefined;
   try {
     exitCode = await child.exited;
+    // Descendants may outlive the child and keep the pipes open; end them once a stop was requested.
+    if (timedOut || interrupted) signalTree("SIGKILL");
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);

@@ -216,29 +216,87 @@ describeSandbox("runCodexCheck", () => {
       automaticApprovals: false,
       mcp: { command: "bun", args: [] },
     })).rejects.toMatchObject({ kind: "process", exitCode: 2 });
-
-    const slow = await fixture(`
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    `);
-    const input = {
-      command: slow.executable,
-      workspace: slow.workspace,
-      artifactsDirectory: slow.artifacts,
-      prompt: "Check",
-      sandbox: "read-only" as const,
-      automaticApprovals: false,
-      mcp: { command: "bun", args: [] },
-      interruptGraceMs: 20,
-    };
-    await expect(runCodexCheck({ ...input, timeoutMs: 20 })).rejects.toMatchObject({
-      kind: "timeout",
-    });
-
-    const controller = new AbortController();
-    const interrupted = runCodexCheck({ ...input, signal: controller.signal });
-    setTimeout(() => controller.abort(), 20);
-    await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
   });
+
+  const HANG_GUARD_MS = 20_000;
+  const ignoreSigterm = 'process.on("SIGTERM", () => {});\n';
+  const hold = "await Bun.sleep(600_000);\n";
+  const descendant = `
+    const child = Bun.spawn(["bun", "-e", "process.on('SIGTERM', () => {}); await Bun.write(process.env.PIDFILE, String(process.pid)); await Bun.sleep(600_000);"], {
+      env: { ...process.env, PIDFILE: process.env.PIDFILE! }, stdout: "inherit", stderr: "inherit",
+    });
+    await Bun.write(process.env.PIDFILE + ".parent", String(child.pid));
+    await Bun.sleep(600_000);
+  `;
+  const base = (files: Awaited<ReturnType<typeof fixture>>) => ({
+    command: files.executable,
+    workspace: files.workspace,
+    artifactsDirectory: files.artifacts,
+    prompt: "Check",
+    sandbox: "read-only" as const,
+    automaticApprovals: false,
+    mcp: { command: "bun", args: [] },
+    interruptGraceMs: 50,
+  });
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  async function recordedPid(file: string): Promise<number> {
+    for (let attempts = 0; !existsSync(file) && attempts < 1_000; attempts += 1) await Bun.sleep(10);
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      const text = existsSync(file) ? (await readFile(file, "utf8")).trim() : "";
+      if (text) return Number(text);
+      await Bun.sleep(10);
+    }
+    throw new Error(`no pid recorded in ${file}`);
+  }
+  async function expectGone(pid: number): Promise<void> {
+    for (let attempts = 0; alive(pid) && attempts < 500; attempts += 1) await Bun.sleep(10);
+    expect(alive(pid)).toBe(false);
+  }
+
+  test("times out a child that exits on SIGTERM", async () => {
+    const files = await fixture(hold);
+    await expect(runCodexCheck({ ...base(files), timeoutMs: 100 })).rejects.toMatchObject({ kind: "timeout" });
+  }, HANG_GUARD_MS);
+
+  test("escalates to SIGKILL on timeout when the child ignores SIGTERM", async () => {
+    const files = await fixture(ignoreSigterm + hold);
+    await expect(runCodexCheck({ ...base(files), timeoutMs: 100 })).rejects.toMatchObject({ kind: "timeout" });
+  }, HANG_GUARD_MS);
+
+  test("escalates to SIGKILL on abort when the child ignores SIGTERM", async () => {
+    const files = await fixture(ignoreSigterm + hold);
+    const controller = new AbortController();
+    const interrupted = runCodexCheck({ ...base(files), signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+    await expect(interrupted).rejects.toMatchObject({ kind: "interrupted" });
+  }, HANG_GUARD_MS);
+
+  test("settles on timeout and ends a descendant that keeps the pipes open", async () => {
+    const files = await fixture(ignoreSigterm + descendant);
+    const pidFile = path.join(files.artifacts, "descendant.pid");
+    const run = runCodexCheck({ ...base(files), timeoutMs: 1_000, env: { PIDFILE: pidFile } });
+    const pid = await recordedPid(pidFile);
+    await expect(run).rejects.toMatchObject({ kind: "timeout" });
+    await expectGone(pid);
+  }, HANG_GUARD_MS);
+
+  test("settles on abort and ends a descendant that keeps the pipes open", async () => {
+    const files = await fixture(ignoreSigterm + descendant);
+    const pidFile = path.join(files.artifacts, "descendant.pid");
+    const controller = new AbortController();
+    const run = runCodexCheck({ ...base(files), signal: controller.signal, env: { PIDFILE: pidFile } });
+    const pid = await recordedPid(pidFile);
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ kind: "interrupted" });
+    await expectGone(pid);
+  }, HANG_GUARD_MS);
 
   test("cleans disposable scratch and private homes after failure, timeout, and interruption", async () => {
     const failed = await fixture(`
