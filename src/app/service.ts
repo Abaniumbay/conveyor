@@ -2010,6 +2010,7 @@ export class ConveyorService {
       mcp: this.mcpFactory(),
       harnesses: this.#harnesses,
       delivery: () => this.loadDeliveryState(issueId, repository.address),
+      forgetChange: () => this.forgetChange(issueId, repository.address),
       codeHost: this.executionCodeHost(issueId, this.codeHostFor(repository.id)),
       ci: {
         provider: () => this.executionCiProvider(repository.id),
@@ -2577,6 +2578,12 @@ export class ConveyorService {
         warning: message,
       });
     }
+  }
+
+  /** Drops the cached GitHub reads of the item's change request, so the next read sees what a push did. */
+  private forgetChange(issueId: string, address: string): void {
+    const stored = this.store.getCurrentPullRequest(issueId);
+    if (stored) this.github.forgetChange(address, stored.number);
   }
 
   private async loadDeliveryState(
@@ -3565,8 +3572,9 @@ export class ConveyorService {
       }, {
         registry: createTaskRegistry(),
         deps: taskDeps,
-        liveHeadSha: async () => {
+        liveHeadSha: async (options) => {
           if (!context) return null;
+          if (options?.refresh) this.forgetChange(context.issue.id, context.repository.address);
           const state = await this.loadDeliveryState(context.issue.id, context.repository.address) as {
             change?: { headSha?: string } | null;
             pullRequest?: { headSha?: string } | null;

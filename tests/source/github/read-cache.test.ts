@@ -317,3 +317,25 @@ test("forgetting a repository makes its next reads go to GitHub", async () => {
   await instance.request(get(ISSUE));
   expect(github.requests).toHaveLength(2);
 });
+
+describe("forgetChange", () => {
+  const PULL = "repos/owner/app/pulls/5";
+  const OTHER = "repos/owner/app/pulls/6";
+  const paths = [PULL, `${PULL}/reviews`, `${PULL}/comments`, "repos/owner/app/commits/old/check-runs", OTHER, `${OTHER}/reviews`];
+  const query: GitHubTransportRequest = { method: "POST", path: "graphql", body: { query: "query { node }" } };
+
+  test("drops the pull request, its reviews, comments, check runs and graphql reads, and keeps another pull request's", async () => {
+    const { github, instance } = cache(Object.fromEntries(paths.map((path) => [`GET ${path}`, { number: 5, updated_at: "2026-10-18T10:00:00Z" }])));
+    for (const path of paths) await instance.request(get(path));
+    await instance.request(query);
+    github.requests.length = 0;
+
+    instance.forgetChange("Owner/App", 5);
+    for (const path of paths) await instance.request(get(path));
+    await instance.request(query);
+
+    expect(github.requests.sort()).toEqual([
+      "GET repos/owner/app/commits/old/check-runs", `GET ${PULL}`, `GET ${PULL}/comments`, `GET ${PULL}/reviews`, "POST graphql",
+    ].sort());
+  });
+});
