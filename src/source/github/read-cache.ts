@@ -206,6 +206,18 @@ export class GitHubReadCache implements GitHubTransport {
     }
   }
 
+  /**
+   * Drops what is held about one pull request (the pull request, its reviews and comments, and the
+   * repository's check runs), for a change GitHub has not told us about, such as a git push whose
+   * webhook delivery was lost. The next read goes to GitHub.
+   */
+  forgetChange(address: string, number: number): void {
+    const repository = `repos/${address.toLowerCase()}`;
+    this.#drop(`${repository}/pulls/${number}`);
+    this.#dropMatching(repository, /\/commits\/[^/]+\/check-runs$/);
+    this.#dropGraphql();
+  }
+
   /** Drops everything held for a repository, so its next reads go to GitHub (Sync now). */
   forgetRepository(address: string): void {
     for (const key of this.#storage.keys(`repos/${address.toLowerCase()}/`)) this.#storage.delete(key);
