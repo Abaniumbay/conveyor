@@ -369,7 +369,9 @@ it exits 1 when the plans differ, including when only that setting differs.
 
 When a stage fails with a transient GitHub error (a 5xx, a GraphQL internal error, a push
 `fatal error`, a truncated response) after the tools' own retries, the item does not stop. It waits
-("GitHub unavailable since <time>") and Conveyor probes GitHub with `GET /rate_limit` on the
+("Waiting for GitHub to recover"). `conveyor status` and the dashboard's System attention section
+show one line for all waiting items, "GitHub unavailable since <time>, N items waiting", which
+disappears when no item waits. Conveyor probes GitHub with `GET /rate_limit` on the
 `settings.retries` backoff. Once GitHub answers, the item resumes at the same stage without a manual
 retry. A permanent GitHub failure still stops the item as before.
 
