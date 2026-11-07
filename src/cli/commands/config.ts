@@ -6,6 +6,7 @@ import { redactSecrets } from "../../config/compose";
 import { isNativeStage, STAGES_PIPELINE } from "../../config/schema";
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { migrateConfiguration } from "../../config/migrate";
+import { migrateStages } from "../../config/migrate-stages";
 import { comparePlans } from "../../tasks/compare-plans";
 import type { TaskRegistry } from "../../tasks/contract";
 import { renderPlan } from "../../tasks/plan";
@@ -121,10 +122,24 @@ export const configMigrate: Command = {
   options: {
     from: { type: "string", value: "<dir-or-file>", description: "the configuration to migrate (default: --config)" },
     to: { type: "string", value: "<dir>", description: "an absent or empty directory for the new configuration" },
+    stages: { type: "boolean", description: "convert the pipelines of the configuration file into one installation-wide stages list, written beside it as *.migrated.yaml" },
   },
   details: "Instruction files are copied into the new directory; script, folder and state paths are kept as they are, so the compiled plans stay identical. Exits 1 when the result is not identical.",
   async run(context) {
     const from = path.resolve(stringOption(context, "from") ?? context.paths.config);
+    if (context.options.stages === true) {
+      try {
+        const migrated = await migrateStages(from, { home: context.paths.home });
+        if (context.json) printJson(context, migrated);
+        else {
+          context.out([`Wrote ${migrated.output}`, ...migrated.comparisons.map((entry) => `Repository ${entry.repository}:\n${entry.report}`)].join("\n\n"));
+        }
+        return EXIT.ok;
+      } catch (error) {
+        if (error instanceof ConfigError) throw new CliError(error.message, EXIT.config);
+        throw error;
+      }
+    }
     const to = stringOption(context, "to");
     if (!to) throw new CliError("--to is required", EXIT.usage);
     let result;
