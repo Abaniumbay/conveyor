@@ -901,6 +901,15 @@ describe("GitHubAdapter issue types and fields", () => {
     await expect(broken.listIssueTypes("acme")).rejects.toThrow("boom");
   });
 
+  test("posts a top-level issue with the given labels and returns it", async () => {
+    const transport = new Scripted(() => ({ id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [{ name: "conveyor" }], updated_at: "x" }));
+    const issue = await new GitHubAdapter(transport, "conveyor").createIssue({ address: "o/r", title: "t", body: "b", labels: ["conveyor", "conveyor"] });
+    expect(transport.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      { method: "POST", path: "repos/o/r/issues", body: { title: "t", body: "b", labels: ["conveyor"] } },
+    ]);
+    expect(issue.number).toBe(9);
+  });
+
   test("sets the type, adds only the given field values, and creates a child with both", async () => {
     const transport = new Scripted((request) => request.path.includes("sub_issues") ? [] : request.method === "GET" ? { id: 7, number: 3 }
       : { id: 8, number: 9, html_url: "u", title: "t", body: "b", state: "open", labels: [], updated_at: "x", type: { name: "Bug" } });

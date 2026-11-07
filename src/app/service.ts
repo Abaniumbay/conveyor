@@ -106,7 +106,7 @@ const GITHUB_WRITES = new Set([
   "reactToReviewComment", "reactToIssueComment", "replyToReviewThread", "resolveReviewThread",
   "reactToReviewThread", "updateManagedSection", "ensurePullRequest", "setPullRequestChecklist",
   "setPullRequestDescription", "retriggerLabel", "rerunJob", "squashMerge", "closeIssue",
-  "createChildIssue", "ensureLabels", "ensureWebhook", "pingHook", "redeliverHookDelivery",
+  "createChildIssue", "createIssue", "ensureLabels", "ensureWebhook", "pingHook", "redeliverHookDelivery",
 ]);
 
 
@@ -943,6 +943,26 @@ export class ConveyorService {
     const sync = this.runRepositorySync(repositoryId).finally(() => this.#repositorySyncs.delete(repositoryId));
     this.#repositorySyncs.set(repositoryId, sync);
     return sync;
+  }
+
+  /**
+   * Creates an issue in an onboarded repository, enrolls it (the enrollment label puts it in the
+   * backlog at the pipeline's start stage) and reads the repository so it shows in the item list.
+   * `repository` is a configured repository id or its source address.
+   */
+  async createIssue(input: { repository: string; title: string; body: string }): Promise<{ issueId: string; number: number; url: string }> {
+    const title = input.title.trim();
+    if (title === "") throw new CommandInputError("the issue title must not be empty");
+    const repositoryId = Object.entries(this.config.repositories).find(([id, repository]) => id === input.repository || repository.address === input.repository)?.[0];
+    if (!repositoryId) throw new CommandInputError(`repository ${input.repository} is not onboarded`);
+    this.assertRepositoryActive(repositoryId);
+    const repository = this.config.repositories[repositoryId]!;
+    const created = await this.executionGitHub(repositoryId).createIssue({
+      address: repository.address, title, body: input.body, labels: [this.config.labels.enrollment],
+    });
+    // The issue exists at the source now; a failed read is caught up by the next reconcile.
+    await this.syncRepository(repositoryId).catch((error: unknown) => log.error("Reading the repository after creating an issue failed", { repository: repositoryId }, error));
+    return { issueId: created.id, number: created.number, url: created.url };
   }
 
   private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {

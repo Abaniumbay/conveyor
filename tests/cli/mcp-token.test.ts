@@ -88,7 +88,7 @@ describe("conveyor mcp token", () => {
     const created = JSON.parse((await cli("mcp", "token", "create", "laptop", "--home", target, "--json")).out) as { token: string; id: string };
     const store = await ConveyorStore.open(database(target));
     try {
-      const handler = createOperatorMcpHandler({ facade: { store, status: () => ({}), findItem: () => null, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: (hash) => store.operatorMcpTokenIsActive(hash) });
+      const handler = createOperatorMcpHandler({ facade: { store, status: () => ({}), findItem: () => null, createIssue: () => { throw new Error("unused"); }, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: (hash) => store.operatorMcpTokenIsActive(hash) });
       expect(await request(handler, created.token)).toBe(200);
       expect((await cli("mcp", "token", "revoke", created.id, "--home", target)).code).toBe(0);
       expect(await request(handler, created.token)).toBe(401);

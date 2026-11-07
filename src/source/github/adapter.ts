@@ -614,6 +614,16 @@ export class GitHubAdapter {
     return sourceIssue(address, issue);
   }
 
+  /** Creates a top-level issue with the given labels. */
+  async createIssue(input: { address: string; title: string; body: string; labels: readonly string[] }): Promise<SourceIssue> {
+    const issue = await this.transport.request<GitHubIssue>({
+      method: "POST",
+      path: `repos/${input.address}/issues`,
+      body: { title: input.title, body: input.body, labels: [...new Set(input.labels)] },
+    });
+    return sourceIssue(input.address, issue);
+  }
+
   async createChildIssue(input: {
     address: string;
     parentNumber: number;

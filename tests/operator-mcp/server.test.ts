@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function facade(store: OperatorReadStore = {} as OperatorReadStore) {
-  return { store, status: () => STATUS, findItem: () => null, dispatch: () => { throw new Error("no commands in this test"); } };
+  return { store, status: () => STATUS, findItem: () => null, createIssue: () => { throw new Error("unused"); }, dispatch: () => { throw new Error("no commands in this test"); } };
 }
 
 function listen(handler: (request: Request) => Promise<Response>): string {

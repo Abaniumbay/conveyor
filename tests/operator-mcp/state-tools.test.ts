@@ -37,7 +37,7 @@ beforeAll(async () => {
   store.createRun({ id: "run1", issueId: "i1", stageId: "implementation", attempt: 1, kind: "stage", status: "completed", configHash: "h", startedAt: "2026-10-20T00:00:00.000Z" });
   store.openQuestion({ issueId: "i1", runId: "run1", prompt: "Which?", reason: "unclear", options: ["a", "b"] });
   store.appendConversationMessage({ issueId: "i1", runId: null, stageId: null, actorType: "user", actorId: "u", actorName: "Owner", actorTitle: null, message: "hello" });
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: createOperatorMcpHandler({ facade: { store, status: () => ({}), findItem: () => null, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: () => true }) });
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: createOperatorMcpHandler({ facade: { store, status: () => ({}), findItem: () => null, createIssue: () => { throw new Error("unused"); }, dispatch: () => { throw new Error("unused"); } }, tokenIsActive: () => true }) });
   stop = () => void server.stop(true);
   client = new Client({ name: "test", version: "1" });
   await client.connect(new StreamableHTTPClientTransport(new URL(OPERATOR_MCP_PATH, server.url.href), { requestInit: { headers: { authorization: "Bearer abc" } } }) as Parameters<Client["connect"]>[0]);
