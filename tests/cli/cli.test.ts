@@ -47,7 +47,8 @@ async function initialisedHome(): Promise<string> {
   const home = path.join(root, "home");
   await writeFile(path.join(root, "password"), `${PASSWORD}\n`);
   const result = await cli("init", "--home", home, "--admin-username", "admin", "--admin-password-file", path.join(root, "password"));
-  expect(result.err).toBe("");
+  // The packaged pipelines this home includes are the deprecated form: that is the only stderr line.
+  expect(result.err.split("\n").filter((line) => line && !line.startsWith("warning: pipelines: and repository pipeline: are deprecated"))).toEqual([]);
   expect(result.code).toBe(EXIT.ok);
   return home;
 }
@@ -220,6 +221,62 @@ describe("conveyor config", () => {
     const result = await cli("config", "check", "--home", home);
     expect(result.code).toBe(EXIT.config);
     expect(result.err).toContain("- repositories/broken.yaml: ");
+  });
+
+  describe("pipelines deprecation", () => {
+    async function withRepository(): Promise<string> {
+      const home = await initialisedHome();
+      await writeFile(path.join(home, "config/repositories/app.yaml"), `items: github
+code: github
+ci: { mode: disabled }
+address: owner/app
+folder: /tmp/app
+pipeline: delivery
+`);
+      return home;
+    }
+
+    test("config check warns, names the files and the migration command, and still exits 0", async () => {
+      const home = await withRepository();
+      const result = await cli("config", "check", "--home", home);
+      expect(result.code).toBe(EXIT.ok);
+      expect(result.out).toContain("Configuration is valid");
+      expect(result.out).toContain("conveyor config migrate --stages");
+      expect(result.out).toContain("pipelines.yaml");
+      // A repository file that sets pipeline: is named as using the deprecated form.
+      expect(result.out).toContain(path.join(home, "config/repositories/app.yaml"));
+    });
+
+    test("doctor reports the same warning naming the file", async () => {
+      const home = await withRepository();
+      const checks = await doctorChecks(home, path.join(home, "config/conveyor.yaml"), async () => false);
+      const warning = checks.find((check) => check.name === "configuration" && check.status === "warn");
+      expect(warning?.detail).toContain("conveyor config migrate --stages");
+      expect(warning?.detail).toContain(path.join(home, "config/repositories/app.yaml"));
+    });
+
+    test("serve writes the warning to the service log and still starts", async () => {
+      const home = await initialisedHome();
+      await configureFreeDashboardPort(home);
+      const serving = cli("serve", "--home", home);
+      try {
+        // "started" is logged in the same tick that installs the signal handlers, so once it is
+        // in the log the SIGTERM below reaches the shutdown handler.
+        const logFile = path.join(home, "logs/conveyor.log");
+        let text = "";
+        for (let attempt = 0; attempt < 300 && !text.includes("started"); attempt += 1) {
+          text = await readFile(logFile, "utf8").catch(() => "");
+          if (!text.includes("started")) await Bun.sleep(100);
+        }
+        expect(text).toContain("conveyor config migrate --stages");
+        expect(text).toContain("pipelines.yaml");
+        expect(text).toContain("started");
+      } finally {
+        process.emit("SIGTERM");
+        expect((await serving).code).toBe(EXIT.ok);
+        log.configure({ sinks: [new ConsoleSink()] });
+      }
+    }, 40_000);
   });
 
   test("secret-source parse errors do not expose values through config check or serve", async () => {

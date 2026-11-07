@@ -603,6 +603,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
   let secrets: string[] = [];
   let secretKeys: Record<string, string | number> = {};
   let locate: Locate | null = null;
+  let composedOrigins: ConfigOrigin[] | null = null;
 
   /** Each local document with the directory its relative paths resolve against. */
   let rawLocal: { filename: string; document: ConfigurationDocument; baseOf: BaseDirectory }[];
@@ -624,6 +625,7 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
     const composed = await composeConfig(resolvedTarget, { ...(builtin ? { builtin } : {}), ...(options.secretPlaceholders ? { secretPlaceholders: true } : {}) });
     secrets = composed.secrets;
     secretKeys = composed.secretKeys;
+    composedOrigins = composed.origins;
     const originBase: BaseDirectory = (segments) =>
       path.dirname(originOf(composed.origins, segments)?.file ?? resolvedTarget);
     rawLocal = [{ filename: resolvedTarget, document: composed.document, baseOf: originBase }];
@@ -686,6 +688,25 @@ export async function readConfiguration(target: string, options: LoadConfigOptio
   const origins = new Map<string, string>();
   for (const { filename, document } of documents) {
     mergeDocument(merged, document, origins, filename);
+  }
+
+  const deprecatedFiles = new Set<string>();
+  for (const { filename, document } of localDocuments) {
+    const pipelineKeys: string[][] = [];
+    if (isObject(document.pipelines)) pipelineKeys.push(["pipelines"]);
+    if (isObject(document.repositories)) {
+      for (const [name, repository] of Object.entries(document.repositories)) {
+        if (isObject(repository) && "pipeline" in repository) pipelineKeys.push(["repositories", name, "pipeline"]);
+      }
+    }
+    for (const segments of pipelineKeys) {
+      deprecatedFiles.add(composedOrigins ? originOf(composedOrigins, segments)?.file ?? filename : filename);
+    }
+  }
+  if (deprecatedFiles.size > 0) {
+    warnings.push(
+      `pipelines: and repository pipeline: are deprecated, used in ${[...deprecatedFiles].join(", ")}: declare stages: instead (\`conveyor config migrate --stages\` rewrites them)`,
+    );
   }
 
   // Repositories with a managed webhook are no longer read periodically; these settings did that.

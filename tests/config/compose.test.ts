@@ -59,7 +59,7 @@ describe("single entrypoint", () => {
     });
     const config = await loadConfig(paths.entrypoint, undefined, { home: paths.home });
     expect(config.mode).toBe("entrypoint");
-    expect(config.warnings).toEqual([]);
+    expect(config.warnings).toEqual([expect.stringContaining("conveyor config migrate --stages")]);
     expect(config.settings.database).toBe(path.join(paths.home, "state/conveyor.sqlite"));
     expect(config.settings.logs).toBe(path.join(paths.home, "logs"));
     expect(config.settings.workspaces).toBe(path.join(paths.home, "worktrees"));
