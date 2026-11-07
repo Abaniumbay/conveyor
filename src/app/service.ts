@@ -6123,6 +6123,22 @@ export class ConveyorService {
     check.outcomes.set(issueId, { outcome: "unresolved", reason: message });
   }
 
+  /**
+   * Whether an agent is running for the item right now: the item executes (or has a live run in)
+   * a stage whose runner is an agent, not a script, a gate-only pass or a source action.
+   */
+  hasRunningAgent(issueId: string): boolean {
+    const active = this.#active.get(issueId);
+    if (active?.gateOnly) return false;
+    const issue = this.store.getIssue(issueId);
+    if (!issue) return false;
+    const stageId = active?.stageId ?? this.store.listActiveIssueRuns().find((run) => run.issueId === issueId && run.kind !== "orchestration")?.stageId;
+    if (!stageId) return false;
+    const pipeline = this.config.pipelines[this.config.repositories[issue.repositoryId]?.pipeline ?? ""];
+    const stage = pipeline?.stages.find((candidate) => candidate.id === stageId);
+    return Boolean(stage && !isNativeStage(stage) && stage.run.type === "agent");
+  }
+
   private hasLiveIssueRun(issueId: string): boolean {
     return this.#active.has(issueId) || this.store.listActiveIssueRuns().some((run) => run.issueId === issueId);
   }

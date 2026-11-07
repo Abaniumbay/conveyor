@@ -24,6 +24,15 @@ running. Put the dashboard behind HTTPS before sending a token over a network.
 | Tool | Description |
 | --- | --- |
 | `conveyor_status` | The service status, as `conveyor status` reports it. |
+| `item_retry` | Retry a blocked or failed item's stopped stage. Input: `item`, optional `note` for the agent. |
+| `item_steer` | Send a steering message to the agent running on an item. Input: `item`, `message`. Fails, sending nothing, when no agent is running on it (an idle item or a script stage). |
+| `item_pause` | Pause an item; its stage, worktree and history are kept. Input: `item`. |
+| `item_resume` | Resume a paused item. Input: `item`. |
+| `question_answer` | Answer an item's open question. Input: `questionId`, `answer`. |
+
+`item` is `<repository>:<number>` (or `<repository>#<number>`), for example `my-repo:42`. An unknown or
+offboarded item is a tool error naming it (`Unknown item: …`). These tools issue the same commands as
+the dashboard, through the command bus; they are available only here, not in the REST or control API.
 
 ## Adding a tool
 

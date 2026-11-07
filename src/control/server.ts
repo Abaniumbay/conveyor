@@ -60,6 +60,17 @@ export function resolveItem(service: ConveyorService, reference: string): string
   return issue.id;
 }
 
+/** The item an operator tool targets, or null for an unknown or offboarded reference; `running` means an agent is running on it. */
+export function operatorItemTarget(service: ConveyorService, reference: string): { issueId: string; running: boolean } | null {
+  let issueId: string;
+  try {
+    issueId = resolveItem(service, reference);
+  } catch {
+    return null;
+  }
+  return { issueId, running: service.hasRunningAgent(issueId) };
+}
+
 const STOPPED = new Set(["blocked", "error", "needs-input", "needs-intervention", "rejected"]);
 
 function githubOutageStatus(service: ConveyorService): { since: string; waiting: number } | null {
