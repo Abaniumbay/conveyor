@@ -1227,13 +1227,13 @@ export class ConveyorService {
     const before = new Date(Date.now() - CLOSED_ITEM_RECOVERY_AGE_MS).toISOString();
     for (const repositoryId of Object.keys(this.config.repositories)) {
       for (const issue of this.store.listRecoveryCandidates(repositoryId, now)) {
-        if (issue.projectionChangedAt > before) {
-          // Young stops wait for the recovery age, except an issue GitHub left open after the merge:
-          // it is read fresh on every tick, since GitHub may close it any moment and the cache is stale.
-          if (!this.stoppedForIssueLeftOpen(repositoryId, issue)) continue;
+        // An issue GitHub left open after the merge is read fresh on every tick, whatever the age of the
+        // stop: GitHub may close it any moment and the cached copy is stale.
+        const leftOpen = this.stoppedForIssueLeftOpen(repositoryId, issue);
+        if (leftOpen) {
           const repository = this.config.repositories[repositoryId];
           if (repository) this.github.forgetIssue?.(repository.address, issue.sourceNumber);
-        }
+        } else if (issue.projectionChangedAt > before) continue;
         await this.recoverClosedItem(repositoryId, issue);
       }
     }

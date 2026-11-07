@@ -532,6 +532,28 @@ describe("GitHub calls made for webhook deliveries", () => {
     store.close();
   });
 
+  test("an issue left open is still read fresh on every tick after the stop is older than the recovery age", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls, issue, cacheStaleOpenIssue } = setup;
+    await stopLeftOpen(setup, LEFT_OPEN);
+    cacheStaleOpenIssue();
+
+    const now = Date.now;
+    Date.now = () => now() + (61 * 60 * 1000);
+    try {
+      await conveyor.tick();
+      issue.state = "closed";
+      issue.stateReason = "completed";
+      await conveyor.tick();
+    } finally {
+      Date.now = now;
+    }
+
+    expect(calls.forgotten).toEqual([1, 1]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:cleanup"] }]);
+    store.close();
+  });
+
   test("a young stop for another reason keeps the one-hour recovery age and the cached read", async () => {
     const setup = await service({ pipeline: "issue-closed" });
     const { conveyor, store, calls } = setup;
