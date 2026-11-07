@@ -118,6 +118,7 @@ export const serve: Command = {
       ...service.webDependencies(auth, operator, pushConfiguration(config.web.push)),
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
+          store: service.store,
           status: () => controlStatus(service, controlInfo),
           findItem: (reference) => operatorItemTarget(service, reference),
           dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),

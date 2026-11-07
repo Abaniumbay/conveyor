@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { z } from "zod";
 
 import { createOperatorMcpHandler, OPERATOR_MCP_PATH } from "../../src/operator-mcp/server";
-import { defineOperatorTool } from "../../src/operator-mcp/tool";
+import { defineOperatorTool, type OperatorReadStore } from "../../src/operator-mcp/tool";
 import { OPERATOR_TOOLS } from "../../src/operator-mcp/registry";
 import { hashOperatorToken, newOperatorToken } from "../../src/operator-mcp/tokens";
 import { createWebAuth, hashPassword } from "../../src/web/auth";
@@ -18,8 +18,8 @@ afterEach(() => {
   for (const stop of stops.splice(0)) stop();
 });
 
-function facade() {
-  return { status: () => STATUS, findItem: () => null, dispatch: () => { throw new Error("no commands in this test"); } };
+function facade(store: OperatorReadStore = {} as OperatorReadStore) {
+  return { store, status: () => STATUS, findItem: () => null, dispatch: () => { throw new Error("no commands in this test"); } };
 }
 
 function listen(handler: (request: Request) => Promise<Response>): string {
