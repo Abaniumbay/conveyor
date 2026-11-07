@@ -641,7 +641,8 @@ const repositorySchema = z
     address: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "must use owner/repository format"),
     folder: absolutePathSchema,
     baseBranch: identifierSchema.default("main"),
-    pipeline: identifierSchema,
+    /** Absent when the repository follows the installation-wide `stages:` list. */
+    pipeline: identifierSchema.optional(),
     ci: repositoryCiSchema,
     overrides: z
       .object({
@@ -650,6 +651,8 @@ const repositorySchema = z
             identifierSchema,
             z
               .object({
+                /** `true` passes the stage through without running it; it stays in the stage list. */
+                skip: z.literal(true).optional(),
                 actions: z.record(identifierSchema, taskOverrideSchema).optional(),
                 "exit-gate": z.record(identifierSchema, taskOverrideSchema).optional(),
               })
@@ -712,7 +715,7 @@ const githubSchema = z
   .strict()
   .prefault({});
 
-export const configSchema = z
+const baseConfigSchema = z
   .object({
     settings: settingsSchema,
     github: githubSchema,
@@ -724,10 +727,56 @@ export const configSchema = z
     agents: z.record(identifierSchema, agentSchema).default({}),
     checks: z.record(identifierSchema, checkSchema).default({}),
     labels: labelsSchema,
+    /** The installation-wide stage list that repositories without `pipeline:` follow. */
+    stages: z.array(anyStageSchema).min(1).optional(),
     pipelines: z.record(identifierSchema, pipelineSchema).default({}),
     repositories: z.record(identifierSchema, repositorySchema).default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    if (config.stages === undefined) return;
+    if (Object.keys(config.pipelines).length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["stages"],
+        message: "stages and pipelines are both defined: use only one (stages is the installation-wide stage list; pipelines is deprecated)",
+      });
+    }
+    const seen = new Set<string>();
+    for (const [index, stage] of config.stages.entries()) {
+      if (!isNativeStage(stage)) {
+        context.addIssue({ code: "custom", path: ["stages", index, "run"], message: "legacy (run) stages are not allowed in stages; use actions and exit-gate" });
+      }
+      if (seen.has(stage.id)) {
+        context.addIssue({ code: "custom", path: ["stages", index, "id"], message: `duplicate stage id "${stage.id}"` });
+      }
+      seen.add(stage.id);
+    }
+  });
+
+type ParsedConfig = z.output<typeof baseConfigSchema>;
+type ParsedRepository = ParsedConfig["repositories"][string];
+
+/** The pipeline name a top-level `stages:` list is compiled under. */
+export const STAGES_PIPELINE = "stages";
+
+/**
+ * A repository without `pipeline:` follows the top-level `stages:` list, which is carried as the
+ * pipeline named `stages` so every consumer reads one shape.
+ */
+export const configSchema = baseConfigSchema.transform((config, context) => {
+  const repositories: Record<string, Omit<ParsedRepository, "pipeline"> & { pipeline: string }> = {};
+  for (const [id, repository] of Object.entries(config.repositories)) {
+    const pipeline = repository.pipeline ?? (config.stages ? STAGES_PIPELINE : undefined);
+    if (pipeline === undefined) {
+      context.addIssue({ code: "custom", path: ["repositories", id, "pipeline"], message: "is required when no top-level stages list is defined" });
+      return z.NEVER;
+    }
+    repositories[id] = { ...repository, pipeline };
+  }
+  const pipelines = config.stages ? { ...config.pipelines, [STAGES_PIPELINE]: { stages: config.stages } } : config.pipelines;
+  return { ...config, pipelines, repositories };
+});
 
 export type ConveyorConfigData = z.output<typeof configSchema>;
 export type PipelineStageConfig = ConveyorConfigData["pipelines"][string]["stages"][number];

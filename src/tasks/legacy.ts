@@ -272,6 +272,7 @@ export function translateLegacyStage(stage: PipelineStage, pipeline: LegacyPipel
     retries: maxFeedbackCycles,
     childrenStartAt: stage.childrenStartAt ?? null,
     legacy: true,
+    skipped: false,
     actions,
     exitGate: [compiledTask("legacy.succeeded", "legacy.succeeded", base, "producer outcome is success", { stop: stage.failureState ?? "blocked" })],
   };

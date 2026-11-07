@@ -16,6 +16,7 @@ import reviewer from "../../examples/config/instructions/reviewer.md" with { typ
 import workBreakdown from "../../examples/config/instructions/work-breakdown.md" with { type: "text" };
 import pipelines from "../../examples/config/pipelines.yaml" with { type: "text" };
 import providers from "../../examples/config/providers.yaml" with { type: "text" };
+import stages from "../../examples/config/stages.yaml" with { type: "text" };
 
 import { ConfigError } from "./errors";
 
@@ -30,6 +31,7 @@ export const BUILTIN_FILES: Readonly<Record<string, string>> = {
   "instructions/work-breakdown.md": workBreakdown,
   "pipelines.yaml": pipelines,
   "providers.yaml": providers,
+  "stages.yaml": stages,
 };
 
 /** A short content hash of the packaged defaults; it names their materialised copy. */
