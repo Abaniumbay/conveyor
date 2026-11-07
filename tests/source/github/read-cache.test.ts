@@ -339,3 +339,18 @@ describe("forgetChange", () => {
     ].sort());
   });
 });
+
+describe("forgetIssue", () => {
+  test("drops one issue, what is below it and the issue listings, and keeps another issue", async () => {
+    const listing = "repos/owner/app/issues?state=all";
+    const paths = [ISSUE, `${ISSUE}/comments`, "repos/owner/app/issues/8", listing];
+    const { github, instance } = cache(Object.fromEntries(paths.map((path) => [`GET ${path}`, [{ number: 7 }]])));
+    for (const path of paths) await instance.request(get(path));
+    github.requests.length = 0;
+
+    instance.forgetIssue("Owner/App", 7);
+    for (const path of paths) await instance.request(get(path));
+
+    expect(github.requests.sort()).toEqual([`GET ${ISSUE}`, `GET ${ISSUE}/comments`, `GET ${listing}`].sort());
+  });
+});

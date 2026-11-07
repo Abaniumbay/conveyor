@@ -371,11 +371,12 @@ interface CachingTransport extends GitHubTransport {
   applyDelivery(eventType: string, payload: unknown): void;
   forgetRepository(address: string): void;
   forgetChange(address: string, number: number): void;
+  forgetIssue(address: string, number: number): void;
   useStorage(storage: GitHubMirrorStorage, lifetimes?: GitHubCacheLifetimes): void;
 }
 
 const caching = (transport: GitHubTransport): transport is CachingTransport =>
-  "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport;
+  "applyDelivery" in transport && "forgetRepository" in transport && "forgetChange" in transport && "forgetIssue" in transport;
 
 export class GitHubAdapter {
   constructor(
@@ -401,6 +402,11 @@ export class GitHubAdapter {
   /** Drops a pull request's cached reads, when there is a cache, so the next read goes to GitHub. */
   forgetChange(address: string, number: number): void {
     if (caching(this.transport)) this.transport.forgetChange(address, number);
+  }
+
+  /** Drops an issue's cached reads and its listing entries, when there is a cache, so the next read goes to GitHub. */
+  forgetIssue(address: string, number: number): void {
+    if (caching(this.transport)) this.transport.forgetIssue(address, number);
   }
 
   async listConveyorIssues(address: string): Promise<SourceIssue[]> {

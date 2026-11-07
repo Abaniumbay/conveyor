@@ -1223,9 +1223,17 @@ export class ConveyorService {
 
   /** Reconcile long-lived non-runnable projections that webhook delivery may have missed. */
   private async recoverClosedItems(): Promise<void> {
+    const now = new Date().toISOString();
     const before = new Date(Date.now() - CLOSED_ITEM_RECOVERY_AGE_MS).toISOString();
     for (const repositoryId of Object.keys(this.config.repositories)) {
-      for (const issue of this.store.listRecoveryCandidates(repositoryId, before)) {
+      for (const issue of this.store.listRecoveryCandidates(repositoryId, now)) {
+        if (issue.projectionChangedAt > before) {
+          // Young stops wait for the recovery age, except an issue GitHub left open after the merge:
+          // it is read fresh on every tick, since GitHub may close it any moment and the cache is stale.
+          if (!this.stoppedForIssueLeftOpen(repositoryId, issue)) continue;
+          const repository = this.config.repositories[repositoryId];
+          if (repository) this.github.forgetIssue?.(repository.address, issue.sourceNumber);
+        }
         await this.recoverClosedItem(repositoryId, issue);
       }
     }
