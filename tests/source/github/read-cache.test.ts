@@ -340,8 +340,8 @@ describe("forgetChange", () => {
   });
 });
 
-describe("forgetIssue", () => {
-  test("drops one issue, what is below it and the issue listings, and keeps another issue", async () => {
+describe("read cache", () => {
+  test("forgetIssue drops one issue, what is below it and the issue listings, and keeps another issue", async () => {
     const listing = "repos/owner/app/issues?state=all";
     const paths = [ISSUE, `${ISSUE}/comments`, "repos/owner/app/issues/8", listing];
     const { github, instance } = cache(Object.fromEntries(paths.map((path) => [`GET ${path}`, [{ number: 7 }]])));
