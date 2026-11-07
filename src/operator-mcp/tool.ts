@@ -20,6 +20,8 @@ export interface OperatorFacade {
   status(): unknown;
   /** Finds an item by `<repository>:<number>`; null when Conveyor does not know it. */
   findItem(reference: string): { issueId: string; running: boolean } | null;
+  /** Creates and enrolls an issue in an onboarded repository. Not a command: only the operator MCP offers it. */
+  createIssue(input: { repository: string; title: string; body: string }): Promise<{ issueId: string; number: number; url: string }>;
   /** Sends a command as the operator MCP client. */
   dispatch<N extends CommandName>(name: N, input: CommandInput<N>): ReturnType<CommandBus["dispatch"]>;
 }

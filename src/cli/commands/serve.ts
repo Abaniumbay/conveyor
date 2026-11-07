@@ -121,6 +121,7 @@ export const serve: Command = {
           store: service.store,
           status: () => controlStatus(service, controlInfo),
           findItem: (reference) => operatorItemTarget(service, reference),
+          createIssue: (input) => service.createIssue(input),
           dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
         },
         tokenIsActive: (hash) => service.store.operatorMcpTokenIsActive(hash),

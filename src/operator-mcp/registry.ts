@@ -1,6 +1,7 @@
 // The single list of operator MCP tools. A tool module is registered with one line here.
 
 import { itemPause, itemResume, itemRetry, itemSteer, questionAnswer } from "./tools/control";
+import { createIssue } from "./tools/create-issue";
 import { conveyorStatus } from "./tools/status";
 import { stateTools } from "./tools/state";
 import type { OperatorTool } from "./tool";
@@ -13,4 +14,5 @@ export const OPERATOR_TOOLS: readonly OperatorTool[] = [
   itemResume,
   questionAnswer,
   ...stateTools,
+  createIssue,
 ];
