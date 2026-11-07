@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/Abaniumbay/conveyor?include_prereleases&color=087f72)](https://github.com/Abaniumbay/conveyor/releases)
 
 **Conveyor delivers GitHub issues with AI agents, end to end, on your own server.** Label an issue
-and Conveyor takes it through a pipeline you define: an agent refines it into acceptance criteria,
+and Conveyor takes it through a list of stages you define: an agent refines it into acceptance criteria,
 another implements it in an isolated worktree and opens a pull request, a reviewer checks it, and
 Conveyor merges, deploys and verifies it. Deterministic gates decide when each stage is done, and
 you watch and steer everything from a dashboard or the command line.
@@ -48,8 +48,9 @@ refinement ──► implementation ──► review ──► merge ──► d
 Each stage runs its **actions** (an agent, a script, or a provider step such as pushing or merging)
 and then its **exit gate**: checks over the issue, the pull request, CI and script results. A passing
 gate moves the issue to the next stage label; a failing one sends it back with the reason, retries
-it, or stops it for you. Stages, agents, models and gates are all configuration: the pipeline above
-is the packaged default. Read more in [docs/architecture.md](docs/architecture.md).
+it, or stops it for you. Stages, agents, models and gates are all configuration: the stage list above
+is the packaged default, one list for the installation. A repository changes a task of a stage with
+`overrides.stages.<stageId>`, or skips a stage with `skip: true`, without copying the list. Read more in [docs/architecture.md](docs/architecture.md).
 
 | Item details and its conversation | Reports |
 | --- | --- |
@@ -83,8 +84,13 @@ code: github
 ci: { mode: required }
 address: me/my-app
 folder: ~/code/my-app
-pipeline: delivery
 agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }
+# overrides:
+#   stages:
+#     deploy: { skip: true }                 # skip a stage for this repository
+#     verify:
+#       actions:
+#         verifyScript: { with: { script: ~/stages/verify.ts } }   # change one task
 ```
 
 Check everything, then start it:
@@ -145,11 +151,11 @@ Every command takes `--help` and `--json`; see [docs/cli.md](docs/cli.md).
 | Guide | What it covers |
 | --- | --- |
 | [Operations](docs/operations.md) | Installing, the first run, the systemd service, day-to-day work, troubleshooting, upgrades and rollback, several instances |
-| [Configuration](docs/configuration.md) | `conveyor.yaml`, `!include` and `!secret`, packaged defaults, pipelines, agents, CI, logging, retention |
+| [Configuration](docs/configuration.md) | `conveyor.yaml`, `!include` and `!secret`, packaged defaults, stages, overrides and skip, agents, CI, logging, retention |
 | [Command line](docs/cli.md) | Every command and option, and the exit codes |
 | [Dashboard](docs/dashboard.md) | The board, item details, agents, reports, the operator, push notifications |
-| [Tasks](docs/tasks.md) | Every task a pipeline can use, and the script protocol |
-| [Architecture](docs/architecture.md) | Design principles, components, the pipeline model, MCP, reliability, security |
+| [Tasks](docs/tasks.md) | Every task a stage can use, and the script protocol |
+| [Architecture](docs/architecture.md) | Design principles, components, the stage model, MCP, reliability, security |
 | [Migrating](docs/migration.md) | Moving a source-checkout installation onto a release |
 | [Releasing](docs/releasing.md) | Cutting a release (for maintainers) |
 | [Specification](SPEC.md) | The complete behavioural contract |
@@ -181,7 +187,7 @@ it twice and verifies pixel-identical output.
 ## Status and limits
 
 Conveyor is pre-1.0 and runs on a trusted, single-owner Linux server. It supports GitHub, Codex and
-Claude Code agents, sequential pipelines and existing repository clones. It does not provide
+Claude Code agents, sequential stages and existing repository clones. It does not provide
 multi-tenant isolation, container images, a general workflow engine or automatic issue closure.
 See [SPEC.md](SPEC.md) for the full contract.
 

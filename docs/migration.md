@@ -93,7 +93,7 @@ configuration directory still load (deprecated). Since this release, `examples/c
 section value per file, which is what `!include builtin:<file>` uses, so an `import` pinned to a
 newer commit no longer loads as before.
 
-Conveyor ships a versioned reference configuration in `examples/config/` (providers, harnesses, agents, the `delivery` pipeline, and the agent instructions). The live service imports it at a pinned git commit; paths, secrets, repositories and scripts stay machine-local. Until the migration finishes, the legacy configuration keeps working through the compatibility compiler. Before upgrading, copy any installation-specific provider or pipeline that is still needed into private configuration: releases no longer include them.
+Conveyor ships a versioned reference configuration in `examples/config/` (providers, harnesses, agents, the default `stages` list, and the agent instructions). The live service imports it at a pinned git commit; paths, secrets, repositories and scripts stay machine-local. Until the migration finishes, the legacy configuration keeps working through the compatibility compiler. Before upgrading, copy any installation-specific provider or pipeline that is still needed into private configuration: releases no longer include them.
 
 ### What lives where
 
@@ -101,7 +101,7 @@ Conveyor ships a versioned reference configuration in `examples/config/` (provid
 | --- | --- |
 | `providers.yaml`: item/code/CI providers, shared labels, harnesses | `local.example.yaml`: `import:` pin, `settings` (paths, limits), `web` |
 | `agents.yaml`: agents and their exact task grants | `repositories.example.yaml`: a neutral repository example (folders, `agentEgress`, deploy/verify script overrides) |
-| `pipelines.yaml`: `delivery` | Stage scripts, for example `/etc/conveyor/stages/*.ts` |
+| `stages.yaml` | Stage scripts, for example `/etc/conveyor/stages/*.ts` |
 | `instructions/{darya,kaveh,shirin,omid}.md` | |
 
 `examples/config` holds no repositories or settings on purpose: the importer loads every YAML file under it, and a section may be defined once.

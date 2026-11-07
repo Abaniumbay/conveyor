@@ -22,10 +22,16 @@ async function loadReference(): Promise<ConveyorConfig> {
 const EXAMPLES = path.resolve(import.meta.dir, "../../examples");
 
 describe("reference configuration", () => {
+  test("the example configuration uses stages: and loads without a deprecation warning", async () => {
+    const config = await loadReference();
+    expect(config.warnings ?? []).toEqual([]);
+    expect(config.stages?.map((stage) => stage.id)).toContain("implementation");
+  });
+
   test("loads and compiles the generic delivery plan", async () => {
     const config = await loadReference();
     expect(config.plans.map((plan) => plan.repositoryId)).toEqual(["service"]);
-    expect(config.plans[0]!.id).toBe("delivery");
+    expect(config.plans[0]!.id).toBe("stages");
     for (const plan of config.plans) expect(plan.stages.map((stage) => stage.id)).toEqual(["refinement", "refinement-review", "work-breakdown", "implementation", "review", "merge", "deploy", "verify", "cleanup"]);
   });
 
@@ -60,7 +66,7 @@ describe("reference configuration", () => {
     const config = await loadReference();
     expect(config.checks).toEqual({});
     expect(Object.keys(config.agents).sort()).toEqual(["darya", "jamshid", "kaveh", "omid", "parisa", "roya", "shaghayegh", "shirin"]);
-    for (const pipeline of Object.values(config.pipelines)) for (const stage of pipeline.stages) expect("run" in stage).toBe(false);
+    for (const stage of config.stages!) expect("run" in stage).toBe(false);
     for (const plan of config.plans) {
       for (const stage of plan.stages) {
         expect(stage.legacy).toBe(false);
@@ -73,7 +79,7 @@ describe("reference configuration", () => {
 
   test("reviews a refinement plan before the built-in pipeline creates its children", async () => {
     const config = await loadReference();
-    const stages = config.pipelines.delivery!.stages;
+    const stages = config.stages!;
     const refinement = stages.find((stage) => stage.id === "refinement")!;
     const review = stages.find((stage) => stage.id === "refinement-review")!;
     const breakdown = stages.find((stage) => stage.id === "work-breakdown")!;
@@ -172,7 +178,7 @@ describe("reference configuration", () => {
   });
 
   test("the packaged defaults are section values, and every file is embedded as a builtin", async () => {
-    expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "pipelines.yaml", "providers.yaml", "stages.yaml"]);
+    expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "providers.yaml", "stages.yaml"]);
     const onDisk = [...await referenceYamlFiles(), ...(await readdir(path.join(EXAMPLES, "config/instructions"))).map((file) => `instructions/${file}`)];
     expect(Object.keys(BUILTIN_FILES).sort()).toEqual(onDisk.sort());
     for (const file of await referenceYamlFiles()) {
@@ -255,8 +261,8 @@ describe("reference configuration", () => {
     expect([...jamshid.tasks].sort()).toEqual([...kaveh.tasks].sort());
     expect(jamshid.writableRoots).toEqual(kaveh.writableRoots);
     expect(jamshid.mcpServers.serena!.args).toContain("--context=claude-code");
-    for (const pipeline of Object.values(config.pipelines)) {
-      for (const stage of pipeline.stages) {
+    {
+      for (const stage of config.stages!) {
         if (stage.id !== "implementation" || !("actions" in stage)) continue;
         const implement = (stage.actions as Array<{ id: string; with?: { agents?: string[] } }>).find((action) => action.id === "implement");
         expect(implement?.with?.agents).toEqual(["kaveh", "jamshid"]);
@@ -318,44 +324,5 @@ describe("reference refinement outputs", () => {
     expect(broken).not.toBe(text);
     await writeFile(file, broken);
     await expect(loadConfig(entrypoint)).rejects.toThrow("required field Size must also be listed in fields");
-  });
-});
-
-describe("canary: reference configuration combined with converted legacy sections (deprecated directory mode)", () => {
-  /** The conversion docs/migration.md describes, applied to tests/fixtures/legacy-pipeline. */
-  async function legacyConverted(): Promise<string> {
-    const dir = path.resolve(import.meta.dir, "../fixtures/legacy-pipeline");
-    const docs = await Promise.all(
-      ["10-agents.yaml", "20-pipeline.yaml", "30-repositories.yaml"].map(async (file) => parse(await readFile(path.join(dir, file), "utf8")) as Record<string, any>),
-    );
-    const [agentsDoc, pipelineDoc, repositoriesDoc] = docs as [Record<string, any>, Record<string, any>, Record<string, any>];
-    // 1. Rename the four legacy agents that collide with the reference agents; mitra and checks stay.
-    const renamed = new Map(["darya", "kaveh", "shirin", "omid"].map((name) => [name, `${name}-legacy`]));
-    const agents: Record<string, unknown> = {};
-    for (const [name, agent] of Object.entries(agentsDoc.agents)) agents[renamed.get(name) ?? name] = agent;
-    // 2. Update every run.agent in the legacy pipelines.
-    for (const pipeline of Object.values<any>(pipelineDoc.pipelines)) {
-      for (const stage of pipeline.stages) {
-        if (stage.run?.agent && renamed.has(stage.run.agent)) stage.run.agent = renamed.get(stage.run.agent);
-      }
-    }
-    // The generic reference pipeline does not collide with this legacy pipeline.
-    // sources, runners, labels and settings are dropped: the import provides the same names and labels.
-    return stringify({ agents, checks: agentsDoc.checks, ...pipelineDoc, ...repositoriesDoc });
-  }
-
-  test("loads and compiles every repository", async () => {
-    const { directory, base } = await referenceConfigDirectory({ service: "service-native" });
-    bases.push(base);
-    const local = parse(await readFile(path.join(directory, "local.yaml"), "utf8")) as { repositories: Record<string, unknown> };
-    await writeFile(path.join(directory, "local.yaml"), stringify(local));
-    await writeFile(path.join(directory, "legacy.yaml"), await legacyConverted());
-    const config = await loadConfig(directory);
-    expect(config.plans.map((plan) => plan.repositoryId).sort()).toEqual(["service", "service-native"]);
-    const byId = (id: string) => config.plans.find((plan) => plan.repositoryId === id)!;
-    expect(byId("service-native").stages.every((stage) => !stage.legacy)).toBe(true);
-    expect(byId("service").stages.some((stage) => stage.legacy)).toBe(true);
-    expect(config.agents["kaveh-legacy"]).toBeDefined();
-    expect(config.agents.kaveh!.instructions).toContain("instructions/kaveh.md");
   });
 });

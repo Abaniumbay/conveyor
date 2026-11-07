@@ -28,7 +28,7 @@ web:
 providers: !include builtin:providers.yaml
 harnesses: !include builtin:harnesses.yaml
 agents: !include builtin:agents.yaml
-pipelines: !include builtin:pipelines.yaml
+stages: !include builtin:stages.yaml
 
 # One file per repository; the file name is the repository id.
 repositories: !include_dir_named repositories/
@@ -45,7 +45,6 @@ code: github
 ci: { mode: disabled }
 address: owner/meal-planner
 folder: ~/codes/meal-planner      # an existing Git checkout
-pipeline: delivery
 agentEgress:
   allowLoopbackMcp: true
   httpsHosts: [registry.npmjs.org]

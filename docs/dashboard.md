@@ -67,7 +67,7 @@ Repository and stage controls select current matching items while retaining one 
 
 **Recent** (`/recent`) is a read-only, all-repository activity feed for every signed-in dashboard account. It starts with the preceding 24 hours, newest first, and **Load more** continues backwards past that initial range with a stable time-and-event cursor. The initial range boundary is itself a time-only cursor, so records at that boundary are not repeated. Each row links to the item, names its repository, shows its relative time with the exact timestamp available on hover or keyboard focus, and can expand its recorded reason.
 
-The feed derives rows from completed stage transitions and existing completion records; it does not keep a separate history table. Its categories are **Done** (green), **Stopped** (red), **Sent back** (orange), **Moved forward** (blue), and **New**, **Restarted / resumed**, and **Roll-up** (grey). Corrections and observations use their recorded result and the repository pipeline's stage direction. Roll-up is hidden until selected.
+The feed derives rows from completed stage transitions and existing completion records; it does not keep a separate history table. Its categories are **Done** (green), **Stopped** (red), **Sent back** (orange), **Moved forward** (blue), and **New**, **Restarted / resumed**, and **Roll-up** (grey). Corrections and observations use their recorded result and the repository's stage order. Roll-up is hidden until selected.
 
 Done is independent of stage movement: Conveyor uses the stored `done` push-event timestamp when an item enters done. For an older completed item with no such record, it uses the merged pull request's `merged_at` timestamp. The fallback is never added when a recorded Done event exists, so one completion produces one Done row.
 
@@ -77,7 +77,7 @@ Select any combination of type chips and repositories; selections, including pag
 
 ![The Team view beginning directly below the shared navigation](screenshots/team.png)
 
-**Team** (`/team`) lists every configured agent, each opening a read-only profile (`/team/<id>`) showing its harness, model, effort, workspace access, the pipeline stages it works in, its granted tools, and its instructions.
+**Team** (`/team`) lists every configured agent, each opening a read-only profile (`/team/<id>`) showing its harness, model, effort, workspace access, the stages it works in, its granted tools, and its instructions.
 
 ## Keyboard and assistive technology
 

@@ -98,14 +98,21 @@ code: github
 ci: { provider: actions, mode: required }
 address: owner/meal-planner
 folder: ~/codes/meal-planner
-pipeline: delivery
 agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }
 overrides:
   stages:
     deploy:
       actions:
         deployScript: { with: { script: ../stages/deploy-meal-planner.ts, recovery: reconcile } }
+    verify:
+      skip: true          # this repository runs no verify step
 ```
+
+Every repository follows the installation's one `stages:` list (`stages: !include builtin:stages.yaml`
+in `conveyor.yaml`). `overrides.stages.<stageId>` changes one task of a stage, and `skip: true` lets
+items pass through a stage without running it; see
+[Configuration](configuration.md#installation-stages-overrides-and-skip). A configuration that still
+uses `pipelines:` follows [Migrating from pipelines](configuration.md#migrating-from-pipelines).
 
 ## 4. Authenticate and check
 

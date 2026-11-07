@@ -126,9 +126,9 @@ describe("config compare", () => {
     const left = await referenceConfigEntrypoint();
     const right = await referenceConfigEntrypoint();
     bases.push(left.base, right.base);
-    const pipelines = path.join(right.directory, "defaults/pipelines.yaml");
+    const pipelines = path.join(right.directory, "defaults/stages.yaml");
     const original = await Bun.file(pipelines).text();
-    await Bun.write(pipelines, original.replace("task: change.mergeable\n", "task: change.mergeable\n          manual: true\n"));
+    await Bun.write(pipelines, original.replace("task: change.mergeable\n", "task: change.mergeable\n      manual: true\n"));
 
     const lines: string[] = [];
     const code = await runCli(["config", "compare", left.entrypoint, right.entrypoint], { out: (text) => lines.push(text), err: () => {}, interactive: false });
@@ -142,9 +142,9 @@ describe("config compare", () => {
     const left = await referenceConfigEntrypoint();
     const right = await referenceConfigEntrypoint();
     bases.push(left.base, right.base);
-    const pipelines = path.join(right.directory, "defaults/pipelines.yaml");
+    const pipelines = path.join(right.directory, "defaults/stages.yaml");
     const original = await Bun.file(pipelines).text();
-    await Bun.write(pipelines, original.replace("      id: merge\n", "      id: merge\n      approval: manual\n"));
+    await Bun.write(pipelines, original.replace("  id: merge\n", "  id: merge\n  approval: manual\n"));
 
     const lines: string[] = [];
     const code = await runCli(["config", "compare", left.entrypoint, right.entrypoint], { out: (text) => lines.push(text), err: () => {}, interactive: false });
