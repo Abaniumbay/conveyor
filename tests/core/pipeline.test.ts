@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   PipelineExecutionError,
+  boardStageOrder,
   type CheckResult,
   type PipelineDependencies,
   type ProducerContext,
@@ -359,5 +360,31 @@ describe("PipelineEngine", () => {
         workspace: "/tmp/workspace",
       }),
     ).rejects.toBeInstanceOf(PipelineExecutionError);
+  });
+});
+
+describe("boardStageOrder", () => {
+  const pipeline = (...ids: string[]) => ({ stages: ids.map((id) => ({ id })) });
+
+  test("a single stage list keeps its order, for every repository sharing it", () => {
+    expect(boardStageOrder([pipeline("refinement", "implementation", "ci-gate", "review", "merge", "cleanup")]))
+      .toEqual(["refinement", "implementation", "ci-gate", "review", "merge", "cleanup"]);
+  });
+
+  test("ci-gate lands between review and merge across a delivery and a paid-ci-delivery pipeline", () => {
+    const order = boardStageOrder([
+      pipeline("refinement", "implementation", "review", "merge", "cleanup"),
+      pipeline("refinement", "implementation", "review", "ci-gate", "merge", "cleanup"),
+    ]);
+    expect(order).toEqual(["refinement", "implementation", "review", "ci-gate", "merge", "cleanup"]);
+  });
+
+  test("no stage appears after one that follows it in any pipeline", () => {
+    const pipelines = [pipeline("a", "b", "e"), pipeline("a", "c", "d", "e"), pipeline("z", "a", "d"), pipeline("b", "d", "f")];
+    const order = boardStageOrder(pipelines);
+    for (const { stages } of pipelines) {
+      const positions = stages.map((stage) => order.indexOf(stage.id));
+      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    }
   });
 });

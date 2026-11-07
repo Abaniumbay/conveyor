@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { boardStageOrder } from "../core/pipeline";
 import { redactSecrets } from "../config/compose";
 import { INTERNAL, selfCommand } from "../self";
 import { log, type LogFields } from "../log/logger";
@@ -5004,7 +5005,7 @@ export class ConveyorService {
         if (stage.icon && !stageIcons.has(stage.id)) stageIcons.set(stage.id, stage.icon);
       }
     }
-    const stages = [...stageNames.keys()];
+    const stages = boardStageOrder(Object.values(this.config.pipelines));
     const recent = pagination.view === "recent"
       ? this.recentActivity(pagination, repositoryColors)
       : undefined;
