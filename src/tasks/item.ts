@@ -576,7 +576,13 @@ async function planMetadata(deps: Deps, input: { type?: string | undefined; fiel
   return plan;
 }
 
-const dependencyRule = "it must identify an open, Conveyor-enrolled issue in this repository";
+const dependencyRule = "it must identify an open or finished (closed as completed), Conveyor-enrolled issue in this repository";
+
+/** A closed issue counts as a met dependency only when it was finished, not closed as not planned or without a reason. */
+function closedUnfinished(number: number, state: string, stateReason: string | null | undefined): ToolRequestError | null {
+  if (state === "open" || stateReason === "completed") return null;
+  return invalidDependency(number, `issue #${number} is closed and was not finished; ${dependencyRule}.`);
+}
 
 function invalidDependency(number: number, reason: string): ToolRequestError {
   return new ToolRequestError(`Invalid dependsOn value ${String(number)}: ${reason}`);
@@ -604,9 +610,8 @@ async function childDependencies(
         ? `issue #${number} belongs to another repository; ${dependencyRule}.`
         : `${dependencyRule}.`);
     }
-    if (blocker.sourceState !== "open") {
-      throw invalidDependency(number, `issue #${number} is closed; ${dependencyRule}.`);
-    }
+    const unfinished = closedUnfinished(number, blocker.sourceState, blocker.sourceStateReason);
+    if (unfinished) throw unfinished;
     if (!blocker.labels.includes(deps.config.labels.enrollment)) {
       throw invalidDependency(number, `issue #${number} is not enrolled in Conveyor; ${dependencyRule}.`);
     }
@@ -617,9 +622,8 @@ async function childDependencies(
   const liveBlockers = await Promise.all(requested.map((number) => deps.items.getIssue(deps.repository.address, number)));
   for (const [index, live] of liveBlockers.entries()) {
     const number = requested[index]!;
-    if (live.state !== "open") {
-      throw invalidDependency(number, `issue #${number} is closed; ${dependencyRule}.`);
-    }
+    const unfinished = closedUnfinished(number, live.state, live.stateReason);
+    if (unfinished) throw unfinished;
     if (!live.labels.includes(deps.config.labels.enrollment)) {
       throw invalidDependency(number, `issue #${number} is not enrolled in Conveyor; ${dependencyRule}.`);
     }
@@ -718,7 +722,7 @@ const addFollowUp = tool("item.addFollowUp",
   });
 
 const createChild = tool("item.createChild",
-  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open, Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; it cannot name the parent, new child, closed or unenrolled issues, or create a cycle. Everything knowable before the child is created is validated first.",
+  "Atomically create a child issue with its self-contained body, managed acceptance criteria, optional Refinement section, issue type, issue fields and configured system labels. It refuses when the current item has the configured no-split metadata label: give the whole item acceptance criteria or report needs-input instead. dependsOn may name any open or finished (closed as completed), Conveyor-enrolled issue in this repository, including siblings and issues outside this parent; a finished dependency counts as already met. It cannot name the parent, the new child, an issue closed without being finished, an unenrolled issue, or create a cycle. Everything knowable before the child is created is validated first.",
   createChildInput, true,
   async ({ deps, input, instance }, issue) => {
     const noSplitLabel = deps.config.labels.metadata.noSplit;
