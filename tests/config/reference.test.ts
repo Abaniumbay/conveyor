@@ -172,7 +172,7 @@ describe("reference configuration", () => {
   });
 
   test("the packaged defaults are section values, and every file is embedded as a builtin", async () => {
-    expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "pipelines.yaml", "providers.yaml"]);
+    expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "pipelines.yaml", "providers.yaml", "stages.yaml"]);
     const onDisk = [...await referenceYamlFiles(), ...(await readdir(path.join(EXAMPLES, "config/instructions"))).map((file) => `instructions/${file}`)];
     expect(Object.keys(BUILTIN_FILES).sort()).toEqual(onDisk.sort());
     for (const file of await referenceYamlFiles()) {

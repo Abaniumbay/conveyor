@@ -184,7 +184,7 @@ function ct(reg: TaskRegistry, id: string, task: string, extra: Partial<Compiled
 }
 
 function stage(id: string, actions: CompiledTask[], exitGate: CompiledTask[], retries = 2, approval?: "manual"): CompiledStage {
-  return { id, ...(approval === undefined ? {} : { approval }), concurrency: 1, retries, childrenStartAt: null, legacy: false, actions, exitGate };
+  return { id, ...(approval === undefined ? {} : { approval }), concurrency: 1, retries, childrenStartAt: null, legacy: false, skipped: false, actions, exitGate };
 }
 
 function pipeline(...stages: CompiledStage[]): CompiledPipeline {

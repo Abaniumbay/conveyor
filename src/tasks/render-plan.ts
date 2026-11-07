@@ -43,6 +43,7 @@ export function renderPlan(plan: CompiledPipeline): string {
     if (stage.approval !== undefined) details.push(`entry approval ${stage.approval}`);
     if (stage.childrenStartAt) details.push(`childrenStartAt ${stage.childrenStartAt}`);
     if (stage.legacy) details.push("legacy");
+    if (stage.skipped) details.push("skipped");
     lines.push("", `Stage ${stage.id} (${details.join(", ")})`);
     lines.push(...renderList("actions", stage.actions), ...renderList("exit-gate", stage.exitGate));
   }

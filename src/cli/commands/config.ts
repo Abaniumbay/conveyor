@@ -3,6 +3,7 @@ import { stringify } from "yaml";
 
 import { BUILTIN_FILES } from "../../config/builtin";
 import { redactSecrets } from "../../config/compose";
+import { isNativeStage, STAGES_PIPELINE } from "../../config/schema";
 import { ConfigError, loadConfig, type ConveyorConfig } from "../../config/load";
 import { migrateConfiguration } from "../../config/migrate";
 import { comparePlans } from "../../tasks/compare-plans";
@@ -30,8 +31,33 @@ function checkReport(config: ConveyorConfig): string {
     `Configuration is valid (${config.hash})`,
     ...(junit.length === 0 ? [] : [`JUnit report locators:\n${junit.join("\n")}`]),
     ...warnings,
-    ...config.plans.map(renderPlan),
+    ...(config.stages ? [stagesReport(config)] : config.plans.map(renderPlan)),
   ].join("\n\n");
+}
+
+/** The one installation-wide stage list, then per repository only its overrides and skipped stages. */
+function stagesReport(config: ConveyorConfig): string {
+  const stages = (config.stages ?? []).map((stage, index) => {
+    const tasks = isNativeStage(stage)
+      ? ` (actions: ${stage.actions.map((action) => action.id ?? action.task).join(", ") || "none"}; exit-gate: ${stage.exitGate.map((gate) => gate.id ?? gate.task).join(", ")})`
+      : "";
+    return `  ${index + 1}. ${stage.id}${tasks}`;
+  });
+  const repositories = Object.entries(config.repositories).map(([id, repository]) => {
+    const overrides = Object.entries(repository.overrides?.stages ?? {});
+    const skipped = overrides.filter(([, override]) => override.skip).map(([stage]) => stage);
+    const changed = overrides.flatMap(([stage, override]) =>
+      (["actions", "exitGate"] as const).flatMap((list) =>
+        Object.keys(override[list] ?? {}).map((task) => `${stage}.${list === "exitGate" ? "exit-gate" : list}.${task}`),
+      ),
+    );
+    return [
+      `Repository ${id}`,
+      `  overrides: ${changed.length > 0 ? changed.join(", ") : "none"}`,
+      `  skipped stages: ${skipped.length > 0 ? skipped.join(", ") : "none"}`,
+    ].join("\n");
+  });
+  return [`Stages (all repositories):`, ...stages, "", ...repositories.flatMap((repository) => [repository, ""])].join("\n").trimEnd();
 }
 
 export const configCheck: Command = {
@@ -53,6 +79,13 @@ export const configShow: Command = {
   async run(context) {
     const config = await loadCommandConfig(context, null);
     const { plans: _plans, secrets = [], warnings: _warnings, ...effective } = config;
+    if (effective.stages) {
+      // The stages list is carried internally as the pipeline named "stages"; show it only once.
+      effective.pipelines = Object.fromEntries(Object.entries(effective.pipelines).filter(([name]) => name !== STAGES_PIPELINE));
+      effective.repositories = Object.fromEntries(
+        Object.entries(effective.repositories).map(([id, { pipeline, ...repository }]) => [id, pipeline === STAGES_PIPELINE ? repository : { ...repository, pipeline }]),
+      ) as typeof effective.repositories;
+    }
     const redacted = redactSecrets(effective, secrets);
     if (context.json) printJson(context, redacted);
     else context.out(stringify(redacted, { aliasDuplicateObjects: false, lineWidth: 0 }).trimEnd());

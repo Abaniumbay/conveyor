@@ -28,7 +28,7 @@ const NAMED_SECTIONS = [
   "pipelines",
   "repositories",
 ] as const;
-const SINGLETON_SECTIONS = ["settings", "web", "labels"] as const;
+const SINGLETON_SECTIONS = ["settings", "web", "labels", "stages"] as const;
 
 type ConfigurationDocument = Record<string, unknown>;
 
@@ -151,22 +151,26 @@ function normalizeDocumentPaths(
     }
   }
 
+  const stageLists: Array<{ stages: unknown[]; path: string[] }> = [];
+  if (Array.isArray(document.stages)) stageLists.push({ stages: document.stages, path: ["stages"] });
   if (isObject(document.pipelines)) {
     for (const [name, pipeline] of Object.entries(document.pipelines)) {
-      if (!isObject(pipeline) || !Array.isArray(pipeline.stages)) continue;
-      for (const [index, stage] of pipeline.stages.entries()) {
-        if (!isObject(stage)) continue;
-        const stagePath = ["pipelines", name, "stages", String(index)];
-        if (isObject(stage.run) && "script" in stage.run) {
-          stage.run.script = resolvePath(stage.run.script, baseOf([...stagePath, "run", "script"]));
-        }
-        for (const group of ["actions", "exit-gate"] as const) {
-          const list = stage[group];
-          if (!Array.isArray(list)) continue;
-          for (const [position, entry] of list.entries()) {
-            if (isObject(entry) && entry.task === "script.run") {
-              resolveScriptWith(entry, baseOf([...stagePath, group, String(position), "with", "script"]));
-            }
+      if (isObject(pipeline) && Array.isArray(pipeline.stages)) stageLists.push({ stages: pipeline.stages, path: ["pipelines", name, "stages"] });
+    }
+  }
+  for (const stageList of stageLists) {
+    for (const [index, stage] of stageList.stages.entries()) {
+      if (!isObject(stage)) continue;
+      const stagePath = [...stageList.path, String(index)];
+      if (isObject(stage.run) && "script" in stage.run) {
+        stage.run.script = resolvePath(stage.run.script, baseOf([...stagePath, "run", "script"]));
+      }
+      for (const group of ["actions", "exit-gate"] as const) {
+        const list = stage[group];
+        if (!Array.isArray(list)) continue;
+        for (const [position, entry] of list.entries()) {
+          if (isObject(entry) && entry.task === "script.run") {
+            resolveScriptWith(entry, baseOf([...stagePath, group, String(position), "with", "script"]));
           }
         }
       }
