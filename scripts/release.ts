@@ -3,7 +3,8 @@
 // together, and a release is the tag v<version> on the commit that has both; pushing the tag runs
 // .github/workflows/release.yml, which tests, builds and publishes it.
 //
-//   bun run release start [<version>] [--summary <text> | --summary-file <file|->] [--yes]
+//   bun run release start [<version> | --bump patch|minor|major]
+//                         [--summary <text> | --summary-file <file|-> | --summary-from-commits] [--yes]
 //       On an up-to-date main: asks for the version and a release summary, prepares package.json
 //       and CHANGELOG.md, and opens the release pull request.
 //   bun run release tag <version> [--yes] [--watch]
@@ -45,6 +46,13 @@ export function nextVersions(current: string): { patch: string; minor: string; m
     minor: `${major}.${minor + 1}.0`,
     major: `${major + 1}.0.0`,
   };
+}
+
+/** A release summary listing the commits merged since `previousTag`, leaving out release commits. */
+export function summaryFromCommits(previousTag: string, subjects: readonly string[]): string {
+  const changes = subjects.map((subject) => subject.trim()).filter((subject) => subject && !/^chore\(release\):/.test(subject));
+  if (changes.length === 0) throw new ReleaseCheckError(`no commits since ${previousTag} to summarise`);
+  return [`Merged since ${previousTag}:`, "", ...changes.map((subject) => `- ${subject}`)].join("\n");
 }
 
 /** The body of the `## [version]` section, without its heading. */
@@ -164,6 +172,10 @@ export interface StartOptions {
   version?: string;
   /** The release summary; asked for when absent. */
   summary?: string;
+  /** Write the summary from the commit subjects since the previous release tag. */
+  summaryFromCommits?: boolean;
+  /** Release the next patch, minor or major version when no version is given. */
+  bump?: "patch" | "minor" | "major";
   yes?: boolean;
 }
 
@@ -177,7 +189,7 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   if (fragments.length === 0) throw new ReleaseCheckError("No Unreleased changes to release: add a fragment in changes/");
   const releaseNotes = renderReleaseNotes(fragments);
 
-  let version = options.version;
+  let version = options.version ?? (options.bump ? nextVersions(current)[options.bump] : undefined);
   if (!version) {
     const next = nextVersions(current);
     const answer = await io.ask(`Version to release (current ${current}; patch ${next.patch}, minor ${next.minor}, major ${next.major}): `);
@@ -192,6 +204,11 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
 
   io.print(`\nChanges in ${tag}:\n\n${releaseNotes}\n`);
   let summary = options.summary?.trim();
+  if (!summary && options.summaryFromCommits) {
+    const previousTag = await must(io, ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"], "git describe");
+    const subjects = await must(io, ["git", "log", "--no-merges", "--format=%s", `${previousTag}..HEAD`], "git log");
+    summary = summaryFromCommits(previousTag, subjects.split("\n"));
+  }
   if (!summary) {
     const answer = await io.askText("Release summary: a few sentences on what this release is about, shown first in the release notes. End with an empty line:\n");
     if (answer === null) throw new ReleaseCheckError("not a terminal: pass --summary <text> or --summary-file <file>");
@@ -211,7 +228,7 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   const body = [
     `Prepares ${tag}: \`package.json\` version ${version} and the dated CHANGELOG section below.`,
     "",
-    `After this merges, tag it: \`bun run release tag ${version}\`. The tag runs the Release workflow, which tests, builds and publishes ${tag}.`,
+    `Merging this tags it and starts the Release workflow, which tests, builds and publishes ${tag} (\`.github/workflows/release-tag.yml\`). To tag by hand instead: \`bun run release tag ${version}\`.`,
     "",
     "## Release notes",
     "",
@@ -311,7 +328,16 @@ async function main(args: string[]): Promise<void> {
     const summaryFile = option(args, "--summary-file");
     const summary = option(args, "--summary") ?? (summaryFile ? (summaryFile === "-" ? await Bun.stdin.text() : await readFile(summaryFile, "utf8")) : undefined);
     const version = value && !value.startsWith("--") ? value.replace(/^v/, "") : undefined;
-    await startRelease({ root: ROOT, ...(version ? { version } : {}), ...(summary ? { summary } : {}), yes: args.includes("--yes") }, io);
+    const bump = option(args, "--bump");
+    if (bump !== undefined && bump !== "patch" && bump !== "minor" && bump !== "major") throw new ReleaseCheckError(`--bump must be patch, minor or major, not ${bump}`);
+    await startRelease({
+      root: ROOT,
+      ...(version ? { version } : {}),
+      ...(bump ? { bump } : {}),
+      ...(summary ? { summary } : {}),
+      summaryFromCommits: args.includes("--summary-from-commits"),
+      yes: args.includes("--yes"),
+    }, io);
     return;
   }
   if (command === "tag" && value) {

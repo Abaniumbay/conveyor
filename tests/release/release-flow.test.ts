@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { nextVersions, prepareRelease, ReleaseCheckError, startRelease, tagRelease, type ReleaseIo } from "../../scripts/release";
+import { nextVersions, prepareRelease, ReleaseCheckError, startRelease, summaryFromCommits, tagRelease, type ReleaseIo } from "../../scripts/release";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -91,6 +91,29 @@ describe("bun run release start", () => {
     await startRelease({ root: clone, version: "0.2.0", summary: "Automated release.", yes: true }, releaseIo);
     expect(pullRequests).toHaveLength(1);
     expect(git(clone, "show", "HEAD:package.json")).toContain('"version": "0.2.0"');
+  });
+
+  test("a workflow bumps the version and writes the summary from the commits since the last release", async () => {
+    const { clone } = await repository();
+    git(clone, "tag", "v0.1.0");
+    git(clone, "push", "--quiet", "origin", "v0.1.0");
+    for (const subject of ["Children with dependencies are created again (#12)", "chore(release): v0.1.0", "Status shows one line (#13)"]) {
+      git(clone, "commit", "--quiet", "--allow-empty", "--message", subject);
+    }
+    git(clone, "push", "--quiet");
+    const { releaseIo, pullRequests } = io(clone);
+    await startRelease({ root: clone, bump: "minor", summaryFromCommits: true, yes: true }, releaseIo);
+
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release/v0.2.0");
+    expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toContain(
+      "## [0.2.0] - 2026-10-06\n\nMerged since v0.1.0:\n\n- Status shows one line (#13)\n- Children with dependencies are created again (#12)\n\n### Added",
+    );
+    expect(pullRequests[0]!.body).toContain("## Release notes\n\nMerged since v0.1.0:");
+  });
+
+  test("a summary from commits needs commits since the last release", () => {
+    expect(summaryFromCommits("v0.1.0", ["A (#1)", "", "chore(release): v0.1.0"])).toBe("Merged since v0.1.0:\n\n- A (#1)");
+    expect(() => summaryFromCommits("v0.1.0", ["chore(release): v0.1.0", ""])).toThrow("no commits since v0.1.0 to summarise");
   });
 
   test("declining, or having no terminal, changes nothing", async () => {
