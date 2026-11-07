@@ -29,10 +29,19 @@ running. Put the dashboard behind HTTPS before sending a token over a network.
 | `item_pause` | Pause an item; its stage, worktree and history are kept. Input: `item`. |
 | `item_resume` | Resume a paused item. Input: `item`. |
 | `question_answer` | Answer an item's open question. Input: `questionId`, `answer`. |
+| `list_repositories` | The onboarded repositories. |
+| `list_items` | Items with number, title, stage, state and dependencies; optional `repository` filter. |
+| `get_item` | One item's details: labels, parent, children, dependencies and criteria. |
+| `get_conversation` | An item's shared conversation messages. |
+| `get_change_status` | An item's change request, pull request and recorded CI checks. |
+| `get_questions_and_runs` | An item's pending questions and run history. |
 
 `item` is `<repository>:<number>` (or `<repository>#<number>`), for example `my-repo:42`. An unknown or
 offboarded item is a tool error naming it (`Unknown item: …`). These tools issue the same commands as
 the dashboard, through the command bus; they are available only here, not in the REST or control API.
+
+Item tools take `repository` (id or `owner/name`) and `number`. An unknown repository or item is a
+tool error naming it.
 
 ## Adding a tool
 

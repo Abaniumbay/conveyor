@@ -25,6 +25,7 @@ function setup() {
   commands.handle("item.resume", (input) => { received.push(["item.resume", input]); return { status: "started" as const, stageId: "implementation" }; });
   commands.handle("question.answer", (input) => { received.push(["question.answer", input]); });
   const facade: OperatorFacade = {
+    store: {} as OperatorFacade["store"],
     status: () => ({}),
     findItem: (reference) => ITEMS[reference] ?? null,
     dispatch: (name: CommandName, input) => commands.dispatch(name, input as never, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }) as never,

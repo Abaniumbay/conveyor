@@ -711,6 +711,11 @@ export class ConveyorStore {
     })();
   }
 
+  listRepositories(): Array<Pick<RepositoryRecord, "id" | "configName" | "source" | "address">> {
+    const rows = this.#database.query("SELECT id, config_name, source, address FROM repositories ORDER BY id").all() as Array<{ id: string; config_name: string; source: string; address: string }>;
+    return rows.map((row) => ({ id: row.id, configName: row.config_name, source: row.source, address: row.address }));
+  }
+
   upsertRepository(repository: RepositoryRecord): void {
     const timestamp = now();
     const before = this.#database

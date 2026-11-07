@@ -1,5 +1,6 @@
 import type { z } from "zod";
 
+import type { ConveyorStore } from "../db/store";
 import type { CommandBus } from "../commands/bus";
 import type { CommandInput, CommandName } from "../commands/registry";
 
@@ -7,7 +8,14 @@ import type { CommandInput, CommandName } from "../commands/registry";
  * What an operator tool may reach: read-only service state and the command bus. A tool never sees
  * an HTTP request, and a write goes through `dispatch`, as every other action does.
  */
+export type OperatorReadStore = Pick<ConveyorStore,
+  | "listRepositories" | "listIssues" | "getIssue" | "getIssueByNumber" | "listDependencies" | "listChildren"
+  | "listConversationMessages" | "getCurrentPullRequest" | "listIndicators" | "criterionTestEvidence"
+  | "listOpenQuestions" | "listIssueRuns">;
+
 export interface OperatorFacade {
+  /** Read-only view of Conveyor's stored state. */
+  store: OperatorReadStore;
   /** The service status, as `conveyor status` reports it. */
   status(): unknown;
   /** Finds an item by `<repository>:<number>`; null when Conveyor does not know it. */

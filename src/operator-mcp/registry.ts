@@ -2,6 +2,7 @@
 
 import { itemPause, itemResume, itemRetry, itemSteer, questionAnswer } from "./tools/control";
 import { conveyorStatus } from "./tools/status";
+import { stateTools } from "./tools/state";
 import type { OperatorTool } from "./tool";
 
 export const OPERATOR_TOOLS: readonly OperatorTool[] = [
@@ -11,4 +12,5 @@ export const OPERATOR_TOOLS: readonly OperatorTool[] = [
   itemPause,
   itemResume,
   questionAnswer,
+  ...stateTools,
 ];
