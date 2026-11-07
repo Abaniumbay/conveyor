@@ -176,19 +176,19 @@ async function world(options: {
   directories.push(root);
   const store = await ConveyorStore.open(path.join(root, "db.sqlite"));
   store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "o/r", folder: "/f", configHash: "h" });
-  const sources = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; labels: string[]; updatedAt: string; type?: string | null }>();
+  const sources = new Map<number, { id: string; number: number; url: string; title: string; body: string; state: "open" | "closed"; stateReason?: string | null; labels: string[]; updatedAt: string; type?: string | null }>();
   const source = (number: number) => sources.get(number) ?? {
     id: `github:o/r#${number}`, number, url: `https://x/${number}`, title: `Issue ${number}`, body: "",
     state: "open" as const, labels: [], updatedAt: "2026-01-01T00:00:00Z",
   };
-  const add = (id: string, number: number, extra: { body?: string; labels?: string[]; state?: "open" | "closed"; projected?: string } = {}) => {
+  const add = (id: string, number: number, extra: { body?: string; labels?: string[]; state?: "open" | "closed"; stateReason?: string | null; projected?: string } = {}) => {
     store.upsertIssue({
       id, repositoryId: "repo", sourceNumber: number, sourceUrl: `https://x/${number}`, title: `Issue ${number}`,
-      body: extra.body ?? "", sourceState: extra.state ?? "open", labels: extra.labels ?? ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
+      body: extra.body ?? "", sourceState: extra.state ?? "open", sourceStateReason: extra.stateReason ?? null, labels: extra.labels ?? ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     sources.set(number, {
       id, number, url: `https://x/${number}`, title: `Issue ${number}`, body: extra.body ?? "",
-      state: extra.state ?? "open", labels: extra.labels ?? ["conveyor"], updatedAt: "2026-01-01T00:00:00Z",
+      state: extra.state ?? "open", stateReason: extra.stateReason ?? null, labels: extra.labels ?? ["conveyor"], updatedAt: "2026-01-01T00:00:00Z",
     });
     if (extra.projected) store.setIssueProjection(id, { stage: null, state: extra.projected, warning: null });
   };
@@ -635,7 +635,7 @@ describe("item tools", () => {
       { dependsOn: [0], expected: /Invalid dependsOn value 0: it must be a positive integer/i },
       { dependsOn: [1.5], expected: /Invalid dependsOn value 1.5: it must be a positive integer/i },
       { dependsOn: [5], expected: /Invalid dependsOn value 5: it must not identify the current parent/i },
-      { dependsOn: [6], expected: /Invalid dependsOn value 6: it must identify an open, Conveyor-enrolled issue in this repository/i },
+      { dependsOn: [6], expected: /Invalid dependsOn value 6: it must identify an open or finished \(closed as completed\), Conveyor-enrolled issue in this repository/i },
       { dependsOn: [7], expected: /Invalid dependsOn value 7: issue #7 is closed/i, setup: (w) => w.add("closed", 7, { state: "closed" }) },
       { dependsOn: [8], expected: /Invalid dependsOn value 8: issue #8 is not enrolled in Conveyor/i, setup: (w) => w.add("unenrolled", 8, { labels: [] }) },
       { dependsOn: [9], expected: /Invalid dependsOn value 9: issue #9 belongs to another repository/i, setup: (w) => {
@@ -652,6 +652,42 @@ describe("item tools", () => {
       await expect(attempt).rejects.toThrow(expected);
       expect(w.calls).toEqual([]);
     }
+  });
+
+  test("createChild accepts a closed-completed dependency, stored or live, and the child starts without waiting", async () => {
+    for (const live of [false, true]) {
+      const w = await world(); w.add("i1", 5);
+      if (live) { w.add("done", 7); w.updateLiveSource(7, { state: "closed", stateReason: "completed" }); }
+      else w.add("done", 7, { state: "closed", stateReason: "completed" });
+      const out = await tool("item.createChild", w.deps(), {
+        title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+      });
+      expect(out.output).toMatchObject({ number: 99, dependsOn: [7] });
+      const child = (await run("item.load", { context: {}, deps: w.deps("c") }) as Extract<TaskResult, { status: "pass" }>).output as ItemContext;
+      expect(child.dependencies).toEqual([expect.objectContaining({ number: 7, satisfied: true })]);
+      expect(await run("item.dependenciesMet", { context: ctx(child) })).toEqual({ status: "pass" });
+    }
+  });
+
+  test("createChild refuses a closed dependency that was not finished, stored or live", async () => {
+    for (const reason of ["not_planned", null]) {
+      const stored = await world(); stored.add("i1", 5); stored.add("b", 7, { state: "closed", stateReason: reason });
+      await expect(tool("item.createChild", stored.deps(), {
+        title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+      })).rejects.toThrow("Invalid dependsOn value 7: issue #7 is closed and was not finished");
+      const live = await world(); live.add("i1", 5); live.add("b", 7);
+      live.updateLiveSource(7, { state: "closed", stateReason: reason });
+      await expect(tool("item.createChild", live.deps(), {
+        title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+      })).rejects.toThrow("Invalid dependsOn value 7: issue #7 is closed and was not finished");
+    }
+  });
+
+  test("createChild still refuses a closed-completed dependency that is not enrolled", async () => {
+    const w = await world(); w.add("i1", 5); w.add("b", 7, { state: "closed", stateReason: "completed", labels: [] });
+    await expect(tool("item.createChild", w.deps(), {
+      title: "Kid", body: "Body", acceptanceCriteria: [{ id: "a", text: "Do" }], dependsOn: [7],
+    })).rejects.toThrow("Invalid dependsOn value 7: issue #7 is not enrolled in Conveyor");
   });
 
   test("createChild revalidates stored blockers against their live source state before creating a child", async () => {
