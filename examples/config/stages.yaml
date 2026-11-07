@@ -1,0 +1,134 @@
+# The default stage list, for the top-level `stages:` section. Every stage is `actions` followed by a
+# non-empty `exit-gate`. YAML anchors copy complete stages; the compiled plan has no inheritance.
+# Repositories replace only the deploy and verify script paths, by task id.
+- &refinement
+  id: refinement
+  description: "Turns an item into a clear, testable plan and records a proposed work breakdown without creating children."
+  icon: "🧭"
+  concurrency: 3
+  retries: 2
+  actions:
+    - { id: refine, task: agent.run, with: { agent: darya } }
+  exit-gate:
+    - { id: criteria, task: item.criteriaDefined }
+    - { id: labels, task: item.labelsValid }
+    - { id: outputs, task: item.refinementComplete }   # type, fields and Refinement section the repository requires
+    - { id: breakdownPlan, task: breakdown.planComplete }
+    - id: dependencies
+      task: item.dependenciesMet
+      wait: { timeout: unlimited, poll: 5m }
+
+- id: refinement-review
+  description: "Reviews the proposed work breakdown before Conveyor creates any child issues."
+  icon: "🧾"
+  concurrency: 1
+  actions:
+    - { id: reviewBreakdown, task: agent.run, with: { agent: parisa } }
+  exit-gate:
+    - { id: approvedBreakdown, task: breakdown.reviewed, onFail: { return: refinement } }
+
+- id: work-breakdown
+  description: "Creates the approved work breakdown's child issues exactly as planned."
+  icon: "🧩"
+  concurrency: 1
+  childrenStartAt: next
+  actions:
+    - { id: createChildren, task: agent.run, with: { agent: roya } }
+  exit-gate:
+    - { id: completedBreakdown, task: breakdown.complete, onFail: { return: refinement } }
+
+- id: implementation
+  description: "Writes the change on its own branch, opens a pull request, and verifies its linked tests passed in CI."
+  icon: "🛠️"
+  concurrency: 2
+  retries: 3
+  actions:
+    - { id: workspace, task: workspace.ensure }
+    - { id: implement, task: agent.run, with: { agents: [kaveh, jamshid] } }
+    - id: ensureChange
+      task: change.ensure
+      with: { closingReference: true, criteriaChecklist: true }
+    - { id: startCi, task: ci.start, when: ci.enabled }
+  exit-gate:
+    - { id: pushed, task: workspace.pushed }
+    - { id: criteriaSynced, task: change.criteriaInSync }
+    - { id: criterionTests, task: change.criterionTestsVerified }
+    - id: ciDefined
+      task: ci.defined
+      when: ci.required
+      onFail: { stop: blocked }
+    - id: ciGate
+      task: ci.passed
+      when: ci.required
+      wait: { timeout: 3h, poll: 1m }
+    - id: criterionTestReports
+      task: change.criterionTestsPassed
+      when: ci.required
+
+- &review
+  id: review
+  description: "Reviews the change against its acceptance criteria and sends findings back to implementation."
+  icon: "🔍"
+  concurrency: 1
+  actions:
+    - id: ciSettled
+      task: ci.settled
+      wait: { timeout: 3h, poll: 1m }
+      onFail: { stop: blocked }
+    - id: criterionTests
+      task: change.criterionTestsVerified
+      onFail: { return: implementation }
+    - { id: review, task: agent.run, with: { agents: [shaghayegh, shirin] } }
+  exit-gate:
+    - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
+    - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
+    - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
+    - { id: ciHead, task: change.headUnchanged, when: ci.required, onFail: { return: implementation } }
+    - id: mergeable
+      task: change.mergeable
+      wait: { timeout: 30m, poll: 1m }
+      onFail: { return: implementation }
+
+- &merge
+  id: merge
+  description: "Merges the reviewed pull request."
+  icon: "🔀"
+  concurrency: 1
+  actions:
+    # Re-checked after manual approval: a thread reopened or answered since the review gate fails here.
+    - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
+    - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
+  exit-gate:
+    - { id: merged, task: change.merged, onFail: { return: implementation } }
+
+# Repositories replace the two script paths through stable-ID overrides.
+- &deploy
+  id: deploy
+  description: "Runs the repository's deploy script for the merged change."
+  icon: "🚀"
+  concurrency: 1
+  actions:
+    - { id: deployScript, task: script.run, with: { script: ./stages/deploy.ts, recovery: reconcile } }
+  exit-gate:
+    - { id: deployed, task: script.succeeded, with: { run: deployScript }, onFail: { stop: needs-intervention } }
+
+- &verify
+  id: verify
+  description: "Runs the repository's verify script against the deployed change."
+  icon: "✅"
+  concurrency: 1
+  actions:
+    - { id: verifyScript, task: script.run, with: { script: ./stages/verify.ts, recovery: replay-safe } }
+  exit-gate:
+    - { id: verified, task: script.succeeded, with: { run: verifyScript }, onFail: { stop: needs-intervention } }
+
+- &cleanup
+  id: cleanup
+  description: "Removes the item's workspace once it is delivered."
+  icon: "🧹"
+  concurrency: 4
+  actions:
+    - { id: removeWorkspace, task: workspace.cleanup }
+  exit-gate:
+    - { id: removed, task: workspace.removed, onFail: { stop: needs-intervention } }
+    - { id: issueClosed, task: item.issueClosed, onFail: { stop: needs-intervention } }

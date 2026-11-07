@@ -20,7 +20,7 @@ function task(id: string, name: string, extra: Partial<CompiledTask> = {}): Comp
 }
 
 function stage(id: string, actions: CompiledTask[], exitGate: CompiledTask[], extra: Partial<CompiledStage> = {}): CompiledStage {
-  return { id, concurrency: 1, retries: 2, childrenStartAt: null, legacy: false, actions, exitGate, ...extra };
+  return { id, concurrency: 1, retries: 2, childrenStartAt: null, legacy: false, skipped: false, actions, exitGate, ...extra };
 }
 
 function plan(repositoryId: string, stages: CompiledStage[]): CompiledPipeline {

@@ -37,6 +37,8 @@ export interface CompiledStage {
   retries: number;
   childrenStartAt: string | null;
   legacy: boolean;
+  /** True when the repository skips this stage: it passes through without running (no actions, no gate). */
+  skipped: boolean;
   actions: CompiledTask[];
   exitGate: CompiledTask[];
 }
@@ -52,7 +54,9 @@ export interface CompiledPipeline {
  * routes and waits. Concurrency is left out because it only affects scheduling.
  */
 export function stagePlanHash(stage: CompiledStage): string {
-  const { concurrency: _concurrency, ...plan } = stage;
+  const { concurrency: _concurrency, skipped, ...rest } = stage;
+  // A stage that is not skipped hashes as before this field existed, so parked stages stay valid.
+  const plan = skipped ? { ...rest, skipped } : rest;
   return createHash("sha256").update(JSON.stringify(stableValue(plan))).digest("hex");
 }
 
@@ -103,14 +107,16 @@ export function compilePipeline(input: {
   const stages: CompiledStage[] = [];
   const stageIds = pipeline.stages.map((stage) => stage.id);
   const overrides = repository.overrides?.stages ?? {};
-  for (const stageId of Object.keys(overrides)) {
+  for (const [stageId, override] of Object.entries(overrides)) {
     if (!stageIds.includes(stageId)) {
-      errors.push(`repositories.${repositoryId}.overrides.stages: unknown stage "${stageId}"`);
+      errors.push(
+        `repositories.${repositoryId}.overrides.stages: unknown stage "${stageId}"${override.skip ? " (skip)" : ""}; repository "${repositoryId}" has no stage "${stageId}" in its stage list`,
+      );
     }
   }
 
   for (const [index, stage] of pipeline.stages.entries()) {
-    const prefix = `pipelines.${repository.pipeline}.stages[${index}]`;
+    const prefix = config.stages ? `stages[${index}]` : `pipelines.${repository.pipeline}.stages[${index}]`;
     if (!isNativeStage(stage)) {
       const compiled = translateLegacyStage(stage, {
         successStatuses: pipeline.successStatuses ?? [],
@@ -121,7 +127,11 @@ export function compilePipeline(input: {
       for (const task of [...compiled.actions, ...compiled.exitGate]) {
         if (!registry.get(task.task)) errors.push(`${prefix}: legacy stage "${stage.id}" needs task "${task.task}", which is not registered`);
       }
-      stages.push(compiled);
+      stages.push(overrides[stage.id]?.skip ? skippedStage(compiled, true) : compiled);
+      continue;
+    }
+    if (overrides[stage.id]?.skip) {
+      stages.push(skippedStage(stage, false));
       continue;
     }
     stages.push(compileStage({ config, repositoryId, registry, stage, prefix, stageIds, errors }));
@@ -129,6 +139,23 @@ export function compilePipeline(input: {
 
   if (errors.length > 0) throw new PlanError(repositoryId, errors);
   return { id: repository.pipeline, repositoryId, stages };
+}
+
+/** A stage the repository skips keeps its place but runs nothing, and never waits for entry approval. */
+function skippedStage(
+  stage: { id: string; approval?: "manual" | undefined; concurrency: number; retries?: number | undefined; childrenStartAt?: string | null | undefined },
+  legacy: boolean,
+): CompiledStage {
+  return {
+    id: stage.id,
+    concurrency: stage.concurrency,
+    retries: stage.retries ?? 0,
+    childrenStartAt: stage.childrenStartAt ?? null,
+    legacy,
+    skipped: true,
+    actions: [],
+    exitGate: [],
+  };
 }
 
 /** Compiles every repository; legacy stages go through the compatibility translator. */
@@ -224,6 +251,7 @@ function compileStage(input: StageInput): CompiledStage {
     retries: stage.retries,
     childrenStartAt: stage.childrenStartAt ?? null,
     legacy: false,
+    skipped: false,
     actions: compiled.actions,
     exitGate: compiled["exit-gate"],
   };
