@@ -19,12 +19,26 @@ export interface OperatorToolContext<I> {
   facade: OperatorFacade;
 }
 
-/** One operator MCP tool; register it with one line in `registry.ts`. */
-export interface OperatorTool<S extends z.ZodObject = z.ZodObject> {
+/** A tool as authored: its handler receives the input typed by its own schema. */
+export interface OperatorToolDefinition<S extends z.ZodObject = z.ZodObject> {
   name: string;
   description: string;
   inputSchema: S;
   handler(context: OperatorToolContext<z.infer<S>>): unknown | Promise<unknown>;
 }
 
-export const defineOperatorTool = <S extends z.ZodObject>(tool: OperatorTool<S>): OperatorTool => tool as unknown as OperatorTool;
+/** A tool as registered: the handler takes unvalidated input and validates it against the schema. */
+export interface OperatorTool {
+  name: string;
+  description: string;
+  inputSchema: z.ZodObject;
+  handler(context: OperatorToolContext<unknown>): unknown | Promise<unknown>;
+}
+
+/** One operator MCP tool; register it with one line in `registry.ts`. */
+export const defineOperatorTool = <S extends z.ZodObject>(tool: OperatorToolDefinition<S>): OperatorTool => ({
+  name: tool.name,
+  description: tool.description,
+  inputSchema: tool.inputSchema,
+  handler: ({ input, facade }) => tool.handler({ input: tool.inputSchema.parse(input), facade }),
+});
