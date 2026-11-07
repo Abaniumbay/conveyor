@@ -218,6 +218,20 @@ export class GitHubReadCache implements GitHubTransport {
     this.#dropGraphql();
   }
 
+  /**
+   * Drops what is held about one issue (the issue and what is below it) and its entry in the
+   * repository's issue listings, so the next read goes to GitHub.
+   */
+  forgetIssue(address: string, number: number): void {
+    const repository = `repos/${address.toLowerCase()}`;
+    this.#drop(`${repository}/issues/${number}`);
+    const listing = `${repository}/issues`;
+    for (const key of this.#storage.keys(listing)) {
+      // A listing is read whole; dropping it is the only way to stop serving the stale entry.
+      if (resource(key) === listing) this.#storage.delete(key);
+    }
+  }
+
   /** Drops everything held for a repository, so its next reads go to GitHub (Sync now). */
   forgetRepository(address: string): void {
     for (const key of this.#storage.keys(`repos/${address.toLowerCase()}/`)) this.#storage.delete(key);

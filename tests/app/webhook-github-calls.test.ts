@@ -72,7 +72,9 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
   };
   const second = { ...issue, id: "github:owner/repo#2", number: 2, url: "https://github.com/owner/repo/issues/2", title: "Two" };
   const issues = options.second ? [issue, second] : [issue];
-  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], changeReads: [] as string[], labelWrites: [] as Array<{ issue: number; labels: string[] }>, subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }>, statusMarkdown: [] as string[] };
+  const calls = { listed: [] as Array<string | undefined>, fetched: [] as number[], changeReads: [] as string[], labelWrites: [] as Array<{ issue: number; labels: string[] }>, subIssues: 0, dependencies: 0, relationshipReads: [] as number[], statusWrites: [] as Array<{ issue: number; known: number | undefined }>, statusMarkdown: [] as string[], forgotten: [] as number[] };
+  // While set, reads answer with the issue as it was cached (open) until the cache forgets it.
+  let staleOpen = false;
   let listingGate: Promise<void> | null = null;
   let omitFromPartialListing = false;
   const rejectedFetches = new Set<number>();
@@ -85,8 +87,9 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
     async getIssue(_address: string, issueNumber: number) {
       calls.fetched.push(issueNumber);
       if (rejectedFetches.has(issueNumber)) throw new Error("not found");
-      return issue;
+      return staleOpen ? { ...issue, state: "open" as const, stateReason: null } : issue;
     },
+    forgetIssue(_address: string, issueNumber: number) { calls.forgotten.push(issueNumber); staleOpen = false; },
     async getIssueProvenance() {
       return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } };
     },
@@ -147,6 +150,7 @@ async function service(options: { second?: boolean; pipeline?: "merge-action" | 
   return {
     conveyor, store, calls, deliver, holdListing, issue, second,
     omitFromPartialListing: () => { omitFromPartialListing = true; },
+    cacheStaleOpenIssue: () => { staleOpen = true; },
     rejectFetchFor: (issueNumber: number) => { rejectedFetches.add(issueNumber); },
   };
 }
@@ -465,6 +469,100 @@ describe("GitHub calls made for webhook deliveries", () => {
 
     // The stage is requeued by removing the stopped label (the fake GitHub keeps its labels); no close request exists on the adapter.
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:cleanup"] }]);
+    store.close();
+  });
+
+  const stopLeftOpen = async (setup: Awaited<ReturnType<typeof service>>, reason: string) => {
+    const { conveyor, store, issue } = setup;
+    issue.labels = ["conveyor", "conveyor:cleanup", "conveyor:needs-intervention"];
+    await conveyor.reconcileAll();
+    store.activateEnrollment(issue.id);
+    store.upsertPullRequest({ issueId: issue.id, id: "github:owner/repo#pr-23", number: 23, url: "https://example.com/changes/23", state: "merged", mergedAt: "2026-10-07T20:00:00Z" });
+    store.beginStageTransition({ id: "stopped", issueId: issue.id, fromStage: "cleanup", toStage: "cleanup", kind: "stopped", sourceMutationId: null, detail: { reason, requiredFixes: [], resultStatus: null } });
+    store.completeStageTransition("stopped");
+    setup.calls.fetched.length = 0;
+  };
+  const LEFT_OPEN = "Change #23 merged, but GitHub did not close issue #1. Conveyor never closes the issue itself: close the issue as completed, or reopen the work.";
+
+  test("the next tick reads an issue left open fresh, bypassing the cache, and resumes the item once it is closed", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls, issue, cacheStaleOpenIssue } = setup;
+    await stopLeftOpen(setup, LEFT_OPEN);
+    cacheStaleOpenIssue();
+    issue.state = "closed";
+    issue.stateReason = "completed";
+
+    await conveyor.tick();
+
+    expect(calls.forgotten).toEqual([1]);
+    expect(calls.fetched).toContain(1);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:cleanup"] }]);
+    store.close();
+  });
+
+  test("an issue still open after a fresh read keeps the item stopped and is read again on the next tick", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls } = setup;
+    await stopLeftOpen(setup, LEFT_OPEN);
+
+    await conveyor.tick();
+    await conveyor.tick();
+
+    expect(calls.forgotten).toEqual([1, 1]);
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "cleanup", projectedState: "needs-intervention" });
+    store.close();
+  });
+
+  test("a failed fresh read keeps the item stopped, changes nothing and is retried on the next tick", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls, issue, rejectFetchFor } = setup;
+    await stopLeftOpen(setup, LEFT_OPEN);
+    issue.state = "closed";
+    rejectFetchFor(1);
+
+    await conveyor.tick();
+    await conveyor.tick();
+
+    expect(calls.forgotten).toEqual([1, 1]);
+    expect(calls.changeReads).toEqual([]);
+    expect(calls.labelWrites).toEqual([]);
+    expect(store.getCurrentPullRequest(issue.id)).toMatchObject({ state: "merged" });
+    expect(store.getIssue(issue.id)).toMatchObject({ projectedStage: "cleanup", projectedState: "needs-intervention" });
+    store.close();
+  });
+
+  test("an issue left open is still read fresh on every tick after the stop is older than the recovery age", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls, issue, cacheStaleOpenIssue } = setup;
+    await stopLeftOpen(setup, LEFT_OPEN);
+    cacheStaleOpenIssue();
+
+    const now = Date.now;
+    Date.now = () => now() + (61 * 60 * 1000);
+    try {
+      await conveyor.tick();
+      issue.state = "closed";
+      issue.stateReason = "completed";
+      await conveyor.tick();
+    } finally {
+      Date.now = now;
+    }
+
+    expect(calls.forgotten).toEqual([1, 1]);
+    expect(calls.labelWrites).toEqual([{ issue: 1, labels: ["conveyor", "conveyor:cleanup"] }]);
+    store.close();
+  });
+
+  test("a young stop for another reason keeps the one-hour recovery age and the cached read", async () => {
+    const setup = await service({ pipeline: "issue-closed" });
+    const { conveyor, store, calls } = setup;
+    await stopLeftOpen(setup, "Workspace /w still exists");
+
+    await conveyor.tick();
+
+    expect(calls.forgotten).toEqual([]);
+    expect(calls.fetched).toEqual([]);
     store.close();
   });
 
