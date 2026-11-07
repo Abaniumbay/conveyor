@@ -76,6 +76,7 @@ Instruction files are copied into the new directory; script, folder and state pa
 | --- | --- |
 | `--from <dir-or-file>` | the configuration to migrate (default: --config) |
 | `--to <dir>` | an absent or empty directory for the new configuration |
+| `--stages` | convert the pipelines of the configuration file into one installation-wide stages list, written beside it as *.migrated.yaml |
 
 ### `conveyor config builtin [<file>]`
 
