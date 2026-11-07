@@ -43,7 +43,9 @@ describe("operator MCP endpoint", () => {
     const token = newOperatorToken();
     const url = listen(createOperatorMcpHandler({ facade: facade(), tokenIsActive: (hash) => hash === hashOperatorToken(token) }));
     const client = new Client({ name: "test", version: "1" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(OPERATOR_MCP_PATH, url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+    const transport = new StreamableHTTPClientTransport(new URL(OPERATOR_MCP_PATH, url), { requestInit: { headers: { authorization: `Bearer ${token}` } } });
+    // The SDK's class declares an optional sessionId that exactOptionalPropertyTypes rejects for Transport.
+    await client.connect(transport as Parameters<Client["connect"]>[0]);
     try {
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["conveyor_status"]);
       const result = await client.callTool({ name: "conveyor_status", arguments: {} });
