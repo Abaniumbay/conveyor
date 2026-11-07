@@ -139,6 +139,8 @@ export const EVENT_CATALOGUE = {
   "account.passwordChanged": define("System", "A dashboard account's password changed.", z.object({ accountId: id }).strict()),
   "account.avatarChanged": define("System", "A dashboard account's avatar changed.", z.object({ accountId: id }).strict()),
   "account.deleted": define("System", "A dashboard account was deleted.", z.object({ accountId: id }).strict()),
+  "operatorMcpToken.created": define("System", "An operator MCP token was created.", z.object({ tokenId: id }).strict()),
+  "operatorMcpToken.revoked": define("System", "An operator MCP token was revoked.", z.object({ tokenId: id }).strict()),
   "notifications.settingsChanged": define("System", "An account's push notification preferences changed.", z.object({ accountId: id }).strict()),
   "notifications.subscribed": define("System", "A browser subscribed to push notifications.", z.object({ accountId: id }).strict()),
   "notifications.unsubscribed": define("System", "A browser's push subscription was removed.", z.object({ accountId: nullableId }).strict()),

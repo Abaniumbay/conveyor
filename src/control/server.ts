@@ -67,7 +67,8 @@ function githubOutageStatus(service: ConveyorService): { since: string; waiting:
   return outage ? { since: outage.since, waiting: outage.waitingItems.length } : null;
 }
 
-function status(service: ConveyorService, info: ControlInfo) {
+/** The status payload `GET /v1/status` and the operator MCP `conveyor_status` tool both return. */
+export function status(service: ConveyorService, info: ControlInfo) {
   const work = service.activeWork();
   const issues = service.store.listIssues().filter((issue) => issue.projectedState !== "offboarded");
   return {

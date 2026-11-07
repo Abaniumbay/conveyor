@@ -1083,4 +1083,17 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 45,
+    sql: `
+      -- Operator MCP bearer tokens; only the SHA-256 hash of a token is stored.
+      CREATE TABLE operator_mcp_tokens (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+    `,
+  },
 ];

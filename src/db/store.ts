@@ -109,6 +109,11 @@ export interface FinishedIssueCountQuery {
   stageActors: ReadonlyArray<{ repositoryId: string; stageId: string; text: string }>;
 }
 
+/** An operator MCP token as listed; the token value and its hash are never exposed. */
+export interface OperatorMcpToken { id: string; name: string; createdAt: string; revokedAt: string | null }
+interface OperatorMcpTokenRow { id: string; name: string; created_at: string; revoked_at: string | null }
+const operatorMcpTokenOf = (row: OperatorMcpTokenRow): OperatorMcpToken => ({ id: row.id, name: row.name, createdAt: row.created_at, revokedAt: row.revoked_at });
+
 export interface DashboardAccount {
   id: string;
   username: string;
@@ -616,6 +621,39 @@ export class ConveyorStore {
       this.#events.append("account.deleted", { accountId: id });
       return "deleted";
     })();
+  }
+
+  /** Stores a new operator MCP token by its hash; the caller keeps the only copy of the token itself. */
+  createOperatorMcpToken(name: string, tokenHash: string): OperatorMcpToken {
+    return this.#database.transaction(() => {
+      const token = { id: randomUUID(), name, createdAt: now(), revokedAt: null };
+      this.#database.query("INSERT INTO operator_mcp_tokens (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)").run(token.id, name, tokenHash, token.createdAt);
+      this.#events.append("operatorMcpToken.created", { tokenId: token.id });
+      return token;
+    })();
+  }
+
+  listOperatorMcpTokens(): OperatorMcpToken[] {
+    return this.#database.query("SELECT id, name, created_at, revoked_at FROM operator_mcp_tokens ORDER BY created_at, id").all()
+      .map((row) => operatorMcpTokenOf(row as OperatorMcpTokenRow));
+  }
+
+  /** Revokes a token by id; false when it does not exist, true once it is revoked (also when it already was). */
+  revokeOperatorMcpToken(id: string): boolean {
+    return this.#database.transaction(() => {
+      const row = this.#database.query("SELECT revoked_at FROM operator_mcp_tokens WHERE id = ?").get(id) as { revoked_at: string | null } | null;
+      if (!row) return false;
+      if (row.revoked_at === null) {
+        this.#database.query("UPDATE operator_mcp_tokens SET revoked_at = ? WHERE id = ?").run(now(), id);
+        this.#events.append("operatorMcpToken.revoked", { tokenId: id });
+      }
+      return true;
+    })();
+  }
+
+  /** Whether a token with this hash exists and is not revoked. */
+  operatorMcpTokenIsActive(tokenHash: string): boolean {
+    return this.#database.query("SELECT 1 FROM operator_mcp_tokens WHERE token_hash = ? AND revoked_at IS NULL").get(tokenHash) !== null;
   }
 
   changeDashboardAvatar(id: string, avatar: string): void {
