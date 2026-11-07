@@ -1629,6 +1629,7 @@ export class ConveyorService {
           !this.hasResumableQuestionExecution(issue.id) &&
           !this.childCreationRetryQueued(issue, state.stageId),
         lightweight,
+        skipped: this.isSkippedStage(issue.repositoryId, state.stageId),
         gateOnly: !lightweight && this.isGateOnlyExecution(issue.id, issue.repositoryId, state.stageId),
       }];
     });
@@ -1664,6 +1665,7 @@ export class ConveyorService {
   private schedulerOccupants(): SchedulerOccupant[] {
     const occupants = new Map<string, SchedulerOccupant>();
     for (const run of this.store.listActiveIssueRuns()) {
+      if (this.isSkippedStage(run.repository, run.stageId)) continue;
       occupants.set(run.issueId, {
         id: run.issueId,
         repositoryId: run.repository,
@@ -1673,6 +1675,7 @@ export class ConveyorService {
       });
     }
     for (const [id, active] of this.#active) {
+      if (this.isSkippedStage(active.repositoryId, active.stageId)) continue;
       occupants.set(id, { id, repositoryId: active.repositoryId, stageId: active.stageId, lightweight: active.lightweight, gateOnly: active.gateOnly });
     }
     return [...occupants.values()];
@@ -2732,6 +2735,12 @@ export class ConveyorService {
     const cursor = journal.getCursor(issueId);
     if (!cursor || cursor.stage !== stageId || cursor.stageEpoch !== journal.stageEpoch(issueId)) return false;
     return !remainingWorkStartsProcess(stage, cursor);
+  }
+
+  private isSkippedStage(repositoryId: string, stageId: string): boolean {
+    return (this.config.plans ?? [])
+      .find((plan) => plan.repositoryId === repositoryId)
+      ?.stages.find((candidate) => candidate.id === stageId)?.skipped === true;
   }
 
   private isLightweightStage(repositoryId: string, stageId: string): boolean {

@@ -136,6 +136,11 @@ export class StageExecutor {
     const { journal, clock } = this.#o;
     const stage = input.pipeline.stages.find((candidate) => candidate.id === input.stageId);
     if (!stage) throw new Error(`Unknown stage ${input.stageId}`);
+    if (stage.skipped) {
+      // The repository skips this stage: no action, gate, agent or approval runs, and the item moves on at once.
+      const next = input.pipeline.stages[input.pipeline.stages.findIndex((s) => s.id === stage.id) + 1];
+      return { kind: "advance", stageId: stage.id, nextStageId: next?.id ?? null, result: null, feedbackCycles: 0 };
+    }
     const stored = journal.getContext(input.issueId);
     const context: TaskContext = stored
       ? {
