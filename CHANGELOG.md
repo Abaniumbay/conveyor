@@ -10,6 +10,26 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.17.1] - 2026-11-07
+
+Merged since v0.17.0:
+
+- Release from GitHub: a Start release button, and merging the release PR publishes (#600)
+- Children with dependencies are created again (#598) (#599)
+- Items waiting on a merged issue's closure re-read GitHub each tick instead of waiting an hour (#589)
+- runCodexCheck always settles on timeout or abort and leaves no child running (#587)
+- Pushes refresh the cached pull request so a lost webhook cannot block an item (#585)
+
+### Fixed
+
+- A lost pull request webhook no longer blocks an item after a push: Conveyor now forgets its cached copy of the pull request when it pushes a branch, and re-reads it when a pushed head does not match, instead of waiting up to an hour for the cache to expire.
+
+- A verifier run that times out or is interrupted now always ends: its whole process group is stopped, including helper processes that keep the output open, so a stuck check can no longer stall a run until the job timeout.
+
+- An item stopped because GitHub left its issue open after the merge now reads the issue fresh from GitHub on every tick, bypassing the cached copy, and resumes as soon as the issue is closed instead of waiting up to an hour.
+
+- Refinement can split an item into children that depend on each other again. Since 0.17.0, creating a child with dependencies failed with "The issue body changed while its managed section was being updated." and left an unlabelled child issue behind on each attempt.
+
 ## [0.17.0] - 2026-11-06
 
 Conveyor now rides out GitHub trouble on its own. API calls and pushes retry temporary errors, items wait through a GitHub outage and then resume instead of stopping, retried creates never make duplicates, and status and the dashboard show a single GitHub-unavailable line. Agents learn whether a tool failure is temporary, and stage scripts can report one with exit code 75. Upgrades can switch only when a newer release exists, with timer commands for automatic upgrades.
