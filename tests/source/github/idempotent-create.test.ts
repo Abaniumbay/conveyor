@@ -26,6 +26,13 @@ class FakeGitHub implements GitHubTransport {
       if (this.failFirstCreate) this.lose();
       return issue as T;
     }
+    const issuePath = /^repos\/o\/r\/issues\/(\d+)$/.exec(path);
+    const stored = issuePath ? this.issues.find((issue) => issue.number === Number(issuePath[1])) : undefined;
+    if (stored && method === "GET") return stored as T;
+    if (stored && method === "PATCH") {
+      stored.body = body.body!;
+      return stored as T;
+    }
     if (method === "GET" && path.includes("/comments")) return this.comments as T;
     if (method === "POST" && path.endsWith("/comments")) {
       const comment = { id: this.comments.length + 1, html_url: "c", body: body.body! };
@@ -86,6 +93,19 @@ describe("idempotent creates", () => {
     expect(b.number).not.toBe(a.number);
     expect(again.number).toBe(a.number);
     expect(github.issues).toHaveLength(2);
+  });
+
+  test("a body with its own child-create marker is created unchanged, so a managed section can be written against it", async () => {
+    const github = new FakeGitHub();
+    const adapter = adapterOver(github);
+    const sent = `body\n\n<!-- conveyor:child-create:${"c".repeat(64)} -->\n`;
+    const created = await adapter.createChildIssue({ ...child("Kid"), body: sent });
+    expect(github.issues[0]!.body).toBe(sent);
+    const updated = await adapter.updateManagedSection({
+      address: "o/r", issueNumber: created.number, section: "dependencies", markdown: "- #7",
+      expectedRevision: adapter.managedRevision(sent), baseBody: sent,
+    });
+    expect(updated.body).toContain("<!-- conveyor:dependencies:start -->\n- #7\n<!-- conveyor:dependencies:end -->");
   });
 
   test("pull request created but answered 502 leaves a single pull request", async () => {
