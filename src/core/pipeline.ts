@@ -109,3 +109,34 @@ export class PipelineExecutionError extends Error {
     super(message, options);
   }
 }
+
+/**
+ * The board's column order for a set of pipelines: a topological order of every "runs before"
+ * pair in any pipeline, so no stage appears after one it runs before. Among stages free to go
+ * next, the one seen first goes first, which keeps a single stage list exactly as written. Pipelines
+ * that contradict each other cannot all be honoured; the earliest-seen stage goes first then.
+ */
+export function boardStageOrder(pipelines: Iterable<{ stages: readonly { id: string }[] }>): string[] {
+  const seen: string[] = [];
+  const before = new Map<string, Set<string>>();
+  for (const pipeline of pipelines) {
+    let previous: string | undefined;
+    for (const { id } of pipeline.stages) {
+      if (!before.has(id)) {
+        before.set(id, new Set());
+        seen.push(id);
+      }
+      if (previous !== undefined && previous !== id) before.get(id)!.add(previous);
+      previous = id;
+    }
+  }
+  const order: string[] = [];
+  const placed = new Set<string>();
+  while (order.length < seen.length) {
+    const remaining = seen.filter((id) => !placed.has(id));
+    const next = remaining.find((id) => [...before.get(id)!].every((earlier) => placed.has(earlier))) ?? remaining[0]!;
+    placed.add(next);
+    order.push(next);
+  }
+  return order;
+}

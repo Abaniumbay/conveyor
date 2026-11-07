@@ -2860,3 +2860,46 @@ describe("ConveyorService dashboard", () => {
     store.close();
   });
 });
+
+describe("board column order", () => {
+  test("columns follow the stage list with skipped stages kept, and ci-gate sits between review and merge across pipelines", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-columns-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const stage = (id: string) => ({ id, run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] });
+    const repository = (pipeline: string) => ({ source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline, concurrency: 1, systemLabels: [] });
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: {
+        delivery: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["refinement", "implementation", "review", "merge", "cleanup"].map(stage) },
+        "paid-ci-delivery": { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["refinement", "implementation", "review", "ci-gate", "merge", "cleanup"].map(stage) },
+      },
+      repositories: { one: repository("delivery"), two: repository("paid-ci-delivery") },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    expect(model.stages.map((column) => column.id)).toEqual(["refinement", "implementation", "review", "ci-gate", "merge", "cleanup"].map((id) => `stage:${id}`));
+  });
+
+  test("two repositories on one stages list, one skipping verify, show the same columns in list order", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-columns-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const stage = (id: string) => ({ id, run: { type: "agent", agent: "implementer" }, concurrency: 1, failurePolicies: {}, afterSuccess: [] });
+    const repository = (extra: object) => ({ source: "github", address: "owner/repo", folder: root, baseBranch: "main", pipeline: "stages", concurrency: 1, systemLabels: [], ...extra });
+    const config = {
+      hash: "config-hash", root,
+      settings: { artifacts: path.join(root, "artifacts"), workspaces: path.join(root, "workspaces"), runners: 1, labelPrefix: "conveyor" },
+      web: { listen: "127.0.0.1:4300" }, sources: { github: { type: "github" } },
+      labels: { enrollment: "conveyor", stageTemplate: "conveyor:{stage}", states: { done: "conveyor:done", blocked: "conveyor:blocked" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" } },
+      pipelines: { stages: { successStatuses: ["done"], failureStatuses: ["blocked"], stages: ["refinement", "implementation", "verify", "ci-gate", "review", "merge", "cleanup"].map(stage) } },
+      repositories: { gated: repository({ overrides: { stages: { "ci-gate": {} } } }), skipping: repository({ overrides: { stages: { verify: { skip: true } } } }) },
+      agents: {},
+    } as unknown as ConveyorConfig;
+    const model = new ConveyorService(config, store, {} as never).dashboard("csrf");
+    expect(model.stages.map((column) => column.id)).toEqual(["refinement", "implementation", "verify", "ci-gate", "review", "merge", "cleanup"].map((id) => `stage:${id}`));
+  });
+});
