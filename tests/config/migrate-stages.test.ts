@@ -135,4 +135,45 @@ describe("config migrate --stages", () => {
     expect(result.err).toContain("second (pipeline b): deploy, verify");
     expect(await readdir(directory)).toEqual(["conveyor.yaml"]);
   });
+
+  test("compatible partial orders merge into one list instead of being rejected", async () => {
+    const { file, directory, home } = await fixture(
+      configuration(
+        `\n  ac:\n    stages:${verify}${cleanup()}\n  bc:\n    stages:${deploy}${cleanup()}\n  abc:\n    stages:${verify}${deploy}${cleanup()}`,
+        repository("one", "ac") + repository("two", "bc") + repository("three", "abc"),
+      ),
+    );
+    const result = await migrate(file, home);
+    expect(result.err).toBe("");
+    expect(result.code).toBe(EXIT.ok);
+    const document = await migrated(directory);
+    expect(document.stages.map((stage: { id: string }) => stage.id)).toEqual(["verify", "deploy", "cleanup"]);
+  });
+
+  test("a repository's existing overrides are kept next to the generated ones", async () => {
+    const other = deploy.replace("/tmp/deploy.ts", "/tmp/other-deploy.ts");
+    const text = configuration(
+      `\n  a:\n    stages:${verify}${deploy}\n  b:\n    stages:${verify}${other}`,
+      repository("first", "a") + repository("second", "b") +
+        "\n    overrides:\n      stages:\n        deploy:\n          actions:\n            deployScript:\n              wait: { timeout: 5m }",
+    );
+    const { file, directory, home } = await fixture(text);
+    const result = await migrate(file, home);
+    expect(result.err).toBe("");
+    expect(result.code).toBe(EXIT.ok);
+    const deployOverride = (await migrated(directory)).repositories.second.overrides.stages.deploy.actions.deployScript;
+    expect(deployOverride.with.script).toBe("/tmp/other-deploy.ts");
+    expect(deployOverride.wait).toEqual({ timeout: "5m" });
+  });
+
+  test("a pipeline with a tagged value inside its stages is refused and nothing is written", async () => {
+    const tagged = deploy.replace("/tmp/deploy.ts", "!secret deploy_script");
+    const { file, directory, home } = await fixture(
+      configuration(`\n  a:\n    stages:${verify}${tagged}`, repository("first", "a")),
+    );
+    const result = await migrate(file, home);
+    expect(result.code).not.toBe(EXIT.ok);
+    expect(result.err).toContain("!secret");
+    expect(await readdir(directory)).toEqual(["conveyor.yaml"]);
+  });
 });

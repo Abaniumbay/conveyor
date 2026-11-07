@@ -5,7 +5,7 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isMap, isScalar, isSeq, parseDocument, type Document, type YAMLMap } from "yaml";
+import { isMap, isScalar, isSeq, parseDocument, visit, type Document, type YAMLMap } from "yaml";
 
 import type { TaskRegistry } from "../tasks/contract";
 import { comparePlans } from "../tasks/compare-plans";
@@ -37,20 +37,38 @@ function stageId(stage: Json): string {
   return String(stage.id);
 }
 
-/** The merged order: the first pipeline, then every stage a later pipeline adds, in its place. */
-function mergeOrder(pipelines: Array<{ name: string; stages: Json[] }>): string[] {
-  const merged: string[] = [];
+/**
+ * The merged order: a stable topological sort of every pipeline's adjacent-stage constraints, ties
+ * broken by first appearance. Returns null when the pipelines' orders contradict each other.
+ */
+function mergeOrder(pipelines: Array<{ name: string; stages: Json[] }>): string[] | null {
+  const seen: string[] = [];
+  const after = new Map<string, Set<string>>();
+  const before = new Map<string, number>();
   for (const { stages } of pipelines) {
-    let after = -1;
+    let previous: string | null = null;
     for (const stage of stages) {
       const id = stageId(stage);
-      const at = merged.indexOf(id);
-      if (at >= 0) after = at;
-      else {
-        merged.splice(after + 1, 0, id);
-        after += 1;
+      if (!seen.includes(id)) {
+        seen.push(id);
+        after.set(id, new Set());
+        before.set(id, 0);
       }
+      if (previous !== null && previous !== id && !after.get(previous)!.has(id)) {
+        after.get(previous)!.add(id);
+        before.set(id, before.get(id)! + 1);
+      }
+      previous = id;
     }
+  }
+  const merged: string[] = [];
+  const remaining = new Set(seen);
+  while (remaining.size > 0) {
+    const next = seen.find((id) => remaining.has(id) && before.get(id) === 0);
+    if (next === undefined) return null;
+    remaining.delete(next);
+    merged.push(next);
+    for (const id of after.get(next)!) before.set(id, before.get(id)! - 1);
   }
   return merged;
 }
@@ -102,6 +120,15 @@ function stageOverrides(base: Json, stage: Json, label: string): Json {
   return result;
 }
 
+/** Writes `value` under `at`, descending `depth` object levels, without replacing anything already there. */
+function setMissing(node: YAMLMap, at: string[], value: unknown, depth: number): void {
+  if (depth > 0 && isObject(value)) {
+    for (const [key, child] of Object.entries(value)) setMissing(node, [...at, key], child, depth - 1);
+    return;
+  }
+  if (!node.hasIn(at)) node.setIn(at, value);
+}
+
 export async function migrateStages(
   from: string,
   options: { home?: string; registry?: TaskRegistry | null } = {},
@@ -117,6 +144,13 @@ export async function migrateStages(
 
   const pipelineMap = sectionMap(document, "pipelines");
   const repositoryMap = sectionMap(document, "repositories");
+  visit(pipelineMap, {
+    Node(_key, node) {
+      if ((isScalar(node) || isMap(node) || isSeq(node)) && node.tag?.startsWith("!")) {
+        throw new ConfigError(`--stages cannot migrate a pipeline that uses the ${node.tag} tag inside its stages; write the value inline first`);
+      }
+    },
+  });
   const pipelines = new Map<string, Json[]>();
   for (const pair of pipelineMap.items) {
     const name = String(isScalar(pair.key) ? pair.key.value : pair.key);
@@ -145,8 +179,7 @@ export async function migrateStages(
     if (!used.some((entry) => entry.name === pipeline)) used.push({ name: pipeline, stages: pipelines.get(pipeline)! });
   }
   const merged = mergeOrder(used);
-  const disagreeing = repositories.filter(({ pipeline }) => !isSubsequence(pipelines.get(pipeline)!.map(stageId), merged));
-  if (disagreeing.length > 0) {
+  if (merged === null || repositories.some(({ pipeline }) => !isSubsequence(pipelines.get(pipeline)!.map(stageId), merged))) {
     throw new ConfigError([
       "the pipelines order the same stages differently; reorder them to agree, then migrate again. Current stage order per repository:",
       ...repositories.map(({ id, pipeline }) => `  ${id} (pipeline ${pipeline}): ${pipelines.get(pipeline)!.map(stageId).join(", ")}`),
@@ -166,16 +199,17 @@ export async function migrateStages(
       const difference = stageOverrides(definitions.get(stageId(stage))!, stage, `repository "${id}"`);
       if (Object.keys(difference).length > 0) overrides.push([stageId(stage), difference]);
     }
-    return { id, overrides, skipped: merged.filter((stage) => !present.has(stage)) };
+    return { id, overrides, skipped: merged!.filter((stage) => !present.has(stage)) };
   });
 
   for (const [index, { node }] of repositories.entries()) {
     const change = changes[index]!;
     node.delete("pipeline");
-    for (const [stage, difference] of change.overrides) node.setIn(["overrides", "stages", stage], document.createNode(difference));
-    for (const stage of change.skipped) node.setIn(["overrides", "stages", stage, "skip"], true);
+    // The repository's own overrides apply on top of its pipeline, so they win over generated ones.
+    for (const [stage, difference] of change.overrides) setMissing(node, ["overrides", "stages", stage], difference, 3);
+    for (const stage of change.skipped) setMissing(node, ["overrides", "stages", stage], { skip: true }, 1);
   }
-  const stagesNode = document.createNode(merged.map((id) => definitions.get(id)));
+  const stagesNode = document.createNode(merged!.map((id) => definitions.get(id)));
   const pipelinesPair = (document.contents as YAMLMap).items.find((pair) => isScalar(pair.key) && pair.key.value === "pipelines")!;
   pipelinesPair.key = document.createNode("stages");
   pipelinesPair.value = stagesNode;
