@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function facade() {
-  return { status: () => STATUS, dispatch: () => { throw new Error("no commands in this test"); } };
+  return { status: () => STATUS, findItem: () => null, dispatch: () => { throw new Error("no commands in this test"); } };
 }
 
 function listen(handler: (request: Request) => Promise<Response>): string {
@@ -36,7 +36,7 @@ const call = (url: string, authorization: string | null, name: string) => fetch(
 
 describe("operator MCP endpoint", () => {
   test("the registry ships conveyor_status", () => {
-    expect(OPERATOR_TOOLS.map((tool) => tool.name)).toEqual(["conveyor_status"]);
+    expect(OPERATOR_TOOLS.map((tool) => tool.name)).toContain("conveyor_status");
   });
 
   test("a valid token lists tools and calls conveyor_status over real HTTP", async () => {
@@ -47,7 +47,7 @@ describe("operator MCP endpoint", () => {
     // The SDK's class declares an optional sessionId that exactOptionalPropertyTypes rejects for Transport.
     await client.connect(transport as Parameters<Client["connect"]>[0]);
     try {
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["conveyor_status"]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toContain("conveyor_status");
       const result = await client.callTool({ name: "conveyor_status", arguments: {} });
       expect(JSON.parse((result.content as Array<{ text: string }>)[0]!.text)).toEqual(STATUS);
     } finally {

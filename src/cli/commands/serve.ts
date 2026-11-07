@@ -119,6 +119,12 @@ export const serve: Command = {
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
           status: () => controlStatus(service, controlInfo) ,
+          findItem: (reference) => {
+            const match = /^(.+)[:#](\d+)$/.exec(reference);
+            const issue = match ? service.store.listIssues(match[1]).find((candidate) => candidate.sourceNumber === Number(match[2])) : undefined;
+            if (!issue || issue.projectedState === "offboarded") return null;
+            return { issueId: issue.id, running: service.activeWork().items.some((item) => item.issueId === issue.id) };
+          },
           dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
         },
         tokenIsActive: (hash) => service.store.operatorMcpTokenIsActive(hash),
