@@ -633,7 +633,9 @@ export class GitHubAdapter {
     // attempt so a retry after that write fails does not create a duplicate.
     const createMarker = /<!-- conveyor:child-create:([a-f0-9]{64}) -->/.exec(input.body)?.[0];
     const keyMarker = `<!-- conveyor:child-of:${input.parentNumber}:key:${createHash("sha256").update(input.title).digest("hex").slice(0, 16)} -->`;
-    const body = input.body.includes(keyMarker) ? input.body : `${input.body}\n\n${keyMarker}`;
+    // A body with its own child-create marker is created exactly as given: callers
+    // check later managed-section writes against the body they sent.
+    const body = createMarker || input.body.includes(keyMarker) ? input.body : `${input.body}\n\n${keyMarker}`;
     const findExisting = async () => (await this.transport.request<GitHubIssue[]>({
       method: "GET",
       path: `repos/${input.address}/issues/${input.parentNumber}/sub_issues?per_page=100`,
