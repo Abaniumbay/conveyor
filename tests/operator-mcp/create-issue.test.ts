@@ -88,7 +88,7 @@ repositories:
   stops.push(() => void service.close());
   const token = newOperatorToken();
   const handler = createOperatorMcpHandler({
-    facade: { status: () => ({}), findItem: () => null, createIssue: (input) => service.createIssue(input), dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "test", role: "superuser" }) },
+    facade: { store, status: () => ({}), findItem: () => null, createIssue: (input) => service.createIssue(input), dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "test", role: "superuser" }) },
     tokenIsActive: (hash) => hash === hashOperatorToken(token),
   });
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: handler });
