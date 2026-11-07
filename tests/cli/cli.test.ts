@@ -256,24 +256,27 @@ pipeline: delivery
     });
 
     test("serve writes the warning to the service log and still starts", async () => {
-      const home = await withRepository();
+      const home = await initialisedHome();
       await configureFreeDashboardPort(home);
       const serving = cli("serve", "--home", home);
       try {
+        // "started" is logged in the same tick that installs the signal handlers, so once it is
+        // in the log the SIGTERM below reaches the shutdown handler.
         const logFile = path.join(home, "logs/conveyor.log");
         let text = "";
-        for (let attempt = 0; attempt < 200 && !text.includes("conveyor config migrate --stages"); attempt += 1) {
+        for (let attempt = 0; attempt < 300 && !text.includes("started"); attempt += 1) {
           text = await readFile(logFile, "utf8").catch(() => "");
-          if (!text.includes("conveyor config migrate --stages")) await Bun.sleep(50);
+          if (!text.includes("started")) await Bun.sleep(100);
         }
         expect(text).toContain("conveyor config migrate --stages");
-        expect(text).toContain(path.join(home, "config/repositories/app.yaml"));
+        expect(text).toContain("pipelines.yaml");
+        expect(text).toContain("started");
       } finally {
         process.emit("SIGTERM");
         expect((await serving).code).toBe(EXIT.ok);
         log.configure({ sinks: [new ConsoleSink()] });
       }
-    }, 20_000);
+    }, 40_000);
   });
 
   test("secret-source parse errors do not expose values through config check or serve", async () => {

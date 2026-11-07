@@ -121,6 +121,13 @@ With a Conveyor home, unset state paths default to the home layout:
 The dashboard's external address is `web.publicUrl`, separate from the listen address. A reverse
 proxy provides HTTPS.
 
+## Deprecated: `pipelines:` and repository `pipeline:`
+
+`pipelines:` and a repository's `pipeline:` are deprecated and will be removed in a later release.
+When a configuration uses either, `config check`, `doctor` and the service startup log print a
+warning that names each file using them and points to `conveyor config migrate --stages`. It is a
+warning only: exit codes and behaviour are unchanged, and a configuration without them prints none.
+
 ## Logging and retention
 
 ```yaml

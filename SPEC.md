@@ -273,6 +273,8 @@ agents:
             change.listFindings, change.comment, change.resolveFinding,
             change.checkCriterion, change.uncheckCriterion]
 
+# Deprecated: pipelines: and a repository pipeline: warn at config check, doctor and startup,
+# naming the files and pointing to `conveyor config migrate --stages`.
 pipelines:
   default:
     stages:
