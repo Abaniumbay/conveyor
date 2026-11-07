@@ -10,6 +10,23 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.18.0] - 2026-11-07
+
+Merged since v0.17.1:
+
+- Operators create and onboard issues for onboarded repositories via MCP (#609)
+- Operators read Conveyor state through MCP tools (#608)
+- Operators retry, steer and pause items through MCP tools (#607)
+- Operators connect an MCP client to Conveyor with a CLI-issued token (#597)
+
+### Added
+
+- Operators can connect an MCP client to the running service. `conveyor mcp token create <name>` prints a bearer token once (only its hash is stored), `conveyor mcp token list` shows tokens without their values, and `conveyor mcp token revoke <id>` makes a token fail with 401 on its next request. The authenticated `/operator-mcp` endpoint serves a `conveyor_status` tool; it is separate from the agents' MCP server and from the dashboard and control API.
+
+- Operator MCP clients can read Conveyor state: repositories, items, item details, conversations, change/pull request/CI status, pending questions and run history.
+
+- Operators can retry, steer, pause, resume and answer questions on items from an MCP client. The `/operator-mcp` endpoint gains `item_retry`, `item_steer`, `item_pause`, `item_resume` and `question_answer`; steering an item with no running agent, or any control of an unknown item, is a tool error.
+
 ## [0.17.1] - 2026-11-07
 
 Merged since v0.17.0:
