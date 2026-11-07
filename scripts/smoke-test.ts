@@ -140,16 +140,16 @@ async function main(): Promise<void> {
     const init = await run("init", "--home", home, "--admin-username", "admin", "--admin-password-file", path.join(work, "password"));
     check(init.code === 0, `init creates the home and the administrator: ${init.stderr.trim()}`);
 
-    // A repository on the packaged delivery pipeline compiles from the embedded defaults.
+    // A repository on the packaged stages compiles from the embedded defaults.
     const repository = path.join(work, "repos/app");
     await mkdir(repository, { recursive: true });
     await exec(["git", "init", "-q", repository]);
     await writeFile(path.join(home, "config/repositories/app.yaml"), [
       "items: github", "code: github", "ci: { mode: disabled }", "address: owner/app", `folder: ${repository}`,
-      "pipeline: delivery", "agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }", "",
+      "agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }", "",
     ].join("\n"));
     const checked = await run("config", "check", "--home", home);
-    check(checked.code === 0 && checked.stdout.includes("Repository app"), `config check compiles the packaged pipeline: ${checked.stderr.trim()}`);
+    check(checked.code === 0 && checked.stdout.includes("Repository app"), `config check compiles the packaged stages: ${checked.stderr.trim()}`);
     const doctor = await run("doctor", "--home", home, "--json");
     const report = JSON.parse(doctor.stdout) as { checks: Array<{ name: string; status: string }> };
     check(report.checks.some((entry) => entry.name === "repository app" && entry.status === "ok"), "doctor runs and sees the repository checkout");

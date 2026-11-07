@@ -180,7 +180,9 @@ describe("reference configuration", () => {
   test("the packaged defaults are section values, and every file is embedded as a builtin", async () => {
     expect(await referenceYamlFiles()).toEqual(["agents.yaml", "harnesses.yaml", "providers.yaml", "stages.yaml"]);
     const onDisk = [...await referenceYamlFiles(), ...(await readdir(path.join(EXAMPLES, "config/instructions"))).map((file) => `instructions/${file}`)];
-    expect(Object.keys(BUILTIN_FILES).sort()).toEqual(onDisk.sort());
+    // `pipelines.yaml` is a deprecated builtin kept so installations created before `stages:` still load.
+    expect(Object.keys(BUILTIN_FILES).filter((file) => file !== "pipelines.yaml").sort()).toEqual(onDisk.sort());
+    expect(BUILTIN_FILES["pipelines.yaml"]).toBeDefined();
     for (const file of await referenceYamlFiles()) {
       const text = await readFile(path.join(EXAMPLES, "config", file), "utf8");
       expect(BUILTIN_FILES[file]).toBe(text);

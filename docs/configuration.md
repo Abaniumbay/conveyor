@@ -135,6 +135,12 @@ To move to one installation stage list:
 4. **Read the comparison.** The command prints `conveyor config compare` for every repository, current plan against migrated plan. Each repository must show no differences you did not intend before you continue.
 5. **Replace the files and restart with `--drain`.** Move the `*.migrated.yaml` files over the originals, run `conveyor config check` (no deprecation warning remains), then `conveyor service restart --drain`.
 
+The command reads only inline configuration. If your files use `!include` or `!include_dir_named`
+(for example the layout `conveyor init` wrote), it stops with an error and writes nothing, and it
+writes a single migrated entrypoint rather than a migrated copy of each included file. Write the
+`pipelines:` and `repositories:` values inline in one file first, migrate that file, then split
+the result back into includes by hand before step 5.
+
 If the pipelines order the same stages differently, the command stops without writing anything,
 because one list has one order. Make the order the same first: reorder the stages of the
 differing pipelines in the original files, run `conveyor config check` and `conveyor config compare`

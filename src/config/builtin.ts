@@ -16,6 +16,7 @@ import reviewer from "../../examples/config/instructions/reviewer.md" with { typ
 import workBreakdown from "../../examples/config/instructions/work-breakdown.md" with { type: "text" };
 import providers from "../../examples/config/providers.yaml" with { type: "text" };
 import stages from "../../examples/config/stages.yaml" with { type: "text" };
+import pipelines from "./legacy/pipelines.yaml" with { type: "text" };
 
 import { ConfigError } from "./errors";
 
@@ -29,6 +30,7 @@ export const BUILTIN_FILES: Readonly<Record<string, string>> = {
   "instructions/reviewer.md": reviewer,
   "instructions/work-breakdown.md": workBreakdown,
   "providers.yaml": providers,
+  "pipelines.yaml": pipelines,
   "stages.yaml": stages,
 };
 
