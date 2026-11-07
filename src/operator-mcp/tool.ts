@@ -10,6 +10,8 @@ import type { CommandInput, CommandName } from "../commands/registry";
 export interface OperatorFacade {
   /** The service status, as `conveyor status` reports it. */
   status(): unknown;
+  /** Finds an item by `<repository>:<number>`; null when Conveyor does not know it. */
+  findItem(reference: string): { issueId: string; running: boolean } | null;
   /** Sends a command as the operator MCP client. */
   dispatch<N extends CommandName>(name: N, input: CommandInput<N>): ReturnType<CommandBus["dispatch"]>;
 }

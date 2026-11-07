@@ -1,7 +1,7 @@
 import { ConveyorService } from "../../app/service";
 import { ReleaseCoordinator } from "../../control/releases";
 import { releaseStateFile } from "../../release/state";
-import { createControlHandler, serveControlSocket, status as controlStatus, type ControlInfo } from "../../control/server";
+import { createControlHandler, serveControlSocket, operatorItemTarget, status as controlStatus, type ControlInfo } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
 import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
@@ -118,7 +118,8 @@ export const serve: Command = {
       ...service.webDependencies(auth, operator, pushConfiguration(config.web.push)),
       handleOperatorMcp: createOperatorMcpHandler({
         facade: {
-          status: () => controlStatus(service, controlInfo) ,
+          status: () => controlStatus(service, controlInfo),
+          findItem: (reference) => operatorItemTarget(service, reference),
           dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
         },
         tokenIsActive: (hash) => service.store.operatorMcpTokenIsActive(hash),
