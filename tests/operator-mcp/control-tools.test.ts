@@ -27,6 +27,7 @@ function setup() {
   const facade: OperatorFacade = {
     store: {} as OperatorFacade["store"],
     status: () => ({}),
+    createIssue: () => { throw new Error("unused"); },
     findItem: (reference) => ITEMS[reference] ?? null,
     dispatch: (name: CommandName, input) => commands.dispatch(name, input as never, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }) as never,
   };
