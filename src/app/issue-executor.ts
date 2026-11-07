@@ -59,6 +59,9 @@ export interface IssueExecutorDependencies {
   signal?: AbortSignal;
 }
 
+/** The history entry of a stage the repository's plan skips. */
+export const SKIPPED_REASON = "skipped for this repository";
+
 export class IssueExecutor {
   constructor(private readonly dependencies: IssueExecutorDependencies) {}
 
@@ -93,7 +96,7 @@ export class IssueExecutor {
     store.activateEnrollment(issue.id);
     let workspace = store.getActiveWorkspace(issue.id);
     // Legacy stages get today's pre-created workspace; native stages ensure their own.
-    if (!workspace && stage.legacy) {
+    if (!workspace && stage.legacy && !stage.skipped) {
       const created = await createWorkspace({
         store,
         manager: this.dependencies.workspaceManager,
@@ -149,7 +152,7 @@ export class IssueExecutor {
     try {
       signal?.throwIfAborted();
       let deps: unknown = this.dependencies.taskDeps?.(issue, runtimeRepository) ?? {};
-      if (stage.legacy) {
+      if (stage.legacy && !stage.skipped) {
         const delivery = await refreshDeliveryState();
         const runtime = this.dependencies.runtime({
           issue,
@@ -267,6 +270,9 @@ export class IssueExecutor {
           });
         }
         return { kind: "parked", stageId, reason: "pending", wakeAt: null };
+      }
+      if (result.kind === "advance" && stage.skipped) {
+        store.recordJourneyEvent({ issueId: issue.id, stage: stageId, kind: "skipped", reason: SKIPPED_REASON });
       }
       if (result.kind === "advance") {
         // Successful stages are part of the story too: without this the conversation goes quiet after review.

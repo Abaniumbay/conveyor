@@ -18,6 +18,8 @@ export interface SchedulerCandidate {
    * runner but no repository permit.
    */
   gateOnly?: boolean;
+  /** The repository skips this stage: the item passes at once and takes no capacity. */
+  skipped?: boolean;
 }
 
 export interface ConcurrencyLimits {
@@ -55,11 +57,12 @@ export interface CapacityBlocker {
  * or repository slot.
  */
 export function capacityBlockers(
-  candidate: Pick<SchedulerCandidate, "repositoryId" | "stageId" | "lightweight" | "gateOnly">,
+  candidate: Pick<SchedulerCandidate, "repositoryId" | "stageId" | "lightweight" | "gateOnly" | "skipped">,
   limits: ConcurrencyLimits,
   occupants: readonly SchedulerOccupant[],
 ): CapacityBlocker[] {
   const blocks: CapacityBlocker[] = [];
+  if (candidate.skipped) return blocks;
   const stageOccupants = occupants.filter((occupant) => occupant.stageId === candidate.stageId);
   const stageLimit = limits.stages[candidate.stageId] ?? 0;
   if (stageOccupants.length >= stageLimit) {
@@ -111,6 +114,10 @@ export function selectRunnableIssues(
       continue;
     }
 
+    if (candidate.skipped) {
+      selected.push(candidate);
+      continue;
+    }
     const stageLimit = limits.stages[candidate.stageId] ?? 0;
     const repositoryLimit = limits.repositories[candidate.repositoryId] ?? 0;
     const usedByStage = stageUsage[candidate.stageId] ?? 0;

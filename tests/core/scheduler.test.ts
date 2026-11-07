@@ -209,3 +209,46 @@ describe("gate-only executions", () => {
     expect(blocks.map((block) => block.scope)).toEqual(["global"]);
   });
 });
+
+describe("skipped stages", () => {
+  const full = { global: 1, stages: { review: 1 }, repositories: { a: 1, b: 1 } };
+  const busy = { global: 1, stages: { review: 1 }, repositories: { a: 1, b: 1 } };
+  const base = { siblingOrder: null, eligible: true, dependenciesSatisfied: true };
+
+  test("an item entering a skipped stage is selected although every permit is full", () => {
+    const selected = selectRunnableIssues(
+      [{ ...base, id: "skip", repositoryId: "a", stageId: "review", queueRank: 2, skipped: true }],
+      full,
+      busy,
+    );
+    expect(selected.map((candidate) => candidate.id)).toEqual(["skip"]);
+  });
+
+  test("a skipped item takes no capacity from the item behind it", () => {
+    const empty = { global: 0, stages: {}, repositories: {} };
+    const selected = selectRunnableIssues(
+      [
+        { ...base, id: "skip", repositoryId: "a", stageId: "review", queueRank: 1, skipped: true },
+        { ...base, id: "runs", repositoryId: "a", stageId: "review", queueRank: 2 },
+      ],
+      full,
+      empty,
+    );
+    expect(selected.map((candidate) => candidate.id)).toEqual(["skip", "runs"]);
+  });
+
+  test("an item of a repository that does not skip the stage still waits for a full stage", () => {
+    const selected = selectRunnableIssues(
+      [{ ...base, id: "runs", repositoryId: "b", stageId: "review", queueRank: 2 }],
+      full,
+      busy,
+    );
+    expect(selected).toEqual([]);
+  });
+
+  test("a skipped item reports no capacity blocker", () => {
+    const occupants = [{ id: "x", repositoryId: "a", stageId: "review", lightweight: false }];
+    expect(capacityBlockers({ repositoryId: "a", stageId: "review", skipped: true }, full, occupants)).toEqual([]);
+    expect(capacityBlockers({ repositoryId: "a", stageId: "review" }, full, occupants).length).toBeGreaterThan(0);
+  });
+});
