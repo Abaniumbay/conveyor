@@ -347,3 +347,17 @@ Works whether or not the service is running: it uses the same account store the 
 | Option | Description |
 | --- | --- |
 | `--password-file <file\|->` | read the new password from a file (- for stdin) instead of prompting |
+
+### `conveyor mcp token create <name>`
+
+Create an operator MCP token and print it once.
+
+Only a hash of the token is stored: copy it now. Works whether or not the service is running.
+
+### `conveyor mcp token list`
+
+List operator MCP tokens (never their values).
+
+### `conveyor mcp token revoke <id>`
+
+Revoke an operator MCP token; its next request fails with 401.

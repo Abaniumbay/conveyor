@@ -1,7 +1,7 @@
 import { ConveyorService } from "../../app/service";
 import { ReleaseCoordinator } from "../../control/releases";
 import { releaseStateFile } from "../../release/state";
-import { createControlHandler, serveControlSocket } from "../../control/server";
+import { createControlHandler, serveControlSocket, status as controlStatus, type ControlInfo } from "../../control/server";
 import { ConsoleSink, FileSink, log, Redactor } from "../../log/logger";
 import { mcpSocketPath, serveMcpSocket } from "../../isolation/mcp-socket";
 import { GhCliTransport, GitHubAdapter } from "../../source/github/adapter";
@@ -12,6 +12,7 @@ import { createGitHubCodeHostRegistry } from "../../source/github/codehost-regis
 import { BUILD, versionLine } from "../../version";
 import { createWebAuth } from "../../web/auth";
 import { pushConfiguration } from "../../web/push";
+import { createOperatorMcpHandler } from "../../operator-mcp/server";
 import { createWebHandler } from "../../web/server";
 import { resolveSessionSecret } from "../../web/session-secret";
 import { CliError, EXIT, type ExitCode } from "../args";
@@ -113,7 +114,16 @@ export const serve: Command = {
       throw new CliError("the session secret must be at least 32 bytes (web.sessionSecret or CONVEYOR_SESSION_SECRET)", EXIT.config);
     }
     const operator = accounts.find((account) => account.role === "superuser")?.username ?? accounts[0]!.username;
-    const webDependencies = service.webDependencies(auth, operator, pushConfiguration(config.web.push));
+    const webDependencies = {
+      ...service.webDependencies(auth, operator, pushConfiguration(config.web.push)),
+      handleOperatorMcp: createOperatorMcpHandler({
+        facade: {
+          status: () => controlStatus(service, controlInfo) ,
+          dispatch: (name, input) => service.commands.dispatch(name, input, { kind: "cli", id: null, name: "operator MCP client", role: "superuser" }),
+        },
+        tokenIsActive: (hash) => service.store.operatorMcpTokenIsActive(hash),
+      }),
+    };
     const handler = createWebHandler(webDependencies);
     const server = Bun.serve({
       ...listenAddress(config.web.listen),
@@ -138,7 +148,7 @@ export const serve: Command = {
     // Bookkeeping of past switches must not keep the service from starting; a later upgrade or
     // rollback reports the same problem when it reads the file.
     await releases.onStartup().catch((error: unknown) => log.error("Could not record the outcome of the last release switch", { file: releaseStateFile(context.paths.home) }, error));
-    const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, {
+    const controlInfo: ControlInfo = {
       home: context.paths.home,
       config: context.paths.config,
       logs: config.settings.logs,
@@ -146,7 +156,8 @@ export const serve: Command = {
       dashboardUrl,
       startedAt: new Date().toISOString(),
       supervised,
-    }, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE), releases })).catch(async (error: unknown) => {
+    };
+    const control = await serveControlSocket(context.paths.controlSocket, createControlHandler(service, controlInfo, { restart: () => requestStop("restart requested", RESTART_EXIT_CODE), releases })).catch(async (error: unknown) => {
       await server.stop(true);
       await mcpSocket?.stop();
       await service.close();

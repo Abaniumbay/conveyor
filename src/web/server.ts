@@ -1,3 +1,4 @@
+import { OPERATOR_MCP_PATH } from "../operator-mcp/server";
 import plexMono400 from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2" with { type: "file" };
 import plexSans400 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2" with { type: "file" };
 import plexSans500 from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2" with { type: "file" };
@@ -56,6 +57,8 @@ export interface WebHandlerDependencies {
   isReady: () => boolean | Promise<boolean>;
   webhookPath: string;
   handleWebhook: (rawBody: Uint8Array, headers: Headers) => unknown | Promise<unknown>;
+  /** The operator MCP endpoint; the one route that dispatches operator MCP tools. */
+  handleOperatorMcp?: (request: Request) => Promise<Response>;
   handleMcp: (body: unknown, bearerToken: string, callId?: string) => unknown | Promise<unknown>;
   getSteeringRun: (runId: string) => { id: string; status: string } | null | Promise<{ id: string; status: string } | null>;
   getSteeringEvents: (runId: string, after: number) => Array<{
@@ -1320,6 +1323,10 @@ export function createWebHandler(dependencies: WebHandlerDependencies): (request
       } catch {
         return json({ error: "webhook processing failed" }, 500);
       }
+    }
+
+    if (path === OPERATOR_MCP_PATH) {
+      return dependencies.handleOperatorMcp ? dependencies.handleOperatorMcp(request) : text("Not found", 404);
     }
 
     if (path === "/internal/mcp") {

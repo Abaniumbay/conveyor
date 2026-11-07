@@ -277,6 +277,14 @@ describe("system events", () => {
     expect(events.map((event) => event.type)).toEqual(["account.created", "account.created", "account.passwordChanged", "account.avatarChanged", "account.deleted"]);
     expect(JSON.stringify(events)).not.toMatch(/password-hash|secret-password|session/);
   });
+  test("operator MCP tokens record creation and the first revocation only", async () => {
+    const { store, types } = await world();
+    let id = "";
+    expect(types(() => { id = store.createOperatorMcpToken("laptop", "hash-1").id; })).toEqual(["operatorMcpToken.created"]);
+    expect(types(() => store.revokeOperatorMcpToken(id))).toEqual(["operatorMcpToken.revoked"]);
+    expect(types(() => store.revokeOperatorMcpToken(id))).toEqual([]);
+    expect(types(() => store.revokeOperatorMcpToken("missing"))).toEqual([]);
+  });
   test("push notification settings and subscriptions", async () => {
     const { store, types } = await world();
     const account = store.createDashboardUser("someone", "hash");

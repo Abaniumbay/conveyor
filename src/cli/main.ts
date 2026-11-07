@@ -10,6 +10,7 @@ import { init } from "./commands/init";
 import { events } from "./commands/events";
 import { logs } from "./commands/logs";
 import { board, itemHistory, itemLogs, itemPause, itemDismissFinding, itemResume, itemResumeWaiting, itemRetry, itemShow, questionsAnswer, questionsList, status } from "./commands/operations";
+import { mcpTokenCreate, mcpTokenList, mcpTokenRevoke } from "./commands/mcp";
 import { reportFindings } from "./commands/report";
 import { rollback, upgrade } from "./commands/release";
 import { serve } from "./commands/serve";
@@ -81,6 +82,9 @@ export const COMMANDS: Command[] = [
   diagnosticsExport,
   adminDeleteAccount,
   adminResetPassword,
+  mcpTokenCreate,
+  mcpTokenList,
+  mcpTokenRevoke,
   checkConfigAlias,
 ];
 

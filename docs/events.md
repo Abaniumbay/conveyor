@@ -123,6 +123,8 @@ Each event has:
 | `notifications.settingsChanged` | An account's push notification preferences changed. | `accountId`: string |
 | `notifications.subscribed` | A browser subscribed to push notifications. | `accountId`: string |
 | `notifications.unsubscribed` | A browser's push subscription was removed. | `accountId`: string \| null |
+| `operatorMcpToken.created` | An operator MCP token was created. | `tokenId`: string |
+| `operatorMcpToken.revoked` | An operator MCP token was revoked. | `tokenId`: string |
 | `repository.healthChanged` | A repository's onboarding or reconcile started failing, or recovered; the dashboard shows the error. | `check`: `"onboarding"` \| `"reconcile"`<br>`healthy`: boolean |
 | `repository.onboarded` | A configured repository was added to or updated in the local index. | `address`: string |
 | `repository.paused` | An operator paused repository work without changing its configuration. | `actor`: string<br>`reason`: string \| null |
