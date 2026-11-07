@@ -141,14 +141,13 @@ export function compilePipeline(input: {
   return { id: repository.pipeline, repositoryId, stages };
 }
 
-/** A stage the repository skips keeps its place and settings but runs nothing. */
+/** A stage the repository skips keeps its place but runs nothing, and never waits for entry approval. */
 function skippedStage(
   stage: { id: string; approval?: "manual" | undefined; concurrency: number; retries?: number | undefined; childrenStartAt?: string | null | undefined },
   legacy: boolean,
 ): CompiledStage {
   return {
     id: stage.id,
-    ...(stage.approval === undefined ? {} : { approval: stage.approval }),
     concurrency: stage.concurrency,
     retries: stage.retries ?? 0,
     childrenStartAt: stage.childrenStartAt ?? null,
