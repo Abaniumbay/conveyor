@@ -70,23 +70,29 @@ repositories:
     started.push(issue.id);
     return new Promise<void>((resolve) => release.push(resolve));
   };
-  // Queue order: both skipping items first, then both items of the repository that runs the stage.
-  [["skipper", 1], ["skipper", 2], ["runner", 3], ["runner", 4]].forEach(([repository, number]) => {
+  const enroll = (repository: string, number: number) => {
     const id = `${repository}-${number}`;
     store.upsertIssue({
-      id, repositoryId: repository as string, sourceNumber: number as number, sourceUrl: `https://example.test/${number}`, title: id, body: "",
+      id, repositoryId: repository, sourceNumber: number, sourceUrl: `https://example.test/${number}`, title: id, body: "",
       sourceState: "open", labels: ["conveyor", "conveyor:refinement"], sourceUpdatedAt: "2026-01-01T00:00:00Z",
     });
     store.setIssueProjection(id, { stage: "refinement", state: "active", warning: null });
     store.setQueueRank(id, store.nextQueueRank());
     store.setStageState({ issueId: id, stageId: "refinement", status: "ready", feedbackCycle: 0, configHash: config.hash });
-  });
+  };
+  const schedule = () => (service as unknown as { schedule(): void }).schedule();
 
-  (service as unknown as { schedule(): void }).schedule();
+  // Both skipping items start although the stage's capacity is 1: they do not wait for it.
+  enroll("skipper", 1);
+  enroll("skipper", 2);
+  schedule();
+  expect([...started].sort()).toEqual(["skipper-1", "skipper-2"]);
 
-  // Both skipping items start although the stage's capacity is 1; they do not occupy it, so one
-  // runner item starts as well, and the second runner item still waits.
-  expect(started.sort()).toEqual(["runner-3", "skipper-1", "skipper-2"]);
+  // They still run, yet do not occupy the stage: one item that really runs it is admitted, the next waits.
+  enroll("runner", 3);
+  enroll("runner", 4);
+  schedule();
+  expect([...started].sort()).toEqual(["runner-3", "skipper-1", "skipper-2"]);
   release.forEach((resolve) => resolve());
   await service.close();
 });
