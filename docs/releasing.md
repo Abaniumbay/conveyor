@@ -3,14 +3,33 @@
 A release is a Git tag `vX.Y.Z` on the commit whose `package.json` version is `X.Y.Z` and whose
 `CHANGELOG.md` has a dated `## [X.Y.Z]` section. Pushing the tag runs
 [`.github/workflows/release.yml`](../.github/workflows/release.yml), which tests, builds and publishes
-the GitHub release. `bun run release` walks you through both halves; nothing else publishes
-releases.
+the GitHub release. Start it from GitHub's Actions tab, or with `bun run release` on your machine;
+nothing else publishes releases.
 
 ## Before the first release
 
 Enable **immutable releases** in the repository settings: Settings → General → Releases → enable
 release immutability. Once published, a release's tag and assets can no longer change. The workflow
 attaches every asset to a draft before publishing for that reason.
+
+To release from GitHub, also enable Settings → Actions → General → Workflow permissions → **Allow
+GitHub Actions to create and approve pull requests**, so the Start release workflow can open the
+release pull request.
+
+## From GitHub
+
+1. Actions → **Start release** → Run workflow. Choose patch, minor or major. Leave the summary empty
+   to open the notes with the list of commits merged since the last release, or write your own.
+   It runs `bun run release start` and opens the "Release vX.Y.Z" pull request.
+2. Read the notes in the pull request and merge it. **Merging publishes the release:** the Tag
+   release workflow (`release-tag.yml`) tags the release commit and starts the Release workflow on
+   that tag. Follow it under Actions → Release.
+
+A pull request opened by a workflow does not start the Check workflow; the Release workflow runs
+every check before it publishes anything. To stop a release, close its pull request without merging
+and delete its `release/vX.Y.Z` branch.
+
+The sections below do the same from a terminal.
 
 ## Every release
 
@@ -37,6 +56,8 @@ It checks that `gh` is signed in and that `main` is clean and level with `origin
    the current one.
 2. Shows the combined fragment preview and asks for a **release summary**: a few sentences on what the
    release is about. Finish it with an empty line. The summary opens the release notes.
+   `--bump patch|minor|major` picks the version, and `--summary-from-commits` writes the summary
+   from the commits merged since the last release tag.
 3. Shows the complete release notes and asks for confirmation.
 4. Creates `release/vX.Y.Z`, sets the version in `package.json`, writes the combined fragment
    entries into `## [X.Y.Z] - <today>` under your summary, and deletes the consumed fragments.
@@ -47,7 +68,8 @@ Nothing is changed if you decline or anything fails before that.
 
 ### 2. Merge the release pull request
 
-Review the notes in the pull request and merge it once CI passes. If a note needs correction before
+Review the notes in the pull request and merge it once CI passes. Merging tags it and publishes the
+release (step 3 happens on its own); use step 3 only when that workflow did not run or failed. If a note needs correction before
 starting the release, correct its source fragment in a normal pull request; the release command owns
 the dated `CHANGELOG.md` section.
 
