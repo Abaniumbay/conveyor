@@ -1,3 +1,4 @@
+# Deprecated: kept only so installations created before `stages:` still load (`builtin:pipelines.yaml`).
 # The two reference pipelines. Every stage is `actions` followed by a non-empty `exit-gate`;
 # there is no AI verifier. YAML anchors copy complete stages; the compiled plan has no
 # inheritance. Repositories replace only the deploy and verify script paths, by task id.

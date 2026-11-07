@@ -12,7 +12,6 @@ repositories:
     address: example/service
     folder: /srv/conveyor/repos/service
     baseBranch: main
-    pipeline: delivery
     concurrency: 1
     systemLabels: [backend, testing]
     refinement:

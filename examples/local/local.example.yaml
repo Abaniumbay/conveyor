@@ -7,7 +7,7 @@
 # ~/.config/conveyor-v2/00-core.yaml) and adjust. Settings cannot be imported: paths and
 # limits are per machine, and a setting may be declared in one file only.
 #
-# `import` pins the versioned reference configuration (providers, harnesses, agents, pipelines
+# `import` pins the versioned reference configuration (providers, harnesses, agents, stages
 # and instructions in examples/config) at a git ref; see docs/migration.md.
 import:
   repository: /srv/conveyor/reference-config

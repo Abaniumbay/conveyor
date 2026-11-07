@@ -17,7 +17,7 @@ web:
 providers: !include providers.yaml
 harnesses: !include builtin:harnesses.yaml
 agents: !include_dir_merge_named agents/
-pipelines: !include builtin:pipelines.yaml
+stages: !include builtin:stages.yaml
 repositories: !include_dir_named repositories/
 ```
 
@@ -28,7 +28,6 @@ code: github
 ci: { mode: disabled }
 address: owner/meal-planner
 folder: ~/codes/meal-planner
-pipeline: delivery
 agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }
 ```
 
@@ -53,7 +52,7 @@ show` prints the effective configuration with secrets redacted.
 - Directory tags read only `*.yaml` and `*.yml` files directly in the directory (not subdirectories),
   in sorted order.
 - Every error names the file that defined the value and the key path inside it, for example
-  `repositories/meal-planner.yaml: pipeline references unknown pipeline "delivry"`.
+  `repositories/meal-planner.yaml: overrides.stages.delpoy references unknown stage "delpoy"`.
 
 ## Secrets
 
@@ -94,14 +93,14 @@ The environment variables `CONVEYOR_GITHUB_WEBHOOK_SECRET`, `CONVEYOR_SESSION_SE
 `builtin:` files are the reference configuration in [`examples/config`](../examples/config), embedded
 in each release:
 
-- `providers.yaml`, `harnesses.yaml`, `agents.yaml` and `pipelines.yaml`, each holding one section's
+- `providers.yaml`, `harnesses.yaml`, `agents.yaml` and `stages.yaml`, each holding one section's
   value;
 - `instructions/*.md`.
 
 They need no clone of the Conveyor repository. A section either includes a packaged default or is
 your own; defaults are not merged with overrides. To change a default, copy it into your
 configuration (`conveyor config builtin builtin:agents.yaml > agents.yaml`) and include your copy.
-Repositories still change single tasks of a pipeline through `overrides` (see the README).
+Repositories change single tasks of a stage, or skip a stage, through `overrides` (see [Installation stages, overrides and skip](#installation-stages-overrides-and-skip)).
 
 When included, the packaged files are written to `<home>/state/builtin/<digest>/`, because agents
 read their instruction files by path.
@@ -121,12 +120,31 @@ With a Conveyor home, unset state paths default to the home layout:
 The dashboard's external address is `web.publicUrl`, separate from the listen address. A reverse
 proxy provides HTTPS.
 
-## Deprecated: `pipelines:` and repository `pipeline:`
+## Migrating from pipelines
 
 `pipelines:` and a repository's `pipeline:` are deprecated and will be removed in a later release.
 When a configuration uses either, `config check`, `doctor` and the service startup log print a
 warning that names each file using them and points to `conveyor config migrate --stages`. It is a
 warning only: exit codes and behaviour are unchanged, and a configuration without them prints none.
+
+To move to one installation stage list:
+
+1. **Upgrade** Conveyor to a release that accepts `stages:` and restart it as usual.
+2. **Run `conveyor config check`.** It names every file that still uses `pipelines:` or `pipeline:`.
+3. **Run `conveyor config migrate --stages`.** It reads the configuration file, builds one `stages:` list, turns each repository's differences into `overrides.stages.<stageId>` entries and `skip: true`, and writes `*.migrated.yaml` beside each original. It never changes the originals.
+4. **Read the comparison.** The command prints `conveyor config compare` for every repository, current plan against migrated plan. Each repository must show no differences you did not intend before you continue.
+5. **Replace the files and restart with `--drain`.** Move the `*.migrated.yaml` files over the originals, run `conveyor config check` (no deprecation warning remains), then `conveyor service restart --drain`.
+
+The command reads only inline configuration. If your files use `!include` or `!include_dir_named`
+(for example the layout `conveyor init` wrote), it stops with an error and writes nothing, and it
+writes a single migrated entrypoint rather than a migrated copy of each included file. Write the
+`pipelines:` and `repositories:` values inline in one file first, migrate that file, then split
+the result back into includes by hand before step 5.
+
+If the pipelines order the same stages differently, the command stops without writing anything,
+because one list has one order. Make the order the same first: reorder the stages of the
+differing pipelines in the original files, run `conveyor config check` and `conveyor config compare`
+to confirm the plans still behave as intended, then start again at step 3.
 
 ## Logging and retention
 
@@ -243,7 +261,7 @@ stays the source of truth: the copy saves requests and is never trusted past its
 - **A restart reads nothing the copy holds.** At start Conveyor asks GitHub to redeliver what it
   missed while stopped, and lists the issues changed since the newest change it stored.
 - **The merge decides mergeability.** Conveyor does not wait for GitHub to compute whether a change
-  is mergeable: it merges, and a refusal follows the merge action's `onFail` (the packaged pipeline returns a
+  is mergeable: it merges, and a refusal follows the merge action's `onFail` (the packaged stages return a
   conflict to implementation). A refusal while GitHub is still computing is retried, not treated as a conflict.
   Branch protection on the base branch is what enforces the checks and reviews a repository
   requires.
@@ -418,7 +436,7 @@ issue body's managed Follow-ups section contains notes:
 
 An empty section advances immediately and sends no notification. Notes park the item as waiting
 until a superuser selects **Done** on the board; the stage runs no agent. This is an opt-in native
-stage: adding it to a repository pipeline does not alter the packaged built-in pipeline.
+stage: adding it to your stage list does not alter the packaged built-in stages.
 
 ## Reference
 
@@ -531,75 +549,73 @@ agents:
             change.listFindings, change.comment, change.resolveFinding,
             change.checkCriterion, change.uncheckCriterion]
 
-pipelines:
-  default:
-    stages:
-      - id: refinement
-        description: "Turns an item into a clear, testable plan."   # optional: shown in the stage's dashboard dialog
-        icon: "🧭"                                                  # optional: an emoji beside the stage's name
-        concurrency: 3
-        retries: 2
-        actions:
-          - { id: refine, task: agent.run, with: { agent: refiner } }
-        exit-gate:
-          - { id: criteria, task: item.criteriaDefined }
-          - { id: labels, task: item.labelsValid }
-          - { id: plan, task: breakdown.planComplete }
-          - id: dependencies
-            task: item.dependenciesMet
-            wait: { timeout: unlimited, poll: 5m }
-      - id: refinement-review
-        actions:
-          - { id: reviewPlan, task: agent.run, with: { agent: planReviewer } }
-        exit-gate:
-          - { id: reviewed, task: breakdown.reviewed, onFail: { return: refinement } }
-      - id: work-breakdown
-        childrenStartAt: next
-        actions:
-          - { id: createChildren, task: agent.run, with: { agent: childCreator } }
-        exit-gate:
-          - { id: complete, task: breakdown.complete, onFail: { return: refinement } }
-      - id: implementation
-        concurrency: 2
-        retries: 3
-        actions:
-          - { id: workspace, task: workspace.ensure }
-          - { id: implement, task: agent.run, with: { agent: implementer } }
-          - { id: ensureChange, task: change.ensure, with: { closingReference: true, criteriaChecklist: true } }
-          - { id: startCi, task: ci.start, when: ci.enabled }
-        exit-gate:
-          - { id: pushed, task: workspace.pushed }
-          - { id: criteriaSynced, task: change.criteriaInSync }
-          - { id: criterionTests, task: change.criterionTestsVerified }
-          - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
-          - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
-          - { id: criterionTestReports, task: change.criterionTestsPassed, when: ci.required, onFail: { return: implementation } }
-      - id: review
-        concurrency: 1
-        actions:
-          - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
-          - { id: criterionTests, task: change.criterionTestsVerified, onFail: { return: implementation } }
-          - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
-        exit-gate:
-          - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
-          - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
-          - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
-          - { id: ciHead, task: change.headUnchanged, when: ci.required, onFail: { return: implementation } }
-          - { id: mergeable, task: change.mergeable, wait: { timeout: 30m, poll: 1m }, onFail: { return: implementation } }
-      - id: merge
-        concurrency: 1
-        approval: manual
-        actions:
-          - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
-          - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
-        exit-gate:
-          - { id: merged, task: change.merged, onFail: { return: implementation } }
-      - id: deploy
-        concurrency: 1
-        actions:
-          - { id: deployScript, task: script.run, with: { script: ./stages/deploy.ts, recovery: reconcile } }
-        exit-gate:
-          - { id: deployed, task: script.succeeded, with: { run: deployScript }, onFail: { stop: needs-intervention } }
+stages:
+  - id: refinement
+    description: "Turns an item into a clear, testable plan."   # optional: shown in the stage's dashboard dialog
+    icon: "🧭"                                                  # optional: an emoji beside the stage's name
+    concurrency: 3
+    retries: 2
+    actions:
+      - { id: refine, task: agent.run, with: { agent: refiner } }
+    exit-gate:
+      - { id: criteria, task: item.criteriaDefined }
+      - { id: labels, task: item.labelsValid }
+      - { id: plan, task: breakdown.planComplete }
+      - id: dependencies
+        task: item.dependenciesMet
+        wait: { timeout: unlimited, poll: 5m }
+  - id: refinement-review
+    actions:
+      - { id: reviewPlan, task: agent.run, with: { agent: planReviewer } }
+    exit-gate:
+      - { id: reviewed, task: breakdown.reviewed, onFail: { return: refinement } }
+  - id: work-breakdown
+    childrenStartAt: next
+    actions:
+      - { id: createChildren, task: agent.run, with: { agent: childCreator } }
+    exit-gate:
+      - { id: complete, task: breakdown.complete, onFail: { return: refinement } }
+  - id: implementation
+    concurrency: 2
+    retries: 3
+    actions:
+      - { id: workspace, task: workspace.ensure }
+      - { id: implement, task: agent.run, with: { agent: implementer } }
+      - { id: ensureChange, task: change.ensure, with: { closingReference: true, criteriaChecklist: true } }
+      - { id: startCi, task: ci.start, when: ci.enabled }
+    exit-gate:
+      - { id: pushed, task: workspace.pushed }
+      - { id: criteriaSynced, task: change.criteriaInSync }
+      - { id: criterionTests, task: change.criterionTestsVerified }
+      - { id: ciDefined, task: ci.defined, when: ci.required, onFail: { stop: blocked } }
+      - { id: ciGate, task: ci.passed, when: ci.required, wait: { timeout: 3h, poll: 1m } }
+      - { id: criterionTestReports, task: change.criterionTestsPassed, when: ci.required, onFail: { return: implementation } }
+  - id: review
+    concurrency: 1
+    actions:
+      - { id: ciSettled, task: ci.settled, wait: { timeout: 3h, poll: 1m }, onFail: { stop: blocked } }
+      - { id: criterionTests, task: change.criterionTestsVerified, onFail: { return: implementation } }
+      - { id: review, task: agent.run, with: { agent: reviewer } }   # or agents: [first, backup]
+    exit-gate:
+      - { id: findings, task: change.findingsResolved, onFail: { return: implementation } }
+      - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
+      - { id: criteriaApproved, task: change.criteriaChecked, onFail: { return: implementation } }
+      - { id: ciHead, task: change.headUnchanged, when: ci.required, onFail: { return: implementation } }
+      - { id: mergeable, task: change.mergeable, wait: { timeout: 30m, poll: 1m }, onFail: { return: implementation } }
+  - id: merge
+    concurrency: 1
+    approval: manual
+    actions:
+      - { id: reviewThreads, task: change.reviewThreadsResolved, onFail: { return: implementation } }
+      - { id: mergeReviewedHead, task: change.merge, with: { method: squash }, onFail: { return: implementation } }
+    exit-gate:
+      - { id: merged, task: change.merged, onFail: { return: implementation } }
+  - id: deploy
+    concurrency: 1
+    actions:
+      - { id: deployScript, task: script.run, with: { script: ./stages/deploy.ts, recovery: reconcile } }
+    exit-gate:
+      - { id: deployed, task: script.succeeded, with: { run: deployScript }, onFail: { stop: needs-intervention } }
 
 repositories:
   example:
@@ -609,7 +625,6 @@ repositories:
     address: example/project
     folder: /srv/repositories/project
     baseBranch: main
-    pipeline: default
     concurrency: 2
     extraTrustedLogins: [review-bot]
     agentEgress:
@@ -645,7 +660,7 @@ A repository's `concurrency` limits only the executions that start an agent or s
 
 ### Repository in-progress limit
 
-`inFlight` limits how many items of one repository are in progress in the code pipeline, because parallel branches in a repository cause merge conflicts:
+`inFlight` limits how many items of one repository are in progress in the code stages, because parallel branches in a repository cause merge conflicts:
 
 ```yaml
 repositories:
@@ -653,7 +668,7 @@ repositories:
     concurrency: 2
     inFlight:
       limit: 2             # positive integer
-      from: implementation # a stage of the pipeline at or before its change.merge stage
+      from: implementation # a stage at or before its change.merge stage
 ```
 
 - **Counted interval.** An enrolled leaf item holds one slot from the moment it enters the `from` stage until it leaves the stage with the `change.merge` action (merged, sent back to a stage before `from`, rejected, individually paused or offboarded). It keeps the slot while it waits for CI or review and while it is blocked or in error, whether or not an agent is running. A repository pause retains the slots. Stages before `from`, stages after merge and roll-up parents hold no slot.
@@ -661,7 +676,7 @@ repositories:
 - **Corrections.** An item sent back from review or merge to a stage inside the interval keeps its slot and is not blocked by the limit.
 - **Relation to `concurrency`.** `concurrency` still limits running agents (including refinement) in the repository; `inFlight` limits items, and is checked independently for each repository. Stage and global runner limits are unchanged. Without `inFlight` nothing changes.
 
-An unknown `from` stage, a `from` after the merge stage, or a pipeline without a `change.merge` stage fails configuration loading.
+An unknown `from` stage, a `from` after the merge stage, or a stage list without a `change.merge` stage fails configuration loading.
 
 Native review findings are trusted only when GitHub reports that the author has `write`,
 `maintain`, or `admin` permission for that repository. `extraTrustedLogins` adds named accounts,
@@ -672,13 +687,29 @@ review import and the review gate does not pass on an incomplete trust check.
 
 `labels.metadata.noSplit` is a per-item metadata label that keeps refinement to one item. It defaults to `<labels.enrollment>:no-split`, so existing configurations continue to load unchanged; set it explicitly when the label name should differ from the enrollment prefix. Conveyor never adds, removes, or inherits this label. Adding it neither enrolls an issue nor changes its stage or state, and it remains present through Conveyor's workflow-label updates. Removing it takes effect on the next refinement run. While it is present, `item.createChild` refuses before changing the source issue, relationships, or dependencies; refine the whole scope instead, or report `needs-input` with a concrete reason when that is impossible. Existing children remain unchanged, and a child can be kept whole only by carrying the label itself. The dashboard marks labelled items as “No split”.
 
-Task entries take `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when it occurs once in the list and is required for duplicates; overrides, execution records, script results and idempotency keys use the instance id. `when` is a guard from a closed vocabulary (`ci.enabled`, `ci.required`, `ci.advisory`) evaluated at load time from the repository's CI mode; there are no expressions, variables or loops. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires; the default comes from the task, else `settings.taskDefaults.wait`). In the packaged merge stage, `change.merge` runs before the `change.merged` exit gate; if the request remains open, that gate waits with its effective setting and wakes early on its change delivery. A repository changes a task without copying the pipeline through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`); naming something that does not exist is an error. `settings.maxReturns` (default 5) bounds `return` loops between stages. `agent.run` takes `agent: <id>` or `agents: [<id>, ...]` in order of preference: when an agent's harness cannot run (a usage limit, a login failure, a crash), the next one takes the same step and the item's conversation says so; a result the agent returned, of any status, is never retried on another agent. An answered question goes back to the agent that asked it first.
+Task entries take `id`, `task`, `with`, `wait`, `onFail` and `when`. `id` defaults to the task name when it occurs once in the list and is required for duplicates; overrides, execution records, script results and idempotency keys use the instance id. `when` is a guard from a closed vocabulary (`ci.enabled`, `ci.required`, `ci.advisory`) evaluated at load time from the repository's CI mode; there are no expressions, variables or loops. `wait` is `{ timeout, poll }` (`timeout: unlimited` never expires; the default comes from the task, else `settings.taskDefaults.wait`). In the packaged merge stage, `change.merge` runs before the `change.merged` exit gate; if the request remains open, that gate waits with its effective setting and wakes early on its change delivery. A repository changes a task without copying the stage list through `overrides.stages.<stage>.<actions|exit-gate>.<instance id>` (`with`, `wait`, `onFail`); naming something that does not exist is an error. `settings.maxReturns` (default 5) bounds `return` loops between stages. `agent.run` takes `agent: <id>` or `agents: [<id>, ...]` in order of preference: when an agent's harness cannot run (a usage limit, a login failure, a crash), the next one takes the same step and the item's conversation says so; a result the agent returned, of any status, is never retried on another agent. An answered question goes back to the agent that asked it first.
 
-### Installation-wide stages and skipping a stage
+### Installation stages, overrides and skip
 
-Instead of `pipelines:` and a per-repository `pipeline:`, a configuration may define one top-level `stages:` list, inline or with `!include builtin:stages.yaml`. Each stage has the same shape as a stage in `pipelines.<name>.stages`. Every repository without `pipeline:` follows that list in its configured order. Defining both `stages:` and `pipelines:` is an error: use only one. The `stages:` list itself cannot contain `skip`.
+A configuration defines one top-level `stages:` list, inline or with `!include builtin:stages.yaml`. Every repository follows that list in its configured order. A stage has an `id` (its stable name), optional `description` and `icon`, `concurrency`, `retries`, `actions` and a non-empty `exit-gate`. The list itself cannot contain `skip`.
 
-A repository skips a stage with `overrides.stages.<stageId>.skip: true`. The stage keeps its position in the repository's plan and is marked `skipped`, but it has no actions, no exit-gate tasks and no entry approval, so an item passes through it. An override or skip for a stage that is not in the repository's stage list fails `config check`, naming the repository and the stage. `config check` prints the one stage list and, per repository, only its overrides and skipped stages.
+A repository changes the list without copying it, by stage id, under `overrides.stages.<stageId>`:
+
+- `actions.<instance id>` and `exit-gate.<instance id>` replace `with`, `wait` or `onFail` of one task;
+- `skip: true` skips the stage.
+
+```yaml
+# repositories/meal-planner.yaml
+overrides:
+  stages:
+    deploy:
+      actions:
+        deployScript: { with: { script: ../stages/deploy-meal-planner.ts, recovery: reconcile } }
+    verify:
+      skip: true
+```
+
+A skipped stage keeps its position in the repository's plan and is marked `skipped`, but it has no actions, no exit-gate tasks and no entry approval, so an item passes through it. An override or skip for a stage that is not in the list, or for a task that does not exist, fails `config check`, naming the repository and the stage. `config check` prints the one stage list and, per repository, only its overrides and skipped stages.
 
 ### Manual exit-gate approval
 
@@ -717,7 +748,7 @@ Agents list their exact grants in `tasks:`. Verifier agents and the `checks:` se
 The default merge action observes the live pull request before merging. If review or required CI
 belongs to an older head, or the code host reports a changed head, merge conflict, or outdated
 base during the merge attempt, the merge action fails with the repair reason and its `onFail`
-decides where the item goes: the packaged pipeline sets `onFail: { return: implementation }`. A
+decides where the item goes: the packaged stages set `onFail: { return: implementation }`. A
 merge action without an `onFail` stops as `blocked` instead, as any failed action does. That uses the normal bounded `settings.maxReturns` route: the implementer updates and
 publishes the branch, then required CI and every non-manual criterion approval run again for the
 new head before a fresh review can pass. A stale checkpoint or approval therefore cannot
@@ -727,7 +758,7 @@ transient code-host error uses infrastructure retry handling.
 
 ### Legacy configuration (deprecated, still supported)
 
-Existing configurations keep loading. A stage with `run: { agent | runner + script | sourceAction }`, `enterCheck`, `exitCheck`, `feedbackCycles`, `failurePolicies`, `failureState` and `afterSuccess`, together with the `checks:` section (a deterministic script plus an AI verifier agent), `sources`, `codeHosts`, `runners`, `workspaceAccess` and a top-level `labels`, is compiled by the compatibility compiler into a task plan (`legacy.produce`, `legacy.enterCheck`, `legacy.exitCheck`, `legacy.afterSuccess`, `legacy.succeeded`) with the same behaviour as before and runs through the same durable executor. A legacy stage cannot be mixed with `actions` / `exit-gate` in one stage, and a pipeline with legacy stages still needs `successStatuses` and `failureStatuses`. Legacy `process` stage scripts have no recovery mode, so they stay behind the legacy adapter until each is classified `replay-safe` or `reconcile`. The legacy shape and the AI verifier will be removed once every repository is migrated; do not write new configuration in it.
+Existing configurations keep loading. A stage with `run: { agent | runner + script | sourceAction }`, `enterCheck`, `exitCheck`, `feedbackCycles`, `failurePolicies`, `failureState` and `afterSuccess`, together with the `checks:` section (a deterministic script plus an AI verifier agent), `sources`, `codeHosts`, `runners`, `workspaceAccess` and a top-level `labels`, is compiled by the compatibility compiler into a task plan (`legacy.produce`, `legacy.enterCheck`, `legacy.exitCheck`, `legacy.afterSuccess`, `legacy.succeeded`) with the same behaviour as before and runs through the same durable executor. A legacy stage cannot be mixed with `actions` / `exit-gate` in one stage, and legacy stages still need `successStatuses` and `failureStatuses`. Legacy `process` stage scripts have no recovery mode, so they stay behind the legacy adapter until each is classified `replay-safe` or `reconcile`. The legacy shape and the AI verifier will be removed once every repository is migrated; do not write new configuration in it.
 
 ### Canonical role names and agent settings
 
@@ -794,4 +825,4 @@ repositories:
 
 Every default review starts with `ci.settled`. It waits for the current change head's checks to register and leave queued or running state, then starts the reviewer whether the settled result passed or failed. The wait is persisted, shown on the board with its head, unfinished checks, next poll, and deadline, and follows a newer head if one arrives. It uses the same registration settle window as `ci.passed`; if no applicable checks appear by that window's end, review proceeds under the repository's existing mode policy. Its finite timeout stops the item as blocked with the head and checks still unfinished.
 
-Timing is task configuration (`ci.passed` `with: { settleSeconds, logLines }`, `ci.settled` `with: { settleSeconds }`, and `wait`, overridable per repository by instance id). Legacy pipelines keep the `ci.await` source action (`with: { settleSeconds, pollSeconds, timeoutMinutes }`) and `pullRequest.awaitChecks` with `with.triggers`; both are deprecated, and a stage cannot define triggers when its selected provider already declares them.
+Timing is task configuration (`ci.passed` `with: { settleSeconds, logLines }`, `ci.settled` `with: { settleSeconds }`, and `wait`, overridable per repository by instance id). Legacy stages keep the `ci.await` source action (`with: { settleSeconds, pollSeconds, timeoutMinutes }`) and `pullRequest.awaitChecks` with `with.triggers`; both are deprecated, and a stage cannot define triggers when its selected provider already declares them.

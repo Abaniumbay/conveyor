@@ -14,9 +14,9 @@ import kaveh from "../../examples/config/instructions/kaveh.md" with { type: "te
 import omid from "../../examples/config/instructions/omid.md" with { type: "text" };
 import reviewer from "../../examples/config/instructions/reviewer.md" with { type: "text" };
 import workBreakdown from "../../examples/config/instructions/work-breakdown.md" with { type: "text" };
-import pipelines from "../../examples/config/pipelines.yaml" with { type: "text" };
 import providers from "../../examples/config/providers.yaml" with { type: "text" };
 import stages from "../../examples/config/stages.yaml" with { type: "text" };
+import pipelines from "./legacy/pipelines.yaml" with { type: "text" };
 
 import { ConfigError } from "./errors";
 
@@ -29,8 +29,8 @@ export const BUILTIN_FILES: Readonly<Record<string, string>> = {
   "instructions/omid.md": omid,
   "instructions/reviewer.md": reviewer,
   "instructions/work-breakdown.md": workBreakdown,
-  "pipelines.yaml": pipelines,
   "providers.yaml": providers,
+  "pipelines.yaml": pipelines,
   "stages.yaml": stages,
 };
 

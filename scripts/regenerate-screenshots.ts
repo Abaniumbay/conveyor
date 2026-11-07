@@ -252,7 +252,6 @@ async function configureDemo(
         `address: ${repository.address}`,
         `folder: ${workspace}`,
         "baseBranch: main",
-        "pipeline: delivery",
         ...(repository.extraTrustedLogins
           ? ["extraTrustedLogins:", ...repository.extraTrustedLogins.map((login) => `  - ${login}`)]
           : []),

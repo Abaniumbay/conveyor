@@ -27,7 +27,9 @@ async function home(files: Record<string, string>): Promise<{ home: string; conf
 const DEFAULTS = `providers: !include builtin:providers.yaml
 harnesses: !include builtin:harnesses.yaml
 agents: !include builtin:agents.yaml
-pipelines: !include builtin:pipelines.yaml
+pipelines:
+  delivery:
+    stages: !include builtin:stages.yaml
 `;
 
 const LABELS = `{ enrollment: conveyor, stageTemplate: "conveyor:{stage}", states: { done: conveyor:done }, metadata: { closable: conveyor:closable, orderTemplate: "conveyor:order:{number}" } }`;

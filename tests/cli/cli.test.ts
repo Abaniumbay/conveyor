@@ -47,8 +47,8 @@ async function initialisedHome(): Promise<string> {
   const home = path.join(root, "home");
   await writeFile(path.join(root, "password"), `${PASSWORD}\n`);
   const result = await cli("init", "--home", home, "--admin-username", "admin", "--admin-password-file", path.join(root, "password"));
-  // The packaged pipelines this home includes are the deprecated form: that is the only stderr line.
-  expect(result.err.split("\n").filter((line) => line && !line.startsWith("warning: pipelines: and repository pipeline: are deprecated"))).toEqual([]);
+  // The packaged stages this home includes are not deprecated: no warning.
+  expect(result.err.split("\n").filter(Boolean)).toEqual([]);
   expect(result.code).toBe(EXIT.ok);
   return home;
 }
@@ -194,7 +194,6 @@ describe("conveyor config", () => {
     ci: { mode: disabled }
     address: owner/my-app
     folder: /tmp/my-app
-    pipeline: delivery
     agentEgress:
       localServices:
         - name: postgres
@@ -233,6 +232,11 @@ address: owner/app
 folder: /tmp/app
 pipeline: delivery
 `);
+      // The deprecated form: the packaged stages wrapped in a pipeline named delivery.
+      const entrypoint = path.join(home, "config/conveyor.yaml");
+      const text = await readFile(entrypoint, "utf8");
+      expect(text).toContain("stages: !include builtin:stages.yaml");
+      await writeFile(entrypoint, text.replace("stages: !include builtin:stages.yaml", "pipelines:\n  delivery:\n    stages: !include builtin:stages.yaml"));
       return home;
     }
 
@@ -242,7 +246,7 @@ pipeline: delivery
       expect(result.code).toBe(EXIT.ok);
       expect(result.out).toContain("Configuration is valid");
       expect(result.out).toContain("conveyor config migrate --stages");
-      expect(result.out).toContain("pipelines.yaml");
+      expect(result.out).toContain(path.join(home, "config/conveyor.yaml"));
       // A repository file that sets pipeline: is named as using the deprecated form.
       expect(result.out).toContain(path.join(home, "config/repositories/app.yaml"));
     });
@@ -256,7 +260,7 @@ pipeline: delivery
     });
 
     test("serve writes the warning to the service log and still starts", async () => {
-      const home = await initialisedHome();
+      const home = await withRepository();
       await configureFreeDashboardPort(home);
       const serving = cli("serve", "--home", home);
       try {
@@ -269,7 +273,7 @@ pipeline: delivery
           if (!text.includes("started")) await Bun.sleep(100);
         }
         expect(text).toContain("conveyor config migrate --stages");
-        expect(text).toContain("pipelines.yaml");
+        expect(text).toContain("conveyor.yaml");
         expect(text).toContain("started");
       } finally {
         process.emit("SIGTERM");
@@ -347,7 +351,7 @@ describe("conveyor config migrate", () => {
     await mkdir(path.join(reference, "config/instructions"), { recursive: true });
     const { directory } = await referenceConfigDirectory();
     directories.push(path.dirname(directory));
-    for (const file of ["providers.yaml", "harnesses.yaml", "agents.yaml", "pipelines.yaml"]) {
+    for (const file of ["providers.yaml", "harnesses.yaml", "agents.yaml", "stages.yaml"]) {
       await writeFile(path.join(reference, "config", file), await readFile(path.join(directory, file), "utf8"));
     }
     for (const file of ["darya.md", "kaveh.md", "omid.md", "reviewer.md"]) {
@@ -724,7 +728,7 @@ describe("conveyor doctor", () => {
       await writeFile(config, (await readFile(config, "utf8")).replace("127.0.0.1:7788", `127.0.0.1:${port}`));
       await writeFile(path.join(home, "config/repositories/app.yaml"), [
         "items: github", "code: github", "ci: { mode: disabled }", "address: o/app", `folder: ${path.join(home, "missing")}`,
-        "pipeline: delivery", "agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }", "",
+        "agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }", "",
       ].join("\n"));
       const checks = await doctorChecks(home, config, async () => false);
       expect(find(checks, "configuration")?.status).toBe("ok");

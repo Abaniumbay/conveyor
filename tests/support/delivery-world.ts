@@ -190,7 +190,7 @@ export async function deliveryWorld(options: {
       },
       repositories: { conveyor: repository },
     }),
-    ...["providers", "harnesses", "agents", "pipelines"].map((section) => `${section}: !include builtin:${section}.yaml`),
+    ...["providers", "harnesses", "agents", "stages"].map((section) => `${section}: !include builtin:${section}.yaml`),
     "",
   ].join("\n"));
   const config = await loadConfig(entrypoint, undefined, { home: root });

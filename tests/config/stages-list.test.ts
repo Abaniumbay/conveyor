@@ -127,18 +127,4 @@ describe("installation-wide stages", () => {
     const message = await failure(loadConfig(await write(PIPELINES), registry()));
     expect(message).toContain("pipeline");
   });
-
-  test("builtin:stages.yaml is the stage list of the packaged delivery pipeline", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "conveyor-stages-home-"));
-    directories.push(root);
-    const body = (section: string) => `settings: { database: /tmp/c.sqlite, logs: /tmp/l, workspaces: /tmp/w, artifacts: /tmp/a }\n${section}\n`;
-    await mkdir(path.join(root, "config"), { recursive: true });
-    const single = path.join(root, "config/single.yaml");
-    const multi = path.join(root, "config/multi.yaml");
-    await writeFile(single, body("stages: !include builtin:stages.yaml"));
-    await writeFile(multi, body("pipelines: !include builtin:pipelines.yaml"));
-    const left = (await readConfiguration(single, { home: root })).merged;
-    const right = (await readConfiguration(multi, { home: root })).merged as { pipelines: { delivery: { stages: unknown } } };
-    expect(left.stages).toEqual(right.pipelines.delivery.stages);
-  });
 });

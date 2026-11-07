@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 
 const ROOT = path.resolve(import.meta.dir, "../../examples");
 /** The packaged defaults: each file is the value of the section it is named after. */
-const SECTION_FILES = { "providers.yaml": "providers", "harnesses.yaml": "harnesses", "agents.yaml": "agents", "pipelines.yaml": "pipelines" } as const;
+const SECTION_FILES = { "providers.yaml": "providers", "harnesses.yaml": "harnesses", "agents.yaml": "agents", "stages.yaml": "stages" } as const;
 
 /** The example repositories with folders replaced by directories that exist, and the local settings. */
 async function localSections(base: string, rename: Record<string, string>) {
