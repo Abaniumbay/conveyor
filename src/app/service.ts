@@ -563,8 +563,9 @@ export class ConveyorService {
   readonly #webhookIds = new Map<string, number>();
   /** Repositories whose deliveries Conveyor may not list; warned about once. */
   readonly #redeliveryDenied = new Set<string>();
-  /** Operator syncs in progress, by repository. */
+  /** Idempotency-key results, by repository and key. */
   readonly #createdIssues = new Map<string, Promise<{ issueId: string; number: number; url: string }>>();
+  /** Operator syncs in progress, by repository. */
   readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
   /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
   readonly #repositoryReconciledAt = new Map<string, number>();
