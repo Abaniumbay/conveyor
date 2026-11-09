@@ -40,8 +40,8 @@ settings:
   logs: ${root}/logs
   workspaces: ${root}/workspaces
   artifacts: ${root}/artifacts
-web: {}
-sources: { github: { type: github, webhookSecret: secret } }
+web: { publicUrl: "https://conveyor.example.com" }
+sources: { github: { type: github, webhookSecret: secret, autoConfigureWebhook: true } }
 runners: { codex: { type: codex } }
 agents: { worker: { runner: codex, instructions: ./instructions.md } }
 checks: {}
@@ -66,10 +66,13 @@ repositories:
   const source: Array<{ id: string; number: number; url: string; title: string; body: string; state: "open"; stateReason: null; labels: string[]; updatedAt: string }> = [];
   const created: Array<{ address: string; title: string; body: string; labels: readonly string[] }> = [];
   const listing: { mode: "normal" | "hang" | "fail" } = { mode: "normal" };
+  const requests: string[] = [];
+  const stale: { number: number | null } = { number: null };
   const github = {
+    forgetRepository() { requests.push("forgetRepository"); },
     async createIssue(input: { address: string; title: string; body: string; labels: readonly string[] }) {
       created.push(input);
-      const number = source.length + 1;
+      const number = stale.number ?? source.length + 1;
       const issue = {
         id: `github:${input.address}#${number}`, number, url: `https://github.com/${input.address}/issues/${number}`, title: input.title,
         body: input.body, state: "open" as const, stateReason: null, labels: [...input.labels], updatedAt: "2026-10-07T20:00:00Z",
@@ -78,19 +81,28 @@ repositories:
       return issue;
     },
     async listIssues() {
+      requests.push("listIssues");
       if (listing.mode === "hang") return new Promise<never>(() => {});
       if (listing.mode === "fail") throw new Error("forge listing down");
       return source.map((issue) => ({ ...issue }));
     },
-    async getIssue(_address: string, number: number) { return { ...source[number - 1]! }; },
-    async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; },
-    async collaboratorPermission() { return "write" as const; },
-    async listSubIssues() { return []; },
-    async listDependencies() { return []; },
+    async getIssue(_address: string, number: number) { requests.push("getIssue"); return { ...source[number - 1]! }; },
+    async getIssueProvenance() { requests.push("getIssueProvenance"); return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; },
+    async collaboratorPermission() { requests.push("collaboratorPermission"); return "write" as const; },
+    async listSubIssues() { requests.push("listSubIssues"); return []; },
+    async listDependencies() { requests.push("listDependencies"); return []; },
     async upsertStatusComment() { return 1; },
+    async ensureLabels() {},
+    async ensureWebhook() { return 7; },
+    async listHookDeliveries() { requests.push("listHookDeliveries"); return []; },
+    async redeliverHookDelivery() { requests.push("redeliverHookDelivery"); },
+    async pingHook() { requests.push("pingHook"); return true; },
   };
   const service = new ConveyorService(config, store, github as never);
   service.drain("tests: nothing executes");
+  // Onboarding registers the webhook, so a full sync would list deliveries and ping it.
+  await service.onboardRepositories();
+  requests.length = 0;
   stops.push(() => void service.close());
   const token = newOperatorToken();
   const handler = createOperatorMcpHandler({
@@ -106,7 +118,7 @@ repositories:
     const result = await client.callTool({ name: "create_issue", arguments: args });
     return { isError: result.isError === true, text: (result.content as Array<{ text: string }>)[0]!.text };
   };
-  return { service, store, config, created, call, client, listing, records };
+  return { service, store, config, created, call, client, listing, records, requests, github, stale };
 }
 
 describe("create_issue operator tool", () => {
@@ -139,29 +151,51 @@ describe("create_issue operator tool", () => {
     expect(stored?.labels).toContain("conveyor");
   });
 
-  test("returns issueId, number and url while the repository sync never finishes", async () => {
-    const { call, listing } = await setup();
-    listing.mode = "hang";
-    const result = await Promise.race([call({ repository: "repo", title: "Fast", body: "" }), Bun.sleep(3000).then(() => "timeout" as const)]);
-    expect(result).not.toBe("timeout");
-    expect(JSON.parse((result as { text: string }).text)).toEqual({ issueId: "github:owner/repo#1", number: 1, url: "https://github.com/owner/repo/issues/1" });
+  test("records the new item from the create response before resolving, with no further GitHub request", async () => {
+    const { call, store, requests } = await setup();
+    await call({ repository: "repo", title: "Later", body: "Body" });
+    expect(requests).toEqual([]);
+    const stored = store.getIssueByNumber("repo", 1);
+    expect(stored).toMatchObject({ title: "Later", body: "Body", projectedStage: "implementation", projectedState: "active" });
+    expect(stored?.labels).toContain("conveyor");
   });
 
-  test("the repository sync still runs in the background so the issue appears in the item list", async () => {
-    const { call, store } = await setup();
-    await call({ repository: "repo", title: "Later", body: "" });
-    for (let i = 0; i < 100 && !store.getIssueByNumber("repo", 1); i++) await Bun.sleep(20);
-    expect(store.getIssueByNumber("repo", 1)).toMatchObject({ title: "Later" });
+  test("makes no listing, permission, provenance, redelivery or ping request and keeps the cached GitHub copy", async () => {
+    const { call, requests } = await setup();
+    await call({ repository: "repo", title: "Quiet", body: "" });
+    for (const name of ["listIssues", "collaboratorPermission", "getIssueProvenance", "forgetRepository", "listHookDeliveries", "redeliverHookDelivery", "pingHook"]) expect(requests).not.toContain(name);
+    expect(requests).toEqual([]);
   });
 
-  test("a background sync failure is logged and the returned result is unchanged", async () => {
-    const { call, listing, records } = await setup();
-    listing.mode = "fail";
-    const result = await call({ repository: "repo", title: "Fails later", body: "" });
-    expect(result.isError).toBe(false);
-    expect(JSON.parse(result.text)).toMatchObject({ number: 1 });
-    for (let i = 0; i < 100 && !records.some((r) => r.level === "error" && r.repository === "repo"); i++) await Bun.sleep(20);
-    expect(records.some((r) => r.level === "error" && r.repository === "repo")).toBe(true);
+  test("an older create response does not overwrite a newer recorded state", async () => {
+    const { call, store, service, stale } = await setup();
+    await call({ repository: "repo", title: "Fresh", body: "B" });
+    const issue = { id: 1, number: 1, html_url: "https://github.com/owner/repo/issues/1", title: "Edited", body: "B", state: "open", state_reason: null, labels: [{ name: "conveyor" }], updated_at: "2026-10-07T21:00:00Z" };
+    const payload = JSON.stringify({ action: "edited", issue, sender: { login: "maintainer" }, repository: { full_name: "owner/repo" } });
+    const signature = `sha256=${new Bun.CryptoHasher("sha256", "secret").update(payload).digest("hex")}`;
+    await service.handleWebhook(new TextEncoder().encode(payload), new Headers({ "x-hub-signature-256": signature, "x-github-delivery": "d2", "x-github-event": "issues" }));
+    await service.webhooksSettled();
+    expect(store.getIssueByNumber("repo", 1)?.title).toBe("Edited");
+    // The create response of this call is older than what the webhook already recorded.
+    stale.number = 1;
+    await call({ repository: "repo", title: "Fresh", body: "B", idempotencyKey: "again" });
+    expect(store.getIssueByNumber("repo", 1)?.title).toBe("Edited");
+  });
+
+  test("the issues.opened delivery that follows changes nothing and records onboarding once", async () => {
+    const { call, store, service, requests } = await setup();
+    await call({ repository: "repo", title: "Once", body: "B" });
+    const before = JSON.stringify(store.getIssueByNumber("repo", 1));
+    const onboarded = () => store.listStageTransitions("github:owner/repo#1").filter((entry) => entry.kind === "onboarded").length;
+    expect(onboarded()).toBe(1);
+    const issue = { id: 1, number: 1, html_url: "https://github.com/owner/repo/issues/1", title: "Once", body: "B", state: "open", state_reason: null, labels: [{ name: "conveyor" }], updated_at: "2026-10-07T20:00:00Z" };
+    const payload = JSON.stringify({ action: "opened", issue, sender: { login: "maintainer" }, repository: { full_name: "owner/repo" } });
+    const signature = `sha256=${new Bun.CryptoHasher("sha256", "secret").update(payload).digest("hex")}`;
+    await service.handleWebhook(new TextEncoder().encode(payload), new Headers({ "x-hub-signature-256": signature, "x-github-delivery": "d1", "x-github-event": "issues" }));
+    await service.webhooksSettled();
+    expect(JSON.stringify(store.getIssueByNumber("repo", 1))).toBe(before);
+    expect(onboarded()).toBe(1);
+    expect(requests).toEqual([]);
   });
 
   test("the same idempotency key and repository returns the first result and creates no second issue", async () => {
@@ -195,7 +229,7 @@ describe("create_issue operator tool", () => {
     const entries = records.filter((r) => r.message === "create_issue completed");
     expect(entries).toHaveLength(1);
     const entry = entries[0]!;
-    for (const field of ["forgeCreateMs", "syncHandoffMs", "totalMs"]) expect(typeof entry[field]).toBe("number");
+    for (const field of ["forgeCreateMs", "recordMs", "totalMs"]) expect(typeof entry[field]).toBe("number");
     expect(entry.repository).toBe("repo");
   });
 

@@ -950,8 +950,8 @@ export class ConveyorService {
 
   /**
    * Creates an issue in an onboarded repository, enrolls it (the enrollment label puts it in the
-   * backlog at the pipeline's start stage) and answers at once; the repository is read in the
-   * background so the issue shows in the item list. `repository` is a configured repository id or
+   * backlog at the pipeline's start stage) and records it from the create response, with no
+   * further request, so it shows in the item list. `repository` is a configured repository id or
    * its source address. A repeated call with the same `idempotencyKey` and repository returns the
    * first call's result instead of creating another issue.
    */
@@ -982,17 +982,50 @@ export class ConveyorService {
       address: repository.address, title, body, labels: [this.config.labels.enrollment],
     });
     const forgeDone = performance.now();
-    // The issue exists at the source now; the read runs in the background and a failed read is
+    // The create call returned the issue's full current state: apply it as an `issues.opened`
+    // delivery would, with no listing, permission, redelivery or ping request. A failure is
     // caught up by the next reconcile.
-    void Promise.resolve()
-      .then(() => this.syncRepository(repositoryId))
-      .catch((error: unknown) => log.error("Reading the repository after creating an issue failed", { repository: repositoryId }, error));
+    await this.applyCreatedIssue(repositoryId, created)
+      .catch((error: unknown) => log.error("Recording the created issue failed", { repository: repositoryId, number: created.number }, error));
     const handedOff = performance.now();
     log.info("create_issue completed", {
       repository: repositoryId, number: created.number,
-      forgeCreateMs: Math.round(forgeDone - started), syncHandoffMs: Math.round(handedOff - forgeDone), totalMs: Math.round(handedOff - started),
+      forgeCreateMs: Math.round(forgeDone - started), recordMs: Math.round(handedOff - forgeDone), totalMs: Math.round(handedOff - started),
     });
     return { issueId: created.id, number: created.number, url: created.url };
+  }
+
+  /**
+   * Records an issue Conveyor has just created from the object the create call returned. Conveyor
+   * made it and enrolled it itself, so no permission lookup decides its trust.
+   */
+  private async applyCreatedIssue(repositoryId: string, created: SourceIssue): Promise<void> {
+    await this.withRepositoryLock(repositoryId, async () => {
+      const repository = this.config.repositories[repositoryId];
+      if (!repository) return;
+      // A newer delivery or reconcile may have recorded the issue while the create call returned or
+      // this waited for the lock: an older state changes nothing.
+      const prior = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === created.number);
+      if (prior && Date.parse(prior.sourceUpdatedAt) > Date.parse(created.updatedAt)) return;
+      const pipeline = this.config.pipelines[repository.pipeline]!;
+      const self = { login: "conveyor" };
+      await reconcileRepository({
+        store: this.store,
+        configHash: this.config.hash,
+        repository: { id: repositoryId, configName: repositoryId, source: repository.source, address: repository.address, folder: repository.folder },
+        stages: pipeline.stages.map((stage) => stage.id),
+        labels: this.config.labels,
+        source: this.executionGitHub(repositoryId),
+        trust: { isTrusted: async () => true },
+        extraTrustedLogins: repository.extraTrustedLogins ?? [],
+        expectedPostMergeClosure: (issueId) => this.store.hasMergedPullRequest(issueId),
+        issues: [created],
+        delivered: new Map([[created.number, { enrollment: self, title: self, body: self }]]),
+      });
+      this.interruptIneligibleRuns();
+      this.store.events().append("repository.reconciled", { issueNumbers: [created.number] }, { repositoryId });
+      this.schedule();
+    });
   }
 
   private async runRepositorySync(repositoryId: string): Promise<{ issues: number; failed: boolean }> {
