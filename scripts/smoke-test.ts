@@ -76,9 +76,19 @@ print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output
 `;
 
 /** A Codex stand-in for a repository with `agentEgress`: it must run inside the confined network bridge. */
-const FAKE_CODEX_EGRESS = `#!/usr/bin/env python3
+const fakeCodexEgress = (home: string, executable: string): string => `#!/usr/bin/env python3
 import json, os, sys
 sys.stdin.read()
+def fail(message):
+    print(json.dumps({"type": "error", "message": message}))
+    sys.exit(1)
+# The confined plan: the bridge is this process's parent and is the executable's own \`__bridge\` command...
+parent = open("/proc/%d/cmdline" % os.getppid(), "rb").read().split(b"\\0")
+if parent[:2] != [${JSON.stringify(executable)}.encode(), b"__bridge"]:
+    fail("the parent is not the executable's __bridge: " + repr(parent[:3]))
+# ...and the Conveyor home (state database, config) is not part of the agent's filesystem.
+if os.path.exists(${JSON.stringify(home)} + "/state/conveyor.sqlite"):
+    fail("the Conveyor home is visible: the turn is not in the confined filesystem plan")
 output = sys.argv[sys.argv.index("-o") + 1]
 proxy = os.environ.get("HTTPS_PROXY", "")
 if "@127.0.0.1:" not in proxy and "//127.0.0.1:" not in proxy:
@@ -219,7 +229,7 @@ async function main(): Promise<void> {
     // A steering agent: its harness is a stand-in for Codex that drives the packaged MCP server.
     await writeFile(path.join(tools, "codex"), FAKE_CODEX);
     await chmod(path.join(tools, "codex"), 0o755);
-    await writeFile(path.join(tools, "codex-egress"), FAKE_CODEX_EGRESS);
+    await writeFile(path.join(tools, "codex-egress"), fakeCodexEgress(home, conveyor));
     await chmod(path.join(tools, "codex-egress"), 0o755);
     await writeFile(path.join(tools, "gh"), FAKE_GH);
     await chmod(path.join(tools, "gh"), 0o755);
@@ -316,9 +326,10 @@ async function main(): Promise<void> {
     if (egressRun?.status !== "succeeded") console.error(egressText);
     check(egressRun?.status === "succeeded", `an agent turn in a repository with agentEgress succeeds behind the confined bridge (status ${egressRun?.status ?? "none"})`);
     check(egressText.includes("egress smoke done"), "the egress agent's turn ran inside the bridge");
-    // Starting the wrapper with a command the executable does not have is what `-e` was: the turn cannot start.
-    const unknown = await run("-e", "true");
-    check(unknown.code !== 0 && unknown.stderr.includes("unknown command"), "the executable has no -e, so a wrapper started with it fails");
+    // The turn only succeeds when the wrapper started `<executable> __bridge` (an unknown command, as `-e`
+    // was, ends the turn before the agent runs, so the status is not `succeeded`) and the agent sees the
+    // confined plan: its parent is that bridge and the Conveyor home is hidden.
+    check(!egressText.includes("not in the confined filesystem plan") && !egressText.includes("is not the executable's __bridge"), "the egress agent saw the confined plan and the executable's own bridge");
 
     const statusReport = await run("status", "--home", home, "--json");
     const reported = JSON.parse(statusReport.stdout) as { running: boolean; service: { version: { commit: string } } };
