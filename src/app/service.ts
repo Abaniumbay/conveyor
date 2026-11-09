@@ -120,6 +120,8 @@ interface ActiveRun {
   /** Holds a runner but no repository permit: only checks remain. */
   gateOnly: boolean;
   interrupted: boolean;
+  /** The executor returned: the agent process is gone, though the run may still be reconciling. */
+  executorDone: boolean;
 }
 
 type LiveIssueStatus = IssueWaitingViewModel & { kind: "waiting" | "queued" };
@@ -1634,6 +1636,7 @@ export class ConveyorService {
         lightweight: candidate.lightweight === true,
         gateOnly: candidate.gateOnly === true,
         interrupted: false,
+        executorDone: false,
       });
       startedIds.add(issue.id);
       const active = this.#active.get(issue.id)!;
@@ -2406,7 +2409,15 @@ export class ConveyorService {
     });
     try {
       const warningBefore = this.store.getIssue(issue.id)?.warning ?? null;
-      const outcome = await executor.execute(issue);
+      let outcome: Awaited<ReturnType<typeof executor.execute>>;
+      try {
+        outcome = await executor.execute(issue);
+      } finally {
+        // The agent is gone once the executor returns. The reconcile below may queue for the repository
+        // lock, which a stopper can hold while it waits, so the stopper must not wait for it.
+        const own = this.#active.get(issue.id);
+        if (own && own.controller.signal === signal) own.executorDone = true;
+      }
       this.logOutcome(issue.id, outcome);
       if (outcome.kind === "parked") {
         // A transition can reach the repository pause fence after the stage
@@ -2901,7 +2912,7 @@ export class ConveyorService {
 
   /** Resolves once the runs of these items have ended: their agent processes are gone. */
   private async runsEnded(issueIds: readonly string[]): Promise<void> {
-    while (issueIds.some((issueId) => this.#active.has(issueId))) {
+    while (issueIds.some((issueId) => this.#active.get(issueId)?.executorDone === false)) {
       if (this.#shuttingDown) return;
       await Bun.sleep(10);
     }

@@ -156,7 +156,7 @@ export async function deliveryWorld(options: {
   /** Use the public service scheduling and pause lifecycle instead of the delivery driver. */
   publicLifecycle?: boolean;
   /** Called with the name of every request the service makes to GitHub, as it is made. */
-  onGithubCall?: (method: string) => void;
+  onGithubCall?: (method: string) => void | Promise<void>;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -365,7 +365,10 @@ export async function deliveryWorld(options: {
     ? new Proxy(github, {
       get(target, property, receiver) {
         const value = Reflect.get(target, property, receiver);
-        return typeof value === "function" ? (...args: unknown[]) => { options.onGithubCall!(String(property)); return value(...args); } : value;
+        return typeof value === "function" ? (...args: unknown[]) => {
+          const held = options.onGithubCall!(String(property));
+          return held ? held.then(() => value(...args)) : value(...args);
+        } : value;
       },
     })
     : github;

@@ -44,8 +44,8 @@ function rowsOf(w: DeliveryWorld, issueId: string): Record<string, number> {
 }
 
 /** An item with a deploy script running in its real workspace, plus a todo, a question and a relationship. */
-async function runningItem(options: { onGithubCall?: (method: string) => void } = {}): Promise<{ w: DeliveryWorld; pid: number; workspacePath: string; branch: string }> {
-  world = await deliveryWorld({ interruptGrace: "50ms", publicLifecycle: true, deployScript: HANGING_DEPLOY, ...options });
+async function runningItem(options: { onGithubCall?: (method: string) => void | Promise<void>; deployScript?: string } = {}): Promise<{ w: DeliveryWorld; pid: number; workspacePath: string; branch: string }> {
+  world = await deliveryWorld({ interruptGrace: "50ms", publicLifecycle: true, ...options, deployScript: options.deployScript ?? HANGING_DEPLOY });
   const w = world;
   w.store.setIssueProjection("issue", { stage: "deploy", state: "active", warning: null });
   w.editLabelsOnGitHub(() => ["conveyor", "conveyor:deploy"]);
@@ -102,6 +102,42 @@ describe("purging an item that lost its Conveyor labels", () => {
     expect(w.store.getIssue("child")).not.toBeNull();
     expect(w.store.getIssue("child")!.parentId).toBeNull();
   });
+
+  test("a purge does not wait for the follow-up reconcile of a run whose agent has ended", async () => {
+    let gate: Promise<void> | null = null;
+    let reached = false;
+    let open = () => {};
+    const { w, workspacePath } = await runningItem({
+      deployScript: [
+        'import { existsSync, writeFileSync } from "node:fs";',
+        'writeFileSync("script-ready", String(process.pid));',
+        'while (!existsSync("script-release")) await new Promise((r) => setTimeout(r, 10));',
+        'console.log(JSON.stringify({ outcome: "success", summary: "deploy done" }));',
+      ].join("\n"),
+      onGithubCall: (method) => {
+        if (!gate || reached || method === "upsertStatusComment") return;
+        reached = true;
+        return gate;
+      },
+    });
+    gate = new Promise<void>((resolve) => { open = resolve; });
+
+    // A sync holds the repository lock. The stage ends and its follow-up reconcile queues behind the
+    // sync, so it cannot finish while the lock is held.
+    const sync = w.service.syncRepository("conveyor");
+    await until(() => reached, "the sync to hold the repository lock");
+    writeFileSync(path.join(workspacePath, "script-release"), "");
+    await until(() => w.store.getStageState("issue")?.stageId === "verify", "the stage to end");
+    await Bun.sleep(100);
+
+    // The purge only needs the agent gone; it must finish while the lock is still held.
+    const purge = w.service.purgeItem("issue");
+    const outcome = await Promise.race([purge.then(() => "purged"), Bun.sleep(3000).then(() => "stalled")]);
+    open();
+    await sync;
+    await purge;
+    expect(outcome).toBe("purged");
+  }, 15_000);
 
   test("the event log keeps the item's events after the purge", async () => {
     const { w } = await runningItem();
