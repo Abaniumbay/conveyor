@@ -271,8 +271,8 @@ test("the Check workflow always uploads the JUnit report used by criterion verif
 test("the Check workflow stores main LCOV and conditionally compares pull requests with the latest main artifact", async () => {
   const workflow = await readFile(path.resolve(import.meta.dir, "../../.github/workflows/check.yml"), "utf8");
   const coverageRun = workflow.indexOf("bun test --coverage --coverage-reporter=lcov");
-  const upload = workflow.indexOf("uses: actions/upload-artifact@v4");
-  const download = workflow.indexOf("uses: dawidd6/action-download-artifact@v11");
+  const upload = workflow.indexOf("uses: actions/upload-artifact@");
+  const download = workflow.indexOf("uses: dawidd6/action-download-artifact@");
   const gate = workflow.indexOf("bun run scripts/check-changed-coverage.ts");
 
   expect(workflow).toContain("if: github.ref == 'refs/heads/main'");

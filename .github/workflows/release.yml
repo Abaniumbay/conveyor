@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -40,7 +40,7 @@ jobs:
       - name: Tag, package.json and CHANGELOG.md agree
         run: bun run scripts/release.ts check "$GITHUB_REF_NAME" --notes release-notes.md
       - run: bun run check
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -58,7 +58,7 @@ jobs:
           - { target: linux-x64, runner: ubuntu-latest, optional: false }
           - { target: linux-arm64, runner: ubuntu-24.04-arm, optional: true }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -68,7 +68,7 @@ jobs:
       # A second build to upgrade to and roll back from, run like systemd would.
       - run: bun run scripts/build.ts --target ${{ matrix.target }} --out dist-next --version 99.0.0-next
       - run: bun run scripts/smoke-test.ts --dist dist --next dist-next --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: archive-${{ matrix.target }}
           path: dist/conveyor-*-${{ matrix.target }}.tar.gz
@@ -84,13 +84,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: archive-*
           path: release
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-notes
       - name: Require the x64 archive
