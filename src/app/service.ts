@@ -10,7 +10,7 @@ import { boardStageOrder } from "../core/pipeline";
 import { redactSecrets } from "../config/compose";
 import { INTERNAL, selfCommand } from "../self";
 import { log, type LogFields } from "../log/logger";
-import { applyRetention, type RetentionPolicy, type RetentionReport } from "./retention";
+import { applyRetention, removeRunArtifacts, type RetentionPolicy, type RetentionReport } from "./retention";
 import type { StageOutcome } from "../engine/stage-executor";
 import type { ConveyorConfig } from "../config/load";
 import { isNativeStage, REDELIVERY_WINDOW_MS } from "../config/schema";
@@ -2419,7 +2419,9 @@ export class ConveyorService {
         // A parked poll changes nothing at the source: no reconcile, just the status line.
         this.restorePendingStatus(issue.repositoryId);
         if ((this.store.getIssue(issue.id)?.warning ?? null) !== warningBefore) await this.updateStatusComment(issue.id);
-      } else {
+      } else if (!signal.aborted) {
+        // An interrupted run leaves the reconcile to whoever stopped it: that one may hold the repository
+        // lock while it waits for this run to end.
         // The item's own step changed its state; nothing else in the repository did.
         await this.reconcileRepository(issue.repositoryId, { only: [issue.sourceNumber] });
         await this.updateStatusComment(issue.id);
@@ -2872,6 +2874,8 @@ export class ConveyorService {
       });
       this.store.markWorkspaceRemoved(workspace.id);
     }
+    // Run artifacts are found through the run records, so they go before the records do.
+    for (const runId of this.store.listRunIdsForIssue(issueId)) await removeRunArtifacts(this.config.settings.artifacts, runId);
     this.store.finishPurge(issueId);
     this.github.forgetIssue?.(repository.address, issue.sourceNumber);
     log.info("Item purged", { issue: issueId, number: issue.sourceNumber });

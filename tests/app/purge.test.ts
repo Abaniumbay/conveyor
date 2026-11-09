@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { ItemTodos } from "../../src/engine/todos";
@@ -212,7 +212,27 @@ describe("purging an item that lost its Conveyor labels", () => {
     const onboarded = w.store.getIssueByNumber("conveyor", 1);
     expect(onboarded).not.toBeNull();
     expect(onboarded!.projectedState).not.toBe("unlisted");
-    expect(w.store.getActiveEnrollment(onboarded!.id)).toMatchObject({ generation: 1 });
+    // The purged item's generation is not reused: its workspace and branch names would collide with
+    // work left on the remote.
     expect(w.store.listStageTransitions(onboarded!.id).map((transition) => transition.kind)).not.toContain("offboarded");
+  });
+
+  test("the purge removes the artifact directories of the item's runs with their records", async () => {
+    const { w } = await runningItem();
+    const runId = "run-with-artifacts";
+    const directory = path.join(w.config.settings.artifacts, runId);
+    mkdirSync(path.join(directory, "home"), { recursive: true });
+    writeFileSync(path.join(directory, "home", "note"), "x");
+    chmodSync(path.join(directory, "home"), 0o500);
+    w.store.sqlite().query(
+      "INSERT INTO runs(id, issue_id, stage_id, attempt, kind, status, config_hash, started_at, finished_at) VALUES (?, 'issue', 'deploy', 1, 'stage', 'succeeded', 'h', ?, ?)",
+    ).run(runId, "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z");
+
+    w.editLabelsOnGitHub(() => []);
+    await w.deliverIssueEvent("unlabeled", "unlabel-1");
+    await w.service.purgesSettled();
+
+    expect(existsSync(directory)).toBe(false);
+    expect(w.store.getRun(runId)).toBeNull();
   });
 });

@@ -53,6 +53,19 @@ async function restoreDirectoryAccess(target: string): Promise<void> {
   for (const entry of await readdir(target)) await restoreDirectoryAccess(path.join(target, entry));
 }
 
+/** Removes a run's artifact directory, private home included; absent is fine. Run ids never leave the artifacts directory. */
+export async function removeRunArtifacts(artifacts: string, runId: string): Promise<void> {
+  const selected = runHome(artifacts, runId);
+  if (!selected) throw new Error(`run id ${runId} does not name an artifact directory`);
+  try {
+    await restoreDirectoryAccess(selected.directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await rm(selected.directory, { recursive: true, force: true });
+}
+
 function runHome(artifacts: string, runId: string): { directory: string; home: string } | null {
   const root = path.resolve(artifacts);
   const directory = path.resolve(root, runId);

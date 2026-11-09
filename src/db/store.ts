@@ -990,6 +990,11 @@ export class ConveyorStore {
       .map((row) => ({ issueId: row.issue_id, repositoryId: row.repository_id }));
   }
 
+  /** The ids of every run recorded for an item. */
+  listRunIdsForIssue(issueId: string): string[] {
+    return (this.#database.query("SELECT id FROM runs WHERE issue_id = ?").all(issueId) as Array<{ id: string }>).map((row) => row.id);
+  }
+
   /** Every workspace of an item that was not removed yet, whatever its enrollment's state. */
   listUnremovedWorkspaces(issueId: string): StoredWorkspace[] {
     const rows = this.#database
@@ -1021,6 +1026,14 @@ export class ConveyorStore {
     this.#database.transaction(() => {
       const issue = this.getIssue(issueId);
       if (issue) {
+        this.#database
+          .query(
+            `INSERT INTO purged_generations(issue_id, generation)
+             SELECT ?1, MAX(COALESCE((SELECT MAX(generation) FROM enrollments WHERE issue_id = ?1), 0),
+                            COALESCE((SELECT generation FROM purged_generations WHERE issue_id = ?1), 0))
+             ON CONFLICT(issue_id) DO UPDATE SET generation = excluded.generation`,
+          )
+          .run(issueId);
         this.#database.query("DELETE FROM runs WHERE issue_id = ?").run(issueId);
         this.#database.query("DELETE FROM push_events WHERE target = ?").run(issueId);
         // A later item of the same number must not inherit this one's recorded writes.
@@ -1448,7 +1461,10 @@ export class ConveyorStore {
 
       const latest = this.#database
         .query(
-          "SELECT COALESCE(MAX(generation), 0) AS generation FROM enrollments WHERE issue_id = ?",
+          `SELECT MAX(
+             COALESCE((SELECT MAX(generation) FROM enrollments WHERE issue_id = ?1), 0),
+             COALESCE((SELECT generation FROM purged_generations WHERE issue_id = ?1), 0)
+           ) AS generation`,
         )
         .get(issueId) as { generation: number };
       const id = randomUUID();

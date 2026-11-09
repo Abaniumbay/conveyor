@@ -410,8 +410,8 @@ describe("GitHub calls made for webhook deliveries", () => {
     issue.labels = ["conveyor", "conveyor:work", "unrelated"];
     issue.updatedAt = "2026-10-07T22:00:00Z";
     await conveyor.reconcileAll();
-    // The earlier purge deleted the item: this is a new item, with a new first enrollment.
-    expect(store.activateEnrollment(issue.id).generation).toBe(1);
+    // The earlier purge deleted the item: this is a new item, whose enrollment continues the purged one's generations so its branch name is new.
+    expect(store.activateEnrollment(issue.id).generation).toBe(2);
     issue.state = "closed";
     issue.stateReason = "not_planned";
     issue.updatedAt = "2026-10-07T23:00:00Z";

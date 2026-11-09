@@ -1122,6 +1122,13 @@ export const migrations: readonly Migration[] = [
         repository_id TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      -- The highest enrollment generation a purged issue reached. Enrollment generations name the
+      -- workspace and branch, so a re-onboarded issue continues after it and never adopts a branch the
+      -- purge left on the remote.
+      CREATE TABLE purged_generations (
+        issue_id TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL
+      );
       INSERT INTO pending_purges(issue_id, repository_id, created_at)
         SELECT id, repository_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM issues
         WHERE projected_state IN ('missing', 'offboarded');
