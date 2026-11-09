@@ -2,13 +2,14 @@
 
 Cut a release of Conveyor with `bun run release`. A release is published the moment its tag
 `vX.Y.Z` is pushed: the Release workflow tests, builds and publishes it, and published releases
-cannot be changed. Use this skill only when a person explicitly asked for a release and named, or
-agreed to, its version.
+cannot be changed. Use this skill only when a person explicitly asked for a release and agreed to
+its version, which the changelog fragments decide (`bun run changelog` prints it).
 
 ## Workflow
 
-1. **Confirm the request.** You need the version (`X.Y.Z`, later than `package.json`'s) and a
-   release summary: two to four sentences on what the release is about, for the people installing
+1. **Confirm the request.** You need the version the fragments call for (the last line of
+   `bun run changelog`; patch for fixes only, minor otherwise, major for breaking changes from 1.0
+   on) and a release summary: two to four sentences on what the release is about, for the people installing
    it. Write the summary from `bun run changelog` and the merged pull requests. Do not invent
    changes that are not there. Show it to the person when you can.
 2. **Check the changelog fragments.** Every user-visible change since the last release must have a
@@ -20,12 +21,13 @@ agreed to, its version.
 4. **Open the release pull request:**
 
    ```sh
-   bun run release start X.Y.Z --summary-file <file> --yes
+   bun run release start --summary-file <file> --yes
    ```
 
    It refuses, changing nothing, on a dirty tree, a branch other than `main`, `main` not level with
-   `origin/main`, no changelog fragments, a version that is not newer, or an existing branch or
-   tag. Fix the stated cause. Never bypass the check by editing `package.json` or the dated
+   `origin/main`, no changelog fragments, or an existing branch or tag. Pass a version
+   (`release start X.Y.Z`) only when the person asked for a higher one than the fragments call
+   for, such as 1.0.0 or a pre-release; a lower one is refused. Fix the stated cause. Never bypass the check by editing `package.json` or the dated
    changelog by hand. Report the pull request URL it prints.
 5. **Wait for the merge.** The release pull request goes through review and CI like any other. Do
    not merge it yourself unless the person asked you to.

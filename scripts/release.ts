@@ -3,21 +3,22 @@
 // together, and a release is the tag v<version> on the commit that has both; pushing the tag runs
 // .github/workflows/release.yml, which tests, builds and publishes it.
 //
-//   bun run release start [<version> | --bump patch|minor|major]
-//                         [--summary <text> | --summary-file <file|-> | --summary-from-commits] [--yes]
-//       On an up-to-date main: asks for the version and a release summary, prepares package.json
-//       and CHANGELOG.md, and opens the release pull request.
+//   bun run release start [<version>] [--summary <text> | --summary-file <file|-> | --summary-from-commits] [--yes]
+//       On an up-to-date main: works out the version from the changelog fragments (or takes a
+//       version that is not lower), asks for a release summary, prepares package.json and
+//       CHANGELOG.md, and opens the release pull request.
 //   bun run release tag <version> [--yes] [--watch]
 //       After that pull request merged: tags the commit that set the version and pushes the tag.
 //   bun run release prepare <version>          only bump package.json and date the changelog
 //   bun run release check <tag> [--notes <f>]  verify a tag against both; print or write its notes
+//   bun run changelog                          preview the Unreleased notes and the version they release
 //
 // See docs/releasing.md.
 
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { readChangelogFragments, renderReleaseNotes, renderUnreleased } from "./changelog-fragments";
+import { readChangelogFragments, renderReleaseNotes, renderUnreleased, type ChangelogFragment } from "./changelog-fragments";
 import { compareVersions } from "../src/release/semver";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -46,6 +47,69 @@ export function nextVersions(current: string): { patch: string; minor: string; m
     minor: `${major}.${minor + 1}.0`,
     major: `${major + 1}.0.0`,
   };
+}
+
+export type ReleaseKind = "patch" | "minor" | "major";
+
+/** The version a release must have at least, and why. */
+export interface RequiredRelease {
+  kind: ReleaseKind;
+  version: string;
+  /** For example "minor: 3 added, 1 deprecated". */
+  reason: string;
+}
+
+/**
+ * The release kind one fragment calls for: a fix is a patch, any other change a minor release, and a
+ * breaking change a major one from 1.0 on. Below 1.0 a breaking change is a minor release.
+ */
+function fragmentKind(current: string, fragment: ChangelogFragment): ReleaseKind {
+  if (fragment.breaking) return parse(current)[0] >= 1 ? "major" : "minor";
+  return fragment.section === "Fixed" ? "patch" : "minor";
+}
+
+const KIND_ORDER: readonly ReleaseKind[] = ["patch", "minor", "major"];
+
+/** The smallest release after `current` that the fragments call for. */
+export function requiredRelease(current: string, fragments: readonly ChangelogFragment[]): RequiredRelease {
+  if (fragments.length === 0) throw new ReleaseCheckError("No Unreleased changes to release: add a fragment in changes/");
+  const kind = fragments.reduce<ReleaseKind>((highest, fragment) => {
+    const own = fragmentKind(current, fragment);
+    return KIND_ORDER.indexOf(own) > KIND_ORDER.indexOf(highest) ? own : highest;
+  }, "patch");
+  const counts = (["Added", "Changed", "Deprecated", "Removed", "Fixed"] as const).flatMap((section) => {
+    const count = fragments.filter((fragment) => fragment.section === section).length;
+    return count === 0 ? [] : [`${count} ${section.toLowerCase()}`];
+  });
+  const breaking = fragments.filter((fragment) => fragment.breaking).length;
+  if (breaking > 0) counts.push(`${breaking} breaking`);
+  return { kind, version: nextVersions(current)[kind], reason: `${kind}: ${counts.join(", ")}` };
+}
+
+/** The version without its pre-release suffix: 0.19.0-rc.1 releases the changes of 0.19.0. */
+function core(version: string): string {
+  const [major, minor, patch] = parse(version);
+  return `${major}.${minor}.${patch}`;
+}
+
+/** Refuses a version lower than the fragments call for, naming the fragments that need more. */
+export function checkChosenVersion(version: string, current: string, fragments: readonly ChangelogFragment[]): void {
+  const required = requiredRelease(current, fragments);
+  if (compareVersions(core(version), required.version) >= 0) return;
+  const needing = fragments
+    .filter((fragment) => compareVersions(nextVersions(current)[fragmentKind(current, fragment)], core(version)) > 0)
+    .map((fragment) => `changes/${fragment.filename} (${fragment.breaking ? "breaking" : fragment.section})`);
+  throw new ReleaseCheckError(`${version} is lower than ${required.version}, which the changes call for (${required.reason}): ${needing.join(", ")}`);
+}
+
+/** The Unreleased preview followed by the version it would release. */
+export function changelogPreview(current: string, fragments: readonly ChangelogFragment[]): string {
+  const preview = renderUnreleased(fragments);
+  if (fragments.length === 0) return preview;
+  const required = requiredRelease(current, fragments);
+  return `${preview}
+
+Next release: v${required.version} (${required.reason})`;
 }
 
 /** A release summary listing the commits merged since `previousTag`, leaving out release commits. */
@@ -174,8 +238,6 @@ export interface StartOptions {
   summary?: string;
   /** Write the summary from the commit subjects since the previous release tag. */
   summaryFromCommits?: boolean;
-  /** Release the next patch, minor or major version when no version is given. */
-  bump?: "patch" | "minor" | "major";
   yes?: boolean;
 }
 
@@ -186,23 +248,20 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   const manifestText = await readFile(packageFile, "utf8");
   const current = (JSON.parse(manifestText) as { version: string }).version;
   const fragments = await readChangelogFragments(options.root);
-  if (fragments.length === 0) throw new ReleaseCheckError("No Unreleased changes to release: add a fragment in changes/");
+  const required = requiredRelease(current, fragments);
   const releaseNotes = renderReleaseNotes(fragments);
 
-  let version = options.version ?? (options.bump ? nextVersions(current)[options.bump] : undefined);
-  if (!version) {
-    const next = nextVersions(current);
-    const answer = await io.ask(`Version to release (current ${current}; patch ${next.patch}, minor ${next.minor}, major ${next.major}): `);
-    if (answer === null) throw new ReleaseCheckError("not a terminal: pass the version, e.g. bun run release start 0.2.0");
-    version = answer.trim().replace(/^v/, "");
-  }
+  // The fragments decide the version; one given by hand may only be higher (1.0.0, a pre-release).
+  const version = options.version ?? required.version;
   if (!isLater(version, current)) throw new ReleaseCheckError(`${version} is not later than the current version ${current}`);
+  checkChosenVersion(version, current, fragments);
+  const describe = version === required.version ? required.reason : `set by hand; the changes call for ${required.reason}`;
   const tag = `v${version}`;
   if ((await io.run(["git", "rev-parse", "--verify", "--quiet", `refs/tags/${tag}`])).code === 0) throw new ReleaseCheckError(`tag ${tag} already exists`);
   const branch = `release/${tag}`;
   if ((await io.run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch])).code === 0) throw new ReleaseCheckError(`branch ${branch} already exists on origin: is a release pull request already open?`);
 
-  io.print(`\nChanges in ${tag}:\n\n${releaseNotes}\n`);
+  io.print(`\n${tag} (${describe})\n\nChanges in ${tag}:\n\n${releaseNotes}\n`);
   let summary = options.summary?.trim();
   if (!summary && options.summaryFromCommits) {
     const previousTag = await must(io, ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"], "git describe");
@@ -228,13 +287,15 @@ export async function startRelease(options: StartOptions, io: ReleaseIo): Promis
   const body = [
     `Prepares ${tag}: \`package.json\` version ${version} and the dated CHANGELOG section below.`,
     "",
+    `Version: ${describe}. Patch for fixes only, minor for anything else, major for breaking changes from 1.0 on (minor before 1.0). If it looks wrong, correct the fragment in \`changes/\` and start the release again.`,
+    "",
     `Merging this tags it and starts the Release workflow, which tests, builds and publishes ${tag} (\`.github/workflows/release-tag.yml\`). To tag by hand instead: \`bun run release tag ${version}\`.`,
     "",
     "## Release notes",
     "",
     notes,
   ].join("\n");
-  const url = await must(io, ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", `Release ${tag}`, "--body-file", "-"], "gh pr create", body);
+  const url = await must(io, ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", `Release ${tag} (${describe})`, "--body-file", "-"], "gh pr create", body);
   io.print(`Opened ${url}\nWhen it has merged: bun run release tag ${version}`);
   return url;
 }
@@ -328,12 +389,10 @@ async function main(args: string[]): Promise<void> {
     const summaryFile = option(args, "--summary-file");
     const summary = option(args, "--summary") ?? (summaryFile ? (summaryFile === "-" ? await Bun.stdin.text() : await readFile(summaryFile, "utf8")) : undefined);
     const version = value && !value.startsWith("--") ? value.replace(/^v/, "") : undefined;
-    const bump = option(args, "--bump");
-    if (bump !== undefined && bump !== "patch" && bump !== "minor" && bump !== "major") throw new ReleaseCheckError(`--bump must be patch, minor or major, not ${bump}`);
+    if (args.includes("--bump")) throw new ReleaseCheckError("--bump is gone: the version is worked out from changes/ (bun run changelog shows it)");
     await startRelease({
       root: ROOT,
       ...(version ? { version } : {}),
-      ...(bump ? { bump } : {}),
       ...(summary ? { summary } : {}),
       summaryFromCommits: args.includes("--summary-from-commits"),
       yes: args.includes("--yes"),
@@ -344,12 +403,12 @@ async function main(args: string[]): Promise<void> {
     await tagRelease({ root: ROOT, version: value, yes: args.includes("--yes"), watch: args.includes("--watch") }, io);
     return;
   }
-  if (command === "changelog") {
-    console.log(renderUnreleased(await readChangelogFragments(ROOT)));
-    return;
-  }
   const packageFile = path.join(ROOT, "package.json");
   const manifest = JSON.parse(await readFile(packageFile, "utf8")) as { version: string };
+  if (command === "changelog") {
+    console.log(changelogPreview(manifest.version, await readChangelogFragments(ROOT)));
+    return;
+  }
   if (command === "prepare" && value) {
     const summaryFile = option(args, "--summary-file");
     const summary = option(args, "--summary") ?? (summaryFile ? (summaryFile === "-" ? await Bun.stdin.text() : await readFile(summaryFile, "utf8")) : undefined);
@@ -367,8 +426,9 @@ async function main(args: string[]): Promise<void> {
   }
   throw new ReleaseCheckError([
     "usage: bun run release <command>",
-    "  changelog                                                                  print the combined Unreleased fragment preview",
-    "  start [<version>] [--summary <text> | --summary-file <file|->] [--yes]   prepare the release and open its pull request",
+    "  changelog                                                                  print the Unreleased preview and the version it releases",
+    "  start [<version>] [--summary <text> | --summary-file <file|-> | --summary-from-commits] [--yes]",
+    "                                                                             prepare the release and open its pull request",
     "  tag <version> [--yes] [--watch]                                          tag the merged release and publish it",
     "  prepare <version> [--summary <text> | --summary-file <file|->]          only bump package.json and date the changelog",
     "  check <tag> [--notes <file>]                                             verify a tag and print or write its notes",
