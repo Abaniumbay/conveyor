@@ -564,6 +564,7 @@ export class ConveyorService {
   /** Repositories whose deliveries Conveyor may not list; warned about once. */
   readonly #redeliveryDenied = new Set<string>();
   /** Operator syncs in progress, by repository. */
+  readonly #createdIssues = new Map<string, Promise<{ issueId: string; number: number; url: string }>>();
   readonly #repositorySyncs = new Map<string, Promise<{ issues: number; failed: boolean }>>();
   /** When each repository was last read by a pass of the periodic tick, startup or a sync. */
   readonly #repositoryReconciledAt = new Map<string, number>();
@@ -948,21 +949,48 @@ export class ConveyorService {
 
   /**
    * Creates an issue in an onboarded repository, enrolls it (the enrollment label puts it in the
-   * backlog at the pipeline's start stage) and reads the repository so it shows in the item list.
-   * `repository` is a configured repository id or its source address.
+   * backlog at the pipeline's start stage) and answers at once; the repository is read in the
+   * background so the issue shows in the item list. `repository` is a configured repository id or
+   * its source address. A repeated call with the same `idempotencyKey` and repository returns the
+   * first call's result instead of creating another issue.
    */
-  async createIssue(input: { repository: string; title: string; body: string }): Promise<{ issueId: string; number: number; url: string }> {
+  createIssue(input: { repository: string; title: string; body: string; idempotencyKey?: string | undefined }): Promise<{ issueId: string; number: number; url: string }> {
     const title = input.title.trim();
-    if (title === "") throw new CommandInputError("the issue title must not be empty");
+    if (title === "") return Promise.reject(new CommandInputError("the issue title must not be empty"));
     const repositoryId = Object.entries(this.config.repositories).find(([id, repository]) => id === input.repository || repository.address === input.repository)?.[0];
-    if (!repositoryId) throw new CommandInputError(`repository ${input.repository} is not onboarded`);
+    if (!repositoryId) return Promise.reject(new CommandInputError(`repository ${input.repository} is not onboarded`));
     this.assertRepositoryActive(repositoryId);
+    const key = input.idempotencyKey ? `${repositoryId}\u0000${input.idempotencyKey}` : null;
+    if (key !== null) {
+      const earlier = this.#createdIssues.get(key);
+      if (earlier) return earlier;
+    }
+    const creation = this.createIssueNow(repositoryId, title, input.body);
+    if (key !== null) {
+      this.#createdIssues.set(key, creation);
+      // A failed creation made nothing, so a retry with the key may try again.
+      creation.catch(() => { if (this.#createdIssues.get(key) === creation) this.#createdIssues.delete(key); });
+    }
+    return creation;
+  }
+
+  private async createIssueNow(repositoryId: string, title: string, body: string): Promise<{ issueId: string; number: number; url: string }> {
+    const started = performance.now();
     const repository = this.config.repositories[repositoryId]!;
     const created = await this.executionGitHub(repositoryId).createIssue({
-      address: repository.address, title, body: input.body, labels: [this.config.labels.enrollment],
+      address: repository.address, title, body, labels: [this.config.labels.enrollment],
     });
-    // The issue exists at the source now; a failed read is caught up by the next reconcile.
-    await this.syncRepository(repositoryId).catch((error: unknown) => log.error("Reading the repository after creating an issue failed", { repository: repositoryId }, error));
+    const forgeDone = performance.now();
+    // The issue exists at the source now; the read runs in the background and a failed read is
+    // caught up by the next reconcile.
+    void Promise.resolve()
+      .then(() => this.syncRepository(repositoryId))
+      .catch((error: unknown) => log.error("Reading the repository after creating an issue failed", { repository: repositoryId }, error));
+    const handedOff = performance.now();
+    log.info("create_issue completed", {
+      repository: repositoryId, number: created.number,
+      forgeCreateMs: Math.round(forgeDone - started), syncHandoffMs: Math.round(handedOff - forgeDone), totalMs: Math.round(handedOff - started),
+    });
     return { issueId: created.id, number: created.number, url: created.url };
   }
 
