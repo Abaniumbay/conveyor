@@ -11,8 +11,9 @@ import { ItemTodos } from "../../src/engine/todos";
 import { EMPTY_USAGE, UNAVAILABLE_COST, type RunEnvelope } from "../../src/runner/result";
 import { createTaskRegistry } from "../../src/tasks/catalogue";
 import type { HarnessResumeInput, TaskContext } from "../../src/tasks/context";
-import { runTask, type TaskResult } from "../../src/tasks/contract";
+import { InfrastructureError, runTask, type TaskResult } from "../../src/tasks/contract";
 import type { TaskDeps } from "../../src/tasks/deps";
+import { WorkspaceError } from "../../src/workspace/manager";
 
 const directories: string[] = [];
 afterAll(async () => {
@@ -134,6 +135,17 @@ describe("agent.run", () => {
     expect(w.leases[1]!.allowedTools).toEqual(["conversation.get"]);
     const notes = w.store.listConversationMessages("i1", 100).filter((message) => message.actorName === "Conveyor").map((message) => message.message);
     expect(notes).toEqual(["Kaveh could not run (Claude usage limit reached); Shirin takes this implementation instead."]);
+  });
+
+  test("a WorkspaceError preparing the workspace does not run the next agent or post a fallback message", async () => {
+    const w = await world({ noWorkspace: true });
+    (w.deps.workspaces as unknown as { create: () => Promise<never> }).create = async () => {
+      throw new WorkspaceError("cannot fetch origin/main: incorrect old value provided");
+    };
+    await expect(w.run(false, { agents: ["kaveh", "shirin"] })).rejects.toBeInstanceOf(InfrastructureError);
+    expect(w.calls).toHaveLength(0);
+    expect(w.leases).toHaveLength(0);
+    expect(w.store.listConversationMessages("i1", 100).filter((m) => m.actorName === "Conveyor")).toEqual([]);
   });
 
   test("puts the same handover in every prompt: fresh, fallback and resumed, keeping the issue when todos are huge", async () => {

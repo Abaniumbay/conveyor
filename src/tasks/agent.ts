@@ -31,7 +31,7 @@ import { defineGroup, fail, InfrastructureError, pass, pending, type TaskArgs, t
 import type { TaskDeps } from "./deps";
 import { ensureGitExcludes, worktreeGitPaths } from "../workspace/git";
 import { ensureWorkspace } from "../workspace/lifecycle";
-import { workspaceScratchPath } from "../workspace/manager";
+import { WorkspaceError, workspaceScratchPath } from "../workspace/manager";
 import { linkExistingChange } from "../codehost/actions";
 import { normalizedQuestionOptions, questionConfigurationError } from "../questions";
 
@@ -158,9 +158,12 @@ const run: TaskDefinition<RunConfig, unknown, Deps> = {
   },
 };
 
+class WorkspaceInfrastructureError extends InfrastructureError {}
+
 /** A harness that could not run falls back to the next agent; a shutdown or a cancelled run does not. */
 function canFallBack(error: unknown, deps: Deps): boolean {
   if (deps.signal?.aborted) return false;
+  if (error instanceof WorkspaceInfrastructureError) return false;
   return (error as { kind?: unknown } | null)?.kind !== "interrupted";
 }
 
@@ -186,7 +189,12 @@ async function runAgent(
   const harness: Harness | undefined = deps.harnesses?.[runner.type];
   if (!harness || !deps.mcp) throw new InfrastructureError(`no harness is available for runner type ${runner.type}`);
   // The agent works in the item's workspace; a stage whose first action is this one gets it created here.
-  const workspace = await ensureWorkspace({ store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository });
+  // A workspace failure belongs to the host, not the agent: no other agent is better placed, so it is retried as infrastructure.
+  const workspace = await ensureWorkspace({ store, manager: deps.workspaces, issueId: deps.issueId, repository: deps.repository })
+    .catch((error: unknown) => {
+      if (error instanceof WorkspaceError) throw new WorkspaceInfrastructureError(`workspace preparation failed: ${error.message}`, { cause: error });
+      throw error;
+    });
   if (deps.codeHost) {
     await linkExistingChange({
       codeHost: deps.codeHost, store, address: deps.repository.address, issueId: deps.issueId, branch: workspace.branch,
