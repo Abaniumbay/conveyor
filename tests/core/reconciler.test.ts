@@ -1047,6 +1047,38 @@ describe("reconcileRepository against rows stored while it waits", () => {
     expect(store.getIssue(source.id)).toMatchObject({ title: "Accepted title", acceptedTextAt: source.updatedAt });
     store.close();
   });
+
+  // A stored enrolled item whose listed copy differs in text, so the pass awaits the trust lookup.
+  const storedWhileReading = async (duringLookup: (store: ConveyorStore, id: string) => void) => {
+    const store = await openStore();
+    const source = issue(1, ["conveyor", "conveyor:refinement"]);
+    store.upsertRepository({ ...repository, configHash: "hash-1" });
+    store.upsertIssue({ id: source.id, repositoryId: "repo", sourceNumber: 1, sourceUrl: source.url, title: "Accepted title", body: "Body", sourceState: "open", labels: source.labels, sourceUpdatedAt: "2025-01-01T00:00:00Z", acceptedTextAt: "2025-01-01T00:00:00Z" });
+    await reconcileRepository({
+      store, configHash: "hash-1", repository, stages: ["refinement", "implementation"], labels,
+      source: {
+        async listIssues() { return [{ ...source, title: "Edited by a stranger" }]; },
+        async getIssueProvenance() {
+          duringLookup(store, source.id);
+          return { enrollment: { login: "trusted" }, title: { login: "stranger" }, body: { login: "trusted" } };
+        },
+      },
+    });
+    return { store, id: source.id };
+  };
+
+  test("a purge that begins while the snapshot waits is not undone by the stale read", async () => {
+    const { store, id } = await storedWhileReading((s, issueId) => { s.beginPurge(issueId); });
+    expect(store.isPurging(id)).toBe(true);
+    expect(store.getIssue(id)).toMatchObject({ title: "Accepted title", projectedState: "unlisted" });
+    store.close();
+  });
+
+  test("a row purged away while the snapshot waits is not stored again by the stale read", async () => {
+    const { store, id } = await storedWhileReading((s, issueId) => { s.beginPurge(issueId); s.finishPurge(issueId); });
+    expect(store.getIssue(id)).toBeNull();
+    store.close();
+  });
 });
 
 describe("reconcileRepository with an issue that is gone from the source", () => {
