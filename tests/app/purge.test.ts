@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { GitHubIssueGoneError, GitHubTransportError } from "../../src/source/github/adapter";
 import { ItemTodos } from "../../src/engine/todos";
 import { WorkspaceManager } from "../../src/workspace/manager";
 import { createWorkspace } from "../../src/workspace/lifecycle";
@@ -295,6 +296,44 @@ describe("purging an item whose GitHub issue was deleted or transferred", () => 
       expect(existsSync(workspacePath)).toBe(false);
       expect(w.store.getIssue("issue")).toBeNull();
       expect(Object.entries(rowsOf(w, "issue")).filter(([, count]) => count > 0)).toEqual([]);
+    });
+  }
+});
+
+describe("an `only` refresh that reads an enrolled issue by number", () => {
+  /** The first read (the pause's own check) succeeds; the refresh's read fails with `failure`. */
+  async function pauseWithFailingRefresh(failure: Error): Promise<DeliveryWorld> {
+    let reads = 0;
+    const { w } = await runningItem({
+      onGithubCall: (method) => {
+        if (method !== "getIssue") return;
+        reads += 1;
+        if (reads === 2) throw failure;
+      },
+    });
+    reads = 0;
+    const pausing = w.service.pauseIssue("issue", "operator");
+    await pausing.catch(() => {});
+    await w.service.purgesSettled();
+    return w;
+  }
+
+  for (const status of [404, 410]) {
+    test(`answered ${status} purges the item`, async () => {
+      const w = await pauseWithFailingRefresh(new GitHubIssueGoneError(`HTTP ${status}`, 1, `HTTP ${status}`));
+      expect(w.store.getIssue("issue")).toBeNull();
+      expect(Object.entries(rowsOf(w, "issue")).filter(([, count]) => count > 0)).toEqual([]);
+    });
+  }
+
+  for (const [what, failure] of [
+    ["a 5xx", new GitHubTransportError("HTTP 502", 1, "HTTP 502")],
+    ["a network error", new GitHubTransportError("connection reset", 1, "connection reset")],
+  ] as const) {
+    test(`failing with ${what} leaves the item unchanged`, async () => {
+      const w = await pauseWithFailingRefresh(failure);
+      expect(w.store.getIssue("issue")).not.toBeNull();
+      expect(w.store.isPurging("issue")).toBe(false);
     });
   }
 });

@@ -270,6 +270,9 @@ export async function reconcileRepository(
       current = fresh;
       snapshot = await acceptedSnapshot(input, sourceIssue, current, hasEnrollment);
     }
+    // The awaits above let a purge begin or finish (a deletion delivery bypasses this pass's lock);
+    // a stale read must never put a purged item back.
+    if (input.store.isPurging(issueId) || (prior && !current)) continue;
 
     input.store.upsertIssue({
       id: issueId,
