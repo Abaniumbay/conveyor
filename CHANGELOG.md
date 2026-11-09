@@ -10,6 +10,37 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.18.1] - 2026-11-09
+
+Merged since v0.18.0:
+
+- create_issue answers right after creation and is idempotent on retry (#626)
+- Docs and examples describe stages, overrides and skip (#624)
+- Items pass through a skipped stage at once and history records it (#623)
+- Board columns follow the installation's stage order (#622)
+- config migrate --stages converts pipelines to one stage list (#621)
+- Deprecation warning for pipelines in config check, doctor and service startup (#619)
+- Configuration accepts one installation-wide stages list and a per-repository skip (#620)
+- Children may depend on a finished closed sibling instead of a copy (#618)
+
+### Added
+
+- `conveyor.yaml` can now define one installation-wide `stages:` list (inline or `!include builtin:stages.yaml`) that every repository without `pipeline:` follows. A repository skips a stage with `overrides.stages.<stageId>.skip: true`: the stage keeps its place but runs nothing. An override for a stage that is not in the list, or defining both `stages:` and `pipelines:`, is reported by `config check`. `pipelines:` and `pipeline:` keep working unchanged.
+
+- An item entering a stage its repository skips now passes on at once: no actions, exit-gate tasks, agent or wait for stage capacity run, and its history records `skipped for this repository`.
+
+- `conveyor config migrate --stages` converts the pipelines of a configuration file into one `stages:` list, turning each repository's differences into `overrides` and `skip: true`, writes `*.migrated.yaml` beside the original and prints `config compare` for every repository. Pipelines that order the same stages differently stop the command without writing anything.
+
+### Changed
+
+- A child item can now depend on a sibling that is already finished: `item.createChild` accepts a `dependsOn` naming a closed issue that was completed, and the child starts without waiting. A closed issue that was not finished is refused with a message saying so, and refinement reuses finished children instead of recreating them.
+
+- The documentation and the example configuration describe the installation stage list, `overrides.stages.<stageId>` and `skip: true`; `pipelines:` is described only in "Migrating from pipelines" in `docs/configuration.md`. `examples/config/pipelines.yaml` is replaced by `stages.yaml`, `builtin:pipelines.yaml` is gone, and `conveyor init` now writes `stages: !include builtin:stages.yaml`.
+
+### Deprecated
+
+- `config check`, `doctor` and the service startup log now warn when a configuration uses `pipelines:` or a repository `pipeline:`. The warning names each file that uses them and points to `conveyor config migrate --stages`. It is only a warning: exit codes and behaviour do not change.
+
 ## [0.18.0] - 2026-11-07
 
 Merged since v0.17.1:
