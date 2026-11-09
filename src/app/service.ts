@@ -6278,14 +6278,14 @@ export class ConveyorService {
       !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
   }
 
-  /** Whether an open, enrolled item with a stage can be paused by removing its enrollment label. */
+  /** Whether an open, enrolled item with a stage can be paused by adding the paused label. */
   private pausableIssue(issue: StoredIssue): boolean {
     return issue.sourceState === "open" && issue.projectedStage !== null &&
       issue.labels.includes(this.config.labels.enrollment) &&
       !["paused", "done", "offboarded", "inconsistent", "rejected"].includes(issue.projectedState ?? "");
   }
 
-  /** Whether an open paused item can safely restore its enrollment label. */
+  /** Whether an open paused item can safely be resumed by removing the paused label. */
   private resumablePausedIssue(issue: StoredIssue, running: boolean): boolean {
     return issue.sourceState === "open" && issue.projectedState === "paused" &&
       issue.labels.includes(this.config.labels.metadata.paused) && !running;
@@ -6748,7 +6748,7 @@ export class ConveyorService {
         repository.address,
         issue.sourceNumber,
         labels,
-        [this.config.labels.metadata.noSplit, this.config.labels.metadata.paused],
+        [this.config.labels.metadata.noSplit],
       );
       this.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {

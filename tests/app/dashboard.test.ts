@@ -2917,7 +2917,7 @@ describe("pause eligibility", () => {
     };
     add("running", 1, ["conveyor"], "open", "refinement", "active");
     add("queued", 2, ["conveyor"], "open", "refinement", "queued");
-    add("paused", 3, [], "open", "refinement", "paused");
+    add("paused", 3, ["conveyor", "conveyor:paused"], "open", "refinement", "paused");
     add("backlog", 4, ["conveyor"], "open", null, "queued");
     add("closed", 5, ["conveyor"], "closed", "refinement", "active");
     add("done", 6, ["conveyor"], "open", "refinement", "done");

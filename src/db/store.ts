@@ -77,7 +77,6 @@ export interface CriterionTestEvidence {
 export interface StoredIssue extends IssueProjection {
   metadata: IssueMetadata;
   queueRank: number | null;
-  /** Set when Conveyor's pause removed the item's last control label. */
   projectedStage: string | null;
   projectedState: string | null;
   warning: string | null;
