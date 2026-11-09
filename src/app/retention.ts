@@ -3,9 +3,10 @@
 // homes are reclaimed independently, even for open items; running homes are never touched. Service
 // log retention is separate (settings.logging).
 
-import { chmod, lstat, readdir, rm, stat } from "node:fs/promises";
+import { lstat, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { restoreDirectoryAccess } from "../core/directory-access";
 import type { ConveyorStore } from "../db/store";
 
 export interface RetentionPolicy {
@@ -43,14 +44,6 @@ async function homeSize(target: string): Promise<number> {
   let total = 0;
   for (const entry of await readdir(target)) total += await homeSize(path.join(target, entry));
   return total;
-}
-
-/** Restores the owning service account's access without dereferencing links in a private home. */
-async function restoreDirectoryAccess(target: string): Promise<void> {
-  const info = await lstat(target);
-  if (!info.isDirectory()) return;
-  await chmod(target, (info.mode & 0o7777) | 0o700);
-  for (const entry of await readdir(target)) await restoreDirectoryAccess(path.join(target, entry));
 }
 
 /** Removes a run's artifact directory, private home included; absent is fine. Run ids never leave the artifacts directory. */

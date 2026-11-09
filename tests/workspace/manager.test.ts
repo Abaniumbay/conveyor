@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -511,6 +511,69 @@ exec "${real}" "$@"
       expect(a.some((x) => b.some((y) => overlaps(x, y)))).toBe(true);
     } finally {
       trace.restore();
+    }
+  });
+
+  test("removing a workspace deletes scratch holding a read-only directory with a file", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const workspace = await manager.create({
+      repositoryPath: fixture.checkout, repositoryId: "repo", issueNumber: 5, enrollment: 1, slug: "ro", baseBranch: "main",
+    });
+    const nested = path.join(workspaceScratchPath(workspace.path), "world", "home");
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(nested, "file"), "x");
+    await chmod(nested, 0o500);
+
+    await manager.remove({ repositoryPath: fixture.checkout, workspacePath: workspace.path, branch: workspace.branch, deleteBranch: true });
+
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
+  });
+
+  test("removing a workspace without a scratch directory succeeds", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const workspace = await manager.create({
+      repositoryPath: fixture.checkout, repositoryId: "repo", issueNumber: 6, enrollment: 1, slug: "noscratch", baseBranch: "main",
+    });
+    await rm(workspaceScratchPath(workspace.path), { recursive: true, force: true });
+
+    await manager.remove({ repositoryPath: fixture.checkout, workspacePath: workspace.path, branch: workspace.branch, deleteBranch: true });
+
+    expect(existsSync(workspaceScratchPath(workspace.path))).toBe(false);
+  });
+
+  test("the orphan sweep deletes and counts scratch holding a read-only directory", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const orphan = path.join(fixture.workspaces, "repo", "issue-7-r1.tmp");
+    const nested = path.join(orphan, "world", "home");
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(nested, "file"), "x");
+    await chmod(nested, 0o500);
+
+    expect(await manager.removeOrphanedScratch([])).toBe(1);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test("restoring access does not follow a symlink out of the scratch directory", async () => {
+    const fixture = await repository();
+    const manager = new WorkspaceManager(fixture.workspaces);
+    const outside = path.join(fixture.root, "outside-readonly");
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, "keep"), "x");
+    await chmod(outside, 0o500);
+    const orphan = path.join(fixture.workspaces, "repo", "issue-8-r1.tmp");
+    await mkdir(orphan, { recursive: true });
+    await symlink(outside, path.join(orphan, "link"));
+
+    try {
+      expect(await manager.removeOrphanedScratch([])).toBe(1);
+      expect(existsSync(orphan)).toBe(false);
+      expect((await stat(outside)).mode & 0o777).toBe(0o500);
+      expect(existsSync(path.join(outside, "keep"))).toBe(true);
+    } finally {
+      await chmod(outside, 0o700);
     }
   });
 });
