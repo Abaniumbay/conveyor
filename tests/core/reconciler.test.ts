@@ -7,6 +7,7 @@ import { reconcileRepository as reconcile } from "../../src/core/reconciler";
 import { ConveyorStore } from "../../src/db/store";
 import { ExecutionStore } from "../../src/engine/journal";
 import { ItemTodos, TODO_CLOSEOUT_NOTE } from "../../src/engine/todos";
+import { GitHubAdapter, GitHubTransportError, type GitHubTransport, type GitHubTransportRequest } from "../../src/source/github/adapter";
 import type { IssueSourceAdapter, SourceIssue } from "../../src/source/types";
 
 const temporaryDirectories: string[] = [];
@@ -1046,4 +1047,90 @@ describe("reconcileRepository against rows stored while it waits", () => {
     expect(store.getIssue(source.id)).toMatchObject({ title: "Accepted title", acceptedTextAt: source.updatedAt });
     store.close();
   });
+});
+
+describe("reconcileRepository with an issue that is gone from the source", () => {
+  const gone = (status: number) => new GitHubTransportError(`GitHub API GET repos/owner/my-app/issues/1 failed: gh: Gone (HTTP ${status})`, 1, `gh: Gone (HTTP ${status})`);
+  const base = (store: ConveyorStore) => ({
+    store, configHash: "hash-1",
+    repository: { id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository" },
+    stages: ["refinement", "implementation"], labels,
+  });
+  /** The real GitHub adapter over a transport that lists the given issues and answers a read by number with `readError`. */
+  function adapterWith(listed: unknown[], readError: Error | null): { source: Pick<IssueSourceAdapter, "listIssues" | "getIssue">; reads: string[] } {
+    const reads: string[] = [];
+    const transport: GitHubTransport = {
+      async request<T>(request: GitHubTransportRequest): Promise<T> {
+        if (request.path.includes("?state=all")) return listed as T;
+        reads.push(request.path);
+        if (readError) throw readError;
+        return rawIssue(1) as T;
+      },
+    };
+    const adapter = new GitHubAdapter(transport, "conveyor");
+    return { source: { listIssues: (a, o) => adapter.listIssues(a, o), getIssue: (a, n) => adapter.getIssue(a, n) }, reads };
+  }
+  const rawIssue = (number: number) => ({
+    id: number, number, html_url: `https://github.com/owner/my-app/issues/${number}`, title: `Issue ${number}`, body: "Body",
+    state: "open", labels: [{ name: "conveyor" }, { name: "conveyor:refinement" }], updated_at: `2026-01-${String(number).padStart(2, "0")}T00:00:00Z`,
+  });
+  async function enrolled(): Promise<{ store: ConveyorStore; id: string }> {
+    const store = await openStore();
+    await reconcileRepository({ ...base(store), source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
+    const id = store.listIssues("repo")[0]!.id;
+    return { store, id };
+  }
+
+  for (const status of [404, 410]) {
+    test(`a read by number answered ${status} purges the enrolled item (webhook-named)`, async () => {
+      const { store, id } = await enrolled();
+      const left: string[] = [];
+      const { source } = adapterWith([], gone(status));
+      const result = await reconcileRepository({ ...base(store), source, since: "2026-01-01T00:00:00Z", includeIssueNumbers: [1], onLeft: (issueId) => left.push(issueId) });
+      expect(left).toEqual([id]);
+      expect(result.purged).toBe(1);
+      store.close();
+    });
+
+    test(`a full listing without the issue followed by ${status} on reading it purges it and never marks it missing`, async () => {
+      const { store, id } = await enrolled();
+      const { source, reads } = adapterWith([], gone(status));
+      const result = await reconcileRepository({ ...base(store), source });
+      expect(reads).toEqual(["repos/owner/my-app/issues/1"]);
+      expect(store.isPurging(id)).toBe(true);
+      expect(result.purged).toBe(1);
+      expect(store.getIssue(id)!.projectedState).not.toBe("missing");
+      store.close();
+    });
+  }
+
+  const infrastructure: Array<[string, Error]> = [
+    ["a 5xx", new GitHubTransportError("GitHub API GET failed: gh: Bad Gateway (HTTP 502)", 1, "gh: Bad Gateway (HTTP 502)")],
+    ["a network error", new GitHubTransportError("GitHub API GET failed: dial tcp: connection refused", 1, "dial tcp: connection refused")],
+  ];
+  for (const [what, error] of infrastructure) {
+    test(`a read by number failing with ${what} leaves the item unchanged (webhook-named)`, async () => {
+      const { store, id } = await enrolled();
+      const before = store.getIssue(id);
+      const left: string[] = [];
+      const { source } = adapterWith([], error);
+      const result = await reconcileRepository({ ...base(store), source, since: "2026-01-01T00:00:00Z", includeIssueNumbers: [1], onLeft: (issueId) => left.push(issueId) });
+      expect(left).toEqual([]);
+      expect(result.purged).toBe(0);
+      expect(store.isPurging(id)).toBe(false);
+      expect(store.getIssue(id)).toEqual(before);
+      store.close();
+    });
+
+    test(`a full listing without the issue followed by ${what} on reading it leaves the item unchanged`, async () => {
+      const { store, id } = await enrolled();
+      const before = store.getIssue(id);
+      const { source } = adapterWith([], error);
+      const result = await reconcileRepository({ ...base(store), source });
+      expect(result.purged).toBe(0);
+      expect(store.isPurging(id)).toBe(false);
+      expect(store.getIssue(id)).toEqual(before);
+      store.close();
+    });
+  }
 });

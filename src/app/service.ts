@@ -27,7 +27,7 @@ import type { Harness } from "../harness/types";
 import { GitHubAdapter, GitHubTransportError, isStatusComment, verifyGitHubSignature } from "../source/github/adapter";
 import { followUpsFromBody } from "../source/github/managed-sections";
 import { GitHubRepositoryTrust } from "../source/github/trust";
-import type { SourceIssue } from "../source/types";
+import { isIssueGone, type SourceIssue } from "../source/types";
 import { GitHubActionsCiProvider, focusGitHubActionsLog, parseGitHubActionsTriggers } from "../source/github/ci-provider";
 import type { CiChange, CiProvider, CiRun } from "./ci-provider";
 import { CodeHostRegistry } from "../codehost/registry";
@@ -2995,7 +2995,17 @@ export class ConveyorService {
     if (!repository) return;
     const pipeline = this.config.pipelines[repository.pipeline]!;
     const followUpBodies = this.followUpBodies(repositoryId);
-    const issues = await Promise.all([...new Set(numbers)].map((number) => this.github.getIssue(repository.address, number)));
+    const issues = (await Promise.all([...new Set(numbers)].map(async (number) => {
+      try {
+        return await this.github.getIssue(repository.address, number);
+      } catch (error) {
+        if (!isIssueGone(error)) throw error;
+        // 404/410: the issue is gone, which is the same as having no Conveyor labels.
+        const stored = this.store.listIssues(repositoryId).find((issue) => issue.sourceNumber === number);
+        if (stored && stored.projectedState !== "unlisted") void this.purgeItem(stored.id);
+        return null;
+      }
+    }))).filter((issue) => issue !== null);
     await reconcileRepository({
       store: this.store,
       configHash: this.config.hash,
@@ -4015,6 +4025,15 @@ export class ConveyorService {
   private reactToGitHubEvent(event: StoredEvent): void {
     const repositoryId = event.repositoryId;
     if (!repositoryId || !this.config.repositories[repositoryId]) return;
+    // A deleted or transferred issue is gone: purge its item now, synchronously, so its run is aborted
+    // before anything makes another GitHub request, and without a read or a sync.
+    if (isEventOf(event, "github.issueUpdated") && !event.payload.pullRequest && (event.payload.action === "deleted" || event.payload.action === "transferred")) {
+      const gone = event.payload.number;
+      for (const issue of this.store.listIssues(repositoryId)) {
+        if (issue.sourceNumber === gone && issue.projectedState !== "unlisted") void this.purgeItem(issue.id);
+      }
+      return;
+    }
     const work = withEventContext({ actor: { kind: "webhook", id: event.actor.id } }, () => withGitHubCallSource("webhook", async () => {
       await this.applyCiEvent(repositoryId, event)
         .catch((error) => log.warn("CI indicator webhook update failed", { repository: repositoryId, event: event.type }, error));

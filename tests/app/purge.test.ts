@@ -272,3 +272,29 @@ describe("purging an item that lost its Conveyor labels", () => {
     expect(w.store.getRun(runId)).toBeNull();
   });
 });
+
+describe("purging an item whose GitHub issue was deleted or transferred", () => {
+  for (const action of ["deleted", "transferred"]) {
+    test(`an issues.${action} delivery kills the running agent before any GitHub request and purges the item without a sync`, async () => {
+      const calls: Array<{ method: string; agentAlive: boolean }> = [];
+      let pid = 0;
+      const { w, pid: agentPid, workspacePath } = await runningItem({
+        onGithubCall: (method) => { calls.push({ method, agentAlive: pid !== 0 && alive(pid) }); },
+      });
+      pid = agentPid;
+      expect(alive(pid)).toBe(true);
+      calls.length = 0;
+
+      await w.deliverIssueEvent(action, `${action}-1`);
+      await w.service.purgesSettled();
+
+      expect(alive(pid)).toBe(false);
+      expect(calls.filter((call) => call.agentAlive)).toEqual([]);
+      // No listing and no read of the issue: the delivery alone is the proof.
+      expect(calls.map((call) => call.method).filter((method) => method === "listIssues" || method === "getIssue")).toEqual([]);
+      expect(existsSync(workspacePath)).toBe(false);
+      expect(w.store.getIssue("issue")).toBeNull();
+      expect(Object.entries(rowsOf(w, "issue")).filter(([, count]) => count > 0)).toEqual([]);
+    });
+  }
+});

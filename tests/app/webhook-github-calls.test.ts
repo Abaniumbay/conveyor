@@ -836,13 +836,15 @@ describe("issue deliveries that carry the full issue", () => {
     store.close();
   });
 
-  test("a transfer is read from GitHub instead", async () => {
+  test("a transfer purges the item without reading the issue", async () => {
     const { conveyor, store, calls, deliver } = await service();
     await conveyor.reconcileAll();
     calls.fetched.length = 0;
     await deliver("issues", { action: "transferred", issue: fullIssue(["conveyor", "conveyor:work"], "2026-10-07T21:00:00Z"), sender: { login: "maintainer" } });
     await conveyor.webhooksSettled();
-    expect(calls.fetched).toEqual([1]);
+    await conveyor.purgesSettled();
+    expect(calls.fetched).toEqual([]);
+    expect(store.listIssues("conveyor")).toEqual([]);
     store.close();
   });
 });
