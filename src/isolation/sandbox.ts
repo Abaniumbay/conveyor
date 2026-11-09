@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { resolveFilesystemPath, resolvePathEnvironment } from "../core/paths";
 import { INTERNAL, selfCommand, sourceCheckoutRuntime } from "../self";
+import { BUILD } from "../version";
 
 export const PROXY_VARIABLES = [
   "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -553,7 +554,7 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
     const bubblewrap = findOnPath("bwrap", options.env.PATH);
     if (!bubblewrap) throw new Error("agent filesystem confinement requires bubblewrap on PATH; install it (for example: sudo apt install bubblewrap) and run `conveyor doctor`");
     return {
-      argv: [bubblewrap, "--unshare-net", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--", process.execPath, "-e", BRIDGE_PROGRAM, spec],
+      argv: [bubblewrap, "--unshare-net", "--unshare-pid", "--die-with-parent", ...filesystem.mounts, "--", ...confinedBridgeCommand(spec)],
       env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
       dataEnv,
     };
@@ -563,6 +564,15 @@ export function sandboxCommand(options: SandboxOptions): SandboxedCommand {
     env: resolvePathEnvironment({ ...options.env, ...commandEnv }),
     dataEnv,
   };
+}
+
+/**
+ * The bridge command inside the confined filesystem. A compiled build runs its own executable's
+ * `__bridge` (the executable is mounted read-only; no source checkout exists). From a source checkout
+ * the inline program keeps the checkout unmounted and hidden from the agent.
+ */
+function confinedBridgeCommand(spec: string): string[] {
+  return BUILD.compiled ? [process.execPath, INTERNAL.bridge, spec] : [process.execPath, "-e", BRIDGE_PROGRAM, spec];
 }
 
 // The egress bridge must run inside the network namespace, but mounting Conveyor's source tree to
