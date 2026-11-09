@@ -10,6 +10,48 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.20.0] - 2026-11-09
+
+Merged since v0.19.0:
+
+- Deleted or transferred GitHub issues are detected and purged without a sync (#654)
+- Items that lose their Conveyor labels stop at once and are purged (#651)
+- agent.run falls back only for harness failures; invalid results are retried in-session (#653)
+- Claude Code agents can run without a shell via `shell: false` (#652)
+- Compiled builds start the confined agentEgress bridge with __bridge (#649)
+- A failed agent MCP server is logged, noted on the item, and caught by doctor (#648)
+- Pause is the conveyor:paused label and kills the running agent (#645)
+- Workspace preparation is serialised per repository and never falls back to another agent (#644)
+- Items have a Pause / Resume button and a striped paused look (#642)
+- create_issue applies the created issue without a full repository sync (#639)
+- Move GitHub Actions to their Node 24 releases
+
+### Added
+
+- Items have a Pause / Resume button on their board card and item page, and a paused card is drawn with a grey striped overlay and a "Paused" badge in both themes.
+
+- An agent can set `shell: false` (default `true`). A Claude Code agent then runs without `Bash`; on a Codex agent it fails `config check`, because Codex reaches files only through its shell.
+
+- A configured agent MCP server that exits or does not answer `initialize` at the start of a run is recorded in the run's technical log with its error, and the item's conversation gets one Conveyor note naming it. `conveyor doctor` now starts each agent's MCP servers inside its sandbox and fails when one does not answer.
+
+### Changed
+
+- Creating an issue with `create_issue` now records that issue from the create response alone, instead of running a full repository sync. It no longer lists the repository, re-reads permissions, redelivers missed webhooks or pings the webhook.
+
+- **Breaking:** Pausing an item now adds the `conveyor:paused` label instead of removing the `conveyor` label. While the label is present the item is paused: its running agent is stopped, nothing new starts (stage, retry, follow-up or CI wait), and its `conveyor` and stage labels stay. Removing the label (`item resume`, the CLI, the operator MCP tool or a label edit on GitHub) continues the same stage from the interrupted step. Removing the `conveyor` label no longer pauses an item; it leaves Conveyor. `conveyor:paused` is created with the other system labels, and its name can be set with `labels.metadata.paused`. On upgrade the `paused_by_conveyor` column is dropped and items paused the old way are relabelled once with `conveyor` and `conveyor:paused`.
+
+- **Breaking:** An issue with no Conveyor labels no longer exists for Conveyor, open or closed. When an item loses its `conveyor` label, or is closed without a merged change, Conveyor kills its running agent before making any GitHub request for it, removes its workspace, worktree and branch, and then deletes every database row of the item (issue, stage state, journal, todos, questions, relationships, runs). An interrupted purge finishes after a restart without repeating any workspace removal or GitHub write. The event log keeps the item's events and records `item.purged`. Adding the `conveyor` label back onboards the issue as a new item. The `missing` and `offboarded` projected states are gone, and so is their read-only history card; migration 47 queues existing rows in those states, removes their workspaces and deletes them. Done items keep their labels and stay visible.
+
+- A deleted or transferred GitHub issue is purged as soon as Conveyor learns of it, without a sync. An `issues.deleted` or `issues.transferred` delivery kills the item's running agent before any further GitHub request and removes the item. A read of an enrolled issue by number that answers 404 or 410 purges it too, and so does a full listing that omits a stored issue when reading it by number answers 404 or 410. Any other failure (5xx, network) leaves the item unchanged.
+
+- **Breaking:** `agent.run` with `with.agents` now falls back to the next agent only when the first agent's harness cannot run: a usage limit, a process that fails or cannot start, or a missing CLI. Workspace, MCP, protocol and timeout errors no longer fall back; they end the attempt as an infrastructure error retried with the executor's backoff. An invalid structured result is returned once to the same agent, in the same session, with the validation message; a second invalid result is an infrastructure error. Configurations that relied on a backup agent for those failures must now handle them through the retry.
+
+### Fixed
+
+- Items of one repository that start together no longer fail workspace preparation on the shared clone: ref-changing git operations now run one at a time per repository. A workspace preparation failure is retried as an infrastructure error with the usual backoff instead of falling back to the next agent in `with.agents`.
+
+- Agent runs in a repository with `agentEgress` no longer fail in compiled builds with `unknown command: -e`: the confined egress wrapper starts the network bridge with the executable's own `__bridge` command. The packaged smoke test now runs an agent turn under `agentEgress`.
+
 ## [0.19.0] - 2026-11-09
 
 Merged since v0.18.1:
