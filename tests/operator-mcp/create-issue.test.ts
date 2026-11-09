@@ -10,7 +10,7 @@ import { loadConfig } from "../../src/config/load";
 import { COMMANDS } from "../../src/commands/registry";
 import { createControlHandler } from "../../src/control/server";
 import { ConveyorStore } from "../../src/db/store";
-import { ConsoleSink, log } from "../../src/log/logger";
+import { ConsoleSink, log, type LogRecord } from "../../src/log/logger";
 import { agentGrantableTools, registeredToolNames } from "../../src/mcp/tools";
 import { createConveyorMcpServer, type RunMcpContext } from "../../src/mcp/server";
 import { OPERATOR_TOOLS } from "../../src/operator-mcp/registry";
@@ -30,7 +30,8 @@ afterEach(async () => {
 async function setup() {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-create-issue-"));
   directories.push(root);
-  log.configure({ sinks: [] });
+  const records: LogRecord[] = [];
+  log.configure({ sinks: [{ write: (record) => void records.push(record) }] });
   await writeFile(path.join(root, "instructions.md"), "Work.");
   await mkdir(path.join(root, "repo"));
   await writeFile(path.join(root, "config.yml"), `
@@ -64,6 +65,7 @@ repositories:
   const store = await ConveyorStore.open(config.settings.database);
   const source: Array<{ id: string; number: number; url: string; title: string; body: string; state: "open"; stateReason: null; labels: string[]; updatedAt: string }> = [];
   const created: Array<{ address: string; title: string; body: string; labels: readonly string[] }> = [];
+  const listing: { mode: "normal" | "hang" | "fail" } = { mode: "normal" };
   const github = {
     async createIssue(input: { address: string; title: string; body: string; labels: readonly string[] }) {
       created.push(input);
@@ -75,7 +77,11 @@ repositories:
       source.push(issue);
       return issue;
     },
-    async listIssues() { return source.map((issue) => ({ ...issue })); },
+    async listIssues() {
+      if (listing.mode === "hang") return new Promise<never>(() => {});
+      if (listing.mode === "fail") throw new Error("forge listing down");
+      return source.map((issue) => ({ ...issue }));
+    },
     async getIssue(_address: string, number: number) { return { ...source[number - 1]! }; },
     async getIssueProvenance() { return { enrollment: { login: "maintainer" }, title: { login: "maintainer" }, body: { login: "maintainer" } }; },
     async collaboratorPermission() { return "write" as const; },
@@ -100,7 +106,7 @@ repositories:
     const result = await client.callTool({ name: "create_issue", arguments: args });
     return { isError: result.isError === true, text: (result.content as Array<{ text: string }>)[0]!.text };
   };
-  return { service, store, config, created, call, client };
+  return { service, store, config, created, call, client, listing, records };
 }
 
 describe("create_issue operator tool", () => {
@@ -131,6 +137,66 @@ describe("create_issue operator tool", () => {
     const stored = store.getIssueByNumber("repo", 1);
     expect(stored).toMatchObject({ title: "Add a thing", projectedStage: "implementation" });
     expect(stored?.labels).toContain("conveyor");
+  });
+
+  test("returns issueId, number and url while the repository sync never finishes", async () => {
+    const { call, listing } = await setup();
+    listing.mode = "hang";
+    const result = await Promise.race([call({ repository: "repo", title: "Fast", body: "" }), Bun.sleep(3000).then(() => "timeout" as const)]);
+    expect(result).not.toBe("timeout");
+    expect(JSON.parse((result as { text: string }).text)).toEqual({ issueId: "github:owner/repo#1", number: 1, url: "https://github.com/owner/repo/issues/1" });
+  });
+
+  test("the repository sync still runs in the background so the issue appears in the item list", async () => {
+    const { call, store } = await setup();
+    await call({ repository: "repo", title: "Later", body: "" });
+    for (let i = 0; i < 100 && !store.getIssueByNumber("repo", 1); i++) await Bun.sleep(20);
+    expect(store.getIssueByNumber("repo", 1)).toMatchObject({ title: "Later" });
+  });
+
+  test("a background sync failure is logged and the returned result is unchanged", async () => {
+    const { call, listing, records } = await setup();
+    listing.mode = "fail";
+    const result = await call({ repository: "repo", title: "Fails later", body: "" });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text)).toMatchObject({ number: 1 });
+    for (let i = 0; i < 100 && !records.some((r) => r.level === "error" && r.repository === "repo"); i++) await Bun.sleep(20);
+    expect(records.some((r) => r.level === "error" && r.repository === "repo")).toBe(true);
+  });
+
+  test("the same idempotency key and repository returns the first result and creates no second issue", async () => {
+    const { call, created } = await setup();
+    const first = await call({ repository: "repo", title: "Once", body: "", idempotencyKey: "k1" });
+    const retry = await call({ repository: "owner/repo", title: "Once", body: "", idempotencyKey: "k1" });
+    expect(retry.isError).toBe(false);
+    expect(JSON.parse(retry.text)).toEqual(JSON.parse(first.text));
+    expect(created).toHaveLength(1);
+  });
+
+  test("concurrent calls with the same key create one issue", async () => {
+    const { call, created } = await setup();
+    const [a, b] = await Promise.all([call({ repository: "repo", title: "Once", body: "", idempotencyKey: "k" }), call({ repository: "repo", title: "Once", body: "", idempotencyKey: "k" })]);
+    expect(JSON.parse(a.text)).toEqual(JSON.parse(b.text));
+    expect(created).toHaveLength(1);
+  });
+
+  test("different keys, or no key, each create their own issue", async () => {
+    const { call, created } = await setup();
+    await call({ repository: "repo", title: "A", body: "", idempotencyKey: "k1" });
+    await call({ repository: "repo", title: "A", body: "", idempotencyKey: "k2" });
+    await call({ repository: "repo", title: "A", body: "" });
+    await call({ repository: "repo", title: "A", body: "" });
+    expect(created).toHaveLength(4);
+  });
+
+  test("logs the duration of each step and the total in one entry per call", async () => {
+    const { call, records } = await setup();
+    await call({ repository: "repo", title: "Timed", body: "" });
+    const entries = records.filter((r) => r.message === "create_issue completed");
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!;
+    for (const field of ["forgeCreateMs", "syncHandoffMs", "totalMs"]) expect(typeof entry[field]).toBe("number");
+    expect(entry.repository).toBe("repo");
   });
 
   test("a repository that is not onboarded returns a tool error and creates nothing", async () => {
