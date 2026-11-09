@@ -6276,13 +6276,14 @@ export class ConveyorService {
       !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
   }
 
-  /** Whether an open paused item can safely restore its enrollment label. */
+  /** Whether an open, enrolled item with a stage can be paused by removing its enrollment label. */
   private pausableIssue(issue: StoredIssue): boolean {
     return issue.sourceState === "open" && issue.projectedStage !== null &&
       issue.labels.includes(this.config.labels.enrollment) &&
       !["paused", "done", "offboarded", "inconsistent", "rejected"].includes(issue.projectedState ?? "");
   }
 
+  /** Whether an open paused item can safely restore its enrollment label. */
   private resumablePausedIssue(issue: StoredIssue, running: boolean): boolean {
     return issue.sourceState === "open" && issue.projectedState === "paused" &&
       !issue.labels.includes(this.config.labels.enrollment) && !running;

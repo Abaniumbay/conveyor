@@ -365,35 +365,62 @@ describe("dashboard live refresh position", () => {
     }
   }, 30_000);
 
-  for (const theme of ["light", "dark"] as const) {
-    test(`draws a paused card with a striped overlay and a Paused badge in the ${theme} theme at 360 px`, async () => {
-      const paused = { ...issue("paused-1", 62, "A paused item with a deliberately long title that must stay inside the phone viewport"), paused: true, resumable: true };
-      const server = startDashboard({ dashboard: () => dashboard(`striped-${theme}`, [paused]), revision: () => `striped-${theme}` });
-      try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce", colorScheme: theme });
-        await signIn(page, server.port);
+  type Stop = { r: number; g: number; b: number; a: number };
+  const parseStops = (image: string): Stop[] => {
+    const stops: Stop[] = [];
+    for (const match of image.matchAll(/(?:color\(srgb|rgba?\()\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:\s*[/,]\s*([\d.]+))?\)/g)) {
+      const scale = match[0].startsWith("color(") ? 255 : 1;
+      stops.push({ r: Number(match[1]) * scale, g: Number(match[2]) * scale, b: Number(match[3]) * scale, a: match[4] === undefined ? 1 : Number(match[4]) });
+    }
+    return stops;
+  };
+
+  test("draws a paused card with grey darker-striped overlay and a Paused badge in both themes at 360 px", async () => {
+    const paused = { ...issue("paused-1", 62, "A paused item with a deliberately long title that must stay inside the phone viewport"), paused: true, resumable: true };
+    const server = startDashboard({ dashboard: () => dashboard("striped", [paused]), revision: () => "striped" });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      const card = page.locator('article[data-issue-id="paused-1"]');
+      await card.waitFor();
+      const seen: Record<string, Stop[]> = {};
+      for (const theme of ["light", "dark"] as const) {
         await page.evaluate((value) => document.documentElement.setAttribute("data-theme", value), theme);
-        const card = page.locator('article[data-issue-id="paused-1"]');
-        await card.waitFor();
         const overlay = await card.evaluate((element) => {
           const style = getComputedStyle(element, "::after");
           return { image: style.backgroundImage, position: style.position, events: style.pointerEvents };
         });
         expect(overlay.image).toContain("repeating-linear-gradient");
-        expect(overlay.image).toMatch(/srgb|rgba?\(/);
+        expect(overlay.image).toContain("135deg");
         expect(overlay.position).toBe("absolute");
         expect(overlay.events).toBe("none");
+        const all = parseStops(overlay.image);
+        // Each band repeats its colour at both ends: [stripe, stripe, gap, gap].
+        expect(all).toHaveLength(4);
+        expect(all[0]).toEqual(all[1]);
+        expect(all[2]).toEqual(all[3]);
+        const stops = [all[0]!, all[2]!];
+        const [stripe, gap] = stops as [Stop, Stop];
+        for (const stop of stops) {
+          expect(stop.a).toBeGreaterThan(0);
+          expect(Math.max(stop.r, stop.g, stop.b) - Math.min(stop.r, stop.g, stop.b)).toBeLessThanOrEqual(24);
+        }
+        // Stripes are the denser (darker) band over the grey card in both themes.
+        expect(stripe.a).toBeGreaterThan(gap.a);
+        seen[theme] = stops;
         const badge = card.locator(".issue-paused-badge");
         expect(await badge.isVisible()).toBe(true);
         expect((await badge.textContent())?.trim()).toBe("Paused");
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await card.screenshot({ path: `/tmp/paused-card-${theme}.png` });
-      } finally {
-        server.stop(true);
       }
-    }, 30_000);
-  }
+      const brightness = (stop: Stop) => stop.r + stop.g + stop.b;
+      expect(brightness(seen.light![0]!)).not.toBe(brightness(seen.dark![0]!));
+    } finally {
+      server.stop(true);
+    }
+  }, 60_000);
 
   test("resumes a paused item from its inspector", async () => {
     const paused = {

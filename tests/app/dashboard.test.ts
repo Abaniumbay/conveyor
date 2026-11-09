@@ -2903,3 +2903,49 @@ describe("board column order", () => {
     expect(model.stages.map((column) => column.id)).toEqual(["refinement", "implementation", "verify", "ci-gate", "review", "merge", "cleanup"].map((id) => `stage:${id}`));
   });
 });
+
+describe("pause eligibility", () => {
+  test("flags only open enrolled staged items as pausable and paused items as paused and resumable", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "conveyor-dashboard-pausable-"));
+    temporaryDirectories.push(root);
+    const store = await ConveyorStore.open(path.join(root, "conveyor.sqlite"));
+    const config = dashboardResumeConfig(root);
+    store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: root, configHash: config.hash });
+    const add = (id: string, n: number, labels: string[], sourceState: "open" | "closed", stage: string | null, state: string) => {
+      store.upsertIssue({
+        id, repositoryId: "repo", sourceNumber: n, sourceUrl: `https://example.com/issues/${n}`,
+        title: id, body: "", sourceState, labels, sourceUpdatedAt: "2026-10-21T00:00:00Z",
+      });
+      store.setIssueProjection(id, { stage: stage as never, state: state as never, warning: null });
+    };
+    add("running", 1, ["conveyor"], "open", "refinement", "active");
+    add("queued", 2, ["conveyor"], "open", "refinement", "queued");
+    add("paused", 3, [], "open", "refinement", "paused");
+    add("backlog", 4, ["conveyor"], "open", null, "queued");
+    add("closed", 5, ["conveyor"], "closed", "refinement", "active");
+    add("done", 6, ["conveyor"], "open", "refinement", "done");
+
+    const service = new ConveyorService(config, store, {} as never);
+    const dashboard = service.dashboard("csrf");
+    const cards = [
+      ...dashboard.backlog, ...dashboard.attention.issues, ...dashboard.done.issues,
+      ...dashboard.stages.flatMap((stage) => [...stage.issues]),
+    ] as Array<{ id: string; pausable: boolean; paused: boolean; resumable: boolean }>;
+    const expected: Record<string, { pausable: boolean; paused: boolean; resumable?: boolean }> = {
+      running: { pausable: true, paused: false },
+      queued: { pausable: true, paused: false },
+      paused: { pausable: false, paused: true, resumable: true },
+      backlog: { pausable: false, paused: false },
+      closed: { pausable: false, paused: false },
+      done: { pausable: false, paused: false },
+    };
+    for (const [id, flags] of Object.entries(expected)) {
+      const card = cards.find((c) => c.id === id);
+      if (card) expect(card).toMatchObject(flags);
+      expect(service.issueDetails("csrf", id)).toMatchObject(flags);
+    }
+    expect(cards.find((c) => c.id === "running")).toBeDefined();
+    expect(cards.find((c) => c.id === "paused")).toBeDefined();
+    store.close();
+  });
+});
