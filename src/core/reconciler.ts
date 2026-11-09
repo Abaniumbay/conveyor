@@ -35,6 +35,11 @@ export interface ReconcileRepositoryInput {
    * read when it answers every trust question the change raises.
    */
   delivered?: ReadonlyMap<number, DeliveredActors>;
+  /**
+   * Called synchronously for an item that left Conveyor, before anything else is read for it, so
+   * the owner can stop the item's run and begin its purge. Without it the purge is only recorded.
+   */
+  onLeft?: (issueId: string) => void;
 }
 
 /** Who changed each trust-relevant part of an issue in one delivery; "unchanged" when it did not change it. */
@@ -47,8 +52,8 @@ export interface DeliveredActors {
 export interface ReconcileRepositoryResult {
   seen: number;
   enrolled: number;
-  offboarded: number;
-  missing: number;
+  /** Items that had lost their Conveyor labels and were handed to the purge. */
+  purged: number;
 }
 
 /** Projected states an item resumes from when its stopping label is removed (or enrolment restored). */
@@ -65,12 +70,6 @@ function movedForward(
   const prior = priorStage === null ? -1 : stages.indexOf(priorStage);
   const current = stage === null ? -1 : stages.indexOf(stage);
   return prior >= 0 && current > prior;
-}
-
-function isConveyorIssue(labels: readonly string[], enrollment: string): boolean {
-  return labels.some(
-    (label) => label === enrollment || label.startsWith(`${enrollment}:`),
-  );
 }
 
 type TrustDecision = { trusted: boolean; unavailable: boolean };
@@ -178,7 +177,7 @@ async function acceptedSnapshot(input: ReconcileRepositoryInput, sourceIssue: So
  * `since` a time (which cannot tell a deleted issue from an unchanged one).
  *
  * This function only reads the source and updates SQLite. It deliberately performs no
- * source mutations, making polling safe even when an issue was just offboarded.
+ * source mutations, making polling safe even when an issue just left Conveyor.
  */
 export async function reconcileRepository(
   input: ReconcileRepositoryInput,
@@ -216,7 +215,7 @@ export async function reconcileRepository(
   const fullListing = input.issues === undefined && input.since === undefined;
   const seen = new Set<string>();
   let enrolled = 0;
-  let offboarded = 0;
+  let purged = 0;
 
   for (const sourceIssue of sourceIssues) {
     // Source adapters may include a repository address in their IDs. Preserve
@@ -228,13 +227,21 @@ export async function reconcileRepository(
     const issueId = prior?.id ?? sourceIssue.id;
     seen.add(issueId);
     if (fullListing && prior && sourceIssue.updatedAt < prior.sourceUpdatedAt) continue;
-    const relevant = isConveyorIssue(
-      sourceIssue.labels,
-      input.labels.enrollment,
-    );
-    if (!relevant && !prior) continue;
-
     const hasEnrollment = sourceIssue.labels.includes(input.labels.enrollment);
+    // An issue without the Conveyor label does not exist for Conveyor. One Conveyor knows is purged;
+    // a dependency stub (unlisted, not being purged) keeps being refreshed but stays unlisted.
+    if (!hasEnrollment) {
+      if (!prior) continue;
+      if (input.store.isPurging(issueId)) continue;
+      if (prior.projectedState !== "unlisted") {
+        if (input.onLeft) input.onLeft(issueId);
+        else input.store.beginPurge(issueId);
+        purged += 1;
+        continue;
+      }
+    }
+    // A purge in progress finishes first; the issue is onboarded afresh once its rows are gone.
+    if (input.store.isPurging(issueId)) continue;
     // The snapshot awaits the source; a row stored meanwhile (a delivery, another pass) must not
     // be overwritten from the earlier read, so decide again against the current row.
     let current = prior;
@@ -280,7 +287,7 @@ export async function reconcileRepository(
     const visible = projected.visible;
     const eligible = visible && snapshot.enrollmentTrusted;
     const projectedState = !visible
-      ? "offboarded"
+      ? "unlisted"
       : !snapshot.enrollmentTrusted ? "waiting"
       // The paused label wins over a parked question: the question stays open, nothing runs.
       : projected.mode === "paused" ? "paused"
@@ -321,7 +328,7 @@ export async function reconcileRepository(
     }
 
     if (!visible) {
-      input.store.endActiveEnrollment(issueId, "offboarded");
+      // A dependency stub: never enrolled, nothing to end.
     } else if (!snapshot.enrollmentTrusted) {
       input.store.endActiveEnrollment(issueId, "trust-blocked");
     } else if (!openQuestion && projected.mode === "active" && projected.stage) {
@@ -360,21 +367,8 @@ export async function reconcileRepository(
         reason: `Enrolled: the ${input.labels.enrollment} label was added${projected.stage ? ` at ${projected.stage}` : ""}.`,
       });
       enrolled += 1;
-    } else if (current && !projected.visible && current.projectedState !== "offboarded") {
-      offboarded += 1;
     }
   }
 
-  let missing = 0;
-  for (const issue of existing.values()) {
-    if (input.since !== undefined || input.issues !== undefined || seen.has(issue.id)) continue;
-    input.store.setIssueProjection(issue.id, {
-      stage: issue.projectedStage,
-      state: "missing",
-      warning: "Source issue was not returned; it may have been deleted or transferred.",
-    });
-    missing += 1;
-  }
-
-  return { seen: sourceIssues.length, enrolled, offboarded, missing };
+  return { seen: sourceIssues.length, enrolled, purged };
 }

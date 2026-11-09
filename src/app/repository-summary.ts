@@ -122,7 +122,7 @@ function itemSyncOf(source: ConveyorConfig["sources"][string] | undefined, confi
 }
 
 const DONE_STATES = new Set(["done", "completed"]);
-const INACTIVE_STATES = new Set(["closed", "missing", "offboarded", "paused"]);
+const INACTIVE_STATES = new Set(["closed", "unlisted", "paused"]);
 const BLOCKED_STATES = new Set(["blocked", "error", "failed", "rejected", "inconsistent"]);
 const NEEDS_YOU_STATES = new Set(["needs-input", "needs-intervention"]);
 
@@ -174,7 +174,7 @@ export function buildRepositorySummaries(input: BuildRepositorySummariesInput): 
   for (const issue of input.issues ?? store.listIssues()) {
     if (!config.repositories[issue.repositoryId]) continue;
     allIssuesByRepository.set(issue.repositoryId, [...(allIssuesByRepository.get(issue.repositoryId) ?? []), issue]);
-    if (issue.projectedState === "offboarded") continue;
+    if (issue.projectedState === "unlisted") continue;
     issuesByRepository.set(issue.repositoryId, [...(issuesByRepository.get(issue.repositoryId) ?? []), issue]);
   }
   const recordedDeliveries = deliveryRows(store);

@@ -640,7 +640,7 @@ describe("applyStageTransition", () => {
 });
 
 describe("applyClosedItemOffboarding", () => {
-  test("removes every Conveyor control once, offboards the item, and records the closure reason", async () => {
+  test("removes every Conveyor control once, begins the item purge, and records the closure reason", async () => {
     const store = await setup();
     store.activateEnrollment("issue");
     store.setIssueProjection("issue", { stage: "implementation", state: "blocked", warning: "Stopped" });
@@ -658,7 +658,8 @@ describe("applyClosedItemOffboarding", () => {
     await applyClosedItemOffboarding(input);
 
     expect(calls).toEqual([[]]);
-    expect(store.getIssue("issue")).toMatchObject({ projectedStage: null, projectedState: "offboarded", warning: null });
+    expect(store.getIssue("issue")).toMatchObject({ projectedStage: null, projectedState: "unlisted", warning: null });
+    expect(store.isPurging("issue")).toBe(true);
     expect(store.listStageTransitions("issue")).toMatchObject([{
       id: "closed-without-change",
       kind: "offboarded",

@@ -11,7 +11,7 @@ export interface LabelConfiguration {
 }
 
 export type IssueMode =
-  | "offboarded"
+  | "left"
   | "paused"
   | "closed"
   | "stopped"
@@ -51,7 +51,7 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
 
   if (relevantLabels.length === 0) {
     return {
-      mode: "offboarded",
+      mode: "left",
       visible: false,
       eligible: false,
       stage: null,
@@ -108,7 +108,7 @@ export function evaluateIssueState(input: IssueStateInput): EvaluatedIssueState 
 
   // Without the base label the item has left Conveyor.
   if (!hasBaseLabel) {
-    return { mode: "offboarded", visible: false, eligible: false, stage: null, state: null, warnings: [] };
+    return { mode: "left", visible: false, eligible: false, stage: null, state: null, warnings: [] };
   }
 
   if (sourceLabels.has(input.labels.metadata.paused)) {

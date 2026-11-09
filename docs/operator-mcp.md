@@ -37,7 +37,7 @@ running. Put the dashboard behind HTTPS before sending a token over a network.
 | `get_questions_and_runs` | An item's pending questions and run history. |
 
 `item` is `<repository>:<number>` (or `<repository>#<number>`), for example `my-repo:42`. An unknown or
-offboarded item is a tool error naming it (`Unknown item: …`). These tools issue the same commands as
+item that left Conveyor is a tool error naming it (`Unknown item: …`). These tools issue the same commands as
 the dashboard, through the command bus; they are available only here, not in the REST or control API.
 
 Item tools take `repository` (id or `owner/name`) and `number`. An unknown repository or item is a

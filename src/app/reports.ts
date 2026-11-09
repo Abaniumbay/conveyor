@@ -23,7 +23,7 @@ import type {
 
 const DAY = 86_400_000;
 const PERIOD_MS: Record<Exclude<ReportPeriod, "all">, number> = { "7d": 7 * DAY, "30d": 30 * DAY, "90d": 90 * DAY, "12m": 365 * DAY };
-const NOT_IN_PROGRESS = new Set(["done", "offboarded", "missing", "closed"]);
+const NOT_IN_PROGRESS = new Set(["done", "unlisted", "closed"]);
 
 interface IssueRow { id: string; repository_id: string; source_number: number; title: string; source_state: string; projected_state: string | null }
 interface RunRow { issue_id: string; stage_id: string; status: string; started_at: string; finished_at: string | null; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null }

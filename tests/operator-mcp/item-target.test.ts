@@ -54,7 +54,7 @@ describe("operatorItemTarget", () => {
   test("resolves repository references and rejects unknown and offboarded ones", async () => {
     const { service, store, add } = await setup();
     const id = add(1, "build", "blocked");
-    const gone = add(2, "build", "offboarded");
+    const gone = add(2, "build", "unlisted");
     expect(operatorItemTarget(service, "app:1")).toEqual({ issueId: id, running: false });
     expect(operatorItemTarget(service, "app#1")?.issueId).toBe(id);
     expect(operatorItemTarget(service, "app:99")).toBeNull();

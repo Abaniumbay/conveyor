@@ -91,10 +91,10 @@ describe("boardViewModel", () => {
   });
 
   test("shows an item loaded on its own when the board does not hold it", () => {
-    const { placement: _placement, column: _column, order: _order, needsYou: _needsYou, conversation: _conversation, ...outside } = item(8, { historyOnly: true });
+    const { placement: _placement, column: _column, order: _order, needsYou: _needsYou, conversation: _conversation, ...outside } = item(8);
     const selection = boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/8"));
     expect(boardViewModel({ model: model([]), account, csrfToken: "token", selection, outsideItem: { ...outside, csrfToken: "stale" } }).selectedIssue)
-      .toMatchObject({ number: 8, historyOnly: true, csrfToken: "token" });
+      .toMatchObject({ number: 8, csrfToken: "token" });
     // One loaded for another address is not shown.
     const other = boardSelectionFromUrl(new URL("https://conveyor.example.com/issues/repo/5"));
     expect(boardViewModel({ model: model([]), account, csrfToken: "token", selection: other, outsideItem: outside }).selectedIssue).toBeNull();

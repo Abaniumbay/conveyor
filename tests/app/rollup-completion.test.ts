@@ -193,7 +193,7 @@ describe("roll-up parent completion", () => {
     store.close();
   });
 
-  test("leaves unfinished, paused, offboarded, and already closed parents untouched", async () => {
+  test("leaves unfinished, paused, and already closed parents untouched", async () => {
     const { fixture, service, store } = await serviceFor([
       sourceIssue(1, "open", ["conveyor", "conveyor:implementation"]),
       sourceIssue(2, "open", ["conveyor", "conveyor:implementation"]),
@@ -211,14 +211,17 @@ describe("roll-up parent completion", () => {
     });
 
     await service.reconcileAll();
+    await service.purgesSettled();
 
     expect(fixture.closeCalls).toEqual([]);
     expect(fixture.labelCalls).toEqual([]);
     expect(store.getIssue("github:owner/my-app#1")?.sourceState).toBe("open");
-    expect(store.getIssue("github:owner/my-app#3")?.sourceState).toBe("open");
-    expect(store.getIssue("github:owner/my-app#4")?.sourceState).toBe("open");
+    // Without the Conveyor label an item does not exist for Conveyor: it is purged.
+    expect(store.getIssue("github:owner/my-app#3")).toBeNull();
+    expect(store.getIssue("github:owner/my-app#4")).toBeNull();
     expect(store.getIssue("github:owner/my-app#5")?.sourceState).toBe("closed");
     expect(store.getIssue("github:owner/my-app#6")?.sourceState).toBe("open");
+    await service.close();
     store.close();
   });
 

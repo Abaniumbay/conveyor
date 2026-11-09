@@ -67,13 +67,13 @@ describe("relationship pass blocker placeholders", () => {
     store.close();
   });
 
-  test("a blocker that is still not stored gets the empty offboarded placeholder", async () => {
+  test("a blocker that is still not stored gets the empty unlisted placeholder", async () => {
     const { store, pass } = await setup(() => {});
 
     await pass();
 
     const placeholder = store.getIssue(blocker.id)!;
-    expect(placeholder).toMatchObject({ title: "", body: "", projectedState: "offboarded" });
+    expect(placeholder).toMatchObject({ title: "", body: "", projectedState: "unlisted" });
     expect(placeholder.acceptedTextAt ?? null).toBeNull();
     expect(store.listDependencies("github:owner/repo#1")).toEqual([blocker.id]);
     store.close();

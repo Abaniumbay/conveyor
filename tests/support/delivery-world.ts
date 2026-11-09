@@ -57,6 +57,8 @@ export interface DeliveryWorld {
   drive(limit?: number): Promise<void>;
   /** GitHub closes the source issue, as a person or a late auto-close would, and delivers the signed `issues.closed` webhook. */
   closeIssueOnGitHub(): Promise<void>;
+  /** GitHub delivers the signed `issues` webhook of `action` for the issue as it is now. */
+  deliverIssueEvent(action: string, deliveryId: string): Promise<void>;
   /** A person edits the issue's labels on GitHub; the next sync reads them. */
   editLabelsOnGitHub(edit: (labels: string[]) => string[]): void;
   /** The labels the source issue carries now. */
@@ -153,6 +155,8 @@ export async function deliveryWorld(options: {
   githubClosesIssue?: boolean;
   /** Use the public service scheduling and pause lifecycle instead of the delivery driver. */
   publicLifecycle?: boolean;
+  /** Called with the name of every request the service makes to GitHub, as it is made. */
+  onGithubCall?: (method: string) => void | Promise<void>;
 } = {}): Promise<DeliveryWorld> {
   const root = await mkdtemp(path.join(tmpdir(), "conveyor-delivery-world-"));
   const directory = path.join(root, "config");
@@ -357,7 +361,18 @@ export async function deliveryWorld(options: {
     },
   };
 
-  const service = new ConveyorService(config, store, github as never, {
+  const observed = options.onGithubCall
+    ? new Proxy(github, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? (...args: unknown[]) => {
+          const held = options.onGithubCall!(String(property));
+          return held ? held.then(() => value(...args)) : value(...args);
+        } : value;
+      },
+    })
+    : github;
+  const service = new ConveyorService(config, store, observed as never, {
     harnesses: { codex: harness, "claude-code": harness },
     codeHosts: new CodeHostRegistry().register("github", host),
   });
@@ -419,11 +434,14 @@ export async function deliveryWorld(options: {
     },
     async closeIssueOnGitHub() {
       sourceIssue = { ...sourceIssue!, state: "closed", stateReason: "completed", updatedAt: new Date(Date.now() + 5).toISOString() };
+      await world.deliverIssueEvent("closed", "close-1");
+    },
+    async deliverIssueEvent(action, deliveryId) {
       const body = new TextEncoder().encode(JSON.stringify({
-        action: "closed", repository: { full_name: "owner/conveyor" }, sender: { login: "maintainer" },
+        action, repository: { full_name: "owner/conveyor" }, sender: { login: "maintainer" },
         issue: {
-          id: 1, number: 1, html_url: sourceIssue.url, title: sourceIssue.title, body: sourceIssue.body, state: "closed",
-          state_reason: "completed", labels: sourceIssue.labels, updated_at: sourceIssue.updatedAt,
+          id: 1, number: 1, html_url: sourceIssue!.url, title: sourceIssue!.title, body: sourceIssue!.body, state: sourceIssue!.state,
+          state_reason: sourceIssue!.stateReason ?? null, labels: sourceIssue!.labels, updated_at: sourceIssue!.updatedAt,
         },
       }));
       const secret = "delivery-world-secret";
@@ -434,7 +452,7 @@ export async function deliveryWorld(options: {
       process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = secret;
       try {
         const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-        await service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": "close-1", "x-github-event": "issues" }));
+        await service.handleWebhook(body, new Headers({ "x-hub-signature-256": signature, "x-github-delivery": deliveryId, "x-github-event": "issues" }));
         await service.webhooksSettled();
       } finally {
         if (stub) Object.defineProperty(service, "reconcileRepository", stub);

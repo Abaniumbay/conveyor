@@ -337,7 +337,7 @@ describe("GitHub calls made for webhook deliveries", () => {
     store.close();
   });
 
-  test("a closed enrolled item without a current merged change is offboarded", async () => {
+  test("a closed enrolled item without a current merged change loses its labels and is purged", async () => {
     const { conveyor, store, calls, deliver, issue } = await service();
     await conveyor.reconcileAll();
     issue.state = "closed";
@@ -354,11 +354,12 @@ describe("GitHub calls made for webhook deliveries", () => {
     expect(calls.fetched).toEqual([]);
     expect(calls.changeReads).toEqual([]);
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
-    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    await conveyor.purgesSettled();
+    expect(store.getIssue(issue.id)).toBeNull();
     store.close();
   });
 
-  test("a closed paused item is offboarded immediately once, without a source read", async () => {
+  test("a closed paused item is purged immediately once, without a source read", async () => {
     const { conveyor, store, calls, deliver, issue } = await service();
     await conveyor.reconcileAll();
     const closed = {
@@ -375,21 +376,19 @@ describe("GitHub calls made for webhook deliveries", () => {
 
     await deliver("issues", { action: "closed", issue: closed, sender: { login: "maintainer" } });
     await conveyor.webhooksSettled();
-    await deliver("issues", { action: "closed", issue: closed, sender: { login: "maintainer" } });
+    // GitHub then reports the issue as Conveyor left it: closed, no Conveyor labels.
+    await deliver("issues", { action: "unlabeled", issue: { ...closed, labels: ["unrelated"], updated_at: "2026-10-07T21:00:05Z" }, sender: { login: "conveyor[bot]" } });
     await conveyor.webhooksSettled();
 
     expect(calls.fetched).toEqual([]);
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
-    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
-    expect(store.listStageTransitions(issue.id)).toEqual(expect.arrayContaining([expect.objectContaining({
-      kind: "offboarded",
-      status: "completed",
-      reason: "closed without a merged change",
-    })]));
+    await conveyor.purgesSettled();
+    expect(store.getIssue(issue.id)).toBeNull();
+    expect(store.events().read({ issueId: issue.id, type: "item.purged" })).toHaveLength(1);
     store.close();
   });
 
-  test("a re-enrolled closed item offboards its new enrollment", async () => {
+  test("a re-enrolled closed item is purged again as a new item", async () => {
     const { conveyor, store, calls, deliver, issue } = await service();
     await conveyor.reconcileAll();
     expect(store.activateEnrollment(issue.id).generation).toBe(1);
@@ -403,12 +402,15 @@ describe("GitHub calls made for webhook deliveries", () => {
       state: issue.state, state_reason: issue.stateReason, labels: issue.labels, updated_at: issue.updatedAt,
     }, sender: { login: "maintainer" } });
     await conveyor.webhooksSettled();
+    await conveyor.purgesSettled();
+    expect(store.getIssue(issue.id)).toBeNull();
 
     issue.state = "open";
     issue.stateReason = null;
     issue.labels = ["conveyor", "conveyor:work", "unrelated"];
     issue.updatedAt = "2026-10-07T22:00:00Z";
     await conveyor.reconcileAll();
+    // The earlier purge deleted the item: this is a new item, whose enrollment continues the purged one's generations so its branch name is new.
     expect(store.activateEnrollment(issue.id).generation).toBe(2);
     issue.state = "closed";
     issue.stateReason = "not_planned";
@@ -421,8 +423,9 @@ describe("GitHub calls made for webhook deliveries", () => {
     await conveyor.webhooksSettled();
 
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }, { issue: 1, labels: [] }]);
-    expect(store.listStageTransitions(issue.id).filter((transition) => transition.kind === "offboarded")).toHaveLength(2);
-    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    await conveyor.purgesSettled();
+    expect(store.events().read({ issueId: issue.id, type: "item.purged" })).toHaveLength(2);
+    expect(store.getIssue(issue.id)).toBeNull();
     store.close();
   });
 
@@ -625,7 +628,8 @@ describe("GitHub calls made for webhook deliveries", () => {
 
     expect(calls.fetched).toEqual([1]);
     expect(calls.labelWrites).toEqual([{ issue: 1, labels: [] }]);
-    expect(store.getIssue(issue.id)).toMatchObject({ projectedState: "offboarded", projectedStage: null });
+    await conveyor.purgesSettled();
+    expect(store.getIssue(issue.id)).toBeNull();
     store.close();
   });
 
@@ -692,7 +696,8 @@ describe("GitHub calls made for webhook deliveries", () => {
     expect(calls.listed).toHaveLength(2);
     expect(calls.listed[1]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(calls.fetched).toEqual([1]);
-    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: ["bug"], projectedState: "offboarded" });
+    await conveyor.purgesSettled();
+    expect(store.getIssue("github:owner/repo#1")).toBeNull();
     store.close();
   });
 
@@ -725,7 +730,8 @@ describe("GitHub calls made for webhook deliveries", () => {
     await conveyor.webhooksSettled();
 
     expect(calls.fetched).toEqual([1, 2]);
-    expect(store.getIssue("github:owner/repo#1")).toMatchObject({ labels: ["bug"], projectedState: "offboarded" });
+    await conveyor.purgesSettled();
+    expect(store.getIssue("github:owner/repo#1")).toBeNull();
     store.close();
   });
 

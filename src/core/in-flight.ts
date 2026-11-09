@@ -32,7 +32,7 @@ export function inFlightHolders(input: {
   const pendingTargets = new Map(
     input.store.listPendingStageTransitions().map((transition) => [transition.issueId, transition.toStage]),
   );
-  const terminalStates = new Set(["done", "offboarded", "paused", "rejected"]);
+  const terminalStates = new Set(["done", "unlisted", "paused", "rejected"]);
   return input.store.listIssues(input.repositoryId).filter((issue) => {
     if (issue.sourceState === "closed" || input.store.getActiveEnrollment(issue.id) === null) return false;
     if (input.store.listChildren(issue.id).length > 0) return false;

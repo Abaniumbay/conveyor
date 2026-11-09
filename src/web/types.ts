@@ -70,7 +70,6 @@ import type { IndicatorViewModel } from "../app/indicators";
 export interface IssueStageBadgeViewModel {
   name: string;
   icon: string | null;
-  offboarded: boolean;
 }
 
 export interface IssueCardViewModel {
@@ -136,8 +135,6 @@ export interface IssueCardViewModel {
   resumableRollup: boolean;
   /** A stopped roll-up parent explains that its children continue independently. */
   stoppedRollup: boolean;
-  /** An offboarded item exposes its immutable journey history only. */
-  historyOnly?: boolean;
 }
 
 export interface ActiveRunViewModel {

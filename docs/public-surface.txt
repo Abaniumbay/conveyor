@@ -370,6 +370,7 @@ event item.enrolled
 event item.fenced
 event item.metadataChanged
 event item.offboarded
+event item.purged
 event item.queueChanged
 event item.relationshipsChanged
 event item.requeued
@@ -474,6 +475,7 @@ event-field item.discovered number
 event-field item.enrolled generation
 event-field item.fenced epoch
 event-field item.offboarded status
+event-field item.purged number
 event-field item.queueChanged rank
 event-field item.relationshipsChanged dependencies
 event-field item.relationshipsChanged parentId

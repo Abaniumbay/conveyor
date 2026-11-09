@@ -240,7 +240,7 @@ export async function applyStageTransition(
   return { labels };
 }
 
-/** Remove Conveyor's controls from an issue that closed without its current change being merged. */
+/** Remove Conveyor's controls from an issue that closed without its current change being merged, and begin its purge. */
 export async function applyClosedItemOffboarding(
   input: ApplyClosedItemOffboardingInput,
 ): Promise<void> {
@@ -278,8 +278,8 @@ export async function applyClosedItemOffboarding(
   }
   input.store.sqlite().transaction(() => {
     input.store.completeStageTransition(input.transitionId);
-    input.store.setIssueProjection(input.issue.id, { stage: null, state: "offboarded", warning: null });
-    input.store.endActiveEnrollment(input.issue.id, "offboarded");
+    // The labels are gone, so the item no longer exists for Conveyor: its purge begins here.
+    input.store.beginPurge(input.issue.id);
   })();
 }
 

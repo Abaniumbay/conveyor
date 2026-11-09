@@ -96,7 +96,7 @@ describe("Recent activity dashboard", () => {
       ["new", "beta", "onboarded", null, "intake", null],
       ["resumed", "alpha", "resumed", "review", "review", null],
       ["rollup", "beta", "rollup", "review", "review", null],
-      ["offboarded", "alpha", "advance", "review", "cleanup", null],
+      ["unlisted", "alpha", "advance", "review", "cleanup", null],
     ] as const;
     for (const [index, [id, repositoryId, kind, fromStage, toStage, resultStatus]] of kinds.entries()) {
       store.upsertIssue({ id, repositoryId, sourceNumber: index + 1, sourceUrl: `https://example.test/${id}`, title: `${id} issue`, body: "", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
@@ -104,7 +104,7 @@ describe("Recent activity dashboard", () => {
       store.completeStageTransition(`transition-${id}`);
       store.sqlite().query("UPDATE stage_transitions SET created_at = ? WHERE id = ?").run(`2026-10-15T12:0${9 - index}:00.000Z`, `transition-${id}`);
     }
-    store.setIssueProjection("offboarded", { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection("unlisted", { stage: null, state: "unlisted", warning: null });
     store.upsertIssue({ id: "recorded-done", repositoryId: "alpha", sourceNumber: 20, sourceUrl: "https://example.test/recorded", title: "done after a non-advance", body: "", sourceState: "closed", sourceStateReason: "completed", labels: [], sourceUpdatedAt: "2026-10-15T00:00:00.000Z" });
     store.setIssueProjection("recorded-done", { stage: "cleanup", state: "active", warning: null });
     store.setIssueProjection("recorded-done", { stage: "cleanup", state: "done", warning: null });

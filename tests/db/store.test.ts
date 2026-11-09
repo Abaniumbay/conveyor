@@ -45,7 +45,7 @@ describe("ConveyorStore", () => {
 
     expect(store.pragma("journal_mode")).toEqual([{ journal_mode: "wal" }]);
     expect(store.pragma("foreign_keys")).toEqual([{ foreign_keys: 1 }]);
-    expect(store.schemaVersion()).toBe(46);
+    expect(store.schemaVersion()).toBe(47);
 
     store.close();
   });
@@ -59,8 +59,8 @@ describe("ConveyorStore", () => {
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Title", body: "Body", sourceState: "open", labels: [], sourceUpdatedAt: "2026-10-20T00:00:00.000Z" });
     store.sqlite().exec(`
       ALTER TABLE findings DROP COLUMN criterion_ids_json;
-      ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels;
-      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (41, 42, 43, 44, 45, 46);
+      ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations;
+      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (41, 42, 43, 44, 45, 46, 47);
       INSERT INTO findings(id, issue_id, run_id, provider_key, author, source, head_sha, state, path, line, url, body, created_at)
       VALUES ('finding', 'issue', NULL, NULL, 'reviewer', 'agent', 'head', 'open', NULL, NULL, '', 'Existing finding', '2026-10-20T00:00:00.000Z');
     `);
@@ -78,7 +78,7 @@ describe("ConveyorStore", () => {
     let store = await ConveyorStore.open(database);
     store.upsertRepository({ id: "repo", configName: "repo", source: "github", address: "owner/my-app", folder: "repository", configHash: "config-hash" });
     store.upsertIssue({ id: "issue", repositoryId: "repo", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Paused title", body: "Paused body", sourceState: "open", labels: ["conveyor:refinement"], sourceUpdatedAt: "2026-10-16T00:00:00.000Z" });
-    store.sqlite().exec("DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46);");
+    store.sqlite().exec("DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP INDEX dependencies_blocker_idx; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; ALTER TABLE issues DROP COLUMN accepted_text_at; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47);");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -103,8 +103,8 @@ describe("ConveyorStore", () => {
       DROP TABLE board_approvals;
       DROP TABLE item_board_approval_requirements;
       ALTER TABLE findings DROP COLUMN criterion_ids_json;
-      ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels;
-      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46);
+      ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations;
+      DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47);
       INSERT INTO item_manual_gate_requirements(issue_id, stage_id, gate_id, changed_at) VALUES
         ('issue', 'implementation', 'ci.passed', '2026-10-16T00:00:00.000Z'),
         ('issue', 'implementation', 'change.findingsResolved', '2026-10-17T00:00:00.000Z'),
@@ -588,7 +588,7 @@ describe("ConveyorStore", () => {
     });
     store.appendRunEvent("run-claude", "harness", { type: "assistant", message: "ordinary stream event" });
     // Simulate opening a populated database created before the indexed quota projection existed.
-    store.sqlite().exec("DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46);");
+    store.sqlite().exec("DROP TABLE ci_gate_observations; DROP TABLE ci_failure_windows; DROP INDEX issues_recovery_candidates_idx; ALTER TABLE issues DROP COLUMN projection_changed_at; DROP TABLE github_mirror; DROP TABLE repository_pauses; DROP TABLE board_approvals; DROP TABLE item_board_approval_requirements; DROP TABLE wait_subscriptions; DROP TABLE event_consumers; DROP TABLE events; DROP TABLE terminal_home_reclamation_failures; DROP TABLE repository_trust_statuses; DROP TABLE skipped_review_artifacts; ALTER TABLE issues DROP COLUMN accepted_text_at; DROP TABLE manual_gate_approvals; DROP TABLE item_manual_gate_requirements; DROP TABLE harness_quota_events; DROP TABLE item_indicators; DROP TABLE criterion_test_evidence_tests; DROP TABLE criterion_test_evidence; DROP INDEX conversation_messages_question_idx; ALTER TABLE conversation_messages DROP COLUMN question_id; ALTER TABLE stage_states DROP COLUMN execution_epoch; ALTER TABLE issues DROP COLUMN metadata_json; DROP INDEX runs_issue_idx; DROP INDEX usage_cost_entries_run_idx; DROP INDEX run_events_created_idx; DROP INDEX stage_transitions_created_at_idx; DROP INDEX push_events_done_created_at_idx; DROP INDEX push_events_done_target_idx; DROP INDEX pull_requests_merged_at_idx; DROP INDEX pull_requests_enrollment_merged_at_idx; DROP INDEX enrollments_issue_id_idx; DROP INDEX dependencies_blocker_idx; ALTER TABLE findings DROP COLUMN criterion_ids_json; ALTER TABLE findings DROP COLUMN type; DROP TABLE pending_pause_relabels; DROP TABLE pending_purges; DROP TABLE purged_generations; DROP INDEX source_events_received_at_idx; DROP TABLE review_thread_evidence; DROP TABLE review_thread_imports; DROP TABLE operator_mcp_tokens; DELETE FROM schema_migrations WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47);");
     store.close();
 
     store = await ConveyorStore.open(database);
@@ -1141,6 +1141,22 @@ describe("ConveyorStore", () => {
     expect(store.listChildren("parent")).toEqual([
       { issueId: "child", siblingOrder: 2 },
     ]);
+    store.close();
+  });
+
+  test("a purged issue that is enrolled again continues its enrollment generations, so its branch name is new", async () => {
+    const store = await openStore();
+    store.upsertRepository({ id: "repo-1", configName: "sample", source: "github", address: "owner/sample", folder: "/srv/sample", configHash: "config-hash" });
+    const issue = { id: "issue-1", repositoryId: "repo-1", sourceNumber: 1, sourceUrl: "https://example.test/1", title: "Feature", body: "", sourceState: "open" as const, labels: ["conveyor"], sourceUpdatedAt: "2026-01-01T00:00:00Z" };
+    store.upsertIssue(issue);
+    expect(store.activateEnrollment("issue-1").generation).toBe(1);
+
+    store.beginPurge("issue-1");
+    store.finishPurge("issue-1");
+    expect(store.getIssue("issue-1")).toBeNull();
+
+    store.upsertIssue(issue);
+    expect(store.activateEnrollment("issue-1").generation).toBe(2);
     store.close();
   });
 

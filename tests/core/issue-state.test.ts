@@ -23,7 +23,7 @@ const labels = {
 const stages = ["refinement", "implementation", "review", "deploy", "verify"];
 
 describe("evaluateIssueState", () => {
-  test("fully offboards an issue with no Conveyor labels", () => {
+  test("treats an issue with no Conveyor labels", () => {
     expect(
       evaluateIssueState({
         sourceState: "open",
@@ -33,7 +33,7 @@ describe("evaluateIssueState", () => {
         expectedPostMergeClosure: false,
       }),
     ).toEqual({
-      mode: "offboarded",
+      mode: "left",
       visible: false,
       eligible: false,
       stage: null,
@@ -51,10 +51,10 @@ describe("evaluateIssueState", () => {
         stages,
         expectedPostMergeClosure: false,
       }),
-    ).toMatchObject({ mode: "offboarded", visible: false, eligible: false });
+    ).toMatchObject({ mode: "left", visible: false, eligible: false });
   });
 
-  test("offboards a stage-labeled issue without the base label instead of pausing it", () => {
+  test("treats a stage-labeled issue without the base label as left, not paused", () => {
     expect(
       evaluateIssueState({
         sourceState: "open",
@@ -63,7 +63,7 @@ describe("evaluateIssueState", () => {
         stages,
         expectedPostMergeClosure: false,
       }),
-    ).toMatchObject({ mode: "offboarded", visible: false, eligible: false });
+    ).toMatchObject({ mode: "left", visible: false, eligible: false });
   });
 
   test("shows an issue carrying the paused label as paused, keeping its stage and state", () => {

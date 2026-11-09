@@ -166,7 +166,7 @@ export function boardViewModel(input: {
   recent?: RecentActivityViewModel | null;
   /** The data the shown view loaded for itself. */
   viewData?: ViewData | null;
-  /** The open item when the live model does not hold it (finished long ago or offboarded), loaded on its own. */
+  /** The open item when the live model does not hold it (finished long ago), loaded on its own. */
   outsideItem?: IssueCardViewModel | null;
   /** Older finished items that match the board's search or repositories, found among all of them. */
   doneMatches?: readonly DashboardItem[] | null;

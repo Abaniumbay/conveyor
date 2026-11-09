@@ -1110,4 +1110,30 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE issues DROP COLUMN paused_by_conveyor;
     `,
   },
+  {
+    version: 47,
+    sql: `
+      -- An item whose Conveyor labels went away is purged: stopped at once, its workspace removed,
+      -- then its rows deleted. This row is the durable record of a purge in progress, so a restart
+      -- finishes it. The states "missing" and "offboarded" are gone: rows found in them are queued
+      -- here, and the service removes their workspaces before the rows are deleted.
+      CREATE TABLE pending_purges (
+        issue_id TEXT PRIMARY KEY,
+        repository_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      -- The highest enrollment generation a purged issue reached. Enrollment generations name the
+      -- workspace and branch, so a re-onboarded issue continues after it and never adopts a branch the
+      -- purge left on the remote.
+      CREATE TABLE purged_generations (
+        issue_id TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL
+      );
+      INSERT INTO pending_purges(issue_id, repository_id, created_at)
+        SELECT id, repository_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM issues
+        WHERE projected_state IN ('missing', 'offboarded');
+      UPDATE issues SET projected_state = 'unlisted'
+        WHERE projected_state IN ('missing', 'offboarded');
+    `,
+  },
 ];

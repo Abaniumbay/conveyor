@@ -40,7 +40,7 @@ export interface WebHandlerDependencies {
   dispatch: <N extends CommandName>(name: N, input: CommandInput<N>, actor: CommandActor) => Promise<CommandOutcome<N>>;
   /** Records a sign-in or sign-out (never its credentials). */
   recordSession?: (change: "signedIn" | "signedOut", accountId: string | null) => void;
-  /** One item's card, for an item the live model does not hold (finished long ago or offboarded). */
+  /** One item's card, for an item the live model does not hold (finished long ago). */
   getIssueDetails?: (issueId: string) => IssueCardViewModel | null;
   /** The live dashboard model and the sequence of the last patch it includes. */
   getDashboardSnapshot?: () => { seq: number; model: DashboardModel };

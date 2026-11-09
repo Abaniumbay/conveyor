@@ -611,11 +611,12 @@ describe("operating through the CLI", () => {
       expect(store.getQuestion(question.id)?.status).toBe("open");
     });
 
-    test("is offboarded when a person removes every label without pausing", async () => {
+    test("is purged when a person removes every label without pausing", async () => {
       const { service, issue, board, store } = await stageless();
       issue.labels = [];
       await service.syncRepository("app");
-      expect(store.getIssue("issue-1")!.projectedState).toBe("offboarded");
+      await service.purgesSettled();
+      expect(store.getIssue("issue-1")).toBeNull();
       expect((await board()).find((entry) => entry.item === "app:1")).toBeUndefined();
     });
   });
@@ -660,10 +661,10 @@ describe("operating through the CLI", () => {
     expect(store.getQuestion(invalid.id)?.status).toBe("open");
   });
 
-  test("offboarded questions are hidden and cannot be answered", async () => {
+  test("questions of an item that left Conveyor are hidden and cannot be answered", async () => {
     const { cli, store, issues } = await running();
     const question = store.openQuestion({ issueId: "issue-1", runId: null, prompt: "Which region?", reason: "two are configured", options: ["eu", "us"] });
-    store.setIssueProjection("issue-1", { stage: null, state: "offboarded", warning: null });
+    store.setIssueProjection("issue-1", { stage: null, state: "unlisted", warning: null });
     const labelsBefore = [...issues[0]!.labels];
 
     expect(JSON.parse((await cli("questions", "list", "--json")).out)).toEqual([]);
@@ -673,7 +674,7 @@ describe("operating through the CLI", () => {
 
     const answer = await cli("questions", "answer", question.id, "eu");
     expect(answer.code).toBe(EXIT.rejected);
-    expect(answer.err).toContain("offboarded");
+    expect(answer.err).toContain("left Conveyor");
     expect(store.getQuestion(question.id)).toMatchObject({ status: "open", answer: null });
     expect(store.listConversationMessages("issue-1").filter((message) => message.questionId === question.id)).toEqual([]);
     expect(issues[0]!.labels).toEqual(labelsBefore);

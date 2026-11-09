@@ -37,7 +37,7 @@ export const listItems = defineOperatorTool({
   handler: ({ input, facade }) => {
     const { store } = facade;
     const repositoryId = input.repository === undefined ? undefined : findRepository(store, input.repository).id;
-    return store.listIssues(repositoryId).filter((issue) => issue.projectedState !== "offboarded").map((issue) => ({
+    return store.listIssues(repositoryId).filter((issue) => issue.projectedState !== "unlisted").map((issue) => ({
       repository: issue.repositoryId,
       number: issue.sourceNumber,
       title: issue.title,
