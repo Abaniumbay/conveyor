@@ -95,6 +95,8 @@ The Board's compact repository filters show repositories with active board work,
 
 A superuser can **Pause** a repository from its detail page, optionally recording why, and later **Resume** it there. A paused badge appears in the repository list, Board filter, detail page, and its Board cards; the detail page records who paused it and when. Conveyor may still refresh GitHub reads, and a process run already under way is allowed to finish, but it admits no new work and performs no GitHub, code-host, or CI write for that repository until it resumes. Its items, cursors, approvals, journals, costs, and worktrees remain intact, so resumption continues eligible items from their stored step. This is separate from pausing an item, which changes that item's enrollment label, and from removing a repository from configuration, which removes its local operational records.
 
+A superuser can also **Pause** a single item from its Board card or its item page, and **Resume** it the same way. A paused card is drawn with a grey overlay of darker diagonal stripes and a "Paused" badge, so it is recognisable without relying on colour; the stripes use only theme variables, so they work in the light and dark themes and at 360 px width.
+
 ![Configured repositories](screenshots/repositories.png)
 
 ![Repository detail and setup](screenshots/repository.png)

@@ -543,7 +543,7 @@ function formFields(form: HTMLFormElement, csrfToken: string): URLSearchParams {
 }
 
 /** The forms the application sends itself; any other form posts to the server as it always did. */
-const HANDLED_FORMS = "[data-answer-form], [data-manual-gate-form], [data-retry-form], [data-resume-form], [data-resume-rollup-form], [data-conversation-form], [data-repository-sync], [data-account-action-form], [data-profile-avatar-form], [data-account-create-form], form.agent-compose";
+const HANDLED_FORMS = "[data-answer-form], [data-manual-gate-form], [data-retry-form], [data-resume-form], [data-pause-form], [data-resume-rollup-form], [data-conversation-form], [data-repository-sync], [data-account-action-form], [data-profile-avatar-form], [data-account-create-form], form.agent-compose";
 
 /** Shows a form's outcome in its status line. */
 function formStatus(form: HTMLFormElement, message: string, error: boolean): void {
@@ -692,23 +692,24 @@ async function submitForm(form: HTMLFormElement, csrfToken: string): Promise<boo
     }
     return true;
   }
-  if (form.matches("[data-retry-form], [data-resume-form], [data-resume-rollup-form]")) {
+  if (form.matches("[data-retry-form], [data-resume-form], [data-pause-form], [data-resume-rollup-form]")) {
     const retry = form.matches("[data-retry-form]");
     const rollup = form.matches("[data-resume-rollup-form]");
-    const url = form.getAttribute(retry ? "data-retry-url" : rollup ? "data-resume-rollup-url" : "data-resume-url");
-    const button = form.querySelector(retry ? "[data-retry-submit]" : rollup ? "[data-resume-rollup-submit]" : "[data-resume-submit]");
-    const status = form.querySelector(retry ? "[data-retry-status]" : rollup ? "[data-resume-rollup-status]" : "[data-resume-status]");
+    const pause = form.matches("[data-pause-form]");
+    const url = form.getAttribute(retry ? "data-retry-url" : rollup ? "data-resume-rollup-url" : pause ? "data-pause-url" : "data-resume-url");
+    const button = form.querySelector(retry ? "[data-retry-submit]" : rollup ? "[data-resume-rollup-submit]" : pause ? "[data-pause-submit]" : "[data-resume-submit]");
+    const status = form.querySelector(retry ? "[data-retry-status]" : rollup ? "[data-resume-rollup-status]" : pause ? "[data-pause-status]" : "[data-resume-status]");
     const field = form.querySelector("textarea[name='note']");
     if (!url || !(button instanceof HTMLButtonElement)) return true;
     button.disabled = true;
     if (field instanceof HTMLTextAreaElement) field.disabled = true;
-    if (status) status.textContent = retry ? "Retrying…" : "Resuming…";
+    if (status) status.textContent = retry ? "Retrying…" : pause ? "Pausing…" : "Resuming…";
     try {
       await post(url, new URLSearchParams({ ...(retry ? { note: field instanceof HTMLTextAreaElement ? field.value : "" } : {}), csrf: csrfToken }));
-      if (status) status.textContent = retry ? "Retry accepted. A fresh attempt is queued." : rollup ? "The parent is waiting for its children again." : "Item resumed. It will begin or queue shortly.";
+      if (status) status.textContent = retry ? "Retry accepted. A fresh attempt is queued." : rollup ? "The parent is waiting for its children again." : pause ? "Item paused." : "Item resumed. It will begin or queue shortly.";
       if (field instanceof HTMLTextAreaElement) field.value = "";
     } catch (error) {
-      if (status) status.textContent = `${retry ? "Retry" : "Resume"} failed${error instanceof Error ? `: ${error.message}` : "."}`;
+      if (status) status.textContent = `${retry ? "Retry" : pause ? "Pause" : "Resume"} failed${error instanceof Error ? `: ${error.message}` : "."}`;
       button.disabled = false;
     } finally {
       if (field instanceof HTMLTextAreaElement) field.disabled = false;
@@ -865,6 +866,11 @@ export function bindBoardBehaviour(options: { root: HTMLElement; store: LiveStor
     const retry = element(target, "[data-retry-card]", HTMLButtonElement);
     if (retry) {
       void cardAction(retry, retry.getAttribute("data-retry-url") ?? "", "Retry accepted", "Retry failed · try again", csrf());
+      return;
+    }
+    const pauseItem = element(target, "[data-pause-card]", HTMLButtonElement);
+    if (pauseItem) {
+      void cardAction(pauseItem, pauseItem.getAttribute("data-pause-url") ?? "", "Item paused", "Pause failed · try again", csrf());
       return;
     }
     const resumeItem = element(target, "[data-resume-card]", HTMLButtonElement);

@@ -36,6 +36,8 @@ function card(number: number, overrides: Partial<IssueCardViewModel> = {}): Issu
     working: false,
     needsAttention: false,
     retryable: false,
+    paused: false,
+    pausable: false,
     resumable: false,
     resumableRollup: false,
     stoppedRollup: false,

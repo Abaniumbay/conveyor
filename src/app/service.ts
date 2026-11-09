@@ -5060,6 +5060,8 @@ export class ConveyorService {
         ].includes(projectedState),
         retryable,
         retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
+        paused: projectedState === "paused",
+        pausable: this.pausableIssue(viewIssue),
         resumable,
         resumableRollup,
         stoppedRollup: stopped && children.length > 0,
@@ -5868,6 +5870,8 @@ export class ConveyorService {
         ["blocked", "error", "needs-input", "needs-intervention", "rejected"].includes(projectedState),
       retryable,
       retryTargetStage: retryable ? this.retryTargetStage(issue.id) : null,
+      paused: projectedState === "paused",
+      pausable: this.pausableIssue(viewIssue),
       resumable,
       resumableRollup,
       stoppedRollup: stopped && children.length > 0,
@@ -6270,6 +6274,13 @@ export class ConveyorService {
       issue.projectedStage !== null &&
       ["blocked", "error", "needs-intervention"].includes(issue.projectedState ?? "") &&
       !running && (children === 0 || this.stageCreatesChildren(issue.repositoryId, issue.projectedStage));
+  }
+
+  /** Whether an open, enrolled item with a stage can be paused by removing its enrollment label. */
+  private pausableIssue(issue: StoredIssue): boolean {
+    return issue.sourceState === "open" && issue.projectedStage !== null &&
+      issue.labels.includes(this.config.labels.enrollment) &&
+      !["paused", "done", "offboarded", "inconsistent", "rejected"].includes(issue.projectedState ?? "");
   }
 
   /** Whether an open paused item can safely restore its enrollment label. */
