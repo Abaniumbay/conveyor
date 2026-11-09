@@ -348,7 +348,7 @@ async function seedDemo(home: string): Promise<void> {
       },
       {
         ...issue(5, "Investigate the rollout alert", "implementation"),
-        labels: ["conveyor", "conveyor:implementation", "conveyor:blocked"],
+        labels: ["conveyor", "conveyor:implementation", "conveyor:paused"],
       },
     ];
     const phoneOverflowIssue = {
@@ -417,7 +417,7 @@ async function seedDemo(home: string): Promise<void> {
     });
     store.setIssueProjection("demo#5", {
       stage: "implementation",
-      state: "blocked",
+      state: "paused",
       warning: "Investigating the rollout alert",
     });
     store.setIssueProjection(phoneOverflowIssue.id, {
@@ -1098,7 +1098,7 @@ async function main(): Promise<void> {
       "Ship a reliable dashboard overview",
     ]);
     await expectReachableElement(page.locator("[data-sticky-filter-summary]"), "Sticky filter summary");
-    await capture(page, baseUrl, "graph", "/graph?stage=review", ["Workflow graph", "Blocked"]);
+    await capture(page, baseUrl, "graph", "/graph?stage=review", ["Workflow graph"]);
     await page.locator(".graph-svg").waitFor({ state: "visible", timeout: 10_000 });
     await capture(page, baseUrl, "repositories", "/repositories", [
       "Repositories",
