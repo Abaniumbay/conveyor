@@ -10,6 +10,17 @@ Releases are published from tags by `.github/workflows/release.yml`; see
 
 See [changes/](changes/) and run `bun run changelog` to preview unreleased entries.
 
+## [0.19.0] - 2026-11-09
+
+Merged since v0.18.1:
+
+- CI fails a removed or renamed public name without a breaking fragment (#632) (#634)
+- Release version is worked out from the changelog fragments (#631) (#633)
+
+### Changed
+
+- The packaged reviewer instructions (`builtin:instructions/reviewer.md`) now treat a breaking change that is not marked the way the repository asks, for example a changelog entry not marked breaking, as a blocking finding. Installations that copied the reviewer instructions into their own configuration keep their copy until they update it.
+
 ## [0.18.1] - 2026-11-09
 
 Merged since v0.18.0:
