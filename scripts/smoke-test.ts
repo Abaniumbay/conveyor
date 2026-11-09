@@ -75,6 +75,56 @@ print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "t
 print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))
 `;
 
+/** A Codex stand-in for a repository with `agentEgress`: it must run inside the confined network bridge. */
+const FAKE_CODEX_EGRESS = `#!/usr/bin/env python3
+import json, os, sys
+sys.stdin.read()
+output = sys.argv[sys.argv.index("-o") + 1]
+proxy = os.environ.get("HTTPS_PROXY", "")
+if "@127.0.0.1:" not in proxy and "//127.0.0.1:" not in proxy:
+    print(json.dumps({"type": "error", "message": "not behind the egress bridge: " + proxy}))
+    sys.exit(1)
+json.dump({"version": 1, "outcome": "success", "status": "done", "summary": "egress smoke done", "reason": None, "metrics": {}, "artifacts": []}, open(output, "w"))
+print(json.dumps({"type": "thread.started", "thread_id": "smoke-egress"}))
+print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "egress smoke done"}}))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))
+`;
+
+/** A GitHub stand-in (`gh api ...`) serving one enrolled issue in smoke/app; every write is accepted and ignored. */
+const FAKE_GH = `#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+if "--input" in args:
+    sys.stdin.read()
+if args[:1] == ["api"] and args[1:2] == ["graphql"]:
+    print(json.dumps({"data": {"repository": {"issue": {"userContentEdits": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}))
+    sys.exit(0)
+path = args[1] if len(args) > 1 and args[0] == "api" else ""
+method = args[args.index("--method") + 1] if "--method" in args else "GET"
+issue = {
+    "id": 9001, "node_id": "I_smoke", "number": 1, "title": "Smoke item", "body": "Run the agent.", "state": "open",
+    "labels": [{"name": "conveyor"}, {"name": "conveyor:smoke"}], "user": {"login": "owner", "type": "User"},
+    "assignees": [], "comments": 0, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+    "html_url": "https://github.com/owner/app/issues/1", "url": "https://api.github.com/repos/owner/app/issues/1",
+    "repository_url": "https://api.github.com/repos/owner/app",
+}
+open(__file__ + ".log", "a").write(json.dumps(args) + "\\n")
+if path.startswith("repos/owner/app/issues?"):
+    print(json.dumps([issue]))
+elif path == "repos/owner/app" and method == "GET":
+    print(json.dumps({"private": True, "visibility": "private", "default_branch": "main", "full_name": "owner/app"}))
+elif path.startswith("repos/owner/app/issues/1/events"):
+    print(json.dumps([{"id": 1, "event": "labeled", "created_at": "2026-01-01T00:00:00Z", "label": {"name": "conveyor"}, "actor": {"login": "owner"}}]))
+elif path.startswith("repos/owner/app/collaborators/"):
+    print(json.dumps({"permission": "admin"}))
+elif path == "repos/owner/app/issues/1" and method == "GET":
+    print(json.dumps(issue))
+elif "--paginate" in args:
+    print("[]")
+else:
+    print("{}")
+`;
+
 /** Plays systemd's part (Restart=always): starts serve again when it exits to be restarted. */
 class Supervisor {
   #child: ReturnType<typeof Bun.spawn> | null = null;
@@ -111,6 +161,7 @@ async function main(): Promise<void> {
   const work = await mkdtemp(path.join(base, "conveyor-smoke-"));
   if (work.startsWith("/tmp/")) throw new Error("the work directory must not be under /tmp (the sandbox hides it)");
   let server: Supervisor | null = null;
+  const shortArtifacts = await mkdtemp("/dev/shm/conveyor-smoke-");
   try {
     const userHome = path.join(work, "user");
     const tools = path.join(work, "tools");
@@ -143,7 +194,8 @@ async function main(): Promise<void> {
     // A repository on the packaged stages compiles from the embedded defaults.
     const repository = path.join(work, "repos/app");
     await mkdir(repository, { recursive: true });
-    await exec(["git", "init", "-q", repository]);
+    await exec(["git", "init", "-q", "-b", "main", repository]);
+    await exec(["git", "-C", repository, "-c", "user.name=smoke", "-c", "user.email=smoke@example.com", "commit", "-q", "--allow-empty", "-m", "initial"]);
     await writeFile(path.join(home, "config/repositories/app.yaml"), [
       "items: github", "code: github", "ci: { mode: disabled }", "address: owner/app", `folder: ${repository}`,
       "agentEgress: { allowLoopbackMcp: true, httpsHosts: [registry.npmjs.org] }", "",
@@ -167,19 +219,33 @@ async function main(): Promise<void> {
     // A steering agent: its harness is a stand-in for Codex that drives the packaged MCP server.
     await writeFile(path.join(tools, "codex"), FAKE_CODEX);
     await chmod(path.join(tools, "codex"), 0o755);
+    await writeFile(path.join(tools, "codex-egress"), FAKE_CODEX_EGRESS);
+    await chmod(path.join(tools, "codex-egress"), 0o755);
+    await writeFile(path.join(tools, "gh"), FAKE_GH);
+    await chmod(path.join(tools, "gh"), 0o755);
     const port = await freePort();
     await mkdir(path.join(work, "workspace"), { recursive: true });
     await writeFile(path.join(home, "config/smoke.md"), "You are a smoke test.\n");
     const entrypoint = path.join(home, "config/conveyor.yaml");
     await writeFile(entrypoint, [
+      // Run sockets live under the artifacts directory, and a Unix socket path is limited to 100 bytes.
+      `settings: { artifacts: ${shortArtifacts} }`,
       "web:",
       `  listen: 127.0.0.1:${port}`,
       `  steering: { agent: smoke, workspace: ${path.join(work, "workspace")} }`,
       "providers: !include builtin:providers.yaml",
+      "repositories: !include_dir_named repositories/",
       "harnesses:",
       `  fake-codex: { type: codex, command: ${path.join(tools, "codex")}, sandbox: read-only }`,
+      `  fake-egress: { type: codex, command: ${path.join(tools, "codex-egress")}, sandbox: read-only }`,
       "agents:",
       "  smoke: { name: Smoke, title: Tester, harness: fake-codex, instructions: ./smoke.md, access: read-only, tasks: [agent.reportProgress] }",
+      "  egress: { name: Egress, title: Tester, harness: fake-egress, instructions: ./smoke.md, access: read-only, tasks: [] }",
+      "stages:",
+      "  - id: smoke",
+      "    concurrency: 1",
+      "    actions: [{ id: turn, task: agent.run, with: { agent: egress } }]",
+      "    exit-gate: [{ id: labels, task: item.labelsValid }]",
       "",
     ].join("\n"));
     server = new Supervisor([path.join(work, "prefix/current/conveyor"), "serve", "--home", home], environment, path.join(work, "serve.log"));
@@ -235,6 +301,25 @@ async function main(): Promise<void> {
     check(text.includes("smoke progress through MCP"), "the agent's MCP tool call reached the service through the packaged MCP server");
     check(text.includes("tools: agent.reportProgress"), "the packaged MCP server lists exactly the granted tools");
 
+    // A repository with agentEgress: the agent's turn runs in the confined filesystem plan behind the
+    // network bridge, which a compiled build must start with its own `__bridge` command.
+    const egressDatabase = new Database(path.join(home, "state/conveyor.sqlite"), { readonly: true });
+    let egressRun = null as { id: string; status: string } | null;
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      egressRun = egressDatabase.query("SELECT id, status FROM runs WHERE id != ? AND status != 'running' ORDER BY rowid DESC LIMIT 1").get(runId) as { id: string; status: string } | null;
+      if (egressRun) break;
+      await Bun.sleep(200);
+    }
+    const egressEvents = egressRun ? (egressDatabase.query("SELECT type, payload_json AS payload FROM run_events WHERE run_id = ? ORDER BY id").all(egressRun.id) as Array<{ type: string; payload: string }>) : [];
+    egressDatabase.close();
+    const egressText = egressEvents.map((event) => `${event.type}: ${event.payload}`).join("\n");
+    if (egressRun?.status !== "succeeded") console.error(egressText);
+    check(egressRun?.status === "succeeded", `an agent turn in a repository with agentEgress succeeds behind the confined bridge (status ${egressRun?.status ?? "none"})`);
+    check(egressText.includes("egress smoke done"), "the egress agent's turn ran inside the bridge");
+    // Starting the wrapper with a command the executable does not have is what `-e` was: the turn cannot start.
+    const unknown = await run("-e", "true");
+    check(unknown.code !== 0 && unknown.stderr.includes("unknown command"), "the executable has no -e, so a wrapper started with it fails");
+
     const statusReport = await run("status", "--home", home, "--json");
     const reported = JSON.parse(statusReport.stdout) as { running: boolean; service: { version: { commit: string } } };
     check(statusReport.code === 0 && reported.running && reported.service.version.commit === version.commit, "status reaches the running service over its control socket");
@@ -266,6 +351,7 @@ async function main(): Promise<void> {
       await server.stop();
       console.error(await Bun.file(path.join(work, "serve.log")).text().catch(() => ""));
     }
+    await rm(shortArtifacts, { recursive: true, force: true });
     if (!process.env.KEEP_SMOKE_WORK) await rm(work, { recursive: true, force: true });
     else console.log(`work directory kept: ${work}`);
   }
