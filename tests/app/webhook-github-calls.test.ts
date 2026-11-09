@@ -840,11 +840,12 @@ describe("issue deliveries that carry the full issue", () => {
     const { conveyor, store, calls, deliver } = await service();
     await conveyor.reconcileAll();
     calls.fetched.length = 0;
+    expect(store.listIssues("repo")).toHaveLength(1);
     await deliver("issues", { action: "transferred", issue: fullIssue(["conveyor", "conveyor:work"], "2026-10-07T21:00:00Z"), sender: { login: "maintainer" } });
     await conveyor.webhooksSettled();
     await conveyor.purgesSettled();
     expect(calls.fetched).toEqual([]);
-    expect(store.listIssues("conveyor")).toEqual([]);
+    expect(store.listIssues("repo")).toEqual([]);
     store.close();
   });
 });
