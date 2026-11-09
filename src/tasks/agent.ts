@@ -251,6 +251,7 @@ async function runAgent(
           : {
               sandbox: agent.workspaceAccess === "workspace-write" ? ("workspace-write" as const) : ("read-only" as const),
               automaticApprovals: false,
+              ...(agent.shell === false ? { shell: false as const } : {}),
               ...(runner.configDir ? { env: { ...(agent.env ?? {}), CLAUDE_CONFIG_DIR: runner.configDir } } : {}),
               ...egressFor(deps, runner),
               ...(await codexAccess(agent, workspace.path)),

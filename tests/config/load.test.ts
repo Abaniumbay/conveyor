@@ -349,6 +349,13 @@ repositories:
       await expect(load("    codexConfig: { \"bad key\": 1 }")).rejects.toThrow("dotted Codex config key");
       await expect(load("    mcpServers: { conveyor: { command: x } }")).rejects.toThrow("reserved");
     });
+    test("shell: false is refused on a Codex agent, naming it; shell: true or absent passes", async () => {
+      const message = await rejectionMessage(configWith("    shell: false"));
+      expect(message).toContain('agent "worker"');
+      expect(message).toContain("Codex reaches files only through its shell");
+      expect((await load("")).agents.worker).toMatchObject({ shell: true });
+      expect((await load("    shell: true")).agents.worker).toMatchObject({ shell: true });
+    });
     test("env defaults empty, expands ~/ values and rejects invalid variable names", async () => {
       expect((await load("")).agents.worker).toMatchObject({ env: {} });
       const config = await load("    env: { NUGET_PACKAGES: ~/.nuget/packages, DOTNET_NOLOGO: '1' }");

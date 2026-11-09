@@ -137,6 +137,7 @@ config agents.<name>.model
 config agents.<name>.name
 config agents.<name>.network
 config agents.<name>.runner
+config agents.<name>.shell
 config agents.<name>.tasks
 config agents.<name>.title
 config agents.<name>.tools

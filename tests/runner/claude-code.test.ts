@@ -60,6 +60,18 @@ describe("claude code runner", () => {
     expect(value("--resume")).toBe("s1");
   });
 
+  test("shell: false drops Bash from --tools and --allowedTools and keeps the rest", () => {
+    const mcpServers = { plain: { command: "idx", args: [], env: {} } };
+    const readOnly = claudeArguments({ ...base, shell: false, mcpServers }, "{}");
+    const value = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+    expect(value(readOnly, "--tools")).toBe("Read,Grep,Glob");
+    expect(value(readOnly, "--allowedTools")).toBe("Read,Grep,Glob,mcp__conveyor,mcp__plain");
+    const writer = claudeArguments({ ...base, sandbox: "workspace-write", network: true, shell: false }, "{}");
+    expect(value(writer, "--tools")).toBe("Read,Grep,Glob,Edit,Write,WebFetch,WebSearch");
+    expect(value(writer, "--allowedTools")).not.toContain("Bash");
+    expect(value(writer, "--permission-mode")).toBe("acceptEdits");
+  });
+
   test("passes the result schema without the $schema reference Claude Code rejects", async () => {
     const raw = await readFile(path.join(import.meta.dir, "../../src/runner/schemas/producer-result.json"), "utf8");
     expect(raw).toContain("$schema");
