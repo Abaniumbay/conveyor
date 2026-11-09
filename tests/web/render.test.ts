@@ -43,6 +43,8 @@ const parent: IssueCardViewModel = {
   working: true,
   needsAttention: true,
   retryable: false,
+  paused: false,
+  pausable: false,
   resumable: false,
   resumableRollup: false,
   stoppedRollup: false,
@@ -80,6 +82,8 @@ const backlogIssue: IssueCardViewModel = {
   working: false,
   needsAttention: false,
   retryable: false,
+  paused: false,
+  pausable: false,
   resumable: false,
   resumableRollup: false,
   stoppedRollup: false,
@@ -850,6 +854,46 @@ describe("renderDashboard", () => {
     expect(html).toContain('Children can keep running while this parent waits.');
     expect(html).not.toContain('data-retry-card');
     expect(html).not.toContain('data-retry-form');
+  });
+
+  test("offers Pause on a running card and the item page, and a paused card carries its badge and class", () => {
+    const running = { ...backlogIssue, id: "running-1", pausable: true };
+    const paused = { ...backlogIssue, id: "paused-1", paused: true, resumable: true, labels: [] };
+    const html = renderDashboard({
+      ...dashboard,
+      selectedIssue: running,
+      stages: [{ ...dashboard.stages[0]!, issues: [running] }],
+    });
+    expect(html.match(/>Pause</g)).toHaveLength(2);
+    expect(html).toContain('data-pause-card');
+    expect(html).toContain('data-pause-form');
+    expect(html).toContain('/api/issues/running-1/pause');
+    expect(html).not.toContain('issue--paused repo-color');
+    const pausedHtml = renderDashboard({
+      ...dashboard,
+      selectedIssue: paused,
+      stages: [{ ...dashboard.stages[0]!, issues: [paused] }],
+    });
+    expect(pausedHtml).not.toContain('data-pause-card');
+    expect(pausedHtml).toContain('data-resume-card');
+    expect(pausedHtml).toContain('issue--paused repo-color');
+    expect(pausedHtml).toContain('issue-paused-badge">Paused<');
+    const userHtml = renderDashboard({
+      ...dashboard,
+      account: { id: "member", username: "member", role: "user", avatar: "🦊" },
+      selectedIssue: running,
+      stages: [{ ...dashboard.stages[0]!, issues: [running] }],
+    });
+    expect(userHtml).not.toContain('data-pause-card');
+    expect(userHtml).not.toContain('data-pause-form');
+  });
+
+  test("styles the paused card with theme variables only", () => {
+    const css = (/<style[^>]*>([\s\S]*?)<\/style>/.exec(renderDashboard(dashboard)) ?? [])[1] ?? "";
+    const rules = css.split("}").filter((rule) => rule.includes(".issue--paused") || rule.includes(".issue-paused-badge"));
+    expect(rules.length).toBeGreaterThan(0);
+    expect(rules.join("}")).toContain("repeating-linear-gradient");
+    expect(rules.join("}")).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
   });
 
   test("offers Resume only to a superuser for a paused item without an enrollment stage", () => {

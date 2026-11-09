@@ -86,6 +86,8 @@ const detailIssue: IssueCardViewModel = {
   working: true,
   needsAttention: false,
   retryable: false,
+  paused: false,
+  pausable: false,
   resumable: false,
   resumableRollup: false,
   stoppedRollup: false,
@@ -105,6 +107,7 @@ interface CallLog {
   messages: unknown[][];
   retries: unknown[][];
   resumes: unknown[][];
+  pauses: unknown[][];
   dismissals: unknown[][];
   boardApprovals: unknown[][];
   manualApprovals: unknown[][];
@@ -116,7 +119,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     sessionSecret: "session-secret-that-is-at-least-thirty-two-bytes",
     secureCookies: false,
   });
-  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], resumes: [], dismissals: [], boardApprovals: [], manualApprovals: [] };
+  const calls: CallLog = { answers: [], reorders: [], moves: [], webhooks: [], mcp: [], steering: [], issueActivity: [], issueRunEvents: [], issueConversation: [], issueJourney: [], messages: [], retries: [], resumes: [], pauses: [], dismissals: [], boardApprovals: [], manualApprovals: [] };
   const dependencies = {
     auth,
     username: "operator",
@@ -204,6 +207,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     },
     postIssueMessage: async (...args: unknown[]) => { calls.messages.push(args); },
     retryIssue: async (...args: unknown[]) => { calls.retries.push(args); return { status: "queued", stageId: "implementation" }; },
+    pauseIssue: async (...args: unknown[]) => { calls.pauses.push(args); return { stageId: "refinement" }; },
     resumeIssue: async (...args: unknown[]) => { calls.resumes.push(args); return { status: "queued", stageId: "refinement" }; },
     resumeRollupParent: async () => ({ stageId: "implementation" }),
     dismissFinding: async (...args: unknown[]) => { calls.dismissals.push(args); },
@@ -1148,6 +1152,28 @@ describe("createWebHandler", () => {
     expect(calls.resumes).toHaveLength(1);
   });
 
+  test("pauses an item only through a superuser's CSRF-protected request", async () => {
+    const { handler, auth, calls } = setup({ maxBodyBytes: 8_192 });
+    const url = "https://example.com/api/issues/github%3Aowner%2Frepo%231/pause";
+    expect((await handler(new Request(url, { method: "POST" }))).status).toBe(401);
+    const { cookie } = await login(handler);
+    const headers = { cookie, "content-type": "application/x-www-form-urlencoded" };
+    expect((await handler(new Request(url, { method: "POST", headers, body: "csrf=invalid-token" }))).status).toBe(403);
+    expect((await handler(new Request(url, { method: "POST", headers, body: "" }))).status).toBe(403);
+    expect((await handler(new Request(url, { method: "GET", headers: { cookie } }))).status).toBe(405);
+    expect(calls.pauses).toEqual([]);
+    const csrf = auth.getSession(cookie)?.csrfToken ?? "";
+    const paused = await handler(new Request(url, { method: "POST", headers, body: new URLSearchParams({ csrf }) }));
+    expect(paused.status).toBe(202);
+    expect(calls.pauses).toEqual([["github:owner/repo#1", "operator"]]);
+    const member = auth.createSession({ id: "member", username: "member", role: "user", avatar: "🦊", sessionVersion: 1 })!;
+    expect((await handler(new Request(url, {
+      method: "POST", headers: { cookie: member.cookie.split(";", 1)[0]!, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: member.csrfToken }),
+    }))).status).toBe(403);
+    expect(calls.pauses).toHaveLength(1);
+  });
+
   test("reports a rejected source retry as a conflict", async () => {
     const { handler, auth } = setup({ retryIssue: async () => { throw new Error("source label update failed"); } });
     const { cookie } = await login(handler);
@@ -1406,6 +1432,7 @@ describe("dashboard commands", () => {
       ["repository.resume", () => form("/repositories/app/resume", {})],
       ["item.postMessage", () => form(`/api/issues/${ISSUE}/conversation`, { message: "Please continue" })],
       ["item.retry", () => form(`/api/issues/${ISSUE}/retry`, { note: "" })],
+      ["item.pause", () => form(`/api/issues/${ISSUE}/pause`, {})],
       ["item.resume", () => form(`/api/issues/${ISSUE}/resume`, {})],
       ["item.resumeRollup", () => form(`/api/issues/${ISSUE}/resume-waiting`, {})],
       ["finding.dismiss", () => json(`/api/issues/${ISSUE}/findings/f-1/dismiss`, { reason: "Not applicable" })],

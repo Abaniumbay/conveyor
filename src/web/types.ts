@@ -126,6 +126,10 @@ export interface IssueCardViewModel {
   retryable: boolean;
   /** Destination stage for a configured cross-stage retry. */
   retryTargetStage?: string | null;
+  /** The item is paused: its enrollment label was removed and its stage is kept. */
+  paused: boolean;
+  /** A running or queued item can be paused by removing its enrollment label. */
+  pausable: boolean;
   /** A paused item can restore its enrollment label. */
   resumable: boolean;
   /** A stopped parent can clear its stop and keep waiting for independently running children. */

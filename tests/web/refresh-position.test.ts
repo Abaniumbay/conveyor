@@ -43,6 +43,8 @@ function issue(id: string, number: number, title = id): IssueCardViewModel {
     working: false,
     needsAttention: false,
     retryable: false,
+    paused: false,
+    pausable: false,
     resumable: false,
     resumableRollup: false,
     stoppedRollup: false,
@@ -231,7 +233,7 @@ function startDashboard(state: {
     answerQuestion: (questionId: string, answer: string) => delayed(() => state.answerQuestion?.(questionId, answer)), approveManualGate: () => delayed(() => state.approveManualGate?.()),
     setBoardApprovalRequirement: (_issueId: string, _stageId: string, required: boolean) => delayed(() => state.setBoardApprovalRequirement?.(required)),
     reorderBacklog: () => {}, moveBacklogIssue: () => {}, startSteering: () => "run-1",
-    postIssueMessage: () => ({}), retryIssue: () => ({}), resumeIssue: () => ({}), resumeRollupParent: () => ({}), dismissFinding: () => {},
+    postIssueMessage: () => ({}), retryIssue: () => ({}), resumeIssue: () => ({}), pauseIssue: () => ({}), resumeRollupParent: () => ({}), dismissFinding: () => {},
   });
   const handler = createWebHandler({
     auth,
@@ -334,6 +336,64 @@ describe("dashboard live refresh position", () => {
       server.stop(true);
     }
   }, 30_000);
+
+  test("pauses a running item from its card and its inspector through the CSRF-checked endpoint", async () => {
+    const running = { ...issue("running-1", 61, "A running item"), pausable: true };
+    const server = startDashboard({ dashboard: () => dashboard("pausable", [running]), revision: () => "pausable" });
+    try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage({ viewport: { width: 900, height: 700 }, reducedMotion: "reduce" });
+      await signIn(page, server.port);
+      const card = page.locator("[data-pause-card]");
+      await card.waitFor();
+      const request = page.waitForRequest((candidate) => candidate.url().endsWith("/api/issues/running-1/pause"));
+      const response = page.waitForResponse((candidate) => candidate.url().endsWith("/api/issues/running-1/pause"));
+      await card.click();
+      expect((await request).method()).toBe("POST");
+      expect((await response).status()).toBe(202);
+      await page.waitForFunction(() => document.querySelector("[data-pause-card]")?.textContent === "Item paused");
+
+      await page.locator('article[data-issue-id="running-1"] .card-open').click();
+      const form = page.locator('dialog[data-issue-id="running-1"] [data-pause-form]');
+      await form.waitFor();
+      const second = page.waitForResponse((candidate) => candidate.url().endsWith("/api/issues/running-1/pause"));
+      await form.locator("[data-pause-submit]").click();
+      expect((await second).status()).toBe(202);
+      await page.waitForFunction(() => document.querySelector("[data-pause-status]")?.textContent === "Item paused.");
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`draws a paused card with a striped overlay and a Paused badge in the ${theme} theme at 360 px`, async () => {
+      const paused = { ...issue("paused-1", 62, "A paused item with a deliberately long title that must stay inside the phone viewport"), paused: true, resumable: true };
+      const server = startDashboard({ dashboard: () => dashboard(`striped-${theme}`, [paused]), revision: () => `striped-${theme}` });
+      try {
+        browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage({ viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true, reducedMotion: "reduce", colorScheme: theme });
+        await signIn(page, server.port);
+        await page.evaluate((value) => document.documentElement.setAttribute("data-theme", value), theme);
+        const card = page.locator('article[data-issue-id="paused-1"]');
+        await card.waitFor();
+        const overlay = await card.evaluate((element) => {
+          const style = getComputedStyle(element, "::after");
+          return { image: style.backgroundImage, position: style.position, events: style.pointerEvents };
+        });
+        expect(overlay.image).toContain("repeating-linear-gradient");
+        expect(overlay.image).toMatch(/srgb|rgba?\(/);
+        expect(overlay.position).toBe("absolute");
+        expect(overlay.events).toBe("none");
+        const badge = card.locator(".issue-paused-badge");
+        expect(await badge.isVisible()).toBe(true);
+        expect((await badge.textContent())?.trim()).toBe("Paused");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await card.screenshot({ path: `/tmp/paused-card-${theme}.png` });
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
 
   test("resumes a paused item from its inspector", async () => {
     const paused = {
