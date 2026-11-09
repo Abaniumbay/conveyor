@@ -43,11 +43,24 @@ A pull request is ready when:
    [`changes/`](changes/), named `<issue-number>-<short-slug>.md`, with frontmatter selecting
    Added, Changed, Deprecated, Removed or Fixed (and `breaking: true` when needed). Preview the
    combined release notes with `bun run changelog`; do not edit Unreleased in `CHANGELOG.md`.
+   A change is **breaking** when an existing installation, configuration, script or agent that
+   worked before can fail or behave differently after an upgrade without the operator doing
+   anything. For example: a configuration key, value or `builtin:` file removed or renamed, or its
+   meaning or default changed; a CLI command or option removed or renamed, or output that scripts
+   read changed; a label's name or meaning changed; a task, MCP tool or tool input removed or
+   renamed; an event or payload field removed or renamed; an HTTP or control-socket endpoint
+   removed or its response reshaped; a migration that changes or drops data operators rely on.
+   Deprecating something that keeps working is not breaking. A breaking fragment says what
+   operators must change. The Check workflow fails a pull request that removes a line from
+   [`docs/public-surface.txt`](docs/public-surface.txt) without a breaking fragment; review catches
+   the rest (changed meaning, defaults, output).
 4. **Dashboard layout changes regenerate the screenshots.** Run `bun run docs:screenshots` and
    commit the regenerated images in `docs/screenshots/` in the same pull request. The Check workflow
    regenerates them twice and fails when they differ.
-5. **Generated documentation is regenerated.** Run `bun run docs:tasks` after changing a task and
-   `bun run docs:cli` after changing a command or its options.
+5. **Generated documentation is regenerated.** Run `bun run docs:tasks` after changing a task,
+   `bun run docs:cli` after changing a command or its options, `bun run docs:events` after changing
+   an event, and `bun run docs:surface` after any of those or a change to a configuration key,
+   packaged `builtin:` file or label.
 6. **Nothing installation-specific is included:** no real hostnames, repository addresses, logins,
    machine paths or credentials in code, tests, examples or documentation. Use `example.com`,
    `owner/my-app` and similar placeholders.

@@ -491,7 +491,8 @@ const taskEntrySchema = z
   .extend(taskOverrideSchema.shape)
   .strict();
 
-const nativeStageSchema = z
+/** A native (task-chain) stage: `actions` and `exit-gate`. */
+export const nativeStageSchema = z
   .object({
     id: identifierSchema,
     name: identifierSchema.optional(),

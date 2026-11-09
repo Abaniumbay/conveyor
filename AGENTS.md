@@ -37,6 +37,8 @@ Run these from the repository root.
 | Regenerate `docs/tasks.md` | `bun run docs:tasks` |
 | Regenerate `docs/cli.md` | `bun run docs:cli` |
 | Regenerate `docs/events.md` | `bun run docs:events` |
+| Regenerate `docs/public-surface.txt` | `bun run docs:surface` |
+| Check for unmarked breaking changes | `bun run scripts/check-breaking-changes.ts --base origin/main` |
 | Regenerate dashboard screenshots | `bun run docs:screenshots` (needs `bunx playwright install chromium` once) |
 | Run the CLI from source | `bun run src/cli.ts --help` |
 
@@ -61,7 +63,7 @@ Run these from the repository root.
 | `tests/` | Mirrors `src/`: the test for `src/x/y.ts` is `tests/x/y.test.ts`. |
 | `tests/support/` | Shared fixtures: `delivery-world.ts` (a full delivery with fakes at the edges), `bwrap.ts`. |
 | `examples/config/` | Packaged default configuration (`builtin:`), including the default agent instructions. |
-| `docs/` | User and operator documentation. `tasks.md`, `cli.md` and `events.md` are generated; never edit them by hand. |
+| `docs/` | User and operator documentation. `tasks.md`, `cli.md`, `events.md` and `public-surface.txt` are generated; never edit them by hand. |
 
 Some files are very large: `src/app/service.ts` (~6,000 lines), `src/db/store.ts` (~3,100),
 `src/web/render.tsx` (~1,800), `src/web/server.ts` (~1,500) and `src/web/app/behaviour.ts`
@@ -262,12 +264,20 @@ a service mutation directly.
 
 1. `bun run check` passes.
 2. Generated docs are regenerated if you touched tasks (`docs:tasks`), the CLI (`docs:cli`) or
-   events (`docs:events`).
+   events (`docs:events`), and `docs:surface` after any of those or a configuration key, packaged
+   `builtin:` file or label. A line removed from `docs/public-surface.txt` needs a breaking
+   fragment, or CI fails.
 3. Screenshots are regenerated if you changed dashboard layout.
 4. A user-visible change adds a Markdown fragment under `changes/`, named with its positive issue
    number and a short slug. Its frontmatter selects Added, Changed, Deprecated, Removed or Fixed;
-   use `breaking: true` when applicable. Write it for an operator: what changed for them, not how
-   the code changed. Preview the combined notes with `bun run changelog`; do not edit Unreleased in
+   use `breaking: true` when the change is breaking. A change is breaking when an existing
+   installation, configuration, script or agent can fail or behave differently after an upgrade
+   without the operator doing anything: a removed or renamed configuration key, `builtin:` file,
+   CLI command or option, label, task, tool input, event or payload field, or endpoint; a changed
+   meaning or default; changed output that scripts read; a migration that changes or drops data.
+   Deprecating something that keeps working is not breaking. A breaking fragment says what
+   operators must change. Write it for an operator: what changed for them, not how the code
+   changed. Preview the combined notes with `bun run changelog`; do not edit Unreleased in
    `CHANGELOG.md`. The fragment is a standing rule, not an acceptance criterion: link no test to it.
 5. A change to documented behaviour updates `docs/` and, where it describes it, `SPEC.md`.
 6. No hostname, login, private repository address, machine path or secret anywhere in the diff.
