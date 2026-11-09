@@ -25,12 +25,14 @@ export interface ClaudeCodeRunInput extends HarnessRunInput {
   resumeSessionId?: string;
 }
 
-export type ClaudeCodeErrorKind = "usage-limit" | "process" | "protocol" | "timeout" | "interrupted";
+export type ClaudeCodeErrorKind = "usage-limit" | "process" | "protocol" | "invalid-result" | "timeout" | "interrupted";
 
 export class ClaudeCodeRunnerError extends Error {
   override readonly name = "ClaudeCodeRunnerError";
   /** A non-fatal teardown failure that occurred after the Claude Code process stopped. */
   cleanupError?: string;
+  /** The session that produced an invalid result, so the same session can be asked to correct it. */
+  sessionId?: string;
 
   constructor(
     message: string,
@@ -324,10 +326,10 @@ export async function runClaudeCode(input: ClaudeCodeRunInput): Promise<RunEnvel
 
     const parsed = producerResultSchema.safeParse(final.structured_output);
     if (!parsed.success) {
-      throw new ClaudeCodeRunnerError(
+      throw Object.assign(new ClaudeCodeRunnerError(
         `Claude Code structured output failed validation: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`).join("; ")}`,
-        "protocol", exitCode, stderr,
-      );
+        "invalid-result", exitCode, stderr,
+      ), { sessionId: sessionId ?? undefined });
     }
     const usage = { ...EMPTY_USAGE };
     const reported = final.usage ?? {};

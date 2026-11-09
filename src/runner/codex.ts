@@ -75,6 +75,7 @@ export type CodexErrorKind =
   | "usage-limit"
   | "process"
   | "protocol"
+  | "invalid-result"
   | "timeout"
   | "interrupted";
 
@@ -82,6 +83,8 @@ export class CodexRunnerError extends Error {
   override readonly name = "CodexRunnerError";
   /** A non-fatal teardown failure that occurred after the Codex process stopped. */
   cleanupError?: string;
+  /** The session that produced an invalid result, so the same session can be asked to correct it. */
+  sessionId?: string;
 
   constructor(
     message: string,
@@ -452,14 +455,14 @@ export async function runCodex(input: CodexRunInput): Promise<RunEnvelope> {
   }
   const parsed = producerResultSchema.safeParse(decoded);
   if (!parsed.success) {
-    throw withCleanupError(new CodexRunnerError(
+    throw withCleanupError(Object.assign(new CodexRunnerError(
       `Codex structured output failed validation: ${parsed.error.issues
         .map((issue) => `${issue.path.join(".") || "result"}: ${issue.message}`)
         .join("; ")}`,
-      "protocol",
+      "invalid-result",
       exitCode,
       stderr,
-    ), cleanupError);
+    ), { sessionId: sessionId ?? undefined }), cleanupError);
   }
   const result = parsed.data;
   return {

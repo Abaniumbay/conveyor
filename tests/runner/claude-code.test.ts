@@ -162,6 +162,30 @@ echo '${successfulResult}'
     expect(existsSync(path.join(run.artifactsDirectory, "home"))).toBe(false);
   });
 
+  test("a structured result that fails validation is an invalid-result error carrying the session id", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo '{"type":"system","subtype":"init","session_id":"sess-invalid"}'
+echo '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-invalid","usage":{"input_tokens":1,"output_tokens":1},"structured_output":{"version":1,"outcome":"failure","status":"blocked","summary":"x","reason":null,"metrics":{},"artifacts":[]}}'
+`);
+
+    await expect(run.run()).rejects.toMatchObject({
+      kind: "invalid-result",
+      sessionId: "sess-invalid",
+      message: expect.stringContaining("structured output failed validation"),
+    });
+  });
+
+  test("a malformed JSONL stream stays a protocol error", async () => {
+    const run = await runnable(`#!/bin/sh
+cat > /dev/null
+echo 'this is not json'
+echo '${successfulResult}'
+`);
+
+    await expect(run.run()).rejects.toMatchObject({ kind: "protocol" });
+  });
+
   test("clears the private home after a failed run without touching other run homes or shared caches", async () => {
     const run = await runnable(`#!/bin/sh
 cat > /dev/null
