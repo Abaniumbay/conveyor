@@ -320,4 +320,40 @@ describeSandbox("runCodex", () => {
       expect(error).toMatchObject({ kind: "usage-limit", exitCode: 1 });
     }
   });
+
+  const runInput = (files: Awaited<ReturnType<typeof fixture>>) => ({
+    command: files.executable,
+    workspace: files.workspace,
+    artifactsDirectory: files.artifacts,
+    prompt: "Implement",
+    sandbox: "workspace-write" as const,
+    automaticApprovals: true,
+    mcp: { command: "bun", args: ["mcp.ts"] },
+  });
+
+  test("a structured result that fails validation is an invalid-result error carrying the session id", async () => {
+    const files = await fixture(`
+      const args = process.argv.slice(2);
+      await new Response(Bun.stdin.stream()).text();
+      await Bun.write(args[args.indexOf("-o") + 1], JSON.stringify({
+        version: 1, outcome: "failure", status: "blocked", summary: "x", reason: null, metrics: {}, artifacts: []
+      }));
+      console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-invalid" }));
+    `);
+
+    await expect(runCodex(runInput(files))).rejects.toMatchObject({
+      kind: "invalid-result",
+      sessionId: "thread-invalid",
+      message: expect.stringContaining("structured output failed validation"),
+    });
+  });
+
+  test("a malformed JSONL stream stays a protocol error", async () => {
+    const files = await fixture(`
+      await new Response(Bun.stdin.stream()).text();
+      console.log("this is not json");
+    `);
+
+    await expect(runCodex(runInput(files))).rejects.toMatchObject({ kind: "protocol" });
+  });
 });
