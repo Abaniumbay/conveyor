@@ -52,7 +52,7 @@ const labelConfig = {
   },
   metadata: {
     closable: "conveyor:closable",
-    noSplit: "conveyor:no-split",
+    noSplit: "conveyor:no-split", paused: "conveyor:paused",
     orderTemplate: "conveyor:order:{number}",
   },
 };
@@ -275,7 +275,7 @@ describe("applyStageTransition", () => {
       },
     });
 
-    expect(preserved).toEqual(["conveyor:no-split"]);
+    expect(preserved).toEqual(["conveyor:no-split", "conveyor:paused"]);
     store.close();
   });
 
@@ -300,7 +300,7 @@ describe("applyStageTransition", () => {
       labels: labelConfig,
     });
 
-    expect(preserved).toEqual(["conveyor:no-split"]);
+    expect(preserved).toEqual(["conveyor:no-split", "conveyor:paused"]);
     store.close();
   });
 

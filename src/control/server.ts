@@ -131,7 +131,7 @@ function item(service: ConveyorService, issueId: string) {
   const journey = service.issueJourney(issueId);
   const question = service.store.listOpenQuestions().find((candidate) => candidate.issueId === issueId) ?? null;
   const running = service.activeWork().items.some((entry) => entry.issueId === issueId);
-  const enrolled = issue.labels.includes(service.config.labels.enrollment);
+  const paused = issue.labels.includes(service.config.labels.metadata.paused);
   const stoppedRollup = STOPPED.has(issue.projectedState ?? "") && service.store.listChildren(issueId).length > 0;
   const actions: string[] = [];
   if (question) actions.push(`answer the question: conveyor questions answer ${question.id} <answer>`);
@@ -142,8 +142,8 @@ function item(service: ConveyorService, issueId: string) {
       ? `retry the ${issue.projectedStage} stage: conveyor item retry ${itemReference(service, issueId)}`
       : `retry to ${retryTarget}: conveyor item retry ${itemReference(service, issueId)}`);
   }
-  if (enrolled && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(service, issueId)}`);
-  if (!enrolled && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(service, issueId)}`);
+  if (!paused && issue.sourceState === "open") actions.push(`pause it: conveyor item pause ${itemReference(service, issueId)}`);
+  if (paused && issue.sourceState === "open") actions.push(`resume it: conveyor item resume ${itemReference(service, issueId)}`);
   return {
     item: itemReference(service, issueId),
     id: issue.id,
@@ -155,7 +155,7 @@ function item(service: ConveyorService, issueId: string) {
     since: journey?.now.since ?? null,
     blocker: journey?.now.reason ?? null,
     warning: issue.warning,
-    paused: !enrolled,
+    paused,
     childrenContinue: stoppedRollup,
     question: question && { id: question.id, prompt: question.prompt, reason: question.reason, options: question.options, allowFreeText: question.allowFreeText },
     actions,

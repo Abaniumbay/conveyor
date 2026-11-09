@@ -37,14 +37,14 @@ export const itemSteer = defineOperatorTool({
 
 export const itemPause = defineOperatorTool({
   name: "item_pause",
-  description: "Pause an item; its stage, worktree and history are kept.",
+  description: "Pause an item by adding the conveyor:paused label: its running agent is stopped and nothing new starts; its labels, stage, worktree and history are kept.",
   inputSchema: z.object({ item: reference }).strict(),
   handler: async ({ input, facade }) => (await facade.dispatch("item.pause", { issueId: itemOf(facade, input.item).issueId })).result,
 });
 
 export const itemResume = defineOperatorTool({
   name: "item_resume",
-  description: "Resume a paused item.",
+  description: "Resume a paused item by removing the conveyor:paused label.",
   inputSchema: z.object({ item: reference }).strict(),
   handler: async ({ input, facade }) => (await facade.dispatch("item.resume", { issueId: itemOf(facade, input.item).issueId })).result,
 });

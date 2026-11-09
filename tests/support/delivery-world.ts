@@ -57,6 +57,10 @@ export interface DeliveryWorld {
   drive(limit?: number): Promise<void>;
   /** GitHub closes the source issue, as a person or a late auto-close would, and delivers the signed `issues.closed` webhook. */
   closeIssueOnGitHub(): Promise<void>;
+  /** A person edits the issue's labels on GitHub; the next sync reads them. */
+  editLabelsOnGitHub(edit: (labels: string[]) => string[]): void;
+  /** The labels the source issue carries now. */
+  sourceLabels(): string[];
   close(): Promise<void>;
 }
 
@@ -225,8 +229,15 @@ export async function deliveryWorld(options: {
   const labelWrites: string[][] = [];
   let sourceIssue: SourceIssue | null = null;
   const github = {
-    replaceConveyorLabels: async (_address: string, number: number, labels: string[]) => {
+    replaceConveyorLabels: async (_address: string, number: number, requested: string[], preserveLabels: readonly string[] = []) => {
       if (!sourceIssue || sourceIssue.number !== number) throw new Error(`unknown source issue ${number}`);
+      // Same contract as GitHubAdapter: a preserved label keeps its current presence and
+      // cannot be added or removed through the requested list.
+      const preserve = new Set(preserveLabels);
+      const labels = [
+        ...requested.filter((label) => !preserve.has(label)),
+        ...sourceIssue.labels.filter((label) => preserve.has(label)),
+      ];
       labelWrites.push([...labels]);
       sourceIssue = { ...sourceIssue, labels: [...labels], updatedAt: new Date(Math.max(Date.now(), Date.parse(sourceIssue.updatedAt) + 1)).toISOString() };
     },
@@ -431,6 +442,10 @@ export async function deliveryWorld(options: {
         else process.env.CONVEYOR_GITHUB_WEBHOOK_SECRET = previous;
       }
     },
+    editLabelsOnGitHub(edit) {
+      sourceIssue = { ...sourceIssue!, labels: edit([...sourceIssue!.labels]), updatedAt: new Date(Math.max(Date.now(), Date.parse(sourceIssue!.updatedAt) + 1)).toISOString() };
+    },
+    sourceLabels() { return [...sourceIssue!.labels]; },
     async close() { await service.close(); await rm(root, { recursive: true, force: true }); },
   };
   return world;

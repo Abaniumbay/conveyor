@@ -26,8 +26,8 @@ running. Put the dashboard behind HTTPS before sending a token over a network.
 | `conveyor_status` | The service status, as `conveyor status` reports it. |
 | `item_retry` | Retry a blocked or failed item's stopped stage. Input: `item`, optional `note` for the agent. |
 | `item_steer` | Send a steering message to the agent running on an item. Input: `item`, `message`. Fails, sending nothing, when no agent is running on it (an idle item or a script stage). |
-| `item_pause` | Pause an item; its stage, worktree and history are kept. Input: `item`. |
-| `item_resume` | Resume a paused item. Input: `item`. |
+| `item_pause` | Pause an item by adding the `conveyor:paused` label: its running agent is stopped and nothing new starts; its labels, stage, worktree and history are kept. Input: `item`. |
+| `item_resume` | Resume a paused item by removing the `conveyor:paused` label. Input: `item`. |
 | `question_answer` | Answer an item's open question. Input: `questionId`, `answer`. |
 | `list_repositories` | The onboarded repositories. |
 | `list_items` | Items with number, title, stage, state and dependencies; optional `repository` filter. |

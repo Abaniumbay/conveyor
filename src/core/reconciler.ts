@@ -266,7 +266,6 @@ export async function reconcileRepository(
       sourceLabels: sourceIssue.labels,
       labels: input.labels,
       stages: input.stages,
-      pausedByConveyor: current?.pausedByConveyor ?? false,
       expectedPostMergeClosure:
         (input.expectedPostMergeClosure?.(issueId) ?? false) ||
         // A roll-up reaches done before Conveyor closes it with GitHub's completed reason.
@@ -283,16 +282,21 @@ export async function reconcileRepository(
     const projectedState = !visible
       ? "offboarded"
       : !snapshot.enrollmentTrusted ? "waiting"
-      // A parked question survives a plain external removal of enrollment, but Conveyor's
-      // own pause leaves either its empty-label marker or the item's stage-state label behind.
-      : projected.mode === "paused" && (current?.pausedByConveyor || projected.state !== null) ? "paused"
+      // The paused label wins over a parked question: the question stays open, nothing runs.
+      : projected.mode === "paused" ? "paused"
       : openQuestion ? "needs-input" : projected.state ?? projected.mode;
     const projectedStage = openQuestion
       ? questionRun?.stageId ?? current?.projectedStage ?? projected.stage
       : projected.stage;
-    // The pause marker only covers an empty label set; any control label ends it.
-    if (current?.pausedByConveyor && projected.mode !== "paused") input.store.setPausedByConveyor(issueId, false);
     const priorState = current?.projectedState ?? null;
+    if (projectedState === "paused" && priorState !== "paused") {
+      input.store.recordJourneyEvent({
+        issueId,
+        stage: projected.stage,
+        kind: "paused",
+        reason: `Paused: the ${input.labels.metadata.paused} label is present.`,
+      });
+    }
     const resumed = projectedState === "active" && priorState !== null && STOPPED_STATES.has(priorState);
     if (resumed) {
       input.store.recordJourneyEvent({
@@ -300,7 +304,7 @@ export async function reconcileRepository(
         stage: projected.stage,
         kind: "resumed",
         reason: priorState === "paused"
-          ? `Resumed: the ${input.labels.enrollment} label was added back.`
+          ? `Resumed: the ${input.labels.metadata.paused} label was removed.`
           : `Resumed from ${priorState}: the ${priorState} label was removed.`,
       });
     }

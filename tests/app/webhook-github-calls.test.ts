@@ -19,7 +19,7 @@ afterEach(async () => {
 
 const LABELS = {
   enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
-  states: { done: "conveyor:done", blocked: "conveyor:blocked", "needs-intervention": "conveyor:needs-intervention" }, metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+  states: { done: "conveyor:done", blocked: "conveyor:blocked", "needs-intervention": "conveyor:needs-intervention" }, metadata: { closable: "conveyor:closable", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
 };
 
 /** One repository with one enrolled issue, and a GitHub fake that records what Conveyor reads and writes. */
@@ -369,7 +369,7 @@ describe("GitHub calls made for webhook deliveries", () => {
       body: issue.body,
       state: "closed",
       state_reason: "not_planned",
-      labels: ["conveyor:work", "unrelated"],
+      labels: ["conveyor", "conveyor:work", "conveyor:paused", "unrelated"],
       updated_at: "2026-10-07T21:00:00Z",
     };
 
@@ -610,7 +610,7 @@ describe("GitHub calls made for webhook deliveries", () => {
     conveyor.pauseRepository("repo", "maintenance", "Ada");
     issue.state = "closed";
     issue.stateReason = "not_planned";
-    issue.labels = ["conveyor:work", "unrelated"];
+    issue.labels = ["conveyor", "conveyor:work", "conveyor:paused", "unrelated"];
     issue.updatedAt = "2026-10-07T21:00:00Z";
     await deliver("issues", { action: "closed", issue: {
       id: 1, number: 1, html_url: issue.url, title: issue.title, body: issue.body,

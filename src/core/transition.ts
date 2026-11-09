@@ -65,6 +65,7 @@ function metadataLabels(
     (label) =>
       label === labels.metadata.closable ||
       label === labels.metadata.noSplit ||
+      label === labels.metadata.paused ||
       matchesTemplate(label, labels.metadata.orderTemplate, "number"),
   );
 }
@@ -206,7 +207,7 @@ export async function applyStageTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
-        [input.labels.metadata.noSplit],
+        [input.labels.metadata.noSplit, input.labels.metadata.paused],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {
@@ -332,7 +333,7 @@ export async function applyRollupTransition(
         input.address,
         input.issue.sourceNumber,
         labels,
-        [input.labels.metadata.noSplit],
+        [input.labels.metadata.noSplit, input.labels.metadata.paused],
       );
       input.store.completeSourceMutation(mutation.id, { labels });
     } catch (error) {

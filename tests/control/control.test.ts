@@ -55,7 +55,7 @@ async function running(options: {
     labels: {
       enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
       states: { done: "conveyor:done", blocked: "conveyor:blocked", error: "conveyor:error", "needs-intervention": "conveyor:needs-intervention" },
-      metadata: { closable: "conveyor:closable", orderTemplate: "conveyor:order:{number}" },
+      metadata: { closable: "conveyor:closable", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
     },
     runners: {},
     plans: [],
@@ -552,16 +552,16 @@ describe("operating through the CLI", () => {
     expect(again.err).toContain("refresh before retrying");
   });
 
-  test("pause removes only the enrollment label; resume restores it and reports the stage", async () => {
+  test("pause adds the paused label and keeps the others; resume removes it and reports the stage", async () => {
     const { cli, store, issues } = await running();
     const paused = await cli("item", "pause", "app:2");
     expect(paused.out).toBe("app:2 paused at implementation.");
-    expect(issues[1]!.labels).toEqual(["conveyor:implementation", "conveyor:blocked"]);
+    expect(issues[1]!.labels).toEqual(["conveyor", "conveyor:implementation", "conveyor:blocked", "conveyor:paused"]);
     expect((await cli("item", "show", "app:2")).out).toContain("resume it: conveyor item resume app:2");
     expect((await cli("item", "pause", "app:2")).code).toBe(EXIT.rejected);
     const resumed = await cli("item", "resume", "app:2", "--json");
     expect(JSON.parse(resumed.out)).toMatchObject({ item: "app:2", stageId: "implementation" });
-    expect(issues[1]!.labels).toContain("conveyor");
+    expect(issues[1]!.labels).toEqual(["conveyor", "conveyor:implementation", "conveyor:blocked"]);
     expect(store.listConversationMessages("issue-2").map((message) => message.message).join("\n")).toMatch(/Paused by .*\(CLI\)[\s\S]*Resumed by/);
   });
 
@@ -583,12 +583,11 @@ describe("operating through the CLI", () => {
       const { cli, issue, board, store } = await stageless();
       expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ stage: "refinement", state: "active" });
       expect((await cli("item", "pause", "app:1")).code).toBe(0);
-      expect(issue.labels).toEqual([]);
+      expect(issue.labels).toEqual(["conveyor", "conveyor:paused"]);
       expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ state: "paused" });
       expect((await cli("item", "resume", "app:1")).code).toBe(0);
-      expect(issue.labels).toContain("conveyor");
+      expect(issue.labels).toEqual(["conveyor"]);
       expect((await board()).find((entry) => entry.item === "app:1")).toMatchObject({ stage: "refinement", state: expect.not.stringMatching(/paused|offboarded/) });
-      expect(store.getIssue("issue-1")!.pausedByConveyor).toBe(false);
     });
 
     test("keeps an unanswered question open and the item paused, across pause, restart and resume", async () => {

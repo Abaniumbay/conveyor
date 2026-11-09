@@ -163,6 +163,7 @@ config labels.metadata
 config labels.metadata.closable
 config labels.metadata.noSplit
 config labels.metadata.orderTemplate
+config labels.metadata.paused
 config labels.stageTemplate
 config labels.states
 config pipelines

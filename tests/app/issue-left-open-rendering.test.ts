@@ -25,7 +25,7 @@ async function stoppedItem() {
     labels: {
       enrollment: "conveyor", stageTemplate: "conveyor:{stage}",
       states: { done: "conveyor:done", "needs-intervention": "conveyor:needs-intervention" },
-      metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", orderTemplate: "conveyor:order:{number}" },
+      metadata: { closable: "conveyor:closable", noSplit: "conveyor:no-split", paused: "conveyor:paused", orderTemplate: "conveyor:order:{number}" },
     },
     pipelines: { default: { stages: [{ id: "cleanup", actions: [], exitGate: [{ id: "issueClosed", task: "item.issueClosed" }], concurrency: 1 }] } },
     repositories: { repo: { source: "github", address: "owner/my-app", folder: root, baseBranch: "main", pipeline: "default", concurrency: 1, systemLabels: [] } },

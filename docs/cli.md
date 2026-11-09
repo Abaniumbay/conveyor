@@ -230,11 +230,11 @@ Dismiss an open review finding with a reason.
 
 ### `conveyor item pause <item>`
 
-Pause an item (removes its enrollment label; its stage and worktree are kept).
+Pause an item (adds the conveyor:paused label; its stage and worktree are kept).
 
 ### `conveyor item resume <item>`
 
-Resume a paused item.
+Resume a paused item (removes the conveyor:paused label; the same stage continues).
 
 ### `conveyor questions list`
 
