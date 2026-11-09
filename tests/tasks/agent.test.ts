@@ -273,6 +273,20 @@ describe("agent.run", () => {
     expect(w.calls.at(-1)!.env).toEqual({ NUGET_PACKAGES: "/caches/nuget", CLAUDE_CONFIG_DIR: "/claude-config" });
   });
 
+  test("an agent's shell: false reaches a Claude Code harness; without the field there is no shell key", async () => {
+    const w = await world();
+    const config = w.deps.config as unknown as { runners: Record<string, unknown>; agents: Record<string, unknown> };
+    config.runners.claude = { type: "claude-code", command: "claude" };
+    config.agents.jamshid = { ...config.agents.kaveh as object, name: "Jamshid", runner: "claude" };
+    const harnesses = w.deps.harnesses as Record<string, unknown>;
+    harnesses["claude-code"] = harnesses.codex;
+    expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
+    expect("shell" in w.calls.at(-1)!).toBe(false);
+    config.agents.jamshid = { ...config.agents.jamshid as object, shell: false };
+    expect((await w.run(false, { agent: "jamshid" })).status).toBe("pass");
+    expect(w.calls.at(-1)).toMatchObject({ shell: false });
+  });
+
   test("a workspace-write agent may write its worktree's git metadata and its existing extra roots, with network when enabled", async () => {
     const w = await world();
     const workspace = w.store.getActiveWorkspace("i1")!.path;
