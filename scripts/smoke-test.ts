@@ -229,7 +229,7 @@ async function main(): Promise<void> {
     // A steering agent: its harness is a stand-in for Codex that drives the packaged MCP server.
     await writeFile(path.join(tools, "codex"), FAKE_CODEX);
     await chmod(path.join(tools, "codex"), 0o755);
-    await writeFile(path.join(tools, "codex-egress"), fakeCodexEgress(home, conveyor));
+    await writeFile(path.join(tools, "codex-egress"), fakeCodexEgress(home, path.join(work, "prefix/versions", version.version, "conveyor")));
     await chmod(path.join(tools, "codex-egress"), 0o755);
     await writeFile(path.join(tools, "gh"), FAKE_GH);
     await chmod(path.join(tools, "gh"), 0o755);
