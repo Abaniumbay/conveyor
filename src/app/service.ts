@@ -5589,7 +5589,7 @@ export class ConveyorService {
       repositories: repositorySummaries.repositories,
       restrictedRepositories: repositorySummaries.restrictedRepositories,
       steering,
-      selectedIssue: pagination.issueId && listedById.has(pagination.issueId)
+      selectedIssue: pagination.issueId && listedById.has(pagination.issueId) && listedById.get(pagination.issueId)!.projectedState !== "unlisted"
         ? card(listedById.get(pagination.issueId)!)
         : null,
       csrfToken,
@@ -5736,7 +5736,7 @@ export class ConveyorService {
     // one card, so rebuilding every board column, rollup, and repository summary here would make
     // the on-demand endpoint proportional to the board rather than to the item being opened.
     const issue = this.store.getIssue(issueId);
-    if (!issue) return null;
+    if (!issue || issue.projectedState === "unlisted") return null;
     const repositoryColors = new Map(Object.keys(this.config.repositories).map((repositoryId, index) =>
       [repositoryId, (index % 8) + 1],
     ));

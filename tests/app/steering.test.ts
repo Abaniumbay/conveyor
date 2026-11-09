@@ -716,7 +716,7 @@ describe("ConveyorService steering", () => {
         expect(await service.handleMcp({ tool: "operator.retryItem", input: { itemId: "retry-item", note: "owner asked" } }, context.control.token)).toEqual(retry);
         const auditsBeforeRetryReject = store.listRunEvents(steeringRunId).filter((event) => event.type === "operator.control").length;
         await expect(service.handleMcp({ tool: "operator.retryItem", input: { itemId: "active-retry", note: "owner asked" } }, context.control.token)).rejects.toThrow("already running");
-        await expect(service.handleMcp({ tool: "operator.retryItem", input: { itemId: "closed-retry", note: "owner asked" } }, context.control.token)).rejects.toThrow("closed or offboarded");
+        await expect(service.handleMcp({ tool: "operator.retryItem", input: { itemId: "closed-retry", note: "owner asked" } }, context.control.token)).rejects.toThrow("closed or has left Conveyor");
         expect(store.getIssue("active-retry")).toMatchObject({ projectedState: "active", projectedStage: "backlog" });
         expect(store.getIssue("closed-retry")).toMatchObject({ projectedState: "blocked", projectedStage: "backlog" });
         expect(store.listRunEvents(steeringRunId).filter((event) => event.type === "operator.control")).toHaveLength(auditsBeforeRetryReject);

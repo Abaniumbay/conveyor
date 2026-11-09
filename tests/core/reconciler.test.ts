@@ -176,7 +176,8 @@ describe("reconcileRepository", () => {
     await reconcileRepository({ ...common, source: { async listIssues() { return [issue(1, ["conveyor", "conveyor:refinement"])]; } } });
 
     expect(store.getIssue("github:owner/repo#1")).toMatchObject({ projectedStage: "refinement", projectedState: "active" });
-    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(1);
+    // A purged issue enrolled again continues after its old generation, so it never adopts the old branch.
+    expect(store.activateEnrollment("github:owner/repo#1").generation).toBe(2);
     store.close();
   });
 
