@@ -3,6 +3,7 @@ import { mkdir, readdir, realpath, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
 
+import { restoreDirectoryAccess } from "../core/directory-access";
 import { resolveFilesystemPath } from "../core/paths";
 
 export interface CreateWorkspaceInput {
@@ -32,6 +33,17 @@ export interface RemoveWorkspaceInput {
 /** The persistent scratch directory paired with a managed worktree. */
 export function workspaceScratchPath(workspacePath: string): string {
   return `${resolveFilesystemPath(workspacePath)}.tmp`;
+}
+
+/** Removes a scratch directory even when it holds read-only directories; absent is fine. */
+async function removeScratch(scratch: string): Promise<void> {
+  try {
+    await restoreDirectoryAccess(scratch);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await rm(scratch, { recursive: true, force: true });
 }
 
 export class WorkspaceError extends Error {
@@ -323,7 +335,7 @@ export class WorkspaceManager {
       );
     }
     await git(repositoryPath, ["worktree", "prune"]);
-    await rm(workspaceScratchPath(workspacePath), { recursive: true, force: true });
+    await removeScratch(workspaceScratchPath(workspacePath));
 
     if (input.deleteBranch) {
       const deleted = await git(repositoryPath, ["branch", "-D", input.branch]);
@@ -356,7 +368,7 @@ export class WorkspaceManager {
         const scratch = path.join(repositoryPath, entry.name);
         this.assertManagedPath(scratch.slice(0, -".tmp".length));
         if (active.has(scratch)) continue;
-        await rm(scratch, { recursive: true, force: true });
+        await removeScratch(scratch);
         removed += 1;
       }
     }
