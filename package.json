@@ -20,6 +20,7 @@
     "docs:tasks": "bun run scripts/generate-task-docs.ts",
     "docs:cli": "bun run scripts/generate-cli-docs.ts",
     "docs:events": "bun run scripts/generate-event-docs.ts",
+    "docs:surface": "bun run scripts/generate-public-surface.ts",
     "docs:screenshots": "bun run scripts/regenerate-screenshots.ts",
     "build": "bun run scripts/build.ts",
     "release": "bun run scripts/release.ts",

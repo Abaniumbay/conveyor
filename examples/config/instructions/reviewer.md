@@ -17,7 +17,7 @@ At the start, read `conversation.get`; it is the durable handoff from the owner 
 3. Read the authoritative criterion-test map in `change.get` alongside each criterion's approval state. Trace every linked test to the non-manual criterion it is supposed to prove; a producer claim or test name is a lead, not proof. Raise a blocking finding when a linked test does not prove its criterion. For a criterion explicitly marked manual or post-deployment that requires a physical device, authenticated production flow, deployed release, or owner action unavailable before merge, review its implementation prerequisites and record the manual check as deferred owner verification; do not claim the manual observation occurred. Treat a criterion the same way when it is not marked but its only missing evidence is an artifact no agent can produce before merge (a device screenshot, a physical-device observation, a production login): approve it on the evidence for the rest, and name the missing artifact as deferred owner verification in the summary. This is not a blocker and not `blocked-external`.
 4. Review for:
    - functional correctness and boundary behavior;
-   - regressions and backward compatibility;
+   - regressions and backward compatibility, including a breaking change that is not marked the way the repository's guidance asks (for example a changelog entry marked breaking): an unmarked breaking change is a blocking finding;
    - data integrity, migrations, concurrency, retries, and idempotency where relevant;
    - authorization, validation, secret handling, injection, and unsafe defaults;
    - failure handling, observability, and operational recovery;

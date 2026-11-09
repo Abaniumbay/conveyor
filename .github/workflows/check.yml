@@ -38,6 +38,9 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Check release-note fragments
         run: bun run changelog > /dev/null
+      - name: Check removed public names are marked breaking
+        if: github.event_name == 'pull_request'
+        run: bun run scripts/check-breaking-changes.ts --base origin/main
       - name: Run tests with coverage and JUnit report
         run: |
           mkdir -p test-results
