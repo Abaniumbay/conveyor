@@ -1,16 +1,11 @@
 name: Start release
 
-# Run from the Actions tab: opens the "Release vX.Y.Z" pull request with the next version and its
-# notes (docs/releasing.md). Merging that pull request tags and publishes the release
+# Run from the Actions tab: opens the "Release vX.Y.Z" pull request with its notes and the version
+# they call for, worked out from the changelog fragments (docs/releasing.md). Merging that pull request tags and publishes the release
 # (release-tag.yml). Without a summary, the notes open with the commits merged since the last release.
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version to release
-        type: choice
-        options: [patch, minor, major]
-        default: patch
       summary:
         description: Release summary (optional; empty lists the commits since the last release)
         type: string
@@ -41,13 +36,12 @@ jobs:
       - name: Open the release pull request
         env:
           GH_TOKEN: ${{ github.token }}
-          BUMP: ${{ inputs.bump }}
           SUMMARY: ${{ inputs.summary }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ -n "$SUMMARY" ]; then
-            bun run release start --bump "$BUMP" --summary "$SUMMARY" --yes
+            bun run release start --summary "$SUMMARY" --yes
           else
-            bun run release start --bump "$BUMP" --summary-from-commits --yes
+            bun run release start --summary-from-commits --yes
           fi

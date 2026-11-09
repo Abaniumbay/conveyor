@@ -18,10 +18,14 @@ release pull request.
 
 ## From GitHub
 
-1. Actions → **Start release** → Run workflow. Choose patch, minor or major. Leave the summary empty
-   to open the notes with the list of commits merged since the last release, or write your own.
-   It runs `bun run release start` and opens the "Release vX.Y.Z" pull request.
-2. Read the notes in the pull request and merge it. **Merging publishes the release:** the Tag
+1. Actions → **Start release** → Run workflow. Leave the summary empty to open the notes with the
+   list of commits merged since the last release, or write your own. It runs `bun run release start`
+   and opens the "Release vX.Y.Z (kind: counts)" pull request, for example
+   "Release v0.19.0 (minor: 3 added, 1 deprecated)". The version is worked out from the changelog
+   fragments (see [The version](#the-version)); there is nothing to choose.
+2. Read the notes and the version in the pull request and merge it. If the version looks wrong, a
+   fragment is wrong: close the pull request, delete its branch, correct the fragment in a normal pull
+   request and start again. **Merging publishes the release:** the Tag
    release workflow (`release-tag.yml`) tags the release commit and starts the Release workflow on
    that tag. Follow it under Actions → Release.
 
@@ -41,6 +45,22 @@ Every pull request that changes behaviour adds its own Markdown file in `changes
 `bun run changelog`. Do not edit Unreleased in `CHANGELOG.md`; the release command writes its dated
 section and consumes the fragments.
 
+### The version
+
+The fragments decide the version. Each one calls for a release kind, and the release is the
+highest of them:
+
+| Fragments | Below 1.0 | 1.0 and later |
+| --- | --- | --- |
+| Only `Fixed` | patch | patch |
+| Any `Added`, `Changed`, `Deprecated` or `Removed` | minor | minor |
+| Any `breaking: true` | minor | major |
+
+`bun run changelog` ends with the version the current fragments would release, for example
+`Next release: v0.19.0 (minor: 3 added, 1 deprecated)`. A version given by hand to `release start`
+may be higher (1.0.0, or a pre-release such as `0.19.0-rc.1`) but never lower; a lower one is
+refused with the fragments that need more.
+
 ### 1. Start the release
 
 On an up-to-date `main` with a clean working tree:
@@ -52,12 +72,11 @@ bun run release start
 
 It checks that `gh` is signed in and that `main` is clean and level with `origin/main`. Then it:
 
-1. Asks for the version, suggesting the next patch, minor and major versions. It must be later than
-   the current one.
+1. Works out the version from the fragments and prints it with the reason. `bun run release start
+   X.Y.Z` releases a higher version instead.
 2. Shows the combined fragment preview and asks for a **release summary**: a few sentences on what the
    release is about. Finish it with an empty line. The summary opens the release notes.
-   `--bump patch|minor|major` picks the version, and `--summary-from-commits` writes the summary
-   from the commits merged since the last release tag.
+   `--summary-from-commits` writes the summary from the commits merged since the last release tag.
 3. Shows the complete release notes and asks for confirmation.
 4. Creates `release/vX.Y.Z`, sets the version in `package.json`, writes the combined fragment
    entries into `## [X.Y.Z] - <today>` under your summary, and deletes the consumed fragments.
@@ -115,8 +134,8 @@ with `conveyor upgrade --version vX.Y.Z`.
 ## When something goes wrong
 
 - **`start` refuses:** read the message. It names the problem: a dirty tree, not on `main`, `main`
-  behind `origin/main`, no changelog fragments, a version that is not newer, or a branch or tag that
-  already exists.
+  behind `origin/main`, no changelog fragments, a version that is not newer or lower than the
+  fragments call for, or a branch or tag that already exists.
 - **The Release workflow failed:** nothing was published. Fix the cause on `main` (a normal pull
   request), delete the tag, and tag again:
 
@@ -136,12 +155,12 @@ Agents release with the same commands, non-interactively, and only when a person
 release. See [skills/conveyor-release/SKILL.md](../skills/conveyor-release/SKILL.md).
 
 ```sh
-bun run release start 0.3.0 --summary-file notes.md --yes   # or --summary "<text>"; - reads stdin
+bun run release start --summary-file notes.md --yes         # or --summary "<text>"; - reads stdin
 bun run release tag 0.3.0 --yes --watch                     # only after the release pull request merged
 ```
 
-Without a terminal, `start` needs the version, `--summary` or `--summary-file`, and `--yes`; `tag`
-needs `--yes`. Missing ones are refused rather than guessed.
+Without a terminal, `start` needs `--summary`, `--summary-file` or `--summary-from-commits`, and
+`--yes`; `tag` needs `--yes`. Missing ones are refused rather than guessed.
 
 ## Building locally
 

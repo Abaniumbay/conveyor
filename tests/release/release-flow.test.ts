@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { nextVersions, prepareRelease, ReleaseCheckError, startRelease, summaryFromCommits, tagRelease, type ReleaseIo } from "../../scripts/release";
+import { parseChangelogFragment } from "../../scripts/changelog-fragments";
+import { changelogPreview, checkChosenVersion, nextVersions, prepareRelease, ReleaseCheckError, requiredRelease, startRelease, summaryFromCommits, tagRelease, type ReleaseIo } from "../../scripts/release";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -64,9 +65,9 @@ function io(clone: string, answers: Array<string | null> = []) {
 }
 
 describe("bun run release start", () => {
-  test("asks for the version and summary, prepares the release on a branch and opens its pull request", async () => {
+  test("works out the version, asks for the summary, prepares the release on a branch and opens its pull request", async () => {
     const { clone, origin } = await repository();
-    const { releaseIo, printed, pullRequests } = io(clone, ["0.2.0", "The first standalone release.\nInstall it with install.sh.", "y"]);
+    const { releaseIo, printed, pullRequests } = io(clone, ["The first standalone release.\nInstall it with install.sh.", "y"]);
     const url = await startRelease({ root: clone }, releaseIo);
 
     expect(url).toBe("https://github.com/owner/conveyor/pull/7");
@@ -79,7 +80,8 @@ describe("bun run release start", () => {
     );
     expect(await Bun.file(path.join(clone, "changes", "7-standalone-release.md")).exists()).toBe(false);
     expect(git(clone, "show", "--format=", "--name-status", "HEAD")).toContain("D\tchanges/7-standalone-release.md");
-    expect(pullRequests[0]!.argv).toEqual(["gh", "pr", "create", "--base", "main", "--head", "release/v0.2.0", "--title", "Release v0.2.0", "--body-file", "-"]);
+    expect(pullRequests[0]!.argv).toEqual(["gh", "pr", "create", "--base", "main", "--head", "release/v0.2.0", "--title", "Release v0.2.0 (minor: 1 added)", "--body-file", "-"]);
+    expect(pullRequests[0]!.body).toContain("Version: minor: 1 added.");
     expect(pullRequests[0]!.body).toContain("## Release notes\n\nThe first standalone release.");
     expect(pullRequests[0]!.body).toContain("bun run release tag 0.2.0");
     expect(printed.join("\n")).toContain("- The standalone release.");
@@ -93,7 +95,7 @@ describe("bun run release start", () => {
     expect(git(clone, "show", "HEAD:package.json")).toContain('"version": "0.2.0"');
   });
 
-  test("a workflow bumps the version and writes the summary from the commits since the last release", async () => {
+  test("a workflow releases the worked-out version and writes the summary from the commits since the last release", async () => {
     const { clone } = await repository();
     git(clone, "tag", "v0.1.0");
     git(clone, "push", "--quiet", "origin", "v0.1.0");
@@ -102,7 +104,7 @@ describe("bun run release start", () => {
     }
     git(clone, "push", "--quiet");
     const { releaseIo, pullRequests } = io(clone);
-    await startRelease({ root: clone, bump: "minor", summaryFromCommits: true, yes: true }, releaseIo);
+    await startRelease({ root: clone, summaryFromCommits: true, yes: true }, releaseIo);
 
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("release/v0.2.0");
     expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toContain(
@@ -118,7 +120,7 @@ describe("bun run release start", () => {
 
   test("declining, or having no terminal, changes nothing", async () => {
     const { clone } = await repository();
-    await expect(startRelease({ root: clone }, io(clone, ["0.2.0", "Summary.", "n"]).releaseIo)).rejects.toThrow("stopped; nothing was changed");
+    await expect(startRelease({ root: clone }, io(clone, ["Summary.", "n"]).releaseIo)).rejects.toThrow("stopped; nothing was changed");
     await expect(startRelease({ root: clone, version: "0.2.0" }, io(clone).releaseIo)).rejects.toThrow("pass --summary");
     await expect(startRelease({ root: clone, version: "0.2.0", summary: "s" }, io(clone).releaseIo)).rejects.toThrow("pass --yes");
     expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
@@ -224,4 +226,73 @@ test("prepare keeps a blank line between the new section and the previous releas
   await writeFile(path.join(clone, "CHANGELOG.md"), `${CHANGELOG}\n## [0.1.0] - 2026-10-01\n\n### Added\n\n- The first release.\n`);
   await prepareRelease({ root: clone, version: "0.2.0", date: "2026-10-06" });
   expect(await readFile(path.join(clone, "CHANGELOG.md"), "utf8")).toContain("- The standalone release.\n\n## [0.1.0] - 2026-10-01\n");
+});
+
+describe("the version the fragments call for", () => {
+  const fragment = (section: string, breaking = false) =>
+    parseChangelogFragment(`1-${section.toLowerCase()}${breaking ? "-breaking" : ""}.md`, `---\nsection: ${section}${breaking ? "\nbreaking: true" : ""}\n---\nA change.\n`);
+
+  test("only fixes release a patch", () => {
+    expect(requiredRelease("0.18.0", [fragment("Fixed"), fragment("Fixed")])).toEqual({ kind: "patch", version: "0.18.1", reason: "patch: 2 fixed" });
+  });
+
+  test("an added entry releases a minor version", () => {
+    expect(requiredRelease("0.18.0", [fragment("Fixed"), fragment("Added")]).version).toBe("0.19.0");
+  });
+
+  test("a changed entry releases a minor version", () => {
+    expect(requiredRelease("0.18.0", [fragment("Changed")]).version).toBe("0.19.0");
+  });
+
+  test("a deprecated entry releases a minor version", () => {
+    expect(requiredRelease("0.18.0", [fragment("Deprecated")]).version).toBe("0.19.0");
+  });
+
+  test("a removed entry releases a minor version", () => {
+    expect(requiredRelease("0.18.0", [fragment("Removed")]).version).toBe("0.19.0");
+  });
+
+  test("a breaking change releases a minor version below 1.0", () => {
+    expect(requiredRelease("0.18.0", [fragment("Fixed", true)])).toEqual({ kind: "minor", version: "0.19.0", reason: "minor: 1 fixed, 1 breaking" });
+  });
+
+  test("a breaking change releases a major version from 1.0 on", () => {
+    expect(requiredRelease("1.2.0", [fragment("Changed", true)])).toEqual({ kind: "major", version: "2.0.0", reason: "major: 1 changed, 1 breaking" });
+  });
+
+  test("a version lower than the fragments call for is refused, naming the fragments that need more", () => {
+    expect(() => checkChosenVersion("0.18.1", "0.18.0", [fragment("Fixed"), fragment("Added")]))
+      .toThrow("0.18.1 is lower than 0.19.0, which the changes call for (minor: 1 added, 1 fixed): changes/1-added.md (Added)");
+  });
+
+  test("an equal or higher version is accepted, including a pre-release of the required version", () => {
+    for (const version of ["0.19.0", "1.0.0", "0.19.0-rc.1"]) {
+      expect(() => checkChosenVersion(version, "0.18.0", [fragment("Added")])).not.toThrow();
+    }
+  });
+
+  test("start refuses a version lower than the fragments call for and changes nothing", async () => {
+    const { clone } = await repository();
+    await expect(startRelease({ root: clone, version: "0.1.1", summary: "s", yes: true }, io(clone).releaseIo))
+      .rejects.toThrow("0.1.1 is lower than 0.2.0, which the changes call for (minor: 1 added)");
+    expect(git(clone, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  });
+
+  test("a higher version given by hand says so in the pull request title", async () => {
+    const { clone } = await repository();
+    const { releaseIo, pullRequests } = io(clone);
+    await startRelease({ root: clone, version: "1.0.0", summary: "s", yes: true }, releaseIo);
+    expect(pullRequests[0]!.argv).toContain("Release v1.0.0 (set by hand; the changes call for minor: 1 added)");
+  });
+
+  test("the changelog preview ends with the version it releases", () => {
+    expect(changelogPreview("0.18.0", [fragment("Added")])).toBe("## [Unreleased]\n\n### Added\n\n- A change.\n\nNext release: v0.19.0 (minor: 1 added)");
+    expect(changelogPreview("0.18.0", [])).toBe("## [Unreleased]");
+  });
+
+  test("the Start release workflow offers no version choice", async () => {
+    const workflow = await readFile(path.join(import.meta.dir, "../../.github/workflows/release-start.yml"), "utf8");
+    expect(workflow).not.toContain("bump");
+    expect(workflow).toContain("bun run release start --summary-from-commits --yes");
+  });
 });
